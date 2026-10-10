@@ -358,7 +358,8 @@ token, in its installed copy's `.git/config`, and skills never need it. The
 carve-out never writes and never touches the pseudo-filesystem floor. It is cut
 only from Evener's own config mask, and a directory is left masked when it
 contains a masked path or sits under another one (so your own denylist entries,
-inside or above it, win), when a write root overlaps it (it would not stay
+inside or above it, win, under any spelling of the same directory, letter case
+included), when a write root overlaps it (it would not stay
 read-only), or when it resolves anywhere but its own place under Evener's config
 mask (a symlink into, or above, a masked directory). The file tools check that
 resolution again when they open the directory, against the directory actually

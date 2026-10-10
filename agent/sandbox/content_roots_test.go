@@ -537,3 +537,108 @@ func TestEvenerContentRootsBeforeTheConfigDirExistsUnderASymlinkedHome(t *testin
 		}
 	}
 }
+
+// On a case-insensitive volume (macOS's default), denylisting the config root
+// under another case is the same directory, so nothing is carved from it.
+func TestEvenerContentRootsHonourACaseVariantConfigMask(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG", "EVENER")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{".CONFIG/EVENER"}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("a case-variant denylist entry for the config root must keep its content masked, got %v", rp.UnmaskedRoots)
+	}
+}
+
+// On a case-insensitive volume, a denylist entry naming a content root (or a
+// directory inside one) under another case is the same directory, so that
+// root is not carved out and stays masked.
+func TestEvenerContentRootsHonourACaseVariantMaskOfAContentRoot(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "mine", "private"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "evener", "SKILLS")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	for _, entry := range []string{".config/evener/SKILLS", ".config/evener/skills/MINE/PRIVATE"} {
+		rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{entry}}, host, root)
+		if slices.Contains(rp.UnmaskedRoots, skills) {
+			t.Errorf("denylisting %s must keep the skills dir masked, got %v", entry, rp.UnmaskedRoots)
+		}
+		if !rp.Masks(filepath.Join(skills, "mine", "private", "notes.md")) {
+			t.Errorf("denylisting %s: the denied directory must stay masked", entry)
+		}
+	}
+}
+
+// Letter case is ignored only where resolution saw a case-insensitive volume.
+// On a case-sensitive one, a carve-out swapped after resolution for a link to a
+// separate directory spelled in another case is a different place, refused.
+func TestCarveOutRefusesACaseVariantRedirectOnACaseSensitiveVolume(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG")); err == nil {
+		t.Skip("this volume is case-insensitive")
+	}
+	other := filepath.Join(home, ".config", "evener", "plugins", "CACHE")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if err := os.Rename(cache, cache+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, cache); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(cache) || rp.CarveOutResolvesTo(cache, other) {
+		t.Errorf("a case-variant directory on a case-sensitive volume must not pass for the carve-out")
+	}
+}
+
+// An explicit denylist entry for the config root spelled in another case, made
+// while the directory did not exist, is still the user's boundary once the
+// directory is created: it is never mistaken for Evener's own config mask.
+func TestCarveOutHonoursACaseVariantConfigMaskCreatedLater(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{".CONFIG/EVENER"}}, host, root)
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rp.UnmaskedRoots, skills) && rp.CarveOutIntact(skills) {
+		t.Errorf("an explicit case-variant config mask must keep the skills dir masked once it exists")
+	}
+}

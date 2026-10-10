@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 var resolveAbs = filepath.Abs
@@ -149,6 +151,13 @@ type ResolvedPolicy struct {
 	// carveOutAt records where each of the UnmaskedRoots that existed at
 	// resolution resolved to (CarveOutResolvesTo holds it to that location).
 	carveOutAt map[string]string
+
+	// caseFold records, per carve-out root, whether resolution found its
+	// volume case-insensitive (CarveOutResolvesTo then ignores letter case),
+	// and configMasks the masked entries that stand for Evener's config mask,
+	// the only ones a carve-out may sit under.
+	caseFold    map[string]bool
+	configMasks []string
 
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
@@ -458,8 +467,13 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveHost:   host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
+	rp.configMasks = configMasks
 	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
 		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree)
+	rp.caseFold = map[string]bool{}
+	for root, at := range rp.carveOutAt {
+		rp.caseFold[root] = caseInsensitiveAt(at)
+	}
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
 	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, rp)
@@ -777,15 +791,64 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 	return append(slices.Clone(masked), cr), append(configMasks, cr)
 }
 
-// sameDir reports whether a and b name the same directory: the same spelling,
-// or the same symlink-resolved location.
+// sameDir reports whether a and b name the same directory, by file identity:
+// neither spelling nor resolved path tells on a case-insensitive volume
+// (~/.CONFIG/EVENER is ~/.config/evener).
 func sameDir(a, b string) bool {
 	if a == b {
 		return true
 	}
-	ra, aerr := filepath.EvalSymlinks(a)
-	rb, berr := filepath.EvalSymlinks(b)
-	return aerr == nil && berr == nil && ra == rb
+	fa, aerr := os.Stat(a)
+	fb, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(fa, fb)
+}
+
+// underByIdentity reports whether p, or a directory above it, is the existing
+// directory dir (sameDir), so containment holds under any spelling of either.
+func underByIdentity(p, dir string) bool {
+	for {
+		if sameDir(p, dir) {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
+}
+
+// overlapsMaskByIdentity reports whether any of masked, other than the entries
+// standing for Evener's config mask (configMasks, as resolution listed them),
+// is by file identity at, above or inside the directory at. Only those exact
+// entries are exempt: a user's entry naming the same directory in another
+// case is theirs, and wins.
+func overlapsMaskByIdentity(masked, configMasks []string, at string) bool {
+	return slices.ContainsFunc(masked, func(m string) bool {
+		return !slices.Contains(configMasks, m) && (underByIdentity(at, m) || underByIdentity(m, at))
+	})
+}
+
+// caseInsensitiveAt reports whether the volume holding p (or, not created yet,
+// its nearest existing ancestor) ignores letter case: the same path with every
+// letter's case flipped names the same directory.
+func caseInsensitiveAt(p string) bool {
+	for {
+		if _, err := os.Stat(p); err == nil {
+			flipped := strings.Map(func(r rune) rune {
+				if unicode.IsUpper(r) {
+					return unicode.ToLower(r)
+				}
+				return unicode.ToUpper(r)
+			}, p)
+			return flipped != p && sameDir(p, flipped)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
 }
 
 // unmaskedContentRoots admits the host's Evener content roots as read-only
@@ -830,6 +893,13 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			carveOutEscapes(resolved, root, masked) {
 			continue
 		}
+		// The checks above compare spellings; on a case-insensitive volume a
+		// mask spelled in another case (~/.config/evener/SKILLS) is the same
+		// directory, so overlap with any mask but Evener's config mask is also
+		// judged by file identity.
+		if overlapsMaskByIdentity(masked, configMasks, resolved) {
+			continue
+		}
 		// A mask that is itself a symlink into this root (~/.ssh pointing under
 		// the skills dir) would make its secrets readable through the carve-out.
 		if slices.ContainsFunc(masked, func(m string) bool {
@@ -862,8 +932,19 @@ func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	// A root is held to where it resolved at session start (or, not created
 	// yet, where creating it would land), so redirecting an enclosing
 	// directory later cannot move the grant.
+	//
+	// The kernel reports an opened directory in its real letter case, which a
+	// pinned spelling from the environment may not share. Case is ignored only
+	// where resolution found the volume case-insensitive, where two spellings
+	// that differ only in case are one path, never a redirect.
 	at, ok := rp.carveOutAt[root]
-	return ok && resolved == at
+	sameLocation := resolved == at || (rp.caseFold[root] && strings.EqualFold(resolved, at))
+	if !ok || !sameLocation {
+		return false
+	}
+	// A user's mask naming the root in another case, for a directory that did
+	// not exist at resolution, can only be matched by identity now.
+	return !overlapsMaskByIdentity(rp.MaskedPaths, rp.configMasks, at)
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the
