@@ -170,15 +170,16 @@ func TestMemoryWriteNotesUnreadableFrontmatter(t *testing.T) {
 }
 
 // memory_write and memory_edit quote a top-level description or evidence
-// value that is invalid YAML only because it is an unquoted scalar holding
-// ": ", ending in ":", or starting with a YAML indicator, so the page parses
-// with no second call. A valid line beside it is left as written.
+// value YAML can't read as written, such as an unquoted scalar holding ": ",
+// ending in ":", or starting with a YAML indicator, so the page parses with
+// no second call. A valid line beside it is left as written.
 func TestMemoryWriteQuotesAnUnquotedColonValue(t *testing.T) {
 	t.Parallel()
 	s, scope := memoryWritesSession(t)
 	for name, tc := range map[string]struct{ block, want string }{
 		"inner-colon.md": {"description: like `shop: add Count`\n", "description: 'like `shop: add Count`'\n"},
 		"trailing.md":    {"description: Fix:\n", "description: 'Fix:'\n"},
+		"colon-tab.md":   {"description: a:\tb\n", "description: \"a:\\tb\"\n"},
 		"indicator.md":   {"description: d\nevidence: `a.go`: line 3\n", "description: d\nevidence: '`a.go`: line 3'\n"},
 		"both.md": {
 			"description: Fix: use cents\ntags: [money]\nevidence: file: price.go\n",

@@ -250,19 +250,13 @@ func setMemoryFrontmatterField(raw []byte, line string) []byte {
 	return []byte(out)
 }
 
-// memoryQuotableKeys are the top-level frontmatter keys whose free-text value
-// repairMemoryFrontmatter may quote.
-var memoryQuotableKeys = []string{"description", "evidence"}
-
-// yamlIndicators are the characters a plain YAML scalar can't start with.
-const yamlIndicators = "-?:,[]{}#&*!|>'\"%@`"
-
 // repairMemoryFrontmatter is raw with each top-level description or evidence
-// line quoted (memoryYAMLField) whose value can't be read as written because
-// it is an unquoted scalar holding ": ", ending in ":", or starting with a
-// YAML indicator, a mistake easy to make in free text ("like `shop: add
-// Count`"). The quoting is kept only when it makes the frontmatter parse; any
-// other page, readable or not, is returned as it is.
+// line quoted (memoryYAMLField) whose value YAML can't read as written, such
+// as an unquoted scalar holding ": " or ending in ":", a mistake easy to make
+// in free text ("like `shop: add Count`"). Only these free-text keys are
+// quoted; quoting tags or updated would change their type. The quoting is
+// kept only when it makes the frontmatter parse; any other page, readable or
+// not, is returned as it is.
 func repairMemoryFrontmatter(raw []byte) []byte {
 	text := string(raw)
 	block, body, ok := splitMemoryFrontmatter(text)
@@ -275,18 +269,16 @@ func repairMemoryFrontmatter(raw []byte) []byte {
 	lines := slices.Collect(strings.Lines(block))
 	quoted := false
 	for i, line := range lines {
+		// Keys are matched as text: memoryFrontmatterKeyLines reads keys
+		// through YAML, which can't read this block.
 		key, value, found := strings.Cut(strings.TrimSuffix(line, "\n"), ":")
-		value = strings.TrimSpace(value)
-		if !found || !slices.Contains(memoryQuotableKeys, key) || value == "" {
-			continue
-		}
-		if !strings.Contains(value, ": ") && !strings.HasSuffix(value, ":") && !strings.ContainsRune(yamlIndicators, rune(value[0])) {
+		if !found || (key != "description" && key != "evidence") {
 			continue
 		}
 		if yaml.Unmarshal([]byte(line), new(any)) == nil {
 			continue // the line reads as written, quoted or not
 		}
-		lines[i] = memoryYAMLField(key, value)
+		lines[i] = memoryYAMLField(key, strings.TrimSpace(value))
 		quoted = true
 	}
 	if !quoted {
