@@ -472,6 +472,56 @@ it("ordinary disk-only row-restore deadline disposes its binding before a late b
   }
 });
 
+it("ordinary disk-only restore refuses a captured body after a silent durable history deletion", async () => {
+  const storage = await seedDiskOnlyOpening();
+  const original = SessionEntryCache.prototype.getTurn;
+  let releaseTurns: (() => void) | undefined;
+  let markHeld: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseTurns = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    markHeld = resolve;
+  });
+  vi.spyOn(SessionEntryCache.prototype, "getTurn").mockImplementation(async function (
+    this: SessionEntryCache,
+    key,
+    turnId,
+  ) {
+    const row = await original.call(this, key, turnId);
+    markHeld?.();
+    await gate;
+    return row;
+  });
+  const client = connect();
+  let finishRead: (() => void) | undefined;
+  client.on(
+    "thread/read",
+    (params) =>
+      new Promise((resolve) => {
+        finishRead = () =>
+          resolve({
+            ...response("local:a", [turn("post-delete-source", 50)]),
+            requestGeneration: params.requestGeneration,
+          });
+      }),
+  );
+  const opening = threadsStore.getState().ensureThread("local:a");
+  await held;
+  try {
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    await storage.deleteHistory(key); // No channel message or store-side retirement.
+    expect(await storage.getHistoryGeneration(key)).toBe(1);
+    releaseTurns?.();
+    await vi.waitFor(() => expect(finishRead).toBeDefined());
+    expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+  } finally {
+    releaseTurns?.();
+    finishRead?.();
+    await opening;
+  }
+});
+
 it("production cache writes and reopens keyed entries on the real database", async () => {
   const first = cache();
   const item = turn("disk-row").items?.[0];
