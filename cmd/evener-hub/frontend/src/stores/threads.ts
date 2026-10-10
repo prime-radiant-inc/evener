@@ -6761,23 +6761,19 @@ function deleteCachedRefs(refs: string[]): void {
   }
   const production = sessionCacheAdapterOverride === undefined && !entryTranscriptFixtureForTests;
   if (production && !byCache.has(currentEntryCache())) byCache.set(currentEntryCache(), new Set());
-  void trackProjectionWork(
-    (async () => {
-      for (const [cache, captured] of byCache) {
-        for (const historyKey of await cache.historyKeysForRequestedRefs(refs)) captured.add(historyKey);
-        for (const historyKey of captured) await cache.deleteHistory(historyKey);
-      }
-      // Only deletion, never a legacy read or writer, uses this compatibility
-      // adapter on the production route. Its constructor captures real storage
-      // lazily, and both source formats are healed on the same schema version.
-      const legacy = production ? new SessionCacheIndexedDB() : currentSessionCache();
-      try {
-        await legacy.deleteRecords(refs);
-      } finally {
-        if (production) legacy.close();
-      }
-    })(),
-  ).catch(() => {
+  // Source healing must be issued now, not after metadata discovery: a read
+  // queued by the deletion caller must follow this delete, not race ahead of it.
+  const legacy = production ? new SessionCacheIndexedDB() : currentSessionCache();
+  const sources = legacy.deleteRecords(refs).finally(() => {
+    if (production) legacy.close();
+  });
+  const histories = (async () => {
+    for (const [cache, captured] of byCache) {
+      for (const historyKey of await cache.historyKeysForRequestedRefs(refs)) captured.add(historyKey);
+      for (const historyKey of captured) await cache.deleteHistory(historyKey);
+    }
+  })();
+  void trackProjectionWork(Promise.all([sources, histories])).catch(() => {
     // Durable storage is best-effort, but retired claims never resume writes.
   });
 }
