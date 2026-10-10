@@ -12,6 +12,7 @@ import {
 	liveBands,
 	liveSummary,
 	quietOrWorking,
+	rowClassifier,
 	stateWord,
 	subagentChipText,
 	summaryText,
@@ -275,6 +276,59 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.working.map((item) => item.row.ref)).toEqual(["work-b", "work-a"]);
 		expect(bands.finished.map((item) => item.row.ref)).toEqual(["done-new", "done-old"]);
 		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
+	});
+
+	it("dots a live session with anything new since you last looked, and nothing else (Jesse's ruling)", () => {
+		const live = [
+			row("work-hub-unseen", { state: "active", unseen: true, turn_ended_at: at(1) }),
+			row("work-device-unseen", { state: "active" }),
+			row("work-moved", { state: "active" }),
+			row("ask-unseen", { state: "awaiting", ask_pending: true }),
+			row("done-unseen", { state: "idle" }),
+			row("seen-moved", { state: "idle" }),
+			row("never-ran", { state: "idle", dormant: true }),
+			row("offline-unseen", { state: "idle", offline: true }),
+			row("seen-work", { state: "active" }),
+		];
+		const seen = (r: NavigationSessionSummary) => r.ref.startsWith("seen");
+		const moved = (r: NavigationSessionSummary) => r.ref === "work-moved" || r.ref === "seen-moved";
+		const bands = liveBands(live, [], seen, () => false, moved);
+		const dotted = [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle]
+			.filter((item) => item.unseen)
+			.map((item) => item.row.ref)
+			.sort();
+		// A working row reads the hub alone: its own unseen flag or motion after
+		// its seen mark, never this device's fallback.
+		expect(dotted).toEqual(["ask-unseen", "done-unseen", "seen-moved", "work-hub-unseen", "work-moved"]);
+	});
+
+	it("dots no session that isn't live, is offline, or has never run, however new its output", () => {
+		const classify = rowClassifier(
+			[],
+			() => false,
+			() => true,
+		);
+		for (const over of [
+			{ state: "ended", live: false },
+			{ state: "idle", live: false },
+			{ state: "idle", offline: true },
+			{ state: "notLoaded" },
+			{ state: "idle", dormant: true },
+		] as const) {
+			expect(classify(row("r", over)).unseen).toBe(false);
+		}
+	});
+
+	it("reads an active session's turn from the hub alone, with this phone's pending marks", () => {
+		const moved = () => false;
+		// The hub decides a row with a turn end: seen through this phone's mark.
+		const hubSeen = rowClassifier([], () => true, moved);
+		expect(
+			hubSeen(row("asking", { state: "active", ask_pending: true, turn_ended_at: at(1), unseen: true })).unseen,
+		).toBe(false);
+		// Without a turn end the device's markers never dot an active row.
+		const deviceUnseen = rowClassifier([], () => false, moved);
+		expect(deviceUnseen(row("approval", { state: "active", approval_pending: true })).unseen).toBe(false);
 	});
 
 	it("floats a may-be-stuck session to the top of Working when isStuck is given (spec 7.1, S5)", () => {

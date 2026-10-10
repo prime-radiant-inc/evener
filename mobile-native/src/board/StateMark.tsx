@@ -15,7 +15,8 @@ const GLYPHS: Record<BoardState, Glyph | null> = {
 	warning: { name: "exclamationmark.triangle.fill", tint: "attention", size: 20 },
 	restartNeeded: { name: "arrow.triangle.2.circlepath.circle.fill", tint: "attention", size: 20 },
 	working: { name: "circle.fill", tint: "alive", size: 8 },
-	finished: { name: "circle.fill", tint: "accent", size: 8 },
+	// A finished row's blue dot is BoardRow's unseen dot.
+	finished: null,
 	idle: null,
 	shutDown: null,
 };
