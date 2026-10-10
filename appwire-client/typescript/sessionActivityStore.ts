@@ -83,6 +83,10 @@ interface ResourceRead {
   timer: unknown | null;
   cursor: string | undefined;
   epoch: string | undefined;
+  /** A replacement epoch another collection's response announced before this
+   * collection's own read saw it: what frames arriving in that window belong
+   * to, and the ordering this read is about to replace. */
+  announcedEpoch: string | undefined;
   /** The session this collection's rows belong to. `acceptContext` clears it on
    * a replacement, so a continuation page whose response names a different
    * session is recognized as a restart rather than adopted. */
@@ -127,6 +131,7 @@ const resourceRead = (): ResourceRead => ({
   timer: null,
   cursor: undefined,
   epoch: undefined,
+  announcedEpoch: undefined,
   sessionId: undefined,
   incomplete: false,
   boundary: undefined,
@@ -183,12 +188,6 @@ export class SessionActivityStore {
   private delegatesRowSetFinal = false;
   /** The last accepted context's no-read-merge eligibility. */
   private pushEligible = false;
-  /** The replacement epoch whose delegate state has already been retired: a
-   * sibling resource can report the same new epoch on every response while the
-   * delegates read is still in flight, and retiring once per epoch keeps that
-   * from clearing a buffered frame that arrived after the first report. */
-  private retirementEpoch: string | undefined;
-
   constructor(
     private readonly client: SessionActivityClient,
     private readonly ref: string,
@@ -295,6 +294,7 @@ export class SessionActivityStore {
           this.cancelTimer(read);
           this.cancelPace(read);
           read.refresh = null;
+          read.announcedEpoch = undefined;
         }
         this.runtimeThreadId = null;
         this.statusUpdate = null;
@@ -304,7 +304,6 @@ export class SessionActivityStore {
         // only by a fresh live capability context.
         this.pushEligible = false;
         this.clearDelegates();
-        this.retirementEpoch = undefined;
         this.publish({ runtime: null });
       }),
       this.client.onReady(() => {
@@ -339,7 +338,6 @@ export class SessionActivityStore {
     // The replacement context has not been seen by noteContext yet; a fresh
     // session resets eligibility rather than reporting a live->retained flip.
     this.pushEligible = false;
-    this.retirementEpoch = undefined;
     const metadata = this.lease?.metadata();
     if (metadata?.sessionId !== context.sessionId || this.statusUpdate?.threadId !== metadata?.threadId)
       this.statusUpdate = null;
@@ -349,6 +347,7 @@ export class SessionActivityStore {
       this.stopReadDemand(read, resource === source ? read.rootQueued : demanded);
       read.cursor = undefined;
       read.epoch = undefined;
+      read.announcedEpoch = undefined;
       read.sessionId = undefined;
       read.incomplete = false;
       read.boundary = undefined;
@@ -471,9 +470,9 @@ export class SessionActivityStore {
         // A summary-triggered retire already cleared this epoch's state and
         // forced the read, so clearing again here would wipe a frame that
         // arrived between the two and leave it undiscovered until another.
-        if (crossing && resource === "delegates" && this.retirementEpoch !== epoch) {
+        if (crossing && resource === "delegates" && read.announcedEpoch !== epoch) {
           this.clearDelegates();
-          this.retirementEpoch = undefined;
+          read.announcedEpoch = undefined;
         }
         read.epoch = epoch;
         // A page cannot cross epochs: its rows extend a retired walk. A root read
@@ -711,14 +710,17 @@ export class SessionActivityStore {
     // the activity invalidation already re-reads the observed delegates, and a
     // gate that turns on re-reads them too. Retiring on every other collection's
     // context would spend a read on state this store is not merging into.
-    const loaded = this.reads.delegates.epoch;
+    const delegates = this.reads.delegates;
     if (
       (wasEligible || next) &&
-      loaded !== undefined &&
-      loaded !== context.epoch &&
-      this.retirementEpoch !== context.epoch
+      delegates.epoch !== undefined &&
+      delegates.epoch !== context.epoch &&
+      delegates.announcedEpoch !== context.epoch
     ) {
-      this.retirementEpoch = context.epoch;
+      // Announced before the retire: a frame that arrives while the forced read
+      // is in flight is the replacement's own, and the retire's publish can
+      // reach a listener that handles one before this method returns.
+      delegates.announcedEpoch = context.epoch;
       this.retireDelegates();
     }
   }
@@ -773,7 +775,8 @@ export class SessionActivityStore {
    * arriving read judge the record retired and overwrite the frame with its
    * own, older row. */
   private delegateEpoch(): string | undefined {
-    return this.retirementEpoch ?? this.reads.delegates.epoch;
+    const delegates = this.reads.delegates;
+    return delegates.announcedEpoch ?? delegates.epoch;
   }
   /** The frame's logical owner scopes it: `ownerSessionId` is always the
    * physical root, so a session store keys on `logicalOwnerSessionId` (the
@@ -890,11 +893,8 @@ export class SessionActivityStore {
     // never recorded): the loaded row's revision belongs to a retired journal, so
     // comparing against it would reject the replacement's frames, which rebuild
     // from 1. The frame is first sight for this epoch, as a read's row is.
-    if (applied === undefined) {
-      const merged = joinDelegateState(incoming, current, true);
-      return delegateRowsEqual(merged, current) ? current : merged;
-    }
-    const merged = joinDelegateState(incoming, current, revisionOf(incoming.projectionRevision) > applied);
+    const incomingWins = applied === undefined || revisionOf(incoming.projectionRevision) > applied;
+    const merged = joinDelegateState(incoming, current, incomingWins);
     return delegateRowsEqual(merged, current) ? current : merged;
   }
   private joinDelegateRows(
@@ -938,14 +938,22 @@ export class SessionActivityStore {
   private settleBufferedFrames(settled: boolean): void {
     if (!settled || this.bufferedUnknownDelegates.size === 0) return;
     const rows = this.state.delegates.rows as readonly SessionDelegate[];
-    const loaded = new Map<string, number>();
-    for (const row of rows) loaded.set(row.delegateId, (loaded.get(row.delegateId) ?? 0) + 1);
+    // One walk answers both questions a placement asks of the row set: how many
+    // rows the id names, and where the row sits when it names exactly one.
+    const loadedById = new Map<string, { count: number; at: number }>();
+    for (let at = 0; at < rows.length; at += 1) {
+      const row = rows[at];
+      if (!row) continue;
+      const served = loadedById.get(row.delegateId);
+      if (served) served.count += 1;
+      else loadedById.set(row.delegateId, { count: 1, at });
+    }
     let settledRows: SessionDelegate[] | null = null;
     for (const [delegateId, frame] of this.bufferedUnknownDelegates) {
-      const count = loaded.get(delegateId) ?? 0;
-      if (count === 0) continue;
+      const served = loadedById.get(delegateId);
+      if (!served) continue;
       this.bufferedUnknownDelegates.delete(delegateId);
-      if (count > 1) {
+      if (served.count > 1) {
         // The read served the id twice, so it can never be attributed: record
         // the revision the id has now been read for, so a repeat of that frame
         // asks for no read and only a strictly newer one asks again.
@@ -954,15 +962,14 @@ export class SessionActivityStore {
         if (asked === undefined || asked < revision) this.unattributableDelegateRevisions.set(delegateId, revision);
         continue;
       }
-      const index = rows.findIndex((row) => row.delegateId === delegateId);
-      const current = rows[index];
+      const current = rows[served.at];
       if (!current) continue;
       this.seenUnknownDelegates.delete(delegateId);
       this.unattributableDelegateRevisions.delete(delegateId);
       const merged = this.mergeDelegateFrame(current, frame);
       if (merged === current) continue;
       if (!settledRows) settledRows = rows.slice();
-      settledRows[index] = merged;
+      settledRows[served.at] = merged;
       this.recordAppliedDelegate(merged, this.delegateEpoch());
     }
     if (!settledRows) return;
