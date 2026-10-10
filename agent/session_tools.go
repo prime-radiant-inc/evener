@@ -1345,6 +1345,8 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	// keep the advertised capability set aligned with the unconditional grant
 	// guard rather than the parent's interactive-root registry.
 	canonical = removeStrings(canonical, protectedGrantTools())
+	// No delegate can save memory (filterUnavailableMemoryTools).
+	canonical = removeStrings(canonical, memorySaveToolNames)
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 

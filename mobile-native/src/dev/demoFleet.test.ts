@@ -62,7 +62,7 @@ it("summarizes the same coordinator running job in navigation and typed activity
 });
 
 describe("the tool families session (EVENER_DEMO_FLEET_TOOLS)", () => {
-	it("adds Show Every Tool Family to Live, finished, only when asked for", () => {
+	it("adds Show Every Tool Family to Live, idle, only when asked for", () => {
 		const row = findRow(liveRows(createDemoFleet({ now: STARTUP, toolFamilies: true })), "s-tools");
 		expect(row).toMatchObject({ title: "Show Every Tool Family" });
 		expect(liveRows(createDemoFleet({ now: STARTUP })).map((row) => row.session_id)).not.toContain(

@@ -263,11 +263,12 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 	return fmt.Sprintf("\n\nThis page is long (%d KB). A memory page should hold one fact.", kb)
 }
 
-// memoryGardeningSkillAvailable reports whether the session can load the
-// gardening-memory skill: use_skill is callable and the skill is advertised
-// to the model.
+// memoryGardeningSkillAvailable reports whether the session can load and
+// follow the gardening-memory skill: it can save memory (the skill fixes pages
+// with the save tools, which no delegate has), use_skill is callable and the
+// skill is advertised to the model.
 func (s *Session) memoryGardeningSkillAvailable() bool {
-	if !s.canInstructTool("use_skill") {
+	if !s.memorySaveInstructionsEnabled() || !s.canInstructTool("use_skill") {
 		return false
 	}
 	for _, descriptor := range s.skills.ModelEntries() {
