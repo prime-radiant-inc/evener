@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -112,8 +113,12 @@ func newGrepAccum(pattern string, caseInsensitive bool, maxResults int, outputMo
 // not a file found under a directory. Ripgrep omits the filename entirely when
 // given a single explicit file argument, so content and count output do the
 // same here; otherwise the tool's output would differ between environments with
-// and without rg on PATH. A path is written as grepOutputPath gives it.
+// and without rg on PATH. A path is written as grepOutputPath gives it. A
+// binary file (one holding a NUL byte) is skipped.
 func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
+	if bytes.IndexByte(data, 0) >= 0 {
+		return false
+	}
 	singleFile := relPath == "."
 	name := grepOutputPath(relPath)
 	lines := strings.Split(string(data), "\n")
@@ -179,6 +184,20 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 		}
 	}
 	return false
+}
+
+// grepFileSelected reports whether grep searches the file named name, at
+// slash path rel, once dotfile and ignore rules have let it through: a file
+// skip names (when skip is not nil) or outside the glob filters is left out.
+// The error is a malformed glob filter's.
+func grepFileSelected(name, rel string, globFilters []string, skip func(rel string) bool) (bool, error) {
+	if skip != nil && skip(rel) {
+		return false, nil
+	}
+	if len(globFilters) == 0 {
+		return true, nil
+	}
+	return matchesAnyGrepFilter(name, globFilters)
 }
 
 // finish renders the accumulated results in the requested output mode.

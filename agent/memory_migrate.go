@@ -386,7 +386,7 @@ func parseLegacyMemoryIndex(index string) []legacyIndexEntry {
 		if strings.TrimSpace(source) == "" {
 			source = text
 		}
-		if description := strings.Join(strings.Fields(source), " "); description != "" {
+		if description := collapseWhitespace(source); description != "" {
 			out = append(out, legacyIndexEntry{Links: links, Description: description})
 			seen[links[0]] = true
 		}

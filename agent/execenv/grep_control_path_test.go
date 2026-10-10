@@ -23,9 +23,10 @@ func writeControlPathTree(t *testing.T, root string) {
 	}
 }
 
-// controlPathGrepCases are the lines each output mode gives for
-// writeControlPathTree: a name holding a control character is written as a
-// JSON string, so every result stays on one line (#4154).
+// controlPathGrepCases are the results each output mode gives for
+// writeControlPathTree, one per file: a name holding a control character is
+// written as a JSON string, so every line belongs to one result (#4154). A
+// context search's result is its group of lines.
 var controlPathGrepCases = []struct {
 	mode    string
 	context int
@@ -35,9 +36,8 @@ var controlPathGrepCases = []struct {
 	{mode: "content", want: []string{`"bad\nname.md":2:needle`, "ok.md:2:needle"}},
 	{mode: "count", want: []string{`"bad\nname.md":1`, "ok.md:1"}},
 	{mode: "content", context: 1, want: []string{
-		`"bad\nname.md"-1-before`, `"bad\nname.md":2:needle`, `"bad\nname.md"-3-after`,
-		"--",
-		"ok.md-1-before", "ok.md:2:needle", "ok.md-3-after",
+		`"bad\nname.md"-1-before` + "\n" + `"bad\nname.md":2:needle` + "\n" + `"bad\nname.md"-3-after`,
+		"ok.md-1-before\nok.md:2:needle\nok.md-3-after",
 	}},
 }
 
@@ -48,16 +48,15 @@ func checkControlPathGrep(t *testing.T, arm string, env *LocalExecutionEnvironme
 		if err != nil {
 			t.Fatalf("%s: grep %s (context %d): %v", arm, tc.mode, tc.context, err)
 		}
-		lines := strings.Split(got, "\n")
-		if tc.context == 0 {
-			slices.Sort(lines)
-		} else if lines[0] == "ok.md-1-before" {
-			// rg searches files in parallel, so the two groups may come in
-			// either order.
-			lines = append(lines[4:], append([]string{"--"}, lines[:3]...)...)
+		// rg searches files in parallel, so results may come in either order.
+		separator := "\n"
+		if tc.context > 0 {
+			separator = "\n--\n"
 		}
-		if !slices.Equal(lines, tc.want) {
-			t.Errorf("%s: grep %s (context %d) lines = %q, want %q", arm, tc.mode, tc.context, lines, tc.want)
+		results := strings.Split(got, separator)
+		slices.Sort(results)
+		if !slices.Equal(results, tc.want) {
+			t.Errorf("%s: grep %s (context %d) results = %q, want %q", arm, tc.mode, tc.context, results, tc.want)
 		}
 	}
 }
@@ -100,6 +99,10 @@ func TestQuoteControlPath(t *testing.T) {
 			t.Errorf("QuoteControlPath(%q) = %s, want %s", tc.path, got, tc.want)
 		}
 	}
+}
+
+func TestPathHasControl(t *testing.T) {
+	t.Parallel()
 	for path, want := range map[string]bool{"a\nb": true, "a\rb": true, "a\x7f": true, "a\x00": true, "a\tb": false, "plain.md": false, "é.md": false} {
 		if got := PathHasControl(path); got != want {
 			t.Errorf("PathHasControl(%q) = %v, want %v", path, got, want)

@@ -3,7 +3,6 @@
 package execenv
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -275,17 +274,8 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 			excludedByIgnore++
 			return nil
 		}
-		if skip != nil && skip(rel) {
-			return nil
-		}
-		if len(globFilters) > 0 {
-			matched, matchErr := matchesAnyGrepFilter(d.Name(), globFilters)
-			if matchErr != nil {
-				return matchErr
-			}
-			if !matched {
-				return nil
-			}
+		if selected, selErr := grepFileSelected(d.Name(), rel, globFilters, skip); !selected {
+			return selErr
 		}
 		data, rerr := secureBrowseReadFile(fsys, rel)
 		if rerr != nil {
@@ -293,9 +283,6 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 				return cancelErr
 			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files
-		}
-		if bytes.IndexByte(data, 0) >= 0 {
-			return nil
 		}
 		if a.feed(rel, data) {
 			return fs.SkipAll
@@ -321,8 +308,8 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 
 // grepNamedFile searches the one file a grep's path names, given its
 // nonblocking fd (which it takes ownership of), under the rules the walk
-// applies to each file it reaches: dotfiles, skipped files, files outside
-// the glob filter, non-regular files, and binary files are left out. Its
+// applies to each file it reaches: dotfiles, files grepFileSelected leaves
+// out, non-regular files, and binary files (grepAccum.feed) are skipped. Its
 // output path is ".", the unsandboxed walk's name for a named file.
 func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globFilters []string, skip func(rel string) bool) (string, error) {
 	f, err := admitReadFD(fd, path, false)
@@ -331,21 +318,18 @@ func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globF
 	}
 	defer func() { _ = f.Close() }()
 	name := filepath.Base(path)
-	if strings.HasPrefix(name, ".") || (skip != nil && skip(".")) {
+	if strings.HasPrefix(name, ".") {
 		return "", nil
 	}
-	if len(globFilters) > 0 {
-		matched, err := matchesAnyGrepFilter(name, globFilters)
-		if err != nil || !matched {
-			return "", err
-		}
+	if selected, err := grepFileSelected(name, ".", globFilters, skip); !selected {
+		return "", err
 	}
 	data, err := io.ReadAll(f)
 	if cancelErr := ctx.Err(); cancelErr != nil {
 		return "", cancelErr
 	}
-	if err != nil || bytes.IndexByte(data, 0) >= 0 {
-		return "", nil //nolint:nilerr // best-effort grep: an unreadable or binary file is skipped, as in the walk
+	if err != nil {
+		return "", nil //nolint:nilerr // best-effort grep: an unreadable file is skipped, as in the walk
 	}
 	a.feed(".", data)
 	return a.finish(), nil

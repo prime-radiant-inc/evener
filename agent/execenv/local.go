@@ -2231,8 +2231,8 @@ func ripgrepOutputLines(stdout, dir string, oneFile, filesOnly bool) []string {
 	var lines []string
 	for rest := stdout; rest != ""; {
 		var line string
-		path, afterPath, hasPath := strings.Cut(rest, "\x00")
-		hasPath = hasPath && strings.HasPrefix(path, prefix)
+		path, afterPath, cut := strings.Cut(rest, "\x00")
+		hasPath := cut && strings.HasPrefix(path, prefix)
 		switch {
 		case hasPath && filesOnly:
 			line, rest = grepOutputPath(path[len(prefix):]), afterPath
@@ -2371,17 +2371,8 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			excludedByIgnore++
 			return nil
 		}
-		if skip != nil && skip(relSlash) {
-			return nil
-		}
-		if len(globFilters) > 0 {
-			matched, matchErr := matchesAnyGrepFilter(filepath.Base(p), globFilters)
-			if matchErr != nil {
-				return matchErr
-			}
-			if !matched {
-				return nil
-			}
+		if selected, selErr := grepFileSelected(filepath.Base(p), relSlash, globFilters, skip); !selected {
+			return selErr
 		}
 		data, err := grepReadFile(fsys, p)
 		if err != nil {
@@ -2389,10 +2380,6 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 				return cancelErr
 			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
-		}
-		// Skip binary files
-		if bytes.IndexByte(data, 0) >= 0 {
-			return nil
 		}
 		if a.feed(relPath, data) {
 			return filepath.SkipAll

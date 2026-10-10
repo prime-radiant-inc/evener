@@ -30,7 +30,8 @@ func memoryPageSortDate(p memoryPage) string {
 	return memoryStampDate(p.ModTime)
 }
 
-// sortedMemoryPages orders pages newest first, ties by path.
+// sortedMemoryPages orders pages newest first by memoryPageSortDate, ties
+// by path, so pages with unreadable frontmatter come last, by path.
 func sortedMemoryPages(pages []memoryPage) []memoryPage {
 	sorted := slices.Clone(pages)
 	slices.SortStableFunc(sorted, func(a, b memoryPage) int {

@@ -216,10 +216,13 @@ func memoryFallbackDescription(heading, body string) string {
 	return text + " " + memoryNoDescription
 }
 
-// markdownLines yields text's lines, split at each Markdown line ending:
-// "\r\n", a lone "\r", or "\n".
+// markdownLineEndings turns each Markdown line ending ("\r\n", a lone "\r")
+// into "\n".
+var markdownLineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
+// markdownLines yields text's lines, split at each Markdown line ending.
 func markdownLines(text string) iter.Seq[string] {
-	return strings.SplitSeq(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"), "\n")
+	return strings.SplitSeq(markdownLineEndings.Replace(text), "\n")
 }
 
 // collapseWhitespace trims text and turns each inner run of whitespace into
