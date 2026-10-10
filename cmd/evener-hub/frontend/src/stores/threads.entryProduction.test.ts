@@ -805,7 +805,7 @@ it("ordinary overlapping refresh keeps two loaded pages and the deepest usable c
   ]);
 });
 
-it("ordinary reconnect keeps a same-turn tail outside the recovered window without certifying the intervening hole", async () => {
+it("ordinary reconnect keeps a same-turn tail outside the recovered window without fabricating a missing row", async () => {
   const storage = cache();
   const client = connect(response("local:a", [turn("window", 30)]));
   await threadsStore.getState().ensureThread("local:a");
@@ -820,7 +820,13 @@ it("ordinary reconnect keeps a same-turn tail outside the recovered window witho
     (params) =>
       new Promise((resolve) => {
         releaseRead = () => {
-          const read = response("local:a", [turn("window", 40)]);
+          const recovered = turn("window", 40);
+          recovered.items = recovered.items?.map((item) => ({
+            ...item,
+            id: "fresh-window",
+            transcriptKey: "fresh-window",
+          }));
+          const read = response("local:a", [recovered]);
           read.requestGeneration = params.requestGeneration;
           read.snapshot = { incarnation: "inc-a", length: 4 };
           resolve(read);
@@ -855,9 +861,11 @@ it("ordinary reconnect keeps a same-turn tail outside the recovered window witho
       ?.items.map((item) => item.transcriptKey),
   ).toContain("tail");
   const key = entryHistoryKey({ ...identity, clientId: location.origin });
-  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toContain("tail");
-  const window = await storage.getLatestWindow(key, 10);
-  expect(window.coverage.every((range) => range.end === null || range.end.entry <= 40)).toBe(true);
+  const persisted = (await storage.getLatest(key, 10)).map((row) => row.transcriptKey);
+  expect(persisted).toContain("tail");
+  expect(persisted).toContain("fresh-window");
+  expect(persisted).not.toContain("missing-48");
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("missing-48");
 });
 
 it("ordinary sibling Clear permits a genuinely fresh explicit acquisition to cache the new epoch", async () => {
@@ -958,6 +966,26 @@ it("ordinary content clear retires the old entry history so a late old push cann
   await settleEntryTranscriptForTests("local:a");
   expect(await storage.getLatest(key, 10)).toEqual([]);
   expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("old-after-content-clear");
+  const fresh = response("local:a", [turn("new-after-content-clear", 2)]);
+  fresh.thread.id = "cleared-thread";
+  fresh.thread.evener.instanceId = "cleared-thread";
+  fresh.snapshot = { incarnation: "cleared-incarnation", length: 3 };
+  client.on("thread/read", (params) => ({ ...fresh, requestGeneration: params.requestGeneration }));
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "cleared-thread",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: fresh.snapshot,
+      items: turn("new-after-content-clear", 2).items,
+    },
+  });
+  await settleEntryTranscriptForTests("local:a");
+  const freshKey = entryHistoryKey({ ...identity, clientId: location.origin, incarnation: "cleared-incarnation" });
+  expect((await storage.getLatest(freshKey, 10)).map((row) => row.transcriptKey)).toEqual(["new-after-content-clear"]);
+  expect(threadsStore.getState().threads.get("local:a")?.threadId).toBe("cleared-thread");
 });
 
 it("ordinary mutation-pin release saves a fresh final read before removing the last pinned model", async () => {

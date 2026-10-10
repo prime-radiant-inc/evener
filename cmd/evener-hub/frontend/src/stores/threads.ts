@@ -1150,6 +1150,7 @@ async function acceptEntryTranscriptHydration(
     readId: `fixture-read-${++fixture.readSequence}`,
     boundary: `fixture-boundary-${fixture.readSequence}`,
   });
+  if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   for (const update of hydration.fixtureNotifications) {
     repository.accept(update.notification, { lifetime: fixture.lifetime });
   }
@@ -1856,7 +1857,8 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // deleting the record in the same step is what keeps a cleared session's
   // next reload from painting pre-clear content from the shell.
   cancelCacheWrite(targetRef);
-  void currentSessionCache().deleteRecords([targetRef]);
+  noteEntryRouteRetirement(targetRef);
+  deleteCachedRefs([targetRef]);
   // A clear response is a newer authoritative cut than any thread/read that
   // was already in flight for this ref. Retire those reads before publishing
   // the replacement so a late pre-clear snapshot cannot overwrite it.
@@ -1946,6 +1948,11 @@ function currentDispatchClient(targetRef?: string, method?: string, requireArmed
 
 function dropUnpinnedModel(ref: string, flush = true): void {
   if (canonicalThreadOwnerActive(ref) || finalReleaseOwners.has(ref)) return;
+  // The last mutation/history pin is a real final owner too. Keep the model
+  // while the repository captures and saves its finite final read, just as a
+  // pane/background last release does. The retirement callback drops with
+  // flush=false, so this cannot start a second retirement.
+  if (flush && retireEntryTranscriptIfUnowned(ref)) return;
   // The pinned drain is the path a pinned ref's model finally leaves through
   // (releaseThread returns early while pinned), so the flush runs here too —
   // ordered before the model leaves the map, on the pre-removal snapshot —
@@ -4556,6 +4563,31 @@ function handleNotification(n: AnyNotification): void {
         if (fixture.repository.accept(n, { lifetime: fixture.lifetime }) && !fixture.unsubscribeRepository) {
           publishEntryTranscriptModel(ref);
         }
+      } else if (
+        fixture &&
+        productionEntryRoutes.get(ref) === fixture &&
+        !fixture.clearInert &&
+        n.method === "history/updated" &&
+        threadsStore.getState().threads.get(ref)?.threadId === n.params.threadId &&
+        !threadsStore.getState().deletedRefs.has(ref) &&
+        !threadsStore.getState().cacheLifetimes.get(ref)?.suppressed &&
+        !pendingThreadHydrations.has(ref) &&
+        canonicalThreadOwnerActive(ref) &&
+        wiredClient?.state === "ready"
+      ) {
+        // A content clear leaves a bare new thread and retires the old cache
+        // binding. Its first new recorded signal needs an authoritative read,
+        // not a second store-owned ingestion path or the old repository.
+        void refreshTrackedThread(
+          wiredClient,
+          readyEpoch,
+          ref,
+          true,
+          false,
+          undefined,
+          undefined,
+          hydrationIntentFor(ref),
+        ).catch(() => {});
       }
     }
   }
