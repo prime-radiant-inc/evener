@@ -10041,12 +10041,12 @@ test("periodic discovery recovers failed compatible reconciliation after storage
     expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
     expect(failures).toBeGreaterThan(1);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
     faultEnabled = false;
     await vi.advanceTimersByTimeAsync(2000);
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
   } finally {
     vi.useRealTimers();
   }
@@ -10063,6 +10063,7 @@ test("periodic discovery recovers failed compatible reconciliation after storage
 test.each([
   { failure: "a storage timeout", storageError: () => new MutationStorageTimeoutError() },
   { failure: "a retired connection", storageError: () => new DOMException("closing", "InvalidStateError") },
+  { failure: "an aborted transaction", storageError: () => new DOMException("aborted", "AbortError") },
 ])("a reconciliation that $failure fails records the ref as storage-blocked, not failed", async ({ storageError }) => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "storage-blocked-reconcile" });
   await storage.enqueueIntent({
@@ -10287,11 +10288,11 @@ test("periodic discovery recovers reconciliation after the final durable record 
       .refreshThread("ref_a")
       .catch(() => undefined);
     expect(await storage.listTargetRefs()).toEqual([]);
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(true);
     faultEnabled = false;
     await vi.advanceTimersByTimeAsync(2000);
-    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationFailures.has("ref_a"));
-    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationStorageBlocked.has("ref_a")).toBe(false);
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
   } finally {
     vi.useRealTimers();
@@ -14401,6 +14402,30 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     const send = threadsStore.getState().send("ref_a", "sent while the reconcile is wedged open");
     await send;
     expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
+  });
+
+  // A body that throws inside the adapter's real transaction rejects with its
+  // own error, never the AbortError its abort then reports: here the
+  // cross-store id guard meets a recovery record another ref holds. That is a
+  // record judgment, so the send fails closed with nothing sent.
+  test("a send whose write the outbox's own id guard refuses stays fail-closed", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "mutation-shared" });
+    const refused = await storage.enqueueIntent({
+      targetRef: "ref_b",
+      method: "turn/queue",
+      payload: { ref: "ref_b", input: [{ type: "text", text: "refused elsewhere" }] },
+      attachments: [],
+      optimisticDisplay: { text: "refused elsewhere" },
+    });
+    await storage.transferToRecovery(refused.clientMutationId, "rejected", "turn is not active");
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+
+    await expect(threadsStore.getState().send("ref_a", "collides with the recovery record")).rejects.toThrow(
+      "clientMutationId is already active",
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   // A retired connection (or a VersionError) refuses the write at once and

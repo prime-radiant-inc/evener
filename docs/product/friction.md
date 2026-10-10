@@ -418,11 +418,11 @@ the send twice.
 
 **Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
 and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
-[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3292)
+[dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3294)
 mints one `clientMutationId` before its retry ladder; the missing fence is the
 [click-time stop epoch](../../appwire-client/typescript/state/mutation/outbox.ts#L73)
 the enqueue compares against. The [reconcile
-classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3854)
+classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3856)
 splits the storage-caused failure from a genuine one, and
 [currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.
