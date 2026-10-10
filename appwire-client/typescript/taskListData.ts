@@ -41,6 +41,14 @@ export interface TaskRow extends Pick<Task, "id" | "type" | "description" | "pro
   completedAt?: string;
 }
 
+// The settled count: done plus cancelled, the finished tasks that remaining
+// counts the complement of. One derivation for every surface that counts
+// finished tasks - the hub's Tasks chips, the inline task card's meter and
+// this file's remaining fallback.
+export function taskSettledCount(tasks: Pick<TaskCounts, "done" | "cancelled">): number {
+  return tasks.done + (tasks.cancelled ?? 0);
+}
+
 // One condensed sentence for a task aggregate, shared by the web's inline task
 // card and its tasks panel's trigger and body head: "N of M tasks left" while work
 // remains, "All M tasks done" when everything finished without a
@@ -53,7 +61,7 @@ export interface TaskRow extends Pick<Task, "id" | "type" | "description" | "pro
 export function taskAggregateLabel(tasks: TaskCounts): string {
   const noun = tasks.total === 1 ? "task" : "tasks";
   if (tasks.total === 0) return "No tasks";
-  const remaining = tasks.remaining ?? Math.max(0, tasks.total - tasks.done - (tasks.cancelled ?? 0));
+  const remaining = tasks.remaining ?? Math.max(0, tasks.total - taskSettledCount(tasks));
   if (remaining > 0) return `${remaining} of ${tasks.total} ${noun} left`;
   if ((tasks.cancelled ?? 0) > 0) return `All ${tasks.total} ${noun} settled`;
   return `All ${tasks.total} ${noun} done`;
