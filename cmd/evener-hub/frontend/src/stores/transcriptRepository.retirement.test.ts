@@ -9,6 +9,7 @@ import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { holdNextTransaction } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
+  backgroundTranscriptSnapshotForTests,
   installEntryTranscriptFixtureForTests,
   resetThreadsStoreForTests,
   threadsStore,
@@ -362,6 +363,7 @@ test.each(["background", "pane"])(
     await route.settled();
     const releasing = owner.release();
     await vi.waitFor(() => expect(reads).toBe(2));
+    expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1);
     expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(0);
     const held = holdNextTransaction(writeStores, "readwrite");
     try {

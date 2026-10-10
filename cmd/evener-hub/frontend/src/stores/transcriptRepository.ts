@@ -225,11 +225,12 @@ export interface TranscriptRepositoryBinding {
    */
   reconcile?: () => void;
   /** Read-only, deadline-owned transport ports for end disposition and final retirement. */
-  readHistory?: (held?: SnapshotIdentity) => Promise<ThreadReadResponse>;
+  readHistory?: (held?: SnapshotIdentity, signal?: AbortSignal) => Promise<ThreadReadResponse>;
   readHistoryPage?: (request: {
     snapshot: SnapshotIdentity;
     cursor: string;
     before: ThreadItemPosition;
+    signal?: AbortSignal;
   }) => Promise<ThreadTurnsListResponse>;
 }
 
@@ -1091,6 +1092,7 @@ export class TranscriptRepository {
     this.#endRetryCancel?.();
     this.#endRetryCancel = undefined;
     let active = true;
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const current = () => active && this.#acceptsLifetime(this.#binding.lifetime);
     const cancelled = new Promise<TranscriptRetirementOutcome>((resolve) => {
@@ -1102,7 +1104,7 @@ export class TranscriptRepository {
     const work = (async (): Promise<TranscriptRetirementOutcome> => {
       const read = this.#binding.readHistory;
       if (!read || !current()) return { kind: "stale" };
-      const response = await read();
+      const response = await read(undefined, controller.signal);
       if (!current()) return { kind: "cancelled" };
       if (!response.snapshot || !this.#matchesRead(response)) throw new Error("final read has no authority");
       const boundary = `final:${this.#boundary}:${response.snapshot.length}`;
@@ -1142,6 +1144,7 @@ export class TranscriptRepository {
       })
       .finally(() => {
         active = false;
+        controller.abort();
         this.#cancelRetirement = undefined;
         if (timer !== undefined) clearTimeout(timer);
       });
@@ -1164,6 +1167,7 @@ export class TranscriptRepository {
         const rounds = new Set(this.#endClaims);
         if (rounds.size === 0 || !this.#acceptsLifetime(this.#binding.lifetime)) return;
         let active = true;
+        const controller = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           // Same 30-second deadline as AppwireClient's ordinary thread/read. One
@@ -1172,6 +1176,7 @@ export class TranscriptRepository {
             this.#resolveEnd(
               rounds,
               () => active && !this.#retirement && this.#acceptsLifetime(this.#binding.lifetime),
+              controller.signal,
             ),
             new Promise<never>((_resolve, reject) => {
               timer = setTimeout(() => reject(new Error("end disposition timed out")), 30_000);
@@ -1192,6 +1197,7 @@ export class TranscriptRepository {
           this.#paceEndRetry();
         } finally {
           active = false;
+          controller.abort();
           if (timer !== undefined) clearTimeout(timer);
         }
       })
@@ -1228,7 +1234,7 @@ export class TranscriptRepository {
       );
   }
 
-  async #resolveEnd(rounds: ReadonlySet<string>, current: () => boolean): Promise<void> {
+  async #resolveEnd(rounds: ReadonlySet<string>, current: () => boolean, signal: AbortSignal): Promise<void> {
     const model = this.#model;
     const read = this.#binding.readHistory;
     if (!model || !read) throw new Error("end disposition has no source");
@@ -1242,7 +1248,7 @@ export class TranscriptRepository {
     const held = model.history?.incarnation
       ? { incarnation: model.history.incarnation, length: model.history.length }
       : undefined;
-    const response = await read(held);
+    const response = await read(held, signal);
     if (!current()) return;
     if (!response.snapshot || !this.#matchesRead(response)) throw new Error("end disposition has no history authority");
     const fixed = response.snapshot;
@@ -1260,7 +1266,7 @@ export class TranscriptRepository {
     while (minimum && before && comparePosition(minimum, before) < 0 && cursor) {
       if (!this.#binding.readHistoryPage || seen.has(cursor)) throw new Error("end disposition coverage is incomplete");
       seen.add(cursor);
-      const page = await this.#binding.readHistoryPage({ snapshot: fixed, cursor, before });
+      const page = await this.#binding.readHistoryPage({ snapshot: fixed, cursor, before, signal });
       if (!current()) return;
       // Later traffic cannot move this attempt's history boundary.
       if (

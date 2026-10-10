@@ -788,6 +788,42 @@ function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetireme
   return fixture.retirement;
 }
 
+async function runEntryHistoryRequest<T>(
+  fixture: EntryTranscriptFixtureForTests,
+  signal: AbortSignal | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const repository = fixture.repository;
+  const epoch = readyEpoch;
+  const client = wiredClient;
+  const current = () =>
+    !signal?.aborted &&
+    fixture.repository === repository &&
+    !fixture.clearInert &&
+    client === wiredClient &&
+    epoch === readyEpoch;
+  const residency = transcriptResidency();
+  residency.connection(epoch, client?.state === "ready");
+  let ran = false;
+  let result!: T;
+  while (!ran) {
+    if (!current()) throw new Error("entry history request was retired");
+    await residency.scheduleHydration(
+      fixture.ref,
+      heldCountsAtStore(fixture.ref) ? "foreground" : "background",
+      async (scheduledSignal) => {
+        if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
+        ran = true;
+        result = await run();
+        if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
+      },
+    );
+    // A previous same-ref read occupies this slot. Join its settlement, never
+    // its response, then acquire a distinct request for the fresh authority.
+  }
+  return result;
+}
+
 async function acceptEntryTranscriptHydration(
   ref: string,
   pending: PendingThreadHydration,
@@ -858,27 +894,29 @@ async function acceptEntryTranscriptHydration(
       lifetime: fixture.lifetime,
       isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
       suppressed: () => fixture.clearInert === true,
-      readHistory: (held) => {
-        const client = wiredClient;
-        const epoch = readyEpoch;
-        if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
-        const lease = syncThreadSubscription(ref, client);
-        if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
-        const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
-        return lease.read(threadReadParams(true, generation, held)).then((result) => {
-          if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
-          return result;
-        });
-      },
-      readHistoryPage: ({ cursor, before }) => {
-        const client = wiredClient;
-        const epoch = readyEpoch;
-        if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
-        return client.request("thread/turns/list", { ...olderItemsParams(ref, cursor), before }).then((result) => {
-          if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
-          return result;
-        });
-      },
+      readHistory: (held, signal) =>
+        runEntryHistoryRequest(fixture, signal, () => {
+          const client = wiredClient;
+          const epoch = readyEpoch;
+          if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
+          const lease = syncThreadSubscription(ref, client);
+          if (!lease) return Promise.reject(new Error("entry history has no subscription owner"));
+          const generation = (fixture.repository?.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
+          return lease.read(threadReadParams(true, generation, held)).then((result) => {
+            if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
+            return result;
+          });
+        }),
+      readHistoryPage: ({ cursor, before, signal }) =>
+        runEntryHistoryRequest(fixture, signal, () => {
+          const client = wiredClient;
+          const epoch = readyEpoch;
+          if (client?.state !== "ready") return Promise.reject(new Error("entry history source is unavailable"));
+          return client.request("thread/turns/list", { ...olderItemsParams(ref, cursor), before }).then((result) => {
+            if (client !== wiredClient || epoch !== readyEpoch) throw new Error("entry history source was retired");
+            return result;
+          });
+        }),
     });
   }
   const repository = fixture.repository;
