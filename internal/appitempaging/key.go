@@ -8,7 +8,7 @@ import (
 
 // TranscriptItemProjectionVersion names the projection behind item cursors; a
 // cursor minted under another version is stale.
-const TranscriptItemProjectionVersion uint16 = 2
+const TranscriptItemProjectionVersion uint16 = 3
 
 // transcriptItemKeyVersion is the version TranscriptItemKey spells. It stays
 // apart from the projection version: the transcript index's keys
