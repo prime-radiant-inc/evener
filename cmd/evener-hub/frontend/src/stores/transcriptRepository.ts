@@ -656,6 +656,22 @@ export class TranscriptRepository {
     return true;
   }
 
+  /**
+   * A read already represents input at its response cut. Only comparable
+   * versions can establish that buffered input contains something newer:
+   * recorded history uses the shared source/item/turn version merge, and queues
+   * have an explicit revision. Unversioned live input cannot supersede the read.
+   */
+  acceptBeforeReadCut(notification: AnyNotification, context: { lifetime: number }): boolean {
+    if (notification.method === "history/updated") return this.accept(notification, context);
+    if (
+      notification.method === "thread/queueChanged" &&
+      notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
+    )
+      return this.accept(notification, context);
+    return false;
+  }
+
   /** Accept a notification only when the captured authority still matches this repository. */
   accept(notification: AnyNotification, context: { lifetime: number }): boolean {
     if (this.#sealed || !this.#acceptsLifetime(context.lifetime)) return false;

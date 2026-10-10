@@ -1350,7 +1350,7 @@ async function acceptEntryTranscriptHydration(
     boundary: `fixture-boundary-${fixture.readSequence}`,
   });
   for (const update of hydration.fixtureNotifications) {
-    repository.accept(update.notification, { lifetime: fixture.lifetime });
+    repository.acceptBeforeReadCut(update.notification, { lifetime: fixture.lifetime });
   }
 }
 
@@ -3050,10 +3050,11 @@ async function hydrateAndSubscribe(
       ? applyCacheGapRule(ref, pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
   // The response cut retires buffered input from the legacy hydrator because
-  // its snapshot is authoritative for that route. The selected entry fixture
-  // also needs the accepted input itself: the repository merges it under its
-  // own version and coverage authority, preserving input absent from a stale
-  // response and applying overlays after the recorded baseline.
+  // its snapshot is authoritative for that route. The entry repository also
+  // receives this input, but only comparable versions may supersede the read:
+  // recorded item/turn versions can preserve newer content outside its window,
+  // and a higher queue revision can supersede its queue. Unversioned live input
+  // at or before the cut is already represented by the response.
   const fixtureNotifications = usesEntryTranscripts(ref) ? pending.notifications.slice() : [];
   applyHydrationResponseCut(pending, ref, model);
   return { model, response, fixtureNotifications, ...(discardHeldHistory ? { discardHeldHistory: true } : {}) };
