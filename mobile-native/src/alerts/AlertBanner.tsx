@@ -86,6 +86,9 @@ function Mark({ banner }: { banner: Banner }) {
 		);
 	if (only.kind === "notice")
 		return <SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />;
+	// The finished mark is the blue dot, which a Board row draws as its unread
+	// dot rather than as a state mark (spec 13.3).
+	if (only.kind === "finished") return <SymbolView name="circle.fill" size={8} tintColor={palette.accent} />;
 	return <StateMark state={MARK_STATE[only.kind]} />;
 }
 

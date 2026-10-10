@@ -100,6 +100,15 @@ func listedMemoryPagePath(env *execenv.LocalExecutionEnvironment, rel string) st
 	return listed
 }
 
+// memoryPageText is a page's bytes as the page reader and the frontmatter
+// editors see them, with each Markdown line ending ("\r\n", a lone "\r")
+// turned into "\n". frontmatter.Split finds delimiters ending in "\n" only,
+// so a page saved with other line endings still has its frontmatter read,
+// and stamped in place, on the same lines its headings are read from.
+func memoryPageText(raw []byte) string {
+	return normalizeLineEndings(string(raw))
+}
+
 // splitMemoryFrontmatter splits text into its frontmatter block and body
 // exactly as frontmatter.Parse does, so a page whose YAML fails to parse
 // still has a body to fall back on.
@@ -120,7 +129,7 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	if path.Ext(rel) != ".md" {
 		return p
 	}
-	text := string(raw)
+	text := memoryPageText(raw)
 	// Parse reads the block Split finds, so its body is Split's even when
 	// the YAML fails. Frontmatter is the block's presence, not its parsed
 	// value: a block holding only a YAML null parses to no metadata.
@@ -150,7 +159,7 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 // collapsed, or "".
 func firstMarkdownHeading(body string) string {
 	var fence string // the open fence's run ("```", "~~~~", ...), "" outside one
-	for line := range markdownLines(body) {
+	for line := range strings.SplitSeq(body, "\n") {
 		text := strings.TrimLeft(line, " ")
 		if len(line)-len(text) > 3 {
 			continue // indented code
@@ -203,7 +212,7 @@ func fenceRun(line string) string {
 func memoryFallbackDescription(heading, body string) string {
 	text := heading
 	if text == "" {
-		for line := range markdownLines(body) {
+		for line := range strings.SplitSeq(body, "\n") {
 			if text = collapseWhitespace(line); text != "" {
 				break
 			}
@@ -214,15 +223,6 @@ func memoryFallbackDescription(heading, body string) string {
 		return memoryNoDescription
 	}
 	return text + " " + memoryNoDescription
-}
-
-// markdownLineEndings turns each Markdown line ending ("\r\n", a lone "\r")
-// into "\n".
-var markdownLineEndings = strings.NewReplacer("\r\n", "\n", "\r", "\n")
-
-// markdownLines yields text's lines, split at each Markdown line ending.
-func markdownLines(text string) iter.Seq[string] {
-	return strings.SplitSeq(markdownLineEndings.Replace(text), "\n")
 }
 
 // collapseWhitespace trims text and turns each inner run of whitespace into

@@ -124,8 +124,8 @@ export function projectResults(
 }
 
 /** A result's mark, in boardState's precedence (attention.ts). A result
- * carries no timestamp and no seen state, so it is never Finished: without a
- * mark that fits, it has none. S4 brings the unseen flag. */
+ * carries no timestamp and no seen state, so it is never Finished and shows no
+ * unread dot: without a mark that fits, it has none. */
 export function searchResultMark(result: SearchResult): BoardState {
 	const decisive = decisiveState(result.state);
 	if (decisive) return decisive;
