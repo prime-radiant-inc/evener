@@ -1533,6 +1533,19 @@ is a normal delegate generation:
 8. before that generation finishes, settlement appends and fsyncs one
    provider-excluded consumed resolution marker per bound ID.
 
+Attention that reaches a delegate while one of its generations runs, whatever
+started that generation, joins the generation's history and is presented at
+its next model request. A settled request that presented it covers it: when the
+turn ends successfully, still inside the generation's lease, the runtime appends
+and fsyncs a generation-less consumed marker for each covered ID that is still
+pending, so the delegate is not driven again for attention its model has
+already seen. The lease is the delegate's only start claim (no attention
+reservation is admitted while a generation holds a live binding), so the marker
+cannot conflict with a reserved generation. A failed turn leaves its covered
+IDs pending; attention appended after the generation's last request was built
+stays pending and starts its own attention generation; a turn outside a lease
+covers nothing.
+
 There are no recordless model-bearing drive turns. A drive is not a JobRecord,
 but it is an exact delegate generation governed by the same lease.
 

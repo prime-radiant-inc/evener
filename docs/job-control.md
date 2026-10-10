@@ -1393,6 +1393,11 @@ Rules:
   fsyncs. A stopping subtree durably discards its own unresolved attention.
 - If the owner is mid-turn or awaiting an `ask_user` reply, attention waits for
   the next safe boundary. Wakes coalesce, but committed entries do not vanish.
+- Attention a turn already showed the model is consumed with that turn. When a
+  settled model request of a root turn, or of a delegate turn running in its
+  generation, carried an attention entry, the turn's successful end appends the
+  consumed marker, so the entry starts no further turn or attention generation.
+  Attention appended after the turn's last request was built keeps its own wake.
 - Duplicate terminal attention is suppressed by its durable source identity.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
