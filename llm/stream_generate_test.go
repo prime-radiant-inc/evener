@@ -1032,8 +1032,10 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 	}()
 	select {
 	case n := <-drained:
-		if n > cap(ch) {
-			t.Fatalf("TextStream forwarded %d deltas after Close, want at most its %d-entry buffer", n, cap(ch))
+		// The buffer's worth plus the one delta that may have been in flight
+		// when Close landed, as TextStream documents.
+		if n > cap(ch)+1 {
+			t.Fatalf("TextStream forwarded %d deltas after Close, want at most its %d-entry buffer plus one in flight", n, cap(ch))
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("TextStream channel did not close after Close (forwarder leak)")
