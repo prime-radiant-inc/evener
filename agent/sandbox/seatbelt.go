@@ -259,15 +259,19 @@ func denySection(rp ResolvedPolicy, ps *paramSet) string {
 }
 
 // unmaskedSection re-grants each of rp.UnmaskedRoots for reading, under both
-// firmlink spellings, since the mask it overrides was denied under both.
+// firmlink spellings, since the mask it overrides was denied under both. It
+// then denies any .git inside them again (see ResolvedPolicy.Masks), matching
+// the component with a path-free regex inside the root's subpath so no path
+// text enters the policy.
 func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
-	var rules []string
+	var grants, gitDenials []string
 	for i, r := range rp.UnmaskedRoots {
 		for _, k := range ps.defineBothSpellings(fmt.Sprintf("UNMASKED_%d", i), r) {
-			rules = append(rules, "(allow file-read* "+literalAndSubpath(k)+")")
+			grants = append(grants, "(allow file-read* "+literalAndSubpath(k)+")")
+			gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.git(/|$)")))`)
 		}
 	}
-	return strings.Join(rules, "\n")
+	return strings.Join(append(grants, gitDenials...), "\n")
 }
 
 // dataVolumePrefix is the APFS data-volume mount point macOS firmlinks a file's

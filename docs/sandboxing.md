@@ -350,10 +350,12 @@ registries and the marketplace clones), which records marketplace URLs that may
 carry a token. The carve-out never writes, never touches the pseudo-filesystem
 floor, and is refused for a directory that contains a masked path, so adding a
 path inside it to the denylist keeps it masked. The locations follow
-`$XDG_CONFIG_HOME` the way Evener does. One residual: a plugin installed from a
-git URL with a token embedded in it (`https://user:token@host/…`) keeps that URL
-in its installed copy's `.git/config`, which the carve-out exposes; use SSH or a
-git credential helper for private plugin sources.
+`$XDG_CONFIG_HOME` the way Evener does. Inside the carve-out, any `.git` stays
+masked too: a plugin installed by cloning keeps its remote URL, which may carry a
+token, in its installed copy's `.git/config`, and skills and hooks never need it.
+Seatbelt denies `.git` there by pattern; bubblewrap masks the `.git` entries it
+finds at each spawn, so a copy cloned during a running command is masked from the
+next spawn on.
 
 The denylist is **user-extensible in both directions** and never model-changeable
 mid-session:

@@ -26,7 +26,8 @@ func TestFileToolsReadEvenerContentThroughTheCredentialMask(t *testing.T) {
 			userSkill := filepath.Join(skills, "mine", "SKILL.md")
 			secret := filepath.Join(config, "hub.toml")
 			metadata := filepath.Join(store, "known_marketplaces.json")
-			for path, body := range map[string]string{template: "template\n", userSkill: "user skill\n", secret: "token = 'x'\n", metadata: "{}\n"} {
+			pluginGit := filepath.Join(store, "cache", "mkt", "plugin", "abc", ".git", "config")
+			for path, body := range map[string]string{pluginGit: "url = https://user:token@example.com/p.git\n", template: "template\n", userSkill: "user skill\n", secret: "token = 'x'\n", metadata: "{}\n"} {
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -59,6 +60,8 @@ func TestFileToolsReadEvenerContentThroughTheCredentialMask(t *testing.T) {
 			mustDenied(t, err, "read_file of the rest of ~/.config/evener")
 			_, err = env.ReadFile(metadata, nil, nil)
 			mustDenied(t, err, "read_file of the plugin store's marketplace metadata")
+			_, err = env.ReadFile(pluginGit, nil, nil)
+			mustDenied(t, err, "read_file of an installed plugin's .git/config")
 			_, err = env.WriteFile(filepath.Join(filepath.Dir(template), "planted.md"), "x")
 			mustDenied(t, err, "write_file into the plugin store")
 		})

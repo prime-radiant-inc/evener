@@ -477,3 +477,30 @@ func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {
 		})
 	}
 }
+
+// Inside the carve-out, an installed copy's .git (where a cloned plugin keeps
+// its remote URL) is masked again after the read-only re-bind.
+func TestBuildBwrapArgvMasksGitInsideEvenerContent(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	gitDir := filepath.Join(cache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{cache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			bindIdx := seqIndex(args, "--ro-bind", cache, cache)
+			if bindIdx < 0 || seqIndex(args[bindIdx:], "--tmpfs", gitDir) < 0 {
+				t.Errorf("%q must be masked after the carve-out's re-bind: %v", gitDir, args)
+			}
+		})
+	}
+}

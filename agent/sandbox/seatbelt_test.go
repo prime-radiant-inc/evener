@@ -610,6 +610,13 @@ func TestSeatbeltRegrantsEvenerContentAfterTheMask(t *testing.T) {
 				if !regranted {
 					t.Errorf("%q must be re-granted read-only after the mask:\n%s", path, text)
 				}
+				// Any .git inside the carve-out is denied again after the re-grant.
+				for _, key := range keys {
+					gitDeny := "(deny file-read* file-write* (require-all (subpath (param " + quoteParam(key) + ")) (regex #\"/\\.git(/|$)\")))"
+					if i := strings.Index(text, gitDeny); i < strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(key)+")") {
+						t.Errorf("%q must deny .git after its re-grant (want %s):\n%s", path, gitDeny, text)
+					}
+				}
 			}
 		})
 	}

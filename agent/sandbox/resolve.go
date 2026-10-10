@@ -229,11 +229,30 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 }
 
 // Masks reports whether path is denied by the masked set: at or beneath a
-// masked path and not inside one of the UnmaskedRoots carved out of it. Every
-// layer asks this one question, so the file tools, the policy filters and the
-// backends agree on what a mask hides.
+// masked path and not inside one of the UnmaskedRoots carved out of it. Inside
+// a carve-out, any .git stays masked: an installed copy cloned from git keeps
+// its remote URL, which may carry a token, in .git/config, and skills and hooks
+// never need it. Every layer asks this one question, so the file tools, the
+// policy filters and the backends agree on what a mask hides.
 func (rp ResolvedPolicy) Masks(path string) bool {
-	return isUnderAnyRoot(path, rp.MaskedPaths) && !isUnderAnyRoot(path, rp.UnmaskedRoots)
+	if !isUnderAnyRoot(path, rp.MaskedPaths) {
+		return false
+	}
+	for _, root := range rp.UnmaskedRoots {
+		if pathUnder(path, root) {
+			return insideGitDir(path, root)
+		}
+	}
+	return true
+}
+
+// insideGitDir reports whether path has a .git component below root.
+func insideGitDir(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(strings.Split(rel, string(filepath.Separator)), ".git")
 }
 
 // FileToolEnforceable reports whether this OS has an in-process file-tool

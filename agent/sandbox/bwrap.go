@@ -207,6 +207,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 			add("--ro-bind", resolved, resolved)
 		}
 	}
+	// A .git inside a carve-out stays masked (see ResolvedPolicy.Masks). bwrap
+	// cannot mask by pattern, so the existing ones are found at each spawn; one
+	// cloned in mid-command is masked from the next spawn on.
+	for _, r := range rp.UnmaskedRoots {
+		for _, g := range gitDirsUnder(r) {
+			maskInvisible(&a, masked, g)
+		}
+	}
 
 	// ModeReadOnly and WriteBlocked allow only session scratch writes. Remount
 	// /tmp after all binds and masks have created their mountpoints: doing it
@@ -340,6 +348,35 @@ func maskHandledByNamespace(path string) bool {
 		return false
 	}
 	return path == "/proc" || path == "/dev" || strings.HasPrefix(path, "/dev/")
+}
+
+// gitDirsDepth bounds the search for .git entries below a carve-out root. An
+// installed plugin copy sits at cache/<marketplace>/<plugin>/<version>, so its
+// .git is four levels down; a user skill's is two.
+const gitDirsDepth = 4
+
+// gitDirsUnder returns the .git entries (directories or gitdir files) within
+// gitDirsDepth levels below root, without descending into them.
+func gitDirsUnder(root string) []string {
+	var found []string
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			p := filepath.Join(dir, e.Name())
+			switch {
+			case e.Name() == ".git":
+				found = append(found, p)
+			case e.IsDir() && depth < gitDirsDepth:
+				walk(p, depth+1)
+			}
+		}
+	}
+	walk(root, 1)
+	return found
 }
 
 // pathExists reports whether path exists on the host (following symlinks).

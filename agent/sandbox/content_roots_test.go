@@ -30,6 +30,12 @@ func TestEvenerContentRootsAreReadableThroughTheCredentialMask(t *testing.T) {
 	credential := filepath.Join(testHome, ".config", "evener", "hub.toml")
 	// The store's own metadata records marketplace URLs, which may carry tokens.
 	metadata := []string{filepath.Join(store, "known_marketplaces.json"), filepath.Join(store, "marketplaces", "mkt", ".git", "config")}
+	// An installed copy cloned from git keeps its remote URL, which may carry a
+	// token, in its .git; skills and hooks never need it, so it stays masked.
+	metadata = append(metadata,
+		filepath.Join(store, "cache", "mkt", "plugin", "abc", ".git", "config"),
+		filepath.Join(store, "cache", "mkt", "plugin", "abc", ".git"),
+		filepath.Join(skills, "mine", ".git", "config"))
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(true)}, host, root)
@@ -124,7 +130,7 @@ func TestProbeEvenerContentRootsFollowTheConfigRoot(t *testing.T) {
 type evenerContentFixture struct {
 	config, store, skills, plugin     string
 	template, hook, userSkill, secret string
-	metadata                          string
+	metadata, gitConfig               string
 }
 
 // contentRoots are the roots the probe would report for this home.
@@ -143,7 +149,8 @@ func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
 	f.userSkill = filepath.Join(f.skills, "mine", "SKILL.md")
 	f.secret = filepath.Join(f.config, "hub.toml")
 	f.metadata = filepath.Join(f.store, "known_marketplaces.json")
-	for path, body := range map[string]string{f.template: "template\n", f.hook: "#!/bin/sh\necho HOOK-RAN\n", f.userSkill: "user skill\n", f.secret: "token = 'x'\n", f.metadata: `{"mkt":{"source":{"url":"https://user:token@example.com/m.git"}}}`} {
+	f.gitConfig = filepath.Join(f.plugin, ".git", "config")
+	for path, body := range map[string]string{f.gitConfig: "[remote \"origin\"]\n\turl = https://user:token@example.com/p.git\n", f.template: "template\n", f.hook: "#!/bin/sh\necho HOOK-RAN\n", f.userSkill: "user skill\n", f.secret: "token = 'x'\n", f.metadata: `{"mkt":{"source":{"url":"https://user:token@example.com/m.git"}}}`} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -155,20 +162,21 @@ func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
 }
 
 // evenerContentScript reads both skills, runs the hook, tries to write into the
-// store and to read the credential file and the store's marketplace metadata (a
-// bwrap mask over a file reads as empty, hence the -s), printing a marker for
-// each outcome.
+// store and to read the credential file, the store's marketplace metadata and
+// the installed copy's .git/config (a bwrap mask over a file reads as empty,
+// hence the -s), printing a marker for each outcome.
 const evenerContentScript = `set -u
 test "$(cat "$1")" = template && echo SKILL-READ
 test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
 "$3"
 if (printf x > "$(dirname "$1")/planted") 2>/dev/null; then echo STORE-WRITABLE; fi
 if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi
-if cat "$5" >/dev/null 2>&1 && test -s "$5"; then echo METADATA-VISIBLE; fi`
+if cat "$5" >/dev/null 2>&1 && test -s "$5"; then echo METADATA-VISIBLE; fi
+if cat "$6" >/dev/null 2>&1 && test -s "$6"; then echo PLUGIN-GIT-VISIBLE; fi`
 
 // scriptCommand is the confined command running evenerContentScript.
 func (f evenerContentFixture) scriptCommand(shell string) []string {
-	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret, f.metadata}
+	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret, f.metadata, f.gitConfig}
 }
 
 func assertEvenerContentOutput(t *testing.T, out string) {
@@ -178,7 +186,7 @@ func assertEvenerContentOutput(t *testing.T, out string) {
 			t.Errorf("missing %s: the sandbox must read and run Evener content:\n%s", want, out)
 		}
 	}
-	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE", "METADATA-VISIBLE"} {
+	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE", "METADATA-VISIBLE", "PLUGIN-GIT-VISIBLE"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
 		}
