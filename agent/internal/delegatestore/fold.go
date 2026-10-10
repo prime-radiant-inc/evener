@@ -494,6 +494,9 @@ func UpdateDeliveryID(delegateID string, seq uint64) string {
 
 // IsUpdateDeliveryID reports whether deliveryID names an update's delivery,
 // the shape UpdateDeliveryID builds, rather than a generation's report.
+// Classifying by id shape is safe because ids are minted only by
+// UpdateDeliveryID and delegateDeliveryID, and the fuzz invariant pins each
+// kind's shape.
 func IsUpdateDeliveryID(deliveryID string) bool {
 	delegateID, seq, ok := strings.Cut(deliveryID, "/update/")
 	if !ok || delegateID == "" {

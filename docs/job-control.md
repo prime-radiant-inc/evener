@@ -1395,9 +1395,13 @@ ordered queue and receiver-transcript attention as the terminal packet.
 - The `communicate` result carries `delivery`: `delivered` (in the owner's
   transcript), `queued` (durable and waiting behind the owner's turn or an
   earlier delivery of the same delegate), or `not_delivered` with a `reason`
-  (the delegate is stopping or finishing, its run is stale, or the route to the
-  owner is closed). Delivery never fails the call: the message is already in
-  the delegate's transcript.
+  (the update could not be recorded, the delegate is stopping or its report is
+  being settled, its run is stale, or the session has no route to a parent
+  agent). A parent that is gone usually shows `queued`, since the update is
+  durable in the delegate's journal. A delegate parked in its finalization
+  drain after its terminal `communicate` can still send updates; they reach
+  the owner ahead of its report. Delivery never fails the call: the message is
+  already in the delegate's transcript.
 - Updates never feed Activity's `reportPreview`.
 - A root's `communicate(end_turn=false)` is unchanged: a checkpoint for its
   human partner.

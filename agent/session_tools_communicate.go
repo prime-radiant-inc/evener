@@ -240,7 +240,7 @@ func notDeliveredUpdate(err error) delegateUpdateDelivery {
 	switch {
 	case errors.Is(err, errDelegateStaleLease):
 		reason = "this run of yours is no longer the current one"
-	case errors.Is(err, errDelegateTargetBusy), errors.Is(err, errDelegateNotControllable):
+	case errors.Is(err, errDelegateTargetBusy), errors.Is(err, errDelegateNotControllable), errors.Is(err, ErrRetirementUnavailable):
 		reason = "you are stopping or finishing, or this run can no longer report to your parent"
 	}
 	return delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: reason}

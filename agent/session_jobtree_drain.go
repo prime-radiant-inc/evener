@@ -1099,9 +1099,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and the notification turn would only stand down at the admission
 		// gate and spin the drain loop at full rate. A delegate's update to
 		// this delegate does drive it (hasPendingDelegateUpdateAttention), and
-		// the turn that presents it consumes it. That predicate cannot spin
-		// the loop: a successful leased turn consumes what it presented, and a
-		// failed turn returns its error from the process call below.
+		// the turn that presents it consumes it. The drain runs under the
+		// run's lease, so the admission gate (coversPresentedAttention) and
+		// this predicate agree. A successful leased turn credits what its
+		// requests presented as consumed, so the predicate falls quiet; an
+		// update stays pending only if no request presented it, and a turn
+		// that fails first returns its error from the process call below
+		// rather than looping.
 		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasPendingDelegateUpdateAttention()
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil

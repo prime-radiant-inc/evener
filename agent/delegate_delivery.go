@@ -386,9 +386,11 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 // PostUpdate records a running delegate's mid-work update in its journal,
 // queued behind the delegate's earlier deliveries and ahead of the report its
 // generation will settle, and plans the update's delivery when it is the
-// delegate's head. It refuses a run that is no longer current, a delegate
-// that is stopping or whose turn is ending, and a blank message; the update
-// is then not queued anywhere.
+// delegate's head. A delegate parked in its finalization drain after its
+// terminal communicate can still post: its report is prepared only when the
+// settlement claim is taken, and the fold refuses an update from then on. It
+// refuses a run that is no longer current, a delegate that is stopping or
+// settling, and a blank message; the update is then not queued anywhere.
 func (c *delegateTreeController) PostUpdate(actor delegateActor, message string) (string, delegateMutationPlans, error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
@@ -402,16 +404,11 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string)
 	lease := *actor.lease
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	_, _, err = c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
 	if err != nil {
 		return "", delegateMutationPlans{}, err
 	}
 	if c.hasSettlementClaimLocked(lease) {
-		return "", delegateMutationPlans{}, errDelegateTargetBusy
-	}
-	// Once the generation's terminal communicate is latched its report is
-	// prepared and nothing may land ahead of a closing turn's last word.
-	if evidence := live.binding.evidence; evidence != nil && evidence.terminalSeen {
 		return "", delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	appended, err := c.appendLocked(delegatestore.Event{

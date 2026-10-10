@@ -108,15 +108,6 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 			}
 			return delegateActor{lease: &running}
 		}, errDelegateTargetBusy},
-		{"terminal communicate latched", "which table?", func(t *testing.T, c *delegateTreeController) delegateActor {
-			c.mu.Lock()
-			c.live["dlg_target"].binding.evidence = &delegateGenerationEvidence{}
-			c.mu.Unlock()
-			if err := c.recordTerminalSeen(running); err != nil {
-				t.Fatalf("recordTerminalSeen: %v", err)
-			}
-			return delegateActor{lease: &running}
-		}, errDelegateTargetBusy},
 		{"blank message", "  \n", func(*testing.T, *delegateTreeController) delegateActor {
 			return delegateActor{lease: &running}
 		}, nil},
@@ -603,6 +594,91 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 	if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
 		t.Fatalf("the update was consumed by attention generation %d, want the drain turn that presented it (0)", generation)
 	}
+	awaitRootReport(t, root)
+	// The scripted adapter answers a request past its script with a plain
+	// final report, so only the count shows a drain pass that ran extra
+	// turns. The script's three steps are the delegate call, the end of the
+	// first turn and the update's turn.
+	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
+		t.Fatalf("the coordinator made %d model requests, want its 3 scripted steps", got)
+	}
+}
+
+// A coordinator woken in its finalization drain by its worker's update has
+// already sent its terminal communicate, and can still relay what it learns:
+// its own update reaches the root ahead of its report.
+func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T) {
+	t.Parallel()
+	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
+	coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	defer releaseReport()
+	relayResult := make(chan string, 1)
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then report and wait for it.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+	)
+	adapter.script("COORD-BRIEF",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
+		},
+		func(llm.Request) llm.Response { return communicateResponse(true, "COORD_FINAL: waiting on the worker") },
+		func(llm.Request) llm.Response {
+			return updateResponse("relay", "COORD_RELAY: the worker needs the drain cursor table")
+		},
+		func(req llm.Request) llm.Response {
+			relayResult <- lastToolResultText(req.Messages)
+			releaseReport()
+			return finalResponse("relayed")
+		},
+	)
+	adapter.script("WORKER-BRIEF",
+		func(llm.Request) llm.Response {
+			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+			return updateResponse("upd", "DRAIN_UPDATE: which table holds the drain cursor?")
+		},
+		func(llm.Request) llm.Response {
+			awaitSignal(t, reportGate, "the coordinator's relay")
+			return finalResponse("worker done")
+		},
+	)
+	root := newMessagingRoot(t, adapter, nil)
+	serveSupervisionRootWakes(t, root)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "COORD-BRIEF", 2)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the coordinator to go idle", func() bool {
+		children := root.subagents.sessions()
+		return len(children) == 1 && children[0].State() == SessionIdle
+	})
+	close(coordinatorIdle)
+	select {
+	case result := <-relayResult:
+		if !strings.Contains(result, `"delivery":"delivered"`) && !strings.Contains(result, `"delivery":"queued"`) {
+			t.Fatalf("the coordinator's relay result = %s, want delivered or queued", result)
+		}
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	case <-time.After(30 * time.Second):
+		t.Fatal("the coordinator's drain turn never relayed")
+	}
+	awaitRootReport(t, root)
+	fold := rootAttentionFold(t, root)
+	updateAt := slices.IndexFunc(fold.order, func(id string) bool { return strings.Contains(id, "/update/") })
+	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !strings.Contains(id, "/update/") })
+	if updateAt < 0 || reportAt < updateAt {
+		t.Fatalf("root attention order = %v, want the coordinator's update before its report", fold.order)
+	}
+	frame := fold.content[fold.order[updateAt]].Text()
+	if !strings.Contains(frame, `kind="update"`) || !strings.Contains(frame, "COORD_RELAY") {
+		t.Fatalf("the root's first attention = %q, want the coordinator's relayed update", frame)
+	}
 }
 
 // A sibling's report to a coordinator draining its workers gets no turn of its
@@ -694,6 +770,12 @@ func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	case <-time.After(30 * time.Second):
 		t.Fatal("the draining coordinator was never woken by the update")
+	}
+	awaitRootReport(t, root)
+	// Four scripted steps: two delegate calls, the end of the first turn and
+	// the update's turn. A request past them would be answered by default.
+	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
+		t.Fatalf("the coordinator made %d model requests, want its 4 scripted steps", got)
 	}
 }
 
@@ -935,5 +1017,31 @@ func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
 	leased := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	if !sub.sess.acceptNotificationInput(leased, "leased-turn") {
 		t.Fatal("the delegate's own leased turn was not admitted for its update")
+	}
+}
+
+// awaitRootReport waits until the root's transcript holds attention for a
+// delegate's report, which is any attention that is not an update.
+func awaitRootReport(t *testing.T, root *Session) {
+	t.Helper()
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the coordinator's report to reach the root", func() bool {
+		fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
+		return err == nil && slices.ContainsFunc(fold.order, func(id string) bool { return !strings.Contains(id, "/update/") })
+	})
+}
+
+// An update refused because the controller is retiring says the delegate is
+// stopping or finishing, the same as any other closed route, and never leaks
+// the controller's own error text.
+func TestNotDeliveredUpdateExplainsARetiringController(t *testing.T) {
+	t.Parallel()
+	want := notDeliveredUpdate(errDelegateTargetBusy)
+	got := notDeliveredUpdate(fmt.Errorf("post: %w", ErrRetirementUnavailable))
+	if got != want {
+		t.Fatalf("retiring controller delivery = %#v, want %#v", got, want)
+	}
+	if got.Status != delegateUpdateNotDelivered || strings.Contains(got.Reason, "could not be recorded") {
+		t.Fatalf("retiring controller delivery = %#v, want the stopping or finishing reason", got)
 	}
 }
