@@ -5,13 +5,16 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
+import { requestResult, transactionCompletion } from "./idbConnection";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
+  countCachedSessions,
   installEntryTranscriptFixtureForTests,
   resetThreadsStoreForTests,
   settleEntryTranscriptForTests,
+  subscribeCacheWrites,
   threadsStore,
 } from "./threads";
 
@@ -265,4 +268,43 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
     { name: "evener-mutation-outbox", version: 3 },
     { name: SESSION_CACHE_DATABASE_NAME, version: 3 },
   ]);
+});
+
+async function legacyCounts(): Promise<number[]> {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open(SESSION_CACHE_DATABASE_NAME);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    const transaction = database.transaction(["records", "current"], "readonly");
+    const done = transactionCompletion(transaction);
+    const result = await Promise.all([
+      requestResult(transaction.objectStore("records").count()),
+      requestResult(transaction.objectStore("current").count()),
+    ]);
+    await done;
+    return result;
+  } finally {
+    database.close();
+  }
+}
+
+it("ordinary settings count and write notifications describe entries without legacy writers", async () => {
+  connect();
+  const counts: Array<Promise<number | undefined>> = [];
+  const unsubscribe = subscribeCacheWrites(() => counts.push(countCachedSessions()));
+  try {
+    const lease = acquireBackgroundThread("local:a");
+    await lease.ready;
+    await settleEntryTranscriptForTests("local:a");
+    expect(await countCachedSessions()).toBe(1);
+    expect(counts.length).toBeGreaterThan(0);
+    expect(await Promise.all(counts)).toEqual(counts.map(() => 1));
+    expect(await legacyCounts()).toEqual([0, 0]);
+    expect(await lease.release()).toEqual({ kind: "saved" });
+    expect(await legacyCounts()).toEqual([0, 0]);
+  } finally {
+    unsubscribe();
+  }
 });
