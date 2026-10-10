@@ -7095,6 +7095,7 @@ export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel
 }
 
 export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
+  const renewingRetirement = entryTranscriptRoute(ref)?.retirement !== undefined;
   beginCanonicalThreadClaim(ref);
   backgroundRefCounts.set(ref, (backgroundRefCounts.get(ref) ?? 0) + 1);
   syncTranscriptResidencyOwners(ref);
@@ -7108,7 +7109,11 @@ export function acquireBackgroundThread(ref: string): BackgroundThreadLease {
     settleRetired = resolve;
   });
   const acquisition = (async () => {
-    if (threadsStore.getState().deletedRefs.has(ref) || threadsStore.getState().threads.has(ref)) return;
+    if (
+      threadsStore.getState().deletedRefs.has(ref) ||
+      (!renewingRetirement && threadsStore.getState().threads.has(ref))
+    )
+      return;
     try {
       const client = await requireReadyClient();
       const epoch = readyEpoch;
