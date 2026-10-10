@@ -780,8 +780,14 @@ export class SessionActivityStore {
     previous: readonly SessionDelegate[],
   ): SessionDelegate[] {
     const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
+    // A page can serve one delegate id twice, and nothing downstream can tell
+    // which of those rows an id-only frame belongs to, so a buffered frame is
+    // settled by the read unless the id came back as a single row.
+    const served = new Map<string, number>();
+    for (const row of incoming) served.set(row.delegateId, (served.get(row.delegateId) ?? 0) + 1);
     return incoming.map((row) => {
       const identity = rowIdentity("delegates", row);
+      const soleRow = served.get(row.delegateId) === 1;
       const existing = previousById.get(identity);
       const applied = this.appliedDelegates.get(identity);
       let merged: SessionDelegate;
@@ -805,12 +811,14 @@ export class SessionActivityStore {
       // frame is joined against the row it lands in rather than the ordering
       // that row had before this read answered.
       this.recordAppliedDelegate(merged);
-      const buffered = this.bufferedUnknownDelegates.get(row.delegateId);
+      const buffered = soleRow ? this.bufferedUnknownDelegates.get(row.delegateId) : undefined;
       if (buffered) {
         this.bufferedUnknownDelegates.delete(row.delegateId);
         merged = this.mergeDelegateFrame(merged, buffered);
       }
-      this.seenUnknownDelegates.delete(row.delegateId);
+      // An ambiguous id keeps its seen entry, or every later frame would start
+      // another root read instead of staying bounded to one per id.
+      if (soleRow) this.seenUnknownDelegates.delete(row.delegateId);
       this.recordAppliedDelegate(merged);
       return merged;
     });
@@ -1042,8 +1050,9 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
     worktree: frame.worktree,
   };
 }
-/** Mirrors internal/appprojector.delegateActivityAfter: a blank or unparseable
- * value never wins, and a blank current loses to any parseable candidate. */
+/** Mirrors internal/appprojector.delegateActivityAfter: a blank candidate never
+ * wins, a blank current loses to any non-blank candidate, and otherwise the
+ * candidate wins only when both values parse and it is strictly later. */
 function activityAfter(candidate: string | undefined, current: string | undefined): boolean {
   if (!candidate || candidate.trim() === "") return false;
   if (!current || current.trim() === "") return true;
@@ -1051,12 +1060,12 @@ function activityAfter(candidate: string | undefined, current: string | undefine
   const currentMs = Date.parse(current);
   return !Number.isNaN(candidateMs) && !Number.isNaN(currentMs) && candidateMs > currentMs;
 }
-function laterActivity(candidate: string | undefined, current: string | undefined): string | undefined {
-  return activityAfter(candidate, current) ? candidate : current;
-}
 /** The projector's join for one delegate: `incomingWins` picks the snapshot
  * fields, while latestActivityAt is the independent maximum of the two -- a
- * lower revision may advance it, a higher one never moves it backward. */
+ * lower revision may advance it, a higher one never moves it backward. The
+ * other side's activity is taken only when it is strictly later, exactly as
+ * internal/appprojector.mergeAppwireDelegateInfo moves it, so a pushed row and
+ * the same row read back agree. */
 function joinDelegateState<T extends { latestActivityAt?: string | undefined }>(
   incoming: T,
   current: T,
@@ -1064,7 +1073,9 @@ function joinDelegateState<T extends { latestActivityAt?: string | undefined }>(
 ): T {
   const winner = incomingWins ? incoming : current;
   const other = incomingWins ? current : incoming;
-  const activity = laterActivity(winner.latestActivityAt, other.latestActivityAt);
+  const activity = activityAfter(other.latestActivityAt, winner.latestActivityAt)
+    ? other.latestActivityAt
+    : winner.latestActivityAt;
   return activity === winner.latestActivityAt ? winner : { ...winner, latestActivityAt: activity };
 }
 /** A missing/NaN revision is the zero value; an unset read row must not beat a

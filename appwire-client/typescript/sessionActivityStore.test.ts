@@ -3011,6 +3011,75 @@ test("a sibling collection catching up to the epoch keeps the current delegate o
   expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 3, status: "running" });
 });
 
+test("an unparseable activity never displaces a parseable one", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ latestActivityAt: "2026-01-01T00:00:00Z" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 1, status: "completed", latestActivityAt: "not-a-date" })),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.latestActivityAt).toBe("2026-01-01T00:00:00Z");
+});
+
+test("a parseable activity displaces an unparseable one at a higher revision", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ latestActivityAt: "not-a-date" })],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 2, status: "completed", latestActivityAt: "2026-02-02T00:00:00Z" })),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.latestActivityAt).toBe("2026-02-02T00:00:00Z");
+});
+
+test("a read that admits two rows under one id neither applies nor re-reads a buffered frame", async () => {
+  const client = pushClient();
+  let admit = false;
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: admit
+      ? [
+          delegateRow({ delegateId: "delegate-1" }),
+          delegateRow({ delegateId: "delegate-2", childRef: "local:first", status: "running" }),
+          delegateRow({ delegateId: "delegate-2", childRef: "local:second", status: "running" }),
+        ]
+      : [delegateRow({ delegateId: "delegate-1" })],
+  }));
+  const { store } = await pushOwner(client);
+  const before = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(
+    pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 9, status: "failed" })),
+  );
+  await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === before + 1);
+  admit = true;
+  await store.refresh("delegates");
+  const twins = () =>
+    store
+      .getSnapshot()
+      .delegates.rows.filter((row) => row.delegateId === "delegate-2")
+      .map((row) => row.status);
+  expect(twins()).toEqual(["running", "running"]);
+  // The id is still ambiguous, so the at-most-once bound holds for later frames.
+  const settled = callsTo(client, "evener/thread/delegates/list");
+  client.emitNotification(
+    pushedFrame(frameInfo({ delegateId: "delegate-2", projectionRevision: 10, status: "failed" })),
+  );
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(settled);
+  expect(twins()).toEqual(["running", "running"]);
+});
+
 test("a frame whose delegate id names two loaded rows patches neither", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
