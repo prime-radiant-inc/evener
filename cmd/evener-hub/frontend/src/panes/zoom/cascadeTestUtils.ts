@@ -13,9 +13,8 @@ export function cascadeClient(context: (ref: string) => SessionActivityContext) 
     return cascadeThread(ref, requestGeneration, includeTurns !== false);
   });
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
+    ...activitySummary(ref, scope),
     context: context(ref),
-    scope: scope ?? "session",
   }));
   client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
     context: context(ref),

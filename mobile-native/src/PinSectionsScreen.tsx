@@ -7,10 +7,11 @@ import { NavigationPages } from "./navigationPages";
 import { PinCatalogList } from "./PinCatalogList";
 import { PageList } from "./ProjectsScreen";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
 import { usePinNavigation } from "./usePinNavigation";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
+import { Button } from "./sheet/Grouped";
 
 export function PinSectionsScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinSections">) {
 	const pin = usePinNavigation(route.params.hubId);
@@ -78,18 +79,20 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 			<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
 			<ErrorMessage message={pin.action?.error ?? pin.page?.error ?? null} />
 			{pin.ready && (!pin.confirmed || pin.action?.uncertain) ? (
-				<Action
+				<Button
+					text
+					label="Check again"
 					disabled={!!pin.action?.pending}
 					onPress={() => {
 						void pin.actions?.reconcile();
 					}}
-				>
-					Check again
-				</Action>
+				/>
 			) : null}
 			{pin.confirmed && !section ? <Copy>This section no longer exists. Its sessions are kept.</Copy> : null}
-			<Action
-				tone="quiet"
+			<Button
+				text
+				quiet
+				label="Manage section"
 				onPress={() =>
 					navigation.navigate("PinSectionEditor", {
 						hubId,
@@ -97,9 +100,7 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 						title: section?.name ?? title,
 					})
 				}
-			>
-				Manage section
-			</Action>
+			/>
 		</View>
 	);
 	return (

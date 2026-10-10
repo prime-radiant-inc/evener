@@ -74,6 +74,49 @@ Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`).
 
+## Explicit skill and command input
+
+Input-bearing requests accept canonical selections alongside text and images:
+`{"type":"skill","name":"pkg:review"}` and
+`{"type":"command","name":"pkg:review"}` request different behavior even when
+their names match. These items admit only `type` and `name`; bodies, paths,
+arguments and other raw keys are rejected. The target's advertised `skillInput`
+or `commandInput` capability authorizes that kind, never a client assumption.
+
+Command selections resolve exact catalog identity at consumption and expand
+once per canonical name with empty arguments under their source's existing
+expansion rules. Original user text is retained separately from expanded bodies.
+Generated output cannot select or recursively invoke commands. Existing leading
+typed `/command args` retains its arguments; unselected inline slash prose is
+not an explicit selection. Queue, return and recovery input keeps both kinds.
+
+Text items may carry `mentions: [{kind, name, offset}]` as editing metadata.
+Offsets count UTF-16 code units in that text item and locate ordered,
+non-overlapping visible labels for separately selected canonical identities.
+They never authorize activation or carry command bodies, paths or arguments.
+Accepted input persists these locations; queue reads and `thread/queueChanged`
+project FIFO-aligned `mentions` beside full text and canonical name lists, so a
+fresh client's edit restores the chosen kind without selecting duplicate prose.
+Attachment marker translation shifts locations at the submission boundary.
+Automatic transcript-refusal recovery uses `returnClaimedQueuedMutation` to
+clone the original `pending.Input`, retaining text items and their locations.
+The separate `pushQueueHead` helper has no production callers; explicit use of
+it retains locations in the flattened returned text. Public `turn/drainAsSteer`
+preserves each retained entry's raw text and shifts its locations by the
+preceding UTF-16 text length plus the two-unit `\n\n` separator, including any
+extra drain input. Image-only entries add no text separator. Direct promotion
+retains the original text items and their item-relative locations. These
+locations survive durable recovery and mutation replay without changing
+canonical activation identities.
+
+Live completion reads `thread.evener.diagnostics.commands` from the owning
+session's `thread/read` response. It contains path-free descriptors for that
+session's loaded plugin, project and user commands, resolved for its cwd, host
+and harness. An absent field means unreported inventory; `[]` means an
+authoritative empty inventory. Neither permits controller catalog fallback.
+`evener/command/list` remains controller-wide discovery for the separate palette;
+`evener/spawn/slashCatalog` supplies target-scoped pre-session discovery.
+
 ## Request methods
 
 `Scope` is which binaries expose the method: **both** (hub and daemon), **hub**

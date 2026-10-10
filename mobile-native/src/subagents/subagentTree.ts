@@ -4,6 +4,7 @@ import {
 	type ActivityTree,
 	type SessionActivitySummary,
 	type SessionActivityPresentation,
+	type SessionActivitySnapshot,
 	SessionActivityStore,
 	projectSessionActivity,
 	acquireThreadSubscription,
@@ -14,6 +15,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 export interface SubagentTreeSnapshot {
 	tree: ActivityTree | null;
 	summary: SessionActivitySummary | null;
+	pages: Pick<SessionActivitySnapshot, "delegates" | "jobs"> | null;
 	loading: boolean;
 	failed: boolean;
 	unsupported: boolean;
@@ -30,6 +32,7 @@ export class SubagentTree {
 	private detachStore: (() => void) | null = null;
 	private followLease: ThreadSubscriptionLease | null = null;
 	private presentation: SessionActivityPresentation | null = null;
+	private retained: SessionActivitySnapshot | null = null;
 	private coordinatorModel: string | null = null;
 	private modelGeneration = 0;
 	private observedSessionID: string | null = null;
@@ -58,6 +61,7 @@ export class SubagentTree {
 		this.detachStore = null;
 		this.stopActivity.forEach((stop) => stop());
 		this.stopActivity = [];
+		this.retained = this.store?.getSnapshot() ?? this.retained;
 		this.store?.dispose();
 		this.store = null;
 		this.followLease?.release();
@@ -67,8 +71,12 @@ export class SubagentTree {
 			this.publish();
 			return Promise.resolve();
 		}
-		const store = new SessionActivityStore(client, this.ref, { scope: "subtree" });
+		const store = new SessionActivityStore(client, this.ref, {
+			scope: "subtree",
+			retained: this.retained ?? undefined,
+		});
 		this.store = store;
+		this.retained = null;
 		this.detachStore = store.subscribe(() => {
 			const state = store.getSnapshot();
 			const next = projectSessionActivity(state);
@@ -132,10 +140,12 @@ export class SubagentTree {
 	reload(): Promise<void> {
 		return this.store?.refresh() ?? Promise.resolve();
 	}
-	loadMore(): Promise<void> {
+	loadMore(resource?: "delegates" | "jobs"): Promise<void> {
 		const store = this.store;
 		return store
-			? Promise.all([store.loadMore("delegates"), store.loadMore("jobs")]).then(() => {})
+			? Promise.all(
+					(resource ? [resource] : (["delegates", "jobs"] as const)).map((name) => store.loadMore(name)),
+				).then(() => {})
 			: Promise.resolve();
 	}
 	private build(): SubagentTreeSnapshot {
@@ -147,6 +157,7 @@ export class SubagentTree {
 		return {
 			tree,
 			summary: state?.summary ?? this.presentation?.summary ?? null,
+			pages: state ? { delegates: state.delegates, jobs: state.jobs } : null,
 			loading: tree === null && this.client !== null && errors.some((read) => read.loading || read.pending),
 			failed: tree === null && errors.some((read) => read.error !== null && !read.permanent),
 			unsupported: errors.some((read) => read.permanent),

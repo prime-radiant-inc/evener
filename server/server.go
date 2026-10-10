@@ -172,17 +172,18 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for AppWire diagnostics.
 type DetailedStatus struct {
-	Tools            []ToolInfo              `json:"tools,omitempty"`
-	MCP              []MCPServerInfo         `json:"mcp,omitempty"`
-	Skills           []SkillInfo             `json:"skills,omitempty"`
-	SkillDiagnostics []SkillDiagnosticInfo   `json:"skill_diagnostics,omitempty"`
-	Plugins          []PluginStatusInfo      `json:"plugins,omitempty"`
-	HookEvents       []HookEventStatus       `json:"hook_events,omitempty"`
-	Jobs             []JobStatusInfo         `json:"jobs,omitempty"`
-	Delegates        []DelegateStatusInfo    `json:"delegates,omitempty"`
-	Watches          []agent.WatchStatusInfo `json:"watches,omitempty"`
-	TurnSlots        *TurnSlotStatus         `json:"turn_slots,omitempty"`
-	Agents           []string                `json:"agents,omitempty"`
+	Commands         []appwire.CommandDescriptor `json:"commands,omitzero"`
+	Tools            []ToolInfo                  `json:"tools,omitempty"`
+	MCP              []MCPServerInfo             `json:"mcp,omitempty"`
+	Skills           []SkillInfo                 `json:"skills,omitempty"`
+	SkillDiagnostics []SkillDiagnosticInfo       `json:"skill_diagnostics,omitempty"`
+	Plugins          []PluginStatusInfo          `json:"plugins,omitempty"`
+	HookEvents       []HookEventStatus           `json:"hook_events,omitempty"`
+	Jobs             []JobStatusInfo             `json:"jobs,omitempty"`
+	Delegates        []DelegateStatusInfo        `json:"delegates,omitempty"`
+	Watches          []agent.WatchStatusInfo     `json:"watches,omitempty"`
+	TurnSlots        *TurnSlotStatus             `json:"turn_slots,omitempty"`
+	Agents           []string                    `json:"agents,omitempty"`
 }
 
 // SkillDiagnosticInfo is one Stage 1 skill-discovery diagnostic (collision,
@@ -365,6 +366,17 @@ type Server struct {
 	// published if the execution is abandoned, and discarded when its
 	// EXECUTION_STARTED arrives.
 	appDeferredTerminalNotifications []pendingAppNotification
+	// appHeldSettledEffect is the status effect of a resting state the session
+	// settled outside any turn (EventStatusSettled) while an input was being
+	// taken. It is applied when processing ends, unless a turn is published
+	// first (SetProcessingTurn; the turn's own end restates the state), the
+	// input ends on a SESSION_END, or the root is replaced.
+	appHeldSettledEffect func(*Server)
+	// appTurnEndStated records that the published turn's interrupted
+	// SESSION_END already stated the resting state while processing stays set
+	// for the turn to unwind, so the end of processing publishes that state
+	// rather than its idle placeholder.
+	appTurnEndStated bool
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -430,7 +442,7 @@ type Server struct {
 	appSessionActivity       sessionActivityHooks
 	tasksFn                  func() []appwire.Task
 	jobsFn                   func(appwire.JobsListParams) (any, error)
-	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)
+	jobOutputFn              func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)
 	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
 	shutdownFunc             func()
 	daemonStatusFunc         func() appwire.DaemonLifecycle
@@ -871,7 +883,7 @@ func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 // SetJobOutputFunc sets the function backing evener/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
 // beforeBytes > 0 pages backwards through the job's output log.
-func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data appwire.JobOutputTail, found bool, err error)) {
+func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)) {
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()
@@ -889,7 +901,7 @@ func (s *Server) SetJobGetFunc(fn func(jobID string) (data appwire.JobActivityJo
 // publishes nothing when processing starts: the running execution's TurnID is
 // published by SetProcessingTurn, which the session calls before recording the
 // execution's first entry. When processing ends, finishProcessing publishes the
-// thread idle.
+// state the session's events stored (finishProcessing).
 func (s *Server) SetProcessing(processing bool) {
 	if !processing {
 		s.finishProcessing()
@@ -909,6 +921,12 @@ func (s *Server) SetProcessingTurn(turnID string) {
 		s.mu.Lock()
 		s.processing = true
 		s.appActiveTurnID = turnID
+		// A new turn's end has not been stated yet, whatever the turn before
+		// it stated.
+		s.appTurnEndStated = false
+		// A rest held while the input was being taken settled before this
+		// turn started (Session.restMu), and the turn's end restates it.
+		s.appHeldSettledEffect = nil
 		// Until the execution's own EXECUTION_STARTED is projected, a
 		// terminal status still queued from the input before it must not be
 		// published over this one (RecordAppEvent defers it).
@@ -931,6 +949,7 @@ func (s *Server) endProcessingLocked() {
 	s.processing = false
 	s.appActiveTurnID = ""
 	s.appPendingStableTurnID = ""
+	s.appTurnEndStated = false
 }
 
 // InputCh returns the channel that receives user input messages.

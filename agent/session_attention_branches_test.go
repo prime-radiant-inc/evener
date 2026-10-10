@@ -150,7 +150,8 @@ func TestFoldDelegateDeliveryCommits(t *testing.T) {
 	if fold5.deliveryCommits["d1"] != "c1" {
 		t.Fatalf("delivery commit not recorded: %+v", fold5.deliveryCommits)
 	}
-	// Conflicting delivery for same tool call -> error.
+	// One tool call may commit several deliveries in its own turn: a
+	// delegate_send wait carries earlier results ahead of its own (#3906).
 	fold6 := newDelegateAttentionFold()
 	toolTurn4 := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1"}},
@@ -159,8 +160,20 @@ func TestFoldDelegateDeliveryCommits(t *testing.T) {
 		{ToolCallID: "c1", DeliveryID: "d1"},
 		{ToolCallID: "c1", DeliveryID: "d2"},
 	}
-	if err := foldDelegateDeliveryCommits(&fold6, toolTurn4); err == nil {
-		t.Fatal("conflicting deliveries for same tool call should error")
+	if err := foldDelegateDeliveryCommits(&fold6, toolTurn4); err != nil {
+		t.Fatalf("several deliveries on one tool call in its turn: %v", err)
+	}
+	if fold6.deliveryCommits["d1"] != "c1" || fold6.deliveryCommits["d2"] != "c1" {
+		t.Fatalf("deliveries not recorded: %+v", fold6.deliveryCommits)
+	}
+	// A later turn committing another delivery to an earlier turn's tool
+	// call -> error.
+	later := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1"}},
+	}})
+	later.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "c1", DeliveryID: "d3"}}
+	if err := foldDelegateDeliveryCommits(&fold6, later); err == nil {
+		t.Fatal("a later turn's delivery on an earlier turn's tool call should error")
 	}
 	// Conflicting tool call for same delivery -> error.
 	fold7 := newDelegateAttentionFold()

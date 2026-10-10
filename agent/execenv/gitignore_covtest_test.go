@@ -85,7 +85,7 @@ func TestIgnoreSet_Matches_IsDir(t *testing.T) {
 	}
 }
 
-// TestIsDotPath covers the isDotPath function (lines 139-146).
+// TestIsDotPath covers the IsDotPath function (lines 139-146).
 func TestIsDotPath(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -101,8 +101,8 @@ func TestIsDotPath(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range tests {
-		if got := isDotPath(tc.path); got != tc.want {
-			t.Errorf("isDotPath(%q) = %v, want %v", tc.path, got, tc.want)
+		if got := IsDotPath(tc.path); got != tc.want {
+			t.Errorf("IsDotPath(%q) = %v, want %v", tc.path, got, tc.want)
 		}
 	}
 }

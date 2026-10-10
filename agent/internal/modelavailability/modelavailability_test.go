@@ -288,11 +288,28 @@ func TestCursorRejectsChangedPageBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Page(page.Next, 2, 1024); err == nil {
-		t.Fatal("cursor accepted a changed count bound")
+	const want = "cursor was issued for max_count=1 and max_bytes=1024; omit max_count and max_bytes or repeat those values with this cursor, or omit the cursor to start a new listing"
+	if _, err := s.Page(page.Next, 2, 1024); err == nil || err.Error() != want {
+		t.Fatalf("changed count bound error = %v, want %q", err, want)
 	}
-	if _, err := s.Page(page.Next, 1, 512); err == nil {
-		t.Fatal("cursor accepted a changed byte bound")
+	if _, err := s.Page(page.Next, 1, 512); err == nil || err.Error() != want {
+		t.Fatalf("changed byte bound error = %v, want %q", err, want)
+	}
+}
+
+func TestPageFillsUnspecifiedBoundsFromCursorOrDefaults(t *testing.T) {
+	s := testSnapshot("v1", true, "p/a", "p/b", "p/c")
+	page, err := s.Page("", 1, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.Page(page.Next, 0, 0)
+	if err != nil || len(next.Choices) != 1 || next.Choices[0] != "p/b" {
+		t.Fatalf("continuation with unspecified bounds = %#v, %v; want the cursor's one-choice page", next, err)
+	}
+	whole, err := s.Page("", 0, 0)
+	if err != nil || len(whole.Choices) != 3 || !whole.Terminal {
+		t.Fatalf("first page with unspecified bounds = %#v, %v; want every choice under the defaults", whole, err)
 	}
 }
 

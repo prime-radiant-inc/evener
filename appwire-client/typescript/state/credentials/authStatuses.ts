@@ -21,7 +21,7 @@ import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { AuthStatusResponse } from "../../types.gen";
 import { createListRevision, readRevisioned } from "../extensions/listRevision";
-import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "../extensions/storeLifecycle";
+import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "../extensions/storeLifecycle";
 
 export type AuthStatusesClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -34,9 +34,7 @@ export interface AuthStatusesState {
   fetchAuthStatuses(): Promise<void>;
 }
 
-export interface AuthStatusesStore
-  extends FrameworkFreeStore<AuthStatusesState>,
-    Omit<StoreLifecycle<AuthStatusesState>, "guard"> {
+export interface AuthStatusesStore extends FrameworkFreeStore<AuthStatusesState>, HostLifecycle<AuthStatusesState> {
   /** Follows evener/auth/updated. Idempotent. */
   start(): void;
   /** Back to the initial state; reads still in flight publish nothing. */

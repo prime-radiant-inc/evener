@@ -207,10 +207,8 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	for _, masked := range rp.MaskedPaths {
-		if filepath.IsAbs(masked) && pathUnder(path, masked) {
-			return false
-		}
+	if rp.Masks(path) {
+		return false
 	}
 	if rp.FileTool.Read == ReadAnywhere {
 		return true
@@ -221,6 +219,20 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 		}
 	}
 	return false
+}
+
+// Masks reports whether path is denied by the masked set: at or beneath a
+// masked path. Every layer asks this one question, so the file tools, the
+// policy filters and the backends agree on what a mask hides.
+func (rp ResolvedPolicy) Masks(path string) bool {
+	return isUnderAnyRoot(path, rp.MaskedPaths)
+}
+
+// MasksWrite reports whether a write to path is denied by the masked set. It
+// is asked separately from Masks so a read-only exception to the mask never
+// reaches writes.
+func (rp ResolvedPolicy) MasksWrite(path string) bool {
+	return isUnderAnyRoot(path, rp.MaskedPaths)
 }
 
 // FileToolEnforceable reports whether this OS has an in-process file-tool
@@ -391,7 +403,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		backend = chosen
 	}
 
-	masked := policy.EffectiveDenylist(host.Home)
+	masked := withResolvedMasks(withEvenerConfigMask(policy.EffectiveDenylist(host.Home), host, policy))
 	worktree := layout.WorktreeRoot
 
 	rp := ResolvedPolicy{
@@ -410,10 +422,10 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
-	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, masked)
-	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, masked)
-	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, masked)
-	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, masked)
+	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, rp)
+	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
+	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, rp)
+	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
 
 	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
@@ -439,7 +451,7 @@ func toolchainBinDir(host HostFacts, rp ResolvedPolicy, worktree string) string 
 	if len(guardedHostRoots([]string{bin}, host.Home, worktree)) == 0 {
 		return ""
 	}
-	if len(filterMasked([]string{bin}, rp.MaskedPaths)) == 0 {
+	if len(filterMasked([]string{bin}, rp)) == 0 {
 		return ""
 	}
 	if rp.Spawned.Read == ReadWorktreeOnly && !isUnderAnyRoot(bin, rp.Spawned.ReadRoots) {
@@ -635,22 +647,54 @@ func dedupeRoots(roots []string) []string {
 	return out
 }
 
-// filterMasked drops any root that is at or beneath a masked path, upholding the
-// invariant that a resolved policy never grants a denylisted/pseudo-fs path.
-func filterMasked(roots, masked []string) []string {
+// withEvenerConfigMask adds Evener's config root to the masked set where
+// XDG_CONFIG_HOME moved it (HostFacts.EvenerConfigRoot), alongside
+// ~/.config/evener, since hub configuration and credentials live wherever that
+// root is. A user who removed ~/.config/evener from the denylist removed both,
+// and one who removed the relocated root itself removed that.
+func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy) []string {
+	def := filepath.Join(host.Home, ".config", "evener")
+	cr := filepath.Clean(host.EvenerConfigRoot)
+	if !slices.Contains(masked, def) || !filepath.IsAbs(host.EvenerConfigRoot) || slices.Contains(masked, cr) {
+		return masked
+	}
+	for _, r := range policy.DenylistRemove {
+		if resolveHomePath(r, host.Home) == cr {
+			return masked
+		}
+	}
+	return append(slices.Clone(masked), cr)
+}
+
+// withResolvedMasks adds the symlink-resolved location of each masked path that
+// is reached through a symlink, so a secret is masked under both spellings: the
+// file tools compare paths, and would otherwise read a symlinked credential
+// directory (or config root) by its target's name. The backends already mask
+// the resolved target. The pseudo-filesystem floor is left as written: its
+// entries are host paths the backends handle by mount, and its aliases (such as
+// /var/run -> /run) are listed already.
+func withResolvedMasks(masked []string) []string {
+	out := slices.Clone(masked)
+	for _, m := range masked {
+		if slices.Contains(defaultPseudoFSPaths, m) {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(m); err == nil && resolved != m && !slices.Contains(out, resolved) {
+			out = append(out, resolved)
+		}
+	}
+	return out
+}
+
+// filterMasked drops any root the policy masks (ResolvedPolicy.Masks), upholding
+// the invariant that a resolved policy never grants a denylisted/pseudo-fs path.
+func filterMasked(roots []string, rp ResolvedPolicy) []string {
 	if len(roots) == 0 {
 		return roots
 	}
 	out := roots[:0:0]
 	for _, r := range roots {
-		blocked := false
-		for _, m := range masked {
-			if r == m || pathUnder(r, m) {
-				blocked = true
-				break
-			}
-		}
-		if !blocked {
+		if !rp.Masks(r) {
 			out = append(out, r)
 		}
 	}

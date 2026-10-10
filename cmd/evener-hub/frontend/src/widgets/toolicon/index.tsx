@@ -30,6 +30,7 @@
 export type ToolIconKind =
   | "terminal"
   | "file"
+  | "memory"
   | "edit"
   | "search"
   | "folder"
@@ -41,6 +42,7 @@ export type ToolIconKind =
   | "job"
   | "send"
   | "skill"
+  | "fold"
   | "person"
   | "wrench"
   | "thought"
@@ -62,6 +64,8 @@ export const PATHS: Record<ToolIconKind, string> = {
   terminal: "M2.5 3.5 H13.5 V12.5 H2.5 Z M5 6.8 L7.5 8.8 L5 10.8 M8.6 10.8 H11.2",
   // A document with a folded corner.
   file: "M4 2.5 H9.5 L12 5 V13.5 H4 Z M9.5 2.5 V5 H12",
+  // A bookmark with a pointed lower edge.
+  memory: "M5 2.7 H11 A1 1 0 0 1 12 3.7 V13.5 L8 10.7 L4 13.5 V3.7 A1 1 0 0 1 5 2.7 Z",
   // A pencil, tip at lower left.
   edit: "M3.2 12.8 L3.9 10.2 L10.6 3.5 A1.5 1.5 0 0 1 12.7 5.6 L6 12.3 L3.2 12.8 Z",
   // A magnifier.
@@ -89,6 +93,9 @@ export const PATHS: Record<ToolIconKind, string> = {
   send: "M2.5 8 L13.5 2.5 L10 13.5 L7.8 9.7 Z M13.5 2.5 L7.8 9.7",
   // A four-point sparkle (use_skill).
   skill: "M8 2 L9.4 6.6 L14 8 L9.4 9.4 L8 14 L6.6 9.4 L2 8 L6.6 6.6 Z",
+  // Two chevrons converging on the center point (compact_context: folding
+  // history into a checkpoint).
+  fold: "M3 5.5 L8 8 L13 5.5 M3 10.5 L8 8 L13 10.5",
   // A person: head circle over a shoulders arc (SpeakerAvatar's user tile -
   // not a tool, but the transcript's speaker header draws both avatars from
   // this same 16-grid line-art grammar so the two read as one family).

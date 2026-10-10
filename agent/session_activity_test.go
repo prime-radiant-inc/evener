@@ -64,7 +64,7 @@ func TestSessionActivityCanceledFoldResumesWithoutDuplicateCreation(t *testing.T
 	stateDir := t.TempDir()
 	id := "canceledfold"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	writeJobLogFast(t, stateDir, id, 31)
+	writeActivityJobLogFast(t, stateDir, id, 31)
 	index, err := acquireSessionActivityIndex(t.Context(), stateDir+"\x00"+id, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestSessionActivity451JobsPreserveMembershipAndCurrentStatus(t *testing.T) 
 	stateDir := t.TempDir()
 	id := "pagingjobs"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	path := writeJobLogFast(t, stateDir, id, 451)
+	path := writeActivityJobLogFast(t, stateDir, id, 451)
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", id), Limit: 73}
 	first, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestSessionActivity451JobsPreserveMembershipAndCurrentStatus(t *testing.T) 
 	}
 	defer store.Close()
 	at := time.Unix(1_700_000_000, 0).UTC()
-	if err = store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_new", Type: jobstore.JobShell, OwnerSessionID: id, TS: at, StartedAt: &at}); err != nil {
+	if err = store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_new", Type: jobstore.JobShell, Background: true, OwnerSessionID: id, TS: at, StartedAt: &at}); err != nil {
 		t.Fatal(err)
 	}
 	if err = store.Append(jobstore.Event{Kind: jobstore.EventJobFinished, JobID: "job_000000", Status: jobstore.StatusFailed, TerminalGen: "failed", TS: at}); err != nil {
@@ -232,7 +232,7 @@ func TestSessionActivityColdProgressAndWarmReadCost(t *testing.T) {
 	stateDir := t.TempDir()
 	id := "coldprogress"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	writeJobLogFast(t, stateDir, id, 2001)
+	writeActivityJobLogFast(t, stateDir, id, 2001)
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", id), Limit: 200}
 	summary, err := LoadSessionActivitySummary(t.Context(), stateDir, id, appwire.SessionActivityReadParams{Ref: params.Ref})
 	if err != nil {
@@ -283,7 +283,7 @@ func TestSessionActivityCursorsBindResourceScopeAndIncarnation(t *testing.T) {
 	stateDir := t.TempDir()
 	id := "cursoridentity"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	path := writeJobLogFast(t, stateDir, id, 3)
+	path := writeActivityJobLogFast(t, stateDir, id, 3)
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", id), Limit: 1}
 	page, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
 	if err != nil {
@@ -341,7 +341,7 @@ func TestSessionActivityLargeProseKeepsEveryJobReachable(t *testing.T) {
 	at := time.Unix(100, 0).UTC()
 	batch := make([]jobstore.Event, 451)
 	for i := range batch {
-		batch[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("job_large_%04d", i), Type: jobstore.JobShell, OwnerSessionID: id, TS: at, StartedAt: &at, Command: prose, Description: prose, Task: prose}
+		batch[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("job_large_%04d", i), Type: jobstore.JobShell, Background: true, OwnerSessionID: id, TS: at, StartedAt: &at, Command: prose, Description: prose, Task: prose}
 	}
 	if err = store.AppendBatch(batch); err != nil {
 		t.Fatal(err)
@@ -396,7 +396,7 @@ func TestSessionActivitySummaryFailedShellAndUnknownRetainedWatch(t *testing.T) 
 	at := time.Unix(100, 0).UTC()
 	exit := 7
 	if err = store.AppendBatch([]jobstore.Event{
-		{Kind: jobstore.EventJobStarted, JobID: "job_failed", Type: jobstore.JobShell, OwnerSessionID: id, TS: at, StartedAt: &at},
+		{Kind: jobstore.EventJobStarted, JobID: "job_failed", Type: jobstore.JobShell, Background: true, OwnerSessionID: id, TS: at, StartedAt: &at},
 		{Kind: jobstore.EventJobFinished, JobID: "job_failed", Status: jobstore.StatusCommandExitedNonzero, ExitCode: &exit, TerminalGen: "failure", TS: at},
 		{Kind: jobstore.EventWatchRegistered, WatchID: "watch_unknown", TS: at, Watch: &jobstore.WatchEvent{Generation: "g", OwnerSessionID: id, VisibleSessionID: id, Target: "job_failed", ConfigHash: "hash", Config: &jobstore.WatchConfigSnapshot{Target: "job_failed", Events: []string{"job.notification"}}}},
 	}); err != nil {
@@ -438,8 +438,23 @@ func TestSessionActivitySummaryFailedShellAndUnknownRetainedWatch(t *testing.T) 
 	}
 }
 
-func TestSessionActivityRealDelegateTree(t *testing.T) {
-	t.Parallel()
+// realDelegateTree is a root session whose one delegate (parent) spawned one
+// delegate of its own (grandchild), both run to completion: three sessions
+// deep, built by the real delegate runtime. descendantEvents, when set, sees
+// every event the tree's subagent sessions emit, as the daemon's AppWire
+// bridge does.
+type realDelegateTree struct {
+	s                   *Session
+	c                   *delegateTreeController
+	parent              delegateResult
+	parentRuntime       *Session
+	grandchildID        string
+	grandchildSessionID string
+	grandchildRuntime   *Session
+}
+
+func newRealDelegateTree(t *testing.T, descendantEvents func(events.SessionEvent)) realDelegateTree {
+	t.Helper()
 	workspace := t.TempDir()
 	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(
 		func(llm.Request) llm.Response {
@@ -448,6 +463,9 @@ func TestSessionActivityRealDelegateTree(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse("grandchild done") },
 		func(llm.Request) llm.Response { return finalResponse("parent done") },
 	))
+	if descendantEvents != nil {
+		s.SetDescendantEventFunc(descendantEvents)
+	}
 	one := 1
 	parent := s.createDelegate(t.Context(), delegateArgs{Task: "spawn one grandchild", DelegationAllowance: &one})
 	if parent.Err != nil {
@@ -491,6 +509,27 @@ func TestSessionActivityRealDelegateTree(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("scripted grandchild did not finish")
 	}
+	return realDelegateTree{s: s, c: c, parent: parent, parentRuntime: parentRuntime, grandchildID: grandchildID, grandchildSessionID: grandchildSessionID, grandchildRuntime: grandchildRuntime}
+}
+
+// releaseMiddle releases the settled middle subagent's runtime, and its
+// grandchild's with it, through the real idle-release path.
+func (tree realDelegateTree) releaseMiddle(t *testing.T) {
+	t.Helper()
+	claim := claimSettledIdleSubtree(t, tree.c, tree.parent.DelegateID, tree.parentRuntime, tree.grandchildRuntime)
+	if err := tree.c.AbortRuntimeReclamation(claim); err != nil {
+		t.Fatal(err)
+	}
+	if !tree.parentRuntime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("real idle subtree release refused")
+	}
+}
+
+func TestSessionActivityRealDelegateTree(t *testing.T) {
+	t.Parallel()
+	fixture := newRealDelegateTree(t, nil)
+	s, c, parent := fixture.s, fixture.c, fixture.parent
+	grandchildID, grandchildSessionID := fixture.grandchildID, fixture.grandchildSessionID
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())}
 	direct, err := s.ListActivityDelegates(t.Context(), params)
 	if err != nil {
@@ -527,13 +566,7 @@ func TestSessionActivityRealDelegateTree(t *testing.T) {
 	for _, target := range []string{grandchildSessionID, parent.ChildSessionID, s.ID()} {
 		requireSessionActivityInvalidation(t, s.events, target, grandchildSessionID, appwire.SessionActivityResourceJobs)
 	}
-	claim := claimSettledIdleSubtree(t, c, parent.DelegateID, parentRuntime, grandchildRuntime)
-	if err = c.AbortRuntimeReclamation(claim); err != nil {
-		t.Fatal(err)
-	}
-	if !parentRuntime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("real idle subtree release refused")
-	}
+	fixture.releaseMiddle(t)
 	retained, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", parent.ChildSessionID)})
 	if err != nil {
 		t.Fatal(err)
@@ -564,7 +597,7 @@ func TestSessionActivityMultiJournalRawInputBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		event := jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("job_budget_%03d", i), Type: jobstore.JobShell, OwnerSessionID: descriptor.ChildSessionID, TS: at, StartedAt: &at, Command: strings.Repeat("x", (1<<20)+17)}
+		event := jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("job_budget_%03d", i), Type: jobstore.JobShell, Background: true, OwnerSessionID: descriptor.ChildSessionID, TS: at, StartedAt: &at, Command: strings.Repeat("x", (1<<20)+17)}
 		if err = store.Append(event); err != nil {
 			t.Fatal(err)
 		}
@@ -727,7 +760,7 @@ func TestSessionActivityCacheLossAndCursorIdentity(t *testing.T) {
 	stateDir := t.TempDir()
 	id := "cacheloss"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	writeJobLogFast(t, stateDir, id, 3)
+	writeActivityJobLogFast(t, stateDir, id, 3)
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", id), Limit: 1}
 	first, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
 	if err != nil {
@@ -1015,7 +1048,7 @@ func TestSessionActivityRecoverableSourceAccess(t *testing.T) {
 						return len(page.Delegates), err
 					}
 				case "jobs":
-					writeJobLogFast(t, stateDir, id, 2)
+					writeActivityJobLogFast(t, stateDir, id, 2)
 					path = filepath.Join(jobsDir(stateDir, id), "jobs.jsonl")
 					query = func() (int, error) {
 						page, err := LoadSessionActivityJobs(t.Context(), stateDir, id, params)
@@ -1158,7 +1191,7 @@ func TestSessionActivityRejectedTailCapturePublicRecovery(t *testing.T) {
 				return len(page.Jobs), err
 			}
 			if kind == "jobs" {
-				writeJobLogFast(t, dir, id, 2)
+				writeActivityJobLogFast(t, dir, id, 2)
 			} else {
 				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "tailchild1", "one"), pastStableDescriptor(id, "tailchild2", "two"))
 				query = func() (int, error) {
@@ -1188,7 +1221,7 @@ func TestSessionActivityRejectedTailCapturePublicRecovery(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_later", Type: jobstore.JobShell, OwnerSessionID: id, TS: at, StartedAt: &at}); err != nil {
+				if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_later", Type: jobstore.JobShell, Background: true, OwnerSessionID: id, TS: at, StartedAt: &at}); err != nil {
 					t.Fatal(err)
 				}
 				if err := store.Close(); err != nil {
@@ -1305,7 +1338,7 @@ func TestSessionActivityPausedAppendRemainsRecoverable(t *testing.T) {
 				return len(page.Jobs), status, page.Page, err
 			}
 			if kind == "jobs" {
-				writeJobLogFast(t, dir, id, 1)
+				writeActivityJobLogFast(t, dir, id, 1)
 				raw, _ = json.Marshal(jobstore.Event{Kind: jobstore.EventJobFinished, Seq: 2, JobID: "job_000000", Status: jobstore.StatusCommandExitedNonzero, TerminalGen: "failure", TS: at})
 			} else {
 				writePastStableDelegates(t, dir, id, pastStableDescriptor(id, "childpaused", "one"))

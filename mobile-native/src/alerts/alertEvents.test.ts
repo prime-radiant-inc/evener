@@ -76,7 +76,6 @@ describe("session alerts (spec 13.3)", () => {
 		const start = detectSessionAlerts(null, bands([row("d", { state: "active" })]), none).states;
 		const twice = {
 			needsYou: [{ row: asking, state: "question" as const }],
-			finished: [],
 			working: [{ row: row("d", { state: "active" }), state: "working" as const }],
 			idle: [],
 		};
@@ -86,18 +85,30 @@ describe("session alerts (spec 13.3)", () => {
 		expect(detectSessionAlerts(later.states, twice, none).alerts).toEqual([]);
 	});
 
-	it("alerts a finished turn only when the session was working", () => {
+	it("says nothing when a working session's turn ends: it rests Idle with the blue dot (#4093)", () => {
 		const start = detectSessionAlerts(
 			null,
 			bands([row("a", { state: "active" }), row("b", { state: "awaiting", ask_pending: true })]),
 			none,
 		).states;
-		const later = detectSessionAlerts(
-			start,
-			bands([row("a", { state: "awaiting" }), row("b", { state: "awaiting" })]),
-			none,
-		);
-		expect(later.alerts).toEqual([{ kind: "finished", ref: "a", title: "Session a", why: null }]);
+		const later = detectSessionAlerts(start, bands([row("a", { state: "idle" }), row("b", { state: "idle" })]), none);
+		expect(later.alerts).toEqual([]);
+		expect(later.states.get("a")).toBe("idle");
+	});
+
+	// A turn that ended on needs_response waits on you like a question does,
+	// so it alerts as one (#4093).
+	it("alerts a session that needs your reply", () => {
+		const start = detectSessionAlerts(null, bands([row("a", { state: "active" })]), none).states;
+		const later = detectSessionAlerts(start, bands([row("a", { state: "awaiting" })]), none);
+		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
+	});
+
+	it("alerts again when an answered question's turn ends needing your reply", () => {
+		const asking = row("a", { state: "awaiting", ask_pending: true });
+		const start = detectSessionAlerts(null, bands([asking], [asking]), none).states;
+		const later = detectSessionAlerts(start, bands([row("a", { state: "awaiting" })]), none);
+		expect(later.alerts.map((alert) => alert.kind)).toEqual(["needsYou"]);
 	});
 
 	it("stays quiet when a host goes offline and comes back", () => {
@@ -106,6 +117,92 @@ describe("session alerts (spec 13.3)", () => {
 		const away = detectSessionAlerts(start, bands([{ ...asking, offline: true }]), new Set(["p"]));
 		expect(away.alerts).toEqual([]);
 		expect(detectSessionAlerts(away.states, bands([asking]), none).alerts).toEqual([]);
+	});
+});
+
+describe("Warning alerts while children run", () => {
+	it.each([false, true])("waits until the last child settles, hub Needs you membership %s", (inNeedsYou) => {
+		const start = detectSessionAlerts(null, bands([row("a", { state: "active" })]), none).states;
+		const warning = row("a", { state: "warning", subagents: { running: 1, failed: 1, done: 0 } });
+		const workingBands = bands([warning], inNeedsYou ? [warning] : []);
+		const working = detectSessionAlerts(start, workingBands, none);
+		expect(workingBands.needsYou).toEqual([]);
+		expect(working.states.get("a")).toBe("working");
+		expect(working.alerts).toEqual([]);
+		expect(detectSessionAlerts(working.states, workingBands, none).alerts).toEqual([]);
+
+		const settled = { ...warning, subagents: { running: 0, failed: 1, done: 1 } };
+		const settledBands = bands([settled], inNeedsYou ? [settled] : []);
+		const later = detectSessionAlerts(working.states, settledBands, none);
+		expect(settledBands.needsYou.map((item) => item.row.ref)).toEqual(["a"]);
+		expect(later.states.get("a")).toBe("warning");
+		expect(later.alerts).toEqual([
+			{
+				kind: "warning",
+				ref: "a",
+				title: "Session a",
+				why: { word: "Warning", hue: "attention", text: "open the session to see it" },
+			},
+		]);
+		expect(detectSessionAlerts(later.states, settledBands, none).alerts).toEqual([]);
+	});
+
+	it("never alerts a Warning that clears before the last child settles", () => {
+		const start = detectSessionAlerts(null, bands([row("a", { state: "active" })]), none).states;
+		const warning = row("a", { state: "warning", subagents: { running: 1, failed: 1, done: 0 } });
+		const deferred = detectSessionAlerts(start, bands([warning], [warning]), none);
+		expect(deferred.alerts).toEqual([]);
+		const cleared = { ...warning, state: "active" };
+		const working = detectSessionAlerts(deferred.states, bands([cleared]), none);
+		expect(working.alerts).toEqual([]);
+		const settledBands = bands([{ ...cleared, state: "idle", subagents: { running: 0, failed: 1, done: 1 } }]);
+		const settled = detectSessionAlerts(working.states, settledBands, none);
+		expect(settled.alerts).toEqual([]);
+	});
+
+	it.each([{ ask_pending: true }, { approval_pending: true }])(
+		"alerts a blocking Warning immediately, %o",
+		(pending) => {
+			const start = detectSessionAlerts(null, bands([row("a", { state: "active" })]), none).states;
+			const warning = row("a", {
+				state: "warning",
+				subagents: { running: 1, failed: 1, done: 0 },
+				...pending,
+			});
+			const warningBands = bands([warning], [warning]);
+			const later = detectSessionAlerts(start, warningBands, none);
+			expect(warningBands.needsYou.map((item) => item.row.ref)).toEqual(["a"]);
+			expect(later.alerts.map((alert) => ({ kind: alert.kind, ref: alert.ref }))).toEqual([
+				{ kind: "warning", ref: "a" },
+			]);
+			expect(detectSessionAlerts(later.states, warningBands, none).alerts).toEqual([]);
+		},
+	);
+
+	it("does not alert a settled Warning on the connection's first read", () => {
+		const warning = row("a", { state: "warning", subagents: { running: 0, failed: 1, done: 1 } });
+		const warningBands = bands([warning], [warning]);
+		const first = detectSessionAlerts(null, warningBands, none);
+		expect(first.states.get("a")).toBe("warning");
+		expect(first.alerts).toEqual([]);
+		expect(detectSessionAlerts(first.states, warningBands, none).alerts).toEqual([]);
+	});
+
+	it("keeps a deferred Warning quiet through offline and recovery, then alerts at settlement", () => {
+		const warning = row("a", { state: "warning", subagents: { running: 1, failed: 1, done: 0 } });
+		const first = detectSessionAlerts(null, bands([warning], [warning]), none);
+		expect(first.alerts).toEqual([]);
+		const offline = { ...warning, offline: true };
+		const away = detectSessionAlerts(first.states, bands([offline], [offline]), new Set(["a"]));
+		expect(away.states.get("a")).toBe("working");
+		expect(away.alerts).toEqual([]);
+		const back = detectSessionAlerts(away.states, bands([warning], [warning]), none);
+		expect(back.states.get("a")).toBe("working");
+		expect(back.alerts).toEqual([]);
+		const settled = { ...warning, subagents: { running: 0, failed: 1, done: 1 } };
+		expect(
+			detectSessionAlerts(back.states, bands([settled], [settled]), none).alerts.map((alert) => alert.kind),
+		).toEqual(["warning"]);
 	});
 });
 

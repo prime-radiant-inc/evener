@@ -77,7 +77,8 @@ func (a *memHarnessAdapter) Complete(_ context.Context, req llm.Request) (llm.Re
 
 func (a *memHarnessAdapter) respond(n int64, req llm.Request) llm.Response {
 	if len(req.Tools) == 0 {
-		return llm.Response{Message: llm.Assistant(strings.Repeat("summary of prior work. ", 200)), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}
+		// A summary section, or the summarizer rejects the reply and stores none.
+		return llm.Response{Message: llm.Assistant("## Progress\n" + strings.Repeat("summary of prior work. ", 200)), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}
 	}
 	rounds := 0
 	for _, m := range slices.Backward(req.Messages) {

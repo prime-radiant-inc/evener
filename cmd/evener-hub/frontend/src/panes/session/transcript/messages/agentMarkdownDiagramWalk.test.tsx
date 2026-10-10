@@ -1,6 +1,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import "../../../doc";
 import "../../index";
@@ -71,6 +72,7 @@ const thread: ThreadModel = {
 
 afterEach(() => {
   cleanup();
+  resetWorkspaceStoreForTests();
   markdownHtml.current = "";
 });
 
@@ -79,7 +81,7 @@ test("a file link inside a diagram gets no Open beside portal, while the same hr
     '<p><a href="docs/report.md">prose</a></p>' +
     '<div data-mermaid-diagram=""><a href="docs/report.md">diagram</a></div>';
   render(
-    <TranscriptRenderProvider thread={thread}>
+    <TranscriptRenderProvider thread={thread} sourcePaneId="pane_fixture">
       <AgentMarkdown source="x" />
     </TranscriptRenderProvider>,
   );
@@ -93,4 +95,43 @@ test("a file link inside a diagram gets no Open beside portal, while the same hr
   const diagram = screen.getByRole("link", { name: "diagram" });
   expect(diagram.getAttribute("href")).toBe("docs/report.md");
   expect(diagram.closest("[data-mermaid-diagram]")).not.toBeNull();
+});
+
+test("generated filenames exclude diagram, pre, entity and existing anchor subtrees as token barriers", () => {
+  markdownHtml.current =
+    "<p>docs/prose.md</p>" +
+    '<div data-mermaid-diagram=""><svg><text>docs/diagram.md</text></svg></div>' +
+    "<pre><code>docs/code.md</code></pre>" +
+    "<p><span data-entity-host>docs/entity.md</span></p>" +
+    '<p><a href="https://outside.example">docs/external.md</a></p>' +
+    "<p>../<span data-entity-host>control</span>docs/suffix.md</p>";
+  const owner = workspaceStore.getState().openPane("session", { ref: thread.ref });
+  const { container } = render(
+    <TranscriptRenderProvider thread={thread} sourcePaneId={owner}>
+      <AgentMarkdown source="barriers" />
+    </TranscriptRenderProvider>,
+  );
+  const link = screen.getByRole("link", { name: "docs/prose.md" });
+  expect(container.querySelectorAll("a")).toHaveLength(2);
+  expect(container.querySelector("[data-mermaid-diagram] a")).toBeNull();
+  expect(container.querySelector("pre a")).toBeNull();
+  expect(container.querySelector("[data-entity-host] a")).toBeNull();
+  expect(screen.getByRole("link", { name: "docs/external.md" }).getAttribute("href")).toBe("https://outside.example");
+  fireEvent.click(link);
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc && documentPaneState(doc)).toMatchObject({
+    origin: { id: owner },
+    reference: { readTarget: "/workspace/project/docs/prose.md" },
+  });
+});
+
+test.each(["../", "https://host/"])("formatting is not a token boundary after %s", (prefix) => {
+  markdownHtml.current = `<p>${prefix}<strong>docs/a.md</strong> and docs/<em>b.md</em></p>`;
+  const { container } = render(
+    <TranscriptRenderProvider thread={thread} sourcePaneId="pane_fixture">
+      <AgentMarkdown source={prefix} />
+    </TranscriptRenderProvider>,
+  );
+  expect(container.querySelector("a")).toBeNull();
+  expect(container.textContent).toBe(`${prefix}docs/a.md and docs/b.md`);
 });

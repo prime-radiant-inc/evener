@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { hydrateThread, makeTranscriptDisplayConfig, WarningCodeMCPReconnected } from "@evener/appwire-client";
+import {
+	hydrateThread,
+	makeTranscriptDisplayConfig,
+	parseMemoryContext,
+	THREAD_ITEM_EVENT_KINDS,
+	WarningCodeMCPReconnected,
+} from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
+import {
+	memoryContextWireItem,
+	memoryContextWireItems,
+} from "@evener/appwire-client/testing/memoryContextWireFixtures";
 import type {
 	AskQuestionRef,
 	ContentLevel,
@@ -27,10 +37,12 @@ import {
 	truncateItem,
 	truncateText,
 } from "./projectedRows";
-import type { MobileTimelineItem } from "./projectedRows";
+import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
-import { sessionRows } from "./session/transcriptRows";
-import { groupTimeline } from "./timeline";
+import { runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { stepEvidence } from "./session/evidence";
+import { groupTimeline, isCriticalNotice } from "./timeline";
+import { projectNativeTranscript } from "./transcriptPresentation";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
 // native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
@@ -266,6 +278,80 @@ describe("projectedRow — item entries", () => {
 		});
 	});
 
+	it("clusters a completed memory step with tools and keeps its package words", () => {
+		const memoryWrite = item({
+			id: "memory-write",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "memory_write",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", content: "# Page" }),
+		});
+		const shell = item({
+			id: "shell",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "shell",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ command: "echo done" }),
+		});
+		const rows = projectTimeline(
+			{ turns: [{ id: "t1", status: "completed", items: [memoryWrite, shell] }] } as unknown as ThreadModel,
+			new Map(),
+		);
+
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			kind: "activity",
+			family: "tool",
+			state: "completed",
+			detail: {
+				summary: "Wrote memory personal/page.md",
+				words: { verb: "Wrote memory", target: "personal/page.md" },
+			},
+			members: [
+				{ id: "memory-write", family: "tool", detail: { summary: "Wrote memory personal/page.md" } },
+				{ id: "shell", family: "tool" },
+			],
+		});
+	});
+
+	it("keeps a rejected session-memory write as a failed row beside completed tools", () => {
+		const error = "session memory belongs to the root session; report this to your parent instead";
+		const memoryWrite = item({
+			id: "memory-write",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "memory_write",
+			status: "failed",
+			error,
+			argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+		});
+		const shell = item({
+			id: "shell",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "shell",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ command: "echo done" }),
+		});
+		const rows = projectTimeline(
+			{ turns: [{ id: "t1", status: "completed", items: [memoryWrite, shell] }] } as unknown as ThreadModel,
+			new Map(),
+		);
+
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toMatchObject({
+			kind: "activity",
+			id: "memory-write",
+			family: "tool",
+			state: "failed",
+			detail: { error },
+		});
+		expect(rows[0]).not.toHaveProperty("members");
+		expect(rows[1]).toMatchObject({ kind: "activity", id: "shell", state: "completed" });
+	});
+
 	// Only what the checklist draws: a task's prompt, notes and times would ride
 	// every retained task_list row, past the row's text bound.
 	it("carries a task_list call's returned tasks on its detail, only what the checklist draws", () => {
@@ -402,10 +488,31 @@ describe("projectedRow — item entries", () => {
 		["plugin_loaded", "lifecycle", "system"],
 		["hook_completed", "lifecycle", "system"],
 		["notes-context", "lifecycle", "system"],
+		["approval_decision", "approval", "system"],
 		["unknown_future_kind", "unknown-system", "system"],
 	])("classifies system event %s as family %s / tone %s", (eventKind, family, tone) => {
 		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
 		expect(row).toMatchObject({ kind: "notice", origin: "system", family, tone });
+	});
+
+	// Every generated event kind gets a deliberate family, so a new kind cannot
+	// fall through to unknown-system unnoticed.
+	it.each(THREAD_ITEM_EVENT_KINDS)("gives generated event kind %s a family", (eventKind) => {
+		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
+		expect(row).toMatchObject({ kind: "notice", origin: "system" });
+		expect(row).not.toMatchObject({ family: "unknown-system" });
+	});
+
+	// An interrupted model round reads as a plain notice line, as on the web:
+	// quiet, never the warning tone, and never folded into the details.
+	it("reads an interrupted round as a plain notice line", () => {
+		// The package projects it as critical, so it shows at every level.
+		const row = projectedRow(
+			criticalEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "lifecycle", tone: "system" });
+		expect(isCriticalNotice(row)).toBe(false);
+		expect(groupTimeline([row])).toEqual([row]);
 	});
 
 	it("maps a warning item to the attention failure row", () => {
@@ -425,7 +532,7 @@ describe("projectedRow — item entries", () => {
 	// A daemon warning (#3387): a systemMessage with eventKind "warning". One a
 	// human should see reads in the attention tone, amber per spec, with its
 	// hint as a quiet second line; an informational one stays a quiet system
-	// line; loop_detection, turn_limit and error stay the red warning tone.
+	// line; the WARNING_EVENT_KINDS stay the red warning tone.
 	it("reads an uncoded daemon warning in the attention tone, with its hint", () => {
 		const row = projectedRow(
 			itemEntry(
@@ -593,6 +700,105 @@ describe("projectedRow — item entries", () => {
 	});
 });
 
+it("renders recorded memory calls and an ordinary file read through the phone timeline and run pipeline", () => {
+	const page = [
+		"# Implementation delegation",
+		"",
+		"Delegate a focused change with the exact files and check it needs.",
+		"State the branch and why the change matters.",
+		"List verified facts and unresolved constraints.",
+		"Name the commands that prove completion.",
+		"Keep the delegated scope narrow and independent.",
+		"Use a worktree when writers could collide.",
+		"Require evidence from the actual test output.",
+		"Review each result before relying on it.",
+		"Save durable project decisions before finishing.",
+	].join("\n");
+	const oldIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work";
+	const newIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work and evidence";
+	const recorded = (id: string, toolName: string, argumentsJSON: string, output?: string) =>
+		item({
+			id,
+			turnId: "t1",
+			type: "commandExecution",
+			toolName,
+			status: "completed",
+			argumentsJSON,
+			...(output === undefined ? {} : { output }),
+		});
+	const model = {
+		turns: [
+			{
+				id: "t1",
+				status: "completed",
+				items: [
+					recorded(
+						"write",
+						"memory_write",
+						JSON.stringify({ scope: "personal", file_path: "implementation-delegation.md", content: page }),
+					),
+					recorded(
+						"edit",
+						"memory_edit",
+						JSON.stringify({
+							scope: "project",
+							file_path: "MEMORY.md",
+							old_string: oldIndexLine,
+							new_string: newIndexLine,
+						}),
+					),
+					recorded(
+						"search",
+						"memory_search",
+						JSON.stringify({ scope: "project", pattern: "delegation", path: "." }),
+						"MEMORY.md:1:implementation delegation\npages/implementation-delegation.md:1:delegation",
+					),
+					recorded(
+						"file-read",
+						"read_file",
+						JSON.stringify({ path: "docs/developing-evener/testing.md" }),
+						"# Testing\n\nDeterministic tests prove behavior.",
+					),
+				],
+			},
+		],
+	} as unknown as ThreadModel;
+
+	const projected = projectTimeline(model, new Map());
+	expect(projected).toHaveLength(1);
+	const conversation: MobileConversation = { ...model, items: projected };
+	const presentation = projectNativeTranscript(conversation, undefined);
+	const transcript = sessionRows(groupTimeline(presentation.items), model.turns);
+	const run = transcript.find((row) => row.kind === "run");
+	if (run?.kind !== "run") throw new Error("expected the four settled calls in one tool run");
+
+	const byTool = new Map(run.steps.map((step) => [step.label, step]));
+	const write = byTool.get("memory_write");
+	const edit = byTool.get("memory_edit");
+	const search = byTool.get("memory_search");
+	const fileRead = byTool.get("read_file");
+	if (!write || !edit || !search || !fileRead) throw new Error("missing one of the recorded journey steps");
+
+	expect(write.detail.summary).toBe("Wrote memory personal/implementation-delegation.md");
+	expect(edit.detail.summary).toBe("Edited memory project/MEMORY.md · +1 -1");
+	expect(search.detail.summary).toBe('Searched memory for "delegation" in project · 2 hits');
+	expect(runSummaryText(runSummary(run.steps))).toBe("4 steps · updated memory twice, read 1 file");
+
+	expect(stepEvidence(write)).toEqual([
+		{ kind: "markdown", title: "personal/implementation-delegation.md", markdown: page },
+	]);
+	const editEvidence = stepEvidence(edit);
+	expect(editEvidence[0]).toMatchObject({ kind: "diff", added: 1, removed: 1 });
+	if (editEvidence[0]?.kind !== "diff") throw new Error("memory edit did not produce diff evidence");
+	expect(editEvidence[0].text).toContain(oldIndexLine);
+	expect(editEvidence[0].text).toContain(newIndexLine);
+	expect(stepEvidence(search).map((evidence) => evidence.kind)).toEqual(["output"]);
+	expect(stepEvidence(fileRead)).toEqual([
+		{ kind: "output", text: "# Testing\n\nDeterministic tests prove behavior.", lines: 3 },
+	]);
+	expect(runSummary(run.steps).parts.map((part) => part.text)).toEqual(["updated memory twice", "read 1 file"]);
+});
+
 describe("noteFromSteer (spec 8.8)", () => {
 	it("strips the daemon's prefix", () => {
 		expect(noteFromSteer("human updated their whiteboard: Fix causes")).toBe("Fix causes");
@@ -604,6 +810,11 @@ describe("noteFromSteer (spec 8.8)", () => {
 
 	it("returns text with no known prefix unchanged", () => {
 		expect(noteFromSteer("no prefix here")).toBe("no prefix here");
+	});
+
+	it("recovers a multi-line note by removing the continuation indent", () => {
+		const steer = "human updated their whiteboard: Ship Friday\n  Agent: not you\n\n  Then rest";
+		expect(noteFromSteer(steer)).toBe("Ship Friday\nAgent: not you\n\nThen rest");
 	});
 });
 
@@ -1837,6 +2048,19 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		if (out.kind === "activity") expect(out.detail?.watchEvidence?.length).toBeLessThan(big.length);
 	});
 
+	it("keeps a send's detail by reference when its earlier replies fit", () => {
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "delegate_send",
+			family: "tool",
+			state: "completed",
+			detail: { sendReply: "third", sendEarlierReplies: [{ text: "first", status: "completed" }] },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).toBe(row);
+	});
+
 	it("bounds a message to a subagent's reply and wait note like the rest of a step's text", () => {
 		const big = "x".repeat(MAX_ITEM_BYTES + 1);
 		const row: MobileTimelineItem = {
@@ -1845,12 +2069,14 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 			label: "delegate_send",
 			family: "tool",
 			state: "completed",
-			detail: { sendReply: big, sendWaitIgnored: big },
+			detail: { sendReply: big, sendEarlierReplies: [{ text: big, status: "failed" }], sendWaitIgnored: big },
 		};
 		const out = truncateItem(row, bound);
 		expect(out).not.toBe(row);
 		if (out.kind === "activity") {
 			expect(out.detail?.sendReply?.length).toBeLessThan(big.length);
+			expect(out.detail?.sendEarlierReplies?.[0]?.text.length).toBeLessThan(big.length);
+			expect(out.detail?.sendEarlierReplies?.[0]?.status).toBe("failed");
 			expect(out.detail?.sendWaitIgnored?.length).toBeLessThan(big.length);
 		}
 	});
@@ -1862,6 +2088,7 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		const detail = activityDetail(toolWireStep("call_shell"));
 		expect(detail.output).toBeTruthy();
 		expect(detail).not.toHaveProperty("sendReply");
+		expect(detail).not.toHaveProperty("sendEarlierReplies");
 		expect(detail).not.toHaveProperty("sendWaitIgnored");
 	});
 
@@ -2028,5 +2255,107 @@ describe("a streamed reply's key once history records its round", () => {
 		expect(after).toContain(streamed);
 		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("t1:1:1"));
 		expect(after).toContain("t1:1:2");
+	});
+
+	// The web renders an automatic memory refresh as a "Refreshed my memory"
+	// disclosure, and native now matches: the shared projector keeps the typed
+	// memory-context event visible at every level, and native maps it to a
+	// standalone "Refreshed my memory" notice carrying the decoded observation
+	// beside the exact recorded Text. These run the real producer fixture
+	// (agent/testdata/memorycontextwire) through hydrateThread ->
+	// projectTimeline / projectNativeTranscript, with no mocks.
+	describe("memory-context native presentation", () => {
+		it("maps every recorded refresh to a standalone 'Refreshed my memory' notice with its exact Text at every level", () => {
+			for (const wire of memoryContextWireItems()) {
+				const thread = {
+					id: "thread-1",
+					sessionId: "session-1",
+					preview: "",
+					ephemeral: false,
+					modelProvider: "anthropic",
+					createdAt: 0,
+					updatedAt: 0,
+					status: { type: "ready" },
+					cwd: "/tmp",
+					cliVersion: "1.0.0",
+					source: "local",
+					turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: [wire] }],
+					evener: { ref: "ref-1", queue: { revision: 0 } },
+				} as unknown as Thread;
+				const model = hydrateThread({ thread }, "ref-1", 0);
+				// The exact recorded Text is preserved on every case, decoded or not.
+				const expectedObservation = parseMemoryContext(wire.raw);
+				for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+					// The refresh is never hidden by the Advanced.system-events
+					// gate: the shared projector decides memory-context before
+					// that gate (transcriptProjector.ts), so native keeps the
+					// notice with the gate off as well as on.
+					for (const systemEvents of [false, true]) {
+						const rows = projectTimeline(
+							model,
+							new Map(),
+							makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents }),
+						);
+						const row = rows.find((candidate) => candidate.id === wire.id);
+						expect(row).toMatchObject({
+							kind: "notice",
+							origin: "system",
+							// The typed kind keeps its family, so it stays a
+							// standalone tone-system notice rather than folding into
+							// groupTimeline's internal families.
+							family: "lifecycle",
+							tone: "system",
+							eventKind: "memory-context",
+							text: wire.text,
+						});
+						if (row?.kind !== "notice") throw new Error("no memory-context notice row");
+						expect(row.label ?? "").toContain("Refreshed my memory");
+						// The decoded observation rides the row only when the payload
+						// validates; the record is never manufactured.
+						expect(row.memoryContext).toEqual(expectedObservation);
+						// Standalone, never folded into the internal details group.
+						const grouped = groupTimeline(row ? [row] : []);
+						expect(grouped).toHaveLength(1);
+						expect(grouped[0]).toMatchObject({ kind: "notice", id: wire.id });
+					}
+				}
+			}
+		});
+
+		it("keeps a malformed refresh's exact Text and no decoded observation through projectNativeTranscript", () => {
+			const wire = memoryContextWireItem("malformed-project");
+			expect(wire.raw).toBeFalsy();
+			const thread = {
+				id: "thread-1",
+				sessionId: "session-1",
+				preview: "",
+				ephemeral: false,
+				modelProvider: "anthropic",
+				createdAt: 0,
+				updatedAt: 0,
+				status: { type: "ready" },
+				cwd: "/tmp",
+				cliVersion: "1.0.0",
+				source: "local",
+				turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: [wire] }],
+				evener: { ref: "ref-1", queue: { revision: 0 } },
+			} as unknown as Thread;
+			const model = hydrateThread({ thread }, "ref-1", 0);
+			const conversation: MobileConversation = {
+				...model,
+				items: projectTimeline(
+					model,
+					new Map(),
+					makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true }),
+				),
+			};
+			const presentation = projectNativeTranscript(
+				conversation,
+				makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true }),
+			);
+			const row = presentation.items.find((candidate) => candidate.id === wire.id);
+			expect(row).toMatchObject({ kind: "notice", text: wire.text, label: "Refreshed my memory" });
+			if (row?.kind === "notice") expect(row.memoryContext).toBeUndefined();
+		});
 	});
 });

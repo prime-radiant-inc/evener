@@ -238,6 +238,24 @@ posted questions, regardless of the communicate's own end-turn value. `ask_user`
 interactive-root-only — invisible in non-interactive sessions and in every subagent — so this
 branch never applies to a delegate.
 
+On the roots that get `ask_user`, `communicate` also takes `end_reason`, read only when
+`end_turn=true`: `done` (the default), `needs_response`, or `waiting_on_work`. It is recorded
+with the message (`CommunicateData`, the transcript's `CommunicateInfo`). A turn that ends on
+`done` or `waiting_on_work` rests idle. One that ends on `needs_response` rests awaiting, unless
+autonomous work (a working child, a pending delegate report, a pending notification, queued
+input, a goal kick) will move the session first; a finished child's warm runtime does not
+count. The settle reads the first turn-ending call the input accepted, and restore derives the
+same state from the transcript. A pending question rests awaiting at the settle. A
+`needs_response` rest first waits a 5-second quiet period, resting idle, so a session that ends
+a turn and starts the next one at once never flickers to awaiting. When the period passes, the
+timer checks everything the settle checked again: a new turn or settle, a close, queued input,
+runnable steering, or autonomous work leaves the session idle. Otherwise it rests awaiting and
+announces the change with `STATUS_SETTLED`, which the server ignores when a turn is running or
+reserved, or the session has closed. One that arrives while an input is being taken, before any
+turn is published, is held and published when processing ends, unless a turn is published or the
+input's SESSION_END (an interrupted one included) lands first. A turn start waits for a rest that is arming to finish
+its announcement, so the announcement is sent before anything the turn emits once it starts. Restore derives awaiting at once, with no quiet period.
+
 ### The repeated-call breaker
 
 Steering a stuck agent has two layers. `injectPostToolSteering`
@@ -247,16 +265,19 @@ the window failed, today's tiered escalation otherwise. Underneath it,
 `Registry.ExecuteCall` (`agent/internal/tool/registry.go`) consults a ledger
 (`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
 native and MCP alike — a call refused before dispatch — by pre-validation, an unknown tool
-name, unparseable arguments, a schema violation, blocking middleware, or the
+name, unparseable arguments, an argument normalizer, a schema violation, blocking middleware, or the
 argument-size guard — never reaches the ledger. The ledger carries **two triggers,
 keyed differently**. The **failure trigger** counts consecutive failures sharing an
 error class, keyed on tool name + a hash of a **normalized** view of the arguments:
 the top-level `intent` free text and the shell tool's presentation-only `description`
 are dropped, and JSON key order, whitespace, and number spellings are canonicalized,
-so a call that changes only those is the same failing operation — while arguments
+so a call that changes only those is the same failing operation; the tool's own
+`RegisteredTool.NormalizeArgs`, when it has one, is applied too, so a value it
+removes before dispatch fingerprints as the omitted call — while arguments
 that are not a single well-formed JSON value fall back to the raw bytes. Its second
 failure appends a nudge to the result, and the third is **not executed at
-all** — the call is refused before the tool is looked up. The **repetition trigger**
+all** — the tool is resolved to compute the key, and the call is refused before
+any validation or execution. The **repetition trigger**
 counts consecutive byte-identical result bodies regardless of error status, keyed on
 tool name + a hash of the raw argument bytes, and only ever nudges, from the second
 onward; a tool observing mutable state may yet return

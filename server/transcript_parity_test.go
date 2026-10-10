@@ -86,7 +86,7 @@ func (p *parityProvider) respond(ctx context.Context, req llm.Request) (llm.Resp
 		return llm.Response{Message: llm.Assistant(`{"name":"Parity"}`)}, nil
 	}
 	if len(req.Tools) == 0 {
-		return llm.Response{Message: llm.Assistant("Summary: the parity session so far.")}, nil
+		return llm.Response{Message: llm.Assistant("## Progress\nThe parity session so far.")}, nil
 	}
 	texts := userTexts(req)
 	p.mu.Lock()

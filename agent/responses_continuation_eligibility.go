@@ -85,7 +85,7 @@ func responsesContinuationDeltaIneligibleReason(anchor schema.Turn, delta []sche
 			continue // never on the wire, so nothing a continuation must carry
 		}
 		switch turn.Kind {
-		case schema.TurnUserInput, schema.TurnEnvironment, schema.TurnNotesContext:
+		case schema.TurnUserInput, schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 		case schema.TurnToolResults, schema.TurnTool:
 			if reason := responsesContinuationToolResultsIneligibleReason(turn.Message, anchorToolCallIDs); reason != "" {
 				return reason

@@ -104,6 +104,7 @@ type clientMutationRecord struct {
 	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
 	Failure             *clientMutationFailure          `json:"failure,omitempty"`
 	AttemptGeneration   uint64                          `json:"attempt_generation"`
+	CommandPreparations []selectedCommandPreparation    `json:"command_preparations,omitempty"`
 	// SteeringKind is accepted atomically with a typed pending notification.
 	// Reconstruction restores it onto the delivered steering entry.
 	SteeringKind string `json:"steering_kind,omitempty"`
@@ -2015,6 +2016,7 @@ func cloneClientMutationRecord(src clientMutationRecord) clientMutationRecord {
 	dst.Payload = append(json.RawMessage(nil), src.Payload...)
 	dst.Preconditions = cloneClientMutationPreconditions(src.Preconditions)
 	dst.StableQueueEntryIDs = append([]string(nil), src.StableQueueEntryIDs...)
+	dst.CommandPreparations = slices.Clone(src.CommandPreparations)
 	dst.Result = append(json.RawMessage(nil), src.Result...)
 	if src.Rejection != nil {
 		rejection := *src.Rejection
@@ -2041,6 +2043,7 @@ func cloneClientMutationInput(src []appwire.InputItem) []appwire.InputItem {
 	for i, item := range src {
 		dst[i] = item
 		dst[i].Data = append([]byte(nil), item.Data...)
+		dst[i].Mentions = slices.Clone(item.Mentions)
 		if item.Metadata != nil {
 			dst[i].Metadata = make(map[string]string, len(item.Metadata))
 			maps.Copy(dst[i].Metadata, item.Metadata)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,6 +168,14 @@ type inputFeedServer struct {
 	*server.Server
 
 	input chan server.InputMessage
+	// processing mirrors the serve loop's processing mark, which is what
+	// makes a turn read active.
+	processing atomic.Bool
+}
+
+func (s *inputFeedServer) SetProcessing(processing bool) {
+	s.Server.SetProcessing(processing)
+	s.processing.Store(processing)
 }
 
 func (s *inputFeedServer) InputCh() <-chan server.InputMessage { return s.input }
@@ -264,12 +273,11 @@ func TestServeShutdownReleasesAnInputLoopParkedOnAWedgedBridge(t *testing.T) {
 	// second; 30s only fires if the loop never reaches the saturated state at
 	// all, which would mean this test is no longer building the scenario.
 	parkDeadline := time.After(30 * time.Second)
-	for len(sess.Events()) != cap(sess.Events()) ||
-		srv.GetStatus().State != string(agent.SessionProcessing) {
+	for len(sess.Events()) != cap(sess.Events()) || !srv.processing.Load() {
 		select {
 		case <-parkDeadline:
 			t.Fatalf("the daemon's input loop never parked in a saturated authoritative send "+
-				"(buffered %d of %d, state %q)", len(sess.Events()), cap(sess.Events()), srv.GetStatus().State)
+				"(buffered %d of %d, processing %v)", len(sess.Events()), cap(sess.Events()), srv.processing.Load())
 		case <-time.After(time.Millisecond):
 		}
 	}

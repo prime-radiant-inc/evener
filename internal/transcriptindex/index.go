@@ -26,7 +26,7 @@ const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 5
-	projectionID  = "transcript-read-model-v5"
+	projectionID  = "transcript-read-model-v6"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).

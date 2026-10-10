@@ -4,13 +4,14 @@
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Platform } from "react-native";
-import { composerFocusedAs, keyboard, renderHook } from "./renderNative.testkit";
+import { composerFocusedAs, keyboard, renderHook, unmountMountedTrees } from "./renderNative.testkit";
 import { useComposerTyping, useKeyboardShown } from "./useKeyboardShown";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 
 const platform = Platform as { OS: string };
 afterEach(() => {
+	unmountMountedTrees();
 	keyboard.reset();
 	platform.OS = "ios";
 });

@@ -139,6 +139,7 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 		SharedNotes:       remote.SharedNotes && forwarded.SharedNotes,
 		Rename:            remote.Rename && forwarded.Rename,
 		SkillInput:        remote.SkillInput && forwarded.SkillInput,
+		CommandInput:      remote.CommandInput && forwarded.CommandInput,
 		StopSubagent:      remote.StopSubagent && forwarded.StopSubagent,
 	}
 }
@@ -586,10 +587,11 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		}
 		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
 	case *appwire.SessionJobsResponse:
-		refs := make([]*string, 0, 2*len(response.Jobs))
+		refs := make([]*string, 0, len(response.Jobs))
 		for i := range response.Jobs {
 			row := &response.Jobs[i]
-			refs = append(refs, &row.OwnerRef, &row.TranscriptRef)
+			refs = append(refs, &row.OwnerRef)
+			row.TranscriptRef = s.fromRemoteRefOrOpaque(row.TranscriptRef)
 		}
 		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
 	case *appwire.SessionWatchesResponse:

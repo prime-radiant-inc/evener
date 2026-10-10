@@ -735,15 +735,19 @@ func TestInitPlugins_SkillCompatibilityWarningsAreInformational(t *testing.T) {
 	pluginDir := makePluginDir(t, "compatibility-plugin")
 	writeSkillMD(t, pluginDir, "advisory", "---\nname: advisory\ndescription: fixture\nallowed-tools: [read_file]\ncontext: fork\n---\nBODY\n")
 	writeSkillMD(t, pluginDir, "invalid", "---\nname: invalid\ndescription: fixture\nuser-invocable: \"true\"\n---\nBODY\n")
+	// A skill written from scratch without its opening delimiter is read
+	// tolerantly; the recovery is advisory, not an error the user must act on.
+	writeSkillMD(t, pluginDir, "recovered", "name: recovered\ndescription: fixture\n---\nBODY\n")
 
 	warnings := sessionWarnings(t, pluginDir)
 	wantWarnings := map[string]struct {
 		skillName string
 		code      string
 	}{
-		"allowed_tools_not_enforced": {skillName: "advisory", code: events.WarningCodePluginCompatibility},
-		"unsupported_control":        {skillName: "advisory", code: events.WarningCodePluginCompatibility},
-		"invalid_control":            {skillName: "invalid"},
+		"allowed_tools_not_enforced":    {skillName: "advisory", code: events.WarningCodePluginCompatibility},
+		"unsupported_control":           {skillName: "advisory", code: events.WarningCodePluginCompatibility},
+		"missing_frontmatter_delimiter": {skillName: "recovered", code: events.WarningCodePluginCompatibility},
+		"invalid_control":               {skillName: "invalid"},
 	}
 	seen := make(map[string]bool, len(wantWarnings))
 	for _, warning := range warnings {

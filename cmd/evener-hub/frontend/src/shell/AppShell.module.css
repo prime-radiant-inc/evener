@@ -31,6 +31,11 @@
   flex-direction: row;
   min-height: 0;
   min-width: 0;
+  /* The activity sidebar enters from translateX(320px). Unclipped, that
+   * overhang overflows the desktop document, and classic scrollbars (Linux,
+   * Windows) then shift the whole shell 15px and can linger until the next
+   * layout. clip, unlike hidden, makes no scroll container focus could scroll. */
+  overflow-x: clip;
 }
 
 /* The workspace column gives the dock host a bounded flex-height chain. These

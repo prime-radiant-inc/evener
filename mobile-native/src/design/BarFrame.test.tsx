@@ -6,7 +6,7 @@ import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { keyboard, keyboardProgress, render, systemGlass } from "../renderNative.testkit";
+import { keyboard, keyboardProgress, render, systemGlass, unmountMountedTrees } from "../renderNative.testkit";
 import { BarFrame } from "./BarFrame";
 import { paletteFor } from "./tokens";
 
@@ -21,6 +21,7 @@ vi.mock("react-native-safe-area-context", () => ({
 }));
 
 afterEach(() => {
+	unmountMountedTrees();
 	keyboard.reset();
 	keyboardProgress.at = null;
 	systemGlass.reset();

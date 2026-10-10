@@ -15,7 +15,7 @@ import (
 
 func TestReadOutputSnapshotFromFilePinsOpenedOutput(t *testing.T) {
 	for _, replacement := range []string{"regular", "symlink", "fifo"} {
-		for _, api := range []string{"snapshot", "window"} {
+		for _, api := range []string{"snapshot", "window", "page"} {
 			t.Run(replacement+"/"+api, func(t *testing.T) {
 				dir := t.TempDir()
 				path := filepath.Join(dir, "job.log")
@@ -63,6 +63,11 @@ func TestReadOutputSnapshotFromFilePinsOpenedOutput(t *testing.T) {
 						done <- result{content: got.Content, err: err}
 						return
 					}
+					if api == "page" {
+						got, err := ReadOutputPageSnapshotFromFile(path, f, nil, 1024)
+						done <- result{content: got.Content, err: err}
+						return
+					}
 					got, err := ReadOutputWindowSnapshotFromFile(path, f, 0, 1024)
 					done <- result{content: got.Content, err: err}
 				}()
@@ -95,6 +100,9 @@ func TestReadOutputSnapshotFromFileRejectsNilFile(t *testing.T) {
 	}
 	if _, err := ReadOutputWindowSnapshotFromFile("unused", nil, 0, 1); err == nil {
 		t.Fatal("ReadOutputWindowSnapshotFromFile(nil) succeeded")
+	}
+	if _, err := ReadOutputPageSnapshotFromFile("unused", nil, nil, 1); err == nil {
+		t.Fatal("ReadOutputPageSnapshotFromFile(nil) succeeded")
 	}
 }
 
@@ -255,18 +263,29 @@ func TestReadOutputWindowSnapshotFromFileConcurrentAppend(t *testing.T) {
 }
 
 func TestReadOutputSnapshotFromFilePreservesPostReadObservationError(t *testing.T) {
-	for _, api := range []string{"snapshot", "window"} {
+	for _, api := range []string{"snapshot", "window", "page"} {
 		t.Run(api, func(t *testing.T) {
-			path, f := newOutputSnapshotFile(t, 1024, "stable\n")
-			fs := &fdPostReadObservationFaultFS{Fs: afero.NewOsFs(), path: path}
-
-			var err error
-			if api == "snapshot" {
-				_, err = readOutputSnapshotFromFileOnce(fs, path, f, 1024, false)
-			} else {
-				_, err = readOutputWindowSnapshotFromFileOnce(fs, path, f, 0, 1024)
+			read := func(fault bool) (int, error) {
+				path, f := newOutputSnapshotFile(t, 1024, "stable\n")
+				fs := &fdPostReadObservationFaultFS{Fs: afero.NewOsFs(), path: path, fault: fault}
+				var err error
+				switch api {
+				case "snapshot":
+					_, err = readOutputSnapshotFromFileOnce(fs, path, f, 1024, false)
+				case "page":
+					_, err = readOutputPageSnapshotFromFileOnce(fs, path, f, nil, 1024)
+				default:
+					_, err = readOutputWindowSnapshotFromFileOnce(fs, path, f, 0, 1024)
+				}
+				return fs.metaOpens, err
 			}
-			if !errors.Is(err, errFDPostReadObservation) || errors.Is(err, errOutputChanged) {
+			// The precondition: without the fault, the attempt's change is the
+			// read's result, and the second metadata open is the observation
+			// after the attempt.
+			if opens, err := read(false); !errors.Is(err, errOutputChanged) || opens != 2 {
+				t.Fatalf("unfaulted read = %v after %d metadata opens, want errOutputChanged after 2", err, opens)
+			}
+			if _, err := read(true); !errors.Is(err, errFDPostReadObservation) || errors.Is(err, errOutputChanged) {
 				t.Fatalf("error = %v, want original post-read observation error", err)
 			}
 		})
@@ -287,13 +306,18 @@ func TestReadOutputSnapshotFromFileDetectsPrunedGeneration(t *testing.T) {
 		t.Fatalf("open pre-prune output: %v", err)
 	}
 	t.Cleanup(func() { _ = stale.Close() })
-	appendOutput(t, o, "BBBB")
+	// Five bytes take the file past twice the cap, so this append compacts
+	// and replaces the file the stale descriptor still holds.
+	appendOutput(t, o, "BBBBB")
 
 	if _, err := ReadOutputSnapshotFromFile(path, stale, 4, false); !errors.Is(err, ErrOutputChangedDuringRead) {
 		t.Fatalf("stale snapshot error = %v, want ErrOutputChangedDuringRead", err)
 	}
 	if _, err := ReadOutputWindowSnapshotFromFile(path, stale, o.RetainedStart(), 4); !errors.Is(err, ErrOutputChangedDuringRead) {
 		t.Fatalf("stale window error = %v, want ErrOutputChangedDuringRead", err)
+	}
+	if _, err := ReadOutputPageSnapshotFromFile(path, stale, nil, 4); !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("stale page error = %v, want ErrOutputChangedDuringRead", err)
 	}
 
 	fresh, err := os.Open(path)
@@ -372,30 +396,34 @@ func TestReadOutputWindowSnapshotFromFileConcurrentAppendAndPrune(t *testing.T) 
 
 var errFDPostReadObservation = errors.New("fd snapshot test: post-read observation fault")
 
+// fdPostReadObservationFaultFS makes a descriptor read's attempt see a real
+// change. During the observation before the attempt it renames a new file
+// over the path, so the attempt's generation check returns errOutputChanged
+// without reading metadata. When fault is set, it then fails the next
+// metadata open, which is the observation after the attempt.
 type fdPostReadObservationFaultFS struct {
 	afero.Fs
 	path      string
+	fault     bool
 	metaOpens int
 }
 
 func (fs *fdPostReadObservationFaultFS) Open(name string) (afero.File, error) {
 	if name == outputMetaPath(fs.path) {
 		fs.metaOpens++
-		if fs.metaOpens == 3 {
-			appendFile, err := os.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
-			if err != nil {
+		switch fs.metaOpens {
+		case 1:
+			replacement := fs.path + ".replacement"
+			if err := os.WriteFile(replacement, []byte("replaced\n"), 0o600); err != nil {
 				return nil, err
 			}
-			if _, err := appendFile.WriteString("changed\n"); err != nil {
-				_ = appendFile.Close()
+			if err := os.Rename(replacement, fs.path); err != nil {
 				return nil, err
 			}
-			if err := appendFile.Close(); err != nil {
-				return nil, err
+		case 2:
+			if fs.fault {
+				return nil, errFDPostReadObservation
 			}
-		}
-		if fs.metaOpens == 4 {
-			return nil, errFDPostReadObservation
 		}
 	}
 	return fs.Fs.Open(name)
@@ -436,5 +464,65 @@ func TestReadOutputWindowSnapshotFromFilePreservesRawBytes(t *testing.T) {
 	}
 	if !bytes.Equal(got.Content, want) || got.Start != 0 || got.End != 3 {
 		t.Fatalf("snapshot = %+v content=%x, want exact bytes %x", got, got.Content, want)
+	}
+}
+
+// metaOpenCountingFS counts opens of path's metadata sidecar.
+type metaOpenCountingFS struct {
+	afero.Fs
+	path      string
+	metaOpens int
+}
+
+func (fs *metaOpenCountingFS) Open(name string) (afero.File, error) {
+	if name == outputMetaPath(fs.path) {
+		fs.metaOpens++
+	}
+	return fs.Fs.Open(name)
+}
+
+// A descriptor read opens the sidecar once per observation (before and after)
+// and once for its single metadata validation, which hashes the retained file.
+func TestReadOutputSnapshotFromFileValidatesMetadataOnce(t *testing.T) {
+	for _, api := range []string{"snapshot", "window", "page"} {
+		t.Run(api, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "job.log")
+			const content = "retained output\n"
+			mustWriteSnapshotFixture(t, afero.NewOsFs(), path, []byte(content), int64(len(content)), 0)
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			fs := &metaOpenCountingFS{Fs: afero.NewOsFs(), path: path}
+			var got []byte
+			switch api {
+			case "snapshot":
+				snapshot, err := readOutputSnapshotFromFileOnce(fs, path, f, 1024, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = snapshot.Content
+			case "window":
+				snapshot, err := readOutputWindowSnapshotFromFileOnce(fs, path, f, 0, 1024)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = snapshot.Content
+			default:
+				snapshot, err := readOutputPageSnapshotFromFileOnce(fs, path, f, nil, 1024)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = snapshot.Content
+			}
+			if string(got) != content {
+				t.Fatalf("content = %q, want %q", got, content)
+			}
+			const observations = 2
+			if fs.metaOpens != observations+1 {
+				t.Fatalf("metadata opened %d times, want %d observations and one validation", fs.metaOpens, observations)
+			}
+		})
 	}
 }

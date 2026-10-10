@@ -14,7 +14,7 @@ func TestSetHumanNoteJournalFaultRetryDeliversWithoutRewrite(t *testing.T) {
 	if _, err := s.SetHumanNote("save", " note\nvalue "); err == nil {
 		t.Fatal("missing fault")
 	}
-	if note, _ := s.notesSnapshot(); note != "note value" {
+	if note, _ := s.notesSnapshot(); note != "note\nvalue" {
 		t.Fatalf("committed note = %q", note)
 	}
 	reloadHumanNoteStore(t, s)
@@ -22,7 +22,7 @@ func TestSetHumanNoteJournalFaultRetryDeliversWithoutRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replay.Note != "note value" || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
+	if replay.Note != "note\nvalue" || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("replay = %+v", replay)
 	}
 	if len(s.clientMutations.snapshot().SteeringOrder) != 1 {

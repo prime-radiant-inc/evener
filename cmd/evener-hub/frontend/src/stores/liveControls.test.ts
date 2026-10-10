@@ -102,21 +102,32 @@ test("isResumeOnlyLocal follows the hub's foldable bit, never the inferred shape
   expect(recoveryFence("remote:s", { ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(false);
 });
 
-// The client's own signals still narrow the carve-out: a delivery-uncertain row
-// the hub's explicit Resume reconciles, a queued non-send row that would starve
-// the folded send at the target's FIFO, and a Stop this page started all keep
-// the fence.
-test("isResumeOnlyLocal keeps the fence for uncertain, queued, and in-flight-Stop signals", () => {
+// The client's own signals still narrow the FOLD: a delivery-uncertain row, a
+// queued non-send row, and a Stop this page started all keep the resume-only
+// carve-out away. R09 moves the first two under the Send-resumes face (Send is
+// offered; the store's driver resumes), while a draining Stop stays the wire's
+// own fence.
+test("the client signals take a local fence off the fold and split Send from the drain", () => {
   const foldable = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
   expect(recoveryFence("local:s", foldable, true).resumeOnly).toBe(true);
   expect(recoveryFence("local:s", foldable, true, { uncertainMessages: true }).resumeOnly).toBe(false);
   expect(recoveryFence("local:s", foldable, true, { queuedNonSend: true }).resumeOnly).toBe(false);
   expect(recoveryFence("local:s", foldable, true, { stopInFlight: true }).resumeOnly).toBe(false);
-  // A fenced-but-not-resume-only shape is still fenced, and still reached by
-  // the stopped-local card.
+  // A delivery-uncertain or queued-non-send row is the Send-resumes face: Send
+  // is offered and not stillFenced, and the store's driver resumes behind the
+  // parked rows.
   const uncertain = recoveryFence("local:s", foldable, true, { uncertainMessages: true });
-  expect(uncertain.stillFenced).toBe(true);
-  expect(uncertain.fencedLocal).toBe(true);
+  expect(uncertain.sendResumes).toBe(true);
+  expect(uncertain.stillFenced).toBe(false);
+  const queued = recoveryFence("local:s", foldable, true, { queuedNonSend: true });
+  expect(queued.sendResumes).toBe(true);
+  expect(queued.stillFenced).toBe(false);
+  // A Stop this page started keeps its own fence: Stopping > 0 refuses even
+  // turn/start, so Send is not offered and the stopped-local card stays.
+  const stopped = recoveryFence("local:s", foldable, true, { stopInFlight: true });
+  expect(stopped.sendResumes).toBe(false);
+  expect(stopped.stillFenced).toBe(true);
+  expect(stopped.fencedLocal).toBe(true);
 });
 
 // RoboRev Medium (round 13): the hub's resume-only admission is
@@ -189,6 +200,36 @@ test("the press fence keeps a merely-resumable local session fenced", async () =
   // Send is offered, so its own press-time reading agrees and does not refuse.
   expect(pressRefusal(ref, "send")).toBeUndefined();
   expect(pressLocalRecoveryFenced(ref)).toBe(true);
+});
+
+// R09 widens pressRefusal's send carve-out from the merely-resumable fold to the
+// whole Send-resumes face: an uncertain/queued/unconfirmed shape whose press
+// must agree with the offered Send, while every other control keeps its reason.
+test("pressRefusal's send carve-out covers the Send-resumes face", async () => {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  const ref = "local:send-resumes-face";
+  fake.on("thread/read", () => ({
+    thread: {
+      ...thread("notLoaded"),
+      id: ref,
+      sessionId: ref,
+      evener: {
+        ref,
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        capabilities: { ...CAPABILITIES, send: false },
+        queue: { revision: 0 },
+      },
+    } as Thread,
+  }));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  // Send is offered, so its press-time reading agrees instead of refusing.
+  expect(pressRefusal(ref, "send")).toBeUndefined();
+  // Every other control still refuses: only turn/start is carved out.
+  expect(pressRefusal(ref, "steer")).toBeDefined();
+  expect(pressRefusal(ref, "queue")).toBeDefined();
 });
 
 // RoboRev Medium (this round): the press-time fence reads the store's own

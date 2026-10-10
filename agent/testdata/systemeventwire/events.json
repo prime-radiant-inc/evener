@@ -16,6 +16,54 @@
       }
     },
     {
+      "case": "approval-allowed",
+      "note": "A NOTICE entry for a human's Allow on a sandbox escalation (session_escalation.go recordNotice): raw.approvalDecision carries the decision, startedAt when it was made.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_approval_decision_1",
+        "turnId": "turn_1",
+        "transcriptEntryIndex": 1,
+        "text": "Allowed write_file to access /Users/j/sites/docs/index.md",
+        "description": "Approval",
+        "status": "completed",
+        "startedAt": 1790625600000,
+        "raw": {
+          "approvalDecision": {
+            "escalationId": "esc_1_a",
+            "approved": true,
+            "tool": "write_file",
+            "kind": "file_tool",
+            "deniedPath": "/Users/j/sites/docs/index.md"
+          }
+        },
+        "eventKind": "approval_decision"
+      }
+    },
+    {
+      "case": "approval-denied",
+      "note": "A NOTICE entry for a human's Deny on a sandbox escalation.",
+      "item": {
+        "type": "systemMessage",
+        "id": "item_approval_decision_2",
+        "turnId": "turn_1",
+        "transcriptEntryIndex": 2,
+        "text": "Denied read_file access to /etc/hosts",
+        "description": "Approval",
+        "status": "completed",
+        "startedAt": 1790625600000,
+        "raw": {
+          "approvalDecision": {
+            "escalationId": "esc_2_b",
+            "approved": false,
+            "tool": "read_file",
+            "kind": "file_tool",
+            "deniedPath": "/etc/hosts"
+          }
+        },
+        "eventKind": "approval_decision"
+      }
+    },
+    {
       "case": "compaction-summary",
       "note": "A summary turn: description Context summary, the whole summary as markdown text.",
       "item": {
@@ -229,7 +277,7 @@
         "type": "steering",
         "id": "item_steering_1",
         "turnId": "turn_1",
-        "text": "\u003cSYSTEM-REMINDER\u003e\n\u003cCURRENT-TASK id=\"3\"\u003e\n\u003cTITLE\u003eFix race\u003c/TITLE\u003e\n\u003c/CURRENT-TASK\u003e\nCall your next tool: use task_list to mark task 3 as done when this step is complete.\n\u003c/SYSTEM-REMINDER\u003e",
+        "text": "\u003cSYSTEM-REMINDER\u003e\n\u003cCURRENT-TASK id=\"3\"\u003e\n\u003cTITLE\u003eFix race\u003c/TITLE\u003e\n\u003c/CURRENT-TASK\u003e\n\u003c/SYSTEM-REMINDER\u003e",
         "status": "completed",
         "steeringKind": "current-task"
       }
@@ -244,18 +292,6 @@
         "text": "\u003cSYSTEM-REMINDER\u003e\nTasks:\n- #3 Fix race (in progress)\n\u003c/SYSTEM-REMINDER\u003e",
         "status": "completed",
         "steeringKind": "task-list"
-      }
-    },
-    {
-      "case": "steer-task-nudge",
-      "note": "The one-time task_list suggestion (taskReminderNudge).",
-      "item": {
-        "type": "steering",
-        "id": "item_steering_1",
-        "turnId": "turn_1",
-        "text": "\u003cSYSTEM-REMINDER\u003e\nYou have a task_list tool available for organizing multi-step work. Consider creating a task list to track your progress.\n\u003c/SYSTEM-REMINDER\u003e",
-        "status": "completed",
-        "steeringKind": "task-nudge"
       }
     },
     {

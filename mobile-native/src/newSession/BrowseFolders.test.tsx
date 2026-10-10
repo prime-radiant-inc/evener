@@ -4,7 +4,7 @@ import { Platform } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createNewSessionStore } from "../newSession";
-import { pressable, promptRequests, render, renderedText } from "../renderNative.testkit";
+import { pressable, promptRequests, render, renderedText, settle } from "../renderNative.testkit";
 import { BrowseFolders } from "./BrowseFolders";
 import { NewSessionProvider, type NewSessionRoutes } from "./newSessionContext";
 import { sheetContext } from "./newSessionTestUtils";
@@ -18,11 +18,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 /** paradise-park's folders, answered only through evener/host/request for
  * that host: the hub's own machine has none of them. */

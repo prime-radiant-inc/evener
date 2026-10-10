@@ -36,7 +36,10 @@ func TestSessionActivityWarmCountsRecoverDeliveredDescendantWatch(t *testing.T) 
 	f := newStableWatchRuntimeFixture(t, nil)
 	f.sourceJM.retirementOwner = f.source
 	at := time.Unix(100, 0).UTC()
-	if err := f.rootJM.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "root-shell", Type: jobstore.JobShell, OwnerSessionID: f.root.ID(), TS: at, StartedAt: &at}); err != nil {
+	if err := f.rootJM.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "root-shell", Type: jobstore.JobShell, Background: true, OwnerSessionID: f.root.ID(), TS: at, StartedAt: &at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rootJM.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "root-shell-history", Type: jobstore.JobShell, OwnerSessionID: f.root.ID(), TS: at, StartedAt: &at}); err != nil {
 		t.Fatal(err)
 	}
 	params := appwire.SessionActivityReadParams{Ref: encodeRef("", f.root.ID())}
@@ -83,7 +86,7 @@ func TestSessionActivityWarmCountsBoundedSuffixAcrossOwners(t *testing.T) {
 	for owner, store := range stores {
 		events := make([]jobstore.Event, activityMaxWorkUnits+1)
 		for i := range events {
-			events[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("shell_%d", i), Type: jobstore.JobShell, OwnerSessionID: owner, TS: at, StartedAt: &at}
+			events[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("shell_%d", i), Type: jobstore.JobShell, Background: true, OwnerSessionID: owner, TS: at, StartedAt: &at}
 		}
 		if err := store.AppendBatch(events); err != nil {
 			t.Fatal(err)
@@ -118,7 +121,7 @@ func TestSessionActivityWarmCountsBoundedSuffixAcrossOwners(t *testing.T) {
 	}
 	extra := make([]jobstore.Event, activityMaxWorkUnits)
 	for i := range extra {
-		extra[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("new_shell_%d", i), Type: jobstore.JobShell, OwnerSessionID: busy, TS: at, StartedAt: &at}
+		extra[i] = jobstore.Event{Kind: jobstore.EventJobStarted, JobID: fmt.Sprintf("new_shell_%d", i), Type: jobstore.JobShell, Background: true, OwnerSessionID: busy, TS: at, StartedAt: &at}
 	}
 	if err := stores[busy].AppendBatch(extra); err != nil {
 		t.Fatal(err)
@@ -164,7 +167,7 @@ func TestSessionActivityWarmCountsColdReadsAndReplacementDoNotScan(t *testing.T)
 	stateDir := t.TempDir()
 	id := "warmreplacement"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	path := writeJobLogFast(t, stateDir, id, 1)
+	path := writeActivityJobLogFast(t, stateDir, id, 1)
 	params := appwire.SessionActivityReadParams{Ref: encodeRef("", id)}
 	for range 3 {
 		summary, err := LoadSessionActivitySummary(t.Context(), stateDir, id, params)
@@ -186,7 +189,7 @@ func TestSessionActivityWarmCountsColdReadsAndReplacementDoNotScan(t *testing.T)
 	if err := os.Rename(path, path+".old"); err != nil {
 		t.Fatal(err)
 	}
-	writeJobLogFast(t, stateDir, id, 3)
+	writeActivityJobLogFast(t, stateDir, id, 3)
 	index.revision.Add(1)
 	for range 3 {
 		summary, err := LoadSessionActivitySummary(t.Context(), stateDir, id, params)
@@ -212,7 +215,7 @@ func TestSessionActivityWarmCountsEstablishedEmptyCatchesFirstJournal(t *testing
 		t.Fatal(err)
 	}
 	index.release()
-	writeJobLogFast(t, stateDir, id, 2)
+	writeActivityJobLogFast(t, stateDir, id, 2)
 	index.revision.Add(1)
 	summary, err := LoadSessionActivitySummary(t.Context(), stateDir, id, params)
 	if err != nil || !summary.Jobs.Known || summary.Jobs.Total != 2 || summaryRefreshPending(t, summary) {
@@ -224,7 +227,7 @@ func TestSessionActivityWarmCountsDoNotAdvancePartialColdSource(t *testing.T) {
 	stateDir := t.TempDir()
 	id := "warmpartialcold"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	writeJobLogFast(t, stateDir, id, activityMaxWorkUnits+1)
+	writeActivityJobLogFast(t, stateDir, id, activityMaxWorkUnits+1)
 	params := appwire.SessionActivityReadParams{Ref: encodeRef("", id)}
 	page, err := LoadSessionActivityJobs(t.Context(), stateDir, id, appwire.SessionActivityListParams{Ref: params.Ref})
 	if err != nil || page.Page.Complete {
@@ -254,7 +257,7 @@ func TestSessionActivityWarmCountsMissingAndShrunkenSourcesBecomeCold(t *testing
 			stateDir := t.TempDir()
 			id := "warmincarnation"
 			savePastActivityMeta(t, stateDir, id, "Root")
-			path := writeJobLogFast(t, stateDir, id, 2)
+			path := writeActivityJobLogFast(t, stateDir, id, 2)
 			params := appwire.SessionActivityReadParams{Ref: encodeRef("", id)}
 			if _, err := LoadSessionActivityJobs(t.Context(), stateDir, id, appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
 				t.Fatal(err)
@@ -290,7 +293,7 @@ func TestSessionActivityWarmCountsUnavailableSourceRetriesWithoutLosingCursor(t 
 	stateDir := t.TempDir()
 	id := "warmunavailable"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	path := writeJobLogFast(t, stateDir, id, 1)
+	path := writeActivityJobLogFast(t, stateDir, id, 1)
 	params := appwire.SessionActivityReadParams{Ref: encodeRef("", id)}
 	if _, err := LoadSessionActivityJobs(t.Context(), stateDir, id, appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
 		t.Fatal(err)
@@ -352,7 +355,7 @@ func TestSessionActivityWarmCountsInvalidationDuringFoldRetainsDemand(t *testing
 	stateDir := t.TempDir()
 	id := "warminvalidation"
 	savePastActivityMeta(t, stateDir, id, "Root")
-	path := writeJobLogFast(t, stateDir, id, 1)
+	path := writeActivityJobLogFast(t, stateDir, id, 1)
 	params := appwire.SessionActivityReadParams{Ref: encodeRef("", id)}
 	if _, err := LoadSessionActivityJobs(t.Context(), stateDir, id, appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
 		t.Fatal(err)
@@ -370,7 +373,7 @@ func TestSessionActivityWarmCountsInvalidationDuringFoldRetainsDemand(t *testing
 	at := time.Unix(100, 0).UTC()
 	appendJob := func(id string) {
 		t.Helper()
-		if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: id, Type: jobstore.JobShell, OwnerSessionID: "warminvalidation", TS: at, StartedAt: &at}); err != nil {
+		if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: id, Type: jobstore.JobShell, Background: true, OwnerSessionID: "warminvalidation", TS: at, StartedAt: &at}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -393,7 +396,7 @@ func TestSessionActivityWarmCountsUnavailableDescendantPreservesRootJobs(t *test
 		t.Run(failure, func(t *testing.T) {
 			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
 			child, store := newSessionActivityChildJournal(t, s, "dlg_unavailable", time.Unix(100, 0).UTC())
-			writeJobLogFast(t, s.stateDir, s.ID(), 1)
+			writeActivityJobLogFast(t, s.stateDir, s.ID(), 1)
 			params := appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())}
 			if _, err := s.ListActivityWatches(t.Context(), appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
 				t.Fatal(err)
@@ -446,14 +449,14 @@ func TestSessionActivityWarmCountsInvalidationIncludesInitiallyCurrentOwner(t *t
 	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	child, store := newSessionActivityChildJournal(t, s, "dlg_invalidation", at)
-	writeJobLogFast(t, s.stateDir, s.ID(), 1)
+	writeActivityJobLogFast(t, s.stateDir, s.ID(), 1)
 	params := appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())}
 	if _, err := s.ListActivityWatches(t.Context(), appwire.SessionActivityListParams{Ref: params.Ref}); err != nil {
 		t.Fatal(err)
 	}
 	appendJob := func(id string) {
 		t.Helper()
-		if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: id, Type: jobstore.JobShell, OwnerSessionID: child, TS: at, StartedAt: &at}); err != nil {
+		if err := store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: id, Type: jobstore.JobShell, Background: true, OwnerSessionID: child, TS: at, StartedAt: &at}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -495,7 +498,7 @@ func establishedUnavailableSummarySources(t *testing.T, count int, padding strin
 		}
 		owners = append(owners, descriptor.ChildSessionID)
 	}
-	writeJobLogFast(t, s.stateDir, s.ID(), 1)
+	writeActivityJobLogFast(t, s.stateDir, s.ID(), 1)
 	params := appwire.SessionActivityListParams{Ref: encodeRef("", s.ID())}
 	if page, err := s.ListActivityWatches(t.Context(), params); err != nil || !page.Page.Complete {
 		t.Fatalf("establish sources: complete=%v error=%v", page.Page.Complete, err)

@@ -44,6 +44,47 @@ function key(editor: HTMLElement, key: string, extra: Record<string, unknown> = 
 }
 
 describe("SkillEditor real ProseMirror view", () => {
+  it("keeps same-spelling command and skill atoms distinct through paste, remount and undo", () => {
+    const result = mount({ text: "Use /same and /sa", skillNames: ["same"] });
+    act(() => result.ref.current?.insertCommand(14, 17, "same"));
+    expect(result.value().commandNames).toEqual(["same"]);
+    expect(result.value().skillNames).toEqual(["same"]);
+    paste(result.editor, "/same");
+    expect(result.editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+    expect(result.editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    const saved = JSON.parse(JSON.stringify(result.value()));
+    result.unmount();
+    const restored = mount(saved);
+    expect(restored.editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+    expect(restored.editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    act(() => restored.ref.current?.setSelection(19));
+    key(restored.editor, "Backspace");
+    expect(restored.value().commandNames ?? []).toEqual([]);
+    expect(restored.value().skillNames).toEqual(["same"]);
+    key(restored.editor, "z", { ctrlKey: true });
+    expect(restored.value().commandNames).toEqual(["same"]);
+  });
+
+  it("keeps pasted same-spelling prose inert after the last command is deleted and the draft remounts", () => {
+    const result = mount({
+      text: "/same and /same and /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "skill", name: "same", offset: 0 },
+        { kind: "command", name: "same", offset: 10 },
+      ],
+    });
+    act(() => result.ref.current?.setSelection(10, 15));
+    key(result.editor, "Delete");
+    expect(result.value().text).toBe("/same and  and /same");
+    const saved = JSON.parse(JSON.stringify(result.value()));
+    result.unmount();
+    const restored = mount(saved);
+    expect(restored.editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    expect(restored.editor.querySelectorAll("[data-command-name]")).toHaveLength(0);
+  });
+
   it("replaces a completion range with an inline atom and preserves controlled-echo cursor/focus", () => {
     const result = mount(
       { text: "Use /rev now", skillNames: [] },
@@ -131,7 +172,11 @@ describe("SkillEditor real ProseMirror view", () => {
     const result = mount({ text: "/review and ", skillNames: ["review"] });
     act(() => result.ref.current?.setSelection(result.value().text.length));
     paste(result.editor, "/review");
-    expect(result.value()).toEqual({ text: "/review and /review", skillNames: ["review"] });
+    expect(result.value()).toEqual({
+      text: "/review and /review",
+      skillNames: ["review"],
+      mentions: [{ kind: "skill", name: "review", offset: 0 }],
+    });
     expect(result.editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
     act(() => result.ref.current?.setSelection(0, 7));
     key(result.editor, "Delete");
@@ -213,6 +258,22 @@ describe("SkillEditor real ProseMirror view", () => {
     key(result.editor, "Enter", { isComposing: true, keyCode: 229 });
     expect(onKeyDown).not.toHaveBeenCalled();
     expect(result.value().text).toBe("");
+    fireEvent.compositionEnd(result.editor);
+  });
+
+  it.each(["skill", "command"] as const)("refuses %s atom completion during IME without changing prose", (kind) => {
+    const result = mount({ text: "Use /rev", skillNames: [] });
+    fireEvent.compositionStart(result.editor);
+    let inserted = true;
+    act(() => {
+      inserted =
+        kind === "skill"
+          ? result.ref.current!.insertSkill(4, 8, "review")
+          : result.ref.current!.insertCommand(4, 8, "review");
+    });
+    expect(inserted).toBe(false);
+    expect(result.value()).toEqual({ text: "Use /rev", skillNames: [] });
+    expect(result.editor.querySelector("[contenteditable='false']")).toBeNull();
     fireEvent.compositionEnd(result.editor);
   });
 

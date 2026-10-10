@@ -9,7 +9,10 @@ export interface TranscriptReadView {
   readonly role: TranscriptReadRole;
   readonly alive: boolean;
   readonly readable: boolean;
-  subscribe(listener: () => void): () => void;
+  readonly positioningRevision: number;
+  supersedePositioning(): void;
+  syncPositioningMovement(beforeOffset: number): void;
+  subscribe(listener: (beforeOffset?: number) => void): () => void;
   getCapture(): CapturedTranscriptView | undefined;
   setCapture(value: CapturedTranscriptView): void;
   setReadable(value: boolean): void;
@@ -27,9 +30,10 @@ export function retainedTranscriptReadView(
   let alive = lifetime.alive;
   let readable = false;
   let capture: CapturedTranscriptView | undefined;
-  const listeners = new Set<() => void>();
-  const publish = () => {
-    for (const listener of listeners) listener();
+  let positioningRevision = 0;
+  const listeners = new Set<(beforeOffset?: number) => void>();
+  const publish = (beforeOffset?: number) => {
+    for (const listener of listeners) listener(beforeOffset);
   };
   const view: TranscriptReadView = {
     id: JSON.stringify(["read", lifetime.paneId, lifetime.serial, ref, role]),
@@ -42,6 +46,19 @@ export function retainedTranscriptReadView(
     get readable() {
       return alive && readable;
     },
+    get positioningRevision() {
+      return positioningRevision;
+    },
+    supersedePositioning() {
+      if (!alive) return;
+      positioningRevision += 1;
+      capture = undefined;
+      publish();
+    },
+    syncPositioningMovement(beforeOffset) {
+      if (!alive || !Number.isFinite(beforeOffset)) return;
+      publish(beforeOffset);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -50,7 +67,8 @@ export function retainedTranscriptReadView(
     },
     getCapture: () => capture,
     setCapture: (value) => {
-      if (alive) capture = value;
+      if (alive && (value.positioningRevision === undefined || value.positioningRevision === positioningRevision))
+        capture = value;
     },
     setReadable(value) {
       if (!alive || readable === value) return;
@@ -62,6 +80,8 @@ export function retainedTranscriptReadView(
       if (!alive) return;
       alive = false;
       readable = false;
+      positioningRevision += 1;
+      capture = undefined;
       publish();
       listeners.clear();
       if (lifetime.readViews.get(key) === view) lifetime.readViews.delete(key);

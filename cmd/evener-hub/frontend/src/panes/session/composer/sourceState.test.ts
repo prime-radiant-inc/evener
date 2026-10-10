@@ -4,16 +4,19 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
+import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../stores/threads";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { createTestComposerSource } from "../testing/composerSource";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
-import { useAttachments } from "./attachments/useAttachments";
-import { readComposerDraft } from "./draft";
+import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
+import { readComposerDraft, readDraftRevision, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
+  resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetToastStoreForTests();
 });
@@ -26,6 +29,142 @@ afterEach(() => {
 function image(name = "source.png") {
   return new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
 }
+
+test("source restoration retains mixed atom identity and inert prose", () => {
+  const text = "🙂 /same /same /same";
+  const commandOffset = text.indexOf("/same");
+  const skillOffset = text.indexOf("/same", commandOffset + 1);
+  const value = {
+    text,
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command" as const, name: "same", offset: commandOffset },
+      { kind: "skill" as const, name: "same", offset: skillOffset },
+    ],
+  };
+  writeComposerDraft("root", value);
+  const source = createTestComposerSource("root");
+  expect(source.getSnapshot()).toMatchObject(value);
+  source.persistDraft(text);
+  expect(readComposerDraft("root")).toEqual(value);
+});
+
+// Dropping mentions at restore/persist would select this deliberately inert token.
+test("source persistence keeps a meaningful empty mention set", () => {
+  const value = { text: "/same", skillNames: [], mentions: [] };
+  writeComposerDraft("root", value);
+  const source = createTestComposerSource("root");
+  source.persistDraft(value.text);
+  expect(readComposerDraft("root")).toEqual(value);
+});
+
+// A single broad marker deletion spans both retained atoms and loses their identity.
+test("detached submitted markers preserve atoms between each exact splice", () => {
+  writeComposerDraft("root", {
+    text: "🙂 [image 1] /same [image 2] /same [image 3] /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 13 },
+      { kind: "skill", name: "same", offset: 29 },
+    ],
+  });
+  const source = createTestComposerSource("root");
+  const operations = createAttachmentOperations(source.editor, source.attachments);
+  operations.replaceWithSettled(
+    [1, 2, 3].map((marker) => ({
+      marker,
+      name: `${marker}.png`,
+      mediaType: "image/png",
+      data: "AQID",
+      pending: false,
+    })),
+  );
+  source.clearSubmittedAttachments(source.attachments.getState().items);
+  expect(source.attachments.getState().items).toEqual([]);
+  expect(readComposerDraft("root")).toEqual({
+    text: "🙂  /same  /same  /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command", name: "same", offset: 4 },
+      { kind: "skill", name: "same", offset: 11 },
+    ],
+  });
+});
+
+// Ignoring command selections in the empty-work predicate discards a real recovery.
+test("detached command-only recovery persists instead of being discarded", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [{ type: "command" as const, name: "same" }];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  writeComposerDraft("root", { text: "", skillNames: [], commandNames: ["same"], mentions: [] });
+  const source = createTestComposerSource("root");
+  source.setActiveRecoveryId(original.clientMutationId);
+  await source.queueRecoveryPersistence(original.clientMutationId, "", [], [], ["same"], []);
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  expect(source.getSnapshot().commandNames).toEqual(["same"]);
+  expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({
+    clientMutationId: original.clientMutationId,
+    targetRef: "root",
+    payload: { input },
+    composerText: "",
+    composerMentions: [],
+  });
+});
+
+// Equal prose/skills do not authorize clearing a different command snapshot.
+test("source clearing compares the submitted command selection", () => {
+  writeComposerDraft("root", {
+    text: "/same",
+    skillNames: [],
+    commandNames: ["same"],
+    mentions: [{ kind: "command", name: "same", offset: 0 }],
+  });
+  const source = createTestComposerSource("root");
+  source.clearIfUnchanged("/same", 0, readDraftRevision("root"), [], ["different"]);
+  expect(source.getSnapshot().text).toBe("/same");
+  expect(readComposerDraft("root").commandNames).toEqual(["same"]);
+});
+
+// Detached marker writes must patch the full atom value, not infer chips from text.
+test.each(["success", "failure"] as const)("detached mixed atoms survive image decode %s", async (outcome) => {
+  const value = {
+    text: "🙂 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command" as const, name: "same", offset: 3 },
+      { kind: "skill" as const, name: "same", offset: 9 },
+    ],
+  };
+  writeComposerDraft("root", value);
+  const source = createTestComposerSource("root");
+  const encoding = installControlledImageEncoding();
+  const view = renderHook(() => useAttachments(source.editor, source.attachments));
+  act(() => view.result.current.ingestFiles([image()], (message) => pushToast("error", message)));
+  view.unmount();
+  source.editor.write("🙂 /same /same /same[image 1] newer", 33);
+  await act(async () => {
+    if (outcome === "success") await encoding.resolve();
+    else await encoding.reject();
+  });
+  await waitFor(() => expect(source.attachments.getState().items.some((item) => item.pending)).toBe(false));
+  expect(readComposerDraft("root")).toEqual({
+    ...value,
+    text: outcome === "success" ? "🙂 /same /same /same[image 1] newer" : "🙂 /same /same /same newer",
+  });
+  expect(source.getSnapshot()).toMatchObject({ commandNames: ["same"], mentions: value.mentions });
+});
 
 test.each(["success", "failure"] as const)(
   "an encode %s settles its original source while detached",

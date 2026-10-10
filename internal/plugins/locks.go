@@ -93,6 +93,99 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 	return release, nil
 }
 
+// lockClone takes the lock on the marketplace clone at dir and returns its
+// release. A check fetches a clone with the store lock free
+// (fastForwardMarketplace), so whatever else runs git in a clone or removes
+// or renames one takes this too: two gits in one clone collide on its ref
+// locks, and Windows refuses to delete or rename a directory a git is
+// running in. It is a file lock, so it holds against other evener processes
+// as the store lock does, keyed by the clone directory's name (every clone
+// lives in the marketplaces directory). Taken after the store lock, never
+// before it, and held for no store-lock wait. Its error carries the lock
+// file's path only to the log, as lockFailed's does.
+func (m *Manager) lockClone(ctx context.Context, dir string) (func(), error) {
+	path, err := m.cloneLockPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	release, err := acquireLockAtPath(ctx, path)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: taking the lock on marketplace clone %s: %v\n", dir, err)
+		msg := fmt.Sprintf("the lock on marketplace clone %q could not be taken; see the hub's log for detail", filepath.Base(dir))
+		if cause := editFailureIdentity(err); cause != nil {
+			msg = fmt.Sprintf("%s: %v", msg, cause)
+		}
+		return nil, &lockAcquisitionError{msg: msg, cause: err}
+	}
+	return release, nil
+}
+
+// acquireLockAtPath takes the lock on the file at path, as it is when the
+// lock is granted. removeCloneLock deletes a clone's lock file while holding
+// it, so a waiter can be granted the lock on the deleted file while a later
+// taker creates and locks a new one; each would think it held the lock. So
+// the file at path is looked up before the wait and again once the lock is
+// granted, and a lock on any other file is let go and taken again. The file
+// is made first, so a first lock has one to compare and is taken once, and
+// the passes share one 30s wait.
+func acquireLockAtPath(ctx context.Context, path string) (func(), error) {
+	deadline := lockNow().Add(30 * time.Second)
+	if err := lockMkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating lock parent: %w", err)
+	}
+	f, err := lockOpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening lock %s: %w", path, err)
+	}
+	_ = f.Close()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		before, err := os.Stat(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		remaining := deadline.Sub(lockNow())
+		if remaining <= 0 {
+			return nil, fmt.Errorf("%w (locked: %s)", errLockContention, path)
+		}
+		release, err := acquireLock(ctx, path, remaining)
+		if err != nil {
+			return nil, err
+		}
+		// A file removed and made again since the first look is another
+		// taker's; the next pass compares afresh.
+		if after, err := os.Stat(path); before != nil && err == nil && os.SameFile(before, after) {
+			return release, nil
+		}
+		release()
+	}
+}
+
+func (m *Manager) cloneLockPath(dir string) (string, error) {
+	return m.storePath(cloneLocksDirName, filepath.Base(dir)+".lock")
+}
+
+// removeCloneLock removes the lock file of the clone at dir, whose lock the
+// caller holds, once the clone itself is gone. Best effort: a file left
+// behind is reused if the name comes back.
+func (m *Manager) removeCloneLock(dir string) {
+	if path, err := m.cloneLockPath(dir); err == nil {
+		_ = os.Remove(path)
+	}
+}
+
+// withClone runs op holding the lock on the clone at dir (lockClone).
+func (m *Manager) withClone(ctx context.Context, dir string, op func() error) error {
+	release, err := m.lockClone(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return op()
+}
+
 // lockFailed scrubs a failed store-lock acquisition's absolute lock-file path -
 // acquireLock and flockUntil build their errors around the lock path directly -
 // before it reaches an RPC caller, logging the raw error server-side first, the

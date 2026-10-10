@@ -1,7 +1,8 @@
 import { hydrateThread, type SessionJobsResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { JobsTab } from "../../../shell/activitybar/JobsTab";
 import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { activityPanelStore } from "../../../stores/activityPanel";
@@ -14,7 +15,9 @@ import {
   activityJob,
   activitySummary,
   activityThread,
+  activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
+import { NOW_TICK_MS } from "../liveness";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
 
 const ref = "remote:owner";
@@ -23,13 +26,16 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ client: null, state: "idle" });
   activityPanelStore.getState().resetForTests();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
-test("closed trigger shares session counts while an open recursive tree owns only visible subtree demand", async () => {
+// The closed trigger counts subagents at every depth (the subtree's 7) plus
+// the session's own running jobs (2), from the shared subtree store's summary.
+test("closed trigger counts subagents at every depth while an open recursive tree owns only visible subtree demand", async () => {
   const client = activityClient();
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref),
-    scope: scope ?? "session",
+    ...activitySummary(ref, scope),
     delegates: {
       known: true,
       total: scope === "subtree" ? 7 : 1,
@@ -48,28 +54,34 @@ test("closed trigger shares session counts while an open recursive tree owns onl
   const mounted = render(
     <>
       <ActivityPanel sessionRef={ref} model={model()} />
-      <JobsTab scope={deriveScope(navigationStore.getState(), ref)} />
+      <JobsTab scope={deriveScope(navigationStore.getState(), ref, null, null)} />
     </>,
   );
-  await screen.findByRole("button", { name: "Activity · 3 active" });
+  await screen.findByRole("button", { name: "Activity · 9 active" });
   await screen.findByRole("button", { name: /exact selected work/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(0);
   expect(client.calls.filter((c) => c.method === "evener/thread/watches/list")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Activity · 3 active" }));
+  fireEvent.click(screen.getByRole("button", { name: "Activity · 9 active" }));
   await screen.findByText("subtree work");
   expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
+  // The trigger's count and the open tree share one subtree store: one
+  // subtree summary read, not one each.
+  expect(
+    client.calls.filter(
+      (c) => c.method === "evener/thread/activity/read" && (c.params as { scope?: string }).scope === "subtree",
+    ),
+  ).toHaveLength(1);
   expect(
     client.calls.filter((c) => c.method === "thread/read" && (c.params as { subscribe?: boolean }).subscribe),
   ).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
+  // Closing stops the tree's collection demand; the trigger's count keeps
+  // the shared subtree store, and its summary.
+  expect(sessionActivitySnapshot(client, ref, "subtree")?.summary?.delegates.active).toBe(7);
   expect(sessionActivitySnapshot(client, ref, "session")?.jobs.complete).toBe(true);
   const before = client.calls.length;
   act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs", "delegates", "watches"] },
-    }),
+    client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs", "delegates", "watches"])),
   );
   await waitFor(() => expect(client.calls.length).toBeGreaterThan(before));
   expect(
@@ -136,15 +148,66 @@ test("visible rows and disclosure survive same-session invalidation failures", a
   client.on("evener/thread/jobs/list", () => {
     throw new Error("temporary source");
   });
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
   expect(await screen.findByText("Activity is updating…")).toBeTruthy();
   expect(screen.getByText("retained completed")).toBeTruthy();
   expect(activityPanelStore.getState().entries.get(ref)?.expandedFoldIDs).toEqual([`session:${ref}:inactive-fold`]);
+});
+
+test("closed failure history does not block later-page current work through refresh and reconnect", async () => {
+  const client = activityClient();
+  let walk = 0;
+  client.on("evener/thread/jobs/list", ({ cursor, ref, scope }) => {
+    if (!cursor) walk += 1;
+    else expect(cursor).toBe(`later-${walk}`);
+    return {
+      context: activityContext(ref),
+      scope: scope ?? "session",
+      jobs: cursor
+        ? [
+            activityJob({ jobId: "current", description: "Later current work", hasOutput: false }),
+            activityJob({
+              jobId: "later-failed",
+              description: "Later failed history",
+              terminal: true,
+              outcome: "failure",
+            }),
+          ]
+        : [activityJob({ jobId: "failed", description: "First failed history", terminal: true, outcome: "failure" })],
+      page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: `later-${walk}` } : {}) },
+    };
+  });
+  connectionStore.getState().connect(client);
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await screen.findByRole("treeitem", { name: "1 inactive" });
+  expect(screen.queryByRole("treeitem", { name: "First failed history" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Load more jobs" }));
+  await screen.findByRole("treeitem", { name: "Later current work" });
+  expect(screen.getByRole("treeitem", { name: "2 inactive" }).getAttribute("aria-expanded")).toBe("false");
+  vi.useFakeTimers();
+  for (const recover of [
+    () => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])),
+    () => {
+      client.emitStateChange("reconnecting");
+      client.emitStateChange("ready");
+    },
+  ]) {
+    await act(async () => recover());
+    expect(screen.getByRole("treeitem", { name: "Later current work" })).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(screen.getByRole("treeitem", { name: "Later current work" })).toBeTruthy();
+    expect(screen.queryByRole("treeitem", { name: "Later failed history" })).toBeNull();
+    expect(screen.getByRole("treeitem", { name: "2 inactive" }).getAttribute("aria-expanded")).toBe("false");
+    expect(sessionActivitySnapshot(client, ref, "subtree")?.jobs.rows).toHaveLength(3);
+  }
+  expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list").map((call) => call.params)).toEqual([
+    { ref, scope: "subtree" },
+    { ref, scope: "subtree", cursor: "later-1" },
+    { ref, scope: "subtree" },
+    { ref, scope: "subtree", cursor: "later-2" },
+    { ref, scope: "subtree" },
+    { ref, scope: "subtree", cursor: "later-3" },
+  ]);
 });
 
 test("a switched routing ref retires old visible demand and fences delayed rows", async () => {
@@ -194,12 +257,7 @@ test("permanent refusal keeps useful rows without claiming ongoing recovery", as
   client.on("evener/thread/jobs/list", () => {
     throw new WireError("unsupported source", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["jobs"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")?.jobs.permanent).toBe(true));
   expect(screen.getByText("useful retained work")).toBeTruthy();
   expect(screen.queryByText("Activity is updating…")).toBeNull();
@@ -216,7 +274,14 @@ test("loaded subtree job output uses the supplied owner ref and raw logical job 
     page: { complete: true, issues: [] },
   }));
   client.on("evener/jobs/output", () => ({
-    data: { tail: "supplied output tail", totalBytes: 20, retainedStart: 0, truncated: false },
+    data: {
+      offsetBytes: 0,
+      bytesReturned: 20,
+      totalBytes: 20,
+      retainedStartBytes: 0,
+      encoding: "utf8",
+      data: "supplied output tail",
+    },
   }));
   connectionStore.getState().connect(client);
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
@@ -237,7 +302,7 @@ test("recursive activity shows the same proven parent hierarchy above its conten
     rootRef: "remote:root",
     ancestors: [{ ref: "remote:root", sessionId: "root", title: "Parent session" }],
   };
-  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref), scope: "subtree", context }));
+  client.on("evener/thread/activity/read", () => ({ ...activitySummary(ref, "subtree"), context }));
   client.on("evener/thread/delegates/list", () => ({
     context,
     scope: "subtree",
@@ -260,4 +325,73 @@ test("recursive activity shows the same proven parent hierarchy above its conten
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   expect(await screen.findByRole("button", { name: "Parent session" })).toBeTruthy();
   expect(screen.getByRole("navigation", { name: "Scope" })).toBeTruthy();
+});
+
+test("recursive Activity body rebuilds typed rows on remount while retaining ref-qualified fold disclosure", async () => {
+  const fake = activityClient();
+  connectionStore.getState().connect(fake);
+  fake.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef: ref, description: "completed retained row", terminal: true, status: "completed" })],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [],
+    page: { complete: true, issues: [] },
+  }));
+  const first = render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  const fold = await screen.findByRole("treeitem", { name: "1 inactive" });
+  fireEvent.click(within(fold).getByRole("button"));
+  expect(screen.getByText("completed retained row")).toBeTruthy();
+  first.unmount();
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await screen.findByText("completed retained row");
+  expect(screen.getByRole("treeitem", { name: "1 inactive" }).getAttribute("aria-expanded")).toBe("true");
+});
+
+test("recursive Activity body preserves typed watch countdown through the tree clock", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date("2026-08-05T15:00:12Z"));
+  const fake = activityClient();
+  connectionStore.getState().connect(fake);
+  fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    watches: [
+      activityWatch(
+        {
+          id: "watch_open",
+          note: "clock",
+          cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
+        },
+        ref,
+      ),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  await act(async () => {
+    render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  });
+  const row = await screen.findByRole("treeitem", { name: "Watch: clock" });
+  expect(row.textContent).toContain("next ~4m");
+  await act(async () => vi.advanceTimersByTimeAsync(60000));
+  expect(row.textContent).toContain("next ~3m");
+});
+
+test("recursive Activity body uses its row ticker without installing the Details clock", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  const interval = vi.spyOn(globalThis, "setInterval");
+  render(<ActivityPanelBody sessionRef={ref} model={model()} />);
+  await screen.findByRole("tree");
+  expect(interval).not.toHaveBeenCalledWith(expect.any(Function), NOW_TICK_MS);
 });

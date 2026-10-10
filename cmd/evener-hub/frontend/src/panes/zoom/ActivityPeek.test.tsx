@@ -1,5 +1,6 @@
 import type { SessionActivityContext, SessionActivitySummary, ThreadReadResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -48,9 +49,9 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
     contextOverride(ref) ??
     cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "root" ? [] : ["root"]);
   const client = cascadeClient(context);
-  client.on("evener/thread/delegates/list", ({ ref }) => ({
+  const delegatesPage = (ref: string) => ({
     context: context(ref),
-    scope: "session",
+    scope: "session" as const,
     delegates: [
       activityDelegate({
         ownerRef: ref,
@@ -60,7 +61,8 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
       }),
     ],
     page: { complete: true, issues: [] },
-  }));
+  });
+  client.on("evener/thread/delegates/list", ({ ref }) => delegatesPage(ref));
   const params: SessionZoomParams = {
     ref: "grandchild",
     source: { type: "session", params: { ref: "root" } },
@@ -85,6 +87,7 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
   return {
     client,
     context,
+    delegatesPage,
     contents,
     mount() {
       return render(contents());
@@ -108,6 +111,21 @@ function leaf() {
   if (!pane) throw new Error("Missing cascade pane");
   return (pane.params as SessionZoomParams).ref;
 }
+
+test.each(["root", "child", "grandchild"])(
+  "cascade scope %s keeps About out of its four activity peeks",
+  async (ref) => {
+    fixture().mount();
+    await scope("child").findByRole("button", { name: "Open conversation" });
+    const controls = scope(ref);
+    for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
+      expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
+    }
+    expect(controls.getByRole("button", { name: `Tasks, 0 of 0 settled - peek at ${ref}` })).toBeTruthy();
+    expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
+    expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
+  },
+);
 
 test.each(["success", "failure"] as const)(
   "a pending source encode %s cannot change a same-ID restored cascade source",
@@ -205,8 +223,8 @@ test("only a user drill animates a new scope while late ancestry commits immedia
     ref === "fourth" ? fourthContext : ref === "earlier" ? cascadeContext(ref, []) : undefined,
   );
   const authority = deferred<SessionActivitySummary>();
-  client.on("evener/thread/activity/read", ({ ref }) =>
-    ref === "fourth" ? authority.promise : { ...activitySummary(ref), context: context(ref) },
+  client.on("evener/thread/activity/read", ({ ref, scope }) =>
+    ref === "fourth" ? authority.promise : { ...activitySummary(ref, scope), context: context(ref) },
   );
   mount();
   await scope("child").findByRole("button", { name: "Open conversation" });
@@ -243,14 +261,24 @@ test("only a user drill animates a new scope while late ancestry commits immedia
 });
 
 test("an ancestor peek drills its explicit owner and truncates the branch while leaving other panes intact", async () => {
-  const { mount } = fixture();
+  const { client, delegatesPage, mount } = fixture();
   mount();
   await scope("child").findByRole("button", { name: "Open conversation" });
   const other = { id: "other", type: "doc" as const, slot: "secondary" as const, params: { ref: "unrelated" } };
   act(() => workspaceStore.setState((state) => ({ panes: [...state.panes, other], focusedPaneId: other.id })));
+  // The root peek's rows arrive late, as on a loaded host, so the find below
+  // overlaps them on every run and pins its find-before-act order (#3928).
+  client.on("evener/thread/delegates/list", async ({ ref }) => {
+    if (ref === "root") await new Promise((resolve) => setTimeout(resolve, 50));
+    return delegatesPage(ref);
+  });
   const peek = await openPeek("root");
   expect(leaf()).toBe("grandchild");
-  await act(async () => fireEvent.click(await within(peek).findByRole("button", { name: /root direct child/ })));
+  // Found before act(): a Testing Library wait turns the act environment off
+  // until a macrotask after it ends, so an update landing inside an act() scope
+  // in that window makes React warn.
+  const sibling = await within(peek).findByRole("button", { name: /root direct child/ });
+  await act(async () => fireEvent.click(sibling));
   await waitFor(() => expect(leaf()).toBe("sibling"));
   expect(workspaceStore.getState().panes.find((pane) => pane.id === "cascade")?.params).toMatchObject({
     edges: [{ ownerRef: "root", childRef: "sibling", delegateId: "edge-sibling" }],
@@ -279,15 +307,11 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
     page: { complete: true, issues: [] },
   }));
   act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: {
-        ref: "grandchild",
-        threadId: "wire-grandchild",
-        sessionId: "session-grandchild",
-        resources: ["delegates"],
-      },
-    }),
+    client.emitNotification(
+      activityChangedNotification({ ref: "grandchild", threadId: "wire-grandchild", sessionId: "session-grandchild" }, [
+        "delegates",
+      ]),
+    ),
   );
   await within(screen.getByTestId("activity-sidebar")).findByRole("button", { name: /Fresh sidebar row/ });
   expect(reads()).toBe(2);
@@ -299,15 +323,11 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
   );
   const before = reads();
   act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: {
-        ref: "grandchild",
-        threadId: "wire-grandchild",
-        sessionId: "session-grandchild",
-        resources: ["delegates"],
-      },
-    }),
+    client.emitNotification(
+      activityChangedNotification({ ref: "grandchild", threadId: "wire-grandchild", sessionId: "session-grandchild" }, [
+        "delegates",
+      ]),
+    ),
   );
   await act(async () => Promise.resolve());
   expect(reads()).toBe(before);
@@ -395,4 +415,21 @@ test("spine pop and counts are separate keyboard targets and Escape closes the p
   await user.keyboard("{Escape}");
   expect(activitySidebarStore.getState().open).toBe(false);
   expect(leaf()).toBe("grandchild");
+});
+
+// A cascade scope's Agents chip counts that scope's subagents at every depth,
+// as the footer does: here each scope runs one child of its own and three in
+// all, finished one of four.
+test("a cascade scope's Agents chip counts its subagents at every depth", async () => {
+  const { client, mount } = fixture();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "root" ? [] : ["root"]),
+    delegates:
+      scope === "subtree"
+        ? { known: true, total: 4, active: 3, failed: 0, completed: 1 }
+        : { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+  }));
+  mount();
+  expect(await scope("root").findByRole("button", { name: "Agents, 3 of 4 active - peek at root" })).toBeTruthy();
 });

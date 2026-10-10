@@ -25,10 +25,18 @@ type ImageAttachment struct {
 }
 
 // inputHasContent reports whether a durable input's typed parts carry
-// content. Prose, image attachments, and selected skill identities all count:
+// content. Prose, images, and selected skill or command identities all count:
 // a selection-only input is content even with no text of its own.
-func inputHasContent(text string, images []ImageAttachment, skillNames []string) bool {
-	return strings.TrimSpace(text) != "" || len(images) > 0 || len(skillNames) > 0
+func inputHasContent(text string, images []ImageAttachment, selections ...[]string) bool {
+	if strings.TrimSpace(text) != "" || len(images) > 0 {
+		return true
+	}
+	for _, names := range selections {
+		if len(names) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // userInputImagesFromAttachments converts the attachments into the

@@ -15,15 +15,23 @@ import type {
   SearchResult,
   ThreadCapabilities,
   ThreadModel,
+  ThreadReadResponse,
   TurnModel,
 } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { IDBFactory } from "fake-indexeddb";
+import { Composer } from "../../panes/session/composer/Composer";
+import { refreshPendingTurnsProjection } from "../../panes/session/composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { createTestComposerSource } from "../../panes/session/testing/composerSource";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
@@ -762,12 +770,12 @@ test("Enter on an unknown slash command sends the raw query - the escape hatch f
 test("Enter on an unknown slash command against a fenced session toasts the refusal and keeps the palette open", async () => {
   const user = userEvent.setup();
   focusSession("local:ref_a");
-  // A Stop in flight arms the fence while the snapshot still reads idle -
-  // the window the liveControls predicate exists for.
+  // A Stop this page started is its own fence while it drains: the hub holds
+  // Stopping > 0 and refuses turn/start even though the snapshot reads idle.
+  // This is deliberately NOT the Send-resumes face (which excludes a draining
+  // Stop), so the fallthrough's refusal path is what runs here.
   act(() => {
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:ref_a", Symbol()),
-    }));
+    threadsStore.setState((state) => ({ stoppingRefs: new Set(state.stoppingRefs).add("local:ref_a") }));
   });
   render(
     <>
@@ -784,6 +792,184 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
   expect(await screen.findByText("Send isn't available until this session is resumed")).toBeTruthy();
   expect(screen.getByRole("dialog")).toBeTruthy();
   expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("/frobnicate main");
+});
+
+// R09: the palette's slash fallthrough is one of the direct callers of the
+// shared store send, so a Send-resumes fenced ref inherits the whole journey
+// here. The raw text parks durably, the store drives the resume, and the parked
+// turn/start drains once after the resume's hydration reconciles the uncertain
+// row. The palette closes on the durable accept, before the resume lands.
+test("Enter on an unknown slash command against a Send-resumes fenced session parks the send, drives the resume, closes the palette, and drains once", async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:ref_a";
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  let resumed = false;
+  let uncertain = "";
+  const fenced = () =>
+    wireThread(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPS, send: false, queue: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  // The resumed, authoritative snapshot names the uncertain row as accepted,
+  // which reconciles it.
+  const idle = () =>
+    wireThread(ref, {
+      status: { type: "idle" },
+      evener: {
+        ref,
+        capabilities: CAPS,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, clientMutationIds: [uncertain] },
+      },
+    });
+  fake.on("thread/read", () => ({ thread: resumed ? idle() : fenced() }) satisfies ThreadReadResponse);
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const heldResume = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return heldResume;
+  });
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  // Track and hydrate the fenced ref: the fallthrough reads the focused pane's
+  // session, and the driver's refreshThread needs a tracked ref to re-read.
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await act(async () => {
+    const row = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/queue",
+      payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "uncertain" }] },
+    });
+    uncertain = row.clientMutationId;
+    await storage.markUnknown(uncertain, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+  });
+  await flushPendingTurnsProjectionForTests();
+  render(
+    <>
+      <CommandPalette />
+      <Toast />
+    </>,
+  );
+  act(() => openPalette("/frobnicate main"));
+  await user.keyboard("{Enter}");
+  // The durable accept closes the palette before the resume lands.
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await requested;
+  });
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  // The row is parked: nothing reached the wire while the resume was held.
+  expect(starts).toBe(0);
+  await act(async () => {
+    resumed = true;
+    resolveResume({ thread: idle() });
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(threadsStore.getState().resumeFailures.size).toBe(0);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  await waitFor(() => expect(starts).toBe(1));
+  expect(starts).toBe(1);
+});
+
+// The failure arm: the palette still closes on the durable accept (the row is
+// parked and Send remains the single action), and the resume's rejection
+// surfaces through the composer's toast, which names the reason.
+test("a Send-resumes fallthrough whose resume fails parks the row, closes the palette, and toasts through the composer", async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:ref_fail";
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  fake.on(
+    "thread/read",
+    () =>
+      ({
+        thread: wireThread(ref, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref,
+            capabilities: { ...CAPS, send: false, queue: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+      }) satisfies ThreadReadResponse,
+  );
+  fake.on("thread/resume", () => {
+    throw new Error("resume rejected");
+  });
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <>
+      <CommandPalette />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
+      <Toast />
+    </>,
+  );
+  act(() => openPalette("/frobnicate main"));
+  await user.keyboard("{Enter}");
+  expect(await screen.findByText("Resume failed: resume rejected")).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await flushPendingTurnsProjectionForTests();
+  const rows = await storage.listOutbox(ref);
+  expect(rows.map((record) => record.method)).toEqual(["turn/start"]);
+  expect(starts).toBe(0);
 });
 
 // 2026-08-14: a picked session-scoped command - built-in OR plugin catalog -

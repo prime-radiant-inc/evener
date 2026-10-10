@@ -85,3 +85,34 @@ test("an earlier, distinct error in a failed turn says its own message", () => {
   const rows = screen.getAllByTestId("system-notice-failure");
   expect(rows.map((row) => row.textContent)).toEqual(["MCP server github disconnected", "Turn failed"]);
 });
+
+function itemsTurn(...names: SystemEventWireCase[]): TurnModel {
+  return turnModel({
+    id: "turn_1",
+    itemsView: "full",
+    status: "completed",
+    items: names.map(systemEventWireItem),
+  } as unknown as Turn);
+}
+
+// A human's Allow or Deny: "Allowed" or "Denied", the tool's short action,
+// the path, and when.
+test("an approval decision says what was decided, on what, and when", () => {
+  render(<TurnBlock turn={itemsTurn("approval-allowed", "approval-denied")} />);
+  const rows = screen.getAllByTestId("system-notice-approval");
+  expect(rows.map((row) => row.querySelector("[data-testid=system-notice-approval-text]")?.textContent)).toEqual([
+    "Allowed: write /Users/j/sites/docs/index.md",
+    "Denied: read /etc/hosts",
+  ]);
+  for (const row of rows) expect(row.querySelector("time")).not.toBeNull();
+});
+
+// A decision is not lifecycle churn: it never folds into a run of system
+// events, so it stays in view between them.
+test("an approval decision never folds into a run of system events", () => {
+  render(
+    <TurnBlock turn={itemsTurn("plugin-loaded", "approval-allowed", "context-compaction", "plugin-loaded-unnamed")} />,
+  );
+  expect(screen.queryByTestId("system-notice-group")).toBeNull();
+  expect(screen.getAllByTestId("system-notice-approval")).toHaveLength(1);
+});

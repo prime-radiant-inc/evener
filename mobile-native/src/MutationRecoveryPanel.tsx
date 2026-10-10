@@ -1,7 +1,7 @@
 // The native recovery surface's view of one target's durable recovery rows.
 // It is the panel half of the landed slice-4 hook: the hook owns the read,
 // the storage subscription and the one recovery write; this module is the
-// pure projection the screen turns into ghosts above the composer
+// pure projection the screen turns into ghosts at the transcript's end
 // (session/ghosts.ts), the line that shows the surface's own failure, and the
 // consumer hook that owns the screen's recovery state.
 //
@@ -25,7 +25,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { type NativeMutationRecoveryRuntime, useNativeMutationRecovery } from "./useNativeMutationRecovery";
-import { Action, ErrorMessage } from "./ui";
+import { ErrorMessage } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export type NativeMutationRecoveryStatus = MutationRecoveryKind;
 export type NativeMutationRecoveryAction = "restore" | "discard";
@@ -38,6 +39,9 @@ export interface NativeMutationRecoveryRow {
 	reason?: string;
 	/** The text a restore writes into the composer. */
 	text: string;
+	/** The queued messages a refused steer from the queue was for. It sends
+	 * no text of its own, so there is nothing to restore. */
+	queuedText?: string;
 	/** Whether the record carries image inputs a composer restore cannot
 	 * reconstitute here. Restore is withheld for such a row rather than
 	 * silently dropping the image. */
@@ -86,12 +90,23 @@ export function recordCarriesAttachments(record: MutationRecoveryRecord<Mutation
 // fallback the web recovery draft takes, so no recoverable text is lost.
 export function recoveredComposerText(record: MutationRecoveryRecord<MutationAttachmentRef>): string {
 	if (typeof record.composerText === "string" && record.composerText.length > 0) return record.composerText;
-	const input = record.payload.input;
+	return inputText(record.payload.input);
+}
+
+// The text items of an input list, one per line; "" for anything else.
+function inputText(input: unknown): string {
 	if (!Array.isArray(input)) return "";
 	return input
 		.filter(isTextInputItem)
 		.map((item) => item.text)
 		.join("\n");
+}
+
+// A promote or drain from the queue steers with messages the hub holds; its
+// ghost shows them from the record's display.
+function queuedSteerText(record: MutationRecoveryRecord<MutationAttachmentRef>): string | undefined {
+	if (record.method !== "turn/promoteQueuedAsSteer" && record.method !== "turn/drainAsSteer") return undefined;
+	return inputText((record.optimisticDisplay as { input?: unknown } | null)?.input);
 }
 
 // Whether a record can offer a restore at all, independent of the composer: a
@@ -141,6 +156,7 @@ export function projectNativeMutationRecovery(
 		const text = recoveredComposerText(record);
 		const carriesAttachments = recordCarriesAttachments(record);
 		const restoreOffered = recordOffersRestore(record);
+		const queuedText = text === "" ? queuedSteerText(record) : undefined;
 		rows.push({
 			targetKey,
 			clientMutationId: record.clientMutationId,
@@ -148,6 +164,7 @@ export function projectNativeMutationRecovery(
 			status: record.recoveryKind,
 			...(record.recoveryReason === undefined ? {} : { reason: record.recoveryReason }),
 			text,
+			...(queuedText === undefined ? {} : { queuedText }),
 			carriesAttachments,
 			restoreOffered,
 			record,
@@ -287,9 +304,7 @@ export function RecoveryFailure({ error, onRetry }: { error: unknown; onRetry: (
 	return (
 		<View style={{ alignItems: "flex-start" }}>
 			<ErrorMessage message={recoveryFailureMessage(error)} />
-			<Action tone="quiet" onPress={onRetry}>
-				Retry
-			</Action>
+			<Button text quiet label="Retry" onPress={onRetry} />
 		</View>
 	);
 }

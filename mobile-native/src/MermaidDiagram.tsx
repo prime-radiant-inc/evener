@@ -14,7 +14,8 @@ import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
 import { MERMAID_PAGE_HTML } from "./generated/mermaidPage";
 import { codeFontFamily } from "./markdownStyle";
-import { Action, styles as uiStyles, useColors } from "./ui";
+import { styles as uiStyles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 // Last posted height per source, so a FlatList remount shows the right-sized
 // placeholder while the WebView re-initializes (spec: Known trade-offs). A long
@@ -323,12 +324,14 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 				<HoldingModal visible={true} animationType="slide" presentationStyle="fullScreen" onRequestClose={close}>
 					<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 						<View style={styles.header}>
-							<Action onPress={() => setShowSource((showing) => !showing)}>
-								{showSource ? "Show diagram" : "Show source"}
-							</Action>
+							<Button
+								text
+								label={showSource ? "Show diagram" : "Show source"}
+								onPress={() => setShowSource((showing) => !showing)}
+							/>
 							<View style={styles.headerRight}>
-								<Action onPress={() => void copyText(source)}>Copy source</Action>
-								<Action onPress={close}>Done</Action>
+								<Button text label="Copy source" onPress={() => void copyText(source)} />
+								<Button text label="Done" onPress={close} />
 							</View>
 						</View>
 						{showSource ? (

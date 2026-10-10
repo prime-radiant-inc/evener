@@ -31,20 +31,23 @@ describe("panel store eviction", () => {
     expect(tasksPanelStore.getState().entries.has("ref_a")).toBe(true);
   });
 
-  test("retains Activity disclosure while a panel references the ref", async () => {
-    activityPanelStore.getState().toggleFold("ref_a", "fold:qualified");
-    workspaceStore.setState({
-      panes: [{ id: "activity_a", type: "sessionActivity", params: { ref: "ref_a" }, slot: "secondary" }],
-      focusedPaneId: "activity_a",
-    });
-    await settle();
-    expect(activityPanelStore.getState().entries.has("ref_a")).toBe(true);
-  });
+  test.each(["sessionTasks", "sessionDetails"] as const)(
+    "retains Activity disclosure while %s references the ref",
+    async (type) => {
+      activityPanelStore.getState().toggleFold("ref_a", "fold:qualified");
+      workspaceStore.setState({
+        panes: [{ id: "activity_a", type, params: { ref: "ref_a" }, slot: "secondary" }],
+        focusedPaneId: "activity_a",
+      });
+      await settle();
+      expect(activityPanelStore.getState().entries.has("ref_a")).toBe(true);
+    },
+  );
 
-  test("evicts Activity disclosure after their last pane closes", async () => {
+  test("evicts Activity disclosure after its last session pane closes", async () => {
     activityPanelStore.getState().toggleFold("ref_a", "fold:qualified");
     workspaceStore.setState({
-      panes: [{ id: "activity_a", type: "sessionActivity", params: { ref: "ref_a" }, slot: "secondary" }],
+      panes: [{ id: "activity_a", type: "session", params: { ref: "ref_a" }, slot: "main" }],
       focusedPaneId: "activity_a",
     });
     workspaceStore.getState().closePane("activity_a");

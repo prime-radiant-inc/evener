@@ -1,3 +1,4 @@
+import type { ComposerMention } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -13,7 +14,7 @@ import type {
   CachedSessionRecord,
   GoalSetResponse,
   JobActivityJob,
-  JobOutputTail,
+  JobOutputPage,
   ModelListResponse,
   SnapshotIdentity,
   TaskListResponse,
@@ -75,7 +76,12 @@ import {
   type MutationRecoveryRecord,
   type MutationStopBarrier,
 } from "./mutationOutbox";
-import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import {
+  MutationOutboxIndexedDB,
+  MutationStorageError,
+  MutationStorageTimeoutError,
+  type RetargetedMutations,
+} from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
@@ -136,6 +142,7 @@ export class ConflictError extends Error {
 export interface PromoteDisplayInput {
   text: string;
   skillNames?: readonly string[];
+  commandNames?: readonly string[];
 }
 
 interface CacheLifetime {
@@ -154,8 +161,35 @@ export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
   mutationReconciliationFailures: ReadonlySet<string>;
+  // Reconciliation failures this page attributes to unavailable storage rather
+  // than a mutation-state conflict: the same wedge that fences the durable
+  // write also fails the reconcile read, and treating that as a real failure
+  // fences the direct-dispatch fallback too, re-breaking the promise that a
+  // send survives a storage wedge. Storage-blocked refs stay fenced for the
+  // durable dispatcher; the send fallback is the one caller that may admit
+  // them. Recorded at the reconcile's rejection, or classified earlier by the
+  // send fallback's own storage-timeout observation while the reconcile is
+  // still pending. Cleared by a successful reconciliation; retried by every
+  // discovery pass.
+  mutationReconciliationStorageBlocked: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
+  // The resumed identity when a store-driven resume (resumeFencedForSend)
+  // returned a different ref than it started with, keyed by the ref the pane
+  // was showing. The pane reads this and follows the new identity (Session.tsx)
+  // then clears it: a store cannot navigate, so this slice is the one seam
+  // between the resume driver and the pane that started it. An entry that
+  // survives (the pane closed before it could follow) is read by the next pane
+  // opened on that ref, which then follows the identity itself, so a resume is
+  // never lost to a closed pane.
+  resumedIdentities: ReadonlyMap<string, string>;
+  // The most recent store-driven resume failure per ref, for the composer to
+  // toast (a store cannot push a toast). Keyed by ref with a monotonic seq so
+  // the observer toasts each failure exactly once; cleared when a drive
+  // succeeds, and the composer seeds its dedup from the seq on mount so a
+  // remount never re-toasts a failure that predates it.
+  resumeFailures: ReadonlyMap<string, { seq: number; message: string }>;
+  clearResumedIdentity(ref: string): void;
   // Refs with a Force stop RPC this page started still in flight. The hub holds
   // Stopping > 0 for exactly that window and refuses even turn/start for the
   // drain (cmd/evener-hub's sessionActionRecoveryError), so a notLoaded snapshot
@@ -215,6 +249,13 @@ export interface ThreadsStoreState {
   // this refresh publishes its snapshot. A throw cancels the read's result so
   // a canceled action never republishes over newer authoritative state.
   refreshThread(ref: string, beforePublish?: () => void): Promise<void>;
+  // One entry point for the R09 resume sequence (resumeStopBaseline +
+  // client.resumeThread + the identity fence + refreshThread), so every trigger
+  // - the composer/palette/ask-dock send, the recovery resend, and the session
+  // notice's own Resume button - runs the same copy. Resolves when the drive
+  // settles; a failure is published to resumeFailures rather than thrown, and
+  // the identity-follow effect carries the draft and navigates.
+  resumeSession(ref: string): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -229,9 +270,30 @@ export interface ThreadsStoreState {
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
   // before anything durable is written (composerMutationIntent's own gate).
-  send(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
-  steer(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
-  queue(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
+  send(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
+  steer(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
+  queue(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
+  ): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
   // (if any) to the input queue, then drains the whole queue into the
@@ -244,6 +306,8 @@ export interface ThreadsStoreState {
     text: string,
     attachments?: InputAttachment[],
     skillNames?: readonly string[],
+    commandNames?: readonly string[],
+    mentions?: readonly ComposerMention[],
   ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
@@ -320,15 +384,21 @@ export interface ThreadsStoreState {
   // activity views use SessionActivityStore; this method returns the wire's
   // untyped data field unchanged and owns no background refresh or retry.
   listJobs(ref: string, continuation?: string): Promise<unknown>;
-  // beforeBytes > 0 pages backwards: the window ending at that lifetime
-  // output offset instead of the tail (appwire.JobsOutputParams.BeforeBytes).
+  // An explicit beforeBytes pages backwards, ending at that lifetime byte
+  // offset. Omission selects the latest page; explicit zero stays zero.
   // maxBytes > 0 bounds the window (appwire.JobsOutputParams.MaxBytes) - the
   // activity strip's preview uses it to fetch a couple hundred bytes instead
   // of the daemon's default tail.
-  jobOutput(ref: string, jobId: string, beforeBytes?: number, maxBytes?: number): Promise<JobOutputTail>;
+  jobOutput(
+    ref: string,
+    jobId: string,
+    beforeBytes?: number,
+    maxBytes?: number,
+    isCurrent?: () => boolean,
+  ): Promise<JobOutputPage>;
   // Reads one job's metadata (evener/jobs/get): the activity-job shape,
   // including the untruncated command.
-  jobGet(ref: string, jobId: string): Promise<JobActivityJob>;
+  jobGet(ref: string, jobId: string, isCurrent?: () => boolean): Promise<JobActivityJob>;
   // Answers one evener/sandbox/escalation/requested via evener/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -1077,13 +1147,29 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
 // ordering guard: undeliveredMutationIds (the committed rows this tab has not
 // proven delivered) plus inflightDurableEnqueues (a durable enqueue for the ref
 // still in flight).
-function currentDispatchClient(targetRef?: string, method?: string, requireArmed = true): AppwireClientLike | null {
+function currentDispatchClient(
+  targetRef?: string,
+  method?: string,
+  requireArmed = true,
+  options?: { storageBlockedAdmissible?: boolean },
+): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && requireArmed && !dispatchableMutationRefs.has(targetRef)) return null;
   const state = threadsStore.getState();
+  // A storage-blocked ref (its reconcile failed only because storage would not
+  // answer) is fenced here like any reconcile failure: the durable dispatcher
+  // waits for discovery's retry to reconcile before it can order anything.
+  // The send fallback is the one caller that may admit it
+  // ({ storageBlockedAdmissible }): a storage wedge must not strand a send,
+  // and the fallback's own in-memory ordering guards carry the ordering
+  // responsibility instead. Admitting the ref also waives the reconcile still
+  // pending for it - that read sits on the same wedge, so waiting for it
+  // cannot produce ordering facts anyway.
+  const storageBlocked = targetRef !== undefined && state.mutationReconciliationStorageBlocked.has(targetRef);
+  const storageBlockedWaived = storageBlocked && options?.storageBlockedAdmissible === true;
   if (
     targetRef &&
-    (pendingMutationReconciliations.has(targetRef) ||
+    (((storageBlocked || pendingMutationReconciliations.has(targetRef)) && !storageBlockedWaived) ||
       // A Force stop this page started is its own fence for its whole drain
       // window: the hub holds Stopping > 0 and refuses EVERY method there,
       // turn/start included (cmd/evener-hub's sessionActionRecoveryError). Read
@@ -1258,7 +1344,13 @@ export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
 
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
-  const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
+  const state = threadsStore.getState();
+  // Storage-blocked refs ride the same retry: the wedge that failed their
+  // reconcile lifts with storage itself, and this pass is what re-reads the
+  // outbox and re-arms the ref once it does.
+  const refs = [
+    ...new Set([...targetRefs, ...state.mutationReconciliationFailures, ...state.mutationReconciliationStorageBlocked]),
+  ];
   for (const targetRef of refs) pinMutationRef(targetRef);
   notifyMutationPersistence(refs);
   scheduleMutationDispatch(runtime, refs);
@@ -1268,9 +1360,15 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
   const epoch = dispatchReadyEpoch;
   for (const targetRef of refs) {
     if (pendingMutationReconciliations.has(targetRef)) continue;
+    const refState = threadsStore.getState();
     if (
       dispatchableMutationRefs.has(targetRef) &&
-      !threadsStore.getState().mutationReconciliationFailures.has(targetRef)
+      !refState.mutationReconciliationFailures.has(targetRef) &&
+      // A storage-blocked ref must fall through to handleReady's reconcile
+      // retry, not take the authority refresh: that refresh's outbox read
+      // would wedge on the same storage, and only a successful reconcile
+      // clears the storage-blocked fence.
+      !refState.mutationReconciliationStorageBlocked.has(targetRef)
     ) {
       // Another tab can block a shared record after this tab's snapshot.
       // Cached authority cannot settle that newly uncertain send.
@@ -1620,6 +1718,258 @@ export function resumeStopBaseline(): (ref?: string) => void {
   };
 }
 
+// The store-driven resume for the Send-resumes face (R09). A send on a fenced
+// ref parks in the durable outbox (enqueueMutationIntent admits its turn/start),
+// and this driver runs the same sequence the standalone Resume button ran
+// (Session.tsx's RestartRequiredNotice): snapshot every Stop generation before
+// the resume starts, launch the resume with that global fence as beforeRequest,
+// then re-hydrate the resumed identity behind a fence over BOTH refs - the old
+// one the pane still shows and the new one the resume returned, which can be
+// named by a Stop while the resume RPC or its hydration is in flight. The
+// hydration's reconciliation clears the obligation, and the dispatcher's tails
+// drain the parked row exactly once.
+//
+// Idempotent per ref: one resumeThread at a time (AppwireClient itself rejects a
+// second), so a second press while a drive is running parks its row and rides
+// the first drive's reconciliation. A failed drive publishes its reason for the
+// press surface to toast, and is re-drivable by the next press.
+let resumeFailureSeq = 0;
+// Per ref, the ONE in-flight drive. Concurrent callers (a second send, the
+// notice's Resume press) await the same promise, so they ride the same retarget,
+// hydration, and publication instead of starting a second resumeThread.
+const inFlightResumes = new Map<string, Promise<void>>();
+
+async function resumeFencedForSend(ref: string): Promise<void> {
+  const existing = inFlightResumes.get(ref);
+  if (existing !== undefined) return existing;
+  const drive = runResumeFencedForSend(ref);
+  inFlightResumes.set(ref, drive);
+  try {
+    await drive;
+  } finally {
+    if (inFlightResumes.get(ref) === drive) inFlightResumes.delete(ref);
+  }
+}
+
+async function runResumeFencedForSend(ref: string): Promise<void> {
+  // Hoisted for the catch: which identity this drive reached, what its first
+  // retarget moved, whether a Stop won the identity fence, and the token that
+  // identifies this drive's swap registration.
+  let resumedRef: string | undefined;
+  let movedFirst: RetargetedMutations | null = null;
+  let stopWon = false;
+  let swapToken: symbol | undefined;
+  try {
+    const client = wiredClient;
+    if (client === null || client.state !== "ready")
+      throw new Error("Connect to the hub before resuming this session.");
+    const stopBaseline = resumeStopBaseline();
+    const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
+    resumedRef = thread.evener.ref;
+    // The token the daemon's instance fence compares (appwire_runtime's
+    // expectedInstanceID vs appThreadID), read the same fused way a fresh send
+    // derives it (instanceId ?? threadId). Taken off the resume RESPONSE: the
+    // resumed ref is usually not tracked yet, so the store has no model for it.
+    const resumedIdentity = { threadId: thread.id, instanceId: thread.evener.instanceId };
+    // The fence over BOTH refs runs before and after the hydration, exactly as
+    // the button's own identityFence did: a Stop against either ref cancels the
+    // publish. The pane only follows the new identity once the hydration has
+    // survived that fence, so a canceled resume leaves it where it was. It is
+    // also the drive's Stop signal: whichever evaluation throws - here, or the
+    // one refreshThread runs before and after publication - records that a Stop
+    // won, so the catch distinguishes a Stop from a transport failure without
+    // matching error text.
+    const identityFence = () => {
+      try {
+        stopBaseline(ref);
+        stopBaseline(resumedRef);
+      } catch (error) {
+        stopWon = true;
+        throw error;
+      }
+    };
+    identityFence();
+    // The old identity is superseded: move every row still parked under it to
+    // the resumed ref BEFORE the hydrated read, so that read reconciles the rows
+    // and the dispatch tails drain the pressed send exactly once under the new
+    // identity. The swap is registered BEFORE the move, so a Stop landing inside
+    // the move's window still reaches the resumed ref through it.
+    if (resumedRef !== ref) {
+      swapToken = registerResumeSwap(ref, resumedRef);
+      movedFirst = await retargetParkedMutations(ref, resumedRef, resumedIdentity);
+    }
+    await threadsStore.getState().refreshThread(resumedRef, identityFence);
+    identityFence();
+    if (resumedRef !== ref) {
+      // A send enqueued after the first snapshot while this drive was in flight
+      // rode this same promise and parked under the old ref. Move those late
+      // rows too, draining until a pass moves nothing.
+      //
+      // The old ref's restart obligation is NOT cleared by this drive:
+      // publishThreadHydration clears only the HYDRATED ref's obligation
+      // (threads.ts's reconciliation tail), and the hydration here is the
+      // resumed ref. So a concurrent send on the old ref can still be admitted
+      // and park while we drain. The inline loop stops at the first pass that
+      // moves nothing, but a row committed inside THAT pass's own read window is
+      // not in its snapshot, so the trailing pass below is scheduled
+      // unconditionally - not only when the loop reaches its cap.
+      for (let pass = 0; pass < RETARGET_DRAIN_PASSES; pass += 1) {
+        if ((await retargetParkedMutations(ref, resumedRef, resumedIdentity)) === null) break;
+      }
+      // scheduleRetargetDrain queues a microtask, and this drive's remaining
+      // synchronous work (the resumedIdentities publication just below, then the
+      // return) completes before the microtask can run - so the trailing pass
+      // fires after this drive has published the identity, and it is the last
+      // drain this drive performs (it re-schedules itself only while rows keep
+      // moving). Navigation is a later React effect, so the trailing pass can
+      // still precede the pane swap; a press that lands after it starts a fresh
+      // drive once this one has settled, so its row is still moved.
+      if (swapToken !== undefined) scheduleRetargetDrain(ref, resumedRef, resumedIdentity, swapToken);
+      const swapTo = resumedRef;
+      threadsStore.setState((state) => ({
+        resumedIdentities: new Map(state.resumedIdentities).set(ref, swapTo),
+      }));
+    }
+    // The drive succeeded: drop any earlier failure for this ref so a later
+    // composer mount does not re-toast a superseded one.
+    threadsStore.setState((state) => {
+      if (!state.resumeFailures.has(ref)) return {};
+      const resumeFailures = new Map(state.resumeFailures);
+      resumeFailures.delete(ref);
+      return { resumeFailures };
+    });
+  } catch (error) {
+    // A Stop that won after the first retarget had already moved rows: the Stop's
+    // own cancel named the old ref, so without this the moved rows would still
+    // deliver while the toast says canceled. Cancel exactly that work under the
+    // resumed ref so the UI and the wire agree. A NON-stop failure is
+    // deliberately different: the moved rows are preserved work queued under the
+    // resumed identity, and they deliver when it reconnects - canceling them
+    // there would lose the user's message.
+    if (stopWon && movedFirst !== null && resumedRef !== undefined) {
+      await cancelUnattemptedMutations(resumedRef).catch(() => {});
+    }
+    if (swapToken !== undefined) settleResumeSwap(ref, swapToken);
+    const message = error instanceof Error ? error.message : String(error);
+    resumeFailureSeq += 1;
+    threadsStore.setState((state) => ({
+      resumeFailures: new Map(state.resumeFailures).set(ref, { seq: resumeFailureSeq, message }),
+    }));
+  }
+}
+
+// The late-row drain's in-line bound: enough passes for the common case. The
+// scheduled trailing pass runs regardless, so the bound never exits silently.
+const RETARGET_DRAIN_PASSES = 3;
+
+// A resume that changed identity is mid-swap: the rows it moved to the resumed
+// ref are still the user's to cancel with a Stop pressed on the ref they are
+// looking at, but a Stop's own durable cancel names only that ref. This map
+// (old ref -> resumed ref plus the registering drive's token) is the
+// registration that closes the gap, live from the moment the resume response
+// names the differing ref until the retarget
+// machinery goes quiet - the drain pass that moves nothing - so a Stop racing
+// either the pre-hydration window or the trailing drain still cancels the moved
+// rows (the Stop call sites consult it). It is NOT cleared with the drive: the
+// trailing drain runs after the drive's own bookkeeping, so a Stop during that
+// pass must still find the target.
+const resumeSwapTargets = new Map<string, { toRef: string; token: symbol }>();
+
+// The token identifies THIS drive's registration. Two drives can target the
+// same (fromRef, toRef) pair - inFlightResumes drops the first when it resolves
+// while its trailing drain still awaits storage, and a second press then starts
+// a second drive that registers the same pair - so matching only the pair would
+// let the first drive's drain clear the second drive's live registration.
+function registerResumeSwap(fromRef: string, toRef: string): symbol {
+  const token = Symbol("resumeSwap");
+  resumeSwapTargets.set(fromRef, { toRef, token });
+  return token;
+}
+
+// Idempotent per drive: both the drive and its drain may settle, and only the
+// registration carrying THIS token is cleared - an earlier swap's settle can
+// never clear a later swap's registration.
+function settleResumeSwap(fromRef: string, token: symbol): void {
+  if (resumeSwapTargets.get(fromRef)?.token === token) resumeSwapTargets.delete(fromRef);
+}
+
+// The Stop call sites' second cancel: while `ref` is mid-swap, a Stop pressed on
+// it must also cancel the unattempted rows the drive moved to the resumed ref.
+// A Stop after the swap settles is about the resumed ref's own rows and is not
+// this registration's to cancel.
+async function cancelResumeSwapTarget(ref: string): Promise<void> {
+  const entry = resumeSwapTargets.get(ref);
+  if (entry === undefined) return;
+  await cancelUnattemptedMutations(entry.toRef);
+}
+
+// One more drain pass, on a later task, re-scheduling itself while passes keep
+// moving rows. The old ref's restart obligation is not cleared by the drive (see
+// the drain loop's comment), so a concurrent send can park during the drain;
+// this converges on a clean snapshot without blocking the event loop. The pass
+// that moves nothing is the swap's convergence: it settles the Stop
+// registration, so a Stop no longer needs to chase the resumed ref after the
+// rows have stopped moving.
+function scheduleRetargetDrain(
+  fromRef: string,
+  toRef: string,
+  identity: { threadId?: string; instanceId?: string },
+  token: symbol,
+): void {
+  queueMicrotask(() => {
+    void retargetParkedMutations(fromRef, toRef, identity)
+      .then((moved) => {
+        if (moved !== null) scheduleRetargetDrain(fromRef, toRef, identity, token);
+        else settleResumeSwap(fromRef, token);
+      })
+      // Silence is deliberate, like the store's other fire-and-forget tails: the
+      // resume itself already succeeded, so a resume-failure toast would be
+      // wrong. A storage failure here just leaves the straggler parked under the
+      // old ref - the pre-move behavior - where a later drive or a fresh
+      // discovery retries it. The swap is settled either way: no further moves
+      // happen, so a Stop has nothing left to chase.
+      .catch(() => settleResumeSwap(fromRef, token));
+  });
+}
+
+// Move the rows a resume left parked under its superseded ref onto the resumed
+// ref, through the storage's retarget transaction, rewriting the rows' identity
+// fields to `identity` so the daemon's instance fence accepts them under the
+// resumed identity. The outbox bookkeeping the store keeps per ref moves with
+// them: the old ref's undelivered ids are resolved and re-registered under the
+// new ref, the new ref is pinned and armed for dispatch, and the old ref's arm
+// is dropped if it is now idle. Returns what moved (null when nothing did) - an
+// optimistic-only or recovery-only identity change still needs the new ref
+// pinned and armed, and the drive needs the moved set to cancel that work if a
+// Stop wins the swap.
+async function retargetParkedMutations(
+  fromRef: string,
+  toRef: string,
+  identity: { threadId?: string; instanceId?: string },
+): Promise<RetargetedMutations | null> {
+  const runtime = getMutationRuntime();
+  if (!runtime) return null;
+  const moved = await runtime.storage.retargetOutbox(fromRef, toRef, identity);
+  if (moved.outbox.length === 0 && moved.optimistic.length === 0 && moved.recovery.length === 0) return null;
+  for (const record of moved.outbox) {
+    noteHandledMutation(record.clientMutationId);
+    noteUndeliveredMutation(toRef, record.clientMutationId);
+  }
+  noteMutationStateChange(fromRef);
+  noteMutationStateChange(toRef);
+  disarmQuiescedMutationArm(fromRef);
+  pinMutationRef(toRef);
+  if (dispatchReplayGateOpen(toRef)) dispatchableMutationRefs.add(toRef);
+  // BOTH refs: the destination's projection must show the moved rows, and the
+  // superseded ref's projection still holds them (retargetOutbox removed them
+  // from storage), so it must re-read and clear to the honest state. Dispatch is
+  // scheduled for the destination only - the old ref has no rows left, so a
+  // schedule there would be a no-op drain.
+  notifyMutationPersistence([fromRef, toRef]);
+  scheduleMutationDispatch(runtime, [toRef]);
+  return moved;
+}
+
 // The snapshot-level refusals of retryBlockedMutation: a target the store
 // cannot act on regardless of what the retry would find -- no live status, a
 // restartRequired or notLoaded snapshot, no mutation authority, or a
@@ -1698,7 +2048,11 @@ export async function retryBlockedMutation(
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    state.mutationReconciliationFailures.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef) ||
+    // A storage-blocked ref cannot answer the ordering questions a Retry
+    // press asks either: its reconcile sits on the same wedge, and
+    // discovery's retry is what clears this fence.
+    state.mutationReconciliationStorageBlocked.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
@@ -1749,14 +2103,17 @@ export async function updateRecoveryMutation(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
     clientMutationId,
-    buildInput(text, attachments, skillNames),
+    buildInput(text, attachments, skillNames, commandNames, mentions),
     durableAttachments(attachments),
     text,
+    mentions,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);
@@ -1789,10 +2146,12 @@ export async function resendRecoveryMutation(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
+  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const record = await trackOutboxWrite(
@@ -1813,6 +2172,9 @@ export async function resendRecoveryMutation(
   pinMutationRef(targetRef);
   notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
+  // A resent row on the Send-resumes face parks like an ordinary send: drive the
+  // resume it needs. Read after the write, which cannot have changed the face.
+  if (sendResumesLocalModel(targetRef)) void resumeFencedForSend(targetRef);
   return record;
 }
 
@@ -2181,6 +2543,8 @@ function composerMutationIntent(
   text: string,
   attachments?: InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): MutationIntent {
   const model = trackedThreadModel(ref);
   // The store-side half of the skillInput gate (Task 12 gates the hub's
@@ -2194,11 +2558,14 @@ function composerMutationIntent(
   if (canonicalSkillNames(skillNames).length > 0 && model?.capabilities?.skillInput !== true) {
     throw new Error("skill selections are not supported on this target");
   }
+  if (canonicalSkillNames(commandNames).length > 0 && model?.capabilities?.commandInput !== true) {
+    throw new Error("command selections are not supported on this target");
+  }
   // Translated HERE, not inside buildInput: this is the submit boundary. The
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildComposerInput(text, attachments, skillNames);
+  const input = buildComposerInput(text, attachments, skillNames, commandNames, mentions);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,
@@ -2209,6 +2576,7 @@ function composerMutationIntent(
     instanceId: model?.instanceId,
     attachments: durableAttachments(attachments),
     composerText: text,
+    composerMentions: mentions,
   };
   if (route === "send") {
     return {
@@ -2312,6 +2680,10 @@ export interface ResumeOnlySignals {
   // A queued non-turn/start durable row (still "submitting", attempted or not)
   // ahead of the send (the pending-turns projection's hasQueuedNonSend).
   queuedNonSend?: boolean;
+  // The store's mutation-recency reading (mutationAuthorityRefs), read only by
+  // the Send-resumes face below: a local snapshot whose parent still owns its
+  // uncertain rows (Session.tsx's recoveryOwnerRef) is not Send-driven.
+  mutationStateAuthoritative?: boolean;
 }
 
 export function isResumeOnlyLocal(
@@ -2399,16 +2771,84 @@ export function hasQueuedNonSend(ref: string): boolean {
 // dispatch the named head record may itself be the send, with no non-send row
 // ahead of it (currentDispatchClient).
 export function resumeOnlyLocalModel(ref: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
+  return model !== undefined && isResumeOnlyLocal(ref, model, localFenceSignals(ref));
+}
+
+// The store's client-side fence signals, read once from the current state: the
+// delivery-uncertain rows, the in-flight Stop, the queued non-send row, and the
+// mutation-recency mark. resumeOnlyLocalModel, sendResumesLocalModel and
+// sendDrivenLocalModel all share this one literal.
+function localFenceSignals(ref: string): ResumeOnlySignals {
   const state = threadsStore.getState();
-  const model = state.threads.get(ref);
+  return {
+    stopInFlight: state.stoppingRefs.has(ref),
+    uncertainMessages: hasBlockedUnknown(ref),
+    queuedNonSend: hasQueuedNonSend(ref),
+    mutationStateAuthoritative: state.mutationAuthorityRefs.has(ref),
+  };
+}
+
+// A local snapshot the pane shows as retained by its owning session: its
+// uncertain rows are the owner's to reconcile, and the pane offers the owner's
+// link and a Refresh - never a resume. The ONE definition, consumed by the
+// Send-resumes face here, Session.tsx's notice, and SessionChrome.tsx's
+// force-stop eligibility.
+export function ownerRetainedRef(
+  model: Pick<ThreadModel, "status" | "parentRef">,
+  mutationStateAuthoritative: boolean,
+): string | undefined {
+  return !mutationStateAuthoritative &&
+    model.status.type !== "notLoaded" &&
+    model.status.type !== "restartRequired" &&
+    model.parentRef?.startsWith("local:") === true
+    ? model.parentRef
+    : undefined;
+}
+
+// The recovery fence's Send-driven face (R09): a LOCAL session carrying a
+// restart-blocking obligation whose only recovery action used to be the
+// standalone Resume button. Broad by design - it is everything the merely-
+// resumable fold is NOT, minus the two shapes that keep their own controls:
+//   - a restartRequired daemon still needs its older process stopped first,
+//     which Send cannot do;
+//   - an owner-retained snapshot's rows belong to its owner;
+//   - a draining Stop is still the wire's own fence (the hub holds Stopping > 0
+//     and refuses even turn/start).
+// Everything else - delivery-uncertain rows, a queued non-send row, an
+// unconfirmed exit, the connection fence - offers Send, and the store's driver
+// resumes before the parked send dispatches.
+export function isSendResumesLocal(
+  ref: string,
+  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status" | "parentRef">,
+  restartObligated: boolean,
+  signals: ResumeOnlySignals = {},
+): boolean {
+  if (!ref.startsWith("local:")) return false;
+  if (!restartObligated) return false;
+  if (model.status.type === "restartRequired") return false;
+  if (signals.stopInFlight === true) return false;
+  if (ownerRetainedRef(model, signals.mutationStateAuthoritative === true) !== undefined) return false;
+  return !isResumeOnlyLocal(ref, model, signals);
+}
+
+// isSendResumesLocal over the store's current model for ref: the ADMISSION
+// predicate enqueueMutationIntent and the press (liveControls) share, read from
+// the same store-wide signals resumeOnlyLocalModel reads.
+export function sendResumesLocalModel(ref: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
   return (
     model !== undefined &&
-    isResumeOnlyLocal(ref, model, {
-      stopInFlight: state.stoppingRefs.has(ref),
-      uncertainMessages: hasBlockedUnknown(ref),
-      queuedNonSend: hasQueuedNonSend(ref),
-    })
+    isSendResumesLocal(ref, model, threadsStore.getState().restartBlockingObligations.has(ref), localFenceSignals(ref))
   );
+}
+
+// The two faces whose only recovery action is a Send: the merely-resumable fold
+// and the Send-resumes face. The admission (enqueueMutationIntent) and the press
+// (liveControls' pressRefusal) both admit turn/start for exactly this union, so
+// they read this one helper rather than recombining the pair.
+export function sendDrivenLocalModel(ref: string): boolean {
+  return resumeOnlyLocalModel(ref) || sendResumesLocalModel(ref);
 }
 
 // The DISPATCH reading of the resume-only carve-out, used by
@@ -2451,10 +2891,12 @@ export function resumeOnlyLocalDispatchable(ref: string): boolean {
 // (shell/palette/commands.ts's own carve-out, pinned there), so interrupt
 // still enqueues and settles after Resume rather than refusing here. Any
 // method absent from this table is therefore not fenced at admission - the
-// table is the whole policy. turn/start is fenced only while the fence is NOT
-// the merely-resumable case (isResumeOnlyLocal): a session that only needs
-// resume folds it into the send, so enqueueMutationIntent carves that method
-// out - a live Stop drain or a restartRequired daemon still refuses it.
+// table is the whole policy. turn/start is carved out for BOTH Send-driven
+// shapes (sendDrivenLocalModel): the merely-resumable fold
+// (isResumeOnlyLocal), whose resume the hub folds into turn/start, and the
+// Send-resumes face (isSendResumesLocal), whose send parks and drives the
+// store's resume. A live Stop drain or a restartRequired daemon is neither and
+// still refuses it.
 const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "turn/start": "Send isn't available until this session is resumed",
   "turn/steer": "Steer isn't available until this session is resumed",
@@ -2468,9 +2910,10 @@ const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
 
 // The composer's four send verbs, DERIVED from COMPOSER_ROUTE_METHODS so the
 // builder and this set cannot drift. These are the only mutations the direct
-// fallback answers when the durable outbox cannot be written: each has no
-// response-side local commit beyond the wire call itself, so a plain RPC looks
-// to the rest of the store exactly like the dispatched row would have. Every
+// fallback answers when storage fails their durable write (isStorageFailure):
+// each has no response-side local commit beyond the wire call itself, so a
+// plain RPC looks to the rest of the store exactly like the dispatched row
+// would have. Every
 // other durable write keeps its own contract and stays fail-closed - see the
 // catch in enqueueMutationIntent.
 const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set(Object.values(COMPOSER_ROUTE_METHODS));
@@ -2577,12 +3020,16 @@ async function enqueueMutationIntent(
       ref,
       admissionState.restartBlockingObligations.has(ref) || admissionState.stoppingRefs.has(ref),
     ) &&
-    // A merely-resumable session folds its resume into turn/start - the hub
-    // admits it (cmd/evener-hub's sessionActionRecoveryError turn/start
-    // carve-out) - so its send must not be refused here. turn/start on a live
-    // Stop drain or a restartRequired daemon is not this case; every other
+    // Two shapes admit turn/start at this funnel. A merely-resumable session
+    // folds its resume into the send - the hub admits it (cmd/evener-hub's
+    // sessionActionRecoveryError turn/start carve-out). The Send-resumes face
+    // (isSendResumesLocal) is the broad complement: its only recovery action
+    // used to be the standalone Resume button, and a send now drives that
+    // resume in the store (resumeFencedForSend) with the button's protections,
+    // so its intent must be admitted to park rather than refused. turn/start on
+    // a live Stop drain or a restartRequired daemon is neither; every other
     // fenced verb keeps the refusal unchanged.
-    !(intent.method === "turn/start" && resumeOnlyLocalModel(ref))
+    !(intent.method === "turn/start" && sendDrivenLocalModel(ref))
   )
     throw new Error(fenceRefusal);
   const client = requireClient();
@@ -2637,30 +3084,37 @@ async function enqueueMutationIntent(
     // dispatch. thread/clear needs its response applied locally
     // (applyClearResponse) and notes/human/set needs its onCommitted to mark
     // the draft saved; turn/promoteQueuedAsSteer is a queue action, not a send.
-    // A storage-unavailable failure on any of those propagates exactly as every
-    // other submission failure: the caller sees the refusal. This click's own
-    // write has settled, so drop the ref's arm if it is now idle - see
+    // A storage failure on any of those propagates exactly as every other
+    // submission failure: the caller sees the refusal. This click's own write
+    // has settled, so drop the ref's arm if it is now idle - see
     // disarmQuiescedMutationArm. (A Stop therefore lands here, not in the
     // fallback below, so its fail-closed decision lives with its invariant.)
-    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageUnavailable(error)) {
+    if (durableWrite !== "enqueue" || !DIRECT_FALLBACK_METHODS.has(intent.method) || !isStorageFailure(error)) {
       disarmQuiescedMutationArm(ref);
       throw error;
     }
-    // Persistent storage failure on a composer send: the durable write could
-    // not be made, so send it as a plain RPC right now, exactly as the
-    // non-durable operations do (setModel, rename, compact, ...). The outbox
-    // row, the dispatcher, the receipt/settle machinery and the recovery list
-    // are all skipped - there is nothing durable to settle or replay.
+    // Storage failed a composer send's durable write - timed out or refused
+    // outright (see isStorageFailure) - so send it as a plain
+    // RPC right now, exactly as the non-durable operations do (setModel,
+    // rename, compact, ...). The outbox row, the dispatcher, the
+    // receipt/settle machinery and the recovery list are all skipped - there
+    // is nothing durable to settle or replay.
     //
     // It must still re-earn the admission the dispatcher would grant, because
     // it is NOT the ref's durable FIFO head. currentDispatchClient is that
     // exact admission (the dispatcher asks it per ref and method), so re-run
     // it: it re-checks the wired client and readyEpoch - both may have changed
-    // across the watchdogs - the client's ready state, and the ref's fences (a
+    // across the failed write - the client's ready state, and the ref's fences (a
     // pending reconciliation, a reconciliation failure, a Stop drain via
     // stoppingRefs, the restart obligation with turn/start's resume-only
     // carve-out, and restartRequired). requireArmed is off: the fallback's own
     // ordering guard is not the dispatcher's arm but the two checks below.
+    // A reconcile the same storage wedge failed is admissible here and nowhere
+    // else: storage-blocked is the one fence whose cause cannot be waited out
+    // inside the wedge, so the fallback waives it (and the reconcile still
+    // pending on that wedge) rather than strand the send. The pending record
+    // is classified below when the fallback's own timeout observes the wedge,
+    // so the waiver does not wait for the reconcile's own watchdog.
     //
     // A fallback send must not jump an earlier durable send for the ref, and
     // two in-memory facts cover what this tab can see. undeliveredMutationIds
@@ -2674,10 +3128,30 @@ async function enqueueMutationIntent(
     // this ref still in flight, one that has not committed (so not undelivered
     // work yet) and whose dispatch arm a background refresh can clear. The
     // precise answer - whether the ref's nextDispatchable head is this send -
-    // lives in storage, which is unavailable here; these two are what the
+    // lives in storage, which just failed this send; these two are what the
     // in-memory state proves, and the fallback refuses on either rather than
     // reorder.
-    const dispatchClient = currentDispatchClient(ref, intent.method, false);
+    // The storage that failed this write is the storage the reconcile reads,
+    // so a reconcile still pending for the ref sits on the same failure:
+    // classify it now rather than wait for it to reject. Without this, a send
+    // whose fallback decision lands while the reconcile has not yet rejected
+    // meets the pending fence and dies with the storage error - the exact
+    // window the fallback exists to close. A reconcile that later succeeds
+    // (a full origin's reads still answer) clears the record, so a read that
+    // was healthy after all self-corrects.
+    //
+    // A full origin's QuotaExceededError refuses only writes, so its pending
+    // reconcile may still finish and find an undelivered row this send then
+    // jumps. That reorder is accepted on purpose (friction C13's per-ref
+    // ordering gap). Keeping the pending fence for quota would fail the send
+    // the person just made, in order to wait on a reconcile that usually finds
+    // nothing; getting the send out wins.
+    if (pendingMutationReconciliations.has(ref)) {
+      threadsStore.setState((state) => ({
+        mutationReconciliationStorageBlocked: new Set(state.mutationReconciliationStorageBlocked).add(ref),
+      }));
+    }
+    const dispatchClient = currentDispatchClient(ref, intent.method, false, { storageBlockedAdmissible: true });
     const concurrentEnqueueOutstanding = (inflightDurableEnqueues.get(ref) ?? 0) > 0;
     if (dispatchClient === null || hasUndeliveredMutation(ref) || concurrentEnqueueOutstanding) {
       disarmQuiescedMutationArm(ref);
@@ -2688,8 +3162,8 @@ async function enqueueMutationIntent(
     disarmQuiescedMutationArm(ref);
     //
     // The forfeited cross-tab Stop fence: this send carries no click-time stop
-    // epoch - whether the capture read timed out, or the capture succeeded and
-    // only the enqueue timed out. The epoch is a commit-order comparison
+    // epoch - whether the capture read failed, or the capture succeeded and only
+    // the enqueue failed. The epoch is a commit-order comparison
     // against the durable row the enqueue would have written, not a wire
     // parameter (the dispatcher sends record.payload alone), so a send with no
     // row carries none either way. A Stop landing in another tab during that
@@ -2733,10 +3207,11 @@ async function enqueueMutationIntent(
 // answer, so try it a second time before giving up. The click-time capture is
 // awaited ONCE here, before the ladder, and every attempt reuses that same
 // observation: re-reading it would let a Stop landing between attempts become
-// the retry's own baseline (the fence the capture exists to hold). A rejecting
-// capture (MutationStorageTimeoutError, VersionError, a retired connection)
-// propagates, and enqueueMutationIntent decides between the fallback and a
-// hard failure.
+// the retry's own baseline (the fence the capture exists to hold). Only a
+// timeout is retried: a write the browser refused outright would be refused
+// again. A rejecting
+// capture, or a write that is not retried, propagates, and
+// enqueueMutationIntent decides between the fallback and a hard failure.
 const MUTATION_DURABLE_WRITE_ATTEMPTS = 2;
 const MUTATION_DURABLE_WRITE_RETRY_DELAY_MS = 50;
 
@@ -2755,17 +3230,50 @@ async function enqueueDurableMutation(
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
         : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
     } catch (error) {
-      if (!isStorageUnavailable(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
+      if (!isStorageTimeout(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
       await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
     }
   }
 }
 
-// Whether an error is the storage-unavailable signal (the IndexedDB watchdog
-// gave up on an open or a transaction): the one failure the direct fallback
-// answers, because it does not prove the mutation's shape was rejected.
-function isStorageUnavailable(error: unknown): boolean {
+// Whether the IndexedDB watchdog gave up on an open or a transaction: storage
+// that may only be slow, so a durable write is worth a second attempt.
+function isStorageTimeout(error: unknown): boolean {
   return error instanceof MutationStorageTimeoutError;
+}
+
+// The DOMException names IndexedDB uses when storage itself refuses: a full
+// origin, a browser that denies this origin storage, a schema version another
+// tab moved, a connection closed under the transaction, a transaction the
+// browser aborted, an internal failure. Names that judge the record written
+// (DataError, DataCloneError, ConstraintError: its key, its payload, a
+// duplicate id) or that only this code's own bugs raise (NotFoundError for a
+// missing store, TransactionInactiveError for a request on a finished
+// transaction) are absent on purpose. An AbortError cannot stand in for a
+// record judgment: the outbox adapter races a transaction's body against its
+// completion, so a body that throws rejects with its own error before the
+// abort it causes is reported, and IDBConnection rejects an open whose schema
+// upgrade threw with IDBUpgradeError, not the abort.
+const STORAGE_REFUSAL_NAMES: ReadonlySet<string> = new Set([
+  "QuotaExceededError",
+  "SecurityError",
+  "VersionError",
+  "InvalidStateError",
+  "UnknownError",
+  "AbortError",
+]);
+
+// Whether an outbox operation failed because storage did, not because of what
+// it was asked to write: the adapter's own storage errors (a timeout, a
+// refused, blocked or superseded open) or a storage refusal IndexedDB raised.
+// Only these earn the send fallback and the storage-blocked reconcile record;
+// the outbox's own validation errors keep their ordinary meaning. IndexedDB's
+// are matched by name because DOMExceptions from another realm fail
+// instanceof.
+function isStorageFailure(error: unknown): boolean {
+  if (error instanceof MutationStorageError) return true;
+  const name = typeof error === "object" && error !== null ? (error as { name?: unknown }).name : undefined;
+  return typeof name === "string" && STORAGE_REFUSAL_NAMES.has(name);
 }
 
 // The fallback send's RPC is its only transport, so a failure on the wire is
@@ -3325,9 +3833,16 @@ async function publishAndReconcileThreadHydration(
         pending.client === wiredClient
       ) {
         threadsStore.setState((state) => {
+          // Returning the same reference skips the merge and the listener
+          // pass (zustand/vanilla drops identical states), and a healthy ref
+          // settles neither fence on most reconciles.
+          if (!state.mutationReconciliationFailures.has(ref) && !state.mutationReconciliationStorageBlocked.has(ref))
+            return state;
           const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
           mutationReconciliationFailures.delete(ref);
-          return { mutationReconciliationFailures };
+          const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
+          mutationReconciliationStorageBlocked.delete(ref);
+          return { mutationReconciliationFailures, mutationReconciliationStorageBlocked };
         });
       }
     } catch (error) {
@@ -3337,11 +3852,29 @@ async function publishAndReconcileThreadHydration(
         pending.epoch === readyEpoch &&
         pending.client === wiredClient
       ) {
-        // Discovery retries the authoritative read after storage recovers.
-        // Keep the failure visible and dispatch closed until that succeeds.
-        threadsStore.setState((state) => ({
-          mutationReconciliationFailures: new Set(state.mutationReconciliationFailures).add(ref),
-        }));
+        // A storage failure is not a mutation-state fact: the same storage
+        // that fails the durable write failed this read, so record
+        // the ref aside as storage-blocked - the slice the send fallback may
+        // admit - and let discovery retry the read on every pass. A genuine
+        // failure recorded earlier (a real reconcile conflict, a blocked
+        // shared record) must survive it: erasing it would unfence the
+        // fallback through the waivable slice, so a storage failure only adds
+        // the storage-blocked record. Any other failure keeps its old
+        // meaning and supersedes the storage-blocked state, being the
+        // stricter fence: record it in failures and clear the storage-blocked
+        // record. A successful reconcile clears both.
+        const storageBlocked = isStorageFailure(error);
+        threadsStore.setState((state) => {
+          const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
+          const mutationReconciliationStorageBlocked = new Set(state.mutationReconciliationStorageBlocked);
+          if (storageBlocked) {
+            mutationReconciliationStorageBlocked.add(ref);
+          } else {
+            mutationReconciliationFailures.add(ref);
+            mutationReconciliationStorageBlocked.delete(ref);
+          }
+          return { mutationReconciliationFailures, mutationReconciliationStorageBlocked };
+        });
       }
       throw error;
     } finally {
@@ -4257,7 +4790,7 @@ function waitForReadyOrRewire(client: AppwireClientLike, timeoutMs: number): Pro
 // AppwireClient's synchronous rejection, so a caller retrying a mutation
 // whose first attempt may already be executing server-side can never have
 // both attempts land. The one mutation that does wait here is
-// enqueueMutationIntent's storage-unavailable fallback send
+// enqueueMutationIntent's storage-failure fallback send
 // (dispatchMutationDirectly): it reuses ONE clientMutationId across its
 // attempts, so the daemon dedups a replay and the double-land reason above
 // does not hold.
@@ -4308,8 +4841,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
+  mutationReconciliationStorageBlocked: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
+  resumedIdentities: new Map(),
+  resumeFailures: new Map(),
   stoppingRefs: new Set(),
   frameTimes: new Map(),
   hydrations: new Map(),
@@ -4317,6 +4853,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   deletedRefs: new Set(),
   cacheLifetimes: new Map(),
   clearInFlight: undefined,
+
+  clearResumedIdentity(ref) {
+    threadsStore.setState((state) => {
+      if (!state.resumedIdentities.has(ref)) return {};
+      const resumedIdentities = new Map(state.resumedIdentities);
+      resumedIdentities.delete(ref);
+      return { resumedIdentities };
+    });
+  },
 
   async ensureThread(ref) {
     let client = requireClient();
@@ -4745,6 +5290,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },
 
+  resumeSession(ref) {
+    return resumeFencedForSend(ref);
+  },
+
   async loadOlderTurns(ref) {
     // A shell's cursor belongs to whichever window the reconcile settles on;
     // paging below a shell the gap rule is about to replace races that
@@ -4805,25 +5354,44 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
-  async send(ref, text, attachments, skillNames) {
+  async send(ref, text, attachments, skillNames, commandNames, mentions) {
     // The recovery fence is enforced at the shared admission every durable
     // action funnels through (enqueueMutationIntent's central check), so the
     // alternate send paths - the palette's slash fallthrough, the ask dock's
     // batch send, a failed turn's Retry - hear the same refusal the surfaces
     // render, with nothing parked behind it.
-    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
+    //
+    // The Send-resumes face is the one shape the fence admits: its send parks
+    // (no RPC leaves while the obligation stands). After the durable write the
+    // store runs the resume the standalone button used to, and the deferred
+    // dispatch tails drain the parked row once the resume reconciles. The face
+    // is read AFTER the write: a hydration that landed while the write was in
+    // flight is the snapshot the admission saw, and re-reading here keeps the
+    // drive from being skipped (or spuriously started) across that window.
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
+    );
+    if (sendResumesLocalModel(ref)) void resumeFencedForSend(ref);
   },
 
-  async steer(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "steer", text, attachments, skillNames));
+  async steer(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "steer", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
-  async queue(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "queue", text, attachments, skillNames));
+  async queue(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
   async interrupt(ref) {
     cancelPendingUserIntents(ref);
+    // Same mid-swap reach as forceStop's cancel above: a Stop pressed on the
+    // old ref while a resume is moving its rows to the resumed ref must cancel
+    // the moved rows too, or the message delivers under a Stop.
+    await cancelResumeSwapTarget(ref);
     // Stop is session-scoped, always. Naming a turn here could only ever make
     // Stop fail: the id is missing in the windows Stop matters most -- a turn
     // the session started for itself, a boundary between two turns of one
@@ -4843,8 +5411,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments, skillNames));
+  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions) {
+    await enqueueMutationIntent(
+      composerMutationIntent(ref, "drain", text, attachments, skillNames, commandNames, mentions),
+    );
   },
 
   async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
@@ -4860,6 +5430,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
           ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),
+          ...(display.commandNames ?? []).map((name) => ({ type: "command", name })),
         ],
       },
     );
@@ -5017,6 +5588,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // durably before the stop RPC, so a storage failure aborts the stop here
       // with the daemon untouched and the user free to retry.
       await cancelUnattemptedMutations(ref);
+      // A Stop pressed on the old ref while a resume is mid-swap must also
+      // cancel the rows the drive already moved to the resumed ref.
+      await cancelResumeSwapTarget(ref);
       // Resolve the client in its own step, so a lookup failure is
       // distinguishable by construction from a signal failure: no client
       // means no signal reached any daemon, so - exactly like the
@@ -5049,6 +5623,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async shutdown(ref) {
     cancelPendingUserIntents(ref);
     await cancelUnattemptedMutations(ref);
+    // Same mid-swap reach as forceStop's cancel above.
+    await cancelResumeSwapTarget(ref);
     const client = requireClient();
     try {
       await client.request("thread/shutdown", { ref });
@@ -5130,25 +5706,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return resp.data;
   },
 
-  async jobOutput(ref, jobId, beforeBytes, maxBytes) {
+  async jobOutput(ref, jobId, beforeBytes, maxBytes, isCurrent) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
     const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
     const resp = await client.request("evener/jobs/output", {
       ref,
       jobId,
-      ...(beforeBytes !== undefined && beforeBytes > 0 ? { beforeBytes } : {}),
+      ...(beforeBytes !== undefined ? { beforeBytes } : {}),
       ...(maxBytes !== undefined && maxBytes > 0 ? { maxBytes } : {}),
     });
     return resp.data;
   },
 
-  async jobGet(ref, jobId) {
+  async jobGet(ref, jobId, isCurrent) {
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
     const client = await requireReadyClient();
+    if (isCurrent !== undefined && !isCurrent()) throw new Error("job read is no longer current");
     const resp = await client.request("evener/jobs/get", { ref, jobId });
     return resp.data;
   },
@@ -5538,6 +6116,8 @@ export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
   userIntentStopSequence = 0;
   activeStops.clear();
+  inFlightResumes.clear();
+  resumeSwapTargets.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();

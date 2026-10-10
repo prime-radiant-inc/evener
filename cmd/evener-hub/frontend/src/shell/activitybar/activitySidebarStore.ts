@@ -4,6 +4,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { isRendered } from "../../widgets/focusscope/tabbable";
 import { focusedActivityScopeRef, useFocusedActivityScopeRef } from "../focusedSession";
 import { refParam } from "../routing";
 import type { ActivityTab } from "../statusbar/statusScope";
@@ -11,7 +12,7 @@ import { currentSessionRef, workspaceStore } from "../workspace";
 
 export const ACTIVITY_VIEW_STORAGE_KEY = "evener.activity-sidebar.v1";
 export const ACTIVITY_VIEW_LIMIT = 100;
-const TABS: readonly ActivityTab[] = ["agents", "jobs", "watches", "tasks"];
+const TABS: readonly ActivityTab[] = ["agents", "jobs", "watches", "tasks", "about"];
 let hydrated = false;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const SAVE_DELAY_MS = 400;
@@ -128,11 +129,14 @@ export interface ActivitySidebarState {
 
 let activitySidebarOpener: HTMLElement | null = null;
 let activitySidebarOpenerPaneId: string | null = null;
+let activitySidebarOpenerRef: string | null = null;
 
 function captureActivitySidebarOpener(opener?: HTMLElement): void {
   const active = opener ?? document.activeElement;
+  if (active instanceof HTMLElement && active.closest('[data-testid="activity-sidebar"]')) return;
   activitySidebarOpener = active instanceof HTMLElement && active !== document.body ? active : null;
   activitySidebarOpenerPaneId = workspaceStore.getState().focusedPaneId;
+  activitySidebarOpenerRef = activitySidebarStore.getState().ref;
 }
 
 export const activitySidebarStore = createStore<ActivitySidebarState>()((set, get) => {
@@ -155,12 +159,13 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       update({ open: true, tab: tab ?? get().tab });
     },
     openFor: (ref, tab, opener) => {
-      const pane = workspaceStore
-        .getState()
-        .panes.find((candidate) => candidate.type === "session" && refParam(candidate.params) === ref);
+      const workspace = workspaceStore.getState();
+      const panes = workspace.panes.filter(
+        (candidate) => candidate.type === "session" && refParam(candidate.params) === ref,
+      );
+      const pane = panes.find((candidate) => candidate.id === workspace.focusedPaneId) ?? panes[0];
       if (pane) workspaceStore.getState().focusPane(pane.id);
       else get().retarget(ref);
-      closeSessionActivityPanes(ref);
       get().openWith(tab, opener);
     },
     close: () => update({ open: false }),
@@ -179,8 +184,8 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       // A fresh child keeps the ongoing inspection open on its current kind;
       // a visited session restores its own category and explicit close choice.
       const view = views.get(ref) ?? { open: state.open, tab: state.tab, categories: {} };
-      if (view.open && !state.open) captureActivitySidebarOpener();
       set({ ref, open: view.open, tab: view.tab, views: rememberView(views, ref, view) });
+      if (view.open && !state.open) captureActivitySidebarOpener();
     },
     retainOpenView(ref) {
       const state = get();
@@ -226,12 +231,30 @@ workspaceStore.subscribe((state, previous) => {
 });
 
 export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement | null {
-  if (activitySidebarOpener?.isConnected) return activitySidebarOpener;
-  const candidates = document.querySelectorAll<HTMLElement>(`[data-activity-tab="${tab}"]`);
-  if (activitySidebarOpenerPaneId === null) return candidates.item(0);
+  const visible = (element: HTMLElement | null): element is HTMLElement =>
+    element?.isConnected === true && !element.matches(":disabled") && isRendered(element);
+  if (visible(activitySidebarOpener)) return activitySidebarOpener;
+  const actions = Array.from(document.querySelectorAll<HTMLElement>("[data-session-actions-ref]"))
+    .filter((marker) => marker.dataset.sessionActionsRef === activitySidebarOpenerRef)
+    .flatMap((marker) => {
+      const button = marker.closest<HTMLButtonElement>("button");
+      return visible(button) ? [{ button, paneId: marker.dataset.paneId }] : [];
+    });
+  const chips = Array.from(document.querySelectorAll<HTMLElement>("[data-activity-tab]")).filter(
+    (chip) => chip.dataset.activityTab === tab && chip.dataset.sessionRef === activitySidebarOpenerRef && visible(chip),
+  );
   return (
-    Array.from(candidates).find((candidate) => candidate.dataset.paneId === activitySidebarOpenerPaneId) ??
-    candidates.item(0)
+    actions.find((action) => action.paneId === activitySidebarOpenerPaneId)?.button ??
+    chips.find((chip) => chip.dataset.paneId === activitySidebarOpenerPaneId) ??
+    actions[0]?.button ??
+    chips[0] ??
+    Array.from(document.querySelectorAll<HTMLElement>("[data-session-navigation-ref]")).find(
+      (control) =>
+        control.dataset.sessionNavigationRef === activitySidebarOpenerRef &&
+        !control.closest('[data-testid="activity-sidebar"]') &&
+        visible(control),
+    ) ??
+    null
   );
 }
 
@@ -258,24 +281,13 @@ export function activitySidebarOpenFor(ref: string): boolean {
   return activitySidebarStore.getState().open && focusedActivityScopeRef() === ref;
 }
 
-/** Closes any sessionActivity panes for a session. Activity now uses the
- * sidebar at every viewport, so a pane that survives an upgrade or restored
- * layout has no affordance that opens it. */
-export function closeSessionActivityPanes(ref: string): void {
-  const workspace = workspaceStore.getState();
-  for (const pane of workspace.panes) {
-    if (pane.type === "sessionActivity" && (pane.params as { ref?: string }).ref === ref) {
-      workspace.closePane(pane.id);
-    }
-  }
-}
-
 // resetActivitySidebarStoreForTests restores the initial state between tests -
 // mirrors chromeStore's resetChromeStoreForTests precedent. No production code
 // should ever call this.
 export function resetActivitySidebarStoreForTests({ preserveStorage = false } = {}): void {
   activitySidebarOpener = null;
   activitySidebarOpenerPaneId = null;
+  activitySidebarOpenerRef = null;
   if (!preserveStorage) {
     try {
       localStorage.removeItem(ACTIVITY_VIEW_STORAGE_KEY);

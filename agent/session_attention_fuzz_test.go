@@ -164,17 +164,22 @@ func foldDelegateAttentionModel(entries []transcript.Entry) (delegateAttentionFo
 					results[part.ToolResult.ToolCallID] = true
 				}
 			}
+			// A call may commit several deliveries in its own turn, never in
+			// a later one.
+			committedCalls := make(map[string]bool)
+			for _, toolCallID := range model.deliveryCommits {
+				committedCalls[toolCallID] = true
+			}
 			for _, commit := range turn.DelegateDeliveryCommits {
 				if commit.ToolCallID == "" || commit.DeliveryID == "" || !results[commit.ToolCallID] {
 					return delegateAttentionFoldModel{}, errors.New("invalid delivery commit identity")
 				}
-				if previous, exists := model.deliveryCommits[commit.DeliveryID]; exists && previous != commit.ToolCallID {
+				previous, exists := model.deliveryCommits[commit.DeliveryID]
+				if exists && previous != commit.ToolCallID {
 					return delegateAttentionFoldModel{}, errors.New("conflicting delivery commit")
 				}
-				for deliveryID, toolCallID := range model.deliveryCommits {
-					if toolCallID == commit.ToolCallID && deliveryID != commit.DeliveryID {
-						return delegateAttentionFoldModel{}, errors.New("conflicting tool-call commit")
-					}
+				if committedCalls[commit.ToolCallID] && !exists {
+					return delegateAttentionFoldModel{}, errors.New("conflicting tool-call commit")
 				}
 				model.deliveryCommits[commit.DeliveryID] = commit.ToolCallID
 			}
@@ -222,7 +227,8 @@ func delegateAttentionFuzzEntries(program []byte) []transcript.Entry {
 	for index, operation := range program {
 		attentionID := fmt.Sprintf("attention-%d", (operation>>3)&1)
 		callID := fmt.Sprintf("call-%d", (operation>>4)&1)
-		deliveryID := fmt.Sprintf("delivery-%d", (operation>>5)&1)
+		deliveryBit := (operation >> 5) & 1
+		deliveryID := fmt.Sprintf("delivery-%d", deliveryBit)
 		var turn schema.Turn
 		switch operation % 8 {
 		case 0:
@@ -238,6 +244,11 @@ func delegateAttentionFuzzEntries(program []byte) []transcript.Entry {
 		case 4:
 			turn = schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "delegate_send", "done", false))
 			turn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID, DeliveryID: deliveryID}}
+			if (operation>>6)&1 == 1 {
+				// A delegate_send wait carrying an earlier result ahead of
+				// its own commits both to its one call (#3906).
+				turn.DelegateDeliveryCommits = append(turn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{ToolCallID: callID, DeliveryID: fmt.Sprintf("delivery-%d", 1-deliveryBit)})
+			}
 		case 5:
 			turn = schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "delegate_send", "done", false))
 			turn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID + "-wrong", DeliveryID: deliveryID}}

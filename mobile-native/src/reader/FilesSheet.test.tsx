@@ -1,9 +1,9 @@
-// Files & artifacts (spec 10.1, ruling 26): the session's documents, newest
+// Files (spec 10.1, ruling 26): the session's documents, newest
 // write first, each with its kind, title, path, length and age, and a blue dot
 // when it's new or changed since you last opened it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { pressable, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
@@ -45,7 +45,6 @@ const bodies: Record<string, string> = {
 };
 
 let memory: DocumentMemory;
-const trees: ReactTestRenderer[] = [];
 
 function storage(): SyncStringStorage {
 	const data = new Map<string, string>();
@@ -69,25 +68,17 @@ beforeEach(() => {
 	});
 });
 afterEach(() => {
-	for (const tree of trees.splice(0)) act(() => tree.unmount());
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * MINUTE).toISOString();
 
 async function sheet(documents: SessionDocument[]) {
-	const params = { hubId: "studio", ref: "local:fix", title: "Fix race", documents };
+	const params = { hubId: "studio", ref: "local:fix", title: "Fix race", cwd: "/work/owner", documents };
 	const tree = render(
 		<FilesSheet route={{ key: "files", name: "FilesSheet", params } as never} navigation={sheetNavigation as never} />,
 	);
-	trees.push(tree);
 	await settle();
 	return tree;
 }
@@ -109,7 +100,8 @@ it("lists each document with its kind, title, path, length and age, in the order
 		{ path: CODE, kind: "Code" },
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("Files & artifacts");
+	const header = tree.root.find((node) => node.props.accessibilityRole === "header");
+	expect(header.props.children).toBe("Files");
 	expect(text).toContain("Fix the settle/drain race");
 	expect(text).toContain(PLAN);
 	expect(text).toContain("142 lines");
@@ -150,8 +142,27 @@ it("opens a document in the Reader over the session, after the sheet goes", asyn
 		hubId: "studio",
 		sessionRef: "local:fix",
 		path: PLAN,
+		reference: { path: PLAN, cwd: "/work/owner", readTarget: `/work/owner/${PLAN}`, provenance: "relative" },
 		sessionTitle: "Fix race",
 		updatedAt,
+	});
+});
+
+it("captures literal raw-space artifact paths from this sheet's owning cwd", async () => {
+	const tree = await sheet([{ path: "docs/a raw.md", kind: "Doc" }]);
+	act(() => rows(tree)[0]?.props.onPress());
+	expect(sheetNavigation.navigate).toHaveBeenCalledWith("Reader", {
+		hubId: "studio",
+		sessionRef: "local:fix",
+		path: "docs/a raw.md",
+		reference: {
+			path: "docs/a raw.md",
+			cwd: "/work/owner",
+			readTarget: "/work/owner/docs/a raw.md",
+			provenance: "relative",
+		},
+		sessionTitle: "Fix race",
+		updatedAt: undefined,
 	});
 });
 

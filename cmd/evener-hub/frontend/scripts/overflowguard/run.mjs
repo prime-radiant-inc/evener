@@ -43,7 +43,7 @@ import {
   applyViewport,
   assertGuardOrigin,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
@@ -95,7 +95,7 @@ const BOOT = {
 // settled page (the verb cluster) and needs none of the disclosure exception
 // probe, the Verbosity detail inspection or the trusted-focus pass.
 async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900, mobile: width < 900 });
@@ -221,7 +221,7 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
 }
 
 async function measureComposerSend(cdpEndpoint, url, width) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900, mobile: width < 900 });
@@ -282,7 +282,7 @@ async function measureComposerSend(cdpEndpoint, url, width) {
 // browser's actual env() value, not the footer's own padding formula. Only the
 // keyboard custom property is simulated, not an iOS Safari keyboard/viewport.
 async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   const mobile = width < 900;
   try {
@@ -374,7 +374,7 @@ function assertComposerFooter(measurement, width) {
 }
 
 async function verifyItemPaging(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900 });
@@ -518,7 +518,7 @@ async function measureTrustedFocus(send) {
 // The guard measures the narrower chrome, selected activity-tab state, and the same
 // production Verbosity editor's containment and fieldset geometry.
 async function verifyPanelCollapse(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 900, height: 900 });
@@ -590,7 +590,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
 }
 
 async function verifyShortSessionMenu(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 844, height: 390, mobile: true });
@@ -621,6 +621,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
         const box = menu.getBoundingClientRect();
         return {
           itemCount: menu.querySelectorAll('[role="menuitem"]').length,
+          itemLabels: [...menu.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent.trim()),
           top: box.top,
           bottom: box.bottom,
           clientHeight: menu.clientHeight,
@@ -672,7 +673,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
 // boot the fixture, wait out the harness's own settled promise and fonts,
 // then run the inspection expression and return its result.
 async function inspectOnSettledPage(cdpEndpoint, url, expression) {
-  const page = await connectPage(cdpEndpoint);
+  const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900, mobile: false });
@@ -1339,7 +1340,12 @@ async function main() {
     if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
-    if (shortMenu.itemCount !== 7) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 7`);
+    const expectedMenuLabels = ["Overview", "Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
+    if (shortMenu.itemCount !== 6) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 6`);
+    const menuLabels = shortMenu.itemLabels.map((label) => label.replace(/^Overview · .+$/, "Overview"));
+    if (JSON.stringify(menuLabels) !== JSON.stringify(expectedMenuLabels)) {
+      shortMenuFailures.push(`labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`);
+    }
     if (shortMenu.top < 8 - GEOMETRY_TOLERANCE || shortMenu.bottom > 390 - 8 + GEOMETRY_TOLERANCE) {
       shortMenuFailures.push(`bounds=${shortMenu.top}-${shortMenu.bottom}, expected within 8-382`);
     }

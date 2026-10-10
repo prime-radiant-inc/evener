@@ -10,6 +10,12 @@ it.each([
 		{ project_key: "p", tier: "archived" },
 		{ resource: "project_page", projectKey: "p", tier: "archived" },
 	],
+	// A key held by several catalogs reads the first by key alone; the
+	// location names the catalog whose project holds the session (#3799).
+	[
+		{ project_key: "no-project", catalog: "test_runs", tier: "current" },
+		{ resource: "project_page", projectKey: "no-project", catalog: "test_runs", tier: "current" },
+	],
 	[{ pin_section_id: "pin" }, { resource: "pin_section", sectionId: "pin" }],
 	[{ tier: "needs_you" }, { resource: "section", section: "needs_you" }],
 	[{ tier: "live" }, { resource: "section", section: "live" }],
@@ -39,11 +45,9 @@ it.each([
 			};
 		},
 	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
-	expect(await locateSession(client, "child")).toMatchObject({
-		params,
-		ref: "child",
-		revealRef: "child",
-	});
+	const located = await locateSession(client, "child");
+	expect(located).toMatchObject({ ref: "child", revealRef: "child" });
+	expect(located.params).toEqual(params);
 });
 /** A hub answering one location, for a session of the given kind. */
 const locationClient = (fields: Record<string, unknown>, kind = "session") =>

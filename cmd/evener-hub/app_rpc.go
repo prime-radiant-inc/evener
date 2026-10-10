@@ -90,7 +90,14 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		// subscribers to re-read.
 		// The roster's resolved session id is passed along: a legacy entry names
 		// no session of its own, and its relay session is keyed by the resolved one.
-		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
+		// An archived session's scratch outlives a daemon still running at
+		// archive time, so a daemon's exit kicks the reconcile that removes it.
+		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) {
+			local.AnnounceDaemonGone(gone.Entry, gone.SessionID)
+			if cfg.ScratchReconcile != nil {
+				cfg.ScratchReconcile()
+			}
+		})
 		registry.Add(local)
 	}
 	if len(cfg.RemoteHosts) > 0 {
@@ -1033,6 +1040,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
+		ConcurrentRequest: forwardedHostRead,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -1283,13 +1291,13 @@ func registerThreadHandlers(
 	// the controller's host-qualified image routes proxy through it to the hub
 	// that owns the session (multi-host component 05). It resolves only against
 	// this hub's own local session state.
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
-		return sessionImageFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+		return sessionImageFromHub(ctx, cfg, sources, params)
 	})
 	// evener/session/document is the AppWire counterpart of the raw /doc/file
 	// read, for the controller's /doc/file proxy (S7).
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(_ context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
-		return sessionDocumentFromHub(cfg, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(ctx context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
@@ -2236,6 +2244,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		return pluginsController.SetAutoUpgrade(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckUpdates, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.CheckUpdates(ctx)
 	})
 }
 

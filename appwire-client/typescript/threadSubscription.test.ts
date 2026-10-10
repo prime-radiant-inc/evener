@@ -125,9 +125,14 @@ test("a late old subscribe cannot publish metadata after reconnect", async () =>
   lease.release();
 });
 
-test.each(["transcript-first", "activity-first"])(
-  "transcript lease and activity share membership: %s",
-  async (order) => {
+test.each([
+  { order: "transcript-first", releaseOrder: "transcript-first" },
+  { order: "transcript-first", releaseOrder: "activity-first" },
+  { order: "activity-first", releaseOrder: "transcript-first" },
+  { order: "activity-first", releaseOrder: "activity-first" },
+])(
+  "transcript lease and activity share membership: acquire $order, release $releaseOrder",
+  async ({ order, releaseOrder }) => {
     const client = activityClient(),
       removed = deferred<void>();
     client.on("thread/unsubscribe", () => {
@@ -149,7 +154,7 @@ test.each(["transcript-first", "activity-first"])(
         (call) => call.method === "thread/read" && (call.params as { includeTurns: boolean }).includeTurns,
       )?.params,
     ).toEqual({ ...params, ref: activityRef, subscribe: order === "transcript-first", replaceSubscription: false });
-    if (order === "transcript-first") {
+    if (releaseOrder === "transcript-first") {
       transcript.release();
       expect(callsTo(client, "thread/unsubscribe")).toBe(0);
       activity.dispose();

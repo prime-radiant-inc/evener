@@ -39,6 +39,7 @@ import {
 	type AskQuestionRef,
 	attentionWarningNotice,
 	configFingerprint,
+	APPROVAL_DECISION_EVENT_KIND,
 	ERROR_EVENT_KIND,
 	echoesTurnError,
 	hasItemFailure,
@@ -50,15 +51,21 @@ import {
 	joinWarningParts,
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
+	MEMORY_CONTEXT_EVENT_KIND,
+	MEMORY_CONTEXT_LABEL,
+	type MemoryContextObservation,
+	parseMemoryContext,
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
+	PROMPT_EVENT_KINDS,
 	projectThread,
 	steeringLabel,
 	steeringNotificationFragments,
 	stripSystemReminder,
 	systemEventWords,
 	composeStepWords,
+	delegateSendEarlierResponses,
 	delegateSendResponse,
 	delegateSendWaitIgnoredReason,
 	toolFamily,
@@ -66,6 +73,7 @@ import {
 	warningWords,
 } from "@evener/appwire-client";
 import type {
+	DelegateSendEarlierResponse,
 	ItemImage,
 	ItemModel,
 	ProjectedEntry,
@@ -151,6 +159,11 @@ export interface ActivityDetail {
 	// for every other step, and when the send got no reply or its wait was
 	// honoured.
 	sendReply?: string;
+	// The earlier results a send's wait carried ahead of its own reply, oldest
+	// first (the package's delegateSendEarlierResponses): results the caller
+	// had not yet received, each in words with its status. Absent when there
+	// are none.
+	sendEarlierReplies?: readonly DelegateSendEarlierResponse[];
 	sendWaitIgnored?: string;
 }
 
@@ -176,10 +189,10 @@ export interface ActivityMember {
 
 // Tone of a steering/lifecycle notice row. "info" for every daemon steer
 // (a loop-detected or provider-failure steer included: the failure it answers
-// shows as the turn's own error), "warning" for the loop_detection, turn_limit
-// and error system events (WARNING_EVENT_KINDS), "attention" for a daemon
-// warning a human should see (attentionWarningNotice: amber, spec 8.2's
-// Warning), and "system" for every other system event.
+// shows as the turn's own error), "warning" for the WARNING_EVENT_KINDS system
+// events, "attention" for a daemon warning a human should see
+// (attentionWarningNotice: amber, spec 8.2's Warning), and "system" for every
+// other system event.
 export type NoticeTone = "info" | "warning" | "attention" | "system";
 
 export type NoticeOrigin = "steering" | "system";
@@ -191,6 +204,8 @@ export type NoticeFamily =
 	| "system-prelude"
 	| "lifecycle"
 	| "diagnostic"
+	// A human's Allow or Deny on a sandbox escalation (Approval history).
+	| "approval"
 	| "unknown-system";
 
 // The mobile timeline item union. A pure projection of one thread's turns
@@ -252,12 +267,23 @@ export type MobileTimelineItem =
 				label?: string;
 				// The text is markdown, and opens rendered as markdown.
 				rendersMarkdown?: boolean;
+				// The decoded automatic memory refresh, present only when the
+				// recorded raw.memoryContext validates. Absent means the payload
+				// could not be decoded, so an opened refresh falls back to its
+				// complete original text. `text` carries that recorded message, decoded
+				// or not, but the row is a display-bounded copy: an opened refresh
+				// reads the complete original from the retained canonical model
+				// (TimelineItem's sourceTurns), so the literal Source is independent
+				// of the decoded content.
+				memoryContext?: MemoryContextObservation;
 				// A steer that delivers <delegate-notification> or
 				// <job-notification> blocks, parsed: the transcript reads it as
 				// the notifications it carries (spec 8.2, 9), never as the markup.
 				notifications?: SteeringFragment[];
 				// A daemon warning's what-to-do, read as a quiet second line.
 				hint?: string;
+				// When an approval decision was made (epoch ms), for its "5m ago".
+				decidedAtMs?: number;
 		  }
 		// The pending ask_user questions of one call, each carrying that call's id
 		// (AskQuestionRef.callId); the composer renders them as interactive cards
@@ -515,12 +541,17 @@ function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" 
 
 // The daemon's shared-notes steer opens with this marker (last-resort
 // provenance; agent/session_notes_rpc.go's humanNoteSteerPrefix), followed by
-// the note itself or "(whiteboard cleared)" for an emptied note.
-const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
-const NOTE_STEER_CLEARED = "(whiteboard cleared)";
+// the note itself or "(whiteboard cleared)" for an emptied note. A multi-line
+// note's continuation lines carry a two-space indent under the prefix
+// (formatNotesField); a stored note's lines are trimmed, so removing that
+// indent recovers the note exactly.
+export const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
+export const NOTE_STEER_CLEARED = "(whiteboard cleared)";
 
 export function noteFromSteer(text: string): string {
-	const stripped = text.startsWith(NOTE_STEER_PREFIX) ? text.slice(NOTE_STEER_PREFIX.length) : text;
+	const stripped = text.startsWith(NOTE_STEER_PREFIX)
+		? text.slice(NOTE_STEER_PREFIX.length).replace(/\n {2}/g, "\n")
+		: text;
 	return stripped === NOTE_STEER_CLEARED ? "" : stripped;
 }
 
@@ -616,6 +647,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 	const watchEvidence = it.toolName === "job_watch" ? jobWatchEvidence(it) : undefined;
 	const send = toolFamily(it.toolName ?? "") === "message";
 	const sendReply = send ? delegateSendResponse(it) : undefined;
+	const sendEarlierReplies = send ? delegateSendEarlierResponses(it) : [];
 	const sendWaitIgnored = send ? delegateSendWaitIgnoredReason(it) : undefined;
 	return {
 		description: activityDescription(it),
@@ -630,6 +662,7 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		...(tasks ? { tasks } : {}),
 		...(watchEvidence !== undefined ? { watchEvidence } : {}),
 		...(sendReply !== undefined ? { sendReply } : {}),
+		...(sendEarlierReplies.length > 0 ? { sendEarlierReplies } : {}),
 		...(sendWaitIgnored !== undefined ? { sendWaitIgnored } : {}),
 	};
 }
@@ -720,7 +753,6 @@ export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestion
 // --- notice rows ------------------------------------------------------------------
 
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", ERROR_EVENT_KIND]);
-const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const PRELUDE_EVENT_KINDS = new Set(["environment"]);
 const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
 const LIFECYCLE_EVENT_KINDS = new Set([
@@ -733,20 +765,31 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	"fork_summary",
 	"tool_repair",
 	"model_switch",
+	// A model round that ended with streamed content or running tools nobody
+	// recorded. The package shows it at every level; like the web, the phone
+	// draws it as a plain notice line, not a failure.
+	"interrupted",
 	// The deleted family classified this lifecycle (its map read
 	// "notes-context": "lifecycle"); the re-home dropped it and its pin with
 	// the oracle (RoboRev panel) — restored here so the canonical set is not
 	// narrower than the family it replaces.
 	"notes-context",
+	// An automatic memory refresh: a routine context injection like a
+	// shared-notes snapshot. Its lifecycle family keeps it a standalone notice
+	// (lifecycle is not in groupTimeline's internal set), and the native notice
+	// renderer gives the typed kind its own collapsed "Refreshed my memory"
+	// disclosure, as the web renderer does.
+	MEMORY_CONTEXT_EVENT_KIND,
 ]);
 
 function systemFamily(eventKind: string | undefined): NoticeFamily {
 	if (!eventKind) return "unknown-system";
 	if (WARNING_EVENT_KINDS.has(eventKind)) return "warning";
-	if (HIDDEN_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
+	if (PROMPT_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
 	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
 	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
 	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
+	if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "approval";
 	return "unknown-system";
 }
 
@@ -791,10 +834,18 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 			...(attention.hint ? { hint: attention.hint } : {}),
 		};
 	}
+	// An automatic memory refresh is its own collapsed "Refreshed my memory"
+	// disclosure, never a generic lifecycle line. The decoded observation rides
+	// the row only when raw.memoryContext validates; either way `text` is the
+	// complete recorded message, which an opened refresh shows as its literal
+	// Source. It keeps the lifecycle family, so groupTimeline leaves it a
+	// standalone row rather than folding it into the internal details group.
+	if (it.eventKind === MEMORY_CONTEXT_EVENT_KIND) return memoryContextNotice(it);
 	// A system family of "warning" IS the warning tone (systemFamily's own
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
 	const tone: NoticeTone = family === "warning" ? "warning" : "system";
+	const decidedAtMs = family === "approval" ? hubTime(it.startedAt) : null;
 	return {
 		kind: "notice",
 		id: it.id,
@@ -805,6 +856,30 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 		...systemEventWords(it),
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 		...(it.exitCode !== undefined ? { exitCode: it.exitCode } : {}),
+		...(decidedAtMs !== null ? { decidedAtMs } : {}),
+	};
+}
+
+// The row for a recorded automatic memory refresh. Unavailable and revoked
+// carry their state on the collapsed row too, so the heading never implies a
+// successful read; missing is not a broken access, so like current it reads
+// only in the opened meta line, as on the web. The exact recorded Text is kept
+// on the row unchanged, independent of whatever the decoded observation holds.
+function memoryContextNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
+	const observation = parseMemoryContext(it.raw);
+	const state = observation?.state;
+	const label =
+		state === "unavailable" || state === "revoked" ? `${MEMORY_CONTEXT_LABEL} · ${state}` : MEMORY_CONTEXT_LABEL;
+	return {
+		kind: "notice",
+		id: it.id,
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		text: it.text,
+		label,
+		...(observation ? { memoryContext: observation } : {}),
+		...(it.eventKind ? { eventKind: it.eventKind } : {}),
 	};
 }
 
@@ -1346,6 +1421,13 @@ function boundWords(words: StepWords, bound: BoundText): StepWords {
 	};
 }
 
+// Bound each entry of a list, handing back the source list when no entry
+// changed, so a row keeps its identity across publishes (see truncateItem).
+function boundEach<T>(list: readonly T[], boundOne: (entry: T) => T): readonly T[] {
+	const bounded = list.map(boundOne);
+	return bounded.every((entry, index) => entry === list[index]) ? list : bounded;
+}
+
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
 	const description = detail.description ? bound(detail.description) : detail.description;
 	const summary = detail.summary ? bound(detail.summary) : detail.summary;
@@ -1355,6 +1437,12 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const error = detail.error ? bound(detail.error) : detail.error;
 	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
 	const sendReply = detail.sendReply ? bound(detail.sendReply) : detail.sendReply;
+	const sendEarlierReplies = detail.sendEarlierReplies
+		? boundEach(detail.sendEarlierReplies, (reply) => {
+				const text = bound(reply.text);
+				return text === reply.text ? reply : { ...reply, text };
+			})
+		: detail.sendEarlierReplies;
 	const sendWaitIgnored = detail.sendWaitIgnored ? bound(detail.sendWaitIgnored) : detail.sendWaitIgnored;
 	// Nothing was cut: hand back the source detail so a settled row keeps its
 	// identity across publishes (see truncateItem).
@@ -1367,6 +1455,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		error === detail.error &&
 		watchEvidence === detail.watchEvidence &&
 		sendReply === detail.sendReply &&
+		sendEarlierReplies === detail.sendEarlierReplies &&
 		sendWaitIgnored === detail.sendWaitIgnored
 	) {
 		return detail;
@@ -1381,6 +1470,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		error,
 		watchEvidence,
 		sendReply,
+		sendEarlierReplies,
 		sendWaitIgnored,
 	};
 }

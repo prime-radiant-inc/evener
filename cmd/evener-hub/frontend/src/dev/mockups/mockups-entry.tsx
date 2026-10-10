@@ -722,7 +722,7 @@ function withExpansion<T extends TreeNode>(nodes: T[], expanded: ReadonlySet<str
 // ---------------------------------------------------------------------------
 
 const MOCK_ACTIONS: RailRowActions = {
-  onOpenSessionPane: () => {},
+  onOpenOverview: () => {},
   onRenameSession: () => Promise.resolve(),
   onShutdownSession: () => Promise.resolve(),
   onForceStopSession: () => Promise.resolve(),

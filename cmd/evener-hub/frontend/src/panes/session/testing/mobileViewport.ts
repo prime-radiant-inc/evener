@@ -1,8 +1,8 @@
 export function installMobileViewport(): () => void {
   const original = window.matchMedia;
-  window.matchMedia = (() => ({
-    matches: true,
-    media: "(max-width: 899px)",
+  window.matchMedia = ((media: string) => ({
+    matches: media === "(max-width: 899px)",
+    media,
     addEventListener() {},
     removeEventListener() {},
   })) as unknown as typeof window.matchMedia;

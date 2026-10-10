@@ -5,6 +5,7 @@
 // between a queued daemon row and its optimistic pending row, not just
 // cosmetics.
 export {
+  commandMarkers,
   imagePlaceholder,
   normalizeText,
   pendingEntryPreview,

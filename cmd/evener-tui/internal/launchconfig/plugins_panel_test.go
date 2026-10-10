@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 )
 
 func rightKey() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRight} }
@@ -494,11 +495,36 @@ func TestPluginsPanel_InstalledTab_AEmitsAutoUpgradeToggle(t *testing.T) {
 }
 
 func TestPluginsPanel_InstalledTab_UEmitsUpgrade(t *testing.T) {
-	p := installedPanel(appwire.PluginEntry{Plugin: "p", Marketplace: "mkt"})
+	p := installedPanel(appwire.PluginEntry{Plugin: "p", Marketplace: "mkt", UpdateAvailable: true})
 	_, cmd := p.Update(runeKey("u"))
 	got, ok := cmd().(PluginActionMsg)
 	if !ok || got.Action != "upgrade" || got.Plugin != "p" || got.Marketplace != "mkt" {
 		t.Errorf("u should emit upgrade for p@mkt, got %+v (ok=%v)", got, ok)
+	}
+}
+
+// Upgrade is offered only for a plugin the last update check flagged, as the
+// web and the phone offer it: the key does nothing and its hint is hidden on
+// any other plugin.
+func TestPluginsPanel_InstalledTab_UpgradeOnlyWhenAnUpdateIsAvailable(t *testing.T) {
+	p := installedPanel(
+		appwire.PluginEntry{Plugin: "current", Marketplace: "mkt"},
+		appwire.PluginEntry{Plugin: "behind", Marketplace: "mkt", UpdateAvailable: true},
+	)
+	if _, cmd := p.Update(runeKey("u")); cmd != nil {
+		t.Errorf("u on a plugin with no update available emitted %+v", cmd())
+	}
+	upgradeHint := tuiprim.KbdHint("u", "upgrade")
+	if v := p.footerFor(200); strings.Contains(v, upgradeHint) {
+		t.Errorf("footer offers upgrade for a plugin with no update available: %q", v)
+	}
+	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyDown})
+	behind := updated.(PluginsPanel)
+	if v := behind.footerFor(200); !strings.Contains(v, upgradeHint) {
+		t.Errorf("footer does not offer upgrade for a plugin with an update available: %q", v)
+	}
+	if v := behind.View(); !strings.Contains(v, "UPDATE AVAILABLE") {
+		t.Errorf("no update-available badge on the flagged plugin:\n%s", v)
 	}
 }
 

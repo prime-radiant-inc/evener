@@ -1785,7 +1785,7 @@ describe("resource-backed Rail", () => {
     expect(screen.queryByRole("menuitem", { name: "Notes" })).toBeNull();
   });
 
-  test("a rail row's Activity action opens the session and the activity sidebar, never the old pane", async () => {
+  test("a rail row's Overview action opens the session and the activity sidebar, never the old pane", async () => {
     // The chrome menu's twin: desktop Activity everywhere is the sidebar (the
     // zoom system's triage surface). The rail NAVIGATES, idempotently: open
     // the session pane, open the sidebar scoped to it, never toggle closed.
@@ -1802,7 +1802,9 @@ describe("resource-backed Rail", () => {
       render(<Rail />);
 
       fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Activity" })).toBeNull();
+      fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
       await waitFor(() => {
         expect(activitySidebarStore.getState().open).toBe(true);
       });
@@ -1811,7 +1813,7 @@ describe("resource-backed Rail", () => {
           .getState()
           .panes.some((p) => p.type === "session" && (p.params as { ref?: string }).ref === "local:active"),
       ).toBe(true);
-      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["session"]);
     } finally {
       restoreSessionPane();
       // The reset updates a store the row subscribes to; unwrapped it lands
@@ -1820,47 +1822,40 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  test("a rail row's Activity action on desktop closes a leftover sessionActivity pane for that session", async () => {
-    // An upgrade or a restored layout can carry the pre-sidebar pane into the
-    // desktop shell, where no affordance opens it and no ✓ marks it: an
-    // orphan. Opening the sidebar on that session supersedes the pane.
+  test("a rail row's Overview action on desktop preserves a retained Details placement", async () => {
     resetActivitySidebarStoreForTests();
     const restoreSessionPane = registerPaneForTests({
       id: "session",
       title: () => "session",
       component: lazy(() => Promise.resolve({ default: () => null })),
     });
-    const restoreActivityPane = registerPaneForTests({
-      id: "sessionActivity",
-      title: () => "activity",
+    const restoreDetailsPane = registerPaneForTests({
+      id: "sessionDetails",
+      title: () => "details",
       component: lazy(() => Promise.resolve({ default: () => null })),
     });
     try {
       installState([
         sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
       ]);
-      workspaceStore.getState().openPane("sessionActivity", { ref: "local:active" });
+      const details = workspaceStore.getState().openPane("sessionDetails", { ref: "local:active" });
       render(<Rail />);
 
       fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
-      // Desktop never marks the orphan pane (RailRow.test.tsx pins that);
-      // the supersede still fires.
-      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
       await waitFor(() => {
         expect(activitySidebarStore.getState().open).toBe(true);
       });
-      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === details)?.type).toBe("sessionDetails");
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["sessionDetails", "session"]);
     } finally {
       restoreSessionPane();
-      restoreActivityPane();
+      restoreDetailsPane();
       act(() => resetActivitySidebarStoreForTests());
     }
   });
 
-  test("a rail row's Activity action on mobile opens the new activity sidebar", async () => {
-    // The mobile rail lives in the tree drawer, but Activity now opens the
-    // same Tasks, Jobs and Watches surface as desktop instead of the retired
-    // sessionActivity pane.
+  test("a rail row's Overview action on mobile opens the new activity sidebar", async () => {
     const restoreViewport = installMobileViewport();
     resetActivitySidebarStoreForTests();
     const restoreSessionPane = registerPaneForTests({
@@ -1868,11 +1863,6 @@ describe("resource-backed Rail", () => {
       title: () => "session",
       component: lazy(() => Promise.resolve({ default: () => null })),
     });
-    const restoreActivityPane = registerPaneForTests({
-      id: "sessionActivity",
-      title: () => "activity",
-      component: lazy(() => Promise.resolve({ default: () => null })),
-    });
     try {
       installState([
         sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
@@ -1880,13 +1870,12 @@ describe("resource-backed Rail", () => {
       render(<Rail />);
 
       fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Activity" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Overview" }));
       await waitFor(() => expect(activitySidebarStore.getState().open).toBe(true));
-      expect(workspaceStore.getState().panes.some((p) => p.type === "sessionActivity")).toBe(false);
+      expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["session"]);
     } finally {
       restoreViewport();
       restoreSessionPane();
-      restoreActivityPane();
       act(() => resetActivitySidebarStoreForTests());
     }
   });

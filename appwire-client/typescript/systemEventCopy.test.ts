@@ -81,3 +81,13 @@ test("knows the echo of a failure that carries no message", () => {
   expect(echoesTurnError(fallback, {})).toBe(true);
   expect(echoesTurnError({ ...fallback, text: "Another error" }, { message: "" })).toBe(false);
 });
+
+test("says a human's Allow or Deny in the tool's short action, else keeps the daemon's text", () => {
+  expect(words("approval-allowed")).toEqual({ text: "Allowed: write /Users/j/sites/docs/index.md" });
+  expect(words("approval-denied")).toEqual({ text: "Denied: read /etc/hosts" });
+  expect(systemEventWords({ eventKind: "approval_decision", text: "Denied write_file access to /x", raw: {} })).toEqual(
+    {
+      text: "Denied write_file access to /x",
+    },
+  );
+});

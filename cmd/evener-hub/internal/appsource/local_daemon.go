@@ -413,7 +413,8 @@ func (s *LocalDaemonSource) ReadThreadAtEntry(ctx context.Context, entry rendezv
 
 // RetireDaemonAtEntry forwards a safe-retire request to an exact daemon
 // endpoint within the source's recovery cancellation scope. The hub has
-// already validated and locked this exact entry; the params — including the
+// already validated this exact entry (and released its locks: the daemon can
+// hold the request while its session namer settles); the params — including the
 // rendered ownership identity — pass through verbatim, and the daemon's
 // answer (fresh blocker refusal or accepted claim) passes back untransformed.
 func (s *LocalDaemonSource) RetireDaemonAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
@@ -867,7 +868,7 @@ func (s *LocalDaemonSource) withMutationClient(
 // the target advertises skill input support.
 func hasSkillInputItem(items []appwire.InputItem) bool {
 	for _, item := range items {
-		if item.Type == "skill" {
+		if item.Type == "skill" || item.Type == "command" {
 			return true
 		}
 	}
@@ -896,6 +897,9 @@ func gateSkillInputOnClient(ctx context.Context, client *appwire.Client, ref, th
 		return err
 	}
 	if err := appwire.ValidateSkillInputSupport(input, response.Thread.Evener.Capabilities.SkillInput); err != nil {
+		return appwire.InvalidParams(err.Error())
+	}
+	if err := appwire.ValidateCommandInputSupport(input, response.Thread.Evener.Capabilities.CommandInput); err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
 	return nil
@@ -1328,7 +1332,8 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		// gates re-verify against the live daemon, so a daemon that
 		// genuinely lacks the support still refuses each selection
 		// honestly.
-		SkillInput: true,
+		SkillInput:   true,
+		CommandInput: true,
 		// Open sessions get the subagent stop, the way Interrupt gates on
 		// !closed. A descendant alias never does: the stop targets the root
 		// that owns the tree.

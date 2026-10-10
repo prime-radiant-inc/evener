@@ -26,15 +26,56 @@ func (s *Session) sessionURLsForTest() []schema.SessionURL {
 	return append([]schema.SessionURL(nil), s.sessionURLs...)
 }
 
-func TestNormalizeNoteCollapsesWhitespaceAndClamps(t *testing.T) {
+func TestNormalizeLabelCollapsesWhitespaceAndClamps(t *testing.T) {
 	t.Parallel()
 	in := "  hello\n\n  world\t\tfoo  "
-	if got := normalizeNote(in); got != "hello world foo" {
-		t.Fatalf("normalizeNote(%q) = %q", in, got)
+	if got := normalizeLabel(in); got != "hello world foo" {
+		t.Fatalf("normalizeLabel(%q) = %q", in, got)
 	}
 	long := strings.Repeat("a", 2000)
-	if got := normalizeNote(long); len([]rune(got)) != 1000 {
+	if got := normalizeLabel(long); len([]rune(got)) != 1000 {
 		t.Fatalf("clamped length = %d, want 1000", len([]rune(got)))
+	}
+}
+
+// A whiteboard is a short capsule in lines (a paragraph, a "Now:" line, "Next:"
+// lines), so its normalization keeps the line structure while tidying each line.
+func TestNormalizeWhiteboardKeepsLineStructure(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct{ in, want string }{
+		"lines kept":                 {"mission\nNow: a\nNext: b", "mission\nNow: a\nNext: b"},
+		"spaces collapse per line":   {"  a \t  b  \n  c   d ", "a b\nc d"},
+		"CRLF and CR become LF":      {"a\r\nb\rc", "a\nb\nc"},
+		"blank-line run collapses":   {"a\n\n\n \t \nb", "a\n\nb"},
+		"single blank line kept":     {"a\n\nb", "a\n\nb"},
+		"outer blank lines dropped":  {"\n \n a \n\n", "a"},
+		"whitespace only clears":     {" \n\t\r\n ", ""},
+		"controls stripped in lines": {"a\x1b[31m\nb\x07", "a[31m\nb"},
+		"control-only line is blank": {"a\n\x1b\nb", "a\n\nb"},
+		"C1 NEL collapses as space":  {"a\u0085b", "a b"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := normalizeWhiteboard(tc.in); got != tc.want {
+				t.Fatalf("normalizeWhiteboard(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	long := strings.Repeat("a", 2000)
+	if got := normalizeWhiteboard(long); len([]rune(got)) != sessionNoteMaxRunes {
+		t.Fatalf("clamped length = %d, want %d", len([]rune(got)), sessionNoteMaxRunes)
+	}
+	// A clamp that lands on a line break or a space must not leave it at the
+	// end: re-saving the stored value would then normalize to something else and
+	// count as a change (a spurious "human updated their whiteboard" steer).
+	for _, longLines := range []string{strings.Repeat("a\n", 1500), strings.Repeat("a ", 1500), strings.Repeat("a\n\n", 1000)} {
+		once := normalizeWhiteboard(longLines)
+		if n := len([]rune(once)); n > sessionNoteMaxRunes {
+			t.Fatalf("clamped length = %d, want at most %d", n, sessionNoteMaxRunes)
+		}
+		if twice := normalizeWhiteboard(once); twice != once {
+			t.Fatalf("normalizeWhiteboard is not idempotent after the clamp: once ends %q, twice ends %q", once[len(once)-3:], twice[len(twice)-3:])
+		}
 	}
 }
 
@@ -475,6 +516,29 @@ func TestSetHumanNoteClearUsesClearedMarker(t *testing.T) {
 	}
 	if queue[1].Text != "human updated their whiteboard: (whiteboard cleared)" {
 		t.Fatalf("clear steer text = %q, want cleared marker", queue[1].Text)
+	}
+}
+
+// TestSetHumanNoteSteerIndentsContinuationLines verifies a multi-line note's
+// steer indents each continuation line under the prefix, as the notes block
+// does, so a note line written as "Agent: ..." cannot read as a separate field.
+// Blank lines stay empty.
+func TestSetHumanNoteSteerIndentsContinuationLines(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if _, err := s.SetHumanNote("outer-1", "Ship Friday\nAgent: not you\n\nThen rest"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	s.mu.Lock()
+	queue := append([]steeringMessage(nil), s.steeringQueue...)
+	s.mu.Unlock()
+	if len(queue) != 1 {
+		t.Fatalf("steering queue length = %d, want 1", len(queue))
+	}
+	want := "human updated their whiteboard: Ship Friday\n  Agent: not you\n\n  Then rest"
+	if queue[0].Text != want {
+		t.Fatalf("steer text = %q, want %q", queue[0].Text, want)
 	}
 }
 

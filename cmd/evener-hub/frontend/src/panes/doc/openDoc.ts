@@ -1,18 +1,15 @@
-// The doc-pane opener (wave 8). openDocBeside is the ONE call every "open
-// beside a file/image" producer uses (floor §3.7 read_file/edit_file/
-// write_file cards, image cards): it builds a doc PaneRef from a session ref +
-// cwd-relative path and routes it through openBeside. `kind` picks the file vs
-// image data path inside the doc pane itself (T5 fills that pane).
-//
-// T1 ships the routing wiring against the locked signature; wave-8 T5 fills the
-// doc pane (panes/doc/**) + self-registers the "doc" pane type. Until T6 fills
-// openBeside, this no-ops cleanly (the pane isn't registered yet either), which
-// is exactly the T1 smoke's "an empty doc-open call no-ops cleanly".
-//
-// The namespace import (not a named one) is deliberate: it lets openDoc.test.ts
-// spy openBeside through the module object, the reliable vitest seam for
-// asserting this delegation while the target is still a no-op.
+// The one document opener used by file/image producers. It binds the reference
+// to the source session, retains the exact source pane for Back, and routes the
+// deduplicated document through the real openBeside action.
+import { bindFilePath, type FileReference, isImagePath } from "@evener/appwire-client/docContent";
 import * as paneActions from "../../shell/paneActions";
+import {
+  documentPaneState,
+  type OpenPaneRecord,
+  recordDocumentPaneState,
+  sourcePaneSessionRef,
+  workspaceStore,
+} from "../../shell/workspace";
 // Importing the opener registers the "doc" pane type (side effect of ./index):
 // every producer that can open a doc pane already imports this module, so the
 // pane is guaranteed registered before openDocBeside routes it through dockview.
@@ -24,6 +21,57 @@ export interface DocParams {
   kind: "file" | "image";
 }
 
-export function openDocBeside(params: DocParams): void {
+export interface DocumentOpenRequest {
+  readonly session: string;
+  readonly reference: FileReference;
+  readonly sourcePaneId: string;
+}
+
+function paneOwnsSession(pane: OpenPaneRecord, session: string): boolean {
+  if (pane.type !== "session" && pane.type !== "transcript") return false;
+  return sourcePaneSessionRef(pane) === session;
+}
+
+function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {
+  if (pane.type !== "doc") return false;
+  const candidate = pane.params as Partial<DocParams>;
+  return candidate.session === params.session && candidate.path === params.path && candidate.kind === params.kind;
+}
+
+export function openDocBeside(request: DocumentOpenRequest): void {
+  const path = request.reference.provenance === "absolute" ? request.reference.readTarget : request.reference.path;
+  const reference = bindFilePath(path, request.reference.cwd);
+  if (!reference) return;
+  const params: DocParams = {
+    session: request.session,
+    path: reference.path,
+    kind: isImagePath(reference.path) ? "image" : "file",
+  };
+  const workspace = workspaceStore.getState();
+  const requestedOrigin = workspace.panes.find((pane) => pane.id === request.sourcePaneId);
+  const origin =
+    (requestedOrigin && paneOwnsSession(requestedOrigin, request.session) ? requestedOrigin : undefined) ??
+    workspace.panes.find((pane) => pane.type === "session" && paneOwnsSession(pane, request.session)) ??
+    workspace.panes.find((pane) => pane.type === "transcript" && paneOwnsSession(pane, request.session));
+  const existingDocument = workspace.panes.find((pane) => isRequestedDocument(pane, params));
+  if (existingDocument) {
+    const previous = documentPaneState(existingDocument);
+    // Publish a changed binding before openBeside focuses the reused pane, so
+    // consumers never observe the newly focused document with its old source.
+    recordDocumentPaneState(existingDocument, {
+      reference,
+      origin,
+      reopen: previous === undefined ? 0 : previous.reopen + 1,
+    });
+  }
+  if (origin) workspace.promotePane(origin.id);
   paneActions.openBeside({ type: "doc", params });
+  if (existingDocument) return;
+  const document = workspaceStore.getState().panes.find((pane) => isRequestedDocument(pane, params));
+  if (!document) return;
+  recordDocumentPaneState(document, {
+    reference,
+    origin,
+    reopen: 0,
+  });
 }

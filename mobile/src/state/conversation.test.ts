@@ -506,7 +506,6 @@ class FakeConversationService implements LiveConversationService {
 	receipt: MutationReceipt = makeReceipt();
 	sendShouldReject: Error | null = null;
 	sendCallCount = 0;
-	steerCallCount = 0;
 	queueCallCount = 0;
 	interruptCallCount = 0;
 	cancelQueuedResult: {
@@ -614,10 +613,6 @@ class FakeConversationService implements LiveConversationService {
 	async send(_input: InputItem[]): Promise<MutationReceipt> {
 		this.sendCallCount += 1;
 		if (this.sendShouldReject) throw this.sendShouldReject;
-		return this.receipt;
-	}
-	async steer(_input: InputItem[]): Promise<MutationReceipt> {
-		this.steerCallCount += 1;
 		return this.receipt;
 	}
 	async queue(_input: InputItem[]): Promise<MutationReceipt> {
@@ -1048,8 +1043,8 @@ describe("ConversationStore", () => {
 
 	// --- mutation-state tests (Step 3) ------------------------------------------
 
-	describe("mutation state — parameterized send/steer/queue/interrupt", () => {
-		type MutationKind = "send" | "steer" | "queue" | "interrupt";
+	describe("mutation state — parameterized send/queue/interrupt", () => {
+		type MutationKind = "send" | "queue" | "interrupt";
 
 		const mutationCases: {
 			kind: MutationKind;
@@ -1066,11 +1061,6 @@ describe("ConversationStore", () => {
 				callCountField: "sendCallCount",
 			},
 			{
-				kind: "steer",
-				call: (store, s, i) => store.getState().steer(s, i),
-				callCountField: "steerCallCount",
-			},
-			{
 				kind: "queue",
 				call: (store, s, i) => store.getState().queue(s, i),
 				callCountField: "queueCallCount",
@@ -1082,7 +1072,7 @@ describe("ConversationStore", () => {
 			},
 		];
 
-		// Send is offered at rest; the steering mutations need a running turn.
+		// Send is offered at rest; queue and interrupt need a running turn.
 		function serviceFor(kind: MutationKind): FakeConversationService {
 			const service = new FakeConversationService();
 			service.openConv = makeConversation({ status: { type: kind === "send" ? "idle" : "active" } });
@@ -1113,8 +1103,6 @@ describe("ConversationStore", () => {
 				if (kind === "send") {
 					service.sendShouldReject = null;
 					service.send = async () => hangPromise;
-				} else if (kind === "steer") {
-					service.steer = async () => hangPromise;
 				} else if (kind === "queue") {
 					service.queue = async () => hangPromise;
 				} else {
@@ -1152,8 +1140,6 @@ describe("ConversationStore", () => {
 				});
 				if (kind === "send") {
 					service.send = async () => hangPromise;
-				} else if (kind === "steer") {
-					service.steer = async () => hangPromise;
 				} else if (kind === "queue") {
 					service.queue = async () => hangPromise;
 				} else {
@@ -1189,8 +1175,6 @@ describe("ConversationStore", () => {
 				const rejectErr = new Error(`${kind} conflict`);
 				if (kind === "send") {
 					service.sendShouldReject = rejectErr;
-				} else if (kind === "steer") {
-					service.steer = async () => Promise.reject(rejectErr);
 				} else if (kind === "queue") {
 					service.queue = async () => Promise.reject(rejectErr);
 				} else {
@@ -1207,13 +1191,13 @@ describe("ConversationStore", () => {
 				expect(store.getState().pendingMutation).not.toBeNull();
 				expect(store.getState().pendingMutation?.status).toBe("failed");
 				expect(store.getState().lastAcceptedMutation).toBeNull();
-				// Draft should be restored for send/steer/queue (interrupt doesn't
+				// Draft should be restored for send/queue (interrupt doesn't
 				// snapshot draft, so it's not restored)
 				if (kind === "interrupt") {
 					// Interrupt doesn't clear draft, so it remains as-is
 					expect(store.getState().draft).toBe("draft to restore");
 				} else {
-					// Send/steer/queue clear draft on submit, restore on failure if no
+					// Send/queue clear draft on submit, restore on failure if no
 					// new text was typed. Since no new text was typed, restore happens.
 					expect(store.getState().draft).toBe("draft to restore");
 				}
@@ -1227,8 +1211,6 @@ describe("ConversationStore", () => {
 				});
 				if (kind === "send") {
 					service.send = async () => hangPromise;
-				} else if (kind === "steer") {
-					service.steer = async () => hangPromise;
 				} else if (kind === "queue") {
 					service.queue = async () => hangPromise;
 				} else {
@@ -1297,7 +1279,7 @@ describe("ConversationStore", () => {
 			).toThrow(/mutationHubId is required/);
 		});
 
-		it("send has an independent capability gate from steer", async () => {
+		it("send has an independent capability gate from queue", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			// Only send is disabled, in the state that offers it.
@@ -1306,12 +1288,12 @@ describe("ConversationStore", () => {
 			});
 			await store.getState().open(service, "ref-1");
 			await expect(store.getState().send(service, textInput("x"))).rejects.toThrow(SEND_UNAVAILABLE);
-			// steer should work since steer capability is true, once a turn runs
+			// queue should work since queue capability is true, once a turn runs
 			store.getState().applyNotification({
 				method: "thread/status/changed",
 				params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
 			} as AnyNotification);
-			await store.getState().steer(service, textInput("x"));
+			await store.getState().queue(service, textInput("x"));
 			expect(store.getState().error).toBeNull();
 		});
 
@@ -2533,10 +2515,10 @@ describe("ConversationStore", () => {
 			expect(store2.getState().conversation?.activeTurnId).toBe("t2");
 		});
 
-		// The control is re-evaluated at the mutation boundary: a Steer the
+		// The control is re-evaluated at the mutation boundary: a Stop the
 		// screen offered while active is refused if the status flipped idle
 		// before the submit reached the store.
-		it("refuses a steer submitted after the status flipped idle", async () => {
+		it("refuses a stop submitted after the status flipped idle", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
 			await store.getState().open(service, "ref-1");
@@ -2544,8 +2526,8 @@ describe("ConversationStore", () => {
 				method: "thread/status/changed",
 				params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
 			} as AnyNotification);
-			await expect(store.getState().steer(service, textInput("x"))).rejects.toThrow(/no active turn/);
-			expect(service.steerCallCount).toBe(0);
+			await expect(store.getState().interrupt(service)).rejects.toThrow(/no active turn/);
+			expect(service.interruptCallCount).toBe(0);
 		});
 
 		// Send is a control like the others: while a turn runs the session queues,
@@ -18628,8 +18610,8 @@ describe("ConversationStore", () => {
 		});
 	});
 
-	describe("C1: wrong-service send/steer/queue/interrupt => zero A calls", () => {
-		for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
+	describe("C1: wrong-service send/queue/interrupt => zero A calls", () => {
+		for (const kind of ["send", "queue", "interrupt"] as const) {
 			it(`wrong-service ${kind} => zero B calls, zero state change`, async () => {
 				const serviceA = new FakeConversationService();
 				serviceA.openConv = makeConversation({ status: { type: kind === "send" ? "idle" : "active" } });
@@ -18641,7 +18623,6 @@ describe("ConversationStore", () => {
 				const serviceB = new FakeConversationService();
 				// Call with wrong serviceB — rejected at the boundary.
 				if (kind === "send") await store.getState().send(serviceB, textInput("x"));
-				else if (kind === "steer") await store.getState().steer(serviceB, textInput("x"));
 				else if (kind === "queue") await store.getState().queue(serviceB, textInput("x"));
 				else await store.getState().interrupt(serviceB);
 				// C1: zero state change — pending/draft/error unchanged.
@@ -18650,7 +18631,6 @@ describe("ConversationStore", () => {
 				expect(store.getState().error).toBe(errorBefore);
 				// C1: serviceB mutation method was never called.
 				if (kind === "send") expect(serviceB.sendCallCount).toBe(0);
-				else if (kind === "steer") expect(serviceB.steerCallCount).toBe(0);
 				else if (kind === "queue") expect(serviceB.queueCallCount).toBe(0);
 				else expect(serviceB.interruptCallCount).toBe(0);
 			});
@@ -19051,8 +19031,8 @@ describe("ConversationStore", () => {
 			expect(snapshotState(store)).toEqual(stateAfterRebind);
 		});
 
-		// Table: late A failure for send/steer/queue/interrupt
-		for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
+		// Table: late A failure for send/queue/interrupt
+		for (const kind of ["send", "queue", "interrupt"] as const) {
 			it(`mutation: controlled A->B then late A ${kind} failure => entire state unchanged`, async () => {
 				const serviceA = new FakeConversationService();
 				serviceA.readProjectionResult = {
@@ -19080,8 +19060,6 @@ describe("ConversationStore", () => {
 				if (kind === "send") {
 					serviceA.sendShouldReject = null;
 					serviceA.send = async () => hangFail;
-				} else if (kind === "steer") {
-					serviceA.steer = async () => hangFail;
 				} else if (kind === "queue") {
 					serviceA.queue = async () => hangFail;
 				} else {
@@ -19090,7 +19068,6 @@ describe("ConversationStore", () => {
 
 				let mutationP: Promise<void>;
 				if (kind === "send") mutationP = store.getState().send(serviceA, textInput("x"));
-				else if (kind === "steer") mutationP = store.getState().steer(serviceA, textInput("x"));
 				else if (kind === "queue") mutationP = store.getState().queue(serviceA, textInput("x"));
 				else mutationP = store.getState().interrupt(serviceA);
 
@@ -19110,8 +19087,7 @@ describe("ConversationStore", () => {
 				await store.getState().rehydrate(serviceB, sinkB);
 
 				const stateAfterRebind = snapshotState(store);
-				const callsA =
-					serviceA.sendCallCount + serviceA.steerCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
+				const callsA = serviceA.sendCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
 
 				// A's mutation fails — zero state change.
 				rejectMutationHolder.fn?.(new Error("A mutation boom"));
@@ -19119,14 +19095,13 @@ describe("ConversationStore", () => {
 
 				expect(snapshotState(store)).toEqual(stateAfterRebind);
 				// No additional A mutation calls after rebind.
-				const callsAAfter =
-					serviceA.sendCallCount + serviceA.steerCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
+				const callsAAfter = serviceA.sendCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
 				expect(callsAAfter).toBe(callsA);
 			});
 		}
 
-		// Table: late A SUCCESS for send/steer/queue/interrupt — full object reference + notification count
-		for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
+		// Table: late A SUCCESS for send/queue/interrupt — full object reference + notification count
+		for (const kind of ["send", "queue", "interrupt"] as const) {
 			it(`mutation: controlled A->B then late A ${kind} success => entire state unchanged`, async () => {
 				const serviceA = new FakeConversationService();
 				serviceA.readProjectionResult = {
@@ -19154,8 +19129,6 @@ describe("ConversationStore", () => {
 				if (kind === "send") {
 					serviceA.sendShouldReject = null;
 					serviceA.send = async () => hangSuccess;
-				} else if (kind === "steer") {
-					serviceA.steer = async () => hangSuccess;
 				} else if (kind === "queue") {
 					serviceA.queue = async () => hangSuccess;
 				} else {
@@ -19164,7 +19137,6 @@ describe("ConversationStore", () => {
 
 				let mutationP: Promise<void>;
 				if (kind === "send") mutationP = store.getState().send(serviceA, textInput("x"));
-				else if (kind === "steer") mutationP = store.getState().steer(serviceA, textInput("x"));
 				else if (kind === "queue") mutationP = store.getState().queue(serviceA, textInput("x"));
 				else mutationP = store.getState().interrupt(serviceA);
 
@@ -19211,8 +19183,7 @@ describe("ConversationStore", () => {
 					notificationCount++;
 				});
 
-				const callsA =
-					serviceA.sendCallCount + serviceA.steerCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
+				const callsA = serviceA.sendCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
 				const readsA = serviceA.readProjectionCalls.length;
 				const writesA = sinkA.setLiveViewCalls.length;
 
@@ -19237,8 +19208,7 @@ describe("ConversationStore", () => {
 					expect(serviceA.readProjectionCalls.length).toBe(readsA);
 					expect(sinkA.setLiveViewCalls.length).toBe(writesA);
 					// No additional A mutation calls after rebind.
-					const callsAAfter =
-						serviceA.sendCallCount + serviceA.steerCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
+					const callsAAfter = serviceA.sendCallCount + serviceA.queueCallCount + serviceA.interruptCallCount;
 					expect(callsAAfter).toBe(callsA);
 				} finally {
 					unsub();

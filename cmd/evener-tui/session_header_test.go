@@ -35,7 +35,7 @@ func TestSessionHeaderHasThreeMainSections(t *testing.T) {
 	if !strings.Contains(got, "Restore hub TUI widgets") {
 		t.Errorf("missing title: %q", got)
 	}
-	if !strings.Contains(got, "YOUR MOVE") {
+	if !strings.Contains(got, "NEEDS YOU") {
 		t.Errorf("missing state badge: %q", got)
 	}
 	// 3. meta strip

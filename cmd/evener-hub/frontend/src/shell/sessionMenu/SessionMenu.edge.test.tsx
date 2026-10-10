@@ -28,7 +28,7 @@ function treeNode(overrides: Partial<NavigationSessionSummary> = {}): Navigation
 
 function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
   const actions: SessionMenuActions = {
-    onOpenPane: vi.fn(),
+    onOpenOverview: vi.fn(),
     onRename: vi.fn().mockResolvedValue(undefined),
     onShutdown: vi.fn().mockResolvedValue(undefined),
     onPin: vi.fn().mockResolvedValue(undefined),
@@ -44,7 +44,7 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
       canRename
       canShutdown
       stopped
-      panesOpen={{ details: false, activity: false }}
+      overviewOpen={false}
       actions={actions}
       {...overrides}
     />,

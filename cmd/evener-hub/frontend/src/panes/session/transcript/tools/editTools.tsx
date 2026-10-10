@@ -20,7 +20,6 @@
 
 import {
   applyPatchSummary,
-  editDiffText,
   editFileSummary,
   filePathArg,
   parseArgs,
@@ -30,14 +29,7 @@ import {
 import { DiffBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-
-function EditFileBody({ item }: ToolRenderProps) {
-  const args = parseArgs(item.argumentsJSON);
-  const path = str(args, "file_path") ?? str(args, "path") ?? "";
-  const oldString = str(args, "old_string") ?? "";
-  const newString = str(args, "new_string") ?? "";
-  return <DiffBlock unified={editDiffText(path, oldString, newString)} />;
-}
+import { EditFileBody, WriteFileBody } from "./bodies";
 
 registerToolRenderer({
   match: "edit_file",
@@ -47,12 +39,6 @@ registerToolRenderer({
   body: EditFileBody,
   openBesidePath: filePathArg, // single-file mutation (floor §3.7)
 });
-
-function WriteFileBody({ item }: ToolRenderProps) {
-  const output = item.output ?? "";
-  if (output === "") return null;
-  return <div>{output}</div>;
-}
 
 registerToolRenderer({
   match: "write_file",

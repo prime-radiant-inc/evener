@@ -1,8 +1,10 @@
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
+import { LivenessLine } from "../../panes/session/transcript/flow/LivenessLine";
 import { connectionStore } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
@@ -16,6 +18,34 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
+});
+
+test("four footer categories keep their owning pane and About has no chip", async () => {
+  const ref = "remote:pane";
+  installFocusedScope(ref, summaryOf({ ref, title: "Pane owner", tasks: { total: 5, done: 2 } }));
+  workspaceStore.setState({
+    panes: [
+      { id: "selected", type: "transcript", params: { ref: "remote:focused" }, slot: "main" },
+      { id: "pane-secondary", type: "transcript", params: { ref }, slot: "secondary" },
+    ],
+    focusedPaneId: "selected",
+  });
+  connectionStore.getState().connect(activityClient());
+  render(<StatusBar sessionRef={ref} paneId="pane-secondary" leading={null} />);
+  await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
+  const chips = screen.getAllByRole("button");
+  expect(chips.map((chip) => chip.dataset.activityTab)).toEqual(["agents", "jobs", "watches", "tasks"]);
+  expect(chips.every((chip) => chip.dataset.sessionRef === ref)).toBe(true);
+  expect(chips.every((chip) => chip.getAttribute("aria-label")?.endsWith(" - open Overview"))).toBe(true);
+  expect(screen.queryByRole("button", { name: /About/ })).toBeNull();
+  for (const tab of ["agents", "jobs", "watches", "tasks"] as const) {
+    act(() => workspaceStore.getState().focusPane("selected"));
+    const chip = chips.find((chip) => chip.dataset.activityTab === tab);
+    if (!chip) throw new Error(`Missing ${tab} chip`);
+    fireEvent.click(chip);
+    expect(workspaceStore.getState().focusedPaneId).toBe("pane-secondary");
+    expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab });
+  }
 });
 
 test("uses its owning pane's session and focuses that pane before opening activity", async () => {
@@ -57,7 +87,7 @@ test.each(["button", "Escape"])("closing activity with %s restores its keyboard 
   const opener = await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
   opener.focus();
   await user.keyboard("{Enter}");
-  const close = await screen.findByRole("button", { name: "Close the activity sidebar" });
+  const close = await screen.findByRole("button", { name: "Close Overview" });
   close.focus();
   await user.keyboard(gesture === "button" ? "{Enter}" : "{Escape}");
   expect(activitySidebarStore.getState().open).toBe(false);
@@ -92,7 +122,7 @@ test("an open activity sidebar returns focus to the latest pane's replacement ch
   await user.click(await within(second.container).findByRole("button", { name: /Jobs, 2 of 201 running/ }));
 
   expect(focusedPaneWhenSidebarChanged).toBe("pane-second");
-  const close = await screen.findByRole("button", { name: "Close the activity sidebar" });
+  const close = await screen.findByRole("button", { name: "Close Overview" });
   close.focus();
   second.unmount();
   const replacement = render(<StatusBar sessionRef="remote:second" paneId="pane-second" leading={null} />);
@@ -141,15 +171,15 @@ test("closing after a transient opener disappears returns to the selected activi
   );
   await user.click(screen.getByRole("button", { name: "Inspect job activity" }));
   trigger.unmount();
-  await user.click(await screen.findByRole("button", { name: "Close the activity sidebar" }));
+  await user.click(await screen.findByRole("button", { name: "Close Overview" }));
   expect(document.activeElement).toBe(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
 });
 
 test("selected child gets authoritative counts before its navigation location exists", async () => {
   const ref = "remote:deep-child",
     client = activityClient();
-  client.on("evener/thread/activity/read", () => ({
-    ...activitySummary(ref),
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(ref, scope),
     context: {
       ...activityContext(ref),
       sessionId: "child",
@@ -169,7 +199,12 @@ test("selected child gets authoritative counts before its navigation location ex
   expect(screen.queryByRole("button", { name: "Root" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Parent" })).toBeNull();
   expect(screen.queryByText("Finding session context…")).toBeNull();
-  expect(client.calls.map((c) => c.method)).toEqual(["thread/read", "evener/thread/activity/read"]);
+  // The session's summary and its subtree's (the subagent count).
+  expect(client.calls.map((c) => c.method)).toEqual([
+    "thread/read",
+    "evener/thread/activity/read",
+    "evener/thread/activity/read",
+  ]);
   expect(client.calls.every((c) => (c.params as { ref?: string }).ref === ref)).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
@@ -178,8 +213,8 @@ test("selected child gets authoritative counts before its navigation location ex
 test("unknown counts remain unknown and pending ancestry is explicit", async () => {
   const ref = "remote:pending",
     client = activityClient();
-  client.on("evener/thread/activity/read", () => ({
-    ...activitySummary(ref),
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...activitySummary(ref, scope),
     context: { ...activityContext(ref), ancestryKnown: false },
     delegates: { known: false, active: 17, total: 99, completed: 0, failed: 0 },
   }));
@@ -212,9 +247,19 @@ test("embedded Tasks counts still use the exact selected navigation row", async 
   installFocusedScope(ref, summaryOf({ ref, title: "Tasks owner", tasks: { total: 5, done: 2 } }));
   connectionStore.getState().connect(client);
   render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
-  expect(await screen.findByRole("button", { name: /Tasks, 2 of 5 done/ })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: /Tasks, 2 of 5 done/ }));
+  expect(await screen.findByRole("button", { name: /Tasks, 2 of 5 settled/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /Tasks, 2 of 5 settled/ }));
   expect(activitySidebarStore.getState().tab).toBe("tasks");
+});
+
+test("the Tasks chip counts cancelled tasks toward its settled count", async () => {
+  const ref = "remote:tasks-cancelled",
+    client = activityClient();
+  installFocusedScope(ref, summaryOf({ ref, title: "Tasks owner", tasks: { total: 5, done: 2, cancelled: 1 } }));
+  connectionStore.getState().connect(client);
+  render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
+  const chip = await screen.findByRole("button", { name: /Tasks, 3 of 5 settled/ });
+  expect(chip.textContent).toContain("3/5");
 });
 
 test("footer and tabs explain summary counts through paging and activity changes", async () => {
@@ -222,8 +267,8 @@ test("footer and tabs explain summary counts through paging and activity changes
   const client = activityClient();
   let active = 2;
   let total = 6;
-  const summary = () => ({
-    ...activitySummary(ref),
+  const summary = ({ scope }: { scope?: "session" | "subtree" }) => ({
+    ...activitySummary(ref, scope),
     delegates: { known: true, active: 0, total: 2, completed: 2, failed: 0 },
     jobs: { known: true, active, total, completed: total - active, failed: 0 },
     watches: { known: true, active: 2, total: 3, completed: 1, failed: 0 },
@@ -258,8 +303,7 @@ test("footer and tabs explain summary counts through paging and activity changes
   await screen.findByRole("radio", { name: "Jobs, 2 of 6 running" });
   const expectCounts = (running: number, retained: number) => {
     expect(
-      footer.getByRole("button", { name: `Jobs, ${running} of ${retained} running - open the activity sidebar` })
-        .textContent,
+      footer.getByRole("button", { name: `Jobs, ${running} of ${retained} running - open Overview` }).textContent,
     ).toContain(`${running}/${retained}`);
     expect(screen.getByRole("radio", { name: `Jobs, ${running} of ${retained} running` }).textContent).toContain(
       `${running}/${retained}`,
@@ -272,8 +316,8 @@ test("footer and tabs explain summary counts through paging and activity changes
   expect(footer.getByRole("button", { name: /Agents, 0 of 2 active/ }).textContent).toContain("0/2");
   expect(screen.getByRole("radio", { name: "Agents, 0 of 2 active" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 done" })).toBeTruthy();
-  expect(screen.queryByText("Activity kind")).toBeNull();
+  expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 settled" })).toBeTruthy();
+  expect(screen.queryByText("Overview kind")).toBeNull();
   fireEvent.click(await screen.findByRole("button", { name: "Load more jobs" }));
   expectCounts(2, 6);
   await act(async () => {
@@ -289,12 +333,36 @@ test("footer and tabs explain summary counts through paging and activity changes
   expectCounts(2, 6);
   active = 1;
   total = 7;
-  act(() =>
-    client.emitNotification({
-      method: "evener/thread/activity/changed",
-      params: { ref, threadId: "owner", sessionId: "owner", resources: ["summary"] },
-    }),
-  );
+  act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["summary"])));
   await screen.findByRole("radio", { name: "Jobs, 1 of 7 running" });
   expectCounts(1, 7);
+});
+
+// "Running subagents" means every open subagent at every depth, on every web
+// surface that counts them. In this tree the session has one child of its
+// own, still running, and that child runs two more: the chip, the sidebar's
+// Agents tab and the liveness line all say 3 of 4, never the session's own 1.
+test("the chip, the sidebar and the liveness line count subagents at every depth", async () => {
+  const ref = "remote:nested";
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates:
+      scope === "subtree"
+        ? { known: true, total: 4, active: 3, failed: 0, completed: 1 }
+        : { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+  }));
+  installFocusedScope(ref);
+  connectionStore.getState().connect(client);
+  render(
+    <MotionProvider>
+      <StatusBar sessionRef={ref} paneId="selected" leading={null} />
+      <ActivitySidebar />
+      <LivenessLine lastFrameAt={0} now={60_000} active={true} sessionRef={ref} turnId="turn_0" />
+    </MotionProvider>,
+  );
+  const chip = await screen.findByRole("button", { name: /Agents, 3 of 4 active/ });
+  await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 3 subagents"));
+  fireEvent.click(chip);
+  expect(await screen.findByRole("radio", { name: "Agents, 3 of 4 active" })).toBeTruthy();
 });

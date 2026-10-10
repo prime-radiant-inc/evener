@@ -29,6 +29,7 @@ import { useSessionActivity } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { TranscriptSourcePaneContext } from "../session/transcript/TranscriptBody";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { JobLog } from "./JobLog";
 import { ReadOnlyThreadContent } from "./ReadOnlyThreadContent";
@@ -74,7 +75,8 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
   const view = pane ? retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "transcript") : undefined;
   const model = useThreadsStore((state) => state.threads.get(ref));
   const { snapshot: activity } = useSessionActivity(ref);
-  const scope = deriveScope(navigationStore.getState(), ref, activity);
+  // Only the crumbs are shown here, so no subagent count is read.
+  const scope = deriveScope(navigationStore.getState(), ref, activity, null);
   return (
     <PaneScaffold title={model?.name || ref}>
       <div className={CLASS.body}>
@@ -84,7 +86,9 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
           </div>
         )}
         <div className={CLASS.list}>
-          {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          <TranscriptSourcePaneContext.Provider value={paneId}>
+            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <EmptyState title="Loading transcript…" />}
+          </TranscriptSourcePaneContext.Provider>
         </div>
       </div>
     </PaneScaffold>

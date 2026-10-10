@@ -1,7 +1,7 @@
 import type { ConnectionState } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook } from "../renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "../renderNative.testkit";
 
 const connection = vi.hoisted(() => ({
 	value: {
@@ -154,6 +154,7 @@ describe("useConnectionStatusText: the status on the provider's clock", () => {
 		vi.setSystemTime(NOW);
 	});
 	afterEach(() => {
+		unmountMountedTrees();
 		vi.useRealTimers();
 	});
 

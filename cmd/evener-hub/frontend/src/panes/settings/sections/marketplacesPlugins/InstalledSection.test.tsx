@@ -154,3 +154,10 @@ test("a filter with no match says so, and clearing it restores the rows", async 
   await user.clear(filter);
   expect(screen.getByText("linter")).toBeTruthy();
 });
+
+test("marks a plugin the hub found an update for", () => {
+  connectFakeClient();
+  extensionsStore.setState({ plugins: [{ ...LINTER, updateAvailable: true }, FORMATTER] });
+  render(<InstalledSection onSelect={() => {}} />);
+  expect(screen.getAllByText("update available")).toHaveLength(1);
+});

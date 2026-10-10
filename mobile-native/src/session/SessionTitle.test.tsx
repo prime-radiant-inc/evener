@@ -30,9 +30,9 @@ const maxWidthOf = (tree: ReturnType<typeof render>) => {
 describe("the Session's nav bar title (spec 8.1)", () => {
 	it("shows the title, the state line and the chevron", () => {
 		const tree = render(
-			<SessionTitle title="Fix the flaky test" line={{ state: "idle", text: "Finished · 1h ago" }} {...base} />,
+			<SessionTitle title="Fix the flaky test" line={{ state: "idle", text: "Idle · 1h ago" }} {...base} />,
 		);
-		expect(renderedText(tree)).toBe("Fix the flaky test Finished · 1h ago");
+		expect(renderedText(tree)).toBe("Fix the flaky test Idle · 1h ago");
 		expect(symbols(tree)).toEqual(["chevron.right"]);
 	});
 
@@ -71,7 +71,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 	});
 
 	it("keeps the title to one tail-truncated line in tabular state figures", () => {
-		const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} {...base} />);
+		const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Idle" }} {...base} />);
 		const [title, state] = tree.root.findAllByType("Text" as never);
 		expect(title?.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
 		expect(title?.props.style).toMatchObject({ fontSize: 15, fontWeight: "600" });
@@ -85,7 +85,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		const tree = render(
 			<SessionTitle
 				title="Audit Tool Descriptions for Implied Options"
-				line={{ state: "idle", text: "Finished" }}
+				line={{ state: "idle", text: "Idle" }}
 				{...base}
 			/>,
 		);
@@ -96,9 +96,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		// Back's pill (BackButton.tsx) shows the count's digits at 17pt tabular
 		// figures, about 10pt each. The span measured for one digit is 80pt a
 		// side, so two more digits add 20pt a side: 390 - 2 * (80 + 20).
-		const tree = render(
-			<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} backCount={123} {...base} />,
-		);
+		const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Idle" }} backCount={123} {...base} />);
 		expect(maxWidthOf(tree)).toBe(390 - 2 * 100);
 	});
 
@@ -107,7 +105,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		// three times their default size, so the span grows by 2 * 30.
 		mockWindow.fontScale = 3;
 		try {
-			const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} {...base} />);
+			const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Idle" }} {...base} />);
 			expect(maxWidthOf(tree)).toBe(390 - 2 * (80 + 60));
 		} finally {
 			mockWindow.fontScale = 1;
@@ -119,9 +117,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		// the window has; the title floors at zero instead of going negative.
 		mockWindow.fontScale = 3;
 		try {
-			const tree = render(
-				<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} backCount={123} {...base} />,
-			);
+			const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Idle" }} backCount={123} {...base} />);
 			expect(maxWidthOf(tree)).toBe(0);
 		} finally {
 			mockWindow.fontScale = 1;
@@ -134,7 +130,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		const tree = render(
 			<SessionTitle
 				title="S"
-				line={{ state: "idle", text: "Finished" }}
+				line={{ state: "idle", text: "Idle" }}
 				onPress={onPress}
 				onSwipe={onSwipe}
 				neighbors={{ previous: true, next: true }}
@@ -160,7 +156,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 			const tree = render(
 				<SessionTitle
 					title="S"
-					line={{ state: "idle", text: "Finished" }}
+					line={{ state: "idle", text: "Idle" }}
 					onPress={() => {}}
 					onSwipe={onSwipe}
 					neighbors={neighbors}

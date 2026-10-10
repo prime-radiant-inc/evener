@@ -255,11 +255,17 @@ function paramsFor(k: ResourceKey, base: NavigationReadBase | undefined): Naviga
     case "catalog":
       return { resource: "catalog", catalog: k.catalog, offset: k.offset, limit: k.limit, ...conditional };
     case "project":
-      return { resource: "project", projectKey: k.projectKey, ...conditional };
+      return {
+        resource: "project",
+        projectKey: k.projectKey,
+        ...(k.catalog ? { catalog: k.catalog } : {}),
+        ...conditional,
+      };
     case "project_page":
       return {
         resource: "project_page",
         projectKey: k.projectKey,
+        ...(k.catalog ? { catalog: k.catalog } : {}),
         tier: k.tier,
         offset: k.offset,
         limit: k.limit,

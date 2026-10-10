@@ -12,9 +12,10 @@ import {
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import { Spinner } from "./sheet/Spinner";
+import { Button } from "./sheet/Grouped";
 
 function shortcutLabel(chord: string): string {
 	return chord.replaceAll("$mod", "Command / Control").replaceAll("Meta", "Command").replaceAll("Alt", "Option");
@@ -121,7 +122,11 @@ export function KeybindingPreferencesScreen({
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, gap: 16 }}>
+				<ScrollView
+					keyboardShouldPersistTaps="handled"
+					keyboardDismissMode="on-drag"
+					contentContainerStyle={{ padding: 20, gap: 16 }}
+				>
 					<Copy>{connection.activeProfile.name}</Copy>
 					<Copy muted>
 						Configure this hub’s web keyboard shortcuts. This preview uses Apple keys. The web character-key setting can
@@ -145,7 +150,9 @@ export function KeybindingPreferencesScreen({
 					{draftUnreadable && (
 						<View style={{ gap: 12 }}>
 							<Copy>A saved draft on this phone could not be read. Discard it to continue editing shortcuts.</Copy>
-							<Action
+							<Button
+								text
+								label="Discard unreadable draft"
 								disabled={unreadableDraftDiscardDisabled(!!model && preferences.connected, domain)}
 								onPress={() => {
 									if (model && preferences.connected) {
@@ -172,18 +179,16 @@ export function KeybindingPreferencesScreen({
 										setError("The change could not be completed. Check current shortcuts and review your changes.");
 									}
 								}}
-							>
-								Discard unreadable draft
-							</Action>
+							/>
 						</View>
 					)}
 					{model && domain?.support === "supported" && (
-						<Action
+						<Button
+							text
+							label="Check current shortcuts"
 							disabled={!preferences.connected || domain.loading || domain.saving}
 							onPress={() => run(() => model.refresh())}
-						>
-							Check current shortcuts
-						</Action>
+						/>
 					)}
 					{editor ? (
 						<>
@@ -216,27 +221,23 @@ export function KeybindingPreferencesScreen({
 								Use + between keys. Meta means Command, Alt means Option, and $mod uses Command on Apple or Control
 								elsewhere. Put a space between successive key presses.
 							</Copy>
-							<Action
-								tone="primary"
+							<Button
+								primary
+								compact
+								label="Use shortcut"
 								disabled={busy || !action || !editor.chord.trim()}
 								onPress={() => apply(editor.chord)}
-							>
-								Use shortcut
-							</Action>
-							<Action disabled={busy || !action} onPress={() => apply(null)}>
-								Unbind shortcut
-							</Action>
-							<Action disabled={busy || !action} onPress={() => apply()}>
-								Restore default
-							</Action>
-							<Action
+							/>
+							<Button text label="Unbind shortcut" disabled={busy || !action} onPress={() => apply(null)} />
+							<Button text label="Restore default" disabled={busy || !action} onPress={() => apply()} />
+							<Button
+								text
+								label="Cancel edit"
 								onPress={() => {
 									setError(null);
 									closeEditor();
 								}}
-							>
-								Cancel edit
-							</Action>
+							/>
 						</>
 					) : (
 						<>
@@ -246,9 +247,12 @@ export function KeybindingPreferencesScreen({
 									{domain.conflict ? (
 										<>
 											<Copy>The hub has different shortcuts. Review both versions before replacing its settings.</Copy>
-											<Action disabled={busy} onPress={() => setReviewedRevision(domain.confirmed?.revision ?? null)}>
-												Review current settings
-											</Action>
+											<Button
+												text
+												label="Review current settings"
+												disabled={busy}
+												onPress={() => setReviewedRevision(domain.confirmed?.revision ?? null)}
+											/>
 											{reviewedRevision !== null && domain.confirmed && (
 												<>
 													<Copy>Current on the hub</Copy>
@@ -258,7 +262,9 @@ export function KeybindingPreferencesScreen({
 													{reviewedRevision !== domain.confirmed.revision && (
 														<Copy>The hub changed again. Review the current settings again.</Copy>
 													)}
-													<Action
+													<Button
+														text
+														label="Keep my proposal"
 														disabled={busy || reviewedRevision !== domain.confirmed.revision}
 														onPress={() => {
 															if (model)
@@ -267,10 +273,10 @@ export function KeybindingPreferencesScreen({
 																	() => setReviewedRevision(null),
 																);
 														}}
-													>
-														Keep my proposal
-													</Action>
-													<Action
+													/>
+													<Button
+														text
+														label="Use hub settings"
 														disabled={busy || reviewedRevision !== domain.confirmed.revision}
 														onPress={() => {
 															if (model)
@@ -279,31 +285,29 @@ export function KeybindingPreferencesScreen({
 																	() => setReviewedRevision(null),
 																);
 														}}
-													>
-														Use hub settings
-													</Action>
+													/>
 												</>
 											)}
 										</>
 									) : (
 										<>
-											<Action
-												tone="primary"
+											<Button
+												primary
+												compact
+												label="Save changes"
 												disabled={busy}
 												onPress={() => {
 													if (model) run(() => model.saveKeybindings());
 												}}
-											>
-												Save changes
-											</Action>
-											<Action
+											/>
+											<Button
+												text
+												label="Discard changes"
 												disabled={busy}
 												onPress={() => {
 													if (model) run(() => model.discardKeybindingsDraft());
 												}}
-											>
-												Discard changes
-											</Action>
+											/>
 										</>
 									)}
 								</View>
@@ -334,9 +338,11 @@ export function KeybindingPreferencesScreen({
 											gap: 2,
 										}}
 									>
-										<Action
+										<Button
+											text
+											label={row.title}
 											disabled={busy}
-											label={`Edit ${row.title}`}
+											accessibilityLabel={`Edit ${row.title}`}
 											onPress={() => {
 												setError(null);
 												const raw = rules.findLast((rule) => rule.action === row.actionId);
@@ -347,9 +353,7 @@ export function KeybindingPreferencesScreen({
 													},
 												});
 											}}
-										>
-											{row.title}
-										</Action>
+										/>
 										<Copy muted>
 											{row.shortcuts.map(shortcutLabel).join(" or ") || "Unbound"}
 											{row.customized ? " · Custom" : " · Default"}

@@ -100,7 +100,7 @@ export interface PendingTurnsThreadsPort {
 // (`clearDraft`). No storage mechanism is named here.
 export interface PendingTurnsDraftPort {
   readDraftRevision(ref: string): number;
-  readComposerDraft(ref: string): { text: string; skillNames: readonly string[] };
+  readComposerDraft(ref: string): { text: string; skillNames: readonly string[]; commandNames?: readonly string[] };
   clearDraft(ref: string): void;
 }
 
@@ -145,6 +145,7 @@ export interface SubmittedDraft {
   draftRevisionAtStart: number;
   text: string;
   skillNames: readonly string[];
+  commandNames?: readonly string[];
 }
 
 export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAttachmentRef>
@@ -245,8 +246,13 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     if (!draftUnchanged) return { cleared: false, draftUnchanged };
     const draft = deps.draft.readComposerDraft(ref);
     const skillNames = [...submitted.skillNames];
+    const commandNames = submitted.commandNames ?? [];
+    const draftCommands = draft.commandNames ?? [];
     const selectionsUnchanged =
-      draft.skillNames.length === skillNames.length && draft.skillNames.every((name, i) => name === skillNames[i]);
+      draft.skillNames.length === skillNames.length &&
+      draft.skillNames.every((name, i) => name === skillNames[i]) &&
+      draftCommands.length === commandNames.length &&
+      draftCommands.every((name, i) => name === commandNames[i]);
     if (draft.text !== submitted.text || !selectionsUnchanged) return { cleared: false, draftUnchanged };
     deps.draft.clearDraft(ref);
     return { cleared: true, draftUnchanged };

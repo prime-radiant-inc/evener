@@ -48,7 +48,7 @@ import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacem
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
-import { type OpenPaneRecord, workspaceStore } from "./workspace";
+import { documentPaneState, type OpenPaneRecord, sourcePaneSessionRef, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -175,6 +175,8 @@ function routePlacementIsApplied(
   locationTerminal = false,
   locationGone = false,
   allowFocusedCompanion = false,
+  allowRestoredInspection = false,
+  allowInitialCascade = false,
 ): boolean {
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
@@ -182,10 +184,14 @@ function routePlacementIsApplied(
   const workspace = workspaceStore.getState();
   const mainRecord = workspace.mainPane();
   if (mainRecord === null) return false;
-  // Contextual drill keeps the URL's original conversation role. A new
-  // pathname must still place its ordinary session, regardless of saved intent.
+  // Startup restoration and contextual drill retain the source's route role.
+  // Later pathname changes must still place their ordinary session.
   const routeRole = (pane: OpenPaneRecord): OpenPaneRecord => {
-    const source = allowFocusedCompanion && pane.type === "sessionZoom" ? parseZoomParams(pane.params)?.source : null;
+    const params =
+      (allowFocusedCompanion || allowInitialCascade) && pane.type === "sessionZoom"
+        ? parseZoomParams(pane.params)
+        : null;
+    const source = params && !params.inspection ? params.source : null;
     return source ? { ...pane, ...source } : pane;
   };
   const main = routeRole(mainRecord);
@@ -218,6 +224,12 @@ function routePlacementIsApplied(
       (ancestorRef !== ref && params.ref === ref && params.parentRef === ancestorRef)
     );
   };
+  const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+  const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
+  const focusedSeparatedInspection =
+    (allowFocusedCompanion || allowRestoredInspection) &&
+    rawFocused?.slot === "secondary" &&
+    !!focusedIntent?.inspection;
   const conversationRef = focusedPane?.type === "session" ? sessionRefOf(focusedPane) : null;
   const focusedCascadeConversation =
     allowFocusedCompanion &&
@@ -227,19 +239,39 @@ function routePlacementIsApplied(
       const params = parseZoomParams(pane.params);
       if (!params) return false;
       const role = routeRole(pane);
-      if (!((role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role))) return false;
+      const coversSource =
+        !!params.inspection || (role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role);
+      if (!coversSource) return false;
       const client = connectionStore.getState().client;
       const context = client ? (sessionActivitySnapshot(client, params.ref, "session")?.context ?? null) : null;
       return deriveCascadePath(params, context).scopes.some((scope) => scope.requestedRef === conversationRef);
     });
+  const documentState = focusedPane?.type === "doc" ? documentPaneState(focusedPane) : undefined;
+  if (
+    allowFocusedCompanion &&
+    documentState?.origin === main &&
+    (main.type === "session" || main.type === "transcript")
+  ) {
+    const sourceSession = sourcePaneSessionRef(main);
+    const docParams = focusedPane?.params as { session?: unknown; path?: unknown };
+    // Filename opens promote their exact source before selecting the document.
+    // That living binding, not the old URL's placement, owns this settled view.
+    // New/pending routes and generic or stale document bindings still reconcile.
+    if (
+      typeof sourceSession === "string" &&
+      docParams.session === sourceSession &&
+      docParams.path === documentState.reference.path
+    ) {
+      return true;
+    }
+  }
   const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||
-    focusedPane?.type === "sessionActivity" ||
     focusedPane?.type === "sessionDetails" ||
     transcriptMatchesRoute(focusedPane) ||
     focusedCascadeConversation;
   const focusIsApplied = (paneId: string): boolean =>
-    workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion);
+    workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;
 
   if (ancestorRef === null || ancestorRef === ref) {
     return (
@@ -644,18 +676,22 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // session pane holds focus even when the URL already named the target -
     // navigate() no-ops on an unchanged pathname, so a secondary panel or
     // another pane holding focus would otherwise survive the press
-    // (roborev PR #1044 round-8 medium 3). replacePrimary both opens the
-    // pane and focuses it (workspace.ts), making it the URL-change and
-    // URL-equal paths' shared seam.
+    // (roborev PR #1044 round-8 medium 3). openTopLevelSession is the shared
+    // placement seam; it focuses a pane it freshly places but deliberately
+    // never steals focus for one it preserves (a restored layout's saved
+    // focus must survive a boot placement), so the chord refocuses whatever
+    // the placement left in main itself.
     const openLiveSession = (ref: string): void => {
       openNeedsYouSession(ref);
       const workspace = workspaceStore.getState();
       const main = workspace.mainPane();
       if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
         openTopLevelSession(ref);
-        return;
       }
-      if (workspace.focusedPaneId !== main.id) workspace.focusPane(main.id);
+      const placed = workspaceStore.getState().mainPane();
+      // focusPane already no-ops for a pane that is focused or absent, so
+      // this needs no guard of its own.
+      if (placed !== null) workspaceStore.getState().focusPane(placed.id);
     };
     const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
       const state = navigationStore.getState();
@@ -876,6 +912,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const routePlacementInProgressRef = useRef(false);
   const routePlacementPathnameRef = useRef<string | null>(null);
   const placedPathnameRef = useRef<string | null>(null);
+  const deferredDocumentRef = useRef<OpenPaneRecord | null>(null);
+  const initialPathnameRef = useRef(pathname);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
@@ -910,7 +948,42 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
-      if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedCompanion)) {
+      const workspace = workspaceStore.getState();
+      const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
+      if (
+        route.type === "session" &&
+        location !== null &&
+        allowFocusedCompanion &&
+        focusedPane?.type === "doc" &&
+        documentPaneState(focusedPane)?.origin === undefined &&
+        deferredDocumentRef.current !== focusedPane
+      ) {
+        // A native filename click can commit openPane's publication before
+        // openDocBeside publishes its exact owner later in the same stack,
+        // even when document hydration has already published a reference.
+        // Recheck once after that stack, generic docs still yield to the route.
+        deferredDocumentRef.current = focusedPane;
+        queueMicrotask(bumpWorkspacePanesVersion);
+        return;
+      }
+      const allowRestoredInspection =
+        route.type === "session" &&
+        openedForPathnameRef.current === pathname &&
+        (placedPathnameRef.current === null ||
+          (placedPathnameRef.current === pathname && pendingSessionRef.current === refParam(route.params)));
+      const allowInitialCascade = placedPathnameRef.current === null && initialPathnameRef.current === pathname;
+      if (
+        routePlacementIsApplied(
+          pathname,
+          location,
+          locationTerminal,
+          locationGone,
+          allowFocusedCompanion,
+          allowRestoredInspection,
+          allowInitialCascade,
+        )
+      ) {
+        pendingSessionRef.current = null;
         placedPathnameRef.current = pathname;
         return;
       }

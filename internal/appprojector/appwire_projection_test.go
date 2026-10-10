@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -527,6 +528,21 @@ func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 	}
 }
 
+// A status that settles outside any turn reaches clients as
+// thread/status/changed.
+func TestAppEventProjectorMapsStatusSettled(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	settled := projector.Project(events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_1", Data: events.StatusSettledData{State: "awaiting"}})
+	if status := notificationThreadStatus(t, settled, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("settled status=%+v, want awaiting", status)
+	}
+	// Only a resting state settles outside a turn; the bridge ignores
+	// anything else, so the projector sends nothing for it either.
+	if bogus := projector.Project(events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_1", Data: events.StatusSettledData{State: "bogus"}}); len(bogus) != 0 {
+		t.Fatalf("a non-resting settled state projected %+v, want nothing", bogus)
+	}
+}
+
 func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(events.SessionEvent{
@@ -677,6 +693,29 @@ func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
 	}
 	if len(params.Queue.Preview) != 2 || params.Queue.Preview[0] != "first line" || params.Queue.Preview[1] != "second" {
 		t.Fatalf("preview=%+v", params.Queue.Preview)
+	}
+}
+
+func TestAppEventProjectorQueueCommandSelections(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	data := events.QueueChangedData{Depth: 2, Preview: []string{"A_318", "B_318"},
+		SkillNames: [][]string{{"probe"}, {}}, CommandNames: [][]string{{"probe"}, {"pkg:probe"}},
+		Mentions: [][]appwire.InputMention{{{Kind: "command", Name: "probe", Offset: 0}, {Kind: "skill", Name: "probe", Offset: 7}}, nil}}
+	out := projector.Project(events.SessionEvent{Kind: events.EventQueueChanged, SessionID: "th_1", Data: data})
+	params := out[0].Params.(appwire.ThreadQueueChangedParams)
+	if len(params.Queue.CommandNames) != 2 || params.Queue.CommandNames[0][0] != "probe" || params.Queue.CommandNames[1][0] != "pkg:probe" {
+		t.Fatalf("command selections lost or reordered: %+v", params.Queue)
+	}
+	if !reflect.DeepEqual(params.Queue.Mentions, data.Mentions) {
+		t.Fatalf("editing mentions lost: %+v", params.Queue)
+	}
+	params.Queue.Mentions[0][0].Kind = "skill"
+	if data.Mentions[0][0].Kind != "command" {
+		t.Fatal("editing locations alias projected queue")
+	}
+	params.Queue.CommandNames[0][0] = "changed"
+	if data.CommandNames[0][0] != "probe" || params.Queue.SkillNames[0][0] != "probe" {
+		t.Fatalf("command projection aliases input or skill intent: %+v", data)
 	}
 }
 

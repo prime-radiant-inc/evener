@@ -7,7 +7,7 @@ import { createCredentialInstancesStore } from "@evener/appwire-client/state/cre
 import { StaleListingRefusal } from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { renderHook } from "./renderNative.testkit";
+import { renderHook, unmountMountedTrees } from "./renderNative.testkit";
 import { useProviderSurface } from "./providerSurface";
 
 // useProviderSurface holds the screen's write gate (one write at a time,
@@ -17,6 +17,7 @@ import { useProviderSurface } from "./providerSurface";
 // hub/ProvidersPage.test.tsx mounts the page over the same render harness.
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.useRealTimers();
 });
 

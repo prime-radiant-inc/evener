@@ -283,8 +283,26 @@ describe("transcript display config", () => {
         "tokenCounts",
         "hookExits",
       ],
-      hidden: ["reasoning", "expandedDetails", "informationalNotices", "estimatedCost", "systemEvents", "promptEvents"],
+      hidden: [
+        "reasoning",
+        "expandedDetails",
+        "informationalNotices",
+        "sharedNotes",
+        "estimatedCost",
+        "systemEvents",
+        "promptEvents",
+      ],
     });
+  });
+
+  test.each(LEVELS)("inventory reports shared-notes visibility at %s", (level) => {
+    for (const systemEvents of [false, true]) {
+      const inventory = visibleCategoryInventory(
+        makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents }),
+      );
+      expect(level !== "chat" && systemEvents ? inventory.visible : inventory.hidden).toContain("sharedNotes");
+      expect(level !== "chat" && systemEvents ? inventory.hidden : inventory.visible).not.toContain("sharedNotes");
+    }
   });
 
   test("inventory shows informational notices at full only, and for a custom vector that is full's", () => {

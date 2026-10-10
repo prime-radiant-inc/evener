@@ -4,11 +4,19 @@ import { installActivityFixture } from "./sessionActivityTestUtils";
 // real one, on the in-memory SQLite double; the tests assert on the wire.
 import type { ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { activityChangedNotification, wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import {
+	alertRequests,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	settle,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { StopSubagentSheet } from "./StopSubagentSheet";
@@ -85,7 +93,6 @@ let client: FakeClient;
 let runtime: NativeMutationRuntime;
 let status = "active";
 let failed = false;
-const trees: ReactTestRenderer[] = [];
 
 const read = (): ThreadReadResponse => ({
 	thread: wireThread(COORDINATOR.ref, {
@@ -199,17 +206,10 @@ beforeEach(async () => {
 	harness.runtime = runtime;
 });
 afterEach(async () => {
-	for (const mounted of trees.splice(0)) act(() => mounted.unmount());
+	unmountMountedTrees();
 	await runtime.stop();
 	vi.restoreAllMocks();
 });
-
-async function settle() {
-	await act(async () => {
-		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
-}
 
 async function mount() {
 	const mounted = render(
@@ -218,7 +218,6 @@ async function mount() {
 			navigation={sheetNavigation as never}
 		/>,
 	);
-	trees.push(mounted);
 	await settle();
 	return mounted;
 }
@@ -232,6 +231,11 @@ async function send(mounted: ReactTestRenderer) {
 	await act(async () => pressable(mounted, "Send stop request")?.props.onPress());
 	await settle();
 }
+
+it("lets a drag of the sheet put the keyboard away", async () => {
+	const mounted = await mount();
+	expect(mounted.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+});
 
 it("prefills the message for a running subagent, and says when it arrives", async () => {
 	const mounted = await mount();
@@ -394,15 +398,7 @@ it("keeps an edited message open when the subagent leaves the tree, rather than 
 	const mounted = await mount();
 	act(() => field(mounted).props.onChangeText("Stop it please."));
 	installActivityFixture(client, () => ({ ...tree(), revision: 2, root: { ...tree().root, entries: [] } }));
-	client.emitNotification({
-		method: "evener/thread/activity/changed",
-		params: {
-			threadId: COORDINATOR.threadId,
-			sessionId: COORDINATOR.threadId,
-			ref: COORDINATOR.ref,
-			resources: ["summary", "delegates", "jobs"],
-		},
-	} as never);
+	act(() => client.emitNotification(activityChangedNotification(COORDINATOR)));
 	await settle();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });

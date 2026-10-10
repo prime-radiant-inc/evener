@@ -113,6 +113,17 @@ Body here.
 	}
 }
 
+// An agent file saved with CRLF line endings keeps its frontmatter.
+func TestParseAgent_CRLF(t *testing.T) {
+	agent, err := ParseAgent([]byte("---\r\nname: crlf-agent\r\ndescription: Saved with CRLF\r\n---\r\nBody here.\r\n"), "p")
+	if err != nil {
+		t.Fatalf("ParseAgent error: %v", err)
+	}
+	if agent.Name != "crlf-agent" || agent.Description != "Saved with CRLF" || agent.SystemPrompt != "Body here.\n" {
+		t.Fatalf("agent = %+v", agent)
+	}
+}
+
 func TestParseAgent_MissingName(t *testing.T) {
 	data := []byte(`---
 description: No name here

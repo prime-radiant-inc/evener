@@ -176,8 +176,8 @@ export class SessionCacheIndexedDB {
           this.#sweepExpired(tx, Date.now()),
         ),
       errors: {
-        open: "session cache open failed",
-        superseded: "session cache open was superseded",
+        open: () => new Error("session cache open failed"),
+        superseded: () => new Error("session cache open was superseded"),
         timeout: () => new Error("session cache open timed out"),
       },
       reportDiagnostic: (path, active) => this.#reportOpenDiagnostic(path, active),

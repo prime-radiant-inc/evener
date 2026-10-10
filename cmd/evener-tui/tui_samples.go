@@ -509,8 +509,8 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		detail.State = "awaiting"
 		m := sampleSessionModel(width, detail)
 		// The chip keys on a genuinely pending ask_user call (pendingAskQuestions),
-		// not on State alone (attention-status-model v5 can re-arm "awaiting"
-		// with nothing pending) — so this sample needs a real unresolved
+		// not on State alone (a needs_response turn rests "awaiting" with
+		// nothing pending) — so this sample needs a real unresolved
 		// ask_user call in the transcript, not just the awaiting state.
 		m.session.messages = []transcript.ChatMessage{sampleAskUserToolCall()}
 		m.session.refreshViewport()

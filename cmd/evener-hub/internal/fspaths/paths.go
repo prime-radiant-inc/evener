@@ -84,9 +84,16 @@ func ResolveInRoot(root, rel string) (string, error) {
 	if root == "" || rel == "" {
 		return "", errors.New("empty root or path")
 	}
-	realRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
+	trustedRoot := filepath.Clean(root)
+	realRoot, err := filepath.EvalSymlinks(trustedRoot)
 	if err != nil {
 		return "", err
+	}
+	if filepath.IsAbs(rel) && trustedRoot != realRoot {
+		relative, err := filepath.Rel(trustedRoot, rel)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			rel = filepath.Join(realRoot, relative)
+		}
 	}
 
 	var joined string

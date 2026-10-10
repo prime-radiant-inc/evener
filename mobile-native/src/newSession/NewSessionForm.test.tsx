@@ -11,7 +11,14 @@ import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
 import { AlertCenter } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
-import { alertRequests, playedHaptics, render, renderedText } from "../renderNative.testkit";
+import {
+	alertRequests,
+	playedHaptics,
+	render,
+	renderedText,
+	settle,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { creationStore, forgetCreationForHub } from "./creations";
 import { formFront } from "./formFront";
@@ -50,11 +57,6 @@ vi.mock("../nativeImagePicker", () => ({
 		id: () => "image-1",
 	},
 }));
-
-const settle = () =>
-	act(async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-	});
 
 const glm: ModelDescriptor = {
 	provider: "lunaroute",
@@ -213,8 +215,8 @@ async function mount(options: Options = {}) {
 		/** The connection drops, or comes back, under the reopened sheet. */
 		const setReopenedReady = async (ready: boolean) => {
 			context = { ...context, ready };
-			store.getState().bind(ready ? createNewSessionService(client as never) : null);
 			await act(async () => {
+				store.getState().bind(ready ? createNewSessionService(client as never) : null);
 				reopened.update(form(next.navigation));
 			});
 			await settle();
@@ -229,8 +231,9 @@ async function mount(options: Options = {}) {
 	const prompt = () => tree.root.findByProps({ accessibilityLabel: "What should the agent do?" });
 	const setReady = async (ready: boolean) => {
 		context = { ...context, ready };
-		store.getState().bind(ready ? createNewSessionService(client as never) : null);
 		await act(async () => {
+			// The store tells the mounted form at once, so the bind belongs in act.
+			store.getState().bind(ready ? createNewSessionService(client as never) : null);
 			tree.update(form());
 		});
 		await settle();
@@ -266,7 +269,11 @@ async function mount(options: Options = {}) {
 		prompt,
 		setReady,
 		text: () => renderedText(tree),
-		dispose: () => (hosts.dispose(), live.dispose(), tree.unmount()),
+		dispose: () => {
+			unmountMountedTrees();
+			hosts.dispose();
+			live.dispose();
+		},
 	};
 }
 
@@ -299,6 +306,12 @@ it("has Cancel, New session and Start, then the prompt, WHERE and AGENT with the
 	expect(form.navigation.navigate).toHaveBeenLastCalledWith("Project");
 	await act(async () => form.row("Model")?.props.onPress());
 	expect(form.navigation.navigate).toHaveBeenLastCalledWith("Model");
+	form.dispose();
+});
+
+it("dismisses the keyboard when the form is dragged", async () => {
+	const form = await mount();
+	expect(form.tree.root.findByType("ScrollView" as never).props.keyboardDismissMode).toBe("on-drag");
 	form.dispose();
 });
 

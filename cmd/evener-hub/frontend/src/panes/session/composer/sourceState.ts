@@ -1,3 +1,4 @@
+import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../stores/threads";
 import { pushToast } from "../../../widgets/toast/store";
@@ -23,13 +24,16 @@ import {
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
-import { parseSkillDocument, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
+import { parseSkillDocument, patchSelectionText, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
 
 type RevisionRef<T> = { current: T };
+type SelectionMeta = { commandNames: string[]; mentions: ComposerMention[] | undefined };
 export interface ComposerSubmissionSnapshot {
   text: string;
   attachments: PendingAttachment[];
   skillNames: string[];
+  commandNames: string[];
+  mentions?: readonly ComposerMention[];
   revision: number;
   draftRevision: number;
 }
@@ -37,6 +41,8 @@ export interface ComposerSubmissionSnapshot {
 export interface ComposerSourceSnapshot {
   text: string;
   skillNames: string[];
+  commandNames: string[];
+  mentions?: ComposerMention[];
   activeRecoveryId: string | null;
   freshRecoveryRef: string | null;
   restoreEpoch: number;
@@ -50,6 +56,7 @@ export interface ComposerSourceState {
   readonly continuity: {
     textRef: RevisionRef<string>;
     skillNamesRef: RevisionRef<string[]>;
+    selectionMetaRef: RevisionRef<SelectionMeta>;
     draftEditRevisionRef: RevisionRef<number>;
     ownedDraftRevisionRef: RevisionRef<number>;
     activeRecoveryIdRef: RevisionRef<string | null>;
@@ -65,6 +72,7 @@ export interface ComposerSourceState {
   editText(text: string): void;
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
+  updateSelectionMeta(value: SkillEditorValue): void;
   setActiveRecoveryId(id: string | null): void;
   markRestore(): void;
   persistDraft(text: string): void;
@@ -75,8 +83,16 @@ export interface ComposerSourceState {
     text: string,
     attachments: InputAttachment[],
     names: readonly string[],
+    commands?: readonly string[],
+    mentions?: readonly ComposerMention[],
   ): Promise<void>;
-  clearIfUnchanged(text: string, revision: number, draftRevision: number, names: readonly string[]): boolean;
+  clearIfUnchanged(
+    text: string,
+    revision: number,
+    draftRevision: number,
+    names: readonly string[],
+    commands?: readonly string[],
+  ): boolean;
   clearSubmittedAttachments(items: PendingAttachment[]): void;
   dispose(): void;
 }
@@ -95,6 +111,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   const state = createStore<ComposerSourceSnapshot>(() => ({
     text: initial.text,
     skillNames: restoredSkillNames(initial),
+    commandNames: initial.commandNames ?? [],
+    mentions: initial.mentions,
     activeRecoveryId: null,
     freshRecoveryRef: null,
     restoreEpoch: 0,
@@ -102,6 +120,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   const continuity: ComposerSourceState["continuity"] = {
     textRef: { current: initial.text },
     skillNamesRef: { current: state.getState().skillNames },
+    selectionMetaRef: { current: { commandNames: initial.commandNames ?? [], mentions: initial.mentions } },
     draftEditRevisionRef: { current: 0 },
     ownedDraftRevisionRef: { current: readDraftRevision(ref) },
     activeRecoveryIdRef: { current: null },
@@ -113,6 +132,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   const {
     textRef,
     skillNamesRef,
+    selectionMetaRef,
     draftEditRevisionRef,
     ownedDraftRevisionRef,
     activeRecoveryIdRef,
@@ -141,6 +161,12 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     skillNamesRef.current = skillNames;
     state.setState({ skillNames });
   }
+  function updateSelectionMeta(value: SkillEditorValue): void {
+    if (disposed) return;
+    const next = { commandNames: value.commandNames ?? [], mentions: value.mentions };
+    selectionMetaRef.current = next;
+    state.setState(next);
+  }
   function markEdited(): void {
     draftEditRevisionRef.current += 1;
     if (activeRecoveryIdRef.current !== null) {
@@ -165,16 +191,30 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   }
   function persistDraft(text: string): void {
     if (disposed) return;
-    writeComposerDraft(ref, { text, skillNames: skillNamesRef.current });
+    writeComposerDraft(ref, {
+      text,
+      skillNames: skillNamesRef.current,
+      ...(selectionMetaRef.current.commandNames.length ? { commandNames: selectionMetaRef.current.commandNames } : {}),
+      ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
+    });
     ownedDraftRevisionRef.current = readDraftRevision(ref);
   }
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
   }
   function writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void {
-    updateSkillNames(restoredSkillNames({ text, skillNames: skillNamesRef.current }));
-    if (source === "submission") updateText(text);
-    else editText(text);
+    if (disposed) return;
+    const next = patchSelectionText(
+      { text: textRef.current, skillNames: skillNamesRef.current, ...selectionMetaRef.current },
+      text,
+    );
+    updateSkillNames(next.skillNames);
+    updateSelectionMeta(next);
+    if (source === "submission") {
+      updateText(text);
+      // React can batch exact marker removals, so restore their already mapped atoms.
+      markRestore();
+    } else editText(text);
     if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(text);
   }
   function writeDetachedSourceDraft(text: string, _cursor: number, source?: TextEditSource): void {
@@ -202,6 +242,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     nextText: string,
     nextAttachments: InputAttachment[],
     nextSkillNames: readonly string[],
+    nextCommandNames: readonly string[] = selectionMetaRef.current.commandNames,
+    nextMentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
   ): Promise<void> {
     if (disposed) return Promise.resolve();
     const version = ++recoveryWriteVersionRef.current;
@@ -211,8 +253,19 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
       .catch(() => undefined)
       .then(async () => {
         if (disposed || activeRecoveryIdRef.current !== clientMutationId) return;
-        if (nextText.trim() === "" && nextAttachments.length === 0 && nextSkillNames.length === 0) {
-          if (textRef.current.trim() !== "" || operations.items.length > 0 || skillNamesRef.current.length > 0) return;
+        if (
+          nextText.trim() === "" &&
+          nextAttachments.length === 0 &&
+          nextSkillNames.length === 0 &&
+          nextCommandNames.length === 0
+        ) {
+          if (
+            textRef.current.trim() !== "" ||
+            operations.items.length > 0 ||
+            skillNamesRef.current.length > 0 ||
+            selectionMetaRef.current.commandNames.length > 0
+          )
+            return;
           await discardRecoveryPendingTurn(
             clientMutationId,
             ref,
@@ -222,7 +275,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
               activeRecoveryIdRef.current === clientMutationId &&
               textRef.current.trim() === "" &&
               operations.items.length === 0 &&
-              skillNamesRef.current.length === 0,
+              skillNamesRef.current.length === 0 &&
+              selectionMetaRef.current.commandNames.length === 0,
           );
           if (
             !disposed &&
@@ -230,7 +284,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
             readDraftRevision(ref) === draftRevision &&
             textRef.current.trim() === "" &&
             operations.items.length === 0 &&
-            skillNamesRef.current.length === 0
+            skillNamesRef.current.length === 0 &&
+            selectionMetaRef.current.commandNames.length === 0
           ) {
             recoveryOwnsLocalDraftRef.current = false;
             setActiveRecoveryId(null);
@@ -244,6 +299,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           nextText,
           nextAttachments,
           nextSkillNames,
+          nextCommandNames,
+          nextMentions,
         );
         if (
           !disposed &&
@@ -266,7 +323,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   }
 
   const unsubscribeCommitted = subscribeComposerSubmissionCommitted(
-    (targetRef, submittedText, submittedSkillNames, recovery) => {
+    (targetRef, submittedText, submittedSkillNames, recovery, submittedCommandNames) => {
       if (disposed || targetRef !== ref) return;
       if (recovery && activeRecoveryIdRef.current === recovery.clientMutationId) {
         if (recovery.draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
@@ -278,10 +335,12 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         if (
           recovery.draftUnchanged &&
           textRef.current === submittedText &&
-          sameSkillSelections(skillNamesRef.current, submittedSkillNames)
+          sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
+          sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
         ) {
           updateText("");
           updateSkillNames([]);
+          updateSelectionMeta({ text: "", skillNames: [] });
         }
         const markers = new Set(
           operations.items
@@ -302,11 +361,13 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         !recovery &&
         activeRecoveryIdRef.current === null &&
         textRef.current === submittedText &&
-        sameSkillSelections(skillNamesRef.current, submittedSkillNames)
+        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
+        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
       ) {
         ownedDraftRevisionRef.current = readDraftRevision(ref);
         updateText("");
         updateSkillNames([]);
+        updateSelectionMeta({ text: "", skillNames: [] });
       }
     },
   );
@@ -338,6 +399,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     editText,
     updateSkillNames,
     editSkillNames,
+    updateSelectionMeta,
     setActiveRecoveryId,
     markRestore,
     persistDraft,
@@ -349,6 +411,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         const draft = readComposerDraft(ref);
         updateText(draft.text);
         updateSkillNames(restoredSkillNames(draft));
+        updateSelectionMeta(draft);
         ownedDraftRevisionRef.current = readDraftRevision(ref);
       }
       markRestore();
@@ -365,11 +428,16 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         if (!disposed && refreshed && refreshVersion === version) state.setState({ freshRecoveryRef: ref });
       });
     },
-    clearIfUnchanged(text, revision, draftRevision, names) {
+    clearIfUnchanged(text, revision, draftRevision, names, commands = []) {
       if (disposed || draftEditRevisionRef.current !== revision) return false;
-      if (textRef.current === text && sameSkillSelections(skillNamesRef.current, names)) {
+      if (
+        textRef.current === text &&
+        sameSkillSelections(skillNamesRef.current, names) &&
+        sameSkillSelections(selectionMetaRef.current.commandNames, commands)
+      ) {
         updateText("");
         updateSkillNames([]);
+        updateSelectionMeta({ text: "", skillNames: [] });
         if (readDraftRevision(ref) === draftRevision) {
           clearDraft(ref);
           ownedDraftRevisionRef.current = readDraftRevision(ref);

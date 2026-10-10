@@ -72,6 +72,20 @@ describe("a subagent's row (spec 8.2)", () => {
 		expect(subagentLine(row(), [delegate({ quietForMs: 300_000 }), ...children], NOW).activity).toBe(
 			"Waiting on 2 subagents",
 		);
+		expect(subagentLine(row(), [delegate(), children[0], children[2]], NOW).activity).toBe("Waiting on 1 subagent");
+	});
+
+	// The silence the row times to turn Quiet (useNowPastQuiet): only while
+	// it grows with the clock, and only when the row would say Quiet.
+	it("times its silence only while it grows and the row would say Quiet", () => {
+		const live = delegate({ runStartedAt: ago(60_000), latestActivityAt: ago(10_000) });
+		expect(subagentLine(row(), [live], NOW).quietForMs).toBe(10_000);
+		// A snapshot of its silence, with no time it can grow from.
+		expect(subagentLine(row(), [delegate()], NOW).quietForMs).toBeUndefined();
+		const child = delegate({ delegateId: "c1", parentDelegateId: "d1", originItemId: "other-1" });
+		expect(subagentLine(row(), [live, child], NOW).quietForMs).toBeUndefined();
+		const failed = delegate({ status: "failed", terminal: true, outcome: "failed", latestActivityAt: ago(10_000) });
+		expect(subagentLine(row(), [failed], NOW).quietForMs).toBeUndefined();
 	});
 
 	it("says how long ago a failed one failed, and why", () => {

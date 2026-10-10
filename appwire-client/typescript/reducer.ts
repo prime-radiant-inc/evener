@@ -1407,7 +1407,12 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.evener.tasks ?? null,
     ...(thread.evener.diagnostics
-      ? { diagnostics: { plugins: thread.evener.diagnostics.plugins?.map((plugin) => ({ name: plugin.name })) } }
+      ? {
+          diagnostics: {
+            commands: thread.evener.diagnostics.commands?.map((command) => ({ ...command })),
+            plugins: thread.evener.diagnostics.plugins?.map((plugin) => ({ name: plugin.name })),
+          },
+        }
       : {}),
     delegates: (thread.evener.diagnostics?.delegates ?? []).map(cloneStableDelegate),
     skills: (thread.evener.diagnostics?.skills ?? []).map((skill) => ({ ...skill })),

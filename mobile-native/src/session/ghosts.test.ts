@@ -2,10 +2,10 @@ import type { QueueState, ThreadCapabilities } from "@evener/appwire-client";
 import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it } from "vitest";
 import {
-	foldQueue,
 	type GhostSource,
 	ghostActionTarget,
 	ghosts,
+	steeringWithQueue,
 	type RecoveryGhostRow,
 	shownGhosts,
 	whatCanActNow,
@@ -107,6 +107,84 @@ describe("queued messages (spec 8.5)", () => {
 		expect(ghosts(noIds, [], null, [], true)[0]).toMatchObject({ buttons: [], menu: [] });
 		const imageOnly = session("active", [""], { queue: queue([""], { preview: ["[image]"] }) });
 		expect(ghosts(imageOnly, [], null, [], true)[0]).toMatchObject({ text: "[image]", menu: ["cancel"] });
+	});
+});
+
+describe("queued messages this phone is steering with", () => {
+	it("shows a promoted message once, as its steer, and the rest of the queue as queued", () => {
+		const promote = pending({ method: "promote", text: "first", queueEntryId: "queue_1" });
+		const list = ghosts(session("active", ["first", "second"]), [promote], null, [], true);
+		expect(list.map((ghost) => [ghost.text, ghost.state])).toEqual([
+			["second", "queued"],
+			["first", "sending"],
+		]);
+	});
+
+	it("shows a drained queue once, as its steer", () => {
+		const drain = pending({ method: "drain", text: "first\nsecond", queueRevision: 3 });
+		const list = ghosts(session("active", ["first", "second"]), [drain], null, [], true);
+		expect(list.map((ghost) => ghost.state)).toEqual(["sending"]);
+	});
+
+	it("shows what was queued after the queue a drain took", () => {
+		const drain = pending({ method: "drain", text: "first", state: "accepted", queueRevision: 3 });
+		const list = ghosts(
+			session("active", ["later"], { queue: queue(["later"], { revision: 4 }) }),
+			[drain],
+			null,
+			[],
+			true,
+		);
+		expect(list.map((ghost) => [ghost.text, ghost.state])).toEqual([
+			["first", "steering"],
+			["later", "queued"],
+		]);
+	});
+
+	it("offers no Send now for a held drain whose queue has changed since", () => {
+		const drain = pending({ method: "drain", text: "first", state: "canceled", queueRevision: 3 });
+		const moved = session("idle", ["first", "later"], { queue: queue(["first", "later"], { revision: 4 }) });
+		const held = ghosts(moved, [drain], null, [], true).find((ghost) => ghost.origin.kind === "pending");
+		expect(held).toMatchObject({ state: "held", buttons: ["cancel"] });
+		expect(held?.note).toBeDefined();
+		const unmoved = ghosts(session("idle", ["first"]), [drain], null, [], true);
+		expect(unmoved).toEqual([expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] })]);
+		// Before the session loads nothing says the queue moved: Send now stays,
+		// and the hub refuses a stale one.
+		expect(ghosts(null, [drain], null, [], true)).toEqual([
+			expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
+		]);
+	});
+
+	it("says whether this phone is steering with the queue it shows, held or on its way", () => {
+		const shown = session("active", ["first", "second"]);
+		const promote = pending({ method: "promote", queueEntryId: "queue_1" });
+		const drain = pending({ method: "drain", queueRevision: 3, state: "canceled" });
+		expect(steeringWithQueue(shown, [promote])).toBe(true);
+		expect(steeringWithQueue(shown, [drain])).toBe(true);
+		// A promote whose message has left the queue, a drain of a queue since
+		// changed, and another client's steer leave the queue to Steer all now.
+		expect(steeringWithQueue(shown, [pending({ method: "promote", queueEntryId: "queue_9" })])).toBe(false);
+		expect(steeringWithQueue(shown, [pending({ method: "drain", queueRevision: 2 })])).toBe(false);
+		expect(steeringWithQueue(shown, [{ ...promote, fromThisClient: false }])).toBe(false);
+		expect(steeringWithQueue(null, [promote])).toBe(false);
+	});
+
+	it("keeps the queue another client is steering with", () => {
+		const promote = pending({ method: "promote", queueEntryId: "queue_1", fromThisClient: false });
+		const drain = pending({ id: "cmid-2", method: "drain", fromThisClient: false });
+		const list = ghosts(session("active", ["first", "second"]), [promote, drain], null, [], true);
+		expect(list.map((ghost) => ghost.state)).toEqual(["queued", "queued"]);
+	});
+
+	it("names the queued messages a refused steer was for, and offers only Discard", () => {
+		const refused = row({ text: "", queuedText: "first", actions: ["discard"], reason: "queue entry changed" });
+		const [ghost] = ghosts(null, [], null, [refused], true);
+		expect(ghost).toMatchObject({
+			text: "first",
+			caption: "Couldn't steer with this · queue entry changed",
+			buttons: ["discard"],
+		});
 	});
 });
 
@@ -307,39 +385,6 @@ it("shows at most three queued messages and counts the rest, never hiding the ot
 	const { shown, moreQueued } = shownGhosts(all);
 	expect(shown.map((ghost) => ghost.text)).toEqual(["1", "2", "3", "draft"]);
 	expect(moreQueued).toBe(2);
-});
-
-// While you type, the queue folds to one line (spec 8.5): its count, and
-// with one message, what you can do to it now.
-describe("the queue folded while you type", () => {
-	it("offers the one queued message's Steer now", () => {
-		const all = ghosts(session("active", ["first"]), [], unsent("draft"), [], true);
-		const { fold, rest } = foldQueue(all);
-		expect(fold).toEqual({ label: "1 queued", act: { ghost: all[0], action: "steerNow" } });
-		expect(rest.map((ghost) => ghost.text)).toEqual(["draft"]);
-	});
-
-	it("counts several, the whole queue, with nothing to act on until they show", () => {
-		const all = ghosts(session("active", ["1", "2", "3", "4", "5"]), [], null, [], true);
-		expect(foldQueue(all)).toEqual({ fold: { label: "5 queued", act: null }, rest: [] });
-	});
-
-	it("says a held queue is held, and offers the one message's Send now", () => {
-		const all = ghosts(session("idle", ["first"]), [], null, [], true);
-		expect(foldQueue(all).fold).toEqual({ label: "1 held", act: { ghost: all[0], action: "sendNow" } });
-		const two = ghosts(session("idle", ["first", "second"]), [], null, [], true);
-		expect(foldQueue(two).fold).toEqual({ label: "2 held", act: null });
-	});
-
-	it("offers nothing a harness can't do", () => {
-		const all = ghosts(session("active", ["first"], { capabilities: caps({ steer: false }) }), [], null, [], true);
-		expect(foldQueue(all).fold).toEqual({ label: "1 queued", act: null });
-	});
-
-	it("folds nothing when nothing is queued", () => {
-		const all = ghosts(session("active"), [], unsent("draft"), [], true);
-		expect(foldQueue(all)).toEqual({ fold: null, rest: all });
-	});
 });
 
 describe("what can act right now", () => {

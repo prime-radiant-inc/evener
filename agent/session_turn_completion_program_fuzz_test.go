@@ -334,8 +334,8 @@ func FuzzTurnFallbackLifecycleProgram(f *testing.F) {
 			if !strings.Contains(out, program.text) {
 				t.Fatalf("successful scenario %d output %q does not contain %q", program.scenario, out, program.text)
 			}
-			if got := sess.State(); got != SessionAwaiting {
-				t.Fatalf("successful scenario %d ended in state %q, want awaiting", program.scenario, got)
+			if got := sess.State(); got != SessionIdle {
+				t.Fatalf("successful scenario %d ended in state %q, want idle", program.scenario, got)
 			}
 		} else {
 			if err == nil {

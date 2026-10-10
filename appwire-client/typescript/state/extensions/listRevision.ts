@@ -50,10 +50,11 @@
 //     different hub's answers describe a machine the store no longer speaks
 //     to, and a store that has forgotten what it read wants none of it either.
 //
-// The hub answers one connection's requests in the order they were sent, and a
-// dropped connection rejects everything it had in flight, so the owner's answer
-// is also the newest list. The revision is the fence should that ever stop
-// holding.
+// The hub answers most of one connection's requests in the order they were
+// sent, but not all: a read forwarded to a remote host through
+// evener/host/request runs off the serial worker and can answer after a
+// request sent later. A dropped connection rejects everything it had in
+// flight. The revision is the fence that keeps the newest list either way.
 
 export interface ListRevision {
   /** Issues a revision: live from here, and the owner until something newer is

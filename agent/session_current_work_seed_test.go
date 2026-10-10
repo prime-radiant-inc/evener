@@ -15,18 +15,20 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-type currentWorkEventRecorder struct {
+// sessionEventRecorder keeps the events a root's descendant sessions emit, as
+// the daemon's AppWire bridge sees them.
+type sessionEventRecorder struct {
 	mu     sync.Mutex
 	events []events.SessionEvent
 }
 
-func (r *currentWorkEventRecorder) record(event events.SessionEvent) {
+func (r *sessionEventRecorder) record(event events.SessionEvent) {
 	r.mu.Lock()
 	r.events = append(r.events, event)
 	r.mu.Unlock()
 }
 
-func (r *currentWorkEventRecorder) snapshot() []events.SessionEvent {
+func (r *sessionEventRecorder) snapshot() []events.SessionEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]events.SessionEvent(nil), r.events...)
@@ -112,7 +114,7 @@ func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) 
 			Prompt: "Inspect it.",
 		}},
 	}
-	var recorder currentWorkEventRecorder
+	var recorder sessionEventRecorder
 	root.SetDescendantEventFunc(recorder.record)
 
 	prepared, err := root.prepareSubagentRun(context.Background(), "inspect", "", "", 1, agentType, "", nil, nil)
@@ -167,7 +169,7 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 	}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	var recorder currentWorkEventRecorder
+	var recorder sessionEventRecorder
 	root.SetDescendantEventFunc(recorder.record)
 
 	prepared, err := root.prepareSubagentRun(context.Background(), "inspect shared work", "", "", 1, "", "", nil, nil)

@@ -194,6 +194,19 @@ describe("each tool's evidence, drawn", () => {
 		expect(tree.root.findAll((node) => node.props.markdown === "# Debugging").length).toBeGreaterThan(0);
 	});
 
+	// A skill's images render as images, as an agent message's do (Jesse's
+	// ruling, #3696): its markdown reaches the markdown view as written.
+	it("hands a skill's images to the markdown view to draw", () => {
+		const instructions = "See ![the flow](https://example.com/flow.png).";
+		const loaded = `<skill-context>\n${JSON.stringify({ name: "diagrams", instructions })}\n</skill-context>`;
+		const skill = step("use_skill", { output: loaded });
+		const tree = render(<StepEvidence step={skill} evidence={stepEvidence(skill)} hubId="hub-1" />);
+		const drawnMarkdown = tree.root
+			.findAll((node) => String(node.type) === "EnrichedMarkdownText")
+			.map((node) => node.props.markdown);
+		expect(drawnMarkdown).toEqual([instructions]);
+	});
+
 	it("draws a task list as the Tasks sheet does, with the note the call added under its task", () => {
 		const tree = drawn([
 			{

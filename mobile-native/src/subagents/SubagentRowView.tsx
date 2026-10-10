@@ -39,7 +39,7 @@ export const SubagentRowView = memo(function SubagentRowView({
 	const time = timeInState(row, now);
 	const why = subagentWhy(row, now);
 	const last = subagentLastLine(row, coordinatorModel, modelName);
-	// A failure's "Failed" takes the danger ink; a note replaces the why line.
+	// Preserve the outcome and cause; a note replaces the why line.
 	const failure = note === undefined && why.word === "Failed";
 	const whyLine = note ?? why.text;
 	const label = [row.title, subagentStateWord(row.state), whyLine, time === null ? null : spokenDuration(time)]
@@ -66,7 +66,7 @@ export const SubagentRowView = memo(function SubagentRowView({
 				{row.state === "running" ? (
 					<SymbolView name="circle.fill" size={8} tintColor={palette.alive} />
 				) : row.state === "failed" ? (
-					<SymbolView name="xmark.octagon.fill" size={20} tintColor={palette.danger} />
+					<SymbolView name="xmark.octagon.fill" size={20} tintColor={palette.inkLow} />
 				) : (
 					<SymbolView name="checkmark" size={14} tintColor={palette.inkLow} />
 				)}
@@ -90,11 +90,11 @@ export const SubagentRowView = memo(function SubagentRowView({
 					<Text
 						allowFontScaling={allowFontScaling}
 						numberOfLines={failure ? 2 : 1}
-						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: failure ? palette.inkHi : palette.inkMid }}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
 					>
 						{failure ? (
 							<>
-								<Text style={{ fontWeight: "600", color: palette.dangerInk }}>Failed</Text>
+								<Text style={{ color: palette.inkMid }}>Failed</Text>
 								{whyLine ? `: ${whyLine}` : ""}
 							</>
 						) : (

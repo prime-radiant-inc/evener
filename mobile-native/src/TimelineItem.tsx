@@ -1,4 +1,10 @@
-import type { ActivityTree, EvenerDelegateInfo } from "@evener/appwire-client";
+import {
+	type ActivityTree,
+	type EvenerDelegateInfo,
+	itemIdentityMatches,
+	MEMORY_CONTEXT_EVENT_KIND,
+	type TurnModel,
+} from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -8,11 +14,15 @@ import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longP
 import { MarkdownResponse } from "./MarkdownResponse";
 import { setDisclosureOpenAll, useDisclosureOpenAmong } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
+import type { NativeFileOpenContext } from "./reader/markdownFileReferences";
 import { useMinuteClock } from "./session/minuteClock";
-import { rowDisclosureIds } from "./session/disclosureKeys";
+import { useNowPastQuiet } from "./session/quietClock";
+import { memoryContextSourceDisclosureId, rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
+import { MemoryContextBody } from "./session/MemoryContextBody";
 import { NotificationCards } from "./session/NotificationCards";
+import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
 import { SubagentRow } from "./session/SubagentRow";
@@ -24,12 +34,14 @@ import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
-import { Action, allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
+import { allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function TimelineItem({
 	item,
 	hubId,
 	sessionRef,
+	sourceTurns,
 	activityPresentation,
 	expandByDefault = false,
 	showDuration = true,
@@ -45,10 +57,13 @@ export function TimelineItem({
 	errorActionFor,
 	onErrorAction,
 	documentChips,
+	fileContext,
 }: {
 	item: TimelineRow;
 	hubId: string;
 	sessionRef: string;
+	/** Retained canonical turns, read only when a shared-notes snapshot opens. */
+	sourceTurns?: readonly TurnModel[];
 	activityPresentation?: ActivityPresentation;
 	expandByDefault?: boolean;
 	showDuration?: boolean;
@@ -75,6 +90,7 @@ export function TimelineItem({
 	/** The document chips under an agent's message (spec 8.2): the screen
 	 * decides which documents a message names and where a chip opens. */
 	documentChips?: (message: { id: string; markdown: string; streaming: boolean }) => ReactNode;
+	fileContext?: NativeFileOpenContext;
 }) {
 	const disclosureIds = rowDisclosureIds(hubId, sessionRef, item);
 	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
@@ -96,6 +112,21 @@ export function TimelineItem({
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
 	const textScale = useTextScale();
 	const label = item.kind === "notice" ? noticeLabel(item) : undefined;
+	const noticeText = useMemo(() => {
+		if (item.kind !== "notice") return undefined;
+		// List rows stay bounded. An opened disclosure whose recorded text can
+		// exceed that bound - a shared-notes snapshot or an automatic memory
+		// refresh - reads the full original from the canonical model the store
+		// already holds: the row's own text is a truncated display copy, so the
+		// literal Source (and a malformed refresh's fallback) stays complete.
+		const readsRetainedOriginal =
+			item.origin === "system" && (item.eventKind === "notes-context" || item.eventKind === MEMORY_CONTEXT_EVENT_KIND);
+		if (!expanded || !readsRetainedOriginal || !sourceTurns) return item.text;
+		return (
+			sourceTurns.find((turn) => turn.id === item.turnId)?.items.find((source) => itemIdentityMatches(source, item))
+				?.text ?? item.text
+		);
+	}, [expanded, item, sourceTurns]);
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
@@ -107,6 +138,7 @@ export function TimelineItem({
 							item={entry}
 							hubId={hubId}
 							sessionRef={sessionRef}
+							sourceTurns={sourceTurns}
 							errorActionFor={errorActionFor}
 							onErrorAction={onErrorAction}
 						/>
@@ -137,12 +169,16 @@ export function TimelineItem({
 		case "assistant":
 			content = (
 				<>
-					<AgentMessage markdown={item.markdown} quote={quote} />
+					<AgentMessage markdown={item.markdown} quote={quote} fileContext={fileContext} />
 					{documentChips?.({ id: item.id, markdown: item.markdown, streaming: item.streaming })}
 				</>
 			);
 			break;
-		case "notice":
+		case "notice": {
+			if (item.family === "approval") {
+				content = <ApprovalHistory text={item.text} decidedAtMs={item.decidedAtMs} />;
+				break;
+			}
 			if (item.notifications) {
 				content = (
 					<NotificationCards
@@ -163,11 +199,20 @@ export function TimelineItem({
 					attention={item.tone === "attention"}
 				/>
 			) : (
-				<SystemEvent label={label} text={item.text} hint={item.hint} expanded={expanded} onToggle={toggle}>
-					{item.rendersMarkdown ? <MarkdownResponse markdown={item.text} /> : undefined}
+				<SystemEvent label={label} text={noticeText} hint={item.hint} expanded={expanded} onToggle={toggle}>
+					{item.eventKind === MEMORY_CONTEXT_EVENT_KIND ? (
+						<MemoryContextBody
+							observation={item.memoryContext}
+							source={noticeText ?? item.text}
+							sourceDisclosureId={memoryContextSourceDisclosureId(hubId, sessionRef, item)}
+						/>
+					) : item.rendersMarkdown ? (
+						<MarkdownResponse markdown={item.text} />
+					) : undefined}
 				</SystemEvent>
 			);
 			break;
+		}
 		case "failure":
 			if (quietThought) {
 				content = (
@@ -234,12 +279,14 @@ export function TimelineItem({
 			content = (
 				<>
 					{activityPresentation?.summary ? <Copy muted>{activityPresentation.summary}</Copy> : null}
-					<Action
-						tone="quiet"
-						label={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
+					<Button
+						text
+						quiet
+						label={`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}
+						accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
 						expanded={expanded}
 						onPress={toggle}
-					>{`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}</Action>
+					/>
 					{expanded ? (
 						<>
 							{item.detail.arguments ? (
@@ -371,7 +418,15 @@ function NoteRow({ text }: { text: string }) {
 	);
 }
 
-function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: string) => void }) {
+function AgentMessage({
+	markdown,
+	quote,
+	fileContext,
+}: {
+	markdown: string;
+	quote?: (text: string) => void;
+	fileContext?: NativeFileOpenContext;
+}) {
 	const colors = useColors();
 	const [selecting, setSelecting] = useState(false);
 	// Memoized so an unchanged message hands MarkdownResponse the same props
@@ -390,7 +445,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 			{/* The markdown view stays VoiceOver's element (it reads the
 			formatting and its links); the pressable only adds touch and hold. */}
 			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
-				<MarkdownResponse markdown={markdown || "…"} selectable={false} {...accessibility} />
+				<MarkdownResponse markdown={markdown || "…"} selectable={false} fileContext={fileContext} {...accessibility} />
 			</Pressable>
 			<HoldingModal
 				visible={selecting}
@@ -400,7 +455,7 @@ function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: st
 			>
 				<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
 					<View style={[styles.row, { paddingHorizontal: 16, justifyContent: "flex-end" }]}>
-						<Action onPress={() => setSelecting(false)}>Done</Action>
+						<Button text label="Done" onPress={() => setSelecting(false)} />
 					</View>
 					<ScrollView contentContainerStyle={{ padding: 16 }}>
 						<Copy variant="agentProse">{markdown}</Copy>
@@ -424,8 +479,9 @@ function Subagent({
 	tree: ActivityTree | null | undefined;
 	openSubagent: ((ref: string, title: string) => void) | undefined;
 }) {
-	// The state's time ("failed · 6m") moves on with the minute clock.
-	const now = useMinuteClock();
+	// The state's time ("failed · 6m") moves on with the minute clock, and
+	// its line turns Quiet the moment a silent subagent crosses into it.
+	const now = useNowPastQuiet(useMinuteClock(), (at) => [subagentLine(row, delegates, at).quietForMs]);
 	const line = subagentLine(row, delegates, now);
 	// A finished subagent's outcome, as the Subagents list gives it, once the
 	// tree shows it done; until then the line says what the roster knows.

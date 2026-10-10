@@ -2888,3 +2888,77 @@ func TestNavigationReadV3FailedDeltaFallsBackToSnapshot(t *testing.T) {
 		t.Fatal("fallback snapshot was not retained as the next delta base")
 	}
 }
+
+// A project key in several catalogs is one resource with one revision,
+// whichever catalog a read names (#3799): a change to any catalog's project
+// with the key raises one project target, and every view of the key reads
+// that target's revision, so a client fencing on it converges. The views stay
+// distinct representations (their ETags differ), and a catalog without the
+// key answers not found.
+func TestNavigationServiceProjectKeyInSeveralCatalogsSharesOneRevision(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	node := func(id string) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)}
+	}
+	source := newTestNavigationSource(now)
+	source.inputs.Tree = hubcore.Tree{Projects: []hubcore.TreeProject{
+		{Key: "no-project", Name: "no-project", Current: []hubcore.TreeNode{node("01ARZ3NDEKTSV4RRFFQ69G5FAV")}},
+		{Key: "no-project", Name: "no-project", IsTestRun: true, Current: []hubcore.TreeNode{node("01ARZ3NDEKTSV4RRFFQ69G5FAW")}},
+	}}
+	service := newTestNavigationService(t, source)
+	views := []navigationResourceKey{
+		{Kind: navigationResourceProject, ProjectKey: "no-project"},
+		{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceProjects},
+		{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceTestRuns},
+		{Kind: navigationResourceProjectPage, ProjectKey: "no-project", Catalog: navigationResourceTestRuns, Tier: "current"},
+	}
+	read := func() []appwire.NavigationReadResponse {
+		t.Helper()
+		out := make([]appwire.NavigationReadResponse, 0, len(views))
+		for _, view := range views {
+			result, err := service.readV3(t.Context(), view, nil)
+			if err != nil {
+				t.Fatalf("read %+v: %v", view, err)
+			}
+			out = append(out, result.Response)
+		}
+		return out
+	}
+	before := read()
+	if before[0].ETag == before[1].ETag || before[1].ETag == before[2].ETag || before[0].ETag == before[2].ETag {
+		t.Fatalf("catalog views share an ETag: %q %q %q", before[0].ETag, before[1].ETag, before[2].ETag)
+	}
+
+	source.mu.Lock()
+	source.inputs.Tree.Projects[1].Current[0].Title = "changed"
+	source.revision++
+	source.mu.Unlock()
+	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"no-project"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target uint64
+	for _, candidate := range mutation.Targets {
+		if candidate.Kind == appwire.NavigationTargetProject && candidate.ProjectKey == "no-project" {
+			target = candidate.Revision
+		}
+	}
+	if target == 0 {
+		t.Fatalf("targets = %+v, want project no-project", mutation.Targets)
+	}
+	for i, response := range read() {
+		if response.Revision != target {
+			t.Fatalf("view %+v reads revision %d, want the target's %d", views[i], response.Revision, target)
+		}
+	}
+
+	for _, missing := range []navigationResourceKey{
+		{Kind: navigationResourceProject, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects},
+		{Kind: navigationResourceProjectPage, ProjectKey: "no-project", Catalog: navigationResourceArchivedProjects, Tier: "current"},
+	} {
+		result, err := service.readV3(t.Context(), missing, nil)
+		if err != nil || result.Response.Status != "gone" || result.Response.Revision != target {
+			t.Fatalf("read %+v of a catalog without the key = %+v (%v), want gone at revision %d", missing, result.Response, err, target)
+		}
+	}
+}
