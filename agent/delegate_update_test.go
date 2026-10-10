@@ -688,7 +688,7 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 // coordinator, and that turn carries the report along with it.
 func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, false)
+	drainingCoordinatorWaitsForAnUpdate(t, 0)
 }
 
 // When the write that marks the update consumed fails once, the drain retries
@@ -696,13 +696,21 @@ func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 // already saw.
 func TestDelegateUpdateConsumedMarkerFailureDoesNotRerunTheTurn(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, true)
+	drainingCoordinatorWaitsForAnUpdate(t, 1)
+}
+
+// When the retry fails too, the update stays pending for the generation's end:
+// the drain neither fails the coordinator, which would stop its healthy
+// workers, nor runs another model turn for an update the model already saw.
+func TestDelegateUpdateConsumedMarkerRetryFailureKeepsTheCoordinatorRunning(t *testing.T) {
+	t.Parallel()
+	drainingCoordinatorWaitsForAnUpdate(t, 2)
 }
 
 // drainingCoordinatorWaitsForAnUpdate runs the draining-coordinator scenario;
-// failConsumedMarker makes the coordinator's first attention resolution write
-// fail.
-func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failConsumedMarker bool) {
+// failedMarkerWrites makes that many of the coordinator's first attention
+// resolution writes fail.
+func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	t.Helper()
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
 	coordinatorIdle, updateGate, reportGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -782,20 +790,28 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failConsumedMarker bool) 
 	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
 		t.Fatalf("the sibling's report ran a turn: the coordinator made %d model requests, want 3", got)
 	}
-	if failConsumedMarker {
-		installResolutionSyncFailureWriter(t, coordinator)
+	var failingWrites *rootAttentionResolutionFailFS
+	if failedMarkerWrites > 0 {
+		failingWrites = installResolutionSyncFailuresWriter(t, coordinator, failedMarkerWrites)
 	}
 	releaseUpdate()
 	select {
 	case text := <-presented:
-		if failConsumedMarker {
+		if failingWrites != nil {
 			// Worker B stays blocked, so no report can run a turn: the only
 			// possible fifth request is a rerun for the update.
 			// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-			waitForCondition(t, 30*time.Second, "the update to be marked consumed", func() bool {
-				fold, err := readDelegateAttentionFold(path, sessionID)
-				return err == nil && len(fold.pendingIDs()) == 0
+			waitForCondition(t, 30*time.Second, "the marker writes to fail", func() bool {
+				return failingWrites.injectedFailures() == failedMarkerWrites
 			})
+			if failedMarkerWrites == 1 {
+				// The retry succeeded.
+				// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+				waitForCondition(t, 30*time.Second, "the update to be marked consumed", func() bool {
+					fold, err := readDelegateAttentionFold(path, sessionID)
+					return err == nil && len(fold.pendingIDs()) == 0
+				})
+			}
 			if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
 				t.Fatalf("the coordinator made %d model requests after the marker write failed, want 4", got)
 			}
@@ -812,6 +828,15 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failConsumedMarker bool) 
 		t.Fatal("the draining coordinator was never woken by the update")
 	}
 	awaitRootReport(t, root)
+	if failingWrites != nil {
+		// The coordinator's run was not failed by the bookkeeping error.
+		fold := rootAttentionFold(t, root)
+		for _, id := range fold.order {
+			if !strings.Contains(id, "/update/") && !strings.Contains(fold.content[id].Text(), `"outcome":"completed"`) {
+				t.Fatalf("the coordinator's report = %q, want a completed outcome", fold.content[id].Text())
+			}
+		}
+	}
 }
 
 // A coordinator that is mid-run when its worker's update arrives sees it at

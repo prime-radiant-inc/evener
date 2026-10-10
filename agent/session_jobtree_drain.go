@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -975,6 +976,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
+	// drivenUpdates holds the delegate updates this drain already ran a turn
+	// for, so an update that stays pending after that turn does not run
+	// another.
+	drivenUpdates := make(map[string]struct{})
 	// drainStartedAt is the instant the root declared the work over: in a
 	// one-shot run this loop starts the moment the coordinator's terminal
 	// communicate ended its turn. It is the reference delegateAbandonedByDrain
@@ -1111,7 +1116,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and resume restores them; see
 		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
 		// so a request after a compaction or a failed turn still presents it.
-		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasPendingDelegateUpdateAttention()
+		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateUpdate(drivenUpdates)
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil
 		}
@@ -1124,6 +1129,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// queue holds only completions and frames armed during the drain;
 			// frames queued before the pre-drain final answer were cut at entry
 			// (discardTerminalWatchLeftovers).
+			updatesBefore := s.pendingDelegateUpdateAttentionIDs()
 			res, err := process(ctx, "", nil, EntryNotification)
 			if err != nil {
 				return lastResult, err
@@ -1132,12 +1138,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				lastResult = res
 			}
 			// A failed consumed-marker write leaves an update the model
-			// already saw pending, and the predicate above would run another
-			// model turn for it. The turn's coverage survives until the next
-			// turn starts, so retry only the marker.
+			// already saw pending. The turn's coverage survives until the
+			// next turn starts, so retry only the marker; if that fails too,
+			// the update stays pending for the generation's end and this
+			// drain runs no more turns for it.
 			if s.hasPendingDelegateUpdateAttention() {
 				if err := s.finishAttentionTurn(nil, nil); err != nil {
-					return lastResult, err
+					s.emit(events.EventWarning, warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
+				}
+			}
+			updatesAfter := s.pendingDelegateUpdateAttentionIDs()
+			for _, id := range updatesBefore {
+				if slices.Contains(updatesAfter, id) {
+					drivenUpdates[id] = struct{}{}
 				}
 			}
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
@@ -1648,4 +1661,13 @@ func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Sessio
 		}
 	}
 	return nil
+}
+
+// hasUndrivenDelegateUpdate reports whether an update from this session's own
+// delegates is pending that the drain has not yet run a turn for.
+func (s *Session) hasUndrivenDelegateUpdate(driven map[string]struct{}) bool {
+	return slices.ContainsFunc(s.pendingDelegateUpdateAttentionIDs(), func(id string) bool {
+		_, done := driven[id]
+		return !done
+	})
 }

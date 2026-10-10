@@ -4362,7 +4362,21 @@ type attentionFailNextSyncFS struct {
 
 func installResolutionSyncFailureWriter(t *testing.T, s *Session) {
 	t.Helper()
-	fs := &rootAttentionResolutionFailFS{Fs: afero.NewOsFs()}
+	installResolutionSyncFailuresWriter(t, s, 1)
+}
+
+// injectedFailures is how many syncs the writer has failed so far.
+func (fs *rootAttentionResolutionFailFS) injectedFailures() int {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.failed
+}
+
+// installResolutionSyncFailuresWriter fails the sync of the session's first
+// failures attention resolution writes.
+func installResolutionSyncFailuresWriter(t *testing.T, s *Session, failures int) *rootAttentionResolutionFailFS {
+	t.Helper()
+	fs := &rootAttentionResolutionFailFS{Fs: afero.NewOsFs(), failures: failures}
 	path := transcriptPath(s.stateDir, s.id)
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
@@ -4383,13 +4397,15 @@ func installResolutionSyncFailureWriter(t *testing.T, s *Session) {
 	s.mu.Lock()
 	s.transcript = replacement
 	s.mu.Unlock()
+	return fs
 }
 
 type rootAttentionResolutionFailFS struct {
 	afero.Fs
-	mu     sync.Mutex
-	armed  bool
-	failed bool
+	mu       sync.Mutex
+	armed    bool
+	failures int
+	failed   int
 }
 
 func (fs *rootAttentionResolutionFailFS) Create(name string) (afero.File, error) {
@@ -4416,7 +4432,7 @@ type rootAttentionResolutionFailFile struct {
 func (file *rootAttentionResolutionFailFile) Write(p []byte) (int, error) {
 	if bytes.Contains(p, []byte(`"kind":"ATTENTION_RESOLUTION"`)) {
 		file.fs.mu.Lock()
-		if !file.fs.failed {
+		if file.fs.failed < file.fs.failures {
 			file.fs.armed = true
 		}
 		file.fs.mu.Unlock()
@@ -4426,10 +4442,10 @@ func (file *rootAttentionResolutionFailFile) Write(p []byte) (int, error) {
 
 func (file *rootAttentionResolutionFailFile) Sync() error {
 	file.fs.mu.Lock()
-	fail := file.fs.armed && !file.fs.failed
+	fail := file.fs.armed && file.fs.failed < file.fs.failures
 	if fail {
 		file.fs.armed = false
-		file.fs.failed = true
+		file.fs.failed++
 	}
 	file.fs.mu.Unlock()
 	if fail {
