@@ -697,9 +697,6 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 		c.mu.Unlock()
 		arm(remaining)
 	}
-	// previous is the last attempt Run recorded, the baseline report compares
-	// a new attempt's reason against.
-	var previous *RetirementAttempt
 	defer disarm()
 	evaluate()
 	for {
@@ -714,10 +711,14 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 			evaluate()
 		case <-tick:
 			if attempt := c.attemptRetirement(ctx, retire); attempt != nil {
-				if report != nil && (previous == nil || !sameRetirementReason(*previous, *attempt)) {
+				// Run is the only writer of lastAttempt, so the reason it
+				// compares against cannot change before the store below.
+				c.mu.Lock()
+				changed := c.lastAttempt == nil || !sameRetirementReason(*c.lastAttempt, *attempt)
+				c.mu.Unlock()
+				if changed && report != nil {
 					report(*attempt)
 				}
-				previous = attempt
 				// Recorded after the report, so a reader that sees this
 				// attempt in a snapshot knows its report was already made.
 				c.mu.Lock()
