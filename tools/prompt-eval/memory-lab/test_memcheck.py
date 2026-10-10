@@ -94,6 +94,11 @@ class IndexLines(Root):
         self.assertEqual(self.run_cmd("index-lines"), 1)
 
 
+class ProjectScope(unittest.TestCase):
+    def test_project_scope_is_the_projects_memory_directory(self):
+        self.assertEqual(memcheck.project_scope("abc"), "projects/abc/memory")
+
+
 class NewPages(Root):
     def test_no_new_page_fails(self):
         self.put("projects/p/memory/seed.md", "---\ndescription: d\ntags: [a]\nby: seed-fixture\n---\n")

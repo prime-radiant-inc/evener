@@ -33,8 +33,14 @@ import argparse, glob, json, os, subprocess, sys
 MAX_INDEX_LINE = 200
 # Where evener keeps each memory scope under its state root: personal memory is
 # memory/ itself, and each project's memory is projects/<id>/memory/.
+PERSONAL_SCOPE = "memory"
 PROJECT_SCOPES = "projects/*/memory"
-PERSONAL_AND_PROJECT_SCOPES = ["memory", PROJECT_SCOPES]
+PERSONAL_AND_PROJECT_SCOPES = [PERSONAL_SCOPE, PROJECT_SCOPES]
+
+
+def project_scope(project_id):
+    """The project's memory directory relative to the evener state root."""
+    return PROJECT_SCOPES.replace("*", project_id)
 MEMSCOPE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "memscope")
 MEMSCOPE_TIMEOUT = 60  # seconds; it only reads a few directories
 MEMSCOPE_BUILD = "build it in the lab directory: go build -o bin/memscope ./memscope"

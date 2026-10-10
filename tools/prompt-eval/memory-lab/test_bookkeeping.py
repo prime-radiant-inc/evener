@@ -652,7 +652,6 @@ class MemorySnapshotTest(unittest.TestCase):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 f.write(text)
-        self.assertEqual(bookkeeping.lab.project_memory_dir(xdg, "abc"), os.path.join(xdg, "evener", "projects", "abc", "memory"))
         bookkeeping.lab.snapshot_memory(xdg, dest)
         memory = bookkeeping.lab.read_tree(dest)
         self.assertEqual(sorted(memory), [os.path.join("memory", "mine.md"), os.path.join("projects", "abc", "memory", "ours.md")])

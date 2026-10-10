@@ -2537,7 +2537,10 @@ func TestMemoryPathAuthority(t *testing.T) {
 		t.Fatalf("outside changed=%q err=%v", got, err)
 	}
 	// A pre-existing symlink in the scope root's relative tail must fail setup.
-	for _, relative := range []string{"memory", "projects", "projects/fixture-project", "projects/fixture-project/memory"} {
+	for _, tc := range []struct{ relative, scope string }{
+		{"memory", "personal"}, {"projects", "project"}, {"projects/fixture-project", "project"}, {"projects/fixture-project/memory", "project"},
+	} {
+		relative := tc.relative
 		host := t.TempDir()
 		link := filepath.Join(host, relative)
 		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
@@ -2547,11 +2550,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 		other := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, MemoryProjectID: "fixture-project"}))
-		scope := "project"
-		if relative == "memory" {
-			scope = "personal"
-		}
-		if res := memoryExec(t, other, "memory_write", map[string]any{"scope": scope, "file_path": "data", "content": "bad"}); !res.IsError {
+		if res := memoryExec(t, other, "memory_write", map[string]any{"scope": tc.scope, "file_path": "data", "content": "bad"}); !res.IsError {
 			t.Fatalf("symlink root %s accepted", relative)
 		}
 	}
