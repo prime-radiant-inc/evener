@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -272,54 +271,6 @@ func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttention
 		t.Fatalf("late attention resolution = %q, want discarded by the stop", resolution)
 	}
 	releaseOnce.Do(func() { close(releaseDrive) })
-}
-
-// A needs-attention clear that fails once after a generation consumed the
-// attention it presented is retried without parent activity: the delegate's
-// noted wakes stay the retry obligation until a clear lands, and the root's
-// attention drive reconciles them against the transcript.
-func TestDelegateNeedsAttentionClearRecoversFromATransientFailure(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	var root *Session
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("warm") },
-		func(llm.Request) llm.Response {
-			armStableSupervisionAttention(t, root.subagents.get(fixture.childID), "attention:clear-retry", "gate job finished: exit 0")
-			return communicateResponse(false, "running gates")
-		},
-		func(llm.Request) llm.Response { return finalResponse("gates passed") },
-	}
-	root = restoreSupervisionRoot(t, fixture, nil)
-	warmStableSupervisionDelegate(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
-
-	// Fail the first clear's fold read, whichever path makes it.
-	compute := readExistingDelegateAttentionFoldCompute
-	var failOnce sync.Once
-	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
-		failed := false
-		failOnce.Do(func() { failed = true })
-		if failed {
-			return delegateAttentionFold{}, 0, errors.New("transient fold read failure")
-		}
-		return compute(path, sessionID)
-	}
-	t.Cleanup(func() { readExistingDelegateAttentionFoldCompute = compute })
-
-	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates")
-	waitForStableSupervisionRun(t, root, fixture.childID)
-	controller := root.delegateController
-	// TRIPWIRE: the root's paced attention retry is the only actor; only a
-	// stranded flag reaches this bound.
-	waitForCondition(t, 30*time.Second, "the delegate's needs-attention mark to clear after a failed clear", func() bool {
-		controller.mu.Lock()
-		defer controller.mu.Unlock()
-		aggregate := controller.durable[fixture.delegateID]
-		return aggregate != nil && !aggregate.NeedsAttention
-	})
-	if got := supervisionRequestCount(fixture.adapter); got != 3 {
-		t.Fatalf("provider requests = %d, want 3: the retry reconciles without another generation", got)
-	}
 }
 
 // attentionRunStarts counts the fixture delegate's generations its journal

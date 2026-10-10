@@ -1556,12 +1556,10 @@ generation. A failed turn leaves its covered
 IDs pending; attention appended after the generation's last request was built
 stays pending and starts its own attention generation; a turn outside a lease
 covers nothing. No attention reservation reports this consumption, so the
-delegate's noted wakes stay until a clear reconciles them against the
-transcript: when the generation lets go with nothing left pending it lowers the
-needs-attention projection and drops the wakes itself, and if that clear fails
-the root's attention drive retries it. A stop meanwhile discards only the
-attention the transcript still owes; a wake whose item is already resolved is
-only forgotten.
+turn also drops the consumed IDs from the delegate's noted wakes (a later stop
+discards only what is still owed), and when the generation lets go with
+nothing left pending it lowers the delegate's needs-attention projection
+itself.
 
 There are no recordless model-bearing drive turns. A drive is not a JobRecord,
 but it is an exact delegate generation governed by the same lease.
