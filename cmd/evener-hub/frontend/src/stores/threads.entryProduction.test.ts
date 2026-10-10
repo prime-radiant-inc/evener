@@ -6,6 +6,7 @@ import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscri
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { requestResult, transactionCompletion } from "./idbConnection";
+import { settleProjectionWorkForTests } from "./projectionWork";
 import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
@@ -14,7 +15,9 @@ import {
   clearCachedSessions,
   countCachedSessions,
   installEntryTranscriptFixtureForTests,
+  markCacheSessionsDeleted,
   resetThreadsStoreForTests,
+  setCacheChannelFactoryForTests,
   settleEntryTranscriptForTests,
   subscribeCacheWrites,
   threadsStore,
@@ -475,4 +478,97 @@ it("ordinary migration isolates a legacy incarnation from the current live repos
   } finally {
     legacy.close();
   }
+});
+
+it("ordinary deletion removes bound histories and durably refuses the captured pre-delete write", async () => {
+  const storage = cache();
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const bound = { ...identity, clientId: location.origin };
+  const key = entryHistoryKey(bound);
+  const oldIdentity = { ...bound, incarnation: "older-incarnation" };
+  const oldKey = entryHistoryKey(oldIdentity);
+  expect(
+    await storage.commitBatch({
+      historyKey: oldKey,
+      clearEpoch: 0,
+      items: [],
+      sessionMetadata: {
+        historyKey: oldKey,
+        requestedRefs: [{ clientId: bound.clientId, ref: "local:a" }],
+        resolvedIdentity: oldIdentity,
+        savedAt: storage.now(),
+        accessedAt: storage.now(),
+        formatVersion: 3,
+      },
+    }),
+  ).toMatchObject({ outcome: "committed" });
+  expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+  markCacheSessionsDeleted(["local:a"]);
+  await settleProjectionWorkForTests();
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  expect(await storage.getHistoryGeneration(key)).toBe(1);
+  expect(await storage.getHistoryGeneration(oldKey)).toBe(1);
+  expect(await countCachedSessions()).toBe(0);
+  const item = turn("stale-after-delete", 2).items?.[0];
+  if (!item) throw new Error("missing positioned item");
+  expect(
+    await storage.commitBatch({
+      historyKey: key,
+      historyGeneration: 0,
+      clearEpoch: 0,
+      items: [{ historyKey: key, transcriptKey: item.id, position: { entry: 2, item: 0 }, version: 1, item }],
+    }),
+  ).toEqual({ outcome: "refused", reason: "history-fence" });
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: [item],
+    },
+  });
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("stale-after-delete");
+});
+
+it("ordinary sibling deletion heals entry rows and retires the still-held publication and write claims", async () => {
+  const storage = cache();
+  const client = connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toHaveLength(1);
+  const channel = Object.assign(new EventTarget(), {
+    name: "evener.session-cache.v1",
+    onmessage: null,
+    onmessageerror: null,
+    postMessage(_message: unknown) {},
+    close() {},
+  });
+  setCacheChannelFactoryForTests(() => channel);
+  channel.dispatchEvent(
+    new MessageEvent("message", { data: { version: 1, sourceId: "sibling-tab", kind: "deletion", refs: ["local:a"] } }),
+  );
+  await settleProjectionWorkForTests();
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  expect(await storage.getHistoryGeneration(key)).toBe(1);
+  expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
+  client.emitNotification({
+    method: "history/updated",
+    params: {
+      ref: "local:a",
+      threadId: "thread-a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-a", length: 4 },
+      items: turn("sibling-deleted", 2).items,
+    },
+  });
+  await settleEntryTranscriptForTests("local:a");
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("sibling-deleted");
 });
