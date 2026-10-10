@@ -29,9 +29,17 @@ directories, and they can be deleted by hand.
 Production CLI and daemon sessions bind memory by default. Trusted launch
 binding uses `identifier.ResolveProjectWith`; linked worktrees share their main
 checkout's identity. The binding survives cwd changes, isolated delegates,
-resume and compaction. Project-resolution failure leaves personal memory and
-ordinary work available without guessing another project. Unbound library
-sessions have no memory capability or home fallback. Tests supply fixture roots.
+resume and compaction. A root session saved without a binding (one created
+before project memory, or whose launch could not resolve its project) binds on
+resume the same way, from its own absolute home: the root it left for a
+worktree, else its working directory, never the directory the resume ran from. The restore
+persists that binding, and a saved binding is never replaced. Delegates take
+their parent's binding; a restored delegate saved without one takes its
+parent's, one saved with a different binding gets none, and an unbound one
+resumed on its own stays unbound.
+Project-resolution failure leaves personal memory and ordinary work available
+without guessing another project. Unbound library sessions have no memory
+capability or home fallback. Tests supply fixture roots.
 
 The five [native tools](../tools/memory.md) use separately confined file roots.
 Read-only roles can write memory without gaining workspace writes. Fresh and
@@ -298,7 +306,8 @@ line counts the pages not shown.
 root `MEMORY.md`, including a hand-written one not yet migrated; a search
 naming it returns nothing, but an invalid pattern or malformed glob braces are
 still an error. A search result names a file whose path holds a control
-character as a JSON string, so each result stays one line. `memory_write`,
+character as a JSON string, so each result stays one line. A search cut off at
+its result cap ends with a line saying so and how to see the rest. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an

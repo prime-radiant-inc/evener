@@ -275,6 +275,16 @@ type SessionMeta struct {
 	JobTreeRevision uint64 `json:"job_tree_revision,omitzero"`
 }
 
+// HomeDir is the directory the session calls home: while it is inside a
+// worktree, the root it entered the worktree from; otherwise its persisted
+// working directory.
+func (m SessionMeta) HomeDir() string {
+	if m.WorktreePath != "" && m.WorktreeRestoreRoot != "" {
+		return m.WorktreeRestoreRoot
+	}
+	return m.EnvInfo.WorkingDir
+}
+
 // CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in
 // SessionMeta so per-session token totals survive daemon restart and resume.
 // Conversion from llm.Usage drops Raw and the reasoning/cache-write pointers;

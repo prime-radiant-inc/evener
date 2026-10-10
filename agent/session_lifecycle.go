@@ -2029,6 +2029,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.restMu.Unlock()
 		return "", false, errors.New("session is closed")
 	}
+	s.restBeforeInput = s.state
 	s.setStateIfOpenLocked(SessionProcessing)
 	// A turn starting ends any needs_response quiet period still running:
 	// whichever boundary this turn rests on, the older rest no longer applies.
@@ -3125,7 +3126,16 @@ func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d delive
 }
 
 func (s *Session) finishNotificationNoop() {
-	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	// No turn ran, so a needs_response rest the wake interrupted still stands,
+	// and the drain loop then treats the input as awaiting, holding follow-ups
+	// as that rest did.
+	rest := SessionIdle
+	s.mu.Lock()
+	if s.restBeforeInput == SessionAwaiting {
+		rest = SessionAwaiting
+	}
+	s.mu.Unlock()
+	s.finishProcessingAtBoundary(context.Background(), rest)
 	s.mu.Lock()
 	s.sessionEndEmitted = true
 	s.mu.Unlock()
