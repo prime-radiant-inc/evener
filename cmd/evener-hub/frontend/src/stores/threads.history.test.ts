@@ -1,3 +1,4 @@
+import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
 // The web store's adoption of the shared reducer's versioned-history contract
 // (task-15-report.md's "Contract for Tasks 16/17"; spec docs/superpowers/specs/
 // 2026-09-25-transcript-read-model-design.md "Reads", "Live history
@@ -22,7 +23,6 @@ import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCache
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
-  installEntryTranscriptFixtureForTests,
   resetThreadsStoreForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
@@ -310,8 +310,8 @@ describe("versioned history: below-floor held snapshot", () => {
 describe("entry repository: older paging", () => {
   const SELECTED = "local:entry-paging";
   const entryIdentity: TranscriptResolvedIdentity = {
-    clientId: "fixture-client",
-    hostId: "fixture-host",
+    clientId: location.origin,
+    hostId: "local",
     sessionId: "sess_h",
     incarnation: "inc_a",
   };
@@ -424,12 +424,7 @@ describe("entry repository: older paging", () => {
 
   test("a server page is accepted into the repository, persisted, and keeps the captured cursor for the next request", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-int-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     let pageCalls = 0;
     const lease = acquireBackgroundThread(SELECTED);
@@ -497,12 +492,7 @@ describe("entry repository: older paging", () => {
 
   test("a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reconcile-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     let pageCalls = 0;
     // The first read is the ordinary hydration; the reconciliation read changes
@@ -586,12 +576,7 @@ describe("entry repository: older paging", () => {
 
   test("a successful local cache hit with the reader attached advances the page generation", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-gen-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     fake.on("thread/read", readHandler());
     try {
@@ -639,12 +624,7 @@ describe("entry repository: older paging", () => {
 
   test("a newer accepted update delivered before the store continuation survives the local page", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-race-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     fake.on("thread/read", readHandler());
     try {
@@ -713,12 +693,7 @@ describe("entry repository: older paging", () => {
 
   test("an already-read local page does not publish across a pending hydration", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-pending-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     fake.on("thread/read", readHandler());
     try {
@@ -776,12 +751,7 @@ describe("entry repository: older paging", () => {
 
   test("an invalidating server page keeps its invalidation at repository and store", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-invalidate-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     fake.on("thread/read", readHandler());
     // A newer epoch in the same incarnation: the shared reducer invalidates
@@ -843,12 +813,7 @@ describe("entry repository: older paging", () => {
 
   test("a last-owner release during a held local lookup leaves the ref absent", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-release-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     fake.on("thread/read", readHandler());
     try {
@@ -884,12 +849,7 @@ describe("entry repository: older paging", () => {
 
   test("a same-thread reconnect with unchanged source identifiers retires the outgoing page authority", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reconnect-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     let pageCalls = 0;
     fake.on("thread/read", readHandler());
@@ -963,12 +923,7 @@ describe("entry repository: older paging", () => {
 
   test("a same-connection close/reopen retains the cached older pages and their usable boundary, and the next older request carries the stored boundary cursor", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reopen-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     const pageCursors: (string | undefined)[] = [];
     let pageCalls = 0;
@@ -1062,12 +1017,7 @@ describe("entry repository: older paging", () => {
 
   test("a same-connection refresh preserves paged history and a missed-event reconnect pages afresh from the returned cursor", async () => {
     const entryCache = new SessionEntryCache({ databaseName: `entry-paging-refresh-reconnect-${crypto.randomUUID()}` });
-    const fixture = installEntryTranscriptFixtureForTests({
-      ref: SELECTED,
-      cache: entryCache,
-      clientId: entryIdentity.clientId,
-      hostId: entryIdentity.hostId,
-    });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
     const fake = connectFakeClient();
     const pageCursors: (string | undefined)[] = [];
     let pageCalls = 0;

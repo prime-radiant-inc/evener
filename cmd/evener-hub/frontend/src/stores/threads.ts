@@ -588,6 +588,21 @@ export function setProductionEntryCacheForTests(cache: SessionEntryCache): void 
   productionEntryCache = cache;
 }
 
+/** @internal Observe an existing ordinary route, without creating or selecting it. */
+export function productionEntryTranscriptForTests(ref: string) {
+  const route = productionEntryRoutes.get(ref);
+  return {
+    ref,
+    historyKey: route?.historyKey,
+    model: route?.repository?.getSnapshot(),
+    baseline: route?.repository?.getBaselineIdentity(),
+    olderPageGeneration: olderPageGenerations.get(ref) ?? 0,
+    readerRetention: route?.reader?.getRetentionSnapshotForTesting(),
+    repository: route?.repository,
+    reader: route?.reader,
+  };
+}
+
 // This process-local token scopes current checkpoints to this browser instance.
 // It is deliberately regenerated on reload and never persisted as identity.
 const currentAppliedSequences = new Map<string, number>();

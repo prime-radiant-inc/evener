@@ -10,11 +10,8 @@ import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from
 import { connectionStore } from "../../../stores/connection";
 import { activityDelegate } from "../../../stores/sessionActivityTestUtils";
 import { SessionEntryCache } from "../../../stores/sessionEntryCache";
-import {
-  installEntryTranscriptFixtureForTests,
-  resetThreadsStoreForTests,
-  threadsStore,
-} from "../../../stores/threads";
+import { observeProductionEntryForTests } from "../../../stores/testing/entryProductionHarness";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { retainedTranscriptReadView } from "./transcriptReadView";
@@ -1212,12 +1209,7 @@ function installEntryPaneRoute(label: string, maxBytes?: number) {
     databaseName: `entry-pane-${label}-${crypto.randomUUID()}`,
     ...(maxBytes === undefined ? {} : { maxBytes }),
   });
-  const fixture = installEntryTranscriptFixtureForTests({
-    ref: REF,
-    cache: entryCache,
-    clientId: "fixture-client",
-    hostId: "fixture-host",
-  });
+  const fixture = observeProductionEntryForTests(entryCache, REF);
   const fake = connectFakeClient();
   const item = (entry: number, turnId: string) => ({
     type: "agentMessage" as const,

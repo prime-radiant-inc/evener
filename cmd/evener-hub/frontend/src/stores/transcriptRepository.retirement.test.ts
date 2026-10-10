@@ -7,11 +7,11 @@ import { connectionStore } from "./connection";
 import { entryHistoryKey } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
+import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
 import { holdNextTransaction } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
-  installEntryTranscriptFixtureForTests,
   resetThreadsStoreForTests,
   threadsStore,
 } from "./threads";
@@ -19,7 +19,7 @@ import { TranscriptRepository, type TranscriptRepositoryBinding } from "./transc
 
 const ref = "local:retirement";
 const threadId = `thr_${ref}`;
-const identity = { clientId: "client-a", hostId: "host-a", sessionId: `sess_${ref}`, incarnation: "inc-1" };
+const identity = { clientId: location.origin, hostId: "local", sessionId: `sess_${ref}`, incarnation: "inc-1" };
 const historyKey = entryHistoryKey(identity);
 const fixtures: ReturnType<typeof createEntryCacheFixture>[] = [];
 const repos: TranscriptRepository[] = [];
@@ -115,12 +115,7 @@ afterEach(async () => {
 test("end retires only covered slots in the real entry store publication", async () => {
   const value = fixture();
   resetThreadsStoreForTests();
-  const route = installEntryTranscriptFixtureForTests({
-    ref,
-    cache: value.cache,
-    clientId: identity.clientId,
-    hostId: identity.hostId,
-  });
+  const route = observeProductionEntryForTests(value.cache, ref);
   const client = new FakeClient("ready");
   client.on("thread/read", () => readOf());
   client.on("thread/unsubscribe", () => ({}));
@@ -341,12 +336,7 @@ test.each(["background", "pane"])(
   async (ownerKind) => {
     const value = fixture();
     resetThreadsStoreForTests();
-    const route = installEntryTranscriptFixtureForTests({
-      ref,
-      cache: value.cache,
-      clientId: identity.clientId,
-      hostId: identity.hostId,
-    });
+    const route = observeProductionEntryForTests(value.cache, ref);
     const client = new FakeClient("ready");
     const final = deferred<ThreadReadResponse>();
     let reads = 0;
@@ -459,12 +449,7 @@ test.each(["read", "write"])("final %s failure finishes stale without claiming s
 test("reacquisition cancels final retirement and its old response cannot publish into the renewed lifetime", async () => {
   const value = fixture();
   resetThreadsStoreForTests();
-  const route = installEntryTranscriptFixtureForTests({
-    ref,
-    cache: value.cache,
-    clientId: identity.clientId,
-    hostId: identity.hostId,
-  });
+  const route = observeProductionEntryForTests(value.cache, ref);
   const client = new FakeClient("ready");
   const old = deferred<ThreadReadResponse>();
   let reads = 0;
@@ -527,12 +512,7 @@ test("one deadline bounds end disposition and late responses cannot publish", as
 test("a held earlier read does not substitute for the fresh final read", async () => {
   const value = fixture();
   resetThreadsStoreForTests();
-  const route = installEntryTranscriptFixtureForTests({
-    ref,
-    cache: value.cache,
-    clientId: identity.clientId,
-    hostId: identity.hostId,
-  });
+  const route = observeProductionEntryForTests(value.cache, ref);
   const client = new FakeClient("ready");
   const earlier = deferred<ThreadReadResponse>();
   const final = deferred<ThreadReadResponse>();
@@ -581,12 +561,7 @@ test("a hung final read finishes stale at the read deadline and its late result 
 
 test.each(["background", "pane"])("offline final %s release finishes stale without a fresh read", async (kind) => {
   const value = fixture();
-  const route = installEntryTranscriptFixtureForTests({
-    ref,
-    cache: value.cache,
-    clientId: identity.clientId,
-    hostId: identity.hostId,
-  });
+  const route = observeProductionEntryForTests(value.cache, ref);
   const client = new FakeClient("ready");
   client.on("thread/read", () => readOf());
   client.on("thread/unsubscribe", () => ({}));
@@ -636,12 +611,7 @@ test("a real Clear epoch refusal makes final retirement stale rather than saved"
 
 test("pending end and final release finish stale with a committed finite cut and ownership cleanup", async () => {
   const value = fixture();
-  const route = installEntryTranscriptFixtureForTests({
-    ref,
-    cache: value.cache,
-    clientId: identity.clientId,
-    hostId: identity.hostId,
-  });
+  const route = observeProductionEntryForTests(value.cache, ref);
   const client = new FakeClient("ready");
   const pendingEnd = deferred<ThreadReadResponse>();
   let reads = 0;
@@ -679,12 +649,7 @@ test.each(["reconnect", "replace"])(
   "a final waiter cannot issue after client %s changes its lifetime",
   async (change) => {
     const value = fixture();
-    const route = installEntryTranscriptFixtureForTests({
-      ref,
-      cache: value.cache,
-      clientId: identity.clientId,
-      hostId: identity.hostId,
-    });
+    const route = observeProductionEntryForTests(value.cache, ref);
     const client = new FakeClient("ready");
     const pendingEnd = deferred<ThreadReadResponse>();
     let reads = 0;
