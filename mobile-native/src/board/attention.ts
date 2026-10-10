@@ -22,11 +22,13 @@ export type BoardState =
 	| "warning"
 	| "restartNeeded"
 	| "working"
-	| "finished"
 	| "idle"
 	| "shutDown";
 
-export type Band = "needsYou" | "finished" | "working" | "idle";
+export type Band = "needsYou" | "working" | "idle";
+
+/** Live's bands in the one attention order every screen reads them in. */
+export const LIVE_BAND_ORDER: readonly Band[] = ["needsYou", "working", "idle"];
 
 export interface ClassifiedRow {
 	row: NavigationSessionSummary;
@@ -38,7 +40,6 @@ export interface ClassifiedRow {
 
 export interface LiveBands {
 	needsYou: ClassifiedRow[];
-	finished: ClassifiedRow[];
 	working: ClassifiedRow[];
 	idle: ClassifiedRow[];
 }
@@ -51,7 +52,6 @@ const WORDS: Record<BoardState, string> = {
 	warning: "Warning",
 	restartNeeded: "Restart needed",
 	working: "Working",
-	finished: "Finished",
 	idle: "Idle",
 	shutDown: "Shut down",
 };
@@ -94,9 +94,9 @@ export function decisiveState(state: string): BoardState | null {
 	return null;
 }
 
-export function boardState(row: NavigationSessionSummary, approval: boolean, seen: boolean): BoardState {
+export function boardState(row: NavigationSessionSummary, approval: boolean): BoardState {
 	// A row from an offline source can't be reached, whatever state it last
-	// reported: it is never Working, Finished or Needs you.
+	// reported: it is never Working or Needs you.
 	if (row.offline) return "shutDown";
 	const decisive = decisiveState(row.state);
 	// Only a nonblocking warning yields to live child work. Search keeps its
@@ -112,14 +112,14 @@ export function boardState(row: NavigationSessionSummary, approval: boolean, see
 	const runningSubagents = row.kind === "session" && (subagentTallyToShow(row)?.running ?? 0) > 0;
 	if (runningSubagents) return "working";
 	if (decisive) return decisive;
-	if (row.dormant || seen) return "idle";
-	return "finished";
+	// A turn that ended rests Idle whether or not you've seen it: the row's
+	// blue dot (rowUnseen) says whether anything is new (#4093).
+	return "idle";
 }
 
 /** Classifies any of the Board's rows, Live's or a category's: the needs_you
- * section marks approvals (approvalRefs), isSeen splits Finished from Idle,
- * and movedSinceSeen says whether the session moved after the person last
- * looked. */
+ * section marks approvals (approvalRefs), and isSeen and movedSinceSeen
+ * say whether anything is new since the person last looked. */
 export function rowClassifier(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
@@ -127,9 +127,8 @@ export function rowClassifier(
 ): (row: NavigationSessionSummary) => ClassifiedRow {
 	const approvals = approvalRefs(needsYouSection);
 	return (row) => {
-		const seen = isSeen(row);
-		const state = boardState(row, approvals.has(row.ref), seen);
-		return { row, state, unseen: rowUnseen(row, state, seen, movedSinceSeen(row)) };
+		const state = boardState(row, approvals.has(row.ref));
+		return { row, state, unseen: rowUnseen(row, state, isSeen(row), movedSinceSeen(row)) };
 	};
 }
 
@@ -154,7 +153,6 @@ const BANDS: Record<BoardState, Band | null> = {
 	warning: "needsYou",
 	restartNeeded: "needsYou",
 	working: "working",
-	finished: "finished",
 	idle: "idle",
 	shutDown: null,
 };
@@ -181,7 +179,7 @@ function byRef(a: ClassifiedRow, b: ClassifiedRow): number {
 function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return time(a.row) - time(b.row) || byRef(a, b);
 }
-// Finished and Idle order by when the turn ended (S4): updated_at moves on
+// Idle orders by when the turn ended (S4): updated_at moves on
 // renames and model rounds too, so it stands in only for a row without a
 // readable turn_ended_at.
 function endedTime(row: NavigationSessionSummary): number {
@@ -220,7 +218,7 @@ function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
 	return (a: ClassifiedRow, b: ClassifiedRow): number => Number(isStuck(b.row)) - Number(isStuck(a.row));
 }
 
-/** Splits Live into the spec's four bands. Rows from the needs_you section
+/** Splits Live into the spec's three bands. Rows from the needs_you section
  * join when Live's loaded pages don't hold them yet, so a session that needs
  * you is never hidden behind "load more"; a row in both keeps its Live copy,
  * which carries the row's children (fork originals and cluster members).
@@ -238,22 +236,25 @@ export function liveBands(
 	const rows = new Map<string, NavigationSessionSummary>();
 	for (const row of live) rows.set(row.ref, row);
 	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);
-	const bands: LiveBands = { needsYou: [], finished: [], working: [], idle: [] };
+	const bands: LiveBands = { needsYou: [], working: [], idle: [] };
 	for (const row of rows.values()) {
 		const item = classify(row);
 		const band = bandOf(item.state);
 		if (band) bands[band].push(item);
 	}
 	bands.needsYou.sort(needsYouOrder);
-	bands.finished.sort(newestEndedFirst);
 	bands.idle.sort(newestEndedFirst);
 	bands.working.sort(workingOrder(isStuck));
 	return bands;
 }
 
+/** Live's rows, band by band in LIVE_BAND_ORDER. */
+export function liveRows(bands: LiveBands): ClassifiedRow[] {
+	return LIVE_BAND_ORDER.flatMap((band) => bands[band]);
+}
+
 export interface LiveSummary {
 	needsYou: number;
-	finished: number;
 	working: number;
 	idle: number;
 }
@@ -263,7 +264,6 @@ export interface LiveSummary {
 export function liveSummary(bands: LiveBands): LiveSummary | null {
 	const counts: LiveSummary = {
 		needsYou: bands.needsYou.length,
-		finished: bands.finished.length,
 		working: bands.working.length,
 		idle: bands.idle.length,
 	};

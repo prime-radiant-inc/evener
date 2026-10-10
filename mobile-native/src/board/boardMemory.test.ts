@@ -20,7 +20,7 @@ describe("seen markers", () => {
 		expect(new SeenMarkers(storage, "hub-a").adopted).toBe(true);
 	});
 
-	it("on first run, adopts the newest row as the epoch so nothing past floods Finished", () => {
+	it("on first run, adopts the newest row as the epoch so nothing past arrives unseen", () => {
 		const seen = new SeenMarkers(memoryStorage(), "hub-a");
 		seen.adoptEpoch([{ updated_at: at(5) }, { updated_at: at(9) }, {}]);
 		expect(seen.isSeen({ ref: "old", updated_at: at(9) })).toBe(true);
