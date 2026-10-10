@@ -501,10 +501,7 @@ func AgeString(t time.Time) string {
 // lock and validation rules Task 18's resume re-entry applies. Otherwise
 // it's just the session's persisted working directory.
 func EffectiveWorkingDir(m schema.SessionMeta) string {
-	if m.WorktreePath != "" && m.WorktreeRestoreRoot != "" {
-		return m.WorktreeRestoreRoot
-	}
-	return m.EnvInfo.WorkingDir
+	return m.HomeDir()
 }
 
 // projectName returns the sidebar project label for a session meta.

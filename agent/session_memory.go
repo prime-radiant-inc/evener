@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
@@ -47,6 +48,46 @@ func (s *Session) memoryScopeBinding(scope string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown memory scope %q", scope)
 	}
+}
+
+// delegateMemoryProjectID bounds a delegate's saved project binding by its
+// live parent's. A delegate saved before project memory has no binding and
+// takes its parent's; one saved with a different binding gets none.
+func delegateMemoryProjectID(saved, parent string) string {
+	if saved == "" || saved == parent {
+		return parent
+	}
+	return ""
+}
+
+// homeMemoryProjectID binds a session saved before project memory the way
+// launch binds a new one, resolving its own home directory rather than
+// wherever the resume was invoked. A home that is relative (it meant something
+// only to the process that saved it) or no longer resolves leaves the session
+// unbound.
+func homeMemoryProjectID(env execenv.ExecutionEnvironment, meta schema.SessionMeta) string {
+	home := meta.HomeDir()
+	if !filepath.IsAbs(home) {
+		return ""
+	}
+	// A local environment confines command working directories to its own
+	// root, which is the resume directory, so the resolver's git fallback runs
+	// from a clone rooted at home. The clone's probe scratch goes with it. A
+	// sandbox that cannot re-root to home leaves the session unbound rather
+	// than probing home unconfined.
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		rooted := local.WithWorkingDirectory(home)
+		defer func() { _ = rooted.DisposeSessionScratch() }()
+		if rooted.SandboxReRootError() != nil {
+			return ""
+		}
+		env = rooted
+	}
+	project, err := identifier.ResolveProjectWith(home, execenv.NewProjectResolver(env))
+	if err != nil {
+		return ""
+	}
+	return project.ID
 }
 
 // memoryReportReminder rides on the result tool's description because the

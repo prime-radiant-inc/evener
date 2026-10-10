@@ -820,9 +820,7 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg := configFromSnapshot(frozenConfig.Clone())
 	subCfg.MemoryStateRoot = parentCfg.MemoryStateRoot
 	subCfg.DisableMemory = subCfg.DisableMemory || parentCfg.DisableMemory
-	if subCfg.MemoryProjectID != parentCfg.MemoryProjectID {
-		subCfg.MemoryProjectID = ""
-	}
+	subCfg.MemoryProjectID = delegateMemoryProjectID(subCfg.MemoryProjectID, parentCfg.MemoryProjectID)
 	subCfg.Project = parentCfg.Project
 	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy

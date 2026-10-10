@@ -192,7 +192,8 @@ func FuzzEgrepGrepNative(f *testing.F) {
 			return out
 		}, struct{}{}, func(a, b string) bool { return a == b })
 
-		// Cap consistency: fuzzed maxResults keeps exactly the first effMax matches.
+		// Cap consistency: fuzzed maxResults keeps exactly the first effMax
+		// matches, then the truncation note when more matches exist.
 		gotCapped, err := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, fuzzMax, "content")
 		if err != nil {
 			t.Fatalf("grepNative capped content errored: %v", err)
@@ -200,7 +201,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		eff := egrep_effMax(fuzzMax)
 		capped := refContent
 		if len(capped) > eff {
-			capped = capped[:eff]
+			capped = append(capped[:eff:eff], grepTruncationNote(eff))
 		}
 		if wantCapped := strings.Join(capped, "\n"); gotCapped != wantCapped {
 			t.Fatalf("cap consistency broken (max=%d eff=%d)\n got =%q\n want=%q",
@@ -210,7 +211,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		// Soundness spot-check independent of the reference: every emitted content
 		// line is a genuine regex hit at its claimed position.
 		if gotCapped != "" {
-			for ln := range strings.SplitSeq(gotCapped, "\n") {
+			for ln := range strings.SplitSeq(strings.TrimSuffix(gotCapped, "\n"+grepTruncationNote(eff)), "\n") {
 				egrep_verifyMatchLine(t, ln, refRe, visible)
 			}
 		}

@@ -42,11 +42,11 @@ type listDirResult struct {
 	Truncated bool
 }
 
-// dirEntrySize over-estimates an entry's rendered line length (name, an optional
-// slash or tab-separated size, and a newline) so the running budget keeps the
-// rendered listing under the cap.
+// dirEntrySize over-estimates an entry's rendered line length (name as
+// formatDirListing writes it, an optional slash or tab-separated size, and a
+// newline) so the running budget keeps the rendered listing under the cap.
 func dirEntrySize(e execenv.DirEntry) int {
-	return len(e.Name) + 16
+	return len(execenv.OneLinePath(e.Name)) + 16
 }
 
 // formatDirListing renders a page as plain text, ls-style: one entry per line,
@@ -58,7 +58,7 @@ func formatDirListing(r listDirResult) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(e.Name)
+		b.WriteString(execenv.OneLinePath(e.Name))
 		switch {
 		case e.IsDir:
 			b.WriteByte('/')
@@ -232,6 +232,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			if err != nil {
 				return "", err
+			}
+			for i, match := range matches {
+				matches[i] = execenv.OneLinePath(match)
 			}
 			result := strings.Join(matches, "\n")
 			// Silent-empty is the enemy: a bare "" here is indistinguishable
