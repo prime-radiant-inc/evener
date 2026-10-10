@@ -44,7 +44,7 @@ Each ruling is what the tasks implement. Raise any you disagree with before Task
 5. **Which parent messages get the label.** Only `delegate_send` into a *running* child produces a steering turn, so only that path gets source `parent`, the attribution line and the "From parent" label. A `delegate_send` that starts an idle child, like the initial `delegate` prompt, opens the child's generation as user input, exactly as the brief does; clients render it as the brief. No client renders a source on user-input items, and a delegate never has a human partner, so nothing is misattributed.
 6. **Where "From parent" lives.** The shared table in `steeringLabels.ts` is keyed by steering kind. The parent label is a source rule in the same module: `steeringLabel(kind, source)` returns "From parent" for source `parent`, and both clients pass the item's source.
 7. **Provenance.** The caller route carried the sender's watch provenance into the parent; reports never did. Updates ride the report path and carry none. Observer loops stay bounded by the watch delivery budget, as they are for reports today. Once the caller route is gone, the steering-claim provenance plumbing it fed is dead and PR 6 removes it.
-8. **#3725 interaction (flag, not fixed).** An update reaching a *running* parent delegate is presented at its next model boundary, as the spec says. Under today's machinery that attention also earns the parent one successor attention generation after its run, which is #3725's mechanism. Updates make it more frequent. The spec keeps #3725 out of scope; Task 7 pins only what the spec promises and does not assert either way about the successor. Recommendation to Jesse: rule on #3725 before PR 4 merges.
+8. **#3725 interaction (resolved by Jesse, 2026-10-10).** An update reaching a *running* parent delegate is presented at its next model boundary, as the spec says. Under today's machinery that attention also earns the parent one successor attention generation after its run (#3725's mechanism), and updates would make it more frequent. Jesse's ruling: a delegate that has already seen the attention that was supposed to wake it must not wake again, as the root already behaves; this reverses the 2026-08-29 no-action decision. PR 3a (Task 4a) implements it and lands before PR 4, which builds on it: Task 7's running-coordinator test asserts that the update the coordinator saw earns it no successor generation.
 9. **Wire corpora.** The update frame is recorded in `agent/testdata/notificationwire` (where every delegate frame the clients parse is recorded) and the parent steer in `agent/testdata/systemeventwire` (where daemon steers are). `agent/testdata/subagentwire` gets a run that posts an update before reporting, pinning that `delegates/list` and its `reportPreview` do not change.
 10. **Updates after the report.** A `communicate(end_turn=false)` once the delegate's generation is settling (its terminal communicate already prepared) is refused as `not_delivered`; nothing can land behind the report of the same generation.
 11. **Root `to="caller"`.** The root gets the same pointer error as a delegate (it used to get "caller is only available from a delegate").
@@ -58,13 +58,14 @@ Each ruling is what the tasks implement. Raise any you disagree with before Task
 | 1 | The delegate journal records updates in delivery order | 1 | ~60 |
 | 2 | Delegate notification frames name their kind; clients render updates | 2, 3 | ~80 |
 | 3 | Delegate guidance: updates reach your parent, only when it needs to know or act | 4 | ~50 |
+| 3a | A delegate does not wake again for attention its run already showed the model | 4a | ~55, mostly renames |
 | 4 | communicate(end_turn=false) delivers a delegate's update to its parent | 5, 6, 7, 8 | ~130 |
 | 5 | delegate_send reaches only your own delegates | 9 | ~140, mostly deletions |
 | 6 | Drop the steering provenance only the caller route set | 10 | ~45, mostly deletions |
 | 7 | A parent's steer is labelled as from the parent | 11, 12 | ~45 |
 | 8 (optional) | Live micro-test: a delegate's question gets its parent's answer | 13 | 0 (eval-tagged test code) |
 
-PR 4 closes #4172. After PR 5 merges, confirm PR #4197 is closed, and if not, close it with a comment linking the spec.
+PR 3a closes #3725; it is independent of PRs 1–3 and lands before PR 4, preferably before PR 3 so ruling 13's order holds. PR 4 closes #4172. After PR 5 merges, confirm PR #4197 is closed, and if not, close it with a comment linking the spec.
 
 ## File structure
 
@@ -87,6 +88,7 @@ PR 4 closes #4172. After PR 5 merges, confirm PR #4197 is closed, and if not, cl
 - `mobile-native/src/session/notificationLine.ts`, `mobile-native/src/projectedRows.ts`, `cmd/evener-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`: client rendering.
 - Tests: `agent/delegate_messaging_test_helpers_test.go` (new, shared scripted root and delegates), `agent/delegate_messaging_guidance_test.go` (new, goldens), `agent/delegate_update_test.go` (new, delivery behavior), `agent/delegate_send_caller_rejected_test.go` (new); goldens under `agent/testdata/messagingprompt/`.
 - Docs: `docs/job-control.md`, `docs/product/session-activity.md`, `docs/product/subsystems.md`, `docs/subagent-management/11-delegate-resource-model.md`.
+- PR 3a: `agent/session_attention.go`, `agent/session.go`, `agent/session_model_call.go`, `agent/session_lifecycle.go` (attention coverage for a delegate's leased turns); tests in `agent/delegate_attention_seen_test.go` (new); docs above plus `docs/superpowers/specs/2026-08-29-stable-delegate-attention-no-action-design.md` (status).
 
 ## Review Focus
 
@@ -95,7 +97,7 @@ The five inputs or conditions the spec implies but its test list does not exerci
 1. **An update posted while the parent is blocked in `delegate_send(max_wait_ms)` on that same delegate.** Expected: the wait answers when the report arrives, the reply carries the update ahead of the report, labelled as an update, and the update is never delivered a second time as a notification. (An update head must never resolve the inline waiter.) Test: Task 5 (waiter not claimed), Task 7 `TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport`.
 2. **Update text containing markup that could close or forge a frame** (`</delegate-notification>`, `<job-notification job_id="…">`, quotes, `&`). Expected: exactly one frame; the parent's model sees `<` escaped; clients show the text as written, in one card. Test: Task 2 `TestDelegateUpdateFrameCannotCloseOrForgeAFrame`, Task 3 TypeScript round trip.
 3. **Update text shaped like a terminal packet (JSON with a string `kind`) or like the quiet-watchdog sentence.** Expected: clients still render an update, routing on the `kind` attribute before the body's shape; no outcome, no quiet card. Test: Task 2 `TestDelegateUpdateFrameKeepsLookalikeMessagesWhole`, Task 3 TypeScript cases.
-4. **A parent delegate that is itself mid-run when its worker sends an update.** Expected: the coordinator sees the update at its next model boundary, with the worker's frame. Test: Task 7 `TestDelegateUpdateReachesARunningParentDelegate`. (Ruling 8: the post-run successor generation is #3725's and is not asserted.)
+4. **A parent delegate that is itself mid-run when its worker sends an update.** Expected: the coordinator sees the update at its next model boundary, with the worker's frame. Test: Task 7 `TestDelegateUpdateReachesARunningParentDelegate`, which also asserts (ruling 8, PR 3a) that the coordinator's own generation consumed the update, so no successor generation runs for it.
 5. **A restart while the generation that posted a still-undelivered update was running.** Expected: after restore the parent gets the update, then the `runtime_lost` report, once each and in that order, and is woken. Test: Task 7 `TestDelegateUpdateSurvivesRestart/posted while the run was still going`.
 
 ---
@@ -1449,9 +1451,449 @@ Claude-Session: https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU"
 Run `/simplify`, push its fixes, and open the PR (base `main`, regular) titled "feat(prompts): delegate guidance: updates reach your parent, only when it needs to know or act". The body says the updates themselves land in PR 4, which merges right after this one (ruling 13), shows the golden diff, states the `/simplify` outcome, and ends with `https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU`. Shepherd it to the merge gate.
 
 
+## PR 3a: A delegate does not wake again for attention its run already showed the model
+
+PR 3a is independent of PRs 1–3: it touches only the session's attention coverage. It lands before PR 4 (ruling 8), and preferably before PR 3, so PR 3 can still merge immediately before PR 4 (ruling 13). Its body says "Closes #3725".
+
+**Mechanism (origin/main 3fb139cd03).** The root already consumes attention its turn showed the model: `stageRootDelegateAttentionCoverage` (`agent/session_attention.go:969`, called from `agent/session_model_call.go:489`) stages the attention IDs a built request presents, `promoteStagedRootDelegateAttention` (`agent/session_lifecycle.go:2358`) credits them once the round's call settles, and the finish defer in `processOneInput` (`agent/session_lifecycle.go:1931-1946`) calls `finishRootDelegateAttentionTurn`, whose `unionCoveredRootDelegateAttention` (`agent/session_attention.go:1040`) adds the covered IDs still pending and resolves them consumed. Staging and its per-turn reset (`agent/session_lifecycle.go:2060`) are gated to the root receiver. A delegate's mid-run attention (`retainDelegateAttentionTurn`, `agent/session_attention.go:1426`) therefore joins its history, is presented at the next request, and stays pending; when the generation releases, `driveStableDelegateAttention` (`agent/delegate_runtime.go:660`) finds it in `pendingDelegateAttentionIDs`, reserves `ids[0]` and starts one `TriggerAttention` successor per item, and the model repeats its handoff. The fix lets a delegate turn that runs under its generation's lease use the same coverage. The lease is the delegate's only start claim: `ReserveAttention` (`agent/delegate_tree_start.go`) admits one reservation per delegate and `delegateAttentionWakeEligibleLocked` (`agent/delegate_tree_attention.go:572`) refuses one while a live binding exists, so the generation-less consumed marker written at the turn's end cannot conflict with a reserved generation (the objection recorded in the old staging comment). Unleased turns on a child session cover nothing.
+
+### Task 4a: Coverage of presented attention extends to a delegate's leased generation
+
+**Files:**
+- Modify: `agent/session_attention.go` (`coversPresentedAttention`; rename and re-gate the coverage functions; failure guard in `finishRootDelegateAttentionTurn`)
+- Modify: `agent/session.go:1037-1050` (coverage field names and comments)
+- Modify: `agent/session_model_call.go:485-489` (pass `ctx` to staging)
+- Modify: `agent/session_lifecycle.go:2058-2060`, `:2354-2358` (renamed calls)
+- Modify: `agent/session_attention_test.go` (renamed calls; staging takes a context)
+- Test: `agent/delegate_attention_seen_test.go` (new)
+- Docs: `docs/superpowers/specs/2026-08-29-stable-delegate-attention-no-action-design.md` (status line), `docs/job-control.md` (attention bullets near line 1394), `docs/subagent-management/11-delegate-resource-model.md` (Attention drives, after line 1534), `docs/product/subsystems.md` (S12 row)
+
+**Interfaces:**
+- Consumes: nothing from other PRs.
+- Produces:
+  - `func (s *Session) coversPresentedAttention(ctx context.Context) bool`: true for the root receiver and for a turn whose `ctx` carries `delegateRunLeaseContextKey`.
+  - Renames, with no other change in behavior for the root: `stageRootDelegateAttentionCoverage` → `stagePresentedAttentionCoverage(ctx context.Context, req llm.Request, historyTurns []schema.Turn)`, `promoteStagedRootDelegateAttention` → `promoteStagedAttentionCoverage`, `resetRootDelegateAttentionCoverage` → `resetAttentionCoverage`, `unionCoveredRootDelegateAttention` → `unionCoveredAttention`; fields `rootAttentionCoveredIDs` → `attentionCoveredIDs`, `rootAttentionStagedIDs` → `attentionStagedIDs`, `rootAttentionPreTurnArmIDs` → `attentionPreTurnIDs`.
+  - Contract (PR 4's Task 7 relies on it): attention a settled request of a delegate's leased generation presented is resolved `consumed` with resume generation 0 before that generation finishes, and earns no attention generation; attention appended after the generation's last request was built stays pending and starts one.
+
+- [ ] **Step 1: Create the worktree for PR 3a**
+
+```bash
+git -C /Users/jesse/git/prime-radiant-inc/evener fetch origin main
+git -C /Users/jesse/git/prime-radiant-inc/evener worktree add -b claude/delegate-attention-seen \
+  /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen origin/main
+```
+
+Work in that worktree for the rest of this task. Read #3725 and its comments first (`gh issue view 3725 --repo prime-radiant-inc/evener --comments`); the root-cause comment is the source of the first test.
+
+- [ ] **Step 2: Write the two behavior tests**
+
+Create `agent/delegate_attention_seen_test.go`:
+
+```go
+package agent
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/llm"
+)
+
+// #3725: attention that reaches a running delegate and is shown to its model
+// in a settled request of that same generation is consumed with it. The
+// delegate does not start another generation for it, so it never repeats
+// its handoff, and its parent's next message still resumes it.
+func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			sub := root.subagents.get(fixture.childID)
+			armStableSupervisionAttention(t, sub, "attention:mid-run", "gate job finished: exit 0")
+			return communicateResponse(false, "running gates")
+		},
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "gate job finished") {
+				t.Errorf("second request did not present the mid-run attention")
+			}
+			return finalResponse("handoff: committed, waiting for review")
+		},
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "FOLLOW-UP: also check the migration") {
+				t.Errorf("third request is not the parent's follow-up")
+			}
+			return finalResponse("migration checked")
+		},
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (a successor generation re-ran the delegate)", got)
+	}
+	if got := attentionRunStarts(t, fixture); got != 0 {
+		t.Fatalf("attention generations = %d, want 0", got)
+	}
+	if resolution, generation := childAttentionResolution(t, sub, "attention:mid-run"); resolution != delegateAttentionConsumed || generation != 0 {
+		t.Fatalf("mid-run attention resolution = %q for generation %d, want consumed by the generation that presented it (0)", resolution, generation)
+	}
+	// The delegate does not stay marked as needing attention it consumed.
+	controller := root.delegateController
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the delegate's needs-attention mark to clear", func() bool {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		aggregate := controller.durable[fixture.delegateID]
+		return aggregate != nil && !aggregate.NeedsAttention
+	})
+
+	// The parent's next message still resumes the same delegate.
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "FOLLOW-UP: also check the migration", 60_000)
+	if outcome.result.Err != nil || outcome.commit == nil {
+		t.Fatalf("follow-up send = %#v", outcome)
+	}
+	plans, err := outcome.commit.Complete(true)
+	if err != nil {
+		t.Fatalf("acknowledge follow-up result: %v", err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatalf("execute follow-up acknowledgement: %v", err)
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := supervisionRequestCount(fixture.adapter); got != 3 {
+		t.Fatalf("provider requests after the follow-up = %d, want 3", got)
+	}
+	if got := attentionRunStarts(t, fixture); got != 0 {
+		t.Fatalf("attention generations after the follow-up = %d, want 0", got)
+	}
+}
+
+// Attention appended after the generation's last request was built has not
+// been shown to the model, so it still wakes the delegate: one attention
+// generation, whose request presents it.
+func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			// This request is already built: the attention lands after the
+			// generation's last model boundary.
+			sub := root.subagents.get(fixture.childID)
+			armStableSupervisionAttention(t, sub, "attention:late", "late gate job finished: exit 1")
+			return finalResponse("handoff: committed, waiting for review")
+		},
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "late gate job finished") {
+				t.Errorf("the attention generation's request did not present the late attention")
+			}
+			return finalResponse("the late gate run failed; looking into it")
+		},
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	if got := supervisionRequestCount(fixture.adapter); got != 2 {
+		t.Fatalf("provider requests = %d, want 2 (the late attention must start one generation)", got)
+	}
+	if got := attentionRunStarts(t, fixture); got != 1 {
+		t.Fatalf("attention generations = %d, want 1", got)
+	}
+	if resolution, generation := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionConsumed || generation == 0 {
+		t.Fatalf("late attention resolution = %q for generation %d, want consumed by its own attention generation", resolution, generation)
+	}
+}
+
+// attentionRunStarts counts the fixture delegate's generations its journal
+// records as started by attention.
+func attentionRunStarts(t *testing.T, fixture coldStableDelegateFixture) int {
+	t.Helper()
+	events, err := delegatestore.ReadEvents(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
+	if err != nil {
+		t.Fatalf("read delegate journal: %v", err)
+	}
+	starts := 0
+	for _, event := range events {
+		if event.Kind == delegatestore.EventDelegateRunStarted && event.DelegateID == fixture.delegateID &&
+			event.RunStarted.Trigger == delegatestore.TriggerAttention {
+			starts++
+		}
+	}
+	return starts
+}
+
+// childAttentionResolution reads how the child transcript resolved
+// attentionID: its disposition, and the generation it was consumed for, which
+// is zero when the generation that presented it consumed it.
+func childAttentionResolution(t *testing.T, sub *subagent, attentionID string) (delegateAttentionResolution, uint64) {
+	t.Helper()
+	sess := sub.sess
+	sess.mu.Lock()
+	path, sessionID := transcriptPath(sess.stateDir, sess.id), sess.id
+	sess.mu.Unlock()
+	fold, err := sess.readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("fold child attention: %v", err)
+	}
+	return fold.resolutions[attentionID], fold.resumeGenerations[attentionID]
+}
+```
+
+- [ ] **Step 3: Watch the first test fail for the right reason**
+
+```bash
+cd /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen/agent
+go test -race -count=1 -run 'TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration|TestDelegateAttentionAfterLastRequestStillWakesTheDelegate' .
+```
+
+Expected: `TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration` fails with `provider requests = 3, want 2` (the successor attention generation answered by the third step, which here is the follow-up step, so its `third request is not the parent's follow-up` error may print too). `TestDelegateAttentionAfterLastRequestStillWakesTheDelegate` passes: it pins behavior the fix must keep, and Step 7 proves it is not vacuous. Any other failure (a hang, a helper error) is a broken test: fix the test before going on.
+
+- [ ] **Step 4: Rename the coverage machinery for what it now serves**
+
+The coverage functions and fields stop being root-only. Rename them mechanically:
+
+```bash
+A=/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen/agent
+perl -pi -e 's/\bstageRootDelegateAttentionCoverage\b/stagePresentedAttentionCoverage/g; s/\bpromoteStagedRootDelegateAttention\b/promoteStagedAttentionCoverage/g; s/\bresetRootDelegateAttentionCoverage\b/resetAttentionCoverage/g; s/\bunionCoveredRootDelegateAttention\b/unionCoveredAttention/g; s/\brootAttentionCoveredIDs\b/attentionCoveredIDs/g; s/\brootAttentionStagedIDs\b/attentionStagedIDs/g; s/\brootAttentionPreTurnArmIDs\b/attentionPreTurnIDs/g' \
+  $A/session.go $A/session_attention.go $A/session_attention_test.go $A/session_lifecycle.go $A/session_model_call.go
+git -C /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen grep -n 'RootDelegateAttentionCoverage\|StagedRootDelegateAttention\|CoveredRootDelegateAttention\|rootAttentionCoveredIDs\|rootAttentionStagedIDs\|rootAttentionPreTurnArmIDs' -- agent
+```
+
+Expected: the grep prints nothing. Then fix the two field comments in `agent/session.go` that the rename left reading oddly; the block becomes:
+
+```go
+	// attentionCoveredIDs is the running turn's coverage set. Stage it per
+	// round, promote it on settle, and read it at turn finish; the contract
+	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
+	// Reset at each turn start.
+	attentionCoveredIDs map[string]struct{}
+	// attentionStagedIDs is one round's candidate coverage: the attention
+	// the round's built request presents. The round loop promotes it into
+	// attentionCoveredIDs only when the round's call settles, so a failed
+	// or filtered round never credits an item the model saw in no settled
+	// call. Every request build re-stages it.
+	attentionStagedIDs map[string]struct{}
+	// attentionPreTurnIDs snapshots rootAttentionWakeIDs at turn start
+	// (resetAttentionCoverage). Marking consults it to separate the root's
+	// deliveries armed mid-turn from attention already owed a dedicated
+	// notification turn. A delegate session arms no root wakes, so for it
+	// the snapshot is empty.
+	attentionPreTurnIDs map[string]struct{}
+```
+
+Run `"$(go env GOROOT)/bin/gofmt" -l` on the five files (prints nothing) and `go test -count=1 -run 'TestRootDelegateAttention_' .` from `agent/` (passes: the rename changes no behavior).
+
+- [ ] **Step 5: Cover presented attention in a delegate's leased turns**
+
+In `agent/session_attention.go`, replace `stagePresentedAttentionCoverage` (the renamed `stageRootDelegateAttentionCoverage`, with its doc comment) with:
+
+```go
+// coversPresentedAttention reports whether this turn consumes the attention
+// its settled requests present. The root receiver's turns do. So does a
+// stable delegate's turn running under its generation's lease: the lease is
+// the delegate's only start claim, since a delegate holds one reservation at
+// a time and no attention reservation is admitted while its generation holds
+// a live binding (delegateAttentionWakeEligibleLocked). The generation-less
+// consumed marker written at the turn's end therefore cannot conflict with a
+// reserved attention generation. An unleased turn on a child session covers
+// nothing.
+func (s *Session) coversPresentedAttention(ctx context.Context) bool {
+	if s.isRootDelegateAttentionReceiver() {
+		return true
+	}
+	_, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	return leased
+}
+
+// stagePresentedAttentionCoverage records one built request's candidate
+// coverage: the attention IDs the request presents that were not armed for
+// the root's own notification turn when this turn began. Staging is
+// candidacy, not credit — the round loop promotes the staged set into
+// attentionCoveredIDs only when the round's call settles, because a request
+// that never settled (a failed attempt, a content-filter retry whose
+// compaction then folds the steering turn away) presented nothing the design
+// may consume. Only a turn that coversPresentedAttention stages.
+//
+// A responses-continuation delta request carries only new items; any older
+// steering turn lives in server-side state this session cannot verify. Nothing
+// stages, and the items keep their wake for a full-history turn.
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, req llm.Request, historyTurns []schema.Turn) {
+	if !s.coversPresentedAttention(ctx) {
+		return
+	}
+	if req.HistoryMode == llm.HistoryModeResponsesDelta {
+		return
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	var staged map[string]struct{}
+	for _, turn := range historyTurns {
+		if turn.AttentionID == "" {
+			continue
+		}
+		if _, preTurn := s.attentionPreTurnIDs[turn.AttentionID]; preTurn {
+			continue
+		}
+		if staged == nil {
+			staged = make(map[string]struct{})
+		}
+		staged[turn.AttentionID] = struct{}{}
+	}
+	s.attentionStagedIDs = staged
+}
+```
+
+Replace `resetAttentionCoverage` (with its doc comment) with the unguarded form. It must clear on every turn: a child's unleased turn that follows a leased one must not union the leased turn's coverage.
+
+```go
+// resetAttentionCoverage clears the per-turn coverage at turn start and
+// snapshots the root's armed set that marking excludes, so the root credits
+// only deliveries armed after this turn began. It runs for every turn, so a
+// turn that covers nothing never inherits an earlier turn's coverage.
+// maps.Clone(nil) is nil, and the field is lookup-only, so an empty armed set
+// needs no special case.
+func (s *Session) resetAttentionCoverage() {
+	s.attentionMu.Lock()
+	s.attentionCoveredIDs = nil
+	s.attentionStagedIDs = nil
+	s.attentionPreTurnIDs = maps.Clone(s.rootAttentionWakeIDs)
+	s.attentionMu.Unlock()
+}
+```
+
+In `finishRootDelegateAttentionTurn`, add as the first statement (before the existing comment block that opens the function body):
+
+```go
+	// A delegate's failed turn leaves what it presented pending for its next
+	// attention generation; the paced retry and the paused notice below
+	// belong to the root's rail.
+	if turnErr != nil && !s.isRootDelegateAttentionReceiver() {
+		return nil
+	}
+```
+
+and extend its doc comment's first sentence to say it runs for every turn: "finishRootDelegateAttentionTurn consumes the exact selected IDs only after a successful model turn and durable resolution markers — plus any still-pending attention this turn's built requests already presented to the model, at the root or in a delegate's leased generation, which needs no wake of its own."
+
+In `agent/session_model_call.go`, the staging call becomes `s.stagePresentedAttentionCoverage(ctx, req, historyTurns)`. In `agent/session_attention_test.go`, the four staging calls gain a context:
+
+```bash
+perl -pi -e 's/\.stagePresentedAttentionCoverage\(llm\.Request/.stagePresentedAttentionCoverage(context.Background(), llm.Request/g' \
+  /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen/agent/session_attention_test.go
+```
+
+- [ ] **Step 6: Watch both tests pass, then the coverage suites**
+
+```bash
+cd /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen/agent
+go test -race -count=1 -run 'TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration|TestDelegateAttentionAfterLastRequestStillWakesTheDelegate|TestRootDelegateAttention_' .
+go test -race -count=3 -run 'TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration|TestDelegateAttentionAfterLastRequestStillWakesTheDelegate' .
+```
+
+Expected: PASS, including three repeated runs of the new tests. If the needs-attention wait times out, nothing re-drove the delegate after its generation released, so the projection kept `needs_attention: true` for attention already consumed. That is a regression of this change: debug it at the root (superpowers:systematic-debugging), starting from what wakes `driveStableDelegateAttention` after `releaseFinalizationLocked`, whose empty-pending branch calls `clearResolvedDelegateAttention`.
+
+- [ ] **Step 7: Commit, then prove the late-attention test is not vacuous**
+
+```bash
+W=/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen
+git -C $W add agent/session.go agent/session_attention.go agent/session_attention_test.go agent/session_lifecycle.go agent/session_model_call.go agent/delegate_attention_seen_test.go
+git -C $W diff --cached --stat
+git -C $W commit -m "fix(agent): a delegate does not wake again for attention its run already showed the model
+
+A delegate generation that presented mid-run attention to its model in a
+settled request left it pending, so each item started one more attention
+generation after the handoff and the model repeated its report (#3725).
+A delegate turn running under its generation's lease now uses the root's
+request-bound coverage: covered items still pending are consumed at the
+turn's end, before the generation finishes. The lease is the delegate's
+only start claim, so the generation-less marker cannot conflict with a
+reserved attention generation. Attention appended after the last request
+still starts its own generation.
+
+Claude-Session: https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU"
+```
+
+Now break the boundary on purpose: in `finishRootDelegateAttentionTurn`, change `ids = s.unionCoveredAttention(ids)` to `ids, _ = s.pendingDelegateAttentionIDs()` (consume everything pending at the turn's end, presented or not), and run:
+
+```bash
+cd /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen/agent
+go test -count=1 -run 'TestDelegateAttentionAfterLastRequestStillWakesTheDelegate' .
+git -C /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen checkout -- agent/session_attention.go
+```
+
+Expected: the test fails with `provider requests = 1, want 2` (the late attention was swallowed), and the checkout restores the committed fix. Confirm `git -C <worktree> status --short` is clean.
+
+- [ ] **Step 8: Run the attention and supervision suites; settle changed expectations**
+
+```bash
+cd /Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen/agent
+go test -race -count=1 -run 'Attention|Supervision|StableDelegate|DelegateResource|Delegate.*Drive' . 2>&1 | tail -40
+```
+
+A failure here falls in one of two kinds. A test that asserted a successor generation (or an extra provider request, an extra report, or a `consumed` marker with a resume generation) for attention that a settled request of the same leased generation had already presented pinned #3725's behavior: change its expectation to the new contract and list it in the PR body with one line each. A test whose attention arrived after the generation's last request, or reached an unleased turn, must keep its expectation: a failure there is a defect in this change; debug it at the root. Re-run until green.
+
+- [ ] **Step 9: Docs**
+
+In `docs/superpowers/specs/2026-08-29-stable-delegate-attention-no-action-design.md`, the status line becomes:
+
+```markdown
+- **Status:** Proposed after simplification and adversarial review. Partly reversed on 2026-10-10 by Jesse's ruling on #3725: attention a delegate generation already showed its model in a settled request is consumed with that generation, as the root's is, so it earns no successor generation. The "Consume attention in the ordinary generation" alternative and the transcript-visibility and no-skip non-goals no longer hold for that case; the root's settled-request coverage is the request-bound evidence they asked for.
+```
+
+In `docs/job-control.md`, after the bullet that begins "If the owner is mid-turn or awaiting an `ask_user` reply" (line 1394), add:
+
+```markdown
+- Attention a turn already showed the model is consumed with that turn. When a
+  settled model request of a root turn, or of a delegate turn running in its
+  generation, carried an attention entry, the turn's successful end appends the
+  consumed marker, so the entry starts no further turn or attention generation.
+  Attention appended after the turn's last request was built keeps its own wake.
+```
+
+In `docs/subagent-management/11-delegate-resource-model.md`, after step 8 of "Attention drives" (the list item ending "provider-excluded consumed resolution marker per bound ID.", line 1534), add the paragraph:
+
+```markdown
+Attention that reaches a delegate while one of its generations runs, whatever
+started that generation, joins the generation's history and is presented at
+its next model request. A settled request that presented it covers it: when the
+turn ends successfully, still inside the generation's lease, the runtime appends
+and fsyncs a generation-less consumed marker for each covered ID that is still
+pending, so the delegate is not driven again for attention its model has
+already seen. The lease is the delegate's only start claim (no attention
+reservation is admitted while a generation holds a live binding), so the marker
+cannot conflict with a reserved generation. A failed turn leaves its covered
+IDs pending; attention appended after the generation's last request was built
+stays pending and starts its own attention generation; a turn outside a lease
+covers nothing.
+```
+
+In `docs/product/subsystems.md`, in the S12 row, change "Stable attention starts revalidate transcript work after claiming a retained child; accepted starts retain their exact generation through journal-commit retries." to "Stable attention starts revalidate transcript work after claiming a retained child; a delegate generation consumes the attention its settled requests already presented, so only attention that arrives after its last request starts another generation; accepted starts retain their exact generation through journal-commit retries."
+
+```bash
+W=/Users/jesse/git/prime-radiant-inc/evener/.claude/worktrees/delegate-attention-seen
+git -C $W add docs/superpowers/specs/2026-08-29-stable-delegate-attention-no-action-design.md docs/job-control.md docs/subagent-management/11-delegate-resource-model.md docs/product/subsystems.md
+git -C $W diff --cached --stat
+git -C $W commit -m "docs: a delegate consumes attention its generation already presented
+
+Records Jesse's 2026-10-10 ruling on #3725 in the no-action design's
+status, and states the coverage rule in job control, the delegate
+resource model and the S12 row.
+
+Claude-Session: https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU"
+```
+
+- [ ] **Step 10: Gates**
+
+Run the agent-module gates from Global Constraints (`go build`, the three `go vet` runs, toolchain gofmt on the touched `.go` files, `golangci-lint run --allow-serial-runners ./...`, the targeted race run from Step 6, then the full race run wrapped in `race-serial` from `agent/`). Set `-o pipefail` before gating on a piped command. Merge `origin/main` before the last gate run.
+
+- [ ] **Step 11: Open the PR**
+
+Run `/simplify`, push its fixes, and open the PR (base `main`, regular) titled "fix(agent): a delegate does not wake again for attention its run already showed the model". The body: "Closes #3725."; the mechanism in two sentences (the root's settled-request coverage now covers a delegate's leased turns; the lease is the only start claim, so the generation-less marker cannot meet a reservation); the two tests and what each pins (no successor generation plus the parent's follow-up still resumes; attention after the last request still wakes), with the red run from Step 3 and the mutation run from Step 7; the existing tests whose expectations changed in Step 8 and why; the 2026-08-29 design status change; the `/simplify` outcome; ending with `https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU`. Shepherd it to the merge gate.
+
+
 ## PR 4: communicate(end_turn=false) delivers a delegate's update to its parent
 
-PR 4 needs PRs 1, 2 and 3. Branch from `origin/main` once they have merged (or from PR 3's branch, rebasing as each lands). Its body says "Closes #4172".
+PR 4 needs PRs 1, 2, 3 and 3a. Branch from `origin/main` once they have merged (or from PR 3's branch, rebasing as each lands). Its body says "Closes #4172".
 
 ### Task 5: The controller posts an update into the delegate's delivery queue
 
@@ -2015,7 +2457,7 @@ The behavior these tests pin is the report path's, inherited by updates in Tasks
 
 **Interfaces:**
 - Consumes: Tasks 4–6.
-- Produces: `newMessagingRoot(t *testing.T, adapter *messagingAdapter, configure func(*SessionConfig)) *Session`; `updateResponse(id, message string) llm.Response`; `delegateSendResponse(id, delegateID, message string, maxWaitMS int) llm.Response`; `jobListResponse(id string) llm.Response`; `awaitSignal(t *testing.T, ch <-chan struct{}, what string)`; `waitForRootAttention(t *testing.T, root *Session, n int) []string`; `appendColdFixtureEvents(t *testing.T, fixture coldStableDelegateFixture, events ...delegatestore.Event) []delegatestore.Event`.
+- Produces: `newMessagingRoot(t *testing.T, adapter *messagingAdapter, configure func(*SessionConfig)) *Session`; `updateResponse(id, message string) llm.Response`; `delegateSendResponse(id, delegateID, message string, maxWaitMS int) llm.Response`; `jobListResponse(id string) llm.Response`; `awaitSignal(t *testing.T, ch <-chan struct{}, what string)`; `waitForRootAttention(t *testing.T, root *Session, n int) []string`; `appendColdFixtureEvents(t *testing.T, fixture coldStableDelegateFixture, events ...delegatestore.Event) []delegatestore.Event`; `updateAttentionConsumedFor(t *testing.T, sess *Session) uint64` (in `agent/delegate_update_test.go`).
 
 - [ ] **Step 1: Extend the helpers**
 
@@ -2407,15 +2849,16 @@ func TestDelegateUpdateWakesAnIdleParentDelegate(t *testing.T) {
 }
 
 // Review Focus 4: a coordinator that is mid-run when its worker's update
-// arrives sees it at its own next model boundary. (Whether it then earns a
-// successor generation is #3725's question and is not asserted here.)
+// arrives sees it at its own next model boundary, and (ruling 8, PR 3a) its
+// own generation consumes the update it saw, so no successor generation is
+// started for it.
 func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 	t.Parallel()
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
 	release, coordinatorDeferred := make(chan struct{}), make(chan struct{})
 	var deferredOnce sync.Once
 	presented := make(chan string, 1)
-	var root *Session
+	var root, coordinator *Session
 	adapter.script("root",
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate and keep working.")
@@ -2447,7 +2890,12 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 		// Only the coordinator receives anything besides the root.
 		cfg.testOnly.delegateDeliveryClassified = func(s *Session, isDeferred bool) {
 			if s != root && isDeferred {
-				deferredOnce.Do(func() { close(coordinatorDeferred) })
+				deferredOnce.Do(func() {
+					// Written before the close the coordinator's step waits
+					// on, so it is visible once presented is received.
+					coordinator = s
+					close(coordinatorDeferred)
+				})
 			}
 		}
 	})
@@ -2467,6 +2915,38 @@ func TestDelegateUpdateReachesARunningParentDelegate(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the running coordinator never saw its worker's update")
 	}
+	// The worker's later report may legitimately wake the coordinator again;
+	// only the update's own resolution says whether it earned a generation.
+	if generation := updateAttentionConsumedFor(t, coordinator); generation != 0 {
+		t.Fatalf("the update the coordinator already saw was consumed by attention generation %d, want its presenting generation (0)", generation)
+	}
+}
+
+// updateAttentionConsumedFor waits until sess's transcript resolves the update
+// attention it received as consumed, and returns the generation that consumed
+// it: zero when the generation that presented it consumed it at its turn's
+// end, an attention generation's number when one was started for it.
+func updateAttentionConsumedFor(t *testing.T, sess *Session) uint64 {
+	t.Helper()
+	sess.mu.Lock()
+	path, sessionID := transcriptPath(sess.stateDir, sess.id), sess.id
+	sess.mu.Unlock()
+	var generation uint64
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the update's attention to be consumed", func() bool {
+		fold, err := sess.readDelegateAttentionFold(path, sessionID)
+		if err != nil {
+			return false
+		}
+		for attentionID, resolution := range fold.resolutions {
+			if strings.Contains(attentionID, "/update/") && resolution == delegateAttentionConsumed {
+				generation = fold.resumeGenerations[attentionID]
+				return true
+			}
+		}
+		return false
+	})
+	return generation
 }
 
 // appendColdFixtureEvents appends events to the fixture's delegate journal
@@ -2582,7 +3062,7 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 Run: `cd agent && go test -race -count=1 -run 'TestDelegateUpdate|TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport' .`
 Expected: PASS. If one fails, it is a real defect in the inherited path: stop and debug it at the root.
 
-Then, to see the tests fail for the right reason, comment out the line `update, isUpdate = deps.postDelegateUpdate(ctx, message)` in `agent/session_tools_communicate.go`, rerun the same command, and confirm every matrix test fails on its update assertion (a missing frame, a missing `delivery`, or a wait that never finishes). Restore the line and confirm `git diff --stat agent/session_tools_communicate.go` shows no change against Task 6's commit.
+Then, to see the tests fail for the right reason, comment out the line `update, isUpdate = deps.postDelegateUpdate(ctx, message)` in `agent/session_tools_communicate.go`, rerun the same command, and confirm every matrix test fails on its update assertion (a missing frame, a missing `delivery`, or a wait that never finishes). Restore the line and confirm `git diff --stat agent/session_tools_communicate.go` shows no change against Task 6's commit. The running-coordinator test's no-successor assertion is PR 3a's contract, whose own tests (Task 4a Steps 3 and 7) already proved it can fail.
 
 Run each new test ten times to catch interleaving flakes: `cd agent && go test -race -count=10 -run 'TestDelegateUpdate|TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport' .` Expected: PASS every time. A flake gets a root-cause fix now (docs/developing-evener/testing.md), never a wider timeout.
 
@@ -2727,7 +3207,7 @@ S11/S12 rows describe updates.
 Claude-Session: https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU"
 ```
 
-Run `/simplify`, push its fixes, and open the PR (base `main`, regular) titled "feat(delegates): communicate(end_turn=false) delivers a delegate's update to its parent". The body: "Closes #4172."; the delivery semantics (rulings 1, 2, 10); the #3725 flag (ruling 8) with a pointer to `TestDelegateUpdateReachesARunningParentDelegate`; the list of existing tests whose expectations changed and why; the `/simplify` outcome; ending with `https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU`. Shepherd it to the merge gate.
+Run `/simplify`, push its fixes, and open the PR (base `main`, regular) titled "feat(delegates): communicate(end_turn=false) delivers a delegate's update to its parent". The body: "Closes #4172."; the delivery semantics (rulings 1, 2, 10); that a running coordinator's generation consumes the update it saw, so no successor generation runs for it (ruling 8, PR 3a), with a pointer to `TestDelegateUpdateReachesARunningParentDelegate`; the list of existing tests whose expectations changed and why; the `/simplify` outcome; ending with `https://claude.ai/code/session_019Vi8aW6mmCJUtdi8j8fAvU`. Shepherd it to the merge gate.
 
 
 ## PR 5: delegate_send reaches only your own delegates
@@ -3559,6 +4039,7 @@ Run `/simplify`, push, open the PR (base `main`, regular) with the run command a
 - Testing list: every bullet maps to a named test in Tasks 2, 6, 7, 9 and 11; the live micro-test is Task 13.
 - Docs: `docs/job-control.md` (Tasks 2, 8, 9, 11), `docs/product/session-activity.md` (Task 8), `docs/product/subsystems.md` S11/S12 (Tasks 8, 11), `docs/subagent-management/11-delegate-resource-model.md` (Tasks 1, 9).
 - Closes #4172 (PR 4); PR #4197 confirmed closed (PR 5).
+- #3725 (ruling 8, Jesse's 2026-10-10 ruling): PR 3a, Task 4a (no successor generation for presented attention; attention after the last request still wakes; the parent's follow-up still resumes); Task 7 asserts the running-coordinator case.
 
 **Placeholder scan.** No TBD or "similar to". Task 8 Step 1 cannot list exact test edits in advance; it names the known files and gives the rule for each kind of failure.
 
