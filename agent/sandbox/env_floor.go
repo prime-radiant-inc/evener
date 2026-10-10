@@ -51,6 +51,7 @@ var floorPrefixDrops = []string{
 // servers, hook commands) so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	out := make([]string, 0, len(env)+4)
+	redirected := redirectedCacheVars(env, policy)
 	for _, kv := range env {
 		name, val, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -63,24 +64,115 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if name == "KUBECONFIG" && kubeconfigIsExternal(val, policy) {
 			continue
 		}
-		if policy.CacheStrategy == CacheSessionPrivate && isRedirectedCacheVar(name) {
+		if redirected[name] {
 			continue // re-added below, pointing into the session scratch
+		}
+		if name == envvars.GoEnv.Name && policy.resolveHost.GoEnvUnreadable {
+			continue // re-added below as off
 		}
 		out = append(out, kv)
 	}
 
+	// The go env file the probe refused (a FIFO, a device) would block or
+	// flood any go the session spawns, so it is turned off for them.
+	if policy.resolveHost.GoEnvUnreadable {
+		out = append(out, envvars.GoEnv.Assignment("off"))
+	}
 	out = applyToolchainPath(out, policy.ToolchainBinDir)
 	out = ApplySessionScratchEnv(out, sessionScratch)
 	if sessionScratch != "" {
-		if policy.CacheStrategy == CacheSessionPrivate {
-			out = append(out,
-				"GOCACHE="+filepath.Join(sessionScratch, goCacheDirName),
-				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
-				envvars.GoPath.Assignment(sessionGoPath(env, policy, sessionScratch)),
-				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
-				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, cargoHomeDirName)),
-			)
+		for _, r := range []struct{ name, value string }{
+			{envvars.GoCache.Name, filepath.Join(sessionScratch, goCacheDirName)},
+			{envvars.GoModCache.Name, filepath.Join(sessionScratch, goModCacheDirName)},
+			{envvars.GoPath.Name, sessionGoPath(env, policy, sessionScratch)},
+			{"npm_config_cache", filepath.Join(sessionScratch, npmCacheDirName)},
+			{envvars.CargoHome.Name, filepath.Join(sessionScratch, cargoHomeDirName)},
+		} {
+			if redirected[r.name] {
+				out = append(out, r.name+"="+r.value)
+			}
 		}
+	}
+	return out
+}
+
+// redirectedCacheVars names the cache variables the floor points into the
+// session scratch: every one under the session-private strategy. Under the
+// overlay, the Go caches when the go env file was unreadable at session start
+// (the overlay cannot know where go will write), and any Go cache whose
+// directory the overlay does not serve (overlayGoCacheDirs; its root was
+// dropped, say inside the worktree), which would otherwise stay persistently
+// writable.
+//
+// GOMODCACHE goes alongside GOCACHE because an ambient value can name any
+// directory. GOPATH goes because Go writes the checksum database's tree heads to
+// its first entry's pkg/sumdb whatever GOMODCACHE says (see sessionGoPath), yet
+// GOMODCACHE stays set explicitly: an environment value overrides one written
+// with `go env -w`, which deriving it from GOPATH would not. PATH is left alone,
+// so `go install` output in the scratch GOPATH's bin runs by its path: a
+// session-writable directory on PATH would let anything the model writes there
+// shadow the commands every spawn site runs, hooks included.
+func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
+	out := map[string]bool{}
+	switch policy.CacheStrategy {
+	case CacheSessionPrivate:
+		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name} {
+			out[name] = true
+		}
+	case CacheOverlay:
+		if policy.resolveHost.GoEnvUnreadable {
+			out[envvars.GoCache.Name], out[envvars.GoModCache.Name], out[envvars.GoPath.Name] = true, true, true
+		}
+		for name, dir := range overlayGoCacheDirs(env, policy.resolveHost) {
+			if filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots) {
+				out[name] = true
+			}
+		}
+	}
+	return out
+}
+
+// overlayGoCacheDirs returns, for each Go cache variable, the directory a
+// spawned go would write that cache to: the spawn's own setting, else the
+// host's resolved one (env or go env -w), else Go's default. GOPATH maps to its
+// first entry's pkg, where the checksum database lives.
+func overlayGoCacheDirs(env []string, host HostFacts) map[string]string {
+	vars := map[string]string{}
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		vars[name] = val
+	}
+	firstOr := func(values ...string) string {
+		for _, v := range values {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	home := firstOr(vars[envvars.Home.Name], host.Home)
+	gopath := ""
+	if entries := filepath.SplitList(vars[envvars.GoPath.Name]); len(entries) > 0 && filepath.IsAbs(entries[0]) {
+		gopath = entries[0]
+	} else if entries := goPathEntries(HostFacts{Home: home, GoPath: host.GoPath}); len(entries) > 0 {
+		gopath = entries[0]
+	}
+	cacheHome := firstOr(vars[envvars.XDGCacheHome.Name], host.XDGCacheHome)
+	if cacheHome == "" && home != "" {
+		cacheHome = filepath.Join(home, ".cache")
+	}
+	out := map[string]string{
+		envvars.GoModCache.Name: firstOr(vars[envvars.GoModCache.Name], host.GoModCache),
+		envvars.GoCache.Name:    firstOr(vars[envvars.GoCache.Name], host.GoCache),
+	}
+	if gopath != "" {
+		out[envvars.GoPath.Name] = filepath.Join(gopath, "pkg")
+		if out[envvars.GoModCache.Name] == "" {
+			out[envvars.GoModCache.Name] = filepath.Join(gopath, "pkg", "mod")
+		}
+	}
+	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
+		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
 	return out
 }
@@ -88,34 +180,70 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
 // first, because Go writes the checksum database and `go install` output only to
 // the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
-// (Go's $HOME/go default when unset) follows, so GOPATH-mode builds still find
-// the packages already there, read-only; restricted mode cannot read it, so it
-// gets the scratch alone. Entries inside the scratch are dropped from the ambient
-// value, so flooring an already-floored env does not repeat them.
+// follows, so GOPATH-mode builds still find the packages already there,
+// read-only: the spawn's own GOPATH when it has one, else what its go would
+// resolve: the host's `go env -w` setting when it reads the same env file,
+// otherwise Go's default for its HOME.
+// Restricted mode cannot read it, so it gets the scratch alone. Entries inside
+// the scratch are dropped from the ambient value, so flooring an already-floored
+// env does not repeat them.
 func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) string {
 	scratchGoPath := filepath.Join(sessionScratch, goPathDirName)
 	if policy.Spawned.Read != ReadAnywhere {
 		return scratchGoPath
 	}
 	var ambient []string
-	home := ""
+	vars := map[string]string{}
 	for _, kv := range env {
 		name, val, _ := strings.Cut(kv, "=")
-		switch name {
-		case envvars.GoPath.Name:
-			for _, entry := range filepath.SplitList(val) {
-				if entry != "" && !isUnderAnyRoot(entry, []string{sessionScratch}) {
-					ambient = append(ambient, entry)
-				}
-			}
-		case "HOME":
-			home = val
+		if name == envvars.GoPath.Name && val != "" {
+			ambient = filepath.SplitList(val)
+		}
+		vars[name] = val
+	}
+	if ambient == nil {
+		// What the spawned go would use for GOPATH: the host's configured value
+		// when it reads the same go env file the probe read, else Go's default
+		// for its own HOME. A clean environment (EnvPolicyNone) has neither.
+		host := policy.resolveHost
+		configured := ""
+		if file := goEnvFileFor(vars, host.OS); file != "" && file == host.GoEnvFile {
+			configured = host.GoPath
+		}
+		ambient = goPathEntries(HostFacts{Home: vars[envvars.Home.Name], GoPath: configured})
+	}
+	entries := []string{scratchGoPath}
+	for _, entry := range ambient {
+		// The go command refuses relative entries, as goPathEntries does.
+		if filepath.IsAbs(entry) && !isUnderAnyRoot(entry, []string{sessionScratch}) {
+			entries = append(entries, entry)
 		}
 	}
-	if len(ambient) == 0 && home != "" {
-		ambient = []string{filepath.Join(home, "go")}
+	return strings.Join(entries, string(filepath.ListSeparator))
+}
+
+// goEnvFileFor returns the go env file a go command run with vars would read,
+// mirroring goEnvFile and os.UserConfigDir for goos: $GOENV, else
+// $HOME/Library/Application Support/go/env on darwin, else
+// ${XDG_CONFIG_HOME:-$HOME/.config}/go/env; "" when GOENV=off or nothing locates
+// it.
+func goEnvFileFor(vars map[string]string, goos string) string {
+	if file := vars[envvars.GoEnv.Name]; file != "" {
+		if file == "off" {
+			return ""
+		}
+		return file
 	}
-	return strings.Join(append([]string{scratchGoPath}, ambient...), string(filepath.ListSeparator))
+	home := vars[envvars.Home.Name]
+	switch {
+	case goos == "darwin" && home != "":
+		return filepath.Join(home, "Library", "Application Support", "go", "env")
+	case goos != "darwin" && vars[envvars.XDGConfigHome.Name] != "":
+		return filepath.Join(vars[envvars.XDGConfigHome.Name], "go", "env")
+	case goos != "darwin" && home != "":
+		return filepath.Join(home, ".config", "go", "env")
+	}
+	return ""
 }
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.
@@ -209,33 +337,6 @@ func floorDrops(name string) bool {
 		if strings.HasPrefix(name, p) {
 			return true
 		}
-	}
-	return false
-}
-
-// isRedirectedCacheVar reports whether name is a language cache var the floor
-// redirects into the session tmp under a session-private cache strategy.
-// GOMODCACHE is included alongside GOCACHE: it defaults to $GOPATH/pkg/mod, and
-// the granted cache root the resolver computes (cacheRootsFor) is a fixed
-// $HOME/go/pkg — it does not track a custom GOPATH, so an ambient GOMODCACHE
-// computed from a non-default GOPATH would land outside every granted root.
-// Verified 2026-08-06 (see env_floor_test.go).
-//
-// GOPATH is included because Go writes the checksum database's tree heads to
-// $GOPATH/pkg/sumdb whatever GOMODCACHE says, so its first entry must be
-// writable too (see sessionGoPath).
-// GOMODCACHE stays set explicitly: an environment value overrides one written to
-// the user's go env file with `go env -w`, which deriving it from GOPATH would not.
-//
-// PATH is deliberately left alone, so `go install` output in the scratch GOPATH's
-// bin is run by its path rather than found on PATH. The real GOPATH's bin is
-// read-only under this strategy, so `go install` could not land anywhere before.
-// Putting a session-writable directory on PATH would let anything the model
-// writes there shadow the commands every spawn site runs, hooks included.
-func isRedirectedCacheVar(name string) bool {
-	switch name {
-	case "GOCACHE", envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
-		return true
 	}
 	return false
 }

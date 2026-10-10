@@ -346,6 +346,23 @@ func TestFilteredEnvWithPolicy_CoreOnly(t *testing.T) {
 	}
 }
 
+// A spawned go must see the Go settings the sandbox resolved at session start:
+// the go env file (GOENV, else under the user config directory XDG_CONFIG_HOME
+// moves) and the build cache the overlay serves (GOCACHE, else under
+// XDG_CACHE_HOME). Core-only environments keep all four.
+func TestFilteredEnvWithPolicy_CoreOnlyKeepsGoEnvFileLocation(t *testing.T) {
+	t.Setenv("GOENV", "/custom/go/env")
+	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
+	t.Setenv("XDG_CACHE_HOME", "/custom/cache")
+	t.Setenv("GOCACHE", "/custom/gocache")
+	m := envToMap(filteredEnvWithPolicy(EnvPolicyCoreOnly, nil))
+	for name, want := range map[string]string{"GOENV": "/custom/go/env", "XDG_CONFIG_HOME": "/custom/config", "XDG_CACHE_HOME": "/custom/cache", "GOCACHE": "/custom/gocache"} {
+		if m[name] != want {
+			t.Errorf("CoreOnly must keep %s=%q, got %q", name, want, m[name])
+		}
+	}
+}
+
 func TestFilteredEnvWithPolicy_Default_FiltersSensitive(t *testing.T) {
 	t.Setenv("DEF_SECRET", "s")
 	t.Setenv("DEF_NORMAL", "ok")
