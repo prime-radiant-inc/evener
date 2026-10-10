@@ -1,4 +1,10 @@
-import type { AnyNotification, ThreadItem, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  ThreadItem,
+  ThreadModel,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+} from "@evener/appwire-client";
 import { afterEach, expect, it, vi } from "vitest";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import type { EntryWriteOutcome } from "./sessionEntryCache";
@@ -743,6 +749,117 @@ it("clears a failed disposition when a live repository re-covers the abandoned w
   });
   await owner.settled();
   expect((await keysInCache(fixture.cache)).sort()).toEqual(["item-base", "item-beta", "item-repair"]);
+  owner.dispose();
+});
+
+// Task 3e case A: an accepted certificate is window-specific, so a different
+// window at the same snapshot count is not a repair. An older-page certificate
+// covering only a position strictly below the held oldest range does not carry
+// the abandoned latest suffix forward, even at the same snapshot length.
+it("does not clear a failed disposition when a different window commits at the same snapshot", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+
+  // An unadmitted failed latest suffix at snapshot 2 records "failed".
+  const failure = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort") });
+  owner.accept(historyNotification("beta", 2, 2), { lifetime: 1 });
+  await expect(owner.settled()).rejects.toThrow(/failed/);
+  failure.mockRestore();
+
+  // A valid older page at the same snapshot 2, covering only a position strictly
+  // before beta's range and not beta itself.
+  const page: ThreadTurnsListResponse = {
+    data: [{ id: "turn_1", itemsView: "full", status: "completed", version: 2, items: [item("alpha", 0, 3)] }],
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: identity.incarnation, length: 2 },
+  };
+  expect(
+    owner.acceptPage(page, {
+      lifetime: 1,
+      readId: "read-page",
+      boundary: "boundary-page",
+      authority: owner.getBaselineIdentity(),
+    }),
+  ).toBe(true);
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-alpha"));
+
+  // The abandoned suffix beta remains unresolved.
+  await expect(owner.settled()).rejects.toThrow(/(cancelled|failed)/);
+  expect(await keysInCache(fixture.cache)).toContain("item-alpha");
+  expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+  owner.dispose();
+});
+
+// Task 3e case B: a later smaller abandonment must not lower an earlier larger
+// obligation. A's dropped retry at reach 2 must not replace B's failed reach 3,
+// so C's real commit covering only reach 2 cannot clear the disposition.
+it("does not lower an earlier larger abandonment when a later smaller one is recorded", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const { scheduled, scheduler } = capturingScheduler();
+  const owner = repository(fixture.cache, 1, undefined, scheduler);
+  owner.acceptRead(readItems("base", 1, [item("base", 1)]), {
+    lifetime: 1,
+    readId: "read-base",
+    boundary: "boundary-base",
+  });
+  await owner.settled();
+  const reader = owner.attachReader();
+
+  // A (reach 2) fails and its retry timer is held.
+  const failureA = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort A") });
+  owner.accept(historyNotification("alpha", 2, 2), { lifetime: 1 });
+  await vi.waitFor(() => expect(scheduled).toHaveLength(1));
+  failureA.mockRestore();
+
+  // C is an ordinary read commit at reach 2, held before storage.
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const gate = deferred<void>();
+  const commits = vi
+    .spyOn(fixture.cache, "commitBatch")
+    .mockImplementationOnce(async (batch) => {
+      await gate.promise;
+      return realCommit(batch);
+    })
+    .mockResolvedValueOnce({ outcome: "failed", error: new Error("simulated abort B") });
+  expect(
+    owner.acceptRead(readItems("c", 2, [item("base", 1, 2), item("alpha", 2, 2)]), {
+      lifetime: 1,
+      readId: "read-c",
+      boundary: "boundary-c",
+    }),
+  ).toBe(true);
+
+  // Release the last reader; B (reach 3) fails with no demand and is unadmitted.
+  reader.dispose();
+  owner.accept(historyNotification("beta", 3, 3), { lifetime: 1 });
+  await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(2));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Fire A's held timer: #drainRetry drops the queued A while no reader remains.
+  scheduled[0]!.fire();
+
+  // Release C: a real extended commit covering only reach 2.
+  gate.resolve();
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-alpha"));
+
+  // The larger abandonment stands; B's higher-reach row remains absent.
+  await expect(owner.settled()).rejects.toThrow(/(cancelled|failed)/);
+  expect(await keysInCache(fixture.cache)).not.toContain("item-beta");
+  commits.mockRestore();
   owner.dispose();
 });
 

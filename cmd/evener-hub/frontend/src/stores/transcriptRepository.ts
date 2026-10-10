@@ -24,13 +24,70 @@ import {
 } from "@evener/appwire-client";
 import type { TranscriptItemRow, TranscriptResolvedIdentity, TranscriptSessionMetadata } from "./sessionCacheSchema";
 import { entryHistoryKey } from "./sessionCacheSchema";
-import type { SessionEntryCache } from "./sessionEntryCache";
+import type { EntryCoverageInput, SessionEntryCache } from "./sessionEntryCache";
 
 function comparePosition(
   left: { entry: number; item: number; sub?: number },
   right: { entry: number; item: number; sub?: number },
 ): number {
   return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+}
+
+/**
+ * The certified extent an abandoned write would have contributed. A snapshot
+ * length alone cannot identify covered work: a read is keyed by its own range
+ * and a page certificate by its own range, and either can return `extended` at
+ * the same snapshot count. The `start`/`end` positions identify the work within
+ * this history, so a later certificate carrying the same extent proves repair.
+ */
+interface AbandonedCoverage {
+  start: ThreadItemPosition | null;
+  end: ThreadItemPosition | null;
+  snapshot: number;
+}
+
+function coverageReach(coverage: EntryCoverageInput | undefined): AbandonedCoverage {
+  return {
+    start: coverage?.start ?? null,
+    end: coverage?.end ?? null,
+    snapshot: coverage?.representedSnapshot ?? 0,
+  };
+}
+
+/** The tightest extent that contains both reaches, so a wider one is never lost. */
+function widerReach(left: AbandonedCoverage, right: AbandonedCoverage): AbandonedCoverage {
+  const start =
+    left.start === null
+      ? right.start
+      : right.start === null
+        ? left.start
+        : comparePosition(right.start, left.start) < 0
+          ? right.start
+          : left.start;
+  const end =
+    left.end === null
+      ? right.end
+      : right.end === null
+        ? left.end
+        : comparePosition(right.end, left.end) > 0
+          ? right.end
+          : left.end;
+  return { start, end, snapshot: Math.max(left.snapshot, right.snapshot) };
+}
+
+/**
+ * Whether a commit's own certificate covers the abandoned reach. With a
+ * positional extent, the abandoned range must lie within the commit's covered
+ * range (positions identify the work, so any read/suffix/page certificate that
+ * spans it proves the rows are durable). A certificate with no positional
+ * extent can only be compared by snapshot length.
+ */
+function commitCarriesCoverage(coverage: EntryCoverageInput, reach: AbandonedCoverage): boolean {
+  if (reach.start !== null && reach.end !== null) {
+    if (coverage.start === null || coverage.end === null) return false;
+    return comparePosition(coverage.start, reach.start) <= 0 && comparePosition(coverage.end, reach.end) >= 0;
+  }
+  return coverage.representedSnapshot >= reach.snapshot;
 }
 
 export interface TranscriptRepositoryBinding {
@@ -136,12 +193,15 @@ export class TranscriptRepository {
   #retryAttempt = 0;
   // Explicit disposition of recovery work that will never run: a cancelled
   // (invalidate/dispose/last-reader) or unadmitted (no demand) failed batch.
-  // Settlement must report it rather than resolving as void success. It carries
-  // the abandoned work's coverage reach (representedSnapshot): an `extended`
-  // commit clears it only when that commit's coverage reaches at least as far,
-  // i.e. actually carries the abandoned suffix forward. A bare "something is
-  // abandoned" flag cannot decide that.
-  #recoveryAbandoned: { kind: "cancelled" | "failed"; snapshot: number } | undefined;
+  // Settlement must report it rather than resolving as void success. It records
+  // the abandoned work's *identity and extent* (its certified start/end range,
+  // not a length), because an accepted certificate is window-specific and a
+  // different window at the same snapshot count is not a repair. This is a
+  // single fixed-shape hull: recording a later abandonment can only widen it,
+  // never lower it, so no smaller or later abandonment can erase an earlier,
+  // larger one, and the state cannot grow without limit (it holds no item
+  // bodies or models, only a kind and two positions).
+  #recoveryAbandoned: { kind: "cancelled" | "failed"; reach: AbandonedCoverage } | undefined;
 
   constructor(cache: SessionEntryCache, binding: TranscriptRepositoryBinding) {
     if (entryHistoryKey(binding.identity) !== binding.historyKey) throw new Error("binding history identity mismatch");
@@ -1040,21 +1100,21 @@ export class TranscriptRepository {
         // certify it). A superseded retry likewise contributes nothing.
         if (!superseded && batch.coverage && outcome.coverage === "extended") {
           this.#cacheContinuityLost = false;
-          // Clearing the abandonment disposition is a claim that this commit
-          // repaired the abandoned work, not merely that the repository is live.
-          // A dead repository takes no further work, so its own late completion
-          // can never repair a different cancelled batch. Live, clear only when
-          // this commit's coverage reaches at least as far as the abandoned work
-          // would have contributed, so a predecessor finishing ahead of an
-          // abandoned suffix leaves the disposition for settled() to report.
-          // Continuity is a local durability fact about this commit's chain and
-          // is always restored.
+          // Clearing is a claim that this commit's coverage carries the
+          // abandoned work forward, not merely that the repository is live. A
+          // dead repository takes no further work, so its own late completion
+          // can never repair a different cancelled batch. Live, the commit must
+          // cover the abandoned extent; a predecessor finishing ahead of an
+          // abandoned suffix, or a different window at the same snapshot,
+          // leaves the disposition for settled() to report. Continuity is a
+          // local durability fact about this commit's chain and is always
+          // restored.
           const abandoned = this.#recoveryAbandoned;
           if (
             !this.#invalidated &&
             !this.#disposed &&
             abandoned !== undefined &&
-            batch.coverage.representedSnapshot >= abandoned.snapshot
+            commitCarriesCoverage(batch.coverage, abandoned.reach)
           ) {
             this.#recoveryAbandoned = undefined;
           }
@@ -1107,11 +1167,11 @@ export class TranscriptRepository {
   // with no reader, or after cancel, the failure is an explicit disposition.
   #enqueueRetry(batch: Parameters<SessionEntryCache["commitBatch"]>[0], revision: number, atFront: boolean): void {
     if (this.#disposed || this.#invalidated) {
-      this.#recoveryAbandoned = { kind: "cancelled", snapshot: batch.coverage?.representedSnapshot ?? 0 };
+      this.#recordAbandonment("cancelled", [batch.coverage]);
       return;
     }
     if (this.#readerCount <= 0) {
-      this.#recoveryAbandoned = { kind: "failed", snapshot: batch.coverage?.representedSnapshot ?? 0 };
+      this.#recordAbandonment("failed", [batch.coverage]);
       return;
     }
     const entry = { batch, revision };
@@ -1120,14 +1180,27 @@ export class TranscriptRepository {
   }
 
   // Record an abandonment that drops the queued batches, remembering the
-  // furthest coverage reach they would have contributed so a later commit can
-  // be checked against it.
+  // coverage identity and extent they would have contributed so a later commit
+  // can be checked against it. The record is a hull: it is widened by each
+  // abandonment and never lowered, so an earlier larger obligation survives a
+  // later smaller one.
   #abandonQueue(kind: "cancelled" | "failed"): void {
-    let snapshot = 0;
-    for (const entry of this.#retryQueue) {
-      snapshot = Math.max(snapshot, entry.batch.coverage?.representedSnapshot ?? 0);
+    this.#recordAbandonment(
+      kind,
+      this.#retryQueue.map((entry) => entry.batch.coverage),
+    );
+  }
+
+  #recordAbandonment(kind: "cancelled" | "failed", coverages: readonly (EntryCoverageInput | undefined)[]): void {
+    let reach = this.#recoveryAbandoned?.reach;
+    for (const coverage of coverages) {
+      const next = coverageReach(coverage);
+      reach = reach ? widerReach(reach, next) : next;
     }
-    this.#recoveryAbandoned = { kind, snapshot };
+    this.#recoveryAbandoned = {
+      kind: this.#recoveryAbandoned?.kind ?? kind,
+      reach: reach ?? { start: null, end: null, snapshot: 0 },
+    };
   }
 
   // One paced timer drains the queue in order, one batch at a time: a retried
