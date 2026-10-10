@@ -1965,8 +1965,8 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 }
 
 // scopeRelativeText names the scope root "." and a path under it by its
-// relative path, wherever they appear, and leaves a sibling that merely
-// shares the root's prefix alone.
+// relative path, wherever they appear, and leaves alone a sibling that merely
+// shares the root's prefix and a longer path that only contains it.
 func TestScopeRelativeText(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(string(filepath.Separator)+"state", "memory", "personal")
@@ -1978,6 +1978,7 @@ func TestScopeRelativeText(t *testing.T) {
 		root + sep + "a.md and " + root + sep + "b.md": "a.md and b.md",
 		root + "-2" + sep + "a.md":                     root + "-2" + sep + "a.md",
 		root + "s":                                     root + "s",
+		"x" + root + sep + "page.md":                   "x" + root + sep + "page.md",
 		"no host path here":                            "no host path here",
 	} {
 		if got := scopeRelativeText(root, in); got != want {

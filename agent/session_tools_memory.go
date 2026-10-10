@@ -66,8 +66,9 @@ func (s *Session) memoryFileArgs(args map[string]any, key, operation string) (*e
 // and each path under it named relative to it, the way the memory tools take
 // paths. The shared executors run on host paths (memoryFileArgs), so their
 // summaries and errors name them, and a model that copied one back would be
-// refused. A longer name that only starts with root, such as a sibling
-// "<root>-2", is left alone.
+// refused. A match that is part of a longer path is left alone: a sibling
+// that only starts with root, such as "<root>-2", or a path that only
+// contains it, such as "x<root>/page.md".
 func scopeRelativeText(root, text string) string {
 	if root == "" || !strings.Contains(text, root) {
 		return text
@@ -80,6 +81,8 @@ func scopeRelativeText(root, text string) string {
 			return b.String()
 		}
 		switch {
+		case before != "" && isPathNameByte(before[len(before)-1]):
+			b.WriteString(root)
 		case strings.HasPrefix(rest, string(filepath.Separator)):
 			rest = rest[1:]
 		case rest == "" || !isPathNameByte(rest[0]):
@@ -91,8 +94,8 @@ func scopeRelativeText(root, text string) string {
 	}
 }
 
-// isPathNameByte reports whether c can continue a file name, so a root
-// followed by it names a longer sibling, not the root.
+// isPathNameByte reports whether c can be part of a file name, so a root next
+// to it is part of a longer path, not the root.
 func isPathNameByte(c byte) bool {
 	return c == '-' || c == '_' || c == '.' || c >= utf8.RuneSelf || unicode.IsLetter(rune(c)) || unicode.IsDigit(rune(c))
 }
