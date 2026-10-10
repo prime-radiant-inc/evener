@@ -798,19 +798,30 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 	return ids
 }
 
+// finishAttentionTurn consumes, at the end of a turn, the attention the turn
+// owes: the root runs its notification rail (finishRootDelegateAttentionTurn).
+// Any other session consumes only what its settled requests presented
+// (coversPresentedAttention), and only when the turn succeeded; a failed
+// delegate turn leaves the items pending for a later generation, and the
+// paced retry and the paused notice stay the root's.
+func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
+	if s.isRootDelegateAttentionReceiver() {
+		return s.finishRootDelegateAttentionTurn(ids, turnErr)
+	}
+	if turnErr == nil {
+		if covered := s.unionCoveredAttention(ids); len(covered) != 0 {
+			return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
+		}
+	}
+	return nil
+}
+
 // finishRootDelegateAttentionTurn consumes the exact selected IDs only after a
 // successful model turn and durable resolution markers — plus any still-pending
-// attention this turn's built requests already presented to the model, at the
-// root or in a delegate's leased generation, which needs no wake of its own.
-// Failures keep the transcript-owned IDs pending and arrange a paced retry
-// wake.
+// attention this turn's built requests already presented to the model, which
+// needs no wake of its own. Failures keep the transcript-owned IDs pending and
+// arrange a paced retry wake.
 func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) error {
-	// A delegate's failed turn leaves what it presented pending for its next
-	// attention generation; the paced retry and the paused notice below
-	// belong to the root's rail.
-	if turnErr != nil && !s.isRootDelegateAttentionReceiver() {
-		return nil
-	}
 	// A failed turn never resolves, so on that path the union serves only as
 	// the emptiness gate that arms the paced-retry backstop — and a non-empty
 	// snapshot already passes it. Skip the fold read there; keep it for an

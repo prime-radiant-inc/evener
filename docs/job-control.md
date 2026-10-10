@@ -1397,7 +1397,9 @@ Rules:
   settled model request of a root turn, or of a delegate turn running in its
   generation, carried an attention entry, the turn's successful end appends the
   consumed marker, so the entry starts no further turn or attention generation.
-  Attention appended after the turn's last request was built keeps its own wake.
+  Attention appended after the turn's last request was built keeps its own wake,
+  and so does attention already armed for the root's own notification turn when
+  the turn began: that notification turn consumes it.
 - Duplicate terminal attention is suppressed by its durable source identity.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.

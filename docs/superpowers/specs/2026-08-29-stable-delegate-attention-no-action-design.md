@@ -1,8 +1,15 @@
 # Stable Delegate Attention No-Action Completion
 
-- **Status:** Proposed after simplification and adversarial review. Partly reversed on 2026-10-10 by Jesse's ruling on #3725: attention a delegate generation already showed its model in a settled request is consumed with that generation, as the root's is, so it earns no successor generation. The "Consume attention in the ordinary generation" alternative and the transcript-visibility and no-skip non-goals no longer hold for that case; the root's settled-request coverage is the request-bound evidence they asked for.
+- **Status:** Proposed after simplification and adversarial review; partly reversed on 2026-10-10 (#3725, see below)
 - **Date:** 2026-08-29
 - **Incident:** `local:034FCH9eUroasmcr3cK4B7`
+
+Jesse's ruling on #3725 reverses this design for one case: attention a
+delegate generation already showed its model in a settled request is consumed
+with that generation, as the root's is, so it earns no successor generation.
+The "Consume attention in the ordinary generation" alternative and the
+transcript-visibility and no-skip non-goals no longer hold for that case; the
+root's settled-request coverage is the request-bound evidence they asked for.
 
 ## Decision
 

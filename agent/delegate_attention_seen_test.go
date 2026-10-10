@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
@@ -60,17 +59,7 @@ func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) 
 	})
 
 	// The parent's next message still resumes the same delegate.
-	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "FOLLOW-UP: also check the migration", 60_000)
-	if outcome.result.Err != nil || outcome.commit == nil {
-		t.Fatalf("follow-up send = %#v", outcome)
-	}
-	plans, err := outcome.commit.Complete(true)
-	if err != nil {
-		t.Fatalf("acknowledge follow-up result: %v", err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("execute follow-up acknowledgement: %v", err)
-	}
+	sendAndAcknowledge(t, root, fixture.delegateID, "FOLLOW-UP: also check the migration")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	if got := supervisionRequestCount(fixture.adapter); got != 3 {
 		t.Fatalf("provider requests after the follow-up = %d, want 3", got)
@@ -138,13 +127,9 @@ func attentionRunStarts(t *testing.T, fixture coldStableDelegateFixture) int {
 // is zero when the generation that presented it consumed it.
 func childAttentionResolution(t *testing.T, sub *subagent, attentionID string) (delegateAttentionResolution, uint64) {
 	t.Helper()
-	sess := sub.sess
-	sess.mu.Lock()
-	path, sessionID := transcriptPath(sess.stateDir, sess.id), sess.id
-	sess.mu.Unlock()
 	// A fresh read: the session's fold cursor belongs to attentionMu, which
 	// the running drive holds while it reads.
-	fold, err := readDelegateAttentionFold(path, sessionID)
+	fold, err := readDelegateAttentionFold(sub.sess.TranscriptPath(), sub.sess.id)
 	if err != nil {
 		t.Fatalf("fold child attention: %v", err)
 	}
@@ -235,18 +220,7 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
-	var (
-		warningsMu sync.Mutex
-		warnings   []events.WarningData
-	)
-	drained := make(chan struct{})
-	sub.sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
-		if warning, ok := ev.Data.(events.WarningData); ok && warning.Code == events.WarningCodeAttentionPaused {
-			warningsMu.Lock()
-			warnings = append(warnings, warning)
-			warningsMu.Unlock()
-		}
-	}, func() { close(drained) })
+	childPausedWarnings := pausedWarnings(t, sub.sess)
 
 	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates and commit")
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
@@ -270,18 +244,7 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 	if resolution, generation := childAttentionResolution(t, sub, "attention:failed-turn"); resolution != delegateAttentionConsumed || generation != 0 {
 		t.Fatalf("attention resolution = %q for generation %d, want consumed by the follow-up generation that presented it (0)", resolution, generation)
 	}
-
-	root.Close()
-	select {
-	case <-drained:
-	// TRIPWIRE: closing the root closes the child's event stream; only a hang
-	// reaches this bound.
-	case <-time.After(30 * time.Second):
-		t.Fatal("the child's event stream did not drain after close")
-	}
-	warningsMu.Lock()
-	defer warningsMu.Unlock()
-	if len(warnings) != 0 {
+	if warnings := childPausedWarnings(); len(warnings) != 0 {
 		t.Fatalf("child emitted paused-updates warnings %+v, want none: that rail is the root's", warnings)
 	}
 }
@@ -306,21 +269,4 @@ func (a *failingRequestAdapter) Complete(ctx context.Context, req llm.Request) (
 		return llm.Response{}, a.err
 	}
 	return a.fakeAdapter.Complete(ctx, req)
-}
-
-// sendAndAcknowledge sends message to the delegate as its parent and
-// acknowledges the result, as the parent's delegate_send does.
-func sendAndAcknowledge(t *testing.T, root *Session, delegateID, message string) {
-	t.Helper()
-	outcome := (delegateRuntime{owner: root}).send(context.Background(), delegateID, message, 60_000)
-	if outcome.result.Err != nil || outcome.commit == nil {
-		t.Fatalf("send %q = %#v", message, outcome)
-	}
-	plans, err := outcome.commit.Complete(true)
-	if err != nil {
-		t.Fatalf("acknowledge %q: %v", message, err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatalf("execute %q acknowledgement: %v", message, err)
-	}
 }

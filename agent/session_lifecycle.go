@@ -1929,7 +1929,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if kind == EntryNotification && !rootAttentionAccepted {
 			return
 		}
-		finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err)
+		finishErr := s.finishAttentionTurn(rootAttentionIDs, err)
 		if finishErr == nil {
 			return
 		}
