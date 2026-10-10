@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -467,5 +468,49 @@ func TestBwrapWritesInsideACacheOverlayPersistOnlyWhereGranted(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cache, "discarded")); !os.IsNotExist(err) {
 		t.Errorf("a write elsewhere in the overlaid cache must be discarded: %v", err)
+	}
+}
+
+// A writable root inside an overlaid cache root is bound again even when the two
+// are spelled through different symlinks to the same storage.
+func TestBwrapRebindsAWritableRootSpelledThroughAnotherSymlink(t *testing.T) {
+	facts := requireRealBwrap(t)
+	if !facts.OverlaySupported {
+		t.Skip("this bwrap has no overlay support")
+	}
+	base, err := os.MkdirTemp("/var/tmp", "evener-overlay-links-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	storage := filepath.Join(base, "storage")
+	library := filepath.Join(storage, "cache", "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "links")
+	if err := os.Symlink(storage, link); err != nil {
+		t.Fatal(err)
+	}
+	facts.Home = filepath.Join(base, "home")
+	facts.GoCache = filepath.Join(link, "cache")
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rp.CacheStrategy != CacheOverlay || !slices.Contains(rp.CacheRoots, facts.GoCache) {
+		t.Skipf("the GOCACHE root is not overlaid here: %v %v", rp.CacheStrategy, rp.CacheRoots)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := w.Wrap([]string{"/bin/sh", "-c", `echo kept > "$1/kept"`, "rebind-test", library}, cwd)
+	if out, err := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(library, "kept")); err != nil {
+		t.Errorf("a write to the writable root must persist: %v", err)
 	}
 }

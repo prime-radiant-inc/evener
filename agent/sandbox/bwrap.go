@@ -186,9 +186,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		// writable root, a linked worktree's git metadata, the session scratch)
 		// was hidden by the overlay's discarded upper layer, so it is bound
 		// writable again on top: writes there persist, the rest of the cache
-		// stays write-private.
+		// stays write-private. Containment is judged by spelling and by
+		// resolved location, since the two may be spelled through different
+		// symlinks to the same storage.
 		for _, w := range appendNonEmpty(slices.Clone(bwrapWriteRoots(rp)), sessionTmp) {
-			if pathExists(w) && slices.ContainsFunc(overlaid, func(c string) bool { return pathUnder(w, c) }) {
+			rw := resolveExistingPrefix(w)
+			if pathExists(w) && slices.ContainsFunc(overlaid, func(c string) bool {
+				return pathUnder(w, c) || pathUnder(rw, resolveExistingPrefix(c))
+			}) {
 				add("--bind", w, w)
 			}
 		}
