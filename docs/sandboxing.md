@@ -326,7 +326,9 @@ file tool nor a spawned process can read them:
   `~/.docker/config.json`, `~/.kube`, `~/.git-credentials`. When
   `$XDG_CONFIG_HOME` moves Evener's config root, `$XDG_CONFIG_HOME/evener` is
   masked as well, since hub configuration and credentials live wherever that root
-  is; removing `~/.config/evener` from the denylist removes both.
+  is; removing `~/.config/evener` from the denylist removes both, and removing the
+  relocated root removes that one. A masked path reached through a symlink is
+  masked at its real location too, so neither spelling reads it.
 - **Pseudo-filesystems and runtime sockets**: `/proc`, `/sys`, `/dev/fd`,
   `/dev/mem`, `/run/user`, and the well-known privileged daemon control sockets
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,

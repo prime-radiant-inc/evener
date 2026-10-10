@@ -391,7 +391,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		backend = chosen
 	}
 
-	masked := withEvenerConfigMask(policy.EffectiveDenylist(host.Home), host)
+	masked := withResolvedMasks(withEvenerConfigMask(policy.EffectiveDenylist(host.Home), host, policy))
 	worktree := layout.WorktreeRoot
 
 	rp := ResolvedPolicy{
@@ -638,14 +638,40 @@ func dedupeRoots(roots []string) []string {
 // withEvenerConfigMask adds Evener's config root to the masked set where
 // XDG_CONFIG_HOME moved it (HostFacts.EvenerConfigRoot), alongside
 // ~/.config/evener, since hub configuration and credentials live wherever that
-// root is. A user who removed ~/.config/evener from the denylist removed both.
-func withEvenerConfigMask(masked []string, host HostFacts) []string {
+// root is. A user who removed ~/.config/evener from the denylist removed both,
+// and one who removed the relocated root itself removed that.
+func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy) []string {
 	def := filepath.Join(host.Home, ".config", "evener")
 	cr := filepath.Clean(host.EvenerConfigRoot)
 	if !slices.Contains(masked, def) || !filepath.IsAbs(host.EvenerConfigRoot) || slices.Contains(masked, cr) {
 		return masked
 	}
+	for _, r := range policy.DenylistRemove {
+		if resolveHomePath(r, host.Home) == cr {
+			return masked
+		}
+	}
 	return append(slices.Clone(masked), cr)
+}
+
+// withResolvedMasks adds the symlink-resolved location of each masked path that
+// is reached through a symlink, so a secret is masked under both spellings: the
+// file tools compare paths, and would otherwise read a symlinked credential
+// directory (or config root) by its target's name. The backends already mask
+// the resolved target. The pseudo-filesystem floor is left as written: its
+// entries are host paths the backends handle by mount, and its aliases (such as
+// /var/run -> /run) are listed already.
+func withResolvedMasks(masked []string) []string {
+	out := slices.Clone(masked)
+	for _, m := range masked {
+		if slices.Contains(defaultPseudoFSPaths, m) {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(m); err == nil && resolved != m && !slices.Contains(out, resolved) {
+			out = append(out, resolved)
+		}
+	}
+	return out
 }
 
 // filterMasked drops any root that is at or beneath a masked path, upholding the

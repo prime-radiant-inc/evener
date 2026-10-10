@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -49,5 +50,39 @@ func TestProbeFindsEvenerConfigRoot(t *testing.T) {
 				t.Errorf("EvenerConfigRoot = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A masked directory reached through a symlink is masked at its real location
+// too, so the file tools cannot read the same secrets by the target's spelling.
+func TestMasksCoverASymlinkedMasksRealLocation(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	realConfig := filepath.Join(clean(t.TempDir()), "real-config")
+	if err := os.MkdirAll(filepath.Join(realConfig, "evener"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(clean(t.TempDir()), "config-link")
+	if err := os.Symlink(realConfig, link); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerConfigRoot = filepath.Join(link, "evener")
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if rp.FileToolCanRead(filepath.Join(realConfig, "evener", "credentials.toml")) {
+		t.Errorf("the relocated config root must be masked at its real location: %v", rp.MaskedPaths)
+	}
+}
+
+// Removing the relocated config root itself from the denylist unmasks it, like
+// any other denylist removal.
+func TestDenylistRemoveUnmasksTheRelocatedConfigRoot(t *testing.T) {
+	root := mainRepo(t)
+	host := bwrapHost()
+	host.EvenerConfigRoot = "/xdg/evener"
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistRemove: []string{"/xdg/evener"}}, host, root)
+	if !rp.FileToolCanRead("/xdg/evener/hub.toml") {
+		t.Errorf("removing /xdg/evener from the denylist must unmask it: %v", rp.MaskedPaths)
 	}
 }
