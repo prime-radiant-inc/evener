@@ -365,6 +365,9 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		s.ensureAppProjectorLocked(event.SessionID)
 		supersededSessionEnd := event.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(event)
 		supersededSettledStatus := event.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked()
+		if event.Kind == events.EventStatusSettled {
+			s.settledStatusLocked(event, supersededSettledStatus)
+		}
 		if started, ok := event.Data.(events.ExecutionStartedData); ok && started.TurnID != "" && started.TurnID == s.appPendingStableTurnID {
 			// The execution SetProcessingTurn published has started, so a
 			// terminal status from the input before it must not be replayed
@@ -614,6 +617,25 @@ func (s *Server) finishProcessing() {
 		s.mu.Unlock()
 		return s.recordAppNotifications(threadID, pending)
 	})
+}
+
+// settledStatusLocked applies a resting status that settled outside any turn
+// (EventStatusSettled) in the same lock hold that decides whether it is
+// published: applied when it can be published now; held for the end of
+// processing when an input is being taken and no turn is published or
+// reserved yet, since that input may end without a turn; dropped otherwise.
+// The caller holds s.mu.
+func (s *Server) settledStatusLocked(event events.SessionEvent, superseded bool) {
+	effect := sessionEventStatusEffect(event)
+	if effect == nil {
+		return
+	}
+	switch {
+	case !superseded:
+		effect(s)
+	case s.processing && s.appActiveTurnID == "" && s.appReservedTurnID == "" && s.status.State != string(agent.SessionClosed):
+		s.appHeldSettledEffect = effect
+	}
 }
 
 // pendingRootStatus reports whether pending already holds a status change for

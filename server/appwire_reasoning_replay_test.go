@@ -694,3 +694,51 @@ func TestServerAppWireHeldStatusSettledDropsAtAnInterruptedSessionEnd(t *testing
 		}
 	}
 }
+
+// A finish that runs after an input's SESSION_END ended processing, but
+// before the bridge projects that SESSION_END, does not apply the rest held
+// during the input: the SESSION_END's own status effect drops it.
+func TestServerAppWireFinishBetweenASessionEndsEffectAndItsProjectionDropsTheHold(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_end_window")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_end_window", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	end := events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_end_window", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}}
+	srv.applySessionEventStatus(end)
+	srv.SetProcessing(false)
+	srv.RecordAppEvent(end)
+
+	if read := readThreadOverWire(t, srv, "local:th_end_window"); read.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("read status = %q, want the SESSION_END's idle", read.Status.Type)
+	}
+	for _, status := range statusNotifications(t, srv, "th_end_window") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the held rest over the SESSION_END: %+v", status)
+		}
+	}
+}
+
+// A settle is applied, held or dropped in the same lock hold that decides its
+// broadcast, so a finish racing the bridge never publishes it twice.
+func TestServerAppWireHeldStatusSettledIsBroadcastOnce(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_once")
+	srv.SetProcessing(true)
+	settled := events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_once", Data: events.StatusSettledData{State: "awaiting"}}
+	srv.applySessionEventStatus(settled)
+	srv.SetProcessing(false)
+	srv.RecordAppEvent(settled)
+
+	awaiting := 0
+	for _, status := range statusNotifications(t, srv, "th_once") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			awaiting++
+		}
+	}
+	if awaiting != 1 {
+		t.Fatalf("awaiting broadcast %d times, want once", awaiting)
+	}
+	if read := readThreadOverWire(t, srv, "local:th_once"); read.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("read status = %q, want awaiting", read.Status.Type)
+	}
+}

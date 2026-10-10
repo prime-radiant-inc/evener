@@ -173,24 +173,20 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	if ev.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(ev) {
 		return
 	}
-	if ev.Kind == events.EventStatusSettled && s.settledStatusSupersededLocked() {
-		// An input being taken, with no turn published yet, may still end
-		// without one: hold the rest for the end of processing. Once a turn is
-		// published, any settle the bridge still meets predates it, and the
-		// turn's own end restates the state.
-		if s.processing && s.appActiveTurnID == "" && s.appReservedTurnID == "" && s.status.State != string(agent.SessionClosed) {
-			s.appHeldSettledEffect = effect
-		}
+	if ev.Kind == events.EventStatusSettled {
+		// Applied, held or dropped together with its projection
+		// (RecordAppEvent), in one lock hold, so the stored state and the
+		// broadcast can't decide differently.
 		return
 	}
 	effect(s)
 }
 
 // settledStatusSupersededLocked reports whether a resting status that settled
-// outside any turn (EventStatusSettled) can't describe the session yet: an
-// input is being taken or a turn is reserved, so it is held for the end of
-// processing (appHeldSettledEffect), or the session already closed, and closed
-// wins. The caller holds s.mu.
+// outside any turn (EventStatusSettled) can't be published now: an input is
+// being taken (it may be held for the end of processing, settledStatusLocked),
+// a turn is reserved and its own end restates the state, or the session
+// already closed, and closed wins. The caller holds s.mu.
 func (s *Server) settledStatusSupersededLocked() bool {
 	return s.processing || s.appReservedTurnID != "" || s.status.State == string(agent.SessionClosed)
 }
