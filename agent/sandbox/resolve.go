@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -533,6 +534,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		}
 		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
 		roots = slices.DeleteFunc(roots, func(r string) bool {
+			if fi, err := os.Stat(r); err == nil && !fi.IsDir() {
+				return true // a file cannot be overlaid; the floor redirects it instead
+			}
 			return pathUnder(r, worktree) || pathUnder(resolveExistingPrefix(r), worktree)
 		})
 		return dedupeRoots(roots)
@@ -545,16 +549,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // through symlinks and the missing rest appended, so a path that does not exist
 // yet is still placed where creating it would land.
 func resolveExistingPrefix(p string) string {
-	rest := ""
-	for dir := filepath.Clean(p); ; dir = filepath.Dir(dir) {
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			return StripDataVolumeAlias(filepath.Join(resolved, rest))
-		}
-		if parent := filepath.Dir(dir); parent == dir {
-			return filepath.Clean(p)
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-	}
+	return StripDataVolumeAlias(canonicalizeLongestPrefix(p, filepath.EvalSymlinks))
 }
 
 // goCacheRoots are the directories the go command writes caches to: pkg under

@@ -41,10 +41,11 @@ var floorPrefixDrops = []string{
 //     system directories, so a spawned `git` is the real git and not the
 //     /usr/bin xcrun shim (which is loud and slow under a sandbox),
 //   - points TMPDIR and EVENER_SCRATCH_DIR at the per-session scratch, and
-//   - redirects the language cache vars (GOCACHE / GOMODCACHE / GOPATH /
-//     npm_config_cache / CARGO_HOME) into the session tmp when the cache strategy
-//     is session-private, so a sandboxed build can never poison a cache a later
-//     build consumes.
+//   - redirects the language cache vars into the session tmp so a sandboxed
+//     build can never poison a cache a later build consumes: all of them
+//     (GOCACHE / GOMODCACHE / GOPATH / npm_config_cache / CARGO_HOME) under the
+//     session-private strategy, and under the overlay the Go caches it does not
+//     serve (see redirectedCacheVars).
 //
 // It is a pure function of its inputs and returns a fresh slice; it never reads
 // the process environment. Called at EVERY spawn site (shell jobs, rg, stdio MCP
@@ -123,8 +124,9 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 		if policy.resolveHost.GoEnvUnreadable {
 			out[envvars.GoCache.Name], out[envvars.GoModCache.Name], out[envvars.GoPath.Name] = true, true, true
 		}
-		for name, dir := range overlayGoCacheDirs(env, policy.resolveHost) {
-			if filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots) {
+		dirs, known := overlayGoCacheDirs(env, policy.resolveHost)
+		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
+			if dir := dirs[name]; !known || (filepath.IsAbs(dir) && !isUnderAnyRoot(dir, policy.CacheRoots)) {
 				out[name] = true
 			}
 		}
@@ -135,8 +137,11 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 // overlayGoCacheDirs returns, for each Go cache variable, the directory a
 // spawned go would write that cache to: the spawn's own setting, else the
 // host's resolved one (env or go env -w), else Go's default. GOPATH maps to its
-// first entry's pkg, where the checksum database lives.
-func overlayGoCacheDirs(env []string, host HostFacts) map[string]string {
+// first entry's pkg, where the checksum database lives. The host's settings
+// count only when the spawn's go reads the same go env file the probe read; a
+// spawn pointing at another file (an alternate GOENV) may configure its caches
+// anywhere, which it reports as not known.
+func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) {
 	vars := map[string]string{}
 	for _, kv := range env {
 		name, val, _ := strings.Cut(kv, "=")
@@ -149,6 +154,14 @@ func overlayGoCacheDirs(env []string, host HostFacts) map[string]string {
 			}
 		}
 		return ""
+	}
+	if file := goEnvFileFor(vars, host.OS); file != host.GoEnvFile {
+		if file != "" {
+			return nil, false
+		}
+		// No env file at all (GOENV=off, or nothing locates it): only the
+		// spawn's own settings and Go's defaults apply.
+		host.GoPath, host.GoModCache, host.GoCache = "", "", ""
 	}
 	home := firstOr(vars[envvars.Home.Name], host.Home)
 	gopath := ""
@@ -174,7 +187,7 @@ func overlayGoCacheDirs(env []string, host HostFacts) map[string]string {
 	if out[envvars.GoCache.Name] == "" && cacheHome != "" {
 		out[envvars.GoCache.Name] = filepath.Join(cacheHome, "go-build")
 	}
-	return out
+	return out, true
 }
 
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch

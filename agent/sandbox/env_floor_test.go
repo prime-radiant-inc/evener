@@ -297,7 +297,7 @@ func TestEnvFloorTurnsAnUnreadableGoEnvFileOff(t *testing.T) {
 // dropped for lying inside the worktree.
 func TestEnvFloorRedirectsResolvedGoCachesTheOverlayDoesNotServe(t *testing.T) {
 	tmp := "/tmp/evener-session-xyz"
-	host := HostFacts{OS: "linux", Home: "/home/u", GoModCache: "/work/project/.mod", GoPath: "/work/project/gopath"}
+	host := HostFacts{OS: "linux", Home: "/home/u", GoModCache: "/work/project/.mod", GoPath: "/work/project/gopath", GoEnvFile: "/home/u/.config/go/env"}
 	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
 	out := ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
 	if v, _ := envValue(out, "GOMODCACHE"); !strings.HasPrefix(v, tmp+"/") {
@@ -308,5 +308,25 @@ func TestEnvFloorRedirectsResolvedGoCachesTheOverlayDoesNotServe(t *testing.T) {
 	}
 	if _, ok := envValue(out, "GOCACHE"); ok {
 		t.Errorf("a GOCACHE the overlay serves (~/.cache/go-build) must be left alone: %v", out)
+	}
+}
+
+// A spawn that points GOENV at a different file may configure its caches
+// anywhere, so the host's resolved settings say nothing about it: under the
+// overlay its Go caches go to the session scratch.
+func TestEnvFloorRedirectsGoCachesForAnAlternateGoEnvFile(t *testing.T) {
+	tmp := "/tmp/evener-session-xyz"
+	host := HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: "/home/u/.config/go/env"}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache", "/home/u/go/pkg"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}
+	out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=/work/project/go.env"}, policy, tmp)
+	for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOPATH"} {
+		if v, _ := envValue(out, name); !strings.HasPrefix(v, tmp+"/") {
+			t.Errorf("%s must move into the session scratch for an alternate GOENV, got %q", name, v)
+		}
+	}
+	// The same file the probe read keeps the host's served settings.
+	same := ApplyEnvFloor([]string{"HOME=/home/u"}, policy, tmp)
+	if _, ok := envValue(same, "GOCACHE"); ok {
+		t.Errorf("the host's own go env file must not redirect a served GOCACHE: %v", same)
 	}
 }

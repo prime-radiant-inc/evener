@@ -713,3 +713,22 @@ func TestCacheRootsNeverCoverTheWorktreeThroughAMissingPathsSymlinkedParent(t *t
 		t.Errorf("a missing cache root whose parent resolves inside the worktree must be dropped: %v", roots)
 	}
 }
+
+// A configured cache "root" that is an existing file is not a cache root the
+// overlay can serve, so it is left out of CacheRoots, and the floor then sends
+// a Go variable naming it to the session scratch.
+func TestCacheRootsLeaveOutAnExistingNonDirectory(t *testing.T) {
+	file := filepath.Join(clean(t.TempDir()), "gocache-is-a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := HostFacts{OS: "linux", Home: "/home/tester", GoCache: file}
+	roots := cacheRootsFor(ModeWorkspaceWrite, host, "/work/project")
+	if slices.Contains(roots, file) {
+		t.Errorf("an existing non-directory must not be a cache root: %v", roots)
+	}
+	out := ApplyEnvFloor([]string{"HOME=/home/tester"}, ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: roots, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: host}, "/tmp/s")
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, "/tmp/s/") {
+		t.Errorf("a GOCACHE naming a file must move into the session scratch, got %q", v)
+	}
+}
