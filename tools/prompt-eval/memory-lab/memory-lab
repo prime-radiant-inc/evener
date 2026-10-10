@@ -560,6 +560,11 @@ def memory_change_count(grade):
     return sum(grade["memory_calls"].get(t, 0) for t in MEMORY_CHANGE_TOOLS)
 
 
+def session_key(grade):
+    """The root session a graded stage ran in: stages that resume one session share it."""
+    return grade["trial"], grade.get("session_id") or grade["stage"]
+
+
 def grade_memory_writes(spec, inputs):
     return inputs["session_memory_changes"] <= spec["max"]
 
@@ -728,7 +733,7 @@ def grade_stage(label, arm, scen, stage, trial, session, earlier=()):
               "memory": read_tree(mem_dir) if os.path.isdir(mem_dir) else {},
               "note": whiteboard_note(session["state"]),
               "session_memory_changes": memory_change_count(grade) + sum(
-                  memory_change_count(e) for e in earlier if e.get("session_id") == grade["session_id"])}
+                  memory_change_count(e) for e in earlier if session_key(e) == session_key(grade))}
     if stage.get("transcripts"):
         # Every session transcript under this stage's state dir, delegates
         # included, e.g. for a delegate's memory_read of project scope.
@@ -897,16 +902,14 @@ def load_scenario(scen):
     return spec
 
 
-def trial_jobs(scenarios, versions, reps, arms=None):
+def trial_jobs(scenarios, versions, reps, only_arm=None):
     """(label, binary, arm, scenario, rep) for every trial: each version runs each arm a scenario declares,
-    or only those of them named in arms, reps times."""
+    or only only_arm when the scenario declares it, reps times."""
     jobs = []
     for scen in scenarios:
-        declared = load_scenario(scen).get("arms", ["on"])
+        arms = [arm for arm in load_scenario(scen).get("arms", ["on"]) if only_arm in (None, arm)]
         for label, binpath in versions.items():
-            for arm in declared:
-                if arms is not None and arm not in arms:
-                    continue
+            for arm in arms:
                 for rep in range(1, reps + 1):
                     jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
     return jobs
@@ -937,7 +940,7 @@ def cmd_run(args):
         print(f"memory-lab: this run's providers.toml, a copy of yours with the override: {args.providers_path} "
               "(owner-only; delete it when you're done with ask)", flush=True)
     jobs = trial_jobs([os.path.abspath(scen) for scen in args.scenarios.split(",")], versions, args.reps,
-                      [args.arm] if args.arm else None)
+                      args.arm)
     os.makedirs(args.out, exist_ok=True)
     print(f"memory-lab: {len(jobs)} trials, model {args.model}, logs under {args.out}", flush=True)
     grades = []
@@ -1033,8 +1036,7 @@ def memory_changes(grades):
         n = memory_change_count(g)
         agg.setdefault(key, {}).setdefault(g["stage"], []).append(n)
         session = totals.setdefault(key, {})
-        sid = (g["trial"], g.get("session_id") or g["stage"])
-        session[sid] = session.get(sid, 0) + n
+        session[session_key(g)] = session.get(session_key(g), 0) + n
     return {key: (list(totals[key].values()), turns) for key, turns in agg.items()}
 
 
