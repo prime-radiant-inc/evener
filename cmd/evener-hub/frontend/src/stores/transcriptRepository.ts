@@ -49,6 +49,12 @@ export interface TranscriptRepositoryBinding {
     snapshotLength: number;
   };
   now?: () => number;
+  /**
+   * The shared paced-retry scheduler for this write path. When absent, a
+   * transient write failure is retried on a bounded exponential timer; the
+   * store wires one so real repairs coalesce per ref. Returns a cancel.
+   */
+  retryScheduler?: (attempt: number, retry: () => void) => () => void;
 }
 
 export type TranscriptReaderStatus = "current" | "stale" | "recovery-needed";
@@ -116,6 +122,11 @@ export class TranscriptRepository {
   #disposed = false;
   #invalidated = false;
   #cacheContinuityLost = false;
+  // A transiently failed batch is retained and retried on bounded backoff
+  // while a reader holds demand. One retry is outstanding per repository.
+  #retryBatch: Parameters<SessionEntryCache["commitBatch"]>[0] | undefined;
+  #retryCancel: (() => void) | undefined;
+  #retryAttempt = 0;
 
   constructor(cache: SessionEntryCache, binding: TranscriptRepositoryBinding) {
     if (entryHistoryKey(binding.identity) !== binding.historyKey) throw new Error("binding history identity mismatch");
@@ -665,11 +676,13 @@ export class TranscriptRepository {
   invalidate(): void {
     this.#invalidated = true;
     this.#pending.clear();
+    this.#cancelWriteRetry();
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#cancelWriteRetry();
     this.#listeners.clear();
     this.#pending.clear();
     this.#model = undefined;
@@ -982,6 +995,12 @@ export class TranscriptRepository {
   #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): void {
     const write = this.#cache.commitBatch(batch).then((outcome) => {
       if (outcome.outcome === "committed") {
+        // A committed batch that carries coverage restores the certified chain
+        // a transient failure broke: the route is durably ready again. Without
+        // this the flag set below stays true forever, so every later open would
+        // report recovery-needed even though eligible work committed.
+        this.#retryAttempt = 0;
+        if (batch.coverage) this.#cacheContinuityLost = false;
         if (batch.coverage) {
           this.#committedCoverageBoundary = batch.coverage.boundary;
           this.#committedCoverageSnapshot = batch.coverage.representedSnapshot;
@@ -997,6 +1016,12 @@ export class TranscriptRepository {
         for (const row of batch.items) {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }
+        // A failed transaction is transient until the storage proves otherwise.
+        // Retry it on bounded backoff while a reader still holds demand, so a
+        // momentary abort does not strand the route in recovery forever.
+        // A refusal (`clear-epoch`, `history-fence`, `capacity`) is not
+        // transient: retrying it would be the repair loop the policy forbids.
+        if (outcome.outcome === "failed") this.#armWriteRetry(batch);
       }
     });
     this.#writes.add(write);
@@ -1008,6 +1033,36 @@ export class TranscriptRepository {
 
   #now(): number {
     return this.#binding.now?.() ?? Date.now();
+  }
+
+  #armWriteRetry(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): void {
+    if (this.#disposed || this.#invalidated || this.#readerCount <= 0) return;
+    if (this.#retryCancel) return; // coalesced: one outstanding retry per repository
+    this.#retryBatch = batch;
+    this.#retryAttempt += 1;
+    const attempt = this.#retryAttempt;
+    const fire = () => {
+      this.#retryCancel = undefined;
+      const pending = this.#retryBatch;
+      this.#retryBatch = undefined;
+      if (!pending || this.#disposed || this.#invalidated || this.#readerCount <= 0) return;
+      this.#queueWrite(pending);
+    };
+    const scheduler = this.#binding.retryScheduler;
+    if (scheduler) {
+      this.#retryCancel = scheduler(attempt, fire);
+      return;
+    }
+    const delay = Math.min(2_000, 250 * 2 ** Math.min(attempt - 1, 3));
+    const timer = setTimeout(fire, delay);
+    this.#retryCancel = () => clearTimeout(timer);
+  }
+
+  #cancelWriteRetry(): void {
+    this.#retryBatch = undefined;
+    const cancel = this.#retryCancel;
+    this.#retryCancel = undefined;
+    cancel?.();
   }
 
   #reclaimBackgroundModel(): void {
