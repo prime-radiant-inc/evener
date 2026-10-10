@@ -211,11 +211,12 @@ Typed client-upgrade and deleted-target rejections remain explained failures.
 The browser's entry repository (an isolated fixture route today, not the
 production path) extends the same reader intent with a persistent cache. It
 mints an opaque *baseline identity* from its tab-local binding lifetime and its
-source revision. The identity changes when an authoritative read or an identity
-change advances the source revision, and the store explicitly retires it at a
-connection/reconnect boundary (the same boundary that invalidates held
-histories), because a reconnect can report the same boot generation, epoch and
-incarnation across a gap. A same-connection reader close/reopen keeps the old
+source revision. The identity changes when an authoritative read, an identity
+change, or the store's own reconciliation of an ambiguous frontier advances the
+source revision, and the store explicitly retires it at a connection/reconnect
+boundary (the same boundary that invalidates held histories), because a
+reconnect can report the same boot generation, epoch and incarnation across a
+gap. A same-connection reader close/reopen keeps the old
 identity. The per-installation lifetime counter is bookkeeping, not a durable
 connection identifier. Callers treat the identity as opaque and never decode it.
 
