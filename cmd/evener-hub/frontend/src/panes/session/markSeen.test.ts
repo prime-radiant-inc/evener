@@ -5,7 +5,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { seenThroughToMark, useMarkSessionSeenOnOpen } from "./markSeen";
+import { seenThroughToMark, seenThroughWithMotion, useMarkSessionSeenOnOpen } from "./markSeen";
 
 const REF = "local:01SEEN";
 const FIRST_TURN = "2026-09-26T11:58:00.123Z";
@@ -156,4 +156,184 @@ test("the mark waits for a ready connection", () => {
   renderHook(() => useMarkSessionSeenOnOpen(REF));
   const fake = connectFake();
   expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
+});
+
+const ACTIVITY_READ = "evener/activity/read";
+const SEEN_MARK = "2026-09-26T12:00:00.000Z";
+const activityFor = (lastMovedAt?: number) => ({
+  sessions: [
+    {
+      ref: REF,
+      minutes: [0, 0, 0, 0, 0, 0, 0],
+      runningSubagents: 0,
+      ...(lastMovedAt === undefined ? {} : { lastMovedAt }),
+    },
+  ],
+});
+const settle = () => act(async () => {});
+
+test("the mark covers the session's last motion when it came after the hub's seen mark", () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  expect(seenThroughWithMotion({ seen_through: SEEN_MARK }, moved)).toBe(moved);
+  expect(seenThroughWithMotion({ seen_through: SEEN_MARK }, Date.parse(SEEN_MARK))).toBeUndefined();
+  expect(seenThroughWithMotion({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN }, moved)).toBe(
+    moved,
+  );
+  expect(
+    seenThroughWithMotion({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: NEXT_TURN }, Date.parse(FIRST_TURN)),
+  ).toBe(Date.parse(NEXT_TURN));
+  // Without the hub's seen mark, motion can't be compared.
+  expect(seenThroughWithMotion({}, moved)).toBeUndefined();
+});
+
+test("opening a pane marks a session seen through output that streamed after its seen mark", async () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  showRow({ seen_through: SEEN_MARK, turn_ended_at: FIRST_TURN, unseen: false });
+  const fake = connectFake();
+  fake.on(ACTIVITY_READ, () => activityFor(moved));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  expect(fake.calls.find((call) => call.method === ACTIVITY_READ)?.params).toEqual({ refs: [REF] });
+  expect(marks(fake)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
+});
+
+// Another device can mark the session unread at the very mark this pane sent;
+// coming back sends it again, which clears the unread (the hub's mark is
+// idempotent otherwise).
+test("coming back to the page sends its mark again, clearing an unread set elsewhere", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  fake.on(ACTIVITY_READ, () => activityFor());
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  setVisibility("hidden");
+  setVisibility("visible");
+  await settle();
+  expect(marks(fake)).toEqual([markFor(FIRST_TURN), markFor(FIRST_TURN)]);
+});
+
+test("a read it can't decode still marks the unseen turn", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  fake.on(ACTIVITY_READ, () => ({ nope: true }) as never);
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
+});
+
+test("the mark reads this session's motion, not another's in the same answer", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  fake.on(ACTIVITY_READ, () => ({
+    sessions: [
+      {
+        ref: "local:other",
+        minutes: [0, 0, 0, 0, 0, 0, 0],
+        runningSubagents: 0,
+        lastMovedAt: Date.parse(SEEN_MARK) + 60_000,
+      },
+      { ref: REF, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0, lastMovedAt: Date.parse(SEEN_MARK) - 1 },
+    ],
+  }));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  expect(marks(fake)).toEqual([]);
+});
+
+test("a pane closed while its read is out sends nothing", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  let answer: (value: never) => void = () => {};
+  fake.on(ACTIVITY_READ, () => new Promise<never>((resolve) => (answer = resolve)));
+  const pane = renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  pane.unmount();
+  answer(activityFor(Date.parse(SEEN_MARK) + 60_000) as never);
+  await settle();
+  expect(marks(fake)).toEqual([]);
+});
+
+test("a failed activity read still marks the unseen turn", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: true, turn_ended_at: FIRST_TURN });
+  const failing = connectFake();
+  failing.on(ACTIVITY_READ, () => {
+    throw new Error("request timed out");
+  });
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  expect(marks(failing)).toEqual([markFor(FIRST_TURN)]);
+});
+
+test("a session with nothing new since its seen mark sends nothing", async () => {
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const quiet = connectFake();
+  quiet.on(ACTIVITY_READ, () => activityFor(Date.parse(SEEN_MARK) - 1));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  expect(marks(quiet)).toEqual([]);
+});
+
+test("a page hidden while the read is out marks nothing until it is shown again", async () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  let answer: (value: never) => void = () => {};
+  let reads = 0;
+  fake.on(ACTIVITY_READ, () => {
+    reads += 1;
+    if (reads === 1) return new Promise<never>((resolve) => (answer = resolve));
+    return activityFor(moved) as never;
+  });
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  setVisibility("hidden");
+  answer(activityFor(moved) as never);
+  await settle();
+  expect(marks(fake)).toEqual([]);
+  setVisibility("visible");
+  await settle();
+  expect(marks(fake)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
+});
+
+test("a connection replaced while the read is out marks through the new one", async () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const first = connectFake();
+  let answer: (value: never) => void = () => {};
+  first.on(ACTIVITY_READ, () => new Promise<never>((resolve) => (answer = resolve)));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  const second = new FakeClient("ready");
+  second.on(SEEN_SET, () => ({
+    ok: true,
+    changed: true,
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
+  act(() => connectionStore.getState().connect(second));
+  answer(activityFor(moved) as never);
+  await settle();
+  expect(marks(first)).toEqual([]);
+  expect(marks(second)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
+});
+
+test("a read that fails because its connection was replaced is read again through the new one", async () => {
+  const moved = Date.parse(SEEN_MARK) + 60_000;
+  showRow({ seen_through: SEEN_MARK, unseen: false, turn_ended_at: FIRST_TURN });
+  const first = connectFake();
+  let fail: (error: Error) => void = () => {};
+  first.on(ACTIVITY_READ, () => new Promise<never>((_resolve, reject) => (fail = reject)));
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  await settle();
+  const second = new FakeClient("ready");
+  second.on(SEEN_SET, () => ({
+    ok: true,
+    changed: true,
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
+  second.on(ACTIVITY_READ, () => activityFor(moved));
+  act(() => connectionStore.getState().connect(second));
+  fail(new Error("connection closed"));
+  await settle();
+  expect(second.calls.filter((call) => call.method === ACTIVITY_READ)).toHaveLength(1);
+  expect(marks(second)).toEqual([{ sessions: [{ ref: REF, seenThrough: moved }] }]);
 });
