@@ -1929,7 +1929,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if kind == EntryNotification && !rootAttentionAccepted {
 			return
 		}
-		finishErr := s.finishRootDelegateAttentionTurn(rootAttentionIDs, err)
+		finishErr := s.finishAttentionTurn(rootAttentionIDs, err)
 		if finishErr == nil {
 			return
 		}
@@ -2060,7 +2060,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	// Attention coverage credits only what this turn's requests present.
 	// Clear a previous turn's marks before any path below can finish this one.
-	s.resetRootDelegateAttentionCoverage()
+	s.resetAttentionCoverage()
 
 	select {
 	case <-ctx.Done():
@@ -2358,7 +2358,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// that failed — or was retried after compaction folded the steering
 		// turn away — never reaches here, so coverage always means
 		// "presented in a settled call of this turn".
-		s.promoteStagedRootDelegateAttention()
+		s.promoteStagedAttentionCoverage()
 
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr
