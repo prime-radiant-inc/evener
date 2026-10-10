@@ -14,8 +14,10 @@ const inspectorFooter = `${inspectorRoot} ~ [data-testid="pane-edge-footer"] [da
 const inspectorIdExpr = `document.querySelector(${q(`${inspectorFooter} [data-pane-id]`)})?.dataset.paneId`;
 const sourceFooter = `[data-pane-scaffold=${q(`session:${fixture.rootRef}`)}] ~ [data-testid="pane-edge-footer"] [data-testid="statusbar"]`;
 const sourceAgents = `${sourceFooter} button[aria-label^="Agents,"]`;
+const rootCrumb = 'nav[aria-label="Agent path"] button:first-child';
 const column = (ref) => `${inspectorRoot} [data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
 const row = (edge) => `[data-activity-anchor=${q(`delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`)}]`;
+const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
 const wait = (expression, label) => {
   new Function(`return (${expression})`);
   return driver.waitPage(expression, { label });
@@ -306,7 +308,7 @@ async function sharedWidthJourney() {
   await assertSourceDom();
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
-  await driver.click('nav[aria-label="Agent path"] button:first-child');
+  await driver.click(rootCrumb);
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.rootRef))}) !== null`, "real root pop supplies a read-only cascade reader");
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1640, height:900, deviceScaleFactor:1, mobile:false });
   const portExpr = `document.querySelector(${q(scroll(fixture.rootRef))})`;
@@ -589,22 +591,31 @@ async function openPeek(ref, kind) {
   await wait('document.querySelector("[data-testid=activity-peek]") !== null', `${kind} ancestor peek`);
 }
 
-async function assertSpineStatus(ref, state, text, signalLabel) {
+// Each runtime state's exact hover and screen-reader text and its
+// session-list signal in the compact spine.
+const spineStatus = {
+  active: { text: "Active", signalLabel: "Running" },
+  idle: { text: "Idle", signalLabel: null },
+  awaiting: { text: "Awaiting", signalLabel: "Needs you" },
+};
+
+async function assertSpineStatus(ref, ...states) {
   const { reducedMotion, ...status } = await wait(`(() => {
     const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]');
     const runtime = spine?.querySelector('[data-runtime-state]');
-    if (!runtime || runtime.dataset.runtimeState !== ${q(state)}) return null;
+    if (!runtime || !${q(states)}.includes(runtime.dataset.runtimeState)) return null;
     const label = runtime.querySelector('[data-runtime-label]');
     const signal = runtime.querySelector('[role="img"]');
     const box = runtime.getBoundingClientRect();
     const labelBox = label?.getBoundingClientRect();
-    return { width: box.width, height: box.height, title: runtime.title,
+    return { state: runtime.dataset.runtimeState, width: box.width, height: box.height, title: runtime.title,
       text: label?.textContent, hiddenFromAT: label?.getAttribute('aria-hidden'),
       labelWidth: labelBox?.width, labelHeight: labelBox?.height,
       signalLabel: signal?.getAttribute('aria-label') ?? null,
       animation: signal ? getComputedStyle(signal).animationName : null,
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches };
-  })()`, `actual ${state} ancestor status`);
+  })()`, `actual ${states.join(" or ")} ancestor status`);
+  const { text, signalLabel } = spineStatus[status.state];
   assert.ok(status.width <= 8.5 && status.height <= 8.5, `compact status must fit an 8px indicator, got ${status.width}x${status.height}`);
   assert.equal(status.title, text, "exact runtime state remains available on hover");
   assert.equal(status.text, text, "exact runtime state remains available to screen readers");
@@ -614,7 +625,7 @@ async function assertSpineStatus(ref, state, text, signalLabel) {
   if (signalLabel === "Running" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
-  driver.milestone("compact-spine-status", { ref, state, ...status });
+  driver.milestone("compact-spine-status", { ref, ...status });
 }
 
 async function installSourceTrace() {
@@ -722,19 +733,22 @@ async function providerHeld() {
   });
 }
 
-const readableGeometrySettled = `(() => {
+const readableGeometrySettled = (expectedColumns) => `(() => {
   const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
   const grid = columns[0]?.closest('.dv-grid-view'), shell = grid?.closest('.dv-shell');
-  if (!grid || !shell) return false;
+  if (!grid || !shell || columns.length !== ${expectedColumns}) return false;
   // Wait for the shell's current size before computing native input coordinates.
   const gridSize = grid.getBoundingClientRect(), shellSize = shell.getBoundingClientRect();
   if (gridSize.width !== Math.round(shellSize.width) || gridSize.height !== Math.round(shellSize.height)) return false;
-  return columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < .75 && columns[1].getBoundingClientRect().width >= 439.5
+  const leaf = columns[columns.length - 1];
+  const readableParent = columns.length === 2 ? columns[0] : null;
+  return leaf.getBoundingClientRect().width >= 439.5
+    && (!readableParent || Math.abs(readableParent.getBoundingClientRect().width - 400) < .75)
     && columns.every(node => getComputedStyle(node).transform === 'none');
 })()`;
 
 async function observeGeometryAndFocus(ref) {
-  await wait(readableGeometrySettled, "settled geometry before live status updates");
+  await wait(readableGeometrySettled(2), "settled geometry before live status updates");
   await read(`(() => {
     document.querySelector(${q(peekChip(ref, "Tasks"))}).focus();
     window.__cascadeFocused = document.activeElement;
@@ -789,12 +803,12 @@ async function sourceMutationJourney() {
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await drill(fixture.edges[1], 2);
-  await assertSpineStatus(ref, "active", "Active", "Running");
+  await assertSpineStatus(ref, "active");
   await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-  await assertSpineStatus(ref, "active", "Active", "Running");
+  await assertSpineStatus(ref, "active");
   const screenshotViewport = await read("({ width: innerWidth, height: innerHeight })");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1050, deviceScaleFactor: 1, mobile: false });
-  await wait(readableGeometrySettled, "settled compact-status screenshot geometry");
+  await wait(readableGeometrySettled(2), "settled compact-status screenshot geometry");
   const screenshotTrack = await wait(`(() => {
     const track = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]')?.parentElement;
     if (!track) return null;
@@ -832,7 +846,8 @@ async function sourceMutationJourney() {
   const releasedAfter = frames.length;
   driver.control("release-provider");
   await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual source status settles after queued provider delivery");
-  await assertSpineStatus(ref, "idle", "Idle", null);
+  // The queued turn ends on a plain reply, which rests idle.
+  await assertSpineStatus(ref, "idle");
   assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "actual source status changes preserve focused element");
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "actual provider completion never changes geometry");
   await read("window.__cascadeGeometryObserver.disconnect()");
@@ -853,11 +868,7 @@ async function sourceMutationJourney() {
 // selected by its description, distinguishes identities with identical labels.
 async function completeOverlap(ref, kind) {
   const description = `Cascade overlap ${kind} fixture`;
-  const point = await wait(`(() => {
-    const button = [...document.querySelectorAll('[data-testid="composer-slash-menu"] button')].find(node => node.textContent.includes(${q(description)}));
-    if (!button) return null;
-    const r = button.getBoundingClientRect(); return { x:r.x + r.width / 2, y:r.y + r.height / 2 };
-  })()`, `real overlapping ${kind} catalog row`);
+  const point = await wait(driver.slashRowPointExpr(description), `real overlapping ${kind} catalog row`);
   await driver.clickAt(point.x, point.y);
   await wait(`document.querySelector(${q(driver.composerSelector(ref))})?.querySelector('[data-${kind}-name="cascade-overlap"]') !== null && document.querySelector('[data-testid="composer-slash-menu"]') === null`, `selected overlapping ${kind} atom`);
 }
@@ -1067,7 +1078,11 @@ async function reloadAndMobileJourney() {
   fixture.sourceTabCount++;
   const removedInspectorId = fixture.inspectorPaneId;
   await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
-  await wait(`document.querySelector(${q(column(fixture.rootRef))}) !== null && ${inspectorIdExpr} === ${q(removedInspectorId)}`, "the same inspector is active before its original-conversation action");
+  // The origin parent is a spine at the first drill. Popping to the root
+  // restores the origin conversation as the readable leaf, whose Open
+  // conversation action resolves the original source pane.
+  await driver.click(rootCrumb);
+  await wait(`document.querySelector(${q(column(fixture.rootRef))}) !== null && ${inspectorIdExpr} === ${q(removedInspectorId)}`, "the root pop keeps the same inspector active before its original-conversation action");
   await clickColumnAction(fixture.rootRef, "Open conversation");
   await wait(`document.querySelector(${q(inspectorRoot)}) === null && document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]')?.contains(document.activeElement) === true`, "original Open closes inspection and focuses its existing source editor");
   const baseline = await wait(`(() => {
@@ -1290,8 +1305,13 @@ async function drill(edge, level) {
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
   await driver.click(selector);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
-  const expected = fixture.refs.slice(Math.max(0, level - 1), level + 1);
-  await wait(`JSON.stringify([...document.querySelectorAll('[data-testid="cascade-column"]')].map(n => n.dataset.scopeRef)) === ${q(JSON.stringify(expected))}`, `exact column pair ${level}`);
+  // The drill whose immediate parent is the live origin conversation
+  // collapses that parent to a spine: the origin pane is already mounted
+  // beside the cascade, so the leaf is the only readable column.
+  const readableFrom = fixture.refs[level - 1] === fixture.rootRef ? level : level - 1;
+  const expected = fixture.refs.slice(readableFrom, level + 1);
+  const expectedSpines = fixture.refs.slice(0, readableFrom);
+  await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(expected))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(expectedSpines))}`, `exact column and spine sets ${level}`);
   await wait(`document.querySelector(${q(column(edge.childRef))}).textContent.includes(${q(`CASCADE_ROLE_${level}_SENTINEL`)})`, `real retained transcript ${level}`);
   const id = await wait(inspectorIdExpr, "secondary inspector has a committed pane ID");
   assert.notEqual(id, fixture.sourcePaneId, "inspection never replaces the source panel");
@@ -1471,24 +1491,21 @@ try {
   await driver.click(sourceAgents);
   await read('window.__cascadeTraceSource("after-sidebar-open")');
   await drill(fixture.edges[0], 1);
-  await wait(readableGeometrySettled, "first secondary split has settled readable geometry");
+  await wait(readableGeometrySettled(1), "first secondary split has settled readable geometry");
   await read('window.__cascadeTraceSource("after-first-drill")');
   await assertSourceDom();
   assert.equal(await sourceAnchor(), beforeEntryAnchor, "secondary entry preserves the visible source row");
   driver.milestone("root-child", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, sourceAnchor: beforeEntryAnchor });
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
-  await wait(`(() => {
+  await wait(`${readableGeometrySettled(2)} && (() => {
     const spines = [...document.querySelectorAll('[data-testid="cascade-spine"]')];
-    const columns = [...document.querySelectorAll('[data-testid="cascade-column"]')];
-    return spines.length === 5 && spines.every(n => Math.abs(n.getBoundingClientRect().width - 52) < 0.75)
-      && columns.length === 2 && Math.abs(columns[0].getBoundingClientRect().width - 400) < 0.75
-      && columns[1].getBoundingClientRect().width >= 439.5;
+    return spines.length === 5 && spines.every(n => Math.abs(n.getBoundingClientRect().width - 52) < 0.75);
   })()`, "settled six-edge geometry");
   const boxes = await read(`([...document.querySelectorAll('[data-testid="cascade-spine"], [data-testid="cascade-column"]')]).map(n => {
     const r = n.getBoundingClientRect(); return { ref: n.dataset.scopeRef, kind: n.dataset.testid, x:r.x, y:r.y, width:r.width, height:r.height };
   })`);
   assert.deepEqual(boxes.map(n => n.ref), fixture.refs);
-  await assertSpineStatus(fixture.rootRef, "idle", "Idle", null);
+  await assertSpineStatus(fixture.rootRef, "idle");
   driver.milestone("six-edges", { boxes, sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, tabs: fixture.sourceTabCount + 1 });
   const paint = await capture("six-edges");
   const cascadePaint = paint.filter(view => view.surface === "cascade");
@@ -1539,7 +1556,7 @@ try {
     return settled;
   })()`, "both cascade columns' scroll geometry settled before the independence check");
   await read(`[${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map((s) => { const port = document.querySelector(s); if (port) port.scrollTop = port.scrollHeight; })`);
-  await wait(`${readableGeometrySettled} && (() => {
+  await wait(`${readableGeometrySettled(2)} && (() => {
     const ports = [${q(scroll(fixture.refs[5]))},${q(scroll(fixture.refs[6]))}].map(selector => document.querySelector(selector));
     return ports.every(port => port && port.clientHeight > 0 && port.scrollHeight > port.clientHeight
       && Math.abs(port.scrollHeight - port.clientHeight - port.scrollTop) <= 1);
@@ -1581,7 +1598,7 @@ try {
   assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(n => n.dataset.scopeRef)`), [fixture.rootRef, fixture.branch.childRef], "the sibling replaces the old six-edge suffix");
   assert.equal(await read('document.querySelectorAll("[data-testid=activity-peek]").length'), 0);
   assert.equal(await read('document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length'), 0);
-  await driver.click('nav[aria-label="Agent path"] button:first-child');
+  await driver.click(rootCrumb);
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.rootRef))}) !== null`, "pop to root before restoring real branch");
   await drill(fixture.edges[0], 1);
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);

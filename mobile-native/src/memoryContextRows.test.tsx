@@ -224,8 +224,8 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 			if (row.kind !== "notice") throw new Error("not a notice row");
 			expect(row.label ?? "").toContain(MEMORY_CONTEXT_LABEL);
 			expect(absent(tree, "memory-context-scope-state")).toBe(true);
-			expect(renderedText(tree)).not.toContain("Quoted index data:");
-			expect(renderedText(tree)).not.toContain("Memory scope");
+			expect(renderedText(tree)).not.toContain('memory index: "');
+			expect(renderedText(tree)).not.toContain("since you last saw it");
 			unmount(tree);
 		}
 	});
@@ -267,20 +267,15 @@ describe("an explicit tap reveals the decoded refresh", () => {
 		unmount(tree);
 	});
 
-	it("names every scope truthfully", () => {
-		for (const [name, expected] of [
-			["current-project", "Project memory · current"],
-			["current-session", "Session memory · current"],
-		] as const) {
-			resetDisclosure();
-			const { tree } = mountItem(memoryContextWireItem(name), "tools", true);
-			press(tree, MEMORY_CONTEXT_LABEL);
-			expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain(expected);
-			unmount(tree);
-		}
+	it("names the project scope truthfully", () => {
+		resetDisclosure();
+		const { tree } = mountItem(memoryContextWireItem("current-project"), "tools", true);
+		press(tree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("Project memory · current");
+		unmount(tree);
 	});
 
-	it("keeps the complete recorded Source for every decodable case, including the delegate suffix and a truncation", () => {
+	it("keeps the complete recorded Source for every decodable case, including a truncation", () => {
 		for (const name of memoryContextWireCases()) {
 			const item = memoryContextWireItem(name);
 			if (!item.raw) continue; // the malformed case has its own fallback test
@@ -328,15 +323,11 @@ describe("states and truncation stay honest", () => {
 		expect(textOf(requireFind(tree, "memory-context-scope-state"))).toContain("missing");
 		unmount(tree);
 
-		// truncated-project says the index is too long; legacy-truncated-project
-		// is an earlier build's explicit "truncated true". Both decode as truncated.
-		for (const name of ["truncated-project", "legacy-truncated-project"] as const) {
-			resetDisclosure();
-			({ tree } = mountItem(memoryContextWireItem(name), "tools", true));
-			press(tree, MEMORY_CONTEXT_LABEL);
-			expect(textOf(requireFind(tree, "memory-context-truncated"))).toBe("truncated");
-			unmount(tree);
-		}
+		resetDisclosure();
+		({ tree } = mountItem(memoryContextWireItem("truncated-project"), "tools", true));
+		press(tree, MEMORY_CONTEXT_LABEL);
+		expect(textOf(requireFind(tree, "memory-context-truncated"))).toBe("truncated");
+		unmount(tree);
 	});
 });
 

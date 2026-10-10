@@ -432,7 +432,7 @@ it("titles the header with the session's state, and opens its info on a press", 
 	if (typeof title !== "function") throw new Error("no header title component");
 	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
 	expect(element.type).toBe(SessionTitle);
-	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Finished" } });
+	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Idle" } });
 	act(() => element.props.onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
@@ -1016,6 +1016,29 @@ it("names the hub's running-subagent count in the tray, as the Board's row does"
 	expect(reads.map((request) => request.params)).toContainEqual({ refs: [ref] });
 	expect(renderedText(tree)).toContain("Waiting on 3 subagents");
 	await act(async () => tree.unmount());
+});
+
+// The screen polls its own session's activity only while it is in front,
+// whether or not the agent is working: the tray's count, and the last motion
+// the in-front seen mark follows.
+it("polls its session's activity while in front, at rest too, and not while covered", async () => {
+	const resting = mount(thread, {
+		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0 }] },
+	});
+	await settle();
+	expect(
+		resting.requests.filter((request) => request.method === "evener/activity/read").map((request) => request.params),
+	).toContainEqual({ refs: [ref] });
+	await act(async () => resting.tree.unmount());
+
+	stack.focused = false;
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	const covered = mount(thread, {
+		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 0 }] },
+	});
+	await settle();
+	expect(covered.requests.filter((request) => request.method === "evener/activity/read")).toEqual([]);
+	await act(async () => covered.tree.unmount());
 });
 
 /** The screen's header block, its list, and scrolling it. */

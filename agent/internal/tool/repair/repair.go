@@ -1,8 +1,9 @@
 // Package repair heals off-distribution LLM tool calls: it renames aliased
-// parameters, coerces mistyped scalars, drops optional enum arguments sent as
-// "" or null, drops hallucinated keys, and fixes broken JSON escapes. It is a
-// pure, standard-library-only leaf package; the caller supplies a tool's
-// JSON-Schema parameter object and the parsed args.
+// parameters, coerces mistyped scalars, drops optional arguments sent as a
+// null their schema refuses (or "" on an enum), drops hallucinated keys, and
+// fixes broken JSON escapes. It is a pure, standard-library-only leaf package;
+// the caller supplies a tool's JSON-Schema parameter object and the parsed
+// args.
 package repair
 
 import (
@@ -52,7 +53,7 @@ var aliasTable = map[string]string{
 }
 
 // RepairArgs normalizes args against the tool's JSON-Schema parameter object.
-// It applies, in order, aliasing, coercion, dropping empty optional enums, and
+// It applies, in order, aliasing, coercion, dropping empty optionals, and
 // drop-unknown. keep names argument paths (as "add[0].reasoning_effort") whose
 // explicit empty value the tool's handler judges itself, so repair leaves them.
 // It never mutates its input; it returns a fresh map plus the changes made.
@@ -62,7 +63,7 @@ func RepairArgs(params, args map[string]any, keep ...string) (map[string]any, []
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
 	changes = append(changes, applyCoercions(params, out)...)
-	changes = append(changes, dropEmptyOptionalEnums(params, out, nil, keep)...)
+	changes = append(changes, dropEmptyOptionals(params, out, nil, keep)...)
 	changes = append(changes, dropUnknown(params, out)...)
 	return out, changes
 }
@@ -145,7 +146,7 @@ func applyCoercions(params, args map[string]any) []Change {
 			args[key] = f
 			changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→` + s})
 		case "array":
-			if _, isArr := raw.([]any); isArr {
+			if _, isArr := raw.([]any); isArr || raw == nil {
 				continue
 			}
 			args[key] = []any{raw}
@@ -204,14 +205,15 @@ func nullableUnionNonNullType(v any) string {
 	return ""
 }
 
-// dropEmptyOptionalEnums removes an optional enum argument sent as "" or null,
-// which models often send for a field they mean to leave out, so the
-// parameter's documented default applies. It descends into nested objects and
+// dropEmptyOptionals removes an optional argument sent as null when its schema
+// does not accept null, and an optional enum argument sent as "" when the enum
+// does not list "". Models often send these for a field they mean to leave
+// out, so the parameter's documented default applies. "" on a plain string
+// stays: it can be a meaningful value. It descends into nested objects and
 // array items, each judged against its own schema's required list. A required
-// argument, an enum that lists the empty value itself, or a kept path stays for
-// validation or the handler to judge. obj is modified in place; the caller
-// owns it.
-func dropEmptyOptionalEnums(schema, obj map[string]any, path []pathStep, keep []string) []Change {
+// argument or a kept path stays for validation or the handler to judge. obj is
+// modified in place; the caller owns it.
+func dropEmptyOptionals(schema, obj map[string]any, path []pathStep, keep []string) []Change {
 	props := schemaProps(schema)
 	required := asStringSlice(schema["required"])
 	var changes []Change
@@ -222,14 +224,14 @@ func dropEmptyOptionalEnums(schema, obj map[string]any, path []pathStep, keep []
 		}
 		at := append(slices.Clip(path), pathStep{name: key})
 		if raw != nil && raw != "" {
-			if nested, c := dropEmptyEnumsWithin(p, raw, at, keep); len(c) > 0 {
+			if nested, c := dropEmptyOptionalsWithin(p, raw, at, keep); len(c) > 0 {
 				obj[key] = nested
 				changes = append(changes, c...)
 			}
 			continue
 		}
 		field := stepPathDisplay(at)
-		if slices.Contains(required, key) || !hasListEntries(p["enum"]) || listHasValue(p["enum"], raw) || slices.Contains(keep, field) {
+		if slices.Contains(required, key) || !emptyMeansAbsent(p, raw) || slices.Contains(keep, field) {
 			continue
 		}
 		delete(obj, key)
@@ -238,17 +240,89 @@ func dropEmptyOptionalEnums(schema, obj map[string]any, path []pathStep, keep []
 	return changes
 }
 
-// dropEmptyEnumsWithin applies dropEmptyOptionalEnums inside a nested object or
+// emptyMeansAbsent reports whether raw, which is null or "", is a value the
+// property's schema refuses and so can only mean the model left it out. null
+// counts whenever the schema refuses it; "" only on an enum that doesn't list
+// it.
+func emptyMeansAbsent(schema map[string]any, raw any) bool {
+	if raw == nil {
+		return !schemaAcceptsNull(schema)
+	}
+	return hasListEntries(schema["enum"]) && !listHasValue(schema["enum"], raw)
+}
+
+// schemaAcceptsNull reports whether schema admits null: its own keywords, then
+// its combinators — some anyOf or oneOf branch (oneOf's "exactly one" can't
+// turn a null-accepting branch into a refusal worth repairing), and every
+// allOf branch. The package resolves no $ref, so a property behind one counts
+// as accepting null and its null stays for validation to judge.
+func schemaAcceptsNull(schema map[string]any) bool {
+	if !candidateMatchesSchema(nil, schema) {
+		return false
+	}
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		if branches, _ := schema[keyword].([]any); len(branches) > 0 && !slices.ContainsFunc(branches, branchAcceptsNull) {
+			return false
+		}
+	}
+	allOf, _ := schema["allOf"].([]any)
+	for _, branch := range allOf {
+		if !branchAcceptsNull(branch) {
+			return false
+		}
+	}
+	if negated, present := schema["not"]; present && definitelyAcceptsNull(negated) {
+		return false
+	}
+	return true
+}
+
+// branchAcceptsNull applies schemaAcceptsNull to one combinator branch. A
+// boolean schema accepts null exactly when it is true; any other non-object
+// branch imposes nothing here.
+func branchAcceptsNull(branch any) bool {
+	switch schema := branch.(type) {
+	case bool:
+		return schema
+	case map[string]any:
+		return schemaAcceptsNull(schema)
+	}
+	return true
+}
+
+// definitelyAcceptsNull reports whether a `not` subschema is sure to accept
+// null, so the `not` refuses it. Only true, or an object whose own keywords
+// accept null and that carries no combinator, conditional or reference of its
+// own, is sure; anything else keeps the null for validation to judge.
+func definitelyAcceptsNull(negated any) bool {
+	switch schema := negated.(type) {
+	case bool:
+		return schema
+	case map[string]any:
+		for key := range schema {
+			switch {
+			case isRefSegment(key):
+				return false
+			case key == "anyOf", key == "oneOf", key == "allOf", key == "not", key == "if":
+				return false
+			}
+		}
+		return candidateMatchesSchema(nil, schema)
+	}
+	return false
+}
+
+// dropEmptyOptionalsWithin applies dropEmptyOptionals inside a nested object or
 // array value. It copies only the containers it changes, so the caller's value
 // is never modified, and returns value itself when nothing changed.
-func dropEmptyEnumsWithin(schema map[string]any, value any, path []pathStep, keep []string) (any, []Change) {
+func dropEmptyOptionalsWithin(schema map[string]any, value any, path []pathStep, keep []string) (any, []Change) {
 	switch v := value.(type) {
 	case map[string]any:
 		if schemaProps(schema) == nil {
 			return value, nil
 		}
 		repaired := maps.Clone(v)
-		if changes := dropEmptyOptionalEnums(schema, repaired, path, keep); len(changes) > 0 {
+		if changes := dropEmptyOptionals(schema, repaired, path, keep); len(changes) > 0 {
 			return repaired, changes
 		}
 	case []any:
@@ -259,7 +333,7 @@ func dropEmptyEnumsWithin(schema map[string]any, value any, path []pathStep, kee
 		var repaired []any
 		var changes []Change
 		for i, element := range v {
-			nested, c := dropEmptyEnumsWithin(items, element, append(slices.Clip(path), pathStep{name: strconv.Itoa(i), index: true}), keep)
+			nested, c := dropEmptyOptionalsWithin(items, element, append(slices.Clip(path), pathStep{name: strconv.Itoa(i), index: true}), keep)
 			if len(c) == 0 {
 				continue
 			}

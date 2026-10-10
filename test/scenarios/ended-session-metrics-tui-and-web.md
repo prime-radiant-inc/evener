@@ -116,13 +116,13 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
   the two disagree.
 - **State vocabulary**: the normalized-state model (`hubapi/attention.go`)
   defines both `idle` (display word "Idle") and `awaiting` (display word
-  "Your move") as distinct terminal states for a still-live session. `idle`
+  "Needs you") as distinct terminal states for a still-live session. `idle`
   is the common case: per `agent/session_tool_round.go`'s
   `deliverIfCommunicated`, a completed turn with no question/ask pending
   lands on `SessionIdle`, and `cmd/evener-hub/internal/hubcore/tree.go`'s
   `NormalizeState` maps that straight through to the `"idle"` string in
-  `/api/sessions/*`. `awaiting` is reserved for the less common case where a
-  question/ask is actually pending. Poll for anything that isn't `active`,
+  `/api/sessions/*`. `awaiting` is reserved for a pending question or a turn
+  that ended on `needs_response`. Poll for anything that isn't `active`,
   or specifically `idle` for this card's no-ask scenario.
 - **The ended session's model switcher is still live.** `EndedSummary`
   deliberately keeps a working `ModelSwitch` (`StatusRow.tsx:235-259`) —

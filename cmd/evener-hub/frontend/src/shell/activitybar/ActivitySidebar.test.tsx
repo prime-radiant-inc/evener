@@ -214,9 +214,8 @@ test.each(["wheel", "key"] as const)(
   "ordinary Session %s input supersedes reflow beside its real inspector",
   async (input) => {
     const { default: Session } = await import("../../panes/session/Session");
-    const { holdReaderFrames, readerWireTurns } = await import(
-      "../../panes/session/transcript/transcriptReaderTestUtils"
-    );
+    const { readerWireTurns } = await import("../../panes/session/transcript/transcriptReaderTestUtils");
+    const { holdReaderFrames } = await import("../../panes/session/transcript/transcriptReadingGeometryTestUtils");
     const context = (ref: string) => cascadeContext(ref, ref === "child" ? ["root"] : []);
     const client = cascadeClient(context);
     client.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
@@ -417,8 +416,10 @@ test("desktop delegate rows build six nested edges beside the mounted center and
       expect(inspector.id).toBe(inspectorId);
       expect(inspector.slot).toBe("secondary");
       await screen.findByText(`${child} real content`);
-      expect(screen.getAllByTestId("cascade-column")).toHaveLength(2);
-      expect(screen.queryAllByTestId("cascade-spine")).toHaveLength(index);
+      // The first drill's immediate parent is the mounted origin itself, so
+      // it collapses to a spine; deeper drills keep two readable columns.
+      expect(screen.getAllByTestId("cascade-column")).toHaveLength(index === 0 ? 1 : 2);
+      expect(screen.queryAllByTestId("cascade-spine")).toHaveLength(index === 0 ? 1 : index);
       expect(currentSessionRef(workspaceStore.getState())).toBe(child);
       expect(
         within(conversation.getByTestId("statusbar")).getByRole("button", {

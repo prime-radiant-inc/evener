@@ -7,7 +7,11 @@ import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } 
 import { mountReaderScene } from "../transcriptReaderTestUtils";
 import { installTranscriptGeometry } from "../transcriptReadingGeometryTestUtils";
 import type { ScrollMetrics } from "./scrollMetrics";
-import { resetTranscriptViewRegistryForTests, transitionTranscriptViews } from "./transcriptViewRegistry";
+import {
+  type CapturedTranscriptView,
+  resetTranscriptViewRegistryForTests,
+  transitionTranscriptViews,
+} from "./transcriptViewRegistry";
 import {
   captureTopAnchor,
   captureTranscriptView,
@@ -174,6 +178,12 @@ function nestedScroller(port: HTMLElement, metrics: ScrollMetrics): HTMLElement 
 
 const AT_BOTTOM: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
+const RETAINED_AWAY_FROM_BOTTOM: CapturedTranscriptView = {
+  anchorId: "i1",
+  anchorOffset: -100,
+  normalizedOffset: 0.08,
+  followingBottom: false,
+};
 
 beforeEach(() => {
   resetThreadsStoreForTests();
@@ -383,6 +393,9 @@ test("Jump to live confirms its landing while viewport measurement is pending an
     expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
     await act(async () => screen.getByRole("button", { name: "Jump to live" }).click());
     expect(scene.port().scrollTop).toBe(2800);
+    // The landing's scroll event arrives in the next frame's scroll steps.
+    await act(async () => scene.frames.release());
+    expect(scene.listRef.current?.isLayoutCurrent()).toBe(false);
     expect(scene.flow().pillVisible).toBe(false);
     scene.geometry.rowHeights[2] = 1400;
     await act(async () => scene.external.notify());
@@ -2182,7 +2195,7 @@ describe("late content growth with no scroll event", () => {
     };
   }
 
-  function mountWithContent(start: ScrollMetrics = MOUNTED_AT_BOTTOM) {
+  function mountWithContent(start: ScrollMetrics = MOUNTED_AT_BOTTOM, initialViewCapture?: CapturedTranscriptView) {
     const { ref, el } = makeListHandle();
     // The scroll content VirtualList renders inside the port (its sizer): a
     // webfont swap resizes THIS, not the port, so the observer must watch it.
@@ -2196,6 +2209,7 @@ describe("late content growth with no scroll event", () => {
         listRef: ref,
         loadOlder: vi.fn(() => Promise.resolve()),
         measure,
+        initialViewCapture,
       }),
     );
     definePort(el, start);
@@ -2237,6 +2251,28 @@ describe("late content growth with no scroll event", () => {
       act(() => resizeObserver.trigger());
 
       expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  // A remounted reader mounts on estimates that fit the port, and its retained
+  // restore lands after the rows measure. Growth reported before that landing's
+  // scroll event is the reader's place, not an end the reader was following.
+  test("a retained placement is not re-anchored when a ResizeObserver tick reports the content grew", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set, result } = mountWithContent(
+        { scrollTop: 0, scrollHeight: 192, clientHeight: 400 },
+        RETAINED_AWAY_FROM_BOTTOM,
+      );
+      definePort(el, { scrollTop: 100, scrollHeight: 1700, clientHeight: 400 });
+      set({ scrollTop: 100, scrollHeight: 1700 });
+
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(100);
+      expect(result.current.pillVisible).toBe(true);
     } finally {
       resizeObserver.restore();
     }
@@ -3294,6 +3330,34 @@ describe("prepend anchoring (loadOlder resolving)", () => {
 });
 
 describe("mount positioning", () => {
+  // A remounted reader restores its retained place after its rows measure, so
+  // the mount saw only estimates that fit the port. The restore's own landing
+  // grows the content below an offset that advanced from 0; that is the
+  // reader's place, not a correction below an end they were following.
+  test("a retained placement's landing is the reader's place, not content measured in below the end", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 192, clientHeight: 400 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+        initialViewCapture: RETAINED_AWAY_FROM_BOTTOM,
+      }),
+    );
+
+    act(() => {
+      el.scrollTop = 100;
+      set({ scrollTop: 100, scrollHeight: 1700 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(el.scrollTop).toBe(100);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("a fresh ref with no saved scroll position starts at the bottom", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
@@ -4053,17 +4117,18 @@ function captureFrames() {
   };
 }
 
-// A native scrolling key's smooth scroll starts on the frame AFTER the key:
+// A native scrolling key's smooth scroll starts a frame or two AFTER the key:
 // Chrome dispatched Shift-Space's first scroll event 20ms after its keydown,
-// after the gesture's one-frame clear had already run (#3880). Unrecorded, the
-// reader's backward movement left VirtualList's size-change rule unprotected.
+// after the gesture's one-frame clear had already run (#3880), and once 37.8ms
+// after it (#4065). Unrecorded, the reader's backward movement left
+// VirtualList's size-change rule unprotected.
 describe("native key scrolling that begins a frame later", () => {
   const PORT: ScrollMetrics = { scrollTop: 900, scrollHeight: 2000, clientHeight: 500 };
 
-  function mountKeyReader() {
+  function mountKeyReader(port: ScrollMetrics = PORT) {
     const frames = captureFrames();
     const { ref, el } = makeListHandle();
-    const { measure, set } = makeMeasure(PORT);
+    const { measure, set } = makeMeasure(port);
     const onReaderMovement = vi.fn();
     const view = renderHook(
       ({ r }) =>
@@ -4077,12 +4142,13 @@ describe("native key scrolling that begins a frame later", () => {
         }),
       { initialProps: { r: "ref_a" } },
     );
-    definePort(el, PORT);
+    definePort(el, port);
     const mountFrames = frames.pending();
     return {
       el,
       onReaderMovement,
       rerender: view.rerender,
+      set,
       shiftSpace: () =>
         act(() => {
           el.dispatchEvent(new KeyboardEvent("keydown", { key: " ", shiftKey: true, bubbles: true, cancelable: true }));
@@ -4104,6 +4170,14 @@ describe("native key scrolling that begins a frame later", () => {
           set({ scrollTop: metrics.scrollTop + delta, scrollHeight: metrics.scrollHeight + delta });
           el.dispatchEvent(new Event("scroll"));
         }),
+      // Content measured in below the viewport: the offset holds.
+      growBelow: (delta: number) =>
+        act(() => {
+          const scrollHeight = measure().scrollHeight + delta;
+          definePort(el, { ...measure(), scrollHeight });
+          set({ scrollHeight });
+          el.dispatchEvent(new Event("scroll"));
+        }),
       restore: frames.restore,
     };
   }
@@ -4112,6 +4186,23 @@ describe("native key scrolling that begins a frame later", () => {
     const reader = mountKeyReader();
     try {
       reader.shiftSpace();
+      reader.runFrame();
+      reader.scrollTo(880);
+
+      expect(reader.onReaderMovement).toHaveBeenCalledWith(900);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  // Chrome sometimes starts the smooth scroll a frame later still: 37.8ms
+  // after Shift-Space's keydown in cascadeguard, against about 20ms usually
+  // (#4065).
+  test("the key's first scroll event, on the third frame, is recorded as the reader's movement", () => {
+    const reader = mountKeyReader();
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
       reader.runFrame();
       reader.scrollTo(880);
 
@@ -4136,10 +4227,11 @@ describe("native key scrolling that begins a frame later", () => {
     }
   });
 
-  test("a key whose scroll never starts stops counting as a gesture after its second frame", () => {
+  test("a key whose scroll never starts stops counting as a gesture after its third frame", () => {
     const reader = mountKeyReader();
     try {
       reader.shiftSpace();
+      reader.runFrame();
       reader.runFrame();
       reader.runFrame();
       reader.scrollTo(880);
@@ -4150,7 +4242,24 @@ describe("native key scrolling that begins a frame later", () => {
     }
   });
 
-  test("a key whose instant scroll consumed its marker lends no extra frame to the next gesture", () => {
+  // Over-marking is the harmful direction: a key whose scroll never starts
+  // must not veto the bottom-hold correction once its frames are over.
+  test("a correction after an un-scrolled key's three frames is still applied", () => {
+    const reader = mountKeyReader({ scrollTop: 1500, scrollHeight: 2000, clientHeight: 500 });
+    try {
+      reader.shiftSpace();
+      reader.runFrame();
+      reader.runFrame();
+      reader.runFrame();
+      reader.growBelow(300);
+
+      expect(reader.el.scrollTop).toBe(1800);
+    } finally {
+      reader.restore();
+    }
+  });
+
+  test("a key whose instant scroll consumed its marker lends no extra frames to the next gesture", () => {
     const reader = mountKeyReader();
     try {
       reader.shiftSpace();
@@ -4165,8 +4274,8 @@ describe("native key scrolling that begins a frame later", () => {
     }
   });
 
-  // A key's marker forgotten before its frames run must not lend its second
-  // frame to the next gesture: a wheel's marker still lasts one frame.
+  // A key's marker forgotten before its frames run must not lend its extra
+  // frames to the next gesture: a wheel's marker still lasts one frame.
   test.each([
     [
       "the document going hidden",
@@ -4180,7 +4289,7 @@ describe("native key scrolling that begins a frame later", () => {
       },
     ],
     ["a session switch", (reader: ReturnType<typeof mountKeyReader>) => act(() => reader.rerender({ r: "ref_b" }))],
-  ])("%s forgets the key's extra frame", (_label, forget) => {
+  ])("%s forgets the key's extra frames", (_label, forget) => {
     const reader = mountKeyReader();
     try {
       reader.shiftSpace();

@@ -326,6 +326,51 @@ class TrialStateTest(unittest.TestCase):
     def test_inside_the_trial(self):
         self.check(work_root=False)
 
+    def test_session_state_leaves_the_results_tree_under_work_root(self):
+        # Delegate worktrees live under the session state dir, so its path is shown to agents.
+        self.run_trial(work_root=True)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        state = bookkeeping.lab.stage_state_dir(trial, "A")
+        self.assertFalse(state.startswith(os.path.join(self.root, "out") + os.sep), state)
+
+    def test_a_stage_session_runs_with_its_state_outside_the_results_tree(self):
+        self.run_trial(work_root=True)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        args = argparse.Namespace(model="m", effort="high", max_rounds=None, timeout=1)
+        with mock.patch.object(bookkeeping.lab, "run_bounded", return_value=(0, "")) as run:
+            bookkeeping.lab.run_session(args, "evener", "on", self.root, {"name": "A", "prompt": "p"}, trial, {})
+        cmd = run.call_args.args[0]
+        state = cmd[cmd.index("--state-dir") + 1]
+        self.assertFalse(state.startswith(os.path.join(self.root, "out") + os.sep), state)
+
+    def test_trial_state_stays_out_of_the_work_root_and_apart_from_the_users_state(self):
+        # A session exploring the work root must not find other trials' memory there, and the user's own
+        # evener state must not sit next to the trial's.
+        work_root = os.path.join(self.root, "wr")
+        trial, work = os.path.join(self.root, "out", "main", "on", "s", "r1"), os.path.join(work_root, "shop-abc")
+        os.makedirs(trial)
+        os.makedirs(work)
+        bookkeeping.lab.make_state_dir(argparse.Namespace(work_root=work_root, providers_path=None), trial, work)
+        xdg = os.path.realpath(os.path.join(trial, "xdg"))
+        self.assertFalse(xdg.startswith(work_root + os.sep), xdg)
+        self.assertEqual(os.listdir(work_root), ["shop-abc"])
+        self.assertNotEqual(os.path.dirname(xdg), os.path.join(self.root, "state"))
+        self.assertEqual(os.path.realpath(os.path.join(trial, "sessions")), os.path.join(xdg, "sessions"))
+
+    def test_a_state_root_inside_the_work_root_is_refused(self):
+        # With $XDG_STATE_HOME at or under the work root, trial state would land back in the work root.
+        for work_root in (os.path.join(self.root, "state"), self.root):
+            with self.subTest(work_root=work_root):
+                with self.assertRaises(SystemExit) as refused:
+                    bookkeeping.lab.require_state_outside_work_root(work_root)
+                self.assertIn("XDG_STATE_HOME", str(refused.exception))
+        bookkeeping.lab.require_state_outside_work_root(os.path.join(self.root, "wr"))
+
+    def test_session_state_stays_in_the_trial_without_work_root(self):
+        self.run_trial(work_root=False)
+        trial = os.path.join(self.root, "out", "main", "on", "s", "r1")
+        self.assertEqual(bookkeeping.lab.stage_state_dir(trial, "A"), os.path.join(trial, "sessions", "A"))
+
     def test_relative_config_paths_resolve_against_the_launch_dir(self):
         _, env = self.run_trial(work_root=True, providers="config/providers.toml")
         self.assertEqual(env["EVENER_CREDENTIALS_CONFIG"], os.path.join(self.root, "config", "credentials.toml"))
@@ -356,6 +401,15 @@ class TrialStateTest(unittest.TestCase):
                                        os.path.join(self.root, "w"))
         env = bookkeeping.lab.fixture_env(os.path.join(self.root, "w"), os.path.join(trial, "xdg"))
         self.assertEqual(env.get("EVENER_PROVIDERS_CONFIG"), os.environ.get("EVENER_PROVIDERS_CONFIG"))
+
+
+def scenario_dir(test, spec):
+    """A temporary scenario dir holding spec as its scenario.json, removed at test cleanup."""
+    scen = tempfile.TemporaryDirectory()
+    test.addCleanup(scen.cleanup)
+    with open(os.path.join(scen.name, "scenario.json"), "w") as f:
+        json.dump(spec, f)
+    return scen.name
 
 
 def event(kind, session="root", **data):
@@ -466,6 +520,140 @@ class CompactionTest(unittest.TestCase):
             event("TOOL_CALL_END", tool_name="shell", output="x" * 30)])
         calls, _, _, _ = bookkeeping.lab.parse_events(path)
         self.assertEqual([c["output_chars"] for c in calls], [0, 0])
+
+
+class ScenarioValidationTest(unittest.TestCase):
+    """load_scenario refuses a scenario that can't run as written."""
+
+    def load(self, stage):
+        return bookkeeping.lab.load_scenario(
+            scenario_dir(self, {"stages": [{"name": "A", "prompt": "p"}, {"name": "B", "prompt": "p", **stage}]}))
+
+    def test_a_workspace_cannot_collide_with_what_the_lab_makes_in_the_trial(self):
+        # A fixture stage whose workspace already exists skips its setup and runs there: the trial's
+        # state dirs, or an earlier stage's outputs.
+        for name in ("sessions", "xdg", "A.memory", "A.events.ndjson", "A.stdout", "A.grade.json", "..", "a/b"):
+            with self.subTest(workspace=name):
+                with self.assertRaises(SystemExit) as refused:
+                    self.load({"fixture": "fixture2", "workspace": name})
+                self.assertIn('"workspace" must be work or work followed by digits', str(refused.exception))
+
+    def test_memory_writes_max_must_be_a_non_negative_integer(self):
+        for bad in ({}, {"max": -1}, {"max": "3"}, {"max": True}, {"max": 2.5}):
+            with self.subTest(check=bad):
+                with self.assertRaises(SystemExit) as refused:
+                    self.load({"memory_writes": [{"name": "few", **bad}]})
+                self.assertIn('needs "max"', str(refused.exception))
+        self.assertEqual(self.load({"memory_writes": [{"name": "few", "max": 0}]})["stages"][1]["memory_writes"][0]["max"], 0)
+
+    def test_a_work_numbered_workspace_loads(self):
+        for name in ("work2", "work10"):
+            with self.subTest(workspace=name):
+                self.assertEqual(self.load({"fixture": "fixture2", "workspace": name})["stages"][1]["workspace"], name)
+
+
+class ArmDeltasTest(unittest.TestCase):
+    """memory-lab report: memory on minus off, per check and version, plus the cost of each arm."""
+
+    @staticmethod
+    def grade(arm, ok, version="try", tools=10, seconds=100, error=None):
+        g = {"scenario": "feedback", "stage": "B", "version": version, "arm": arm, "checks": {"ran vet": ok},
+             "tool_calls": tools, "seconds": seconds}
+        if error:
+            g["error"] = error
+        return g
+
+    def test_pairs_the_arms_of_each_check_and_version(self):
+        grades = [self.grade("on", True), self.grade("on", True), self.grade("off", True), self.grade("off", False),
+                  self.grade("on", False, version="base")]
+        self.assertEqual(bookkeeping.lab.arm_deltas(grades), {("feedback", "B", "ran vet", "try"): (2, 2, 1, 2)})
+
+    def test_costs_average_the_stages_that_ran(self):
+        grades = [self.grade("on", True, tools=20, seconds=300), self.grade("on", True, tools=10, seconds=100),
+                  self.grade("on", False, tools=0, seconds=0, error="session timed out"),
+                  self.grade("off", True, tools=8, seconds=50)]
+        self.assertEqual(bookkeeping.lab.arm_costs(grades), {("feedback", "B", "try"): ((15, 200), (8, 50))})
+
+    def test_a_scenario_with_one_arm_has_no_delta(self):
+        grades = [self.grade("on", True), self.grade("on", False)]
+        self.assertEqual(bookkeeping.lab.arm_deltas(grades), {})
+        self.assertEqual(bookkeeping.lab.arm_costs(grades), {})
+
+
+class SessionMemoryWritesTest(unittest.TestCase):
+    """A multi-turn scenario delivers each partner turn as a stage that resumes one session; memory_writes
+    checks and the report count memory writes and edits per session and per turn."""
+
+    def setUp(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.trial = root.name
+        os.makedirs(os.path.join(self.trial, "work"))
+        os.makedirs(os.path.join(self.trial, "xdg"))
+        os.makedirs(os.path.join(self.trial, "sessions", "A"))
+
+    def grade(self, name, session, tools, max_writes, earlier, refused=()):
+        """Grades stage name, whose root session ran the given tool calls, against a memory_writes check.
+        The calls at the indexes in refused end with an error."""
+        lines = [event("SESSION_START", session=session)]
+        for i, t in enumerate(tools):
+            lines.append(event("TOOL_CALL_START", session=session, tool_name=t, call_id=f"c{i}", arguments_json="{}"))
+            end = {"error": "invalid frontmatter"} if i in refused else {"output": "ok"}
+            lines.append(event("TOOL_CALL_END", session=session, tool_name=t, call_id=f"c{i}", **end))
+        events = events_file(self, lines)
+        session_info = {"work": os.path.join(self.trial, "work"), "xdg": os.path.join(self.trial, "xdg"),
+                        "env": dict(os.environ), "state": os.path.join(self.trial, "sessions", "A"),
+                        "events": events, "started": 0, "exit": 0, "seconds": 1, "timeout": 10}
+        stage = {"name": name, "prompt": "p", "memory_writes": [{"name": "few writes", "max": max_writes}]}
+        return bookkeeping.lab.grade_stage("try", "on", "/s/multi", stage, self.trial, session_info, earlier)
+
+    def test_the_check_counts_writes_and_edits_across_the_turns_of_one_session(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_read", "shell"], 2, [])
+        b = self.grade("B", "s1", ["memory_edit"], 2, [a])
+        c = self.grade("C", "s1", ["memory_write", "memory_delete"], 2, [a, b])
+        self.assertEqual([g["checks"]["few writes"] for g in (a, b, c)], [True, True, False])
+
+    def test_a_refused_write_counts_because_it_is_a_transcript_entry(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_write"], 1, [], refused={0})
+        self.assertFalse(a["checks"]["few writes"])
+
+    def test_a_fresh_session_starts_its_own_count(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_write"], 2, [])
+        b = self.grade("B", "s2", ["memory_write"], 2, [a])
+        self.assertTrue(b["checks"]["few writes"])
+
+    def test_report_counts_writes_per_session_and_per_turn(self):
+        def g(trial, stage, session, calls, error=None):
+            out = {"scenario": "multi", "version": "try", "arm": "on", "trial": trial, "stage": stage,
+                   "session_id": session, "memory_calls": calls}
+            if error:
+                out["error"] = error
+            return out
+        grades = [g("r1", "A", "s1", {"memory_write": 2, "memory_read": 4}), g("r1", "B", "s1", {"memory_edit": 1}),
+                  g("r1", "C", "s2", {}),
+                  g("r2", "A", "s3", {}), g("r2", "B", "s3", {"memory_write": 1}),
+                  g("r2", "C", "s4", {}, error="session timed out")]
+        sessions, turns = bookkeeping.lab.memory_changes(grades)[("multi", "try", "on")]
+        self.assertEqual(sorted(sessions), [0, 1, 3])
+        self.assertEqual(turns, {"A": [2, 0], "B": [1, 1], "C": [0]})
+
+
+class TrialJobsTest(unittest.TestCase):
+    """run --arm limits a run to one arm of each scenario that declares it."""
+
+    def scenario(self, arms):
+        return scenario_dir(self, {"arms": arms, "stages": [{"name": "A", "prompt": "p"}]})
+
+    def test_every_declared_arm_runs_by_default(self):
+        both = self.scenario(["on", "off"])
+        jobs = bookkeeping.lab.trial_jobs([both], {"base": "/b"}, 2, None)
+        self.assertEqual([(label, arm, rep) for label, _, arm, _, rep in jobs],
+                         [("base", "on", 1), ("base", "on", 2), ("base", "off", 1), ("base", "off", 2)])
+
+    def test_arm_keeps_only_that_arm_where_a_scenario_declares_it(self):
+        both, on_only = self.scenario(["on", "off"]), self.scenario(["on"])
+        jobs = bookkeeping.lab.trial_jobs([both, on_only], {"base": "/b"}, 1, "off")
+        self.assertEqual([(scen, arm) for _, _, arm, scen, _ in jobs], [(both, "off")])
 
 
 if __name__ == "__main__":

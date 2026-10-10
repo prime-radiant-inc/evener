@@ -1151,16 +1151,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// must reach the model rather than wait behind a question the user has
 	// already moved past.
 	//
-	// Gated on the pending set, not raw state (attention-status-model v5
-	// reconciliation): SessionAwaiting used to imply "a question is pending" —
-	// the only producer of the state before the merge — but the general
-	// inbox-semantics upgrade (armAwaitingAtSettle) now also rests a session
-	// awaiting after any clean, output-producing turn with nothing else in
-	// flight, no ask involved. Their spec's own consequence for that case is
-	// the opposite of a hold: "async wakes re-arm by design." Only a genuine
+	// Gated on the pending set, not raw state: armAwaitingAtSettle also rests
+	// a session awaiting after a turn that ended on needs_response, no ask
+	// involved, and an async wake may move that session on. Only a genuine
 	// pending question is a stronger stop than the wake (a delegate finishing
 	// while the user reads a QUESTION must not silently resolve it out from
-	// under them); a general re-arm has nothing pending to protect.
+	// under them); a needs_response rest has nothing pending to protect.
 	if len(s.askPending) > 0 && kind != EntryUserInput {
 		s.mu.Unlock()
 		return "", nil
@@ -1358,8 +1354,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					s.mu.Unlock()
 					if emitEnd {
 						s.emit(events.EventSessionEnd, events.SessionEndData{
-							Reason:      "interrupted",
-							State:       string(SessionIdle),
+							Reason: "interrupted",
+							// The boundary above settled the session; WireState says
+							// whether queued work will move it on.
+							State:       s.WireState(),
 							Turns:       turns,
 							Interrupted: true,
 						})
@@ -2018,14 +2016,34 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	queuedIdentity := queuedClientMutationFromContext(ctx)
 	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
 
+	// restMu: a needs_response rest arming right now announces first.
+	if hook := s.cfg.testOnly.turnStartBeforeRestMu; hook != nil {
+		hook()
+	}
+	s.restMu.Lock()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		s.delegateDeliveryMu.Unlock()
+		s.restMu.Unlock()
 		return "", false, errors.New("session is closed")
 	}
+	s.restBeforeInput = s.state
+	// The generation match is what keeps a rest owed only until the next turn
+	// or settle: a turn that accepted needs_response and then failed or was
+	// interrupted before its settle leaves the end reason set but owes nothing.
+	s.quietRestBeforeInput = s.restOwedGeneration != 0 && s.restStillPendingLocked(s.restOwedGeneration)
+	s.endReasonBeforeInput = s.comm.endReason
+	// A resume the last settle never consumed (it returned early for a
+	// pending question, or the drain loop returned before settling) must not
+	// carry into this input's settle.
+	s.resumeQuietRest = false
 	s.setStateIfOpenLocked(SessionProcessing)
+	// A turn starting ends any needs_response quiet period still running:
+	// whichever boundary this turn rests on, the older rest no longer applies.
+	s.restGeneration++
+	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
 	// A claimed answering steering carrier has already crossed its durable
@@ -2089,8 +2107,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if s.servedByDaemon() && runningTurnID == "" {
 			// Settle the SessionProcessing transition this call already made
 			// (above), the way every other refusal on this path does. Without
-			// it the session reports itself busy with nothing running, and the
-			// serve loop republishes that from WireState.
+			// it the session reports itself busy with nothing running.
 			s.finishNotificationNoop()
 			// Ask for another wake. Nothing else will: the EntryNotification
 			// that got us here is consumed, and the drain loop deliberately does
@@ -3118,7 +3135,20 @@ func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d delive
 }
 
 func (s *Session) finishNotificationNoop() {
-	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	// No turn ran, so a needs_response rest the wake interrupted still stands,
+	// and the drain loop then treats the input as awaiting, holding follow-ups
+	// as that rest did. A rest still owed was cancelled by the wake's turn
+	// start; the drain-loop settle arms it again, from the end reason the
+	// turn start reset.
+	rest := SessionIdle
+	s.mu.Lock()
+	if s.restBeforeInput == SessionAwaiting {
+		rest = SessionAwaiting
+	}
+	s.comm.endReason = s.endReasonBeforeInput
+	s.resumeQuietRest = s.quietRestBeforeInput
+	s.mu.Unlock()
+	s.finishProcessingAtBoundary(context.Background(), rest)
 	s.mu.Lock()
 	s.sessionEndEmitted = true
 	s.mu.Unlock()

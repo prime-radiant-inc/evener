@@ -312,12 +312,10 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 	s.worktreeDisposeOnly = true
 	t := *existing
 	t.Definition = tool.DefManageWorktreeDisposeOnly()
-	// Force a fresh schema compile for the narrowed parameters: Register reuses
-	// the existing registration's compiled (full) schema when Schema is nil, so
-	// the old registration must be dropped first.
+	// Drop the copied full schema: Register compiles one for the narrowed
+	// parameters.
 	t.Schema = nil
 	t.Execute = nil
-	s.reg.Unregister("manage_worktree")
 	_ = s.reg.Register(t)
 }
 

@@ -4,7 +4,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -25,8 +25,8 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
-import { holdReaderFrames, readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
-import { installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
+import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
+import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade } from "./actions";
@@ -48,6 +48,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", client: null });
   if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
@@ -173,6 +174,25 @@ function mount(fake: FakeClient) {
 function columnRefs() {
   return screen.queryAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"));
 }
+function spineRefs() {
+  return screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"));
+}
+function inspectedCascade() {
+  const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "child",
+      source: { type: "transcript", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+      inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
+  recordCascadeOrigin(inspector, source);
+  return { source, inspector };
+}
 
 test("genuine cascade column movement supersedes reflow without Return or neighboring movement", async () => {
   const { fake, response } = fixture();
@@ -256,26 +276,45 @@ test("root and child render through real read-only readers inside one scaffold",
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
-test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
-  const { fake } = fixture();
-  const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
-  const inspector: OpenPaneRecord = {
-    ...currentPane(),
-    slot: "secondary",
-    params: {
-      ref: "child",
-      source: { type: "transcript", params: { ref: "root" } },
-      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
-      inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
-    } satisfies SessionZoomParams,
-  };
-  workspaceStore.setState({ panes: [source, inspector], focusedPaneId: inspector.id });
-  recordCascadeOrigin(inspector, source);
-  const sourceLifetime = conversationPaneLifetime(source);
-  const inspectorLifetime = conversationPaneLifetime(inspector);
+test("the agent path nav shows resolved thread names, not raw refs", async () => {
+  const { fake, response } = fixture();
+  fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const read = response(ref);
+    return {
+      ...read,
+      requestGeneration,
+      thread: {
+        ...read.thread,
+        // The wire's ancestor titles are session ids and the leaf scope title
+        // is the requested ref, so only the threads store can supply the
+        // display names the nav must show.
+        name: `Thread name ${ref}`,
+        turns: includeTurns === false ? [] : read.thread.turns,
+      },
+    };
+  });
   mount(fake);
   await screen.findByText("root content old-root");
   await screen.findByText("child content child-id");
+  const nav = within(screen.getByRole("navigation", { name: "Agent path" }));
+  expect(nav.getAllByRole("button").map((button) => button.textContent)).toEqual([
+    "Thread name root",
+    "Thread name child",
+  ]);
+});
+
+test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
+  const { fake } = fixture();
+  const { source, inspector } = inspectedCascade();
+  const sourceLifetime = conversationPaneLifetime(source);
+  const inspectorLifetime = conversationPaneLifetime(inspector);
+  mount(fake);
+  await screen.findByText("child content child-id");
+  // The origin conversation is already live as its own pane, so the cascade
+  // must not repeat it: only the leaf stays readable, the parent is a spine.
+  expect(columnRefs()).toEqual(["child"]);
+  expect(spineRefs()).toEqual(["root"]);
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(inspectorLifetime.composer).toBeNull();
   requestPaneFocus(inspector.id);
@@ -287,6 +326,51 @@ test("separated read-only Zoom Return closes inspection and focuses its survivin
   expect(sourceLifetime.alive).toBe(true);
   expect(inspectorLifetime.alive).toBe(false);
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test("a live origin conversation collapses only its own duplicate parent column", async () => {
+  const { fake } = fixture();
+  const { source, inspector } = inspectedCascade();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  expect(spineRefs()).toEqual(["root"]);
+  // A deeper drill makes the origin the grandparent, not the immediate
+  // parent, so the two readable columns return for the drill.
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), inspector.id),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+  expect(spineRefs()).toEqual(["root"]);
+  // Popping back to depth one keeps the collapse while the origin lives...
+  act(() => popAgentCascade(inspector.id, "child"));
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  // ...and closing the origin retires the association, so the readable
+  // parent column returns without disturbing the selected leaf.
+  act(() => workspaceStore.getState().closePane(source.id));
+  await screen.findByText("root content old-root");
+  expect(columnRefs()).toEqual(["root", "child"]);
+});
+
+test("a cascade with no live origin keeps the readable parent column", async () => {
+  const { fake } = fixture();
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "child",
+      source: { type: "transcript", params: { ref: "root" } },
+      edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
+      inspection: { origin: null },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [inspector], focusedPaneId: inspector.id });
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["root", "child"]);
 });
 
 test.each(["deleted", "missing"] as const)(
@@ -438,6 +522,114 @@ test("deeper drill retains the root view as a paused spine and pop reuses its so
   expect(columnRefs()).toEqual(["root"]);
   expect(rootView.readable).toBe(true);
   expect(screen.queryByTestId("cascade-spine")).toBeNull();
+});
+
+// The drill reveals the leaf by scrolling the column track to its end. The
+// pane can narrow right after (on narrow desktop, a sidebar taking its width
+// mid-drill), and columns keep animating their widths, which leaves the leaf
+// past the track's right edge unless the track keeps to its end.
+type Geometry = { scrollWidth: number; clientWidth: number };
+
+function trackGeometry() {
+  const resized: ResizeObserverCallback[] = [];
+  const observed = new Set<Element>();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resized.push(callback);
+      }
+      observe(target: Element) {
+        observed.add(target);
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const geometry: Geometry = { scrollWidth: 1172, clientWidth: 372 };
+  return {
+    geometry,
+    observed,
+    attach(track: HTMLElement) {
+      Object.defineProperty(track, "scrollWidth", { configurable: true, get: () => geometry.scrollWidth });
+      Object.defineProperty(track, "clientWidth", { configurable: true, get: () => geometry.clientWidth });
+    },
+    resize(change: Partial<Geometry>) {
+      Object.assign(geometry, change);
+      act(() => {
+        for (const callback of resized) callback([], {} as ResizeObserver);
+      });
+    },
+  };
+}
+
+type TrackStep = (element: HTMLElement, geometry: Geometry) => void;
+const scrollTo = (element: HTMLElement, left: number) => {
+  element.scrollLeft = left;
+  fireEvent.scroll(element);
+};
+const narrow = { clientWidth: 152 };
+
+test.each<{ name: string; before?: TrackStep; change: Partial<Geometry>; want: number }>([
+  { name: "the drilled leaf stays revealed when the track narrows", change: narrow, want: 1172 - 152 },
+  {
+    name: "a reader who scrolled back keeps their place when the track narrows",
+    before: (element) => scrollTo(element, 100),
+    change: narrow,
+    want: 100,
+  },
+  {
+    name: "a reader who scrolls back to the end follows the leaf again",
+    before: (element) => {
+      scrollTo(element, 100);
+      scrollTo(element, 1172 - 372);
+    },
+    change: narrow,
+    want: 1172 - 152,
+  },
+  {
+    name: "the reveal's own scroll event, after a column briefly widened the track, keeps the leaf followed",
+    before: (element, geometry) => {
+      geometry.scrollWidth = 1182;
+      fireEvent.scroll(element);
+    },
+    change: narrow,
+    want: 1182 - 152,
+  },
+  {
+    name: "a scroll the browser clamped to a shrunk end keeps the leaf followed",
+    before: (element, geometry) => {
+      geometry.scrollWidth = 1150;
+      scrollTo(element, 1150 - 372);
+    },
+    change: narrow,
+    want: 1150 - 152,
+  },
+  {
+    name: "a column widening after the reveal keeps the leaf revealed",
+    change: { scrollWidth: 1600 },
+    want: 1600 - 372,
+  },
+])("$name", async ({ before, change, want }) => {
+  const track = trackGeometry();
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  const element = screen.getAllByTestId("cascade-column")[0]?.parentElement;
+  if (!element) throw new Error("Missing cascade track");
+  track.attach(element);
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(element.scrollLeft).toBe(1172 - 372);
+  // Columns change the track's content width without resizing the track.
+  for (const column of element.children) expect(track.observed.has(column)).toBe(true);
+  before?.(element, track.geometry);
+
+  track.resize(change);
+
+  expect(element.scrollLeft).toBe(want);
 });
 
 test.each([

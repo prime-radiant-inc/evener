@@ -1058,3 +1058,17 @@ success toast says "Upgraded {plugin}", since an offered Upgrade now always
 has something to install. A hub too old to answer the check offers no
 Upgrade at all. ls-remote yields a commit, not a version, so the badge
 carries no version number.
+
+## 2026-10-09 Loud for covers reply requests
+
+Jesse ruled on needs-you semantics in #4093. A turn that ends with a plain
+reply now rests idle, so it never enters the needs-you tier and never sounds.
+A turn that ends with `end_reason: needs_response` asks for a reply. The
+default "Loud for" scope treats it like a question or an approval: the hub's
+attention entry carries `needsResponse`, and the OS notification and sound
+fire for it. The scope's label is now "Questions, reply requests, approvals &
+errors"; there is no new toggle. "Everything needing me" still adds warnings
+and restart-required. A session fires when it becomes loud for the scope,
+either on entering the tier or when a row already there turns loud, such as
+a warning that settles into a reply request. A row that stays loud never
+fires again.

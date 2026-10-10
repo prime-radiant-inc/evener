@@ -766,9 +766,9 @@ type RestoreSessionConfig struct {
 	LifetimeContext context.Context
 	MemoryStateRoot string
 	DisableMemory   bool
-	// A nil ceiling preserves root-session identity. A live parent's empty ID
-	// revokes project access, including after the authoritative metadata reload.
-	memoryProjectCeiling    *string
+	// parentMemoryProjectID is a delegate's binding (spawn names its parent):
+	// the live parent's, replacing whatever the delegate saved.
+	parentMemoryProjectID   string
 	StateDir                string
 	Project                 identifier.Project
 	ResolveProfile          func(ref string) (*provider.Profile, error)
@@ -906,8 +906,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg := configFromSnapshot(meta.Config)
 	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
 	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
-	if ceiling := restoreCfg.memoryProjectCeiling; ceiling != nil && cfg.MemoryProjectID != *ceiling {
-		cfg.MemoryProjectID = ""
+	if restoreCfg.spawn.parentSessionID != "" {
+		cfg.MemoryProjectID = restoreCfg.parentMemoryProjectID
+	} else if cfg.MemoryProjectID == "" && cfg.MemoryStateRoot != "" && !cfg.DisableMemory && !meta.IsSubagent {
+		// A delegate's binding comes from its parent, so only a root session
+		// binds from its home; an unbound delegate resumed on its own stays so.
+		//
+		// This binds before provisionRestoredSandbox below, the order fresh
+		// launch uses too (it binds before provisioning). Resolving the id is
+		// host code reading .git metadata, and memory files keep their own
+		// confined roots, so the workspace policy provisioned later does not
+		// govern it.
+		cfg.MemoryProjectID = homeMemoryProjectID(env, meta)
 	}
 	// A pre-normalization meta.json may carry a mixed-case level or disable
 	// alias; canonicalize so the loop detector's and request builder's
@@ -1546,13 +1556,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 
 	// Re-derive the at-rest state from the restored history's tail: an
-	// unanswered ask_user call, or more generally any turn the agent moved
-	// last in with nothing else pending, rests awaiting (spec §6, generalized
-	// by attention-status-model v5's resume rule; deriveRestoredState's own
-	// doc comment has the full walk). NewSession never runs this scan — a
-	// fresh session always starts idle. steeringOrigins() gives the boundary
-	// its durable steering provenance, so a kindless legacy human-note turn
-	// is still read as a note rather than an answering steer.
+	// unanswered ask_user call, or a last input that ended on needs_response,
+	// rests awaiting (deriveRestoredState's own doc comment has the full
+	// walk). NewSession never runs this scan — a fresh session always starts
+	// idle. steeringOrigins() gives the boundary its durable steering
+	// provenance, so a kindless legacy human-note turn is still read as a
+	// note rather than an answering steer.
 	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
 	// and still in the same units s.history uses since escaping never
 	// changes its length) scopes the provenance to this session's own turns
@@ -1598,8 +1607,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}, promptSources)
 	// Recompute the settle decision now that history, goal restore, and (unless
 	// deferred for nested delegate reconstruction) notification/watch-send side
-	// effects are all in place: an agent-last transcript with no autonomy in
-	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
+	// effects are all in place: a transcript that ended on needs_response
+	// with no autonomy in flight resumes awaiting rather than idle.
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState(divergenceTurn)
 		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
@@ -1686,7 +1695,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.pluginAgents = builtins
 
-	if s.cfg.SystemPromptFile != "" && s.depth == 0 {
+	if s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
 		b, err := os.ReadFile(s.cfg.SystemPromptFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading system prompt override %s: %w", s.cfg.SystemPromptFile, err)
@@ -2507,7 +2516,7 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 
 func skillDiagnosticWarningCode(category string) string {
 	switch category {
-	case "allowed_tools_not_enforced", "unsupported_control":
+	case "allowed_tools_not_enforced", "unsupported_control", "missing_frontmatter_delimiter":
 		return events.WarningCodePluginCompatibility
 	default:
 		return ""

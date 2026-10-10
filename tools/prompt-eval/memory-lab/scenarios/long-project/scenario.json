@@ -1,6 +1,7 @@
 {
   "arms": [
-    "on"
+    "on",
+    "off"
   ],
   "fixture_from": "freeze",
   "stages": [
@@ -30,7 +31,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/MEMORY.md\")) { open F, $f; while (<F>) { chomp; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     },
@@ -60,7 +61,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/MEMORY.md\")) { open F, $f; while (<F>) { chomp; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     },
@@ -94,7 +95,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/MEMORY.md\")) { open F, $f; while (<F>) { chomp; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     },
@@ -136,7 +137,7 @@
         },
         {
           "name": "index lines under 200 chars",
-          "run": "perl -e 'for $f (glob(\"$ENV{XDG_STATE_HOME}/evener/memory/{personal,projects/*}/MEMORY.md\")) { open F, $f; while (<F>) { chomp; exit 1 if length > 200 } }'"
+          "run": "python3 \"$LAB_DIR/memcheck.py\" index-lines"
         }
       ]
     }

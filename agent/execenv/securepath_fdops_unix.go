@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
@@ -35,12 +36,40 @@ var (
 // a dup of dirFd as os.NewFile(fd, ""), whose DirEntry.Info() would lstat("/"+name)
 // against the host root; resolving beneath the fd keeps the metadata anchored to
 // the directory actually being listed.
-func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, error) {
+func fstatatEntryInfo(dirFd int, name string) (int64, os.FileMode, time.Time, error) {
 	var st unix.Stat_t
 	if err := unix.Fstatat(dirFd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return 0, 0, err
+		return 0, 0, time.Time{}, err
 	}
-	return st.Size, os.FileMode(st.Mode & 0o777), nil
+	// unix.Stat_t has Mtim on both darwin and linux (x/sys defines it for each);
+	// Mtim.Unix() returns (sec, nsec), which is time.Unix's argument pair.
+	return st.Size, statFileMode(st.Mode), time.Unix(st.Mtim.Unix()), nil
+}
+
+// statFileMode converts a stat st_mode to an os.FileMode carrying the permission
+// bits and the file type, so FileMode.IsRegular is true only for a regular file.
+// It is generic because st_mode is uint16 on darwin and uint32 on linux.
+func statFileMode[M uint16 | uint32](st M) os.FileMode {
+	raw := uint32(st)
+	mode := os.FileMode(raw & 0o777)
+	switch raw & unix.S_IFMT {
+	case unix.S_IFREG:
+	case unix.S_IFDIR:
+		mode |= os.ModeDir
+	case unix.S_IFLNK:
+		mode |= os.ModeSymlink
+	case unix.S_IFIFO:
+		mode |= os.ModeNamedPipe
+	case unix.S_IFSOCK:
+		mode |= os.ModeSocket
+	case unix.S_IFCHR:
+		mode |= os.ModeDevice | os.ModeCharDevice
+	case unix.S_IFBLK:
+		mode |= os.ModeDevice
+	default:
+		mode |= os.ModeIrregular
+	}
+	return mode
 }
 
 // close releases every cached root fd. Safe to call more than once.
@@ -420,18 +449,27 @@ func (s *sandboxFS) removeRegularFile(tool, abs string) error {
 	return s.removeWithPolicy(tool, abs, true)
 }
 
-func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
-	parentFd, leaf, err := s.openWriteParent(tool, abs, false)
+// openRemoveParent opens abs's authorized parent for a removal. gone reports
+// that the parent is simply absent, so the target is already gone: best-effort
+// delete, matching off-mode RemovePath (which swallows a missing target), makes
+// a missing-parent ENOENT/ENOTDIR a no-op success rather than a failed
+// apply_patch. Genuine policy denials (outside a writable root, masked,
+// git-protected, a refused symlink component) still propagate.
+func (s *sandboxFS) openRemoveParent(tool, abs string) (parentFd int, leaf string, gone bool, err error) {
+	parentFd, leaf, err = s.openWriteParent(tool, abs, false)
 	if err != nil {
-		// Best-effort delete, matching off-mode RemovePath (which swallows a missing
-		// target): when the target's parent directory is simply absent, the target is
-		// already gone, so a missing-parent ENOENT/ENOTDIR is a no-op success rather
-		// than a failed apply_patch. Genuine policy denials (outside a writable root,
-		// masked, git-protected, a refused symlink component) still propagate.
 		var denied *sandbox.DeniedError
 		if !errors.As(err, &denied) && isAbsentRemove(err) {
-			return nil
+			return -1, "", true, nil
 		}
+		return -1, "", false, err
+	}
+	return parentFd, leaf, false, nil
+}
+
+func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
+	parentFd, leaf, gone, err := s.openRemoveParent(tool, abs)
+	if err != nil || gone {
 		return err
 	}
 	defer func() { _ = unix.Close(parentFd) }()
@@ -484,10 +522,42 @@ func (s *sandboxFS) removeWithPolicy(tool, abs string, regularOnly bool) error {
 	return fmt.Errorf("remove %s: %w", abs, uerr)
 }
 
+// removeEmptyDirectory removes abs, an empty directory, through its
+// authorized parent fd. rmdir itself refuses a nonempty directory and a
+// non-directory leaf, a symlink included, so nothing else is ever removed.
+func (s *sandboxFS) removeEmptyDirectory(tool, abs string) error {
+	parentFd, leaf, gone, err := s.openRemoveParent(tool, abs)
+	if err != nil || gone {
+		return err
+	}
+	defer func() { _ = unix.Close(parentFd) }()
+	// Only ENOENT is a vanished leaf here: rmdir of a symlink or file is
+	// ENOTDIR, which must stop the caller's climb rather than read as gone.
+	if err := secureUnlinkat(parentFd, leaf, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove directory %s: %w", abs, err)
+	}
+	return nil
+}
+
 // rename moves oldAbs to newAbs. Both endpoints must resolve beneath a writable
 // root; the destination's parents are created beneath its root fd. The rename is
 // a single renameat between the two checked directory fds.
 func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
+	return s.betweenWriteParents(tool, oldAbs, newAbs, unix.Renameat)
+}
+
+// link gives the file at oldAbs the second name newAbs, with the same
+// checks as rename. Unlike rename, it never replaces newAbs: an existing
+// newAbs fails with EEXIST, which matches fs.ErrExist.
+func (s *sandboxFS) link(tool, oldAbs, newAbs string) error {
+	return s.betweenWriteParents(tool, oldAbs, newAbs, func(oldParent int, oldLeaf string, newParent int, newLeaf string) error {
+		return unix.Linkat(oldParent, oldLeaf, newParent, newLeaf, 0)
+	})
+}
+
+// betweenWriteParents runs op on the checked parent fds and leaves of oldAbs
+// and newAbs, creating newAbs's parents beneath its root fd.
+func (s *sandboxFS) betweenWriteParents(tool, oldAbs, newAbs string, op func(oldParent int, oldLeaf string, newParent int, newLeaf string) error) error {
 	oldParent, oldLeaf, err := s.openWriteParent(tool, oldAbs, false)
 	if err != nil {
 		return err
@@ -498,7 +568,7 @@ func (s *sandboxFS) rename(tool, oldAbs, newAbs string) error {
 		return err
 	}
 	defer func() { _ = unix.Close(newParent) }()
-	return unix.Renameat(oldParent, oldLeaf, newParent, newLeaf)
+	return op(oldParent, oldLeaf, newParent, newLeaf)
 }
 
 // mkdirAll creates abs (and any missing parents) beneath a writable root.
@@ -561,7 +631,7 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 // root, and each subdirectory is re-opened beneath its parent's fd with
 // O_NOFOLLOW — never re-resolved from the root by a joined path. Masked entries
 // are skipped so a denylisted subtree is never enumerated.
-func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
+func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
 	abs = filepath.Clean(abs)
 	if s.underMasked(abs) {
 		return nil, s.deny(tool, abs, denyReasonMasked)
@@ -571,7 +641,7 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 		return nil, err
 	}
 	var out []DirEntry
-	if err := s.walkDirFd(fd, "", abs, depth, &out); err != nil { // walkDirFd closes fd
+	if err := s.walkDirFd(fd, "", abs, depth, visibleOnly, &out); err != nil { // walkDirFd closes fd
 		return nil, err
 	}
 	return out, nil
@@ -580,8 +650,9 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 // walkDirFd reads the entries of the directory referenced by dirFd (which it
 // closes), appends them to out, and recurses into real subdirectories beneath
 // dirFd. relPrefix is the path prefix reported to the caller; baseAbs is the real
-// absolute path of dirFd, used only to skip masked entries.
-func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, out *[]DirEntry) error {
+// absolute path of dirFd, used only to skip masked entries. visibleOnly skips
+// dot entries, so a dot directory is never opened.
+func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, visibleOnly bool, out *[]DirEntry) error {
 	defer func() { _ = unix.Close(dirFd) }()
 	ents, err := secureReadDirEntries(dirFd)
 	if err != nil {
@@ -590,6 +661,9 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 	sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 	for _, ent := range ents {
 		name := ent.Name()
+		if visibleOnly && IsDotPath(name) {
+			continue
+		}
 		childAbs := filepath.Join(baseAbs, name)
 		if s.underMasked(childAbs) {
 			continue
@@ -603,8 +677,10 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			de.IsSymlink = true
 		}
 		if !ent.IsDir() {
-			if size, mode, ierr := secureEntryInfo(dirFd, name); ierr == nil {
+			if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
 				de.Size = size
+				de.ModTime = modTime
+				de.IsRegular = mode.IsRegular()
 				if mode&0o111 != 0 {
 					de.IsExec = true
 				}
@@ -618,7 +694,7 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, o
 			if cerr != nil {
 				continue // unreadable/symlinked subdir: skip, keep listing
 			}
-			if err := s.walkDirFd(childFd, relName, childAbs, depth-1, out); err != nil {
+			if err := s.walkDirFd(childFd, relName, childAbs, depth-1, visibleOnly, out); err != nil {
 				return err
 			}
 		}

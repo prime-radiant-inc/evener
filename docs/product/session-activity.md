@@ -11,7 +11,13 @@ with viewport-aware above/below fallback in the sessions drawer or a narrow
 window. Scroll and resize cancel visible and pending reveals; a fresh gesture
 opens it at the new position. See the [placement contract](../web-ui/design-system.md).
 Reading a session's activity is a separate operation, so
-browsing navigation does not load every session's work tree.
+browsing navigation does not load every session's work tree. A session's seen
+mark lives on the hub: a live navigation row carries its `seen_through`, and
+the activity read carries when the session's tree last moved (`lastMovedAt`).
+Opening a session (on the web, a pane opening or the page becoming visible
+with it open) marks it seen through the later of an unseen turn end and motion
+after that mark. The web reads that session's activity once per open for this,
+and a read whose connection was replaced is read again through the new one.
 
 Transcript delegate cards and status indicators use the same
 owner-qualified delegate entity projection as Activity. Retained transcripts do
@@ -36,7 +42,9 @@ The existing live compact navigation summary supplies running-subagent work.
 The web rail shows its Running spinner; the phone Board classifies the parent
 as Working, using its existing pulse meter in Live and static mark elsewhere.
 This applies to quiet parents and nonblocking warnings, including mixed running
-and failed children. Questions and approvals keep their attention presentation.
+and failed children. Questions and approvals keep their attention presentation,
+and so does an awaiting rest after a turn that ended on `needs_response`, on the
+web rail and the phone Board alike, since it waits on a person the same way.
 Warnings carrying a question or approval remain attention states. Own failure,
 restart-required and existing unavailable-session presentations remain unchanged.
 
@@ -50,7 +58,8 @@ The phone's [alert feed](../../mobile-native/src/alerts/alertEvents.ts) follows
 Board bands. A new nonblocking Warning waits while live children run. A warning
 that remains alerts when the last child settles; one that clears first never
 alerts. Warnings carrying a pending question or approval remain immediately
-eligible. First-read and offline rules still apply. Combined banners, Needs you
+eligible. A `needs_response` rest alerts like a question, under the same In-app
+alerts switch as questions and approvals. First-read and offline rules still apply. Combined banners, Needs you
 counts and Next navigation use the same Board attention membership.
 
 The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
@@ -478,10 +487,14 @@ authoritative delegation proves a saved source alias occupies an ancestor
 position, both surfaces pop to that alias without replacing the source binding.
 Unknown ancestry stays explicit; cached edges do not establish new ancestors.
 
-The selected session and its immediate parent are readable columns. Earlier
-ancestors are live compact spines. Each readable scope has an independent
-transcript position; collapsed spines retain their reader state while pausing
-older-history demand. Pop, reopen and Jump to live use the existing transcript
+The selected session and its immediate parent are readable columns, except
+that a parent equal to the cascade's live origin conversation stays a compact
+spine: that origin pane is already on screen, and the cascade does not repeat
+it. Closing the origin pane retires that association and restores the readable
+parent column. Earlier ancestors are live compact spines. Each readable scope
+has an independent transcript position; collapsed spines retain their reader
+state while pausing older-history demand. Pop, reopen and Jump to live use the
+existing transcript
 and history owners. The ordinary source keeps its own pending demand while
 inspection is open. A retained source in an existing in-place cascade keeps
 that demand even while collapsed. Another same-ref reader cannot adopt or cancel

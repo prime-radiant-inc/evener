@@ -1825,7 +1825,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
 			captured = raw
 			return true
 		},

@@ -110,6 +110,83 @@ func TestSkillLoadRejectsChangedDeclaredName(t *testing.T) {
 	}
 }
 
+// Recovery must reach the delivered body too: the frontmatter block must not
+// leak into the instructions, and the digest stays over the exact on-disk
+// bytes so identity still tracks the file as written.
+func TestSkillLoadRecoversBodyFromMissingOpeningDelimiter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	data := []byte("name: probe\ndescription: recovered fixture\n---\nRECOVERED_BODY_5c31\n")
+	descriptor, diagnostics, err := Parse(data, path)
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("Parse() = descriptor %+v, diagnostics %+v, error %v", descriptor, diagnostics, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, loadDiagnostics, err := Load(descriptor)
+	if err != nil {
+		t.Fatalf("Load() error = %v, diagnostics = %+v", err, loadDiagnostics)
+	}
+	const wantBody = "RECOVERED_BODY_5c31\n"
+	if loaded.Body != wantBody {
+		t.Fatalf("Load() body = %q, want %q (frontmatter must not leak into instructions)", loaded.Body, wantBody)
+	}
+	wantDigest := sha256.Sum256(data)
+	if loaded.Digest != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("Load() digest = %q, want SHA-256 over exact on-disk bytes %q", loaded.Digest, hex.EncodeToString(wantDigest[:]))
+	}
+}
+
+// A SKILL.md saved with CRLF line endings, framed or missing its opening
+// delimiter, keeps its frontmatter, and the delivered body is the text after
+// it with newline endings.
+func TestSkillLoadReadsCRLFSource(t *testing.T) {
+	for name, data := range map[string][]byte{
+		"framed":            []byte("---\r\nname: probe\r\ndescription: crlf fixture\r\n---\r\nCRLF_BODY_4184\r\n"),
+		"missing delimiter": []byte("name: probe\r\ndescription: crlf fixture\r\n---\r\nCRLF_BODY_4184\r\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "SKILL.md")
+			descriptor, diagnostics, err := Parse(data, path)
+			if err != nil || descriptor.Unavailable || descriptor.Meta.Description != "crlf fixture" {
+				t.Fatalf("Parse() = descriptor %+v, diagnostics %+v, error %v", descriptor, diagnostics, err)
+			}
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			loaded, loadDiagnostics, err := Load(descriptor)
+			if err != nil || loaded.Body != "CRLF_BODY_4184\n" {
+				t.Fatalf("Load() body = %q, error = %v, diagnostics = %+v", loaded.Body, err, loadDiagnostics)
+			}
+		})
+	}
+}
+
+// A frontmatter value ending in dashes must not be treated as the closing
+// delimiter, so the delivered body starts after the real one.
+func TestSkillLoadRecoversBodyWithValueEndingInDashes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	data := []byte("name: probe\ndescription: fine\nnote: see---\n---\nBODY_9f31\n")
+	descriptor, diagnostics, err := Parse(data, path)
+	if err != nil || descriptor.Unavailable {
+		t.Fatalf("Parse() = descriptor %+v, diagnostics %+v, error %v", descriptor, diagnostics, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := Load(descriptor)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	const wantBody = "BODY_9f31\n"
+	if loaded.Body != wantBody {
+		t.Fatalf("Load() body = %q, want %q (a value ending in dashes must not leak the delimiter)", loaded.Body, wantBody)
+	}
+}
+
 func TestSkillLoadReportsInvalidCurrentControls(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "SKILL.md")

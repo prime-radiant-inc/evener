@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,18 +29,8 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, dir := t.TempDir(), t.TempDir()
-			for relative, body := range map[string]string{
-				"memory/personal/MEMORY.md":                 "opaque-memory-personal-3730",
-				"memory/projects/fixture-project/MEMORY.md": "opaque-memory-project-3730",
-			} {
-				path := filepath.Join(root, relative)
-				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
+			memorySeedPage(t, root, "personal", "fact.md", "opaque-memory-personal-3730")
+			memorySeedPage(t, root, "projects/fixture-project", "fact.md", "opaque-memory-project-3730")
 			adapter := &agenttest.FakeAdapter{
 				Provider: "openai",
 				PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
@@ -102,10 +90,10 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 					t.Fatal("full history lost its context boundary")
 				}
 			}
-			for name, sentinel := range map[string]string{"memory_personal": "opaque-memory-personal-3730", "memory_project": "opaque-memory-project-3730"} {
+			for scope, sentinel := range map[string]string{"personal": "opaque-memory-personal-3730", "project": "opaque-memory-project-3730"} {
 				count := 0
 				for _, msg := range req.Messages {
-					if msg.Name == name && strings.Contains(msg.Text(), sentinel) {
+					if section, ok := memoryIndexSectionOf(msg.Text(), scope); ok && strings.Contains(section.Content, sentinel) {
 						if msg.Role != llm.RoleUser {
 							t.Fatalf("memory role=%s, want user", msg.Role)
 						}
@@ -113,7 +101,7 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 					}
 				}
 				if count != 1 {
-					t.Fatalf("request carries %d %s projections, want 1", count, name)
+					t.Fatalf("request carries %d %s projections, want 1", count, scope)
 				}
 			}
 			if !requestMessagesContainText(req.Messages, "opaque-current-input-3730") {

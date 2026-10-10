@@ -127,18 +127,86 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		t.Fatalf("error-only ask round created pending state: pending=%#v isAskRound=%v", pending, isAskRound)
 	}
 
-	// A generic completed tool round rests awaiting but never fabricates an
-	// ask-user hold.
-	generic := []schema.Turn{
-		stmAssistantTurn(llm.ToolCallData{ID: "communicate", Name: "communicate", Arguments: json.RawMessage(`{"message":"done","end_turn":true}`), Type: "function"}),
-		stmToolResultsTurn(stmToolResult("communicate", "communicate", false)),
+	// A generic completed tool round rests idle and never fabricates an
+	// ask-user hold. An input rests awaiting only when the turn-ending
+	// communicate it accepted said needs_response; that call's result carries
+	// the reason in its tool state. An input is the turns sharing a TurnID.
+	call := func(id, args string) llm.ToolCallData {
+		return llm.ToolCallData{ID: id, Name: "communicate", Arguments: json.RawMessage(args), Type: "function"}
 	}
-	if state := deriveRestoredState(generic, 0, nil); state != SessionAwaiting {
-		t.Fatalf("generic completed round restored as %q, want %q", state, SessionAwaiting)
+	in := func(turnID string, turns ...schema.Turn) []schema.Turn {
+		for i := range turns {
+			turns[i].TurnID = turnID
+		}
+		return turns
 	}
-	if pending, isAskRound := deriveRestoredAskPending(generic, 0, nil); isAskRound || len(pending) != 0 {
-		t.Fatalf("generic completion created ask state: pending=%#v isAskRound=%v", pending, isAskRound)
+	const (
+		done          = `{"message":"done","end_turn":true}`
+		needsResponse = `{"message":"which?","end_turn":true,"end_reason":"needs_response"}`
+	)
+	user := schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("go")}
+	steer := schema.Turn{Kind: schema.TurnSteering, Message: llm.User("job finished")}
+	for _, tc := range []struct {
+		name  string
+		turns []schema.Turn
+		want  SessionState
+	}{
+		{"plain reply", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "done"))), SessionIdle},
+		{"waiting on work", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "waiting_on_work"))), SessionIdle},
+		{"needs response", in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"), stmToolResult("other", "other", false))), SessionAwaiting},
+		{"needs response that lost the capture", in("t1", user, stmAssistantTurn(call("c1", done), call("c2", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "done"), stmCommunicateResult("c2", ""))), SessionIdle},
+		{"needs response a Stop hook carried past", in("t1",
+			user,
+			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
+			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
+		), SessionAwaiting},
+		{"needs response whose hook context failed", in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(func() llm.ContentPart {
+			part := stmCommunicateResult("c1", "needs_response")
+			part.ToolResult.IsError = true
+			return part
+		}())), SessionAwaiting},
+		{"an attempt recovery reran under the same TurnID", in("t1",
+			user,
+			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
+			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")),
+		), SessionIdle},
+		{"needs response in an earlier input", append(
+			in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"))),
+			in("t2", user, stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")))...,
+		), SessionIdle},
+		{"needs response before a notification-opened input", append(
+			in("t1", user, stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response"))),
+			in("t2", steer, stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "done")))...,
+		), SessionIdle},
+		{"another tool's end_reason state", in("t1", user, stmAssistantTurn(call("c1", done)), stmToolResultsTurn(stmCommunicateResult("c1", "done"), func() llm.ContentPart {
+			part := stmToolResult("w1", "job_watch", false)
+			part.ToolResult.ToolState = json.RawMessage(`{"end_reason":"needs_response"}`)
+			return part
+		}())), SessionIdle},
+		{"history without turn ids reads only the decisive round", []schema.Turn{
+			user,
+			stmAssistantTurn(call("c1", needsResponse)), stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
+			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
+		}, SessionIdle},
+	} {
+		if state := deriveRestoredState(tc.turns, 0, nil); state != tc.want {
+			t.Fatalf("%s: restored as %q, want %q", tc.name, state, tc.want)
+		}
+		if pending, isAskRound := deriveRestoredAskPending(tc.turns, 0, nil); isAskRound || len(pending) != 0 {
+			t.Fatalf("%s: created ask state: pending=%#v isAskRound=%v", tc.name, pending, isAskRound)
+		}
 	}
+}
+
+// stmCommunicateResult is a communicate call's completed result. The call the
+// input accepted carries its end reason in its tool state; a call that lost
+// the terminal capture (reason "") carries none.
+func stmCommunicateResult(id, acceptedReason string) llm.ContentPart {
+	part := stmToolResult(id, "communicate", false)
+	if acceptedReason != "" {
+		part.ToolResult.ToolState = json.RawMessage(fmt.Sprintf(`{"communicate_end_reason":%q}`, acceptedReason))
+	}
+	return part
 }
 
 func stmRunRoundContracts(t *testing.T, program []byte) {

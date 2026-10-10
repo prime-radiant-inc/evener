@@ -120,8 +120,8 @@ func TestWireState_FailedTurnReadsFailedUntilTheNextTurn(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "second", nil); err != nil {
 		t.Fatalf("second turn: %v", err)
 	}
-	if got := sess.WireState(); got != string(SessionAwaiting) {
-		t.Fatalf("WireState after the next clean turn = %q, want awaiting", got)
+	if got := sess.WireState(); got != string(SessionIdle) {
+		t.Fatalf("WireState after the next clean turn = %q, want idle", got)
 	}
 }
 

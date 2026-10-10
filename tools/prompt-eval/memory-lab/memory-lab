@@ -9,7 +9,7 @@ stream, the workspace and the memory files.
 
 Usage:
   memory-lab run --version v0=BIN [--version v1=BIN] --model MODEL \
-      --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4] \
+      --scenarios DIR/a,DIR/b --reps 2 --out OUTDIR [--max-rounds 40] [--jobs 4] [--arm on] \
       [--effort high] [--timeout 1200] [--work-root DIR] [--context-window TOKENS]
                                       # one line per stage as trials finish, then the pass-rate table;
                                       # --work-root DIR puts each workspace at DIR/<project>-<random> (see README);
@@ -30,11 +30,13 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
    "stages": [{"name": "A", "prompt": "...",
                "seed_project_memory": "seed",   # optional dir copied into project memory first
                "before": "shell run in the workspace before the stage",  # optional
-               "checks": [{"name": "...", "run": "shell; exit 0 = pass"}],
+               "checks": [{"name": "...", "run": "shell; exit 0 = pass; $LAB_DIR is the lab directory, e.g. python3 \"$LAB_DIR/memcheck.py\" index-lines"}],
                "trace": [{"name": "...", "tool": "shell", "regex": "go vet"}],
                "memory": [{"name": "...", "regex": "(?i)vet", "scope": "personal"}],  # scope (personal|project) and "absent": true optional
                "fixture": "fixture2", "workspace": "work2",  # optional: run in another project (both required together)
-               "resume": "A",  # optional: continue stage A's root session (by the id in A.grade.json)
+               "resume": "A",  # optional: continue stage A's root session (by the id in A.grade.json), as the partner's next turn
+               "memory_writes": [{"name": "...", "max": 3}],  # memory_write + memory_edit calls in this stage's root
+                                                              # session so far (this turn and earlier turns resumed into it)
                "transcripts": [{"name": "...", "regex": "over every transcript in the stage's state dir"}],
                "delegate_calls": [{"name": "...", "tools": ["memory_read", "memory_search"],
                                    "args": {"scope": "project"}}],  # a tool call by a delegate this stage started
@@ -43,14 +45,17 @@ A scenario dir holds scenario.json and fixture/. scenario.json:
 
 Each trial lives in OUTDIR/<version>/<arm>/<scenario>/r<N>/ with work/ (the
 checkout, stable across stages; a symlink to the real checkout under --work-root), xdg/ (XDG_STATE_HOME, so memory is isolated;
-also a symlink under --work-root),
-and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
+also a symlink under --work-root), sessions/ (each stage's evener state dir, where delegate worktrees
+live; a symlink under --work-root too), and per stage: <S>.events.ndjson, <S>.stdout, <S>.grade.json, <S>.memory/.
 Full logs stay on disk; the report prints only the summary.
 """
 import argparse, concurrent.futures as cf, glob, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True
+sys.path.insert(0, HERE)
+import memcheck  # next to this script
 PROJID = os.path.join(HERE, "bin", "projid")
 
 
@@ -91,13 +96,31 @@ def run_bounded(cmd, cwd, env, timeout, stdout=None, stderr=None):
 PROVIDERS_POINTER = "providers-config-path"
 
 
+def user_state_root():
+    """The lab user's state root: $XDG_STATE_HOME, else ~/.local/state."""
+    return os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+
+
+def trial_state_parent():
+    """Where --work-root trials keep their state dirs (see make_state_dir)."""
+    return os.path.join(os.path.realpath(user_state_root()), "workspaces")
+
+
+def require_state_outside_work_root(work_root):
+    """Exits when the trials' state parent and the work root overlap: one inside the other would put
+    trial state, and so other trials' memory, back where a session exploring the work root finds it."""
+    state, work = trial_state_parent(), os.path.realpath(work_root)
+    if os.path.commonpath([state, work]) in (state, work):
+        sys.exit(f"memory-lab: --work-root {work_root} overlaps the trials' state dir {state} (from XDG_STATE_HOME "
+                 "or ~/.local/state); pick a work root outside it, or set XDG_STATE_HOME elsewhere")
+
+
 def write_run_providers(text):
     """Writes a run's providers.toml and returns its path: <state root>/memory-lab/providers/<random>/
     providers.toml, where the state root is $XDG_STATE_HOME or ~/.local/state. It is a copy of the user's
     config, which can hold literal keys, so it is owner-only (dir 0700, file 0600) and never in the results
     tree. It is left in place so ask can use it; delete it by hand."""
-    base = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-                        "memory-lab", "providers")
+    base = os.path.join(user_state_root(), "memory-lab", "providers")
     os.makedirs(base, mode=0o700, exist_ok=True)
     os.chmod(base, 0o700)  # makedirs leaves a dir that already existed as it was
     path = os.path.join(tempfile.mkdtemp(dir=base), "providers.toml")  # mkdtemp makes the dir 0700
@@ -396,24 +419,34 @@ def new_workdir(args, trial, name, fixture):
 
 
 def workdir(trial, name):
-    """The real path of the trial's workspace called name, through its symlink under --work-root."""
+    """The real path of trial/name (a workspace, or a stage's state dir), through the symlinks
+    --work-root makes."""
     return os.path.realpath(os.path.join(trial, name))
 
 
 def make_state_dir(args, trial, work):
-    """Creates trial/xdg, the trial's XDG_STATE_HOME. Under --work-root it is a symlink to
-    DIR/.state/<workspace name>, since memory tool results show its path to the agent. Under
-    --context-window it holds the trial's providers.toml."""
+    """Creates trial/xdg, the trial's XDG_STATE_HOME, and trial/sessions, the stages' evener
+    state dirs. Under --work-root both are symlinks into user_state_root()/workspaces/<workspace
+    name>: memory tool results and delegate worktree paths show the state path to the agent, so it
+    is neutral and outside the results tree, and it is outside the work root, where sessions
+    exploring the work root could read other trials' memory, and apart from the user's own evener
+    state. Under --context-window xdg holds the trial's providers.toml."""
     xdg = os.path.join(trial, "xdg")
     if not args.work_root:
         os.makedirs(xdg)
     else:
-        real = os.path.join(os.path.realpath(args.work_root), ".state", os.path.basename(work))
-        os.makedirs(real)
+        real = os.path.join(trial_state_parent(), os.path.basename(work))
+        os.makedirs(os.path.join(real, "sessions"))
         os.symlink(real, xdg)
+        os.symlink(os.path.join(real, "sessions"), os.path.join(trial, "sessions"))
     if args.providers_path:
         with open(os.path.join(xdg, PROVIDERS_POINTER), "w") as f:
             f.write(args.providers_path + "\n")
+
+
+def stage_state_dir(trial, stage):
+    """The real path of a stage's evener state dir."""
+    return workdir(trial, os.path.join("sessions", stage))
 
 
 def make_workspace(fixture, work, xdg):
@@ -470,7 +503,7 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
             raise RuntimeError(f"before hook {how} in {trial}: {out[-500:]}")
     name = stage["name"]
     # "resume": "<stage>" continues that stage's root session instead of starting a fresh one.
-    state = os.path.join(trial, "sessions", stage.get("resume", name))
+    state = stage_state_dir(trial, stage.get("resume", name))
     cmd = evener_command(binpath, args.model, work, state, args.effort, stage["prompt"], max_rounds=args.max_rounds,
                          session_id=session_ids.get(stage.get("resume")), resume_last=bool(stage.get("resume")),
                          disable_memory=arm == "off")
@@ -494,7 +527,7 @@ def session_failure(session, rounds_capped):
 
 def grade_checks(spec, inputs):
     try:
-        rc, _ = run_bounded(spec["run"], inputs["work"], inputs["env"], COMMAND_TIMEOUT)
+        rc, _ = run_bounded(spec["run"], inputs["work"], {**inputs["env"], "LAB_DIR": HERE}, COMMAND_TIMEOUT)
     finally:
         # A held-out check deletes its own test file, unless it was killed first;
         # a leftover would join every later check's and stage's build.
@@ -538,6 +571,28 @@ def grade_delegate_calls(spec, inputs):
                for name, args in inputs["delegate_calls"])
 
 
+# The memory calls that change a page and leave an entry in the transcript the partner reads. The write
+# checks and the writes+edits table count calls, refused ones included: what they measure is how much memory
+# work clutters the transcript and context, and a refused write is an entry there too (it usually comes back
+# as a second attempt).
+MEMORY_CHANGE_TOOLS = ("memory_write", "memory_edit")
+
+
+def memory_change_count(grade):
+    """The memory_write and memory_edit calls, refused ones included, a graded stage's root session made in
+    that stage."""
+    return sum(grade["memory_calls"].get(t, 0) for t in MEMORY_CHANGE_TOOLS)
+
+
+def session_key(grade):
+    """The root session a graded stage ran in: stages that resume one session share it."""
+    return grade["trial"], grade.get("session_id") or grade["stage"]
+
+
+def grade_memory_writes(spec, inputs):
+    return inputs["session_memory_changes"] <= spec["max"]
+
+
 def grade_whiteboard(spec, inputs):
     note = inputs["note"]
     ok = bool(note)
@@ -554,7 +609,7 @@ def grade_whiteboard(spec, inputs):
 # returns whether the check passed.
 GRADERS = {"checks": grade_checks, "trace": grade_trace, "memory": grade_memory,
            "transcripts": grade_transcripts, "delegate_calls": grade_delegate_calls,
-           "whiteboard": grade_whiteboard, "final": grade_final}
+           "whiteboard": grade_whiteboard, "final": grade_final, "memory_writes": grade_memory_writes}
 
 
 def read_meta(path):
@@ -674,8 +729,9 @@ def all_failed(stage):
     return {spec["name"]: False for check_type in GRADERS for spec in stage.get(check_type, [])}
 
 
-def grade_stage(label, arm, scen, stage, trial, session):
-    """Keeps the stage's evidence, grades every check, and writes <stage>.grade.json. Never raises:
+def grade_stage(label, arm, scen, stage, trial, session, earlier=()):
+    """Keeps the stage's evidence, grades every check, and writes <stage>.grade.json. earlier is the trial's
+    grades so far, whose stages in the same root session count toward memory_writes. Never raises:
     a check that errors or times out fails with its reason in check_errors, and a failed session
     fails every check with the reason in error."""
     name = stage["name"]
@@ -688,6 +744,9 @@ def grade_stage(label, arm, scen, stage, trial, session):
     for c in calls:
         if c["tool"].startswith("memory_"):
             grade["memory_calls"][c["tool"]] = grade["memory_calls"].get(c["tool"], 0) + 1
+    # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
+    grade["state"] = session["state"]
+    grade["session_id"] = root_session_id(session["events"], session["state"])
     mem_dir = os.path.join(trial, f"{name}.memory")
     try:
         if os.path.isdir(memory_root(session["xdg"])):
@@ -696,7 +755,9 @@ def grade_stage(label, arm, scen, stage, trial, session):
         grade["evidence_error"] = f"memory snapshot: {e}"
     inputs = {"work": session["work"], "env": session["env"], "calls": calls, "messages": messages,
               "memory": read_tree(mem_dir) if os.path.isdir(mem_dir) else {},
-              "note": whiteboard_note(session["state"])}
+              "note": whiteboard_note(session["state"]),
+              "session_memory_changes": memory_change_count(grade) + sum(
+                  memory_change_count(e) for e in earlier if session_key(e) == session_key(grade))}
     if stage.get("transcripts"):
         # Every session transcript under this stage's state dir, delegates
         # included, e.g. for a delegate's memory_read of project scope.
@@ -729,9 +790,6 @@ def grade_stage(label, arm, scen, stage, trial, session):
                     result = grade["check_errors"].get(cname) or ("passed" if grade["checks"][cname] else "failed")
                     grade["checks"][cname] = False
                     grade["check_errors"][cname] = f"{inputs['cleanup_errors'][cname]} (check result before cleanup: {result})"
-    # ask resumes from here; a resumed stage ran in the earlier stage's state dir.
-    grade["state"] = session["state"]
-    grade["session_id"] = root_session_id(session["events"], session["state"])
     grade["whiteboard"] = inputs["note"]
     grade["final_message"] = messages[-1][:2000] if messages else ""
     return write_grade(trial, grade)
@@ -769,7 +827,7 @@ def run_trial(args, label, binpath, arm, scen, rep):
             failure = f"{type(e).__name__}: {e}"
             grades.append(failed_grade(label, arm, scen, st, trial, failure))
             continue
-        grades.append(grade_stage(label, arm, scen, st, trial, session))
+        grades.append(grade_stage(label, arm, scen, st, trial, session, grades))
         session_ids[st["name"]] = grades[-1]["session_id"]
         if grades[-1].get("error"):
             failure = f"stage {st['name']} failed: {grades[-1]['error']}"
@@ -789,7 +847,8 @@ def contamination(grade):
 # Check type -> (string fields its grader requires, other fields it reads). Any other key is a typo.
 CHECK_FIELDS = {"checks": (["run"], []), "trace": (["tool", "regex"], []), "memory": (["regex"], ["scope", "absent"]),
                 "transcripts": (["regex"], []), "final": (["regex"], []),
-                "whiteboard": ([], ["regex", "max_chars", "min_lines"]), "delegate_calls": ([], ["tools", "args"])}
+                "whiteboard": ([], ["regex", "max_chars", "min_lines"]), "delegate_calls": ([], ["tools", "args"]),
+                "memory_writes": ([], ["max"])}
 SCENARIO_KEYS = {"arms", "fixture_from", "stages"}
 STAGE_KEYS = {"name", "prompt", "before", "fixture", "workspace", "resume", "seed_project_memory"} | set(CHECK_FIELDS)
 MEMORY_SCOPES = {"personal", "project"}
@@ -825,12 +884,14 @@ def load_scenario(scen):
         for key in ("fixture", "seed_project_memory", "workspace", "resume", "before"):
             if key in st and not isinstance(st[key], str):
                 sys.exit(f"{where}: \"{key}\" must be a string")
-        if "workspace" in st and (not st["workspace"] or "/" in st["workspace"] or st["workspace"] in (".", "..")):
-            sys.exit(f"{where}: \"workspace\" must name one dir in the trial, like work2")
+        # Any other name could be a path the lab makes in the trial (xdg, sessions, a stage's
+        # <name>.memory or .events.ndjson): a fixture stage would find it there, skip its setup, and run in it.
+        if "workspace" in st and not re.fullmatch(r"work[0-9]*", st["workspace"]):
+            sys.exit(f"{where}: \"workspace\" must be work or work followed by digits, like work2; another name "
+                     "could collide with a dir or file the lab makes in the trial")
         if st.get("resume") and st["resume"] not in [earlier.get("name") for earlier in spec["stages"][:i]]:
             sys.exit(f"{where}: \"resume\" must name an earlier stage")
-        workspace = st.get("workspace")
-        if st.get("fixture") and not (workspace and workspace != "work"):
+        if st.get("fixture") and st.get("workspace", "work") == "work":
             sys.exit(f"{where}: \"fixture\" needs a \"workspace\" naming a dir other than work "
                      "(otherwise the stage silently reuses the base work dir)")
         seen = set()  # grades and cleanup errors are keyed by check name across every type
@@ -858,13 +919,31 @@ def load_scenario(scen):
             if not (isinstance(tools, list) and tools and all(isinstance(t, str) for t in tools)) or not isinstance(args, dict):
                 sys.exit(f"{where}: delegate_calls {check['name']!r} needs \"tools\", "
                          "a non-empty list of tool names, and an optional \"args\" object")
+        for check in st.get("memory_writes", []):
+            limit = check.get("max")
+            if type(limit) is not int or limit < 0:
+                sys.exit(f"{where}: memory_writes {check['name']!r} needs \"max\", a non-negative integer")
     return spec
+
+
+def trial_jobs(scenarios, versions, reps, only_arm=None):
+    """(label, binary, arm, scenario, rep) for every trial: each version runs each arm a scenario declares,
+    or only only_arm when the scenario declares it, reps times."""
+    jobs = []
+    for scen in scenarios:
+        arms = [arm for arm in load_scenario(scen).get("arms", ["on"]) if only_arm in (None, arm)]
+        for label, binpath in versions.items():
+            for arm in arms:
+                for rep in range(1, reps + 1):
+                    jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
+    return jobs
 
 
 def cmd_run(args):
     args.out = os.path.abspath(args.out)
     if args.work_root:
         args.work_root = os.path.abspath(os.path.expanduser(args.work_root))
+        require_state_outside_work_root(args.work_root)
     versions = {}
     for v in args.version:
         label, sep, binpath = v.partition("=")
@@ -885,14 +964,8 @@ def cmd_run(args):
         args.providers_path = write_run_providers(context_window_config(args.model, args.context_window))
         print(f"memory-lab: this run's providers.toml, a copy of yours with the override: {args.providers_path} "
               "(owner-only; delete it when you're done with ask)", flush=True)
-    jobs = []
-    for scen in args.scenarios.split(","):
-        scen = os.path.abspath(scen)
-        arms = load_scenario(scen).get("arms", ["on"])
-        for label, binpath in versions.items():
-            for arm in arms:
-                for rep in range(1, args.reps + 1):
-                    jobs.append((label, os.path.abspath(binpath), arm, scen, rep))
+    jobs = trial_jobs([os.path.abspath(scen) for scen in args.scenarios.split(",")], versions, args.reps,
+                      args.arm)
     os.makedirs(args.out, exist_ok=True)
     print(f"memory-lab: {len(jobs)} trials, model {args.model}, logs under {args.out}", flush=True)
     grades = []
@@ -902,6 +975,8 @@ def cmd_run(args):
                 grades.append(g)
                 print(line(g), flush=True)
     print_pass_rates(grades)
+    print_arm_deltas(grades)
+    print_memory_changes(grades)
     errored = {g["trial"] for g in grades if g.get("error") or contamination(g)}
     if errored:
         sys.exit(f"memory-lab: {len(errored)} trial(s) hit infrastructure errors; their stages count as failures above")
@@ -918,23 +993,89 @@ def line(g):
     return f"{g['version']:6} {g['arm']:3} {g['scenario']:22} {os.path.basename(g['trial'])} {g['stage']} exit={g['exit']}{cap} tools={g['tool_calls']} mem={mem} | {checks}{error}"
 
 
-def print_pass_rates(grades):
-    print("\n== check pass rates (version arm scenario stage: check passed/total)")
+def pass_counts(grades, stage_checks=True):
+    """{(scenario, stage, check, version, arm): [passed, total]} over each grade's checks, plus
+    "used memory" and "not capped" when stage_checks. An errored stage counts as a failure."""
     agg = {}
     for g in grades:
         ran = not g.get("error")
-        for k, v in list(g["checks"].items()) + [("used memory", bool(g["memory_calls"])), ("not capped", ran and not g["rounds_capped"])]:
-            key = (g["scenario"], g["stage"], k, g["version"], g["arm"])
-            a = agg.setdefault(key, [0, 0])
-            a[0] += v
+        extra = [("used memory", bool(g["memory_calls"])), ("not capped", ran and not g["rounds_capped"])] if stage_checks else []
+        for k, v in list(g["checks"].items()) + extra:
+            a = agg.setdefault((g["scenario"], g["stage"], k, g["version"], g["arm"]), [0, 0])
+            a[0] += bool(v)
             a[1] += 1
-    for (s, st, k, v, arm), (p, n) in sorted(agg.items()):
+    return agg
+
+
+def print_pass_rates(grades):
+    print("\n== check pass rates (version arm scenario stage: check passed/total)")
+    for (s, st, k, v, arm), (p, n) in sorted(pass_counts(grades).items()):
         print(f"{s:22} {st} {k:28} {v:6} {arm:3} {p}/{n}")
+
+
+def arm_deltas(grades):
+    """{(scenario, stage, check, version): (passed on, n on, passed off, n off)} for every check run
+    in both arms, counted as the pass-rate table counts them."""
+    agg = {}
+    for (s, st, k, v, arm), counts in pass_counts(grades, stage_checks=False).items():
+        agg.setdefault((s, st, k, v), {})[arm] = counts
+    return {key: (*arms["on"], *arms["off"]) for key, arms in agg.items() if "on" in arms and "off" in arms}
+
+
+def arm_costs(grades):
+    """{(scenario, stage, version): ((mean tool calls, mean seconds) on, (same) off)} for stages run in
+    both arms, averaged over the stages that ran (an errored stage has no cost to compare)."""
+    agg = {}
+    for g in grades:
+        if not g.get("error"):
+            agg.setdefault((g["scenario"], g["stage"], g["version"]), {}).setdefault(g["arm"], []).append(
+                (g["tool_calls"], g["seconds"]))
+    mean = lambda rows: tuple(sum(r[i] for r in rows) / len(rows) for i in range(2))
+    return {key: (mean(arms["on"]), mean(arms["off"])) for key, arms in agg.items() if "on" in arms and "off" in arms}
+
+
+def print_arm_deltas(grades):
+    """Memory on minus off, for scenarios that declare both arms. An off arm writes no memory, so
+    memory checks are settled there by construction (an "absent" check passes, any other fails):
+    read the delta on behavior checks."""
+    deltas, costs = arm_deltas(grades), arm_costs(grades)
+    if deltas:
+        print("\n== memory on minus off (scenario stage check version: on off delta)")
+        for (s, st, k, v), (p_on, n_on, p_off, n_off) in sorted(deltas.items()):
+            print(f"{s:22} {st} {k:28} {v:6} {p_on}/{n_on} {p_off}/{n_off} {p_on / n_on - p_off / n_off:+.2f}")
+    if costs:
+        print("\n== cost on vs off (scenario stage version: mean tool calls, mean seconds)")
+        for (s, st, v), ((t_on, s_on), (t_off, s_off)) in sorted(costs.items()):
+            print(f"{s:22} {st} {v:6} tools {t_on:.1f} vs {t_off:.1f}, seconds {s_on:.0f} vs {s_off:.0f}")
+
+
+def memory_changes(grades):
+    """{(scenario, version, arm): (writes+edits per root session, {stage: writes+edits per stage})} over the
+    stages that ran. A scenario whose stages resume one session counts that session once, summed over its
+    turns, so the second dict is the per-turn count."""
+    agg, totals = {}, {}
+    for g in grades:
+        if g.get("error"):
+            continue
+        key = (g["scenario"], g["version"], g["arm"])
+        n = memory_change_count(g)
+        agg.setdefault(key, {}).setdefault(g["stage"], []).append(n)
+        session = totals.setdefault(key, {})
+        session[session_key(g)] = session.get(session_key(g), 0) + n
+    return {key: (list(totals[key].values()), turns) for key, turns in agg.items()}
+
+
+def print_memory_changes(grades):
+    print("\n== memory writes+edits (scenario version arm: per session mean (max, sessions); per stage mean)")
+    for (s, v, arm), (sessions, turns) in sorted(memory_changes(grades).items()):
+        per_turn = " ".join(f"{st}={sum(ns) / len(ns):.2f}" for st, ns in sorted(turns.items()))
+        print(f"{s:22} {v:6} {arm:3} {sum(sessions) / len(sessions):.2f} ({max(sessions)}, n={len(sessions)}); {per_turn}")
 
 
 def scenario_problems(scen):
     """Why scen can't run as written, or [] when it can: load_scenario must accept it and
-    return that scenario's own dict, and every fixture and seed dir it names must exist."""
+    return that scenario's own dict, every fixture and seed dir it names must exist, and evener
+    must read every seeded page's frontmatter (memcheck.seed_problems)."""
     try:
         with open(os.path.join(scen, "scenario.json")) as f:
             raw = json.load(f)
@@ -951,7 +1092,15 @@ def scenario_problems(scen):
     dirs = [base_fixture(scen, spec)]
     for st in spec["stages"]:
         dirs += [os.path.join(scen, st[k]) for k in ("fixture", "seed_project_memory") if st.get(k)]
-    return [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+    problems = [f"missing dir {d}" for d in dirs if not os.path.isdir(d)]
+    seeds = sorted({os.path.join(scen, st["seed_project_memory"]) for st in spec["stages"]
+                    if st.get("seed_project_memory") and os.path.isdir(os.path.join(scen, st["seed_project_memory"]))})
+    try:
+        for seed, found in memcheck.seed_problems(seeds).items():
+            problems += [f"{os.path.relpath(seed, scen)}/{p}" for p in found]
+    except memcheck.MemscopeError as e:
+        problems.append(str(e))
+    return problems
 
 
 def cmd_check(args):
@@ -975,6 +1124,8 @@ def cmd_report(args):
     for g in grades:
         print(line(g))
     print_pass_rates(grades)
+    print_arm_deltas(grades)
+    print_memory_changes(grades)
 
 
 def cmd_show(args):
@@ -1012,7 +1163,7 @@ def cmd_ask(args):
     n = len([f for f in os.listdir(trial) if f.startswith(f"{stage}.ask")]) + 1
     events = os.path.join(trial, f"{stage}.ask{n}.events.ndjson")
     # A grade file without "state" means the stage ran in sessions/<stage>.
-    state = g.get("state") or os.path.join(trial, "sessions", stage)
+    state = g.get("state") or stage_state_dir(trial, stage)
     # A grade file without "session_id" can only fall back to the state dir's most recent session.
     cmd = evener_command(os.path.abspath(args.bin), args.model, work, state, args.effort, args.question,
                          session_id=g.get("session_id"), resume_last=not g.get("session_id"))
@@ -1058,6 +1209,8 @@ def main():
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=positive_int, default=1200, help="seconds per stage")
     r.add_argument("--jobs", type=positive_int, default=4)
+    r.add_argument("--arm", choices=["on", "off"],
+                   help="run only this arm of each scenario that declares it (default: every arm it declares)")
     r.add_argument("--work-root", metavar="DIR", help="create each workspace at DIR/<project>-<random> instead of inside the "
                    "results tree; the trial's work/ is a symlink to it. The dirs are left in place")
     r.add_argument("--context-window", type=positive_int, metavar="TOKENS",

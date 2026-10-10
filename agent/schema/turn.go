@@ -64,7 +64,8 @@ const (
 	// UIs render it as harness chrome, not user speech. The persisted note is
 	// the source of truth; each turn carries a fresh projection of it.
 	TurnNotesContext TurnKind = "NOTES_CONTEXT"
-	// TurnMemoryContext carries a lower-trust, scope-labelled index projection.
+	// TurnMemoryContext carries one boundary's lower-trust memory news for
+	// every scope, as one system notification.
 	TurnMemoryContext TurnKind = "MEMORY_CONTEXT"
 	// TurnAttentionResolution records the terminal disposition of one durable
 	// attention item. Provider projection excludes it; generic presentation may
@@ -93,6 +94,15 @@ const (
 // identity (TurnID, TurnKind and the other identity fields). An entry without
 // it is a legacy entry, whose turn identity readers infer as they always have.
 const TurnFormatIdentity = 1
+
+// PublicTranscript reports whether entries of this kind appear in the public
+// transcript, the one read_transcript and doctor transcript number turn by
+// turn. Resolution markers carry no model/public content, and transcript-only
+// entries exist for the history projection alone; both are omitted entirely so
+// interleaved tool calls and results remain adjacent.
+func (k TurnKind) PublicTranscript() bool {
+	return k != TurnAttentionResolution && !k.TranscriptOnly()
+}
 
 // TranscriptOnly reports whether entries of this kind are written to the
 // transcript only. They never enter a session's in-memory history, resume
@@ -148,6 +158,10 @@ type CommunicateInfo struct {
 	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
+	// EndReason is why a root session's call ended its turn (one of
+	// tool.CommunicateEndReasons); empty on a call that kept the turn going
+	// and wherever end_reason is not offered (delegates, headless roots).
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // NoticeKind names a presentational notice.

@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/agent/provenance"
 )
 
@@ -6148,7 +6149,7 @@ func appendWatchFrameJobRead(frame, jobID string) string {
 }
 
 func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
-	text = normalizeLineEndings(text)
+	text = lineend.Normalize(text)
 	for line := range strings.SplitSeq(text, "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
@@ -6156,15 +6157,8 @@ func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
 	}
 }
 
-// normalizeLineEndings turns CRLF and lone CR line endings into LF.
-func normalizeLineEndings(text string) string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	return text
-}
-
 func writeWatchFrameTopField(b *strings.Builder, name, value string) {
-	value = normalizeLineEndings(value)
+	value = lineend.Normalize(value)
 	b.WriteString(name)
 	b.WriteString(": ")
 	b.WriteString(strings.ReplaceAll(value, "\n", "\n  "))
@@ -6308,7 +6302,7 @@ func writeWatchFrameOptionalField(b *strings.Builder, name, value string) {
 }
 
 func writeWatchFrameTextField(b *strings.Builder, name, value string) {
-	value = normalizeLineEndings(value)
+	value = lineend.Normalize(value)
 	b.WriteString("  ")
 	b.WriteString(name)
 	b.WriteString(": ")

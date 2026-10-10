@@ -635,6 +635,41 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
+	// emit atomic against a turn advancing restGeneration: either the turn
+	// starts first and the rest stays idle, or the announcement reaches the
+	// event feed before anything the turn emits.
+	// LOCK ORDER: restMu > delegateDeliveryMu > mu.
+	restMu sync.Mutex
+	// restGeneration counts turn starts and drain-loop settles. A
+	// needs_response rest arms awaiting only if neither happened during its
+	// quiet period. Guarded by s.mu.
+	restGeneration uint64
+	// restBeforeInput is the resting state the session had when the current
+	// input started, read only by finishNotificationNoop: a notification wake
+	// that turns out to have nothing to deliver runs no turn, so it settles
+	// back to it. Guarded by s.mu.
+	restBeforeInput SessionState
+	// restOwedGeneration is the restGeneration of the settle that last found a
+	// needs_response turn with output (or a wake that resumed its rest),
+	// whether it scheduled the quiet period or something held the session
+	// idle; 0 before any. A fresh
+	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
+	// by s.mu.
+	restOwedGeneration uint64
+	// quietRestBeforeInput records that the current input started while that
+	// rest was still owed: no turn or settle since, and the session idle. The
+	// input's turn start cancelled it. Guarded by s.mu.
+	quietRestBeforeInput bool
+	// endReasonBeforeInput is the communicate end reason the current input's
+	// turn start reset. A wake that runs no turn puts it back, so the
+	// drain-loop settle reads the end reason of the last turn that ran.
+	// Guarded by s.mu.
+	endReasonBeforeInput string
+	// resumeQuietRest tells the drain-loop settle that a wake which ran no
+	// turn left that cancelled rest standing, so the settle arms it again.
+	// Guarded by s.mu.
+	resumeQuietRest bool
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
@@ -1399,6 +1434,7 @@ type communicateResult struct {
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
+	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -1893,6 +1929,14 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 	return s.comm.structured, s.comm.structured != nil
 }
 
+// communicateEndReason is why this input's terminal communicate call ended
+// the turn: "" when none was accepted, or on a delegate.
+func (s *Session) communicateEndReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.endReason
+}
+
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
 // communicate tool (issue #570). A call's message, reply, canonical output,
 // and raw structured value are accepted together under s.mu — the first
@@ -1901,7 +1945,7 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 // still-empty structured slot. It returns whether this call won; losers report
 // accepted:false. The stable-delegate lease, when the context carries one, is
 // recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
 	s.mu.Lock()
 	if s.comm.called {
 		s.mu.Unlock()
@@ -1913,6 +1957,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		reply:      reply,
 		output:     output,
 		structured: structured,
+		endReason:  endReason,
 	}
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
