@@ -1674,8 +1674,8 @@ function shownRowKey(ref: string, archived: boolean): string {
 
 /** The Board's shown rows by ref and tier: each ref keeps its first
  * unarchived copy and its first archived copy, in screen order. The map
- * keeps its identity while no row, state or tier changes, so the row menu's
- * host (and an open menu) changes only when one does. */
+ * keeps its identity while no row, state, blue dot or tier changes, so the
+ * row menu's host (and an open menu) changes only when one does. */
 function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> {
 	const byKey = new Map<string, ShownRow>();
 	for (const shown of rows) {
@@ -1691,7 +1691,13 @@ function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap
 	if (before.size !== after.size) return false;
 	for (const [key, shown] of after) {
 		const was = before.get(key);
-		if (!was || was.item.row !== shown.item.row || was.item.state !== shown.item.state) return false;
+		if (
+			!was ||
+			was.item.row !== shown.item.row ||
+			was.item.state !== shown.item.state ||
+			was.item.unseen !== shown.item.unseen
+		)
+			return false;
 	}
 	return true;
 }

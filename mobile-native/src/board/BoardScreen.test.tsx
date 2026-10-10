@@ -5910,3 +5910,26 @@ describe("the nav bar's glass (spec 16.3)", () => {
 		expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 112 - 48) - 112, animated: true });
 	});
 });
+
+// The long-press card reads the shown row, so it follows a blue dot that
+// changed alone.
+it("hands the row menu a row whose blue dot changed though its state didn't", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const turnEnded = minutesAgo(20);
+	const workingUnseen = session("local:working-unseen", {
+		title: "Working unseen",
+		state: "active",
+		updated_at: minutesAgo(1),
+		turn_ended_at: turnEnded,
+		unseen: true,
+	});
+	const fake = hub({ ...fleet, live: [[workingUnseen]], needsYou: [] });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const host = menuHost(id);
+	expect(menuItem(host, "local:working-unseen")).toMatchObject({ state: "working", unseen: true });
+	act(() => hubSeenMarks(id).markSeen(null, [{ ref: "local:working-unseen", seenThrough: Date.parse(turnEnded) }]));
+	expect(menuItem(menuHost(id), "local:working-unseen")).toMatchObject({ state: "working", unseen: false });
+	act(() => tree.unmount());
+});
