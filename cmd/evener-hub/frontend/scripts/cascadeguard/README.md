@@ -23,15 +23,24 @@ its auth URL out of process arguments and environment variables.
 
 The guard checks:
 
-- A first drill whose immediate parent is the mounted origin conversation
-  collapses that parent to a 52px spine, keeping only the leaf readable; two
-  readable columns and five 52px ancestor spines at depth six, a 400px
-  parent and a leaf with a 440px minimum.
-- Compact ancestor status geometry with exact hover and screen-reader text,
-  including a real running-to-resting transition and a still spinner under reduced
-  motion, without changing the selected branch, focus or column geometry.
+- The mounted origin conversation never renders in the pane: no readable
+  column and no spine. A first drill shows only the subagent's conversation,
+  and that lone column fills the pane; depth six keeps two readable columns
+  and four 52px ancestor spines, a 400px parent and a leaf with a 440px
+  minimum. The pane body hosting the spines and columns never scrolls as a
+  unit, each column's transcript viewport scrolls internally with its
+  activity controls below the content, and the pane hosts no path nav or
+  title heading.
+- Compact ancestor status geometry with exact hover and screen-reader text on
+  a rendered ancestor spine, stable through the origin's own live
+  running-to-resting transition and under reduced motion, without changing the
+  selected branch, focus or column geometry. The fixture's only busy
+  conversation is the origin itself, which never renders; the running spine
+  indicator family stays covered by the jsdom suites.
 - Narrow overflow, selected-leaf visibility, independent transcript scrolling,
-  parent selection, ancestor Tasks, one Escape and native keyboard branching.
+  parent selection, ancestor Tasks, one Escape, a keyboard pop through the
+  pane's own footer breadcrumb crumb and native keyboard branching through the
+  source-scoped sidebar's paging rows.
 - Real cursor paging past the default 50 rows and two actual socket reconnects,
   additive membership, retained page extent and closed-peek demand release.
 - Separate source and inspector panels, one reused secondary inspector, exact
@@ -65,15 +74,19 @@ The guard checks:
   retain the original recipient and mutation IDs; the provider and public
   transcript independently verify each submitted input arrives once.
 - Close-only Return, exact original editor focus and persisted inspector removal.
-- A real page reload restoring separate ordinary source and read-only inspector,
-  exact selected ref, six saved edges and origin locator, while an independent
-  pane keeps its identity, grid, tab order and draft.
+- A real page reload restoring separate ordinary source and read-only
+  inspector, exact selected ref, six saved edges and origin locator rendered
+  above the removed origin, while an independent pane keeps its identity,
+  grid, tab order and draft. Opening the already-open child conversation
+  focuses its own pane without closing inspection; the original root
+  conversation no longer renders in the pane, so the old root-column Open
+  shortcut that closed inspection is unreachable.
 - Actual leaf ancestry and source location replies held at native WebSocket
   delivery, then released unchanged, with exact inspector focus retained and no
   column style mutations.
 - A desktop layout reload followed by a phone-width host switch, showing only
-  the selected read-only cascade transcript and usable close-only Return, plus
-  ordinary phone Agents transcript entry.
+  the selected read-only cascade transcript with no path nav or pane title and
+  a usable close-only Return, plus ordinary phone Agents transcript entry.
 
 The center legitimately retains shared root demand. Closed-peek release is
 checked on an ancestor with no independent holder, rather than treating every
