@@ -60,9 +60,9 @@ func (s *Session) hasHumanPartnerToAsk() bool {
 }
 
 // reportsToParent reports whether this session's communicate messages go to
-// a parent agent rather than a human partner. It is the one predicate for
-// that: communicate's wording and update delivery use it, and the Reporting
-// section's IsSubagent branch is the same predicate.
+// a parent agent rather than a human partner; communicate's wording follows
+// it. It is isSubagentSession, the predicate behind the system prompt's
+// IsSubagent branches, so the tool and the prompt cannot disagree.
 func (s *Session) reportsToParent() bool {
 	return s.isSubagentSession()
 }

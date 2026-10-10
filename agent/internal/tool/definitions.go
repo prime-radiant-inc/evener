@@ -219,7 +219,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"`result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable " +
 			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
 			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
-			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"), send updates with communicate(end_turn=false), and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
+			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). " + ObserverReporting + " For delegate readiness, status, findings, and final reports, ask the " +
 			"delegate to call `communicate` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
@@ -395,7 +395,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
 		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
 		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
-		"Observers send updates with `communicate(end_turn=false)` and report findings with `communicate(end_turn=true)`. " +
+		ObserverReporting + " " +
 		"A `self` watch on your own events can feed itself: when a frame responds to this watch's earlier frames, it carries a system reminder saying so and how many exchanges deep the loop runs. As the depth grows, stop acting on those frames, and clear the watch if the loop goes on; Evener drops frames past a depth limit. For sustained watching of your own work, use an observer delegate when you can start one, and use a timer for state outside Evener. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{
@@ -461,7 +461,7 @@ func DefJobList() llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. Observer sidecars send updates with `communicate(end_turn=false)` and findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. " + ObserverReporting + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -732,6 +732,10 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	return def
 }
 
+// ObserverReporting is how an observer sidecar talks to the session it
+// watches, shared by every tool description and error that teaches it.
+const ObserverReporting = "Observers send updates with `communicate(end_turn=false)` and report findings with `communicate(end_turn=true)`."
+
 // communicateDelegateDescription is communicate worded for a delegate, whose
 // messages go to its parent agent.
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. A valid call has visible text in `message` or `output.message`. " +
@@ -746,9 +750,6 @@ const communicateDelegateDescription = "Send a message to your parent agent; it 
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
-	if props == nil {
-		return def
-	}
 	if message, ok := props["message"].(map[string]any); ok {
 		message["description"] = "The text your parent agent receives. When the task asks for concrete findings, put them here."
 	}
