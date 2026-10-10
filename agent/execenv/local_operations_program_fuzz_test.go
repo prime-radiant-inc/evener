@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/fuzz/fault"
 )
 
@@ -286,8 +287,8 @@ func localFilesystemProgramGrep(t *testing.T, env *LocalExecutionEnvironment, to
 		t.Fatalf("Grep count fallback = %q, %v", counts, err)
 	}
 	capped, err := env.Grep(context.Background(), "needle", "", "", true, 1, "")
-	match, cut := strings.CutSuffix(capped, "\n"+grepTruncationNote(1))
-	if err != nil || !cut || match == "" || strings.Count(match, "\n") != 0 {
+	match, notes := searchresult.Split(capped)
+	if err != nil || notes != grepTruncationNote(1) || match == "" || strings.Count(match, "\n") != 0 {
 		t.Fatalf("Grep capped fallback = %q, %v", capped, err)
 	}
 	if _, err := env.Grep(context.Background(), "[", "", "", false, 100, ""); err == nil || !strings.Contains(err.Error(), "invalid regex") {

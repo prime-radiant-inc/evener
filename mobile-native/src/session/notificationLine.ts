@@ -50,8 +50,10 @@ export function notificationLine(
 			const ref = subagent?.transcriptRef ?? notification.transcriptRef;
 			const line: NotificationLine = notification.quiet
 				? { headline: `${subject} quiet · ${notification.quiet.window}`, failed }
-				: // A report whose ending this client doesn't know still reported.
-					{ headline: said(subject, notification.outcome, "reported"), failed };
+				: notification.update
+					? { headline: `${subject} sent an update`, failed }
+					: // A report whose ending this client doesn't know still reported.
+						{ headline: said(subject, notification.outcome, "reported"), failed };
 			// The parser hands a report's message and retires the machinery stubs
 			// and a failure whose whole error is its ending (the delegate redesign,
 			// mockups 24-delegate-complete): a failed packet frame's cause rides as

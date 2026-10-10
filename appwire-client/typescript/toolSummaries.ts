@@ -26,10 +26,10 @@ import {
   BINARY_PAYLOAD_HEADER,
   composeStepWords,
   diffResultText,
-  outputCount,
   quotedSearchPattern,
   readLineRange,
   type StepWords,
+  searchResultCount,
   summaryOf,
   withDetail,
 } from "./stepWords";
@@ -114,7 +114,7 @@ function grepWords(step: ToolStep): StepWords {
   if (!target) return { verb: "Searched files" };
   return withDetail(
     { verb: "Searched", target: target.pattern, after: target.where },
-    outputCount(step.output, "hits"),
+    searchResultCount(step.output, "hits"),
   );
 }
 
@@ -169,7 +169,7 @@ function globPattern(args: Record<string, unknown>): string | undefined {
 function globWords(step: ToolStep): StepWords {
   const pattern = globPattern(parseArgs(step.argumentsJSON));
   if (!pattern) return { verb: "Searched files" };
-  return withDetail({ verb: "Matched", target: pattern }, outputCount(step.output, "matches"));
+  return withDetail({ verb: "Matched", target: pattern }, searchResultCount(step.output, "matches"));
 }
 
 /** "Edited agent/tree.go · +3 -2", or "Edited a file". */
