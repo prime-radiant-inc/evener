@@ -91,32 +91,33 @@ written: the agent checks that a file, function, command or setting a note names
 still exists before relying on it, and follows a recorded decision or rule
 unless the partner or newer evidence says it changed. A delegate is told
 instead to put what it learned that is worth keeping in its report, because
-its caller decides what to save. Sessions that can call the save tools are also told
-when to save: when the partner corrects the agent or says how they want work
-done, when the partner states a project plan, constraint or decision (saved to
-project memory), and when the agent learns
-something the hard way that is not written down. What the agent found by
-reading the repository, and what the session did, belong in its report rather
-than in memory: the next session can read the repository again, and each page
-costs a transcript entry and every later session's context. Partner-stated
-facts are saved before the work they shape, because complying with them does
-not carry them to the next session. A constraint is something about the
-project that stays true on its own; a hold that lasts until the partner lifts
-it is a sign-off for this conversation, and an instruction scoped to this work
-(such as which model to use for some steps of a plan) is not a standing
-preference, so neither is saved. The Finishing guidance and the result
-tool's description repeat the save check at the point the agent decides it is
-done, naming what qualifies: a preference, rule or project fact the partner
-gave, or something learned the hard way that the code, docs and history would
-not show the next session. Pages that contradict what the agent observes are corrected in the same
-turn. Saving sessions are also told the shape of a useful page (one durable
-fact with its reason and when it bears on work, leaving out what the code does
-today, which the code already records, with a frontmatter description that
-says what the page holds and topic tags that reuse the index's) and that run details which go stale within days (commit SHAs, ids, scratch
-paths, test counts, review verdicts) stay out of
-personal and project memory, as do approvals, sign-offs, authorizations and
-where a plan or task stands: memory never records permission, because a later
-session would act on a grant nobody gave it. A changed fact is rewritten in place. When the
+its caller decides what to save. For sessions that can call the save tools, the
+guidance says memory's main source is the human partner: what they told the
+agent, decided or corrected, which a later session has not heard. Those are
+saved before the work they shape: a preference or correction with the
+partner's reason (personal memory), and a project plan, constraint, convention
+or decision (project memory), even when the agent implements it in the same
+task, since the code shows the value, not that it is a rule. The agent's own
+findings qualify only as facts about the project or its environment that the
+repository can't show and that would change what a later session does. The
+guidance names what doesn't qualify: a lesson from one task restated as a
+principle, what the code does, that something is missing, general knowledge of
+a language or tool, where a task or plan stands, approvals and sign-offs
+(including holds that last until the partner lifts them, and plan approvals: a
+later session couldn't know whether they still hold, and memory never records
+permission), instructions scoped to one job (such as which model to use for
+some steps), and bugs in Evener itself, which go to the partner or the report
+so they get filed. What the agent found or did belongs in its report. The
+Finishing guidance repeats the check for what the partner told and for what was
+worked out the hard way; the result tool carries no save reminder, because one
+there fired at every turn and every delegate report and drew low-value pages.
+Pages that contradict what the agent observes are corrected in the same turn.
+Saving sessions
+are also told the shape of a useful page (one durable fact with its reason and
+when it bears on work, with a frontmatter description that says what the page
+holds and topic tags that reuse the index's) and to keep run details that go
+stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
+out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
 ends its turn. A status-only index line is a reason to read its page. Progress through longer work belongs
 to the task list (How you work, when the session has `task_list`): one place
