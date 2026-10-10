@@ -141,7 +141,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			).map(({ label, accessibilityLabel }) => ({ label, accessibilityLabel })),
 		).toEqual([
 			{ label: "Subagents 55", accessibilityLabel: "Subagents, 55" },
-			{ label: "Tasks 3/7", accessibilityLabel: "Tasks, 3 of 7 settled" },
+			{ label: "Tasks 4/7", accessibilityLabel: "Tasks, 4 of 7 settled" },
 			{ label: "Goal", accessibilityLabel: "Goal" },
 			{ label: "Queue 1", accessibilityLabel: "1 queued message" },
 		]);
