@@ -1686,4 +1686,17 @@ export class SessionEntryCache {
       formatVersion: row.formatVersion,
     };
   }
+
+  /** Metadata-only lookup for deletion, including histories no longer owned in memory. */
+  async historyKeysForRequestedRefs(refs: readonly string[]): Promise<string[]> {
+    const database = await this.#connection.open();
+    const transaction = database.transaction(ENTRY_META_STORE, "readonly");
+    const complete = transactionCompletion(transaction);
+    const rows = await requestResult<TranscriptHistoryMetaRow[]>(transaction.objectStore(ENTRY_META_STORE).getAll());
+    await complete;
+    const requested = new Set(refs);
+    return rows
+      .filter((row) => row.requestedRefs?.some((binding) => requested.has(binding.ref)))
+      .map((row) => row.historyKey);
+  }
 }

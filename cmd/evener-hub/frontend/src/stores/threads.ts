@@ -82,6 +82,7 @@ import {
   type MutationStopBarrier,
 } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { trackProjectionWork } from "./projectionWork";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { SESSION_CACHE_LOOKUP_DEADLINE_MS, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
@@ -6690,7 +6691,8 @@ function onCacheChannelMessage(message: CacheChannelMessage): void {
       for (const ref of message.refs) cacheLifetimes.set(ref, { ...cacheLifetimes.get(ref), suppressed: true });
       return { cacheLifetimes };
     });
-    void currentSessionCache().deleteRecords(message.refs);
+    for (const ref of message.refs) noteEntryRouteRetirement(ref);
+    deleteCachedRefs(message.refs);
   } else {
     onCacheEpochObserved(message.epoch); // Task 10's clear arm: the same backstop the aborted write uses
   }
@@ -6721,21 +6723,45 @@ export function markCacheSessionsDeleted(refs: string[]): void {
     residencyIfCreated?.revoke(ref, "deleted");
     noteEntryRouteRetirement(ref);
   }
-  // The entry fixture route owns its recorded history in the repository and the
-  // entry cache, not the legacy records store: retire its claims and remove its
-  // rows and coverage, so a late page or write from the deleted capture cannot
-  // resurrect them. The durable per-history generation fence refuses anything
-  // already captured.
-  const fixture = entryTranscriptFixtureForTests;
-  if (fixture && refs.includes(fixture.ref)) {
-    fixture.reader?.dispose();
-    fixture.repository?.dispose();
-    fixture.repository = undefined;
-    if (fixture.historyKey !== undefined) void fixture.cache.deleteHistory(fixture.historyKey);
-  }
-  void currentSessionCache().deleteRecords(refs);
+  deleteCachedRefs(refs);
   cacheChannel.connect();
   cacheChannel.postMessage({ kind: "deletion", refs });
+}
+
+// Retirement is synchronous. Durable healing then discovers disk-only histories
+// by requested-ref metadata and uses the accepted per-history deletion fence.
+// Captured identities are included even when their first write has not landed.
+function deleteCachedRefs(refs: string[]): void {
+  const byCache = new Map<SessionEntryCache, Set<string>>();
+  const routes = entryTranscriptRoutes().filter((route) => refs.includes(route.ref));
+  for (const route of routes) {
+    const keys = byCache.get(route.cache) ?? new Set<string>();
+    if (route.historyKey) keys.add(route.historyKey);
+    byCache.set(route.cache, keys);
+    clearEntryTranscriptLocalOpening(route.ref);
+    retireEntryTranscriptRoute(route);
+  }
+  const production = sessionCacheAdapterOverride === undefined && !entryTranscriptFixtureForTests;
+  if (production && !byCache.has(currentEntryCache())) byCache.set(currentEntryCache(), new Set());
+  void trackProjectionWork(
+    (async () => {
+      for (const [cache, captured] of byCache) {
+        for (const historyKey of await cache.historyKeysForRequestedRefs(refs)) captured.add(historyKey);
+        for (const historyKey of captured) await cache.deleteHistory(historyKey);
+      }
+      // Only deletion, never a legacy read or writer, uses this compatibility
+      // adapter on the production route. Its constructor captures real storage
+      // lazily, and both source formats are healed on the same schema version.
+      const legacy = production ? new SessionCacheIndexedDB() : currentSessionCache();
+      try {
+        await legacy.deleteRecords(refs);
+      } finally {
+        if (production) legacy.close();
+      }
+    })(),
+  ).catch(() => {
+    // Durable storage is best-effort, but retired claims never resume writes.
+  });
 }
 
 /** Clear cached session content (spec, "The clear-cached-sessions setting").
