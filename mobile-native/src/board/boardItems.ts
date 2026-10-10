@@ -33,7 +33,7 @@ export type BoardItem = { key: string; group: string } & (
 	| { kind: "tree"; section: ProjectSection; tree: Exclude<ProjectTreeItem, { kind: "session" }> }
 );
 
-const LIVE_BANDS: readonly LiveBand[] = ["needsYou", "finished", "working"];
+const LIVE_BANDS: readonly LiveBand[] = ["needsYou", "working"];
 const LIVE = "live";
 
 /** Live: each band that has rows, as its header and its rows, then Idle's

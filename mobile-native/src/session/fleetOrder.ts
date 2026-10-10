@@ -38,7 +38,7 @@ export function nextQueue(bands: LiveBands, currentRef: string, recent: readonly
 }
 
 export function liveOrder(bands: LiveBands): NavigationSessionSummary[] {
-	return [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => item.row);
+	return [...bands.needsYou, ...bands.working, ...bands.idle].map((item) => item.row);
 }
 
 /** The session before or after this one in Live order; null at either end, or

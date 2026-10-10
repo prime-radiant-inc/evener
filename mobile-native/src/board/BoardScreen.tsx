@@ -147,7 +147,6 @@ type Navigation = Props["navigation"];
 const MINUTE = 60_000;
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	needsYou: "NEEDS YOU",
-	finished: "FINISHED",
 	working: "WORKING",
 };
 /** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
@@ -532,7 +531,7 @@ function Board({
 	const scrollerOffset = useRef(searchFieldHeight - underGlass);
 
 	const manifest = snapshot.manifest;
-	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
+	const liveTotal = bands.needsYou.length + bands.working.length + bands.idle.length;
 	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
@@ -843,7 +842,7 @@ function Board({
 	// from.
 	const shownRows = useShownRows([
 		...shownRowItems,
-		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({
+		...[...bands.needsYou, ...bands.working, ...bands.idle].map((item) => ({
 			item,
 			archived: false,
 		})),
@@ -1715,7 +1714,7 @@ function readDraftRefs(hubId: string): Set<string> {
  * seen epoch, but only from fresh, complete reads. Live is sorted by
  * attention, not time, so a newer row can sit on a later page: until the
  * epoch is adopted, keep reading Live's pages. Until then isSeen counts
- * every row as seen, so nothing flashes Finished. */
+ * every row as seen, so no row flashes a blue dot. */
 function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: BoardSnapshot, focused: boolean) {
 	useEffect(() => {
 		// Out of view the Board is paused; coming back re-runs this and picks
@@ -1937,7 +1936,7 @@ function SummaryLine({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const entries = (["needsYou", "finished", "working", "idle"] as const).filter((band) => summary[band] > 0);
+	const entries = (["needsYou", "working", "idle"] as const).filter((band) => summary[band] > 0);
 	return (
 		<View
 			testID="live-summary"
