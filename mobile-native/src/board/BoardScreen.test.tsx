@@ -629,6 +629,8 @@ const isRowTitled = (title: string) => (node: ReactTestInstance) =>
 function rowTitled(tree: ReactTestRenderer, title: string) {
 	return tree.root.find(isRowTitled(title));
 }
+/** Whether a Board row carries the blue dot. */
+const dotted = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).findAllByType(FreshDot).length > 0;
 function hasRow(tree: ReactTestRenderer, title: string) {
 	return tree.root.findAll(isRowTitled(title)).length > 0;
 }
@@ -720,7 +722,7 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	pressLabel(tree, "Idle, 3 sessions, unread sessions inside");
 	for (const title of ["Ship it", "Old chore", "Older chore"]) expect(hasRow(tree, title)).toBe(true);
-	expect(rowTitled(tree, "Ship it").findAllByType(FreshDot)).toHaveLength(1);
+	expect(dotted(tree, "Ship it")).toBe(true);
 	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toEqual({ idle: false });
 	// Folded again, the summary's idle count unfolds it.
 	pressLabel(tree, "Idle, 3 sessions");
@@ -1599,13 +1601,13 @@ it("opens a session after marking it seen", async () => {
 	connect(id, hub(fleet).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	expect(rowTitled(tree, "Ship it").findAllByType(FreshDot)).toHaveLength(1);
+	expect(dotted(tree, "Ship it")).toBe(true);
 	act(() => rowTitled(tree, "Ship it").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
 	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
 	// Seen, the session stays in Idle and loses its blue dot.
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
-	expect(rowTitled(tree, "Ship it").findAllByType(FreshDot)).toHaveLength(0);
+	expect(dotted(tree, "Ship it")).toBe(false);
 	act(() => tree.unmount());
 });
 
@@ -1639,8 +1641,6 @@ const hubFleet: Fleet = {
 };
 const stateOf = (tree: ReactTestRenderer, title: string) =>
 	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
-/** Whether a Board row carries the blue dot. */
-const dotted = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).findAllByType(FreshDot).length > 0;
 
 // A live session that moved after the person last looked carries the blue
 // dot, resting in Idle included, and folded, Idle's header carries it for the
@@ -1684,9 +1684,9 @@ it("dots the folded Idle header while a session inside moved since it was seen, 
 	act(() => fold().props.onPress());
 	expect(fold().props.accessibilityLabel).toBe("Idle, 3 sessions");
 	expect(fold().findAllByType(FreshDot)).toHaveLength(0);
-	expect(rowTitled(tree, "Moved since seen").findAllByType(FreshDot)).toHaveLength(1);
-	expect(rowTitled(tree, "Hub seen").findAllByType(FreshDot)).toHaveLength(0);
-	expect(rowTitled(tree, "Never ran").findAllByType(FreshDot)).toHaveLength(0);
+	expect(dotted(tree, "Moved since seen")).toBe(true);
+	expect(dotted(tree, "Hub seen")).toBe(false);
+	expect(dotted(tree, "Never ran")).toBe(false);
 	act(() => tree.unmount());
 });
 

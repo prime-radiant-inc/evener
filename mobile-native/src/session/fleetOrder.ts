@@ -4,7 +4,7 @@
 // (src/board/attention.ts), so the Session and the Board never disagree about
 // who needs you.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import type { LiveBands } from "../board/attention";
+import { type LiveBands, liveRows } from "../board/attention";
 
 export function othersNeedingYou(bands: LiveBands, currentRef: string): NavigationSessionSummary[] {
 	return bands.needsYou.map((item) => item.row).filter((row) => row.ref !== currentRef);
@@ -38,7 +38,7 @@ export function nextQueue(bands: LiveBands, currentRef: string, recent: readonly
 }
 
 export function liveOrder(bands: LiveBands): NavigationSessionSummary[] {
-	return [...bands.needsYou, ...bands.working, ...bands.idle].map((item) => item.row);
+	return liveRows(bands).map((item) => item.row);
 }
 
 /** The session before or after this one in Live order; null at either end, or

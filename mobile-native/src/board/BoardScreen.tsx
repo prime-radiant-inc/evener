@@ -58,7 +58,9 @@ import {
 	type ClassifiedRow,
 	hostLabeler,
 	type LiveSummary,
+	LIVE_BAND_ORDER,
 	liveBands,
+	liveRows,
 	liveSummary,
 	plural,
 	rowClassifier,
@@ -531,7 +533,7 @@ function Board({
 	const scrollerOffset = useRef(searchFieldHeight - underGlass);
 
 	const manifest = snapshot.manifest;
-	const liveTotal = bands.needsYou.length + bands.working.length + bands.idle.length;
+	const liveTotal = liveRows(bands).length;
 	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
@@ -842,7 +844,7 @@ function Board({
 	// from.
 	const shownRows = useShownRows([
 		...shownRowItems,
-		...[...bands.needsYou, ...bands.working, ...bands.idle].map((item) => ({
+		...liveRows(bands).map((item) => ({
 			item,
 			archived: false,
 		})),
@@ -1936,7 +1938,7 @@ function SummaryLine({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const entries = (["needsYou", "working", "idle"] as const).filter((band) => summary[band] > 0);
+	const entries = LIVE_BAND_ORDER.filter((band) => summary[band] > 0);
 	return (
 		<View
 			testID="live-summary"

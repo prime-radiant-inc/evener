@@ -27,6 +27,9 @@ export type BoardState =
 
 export type Band = "needsYou" | "working" | "idle";
 
+/** Live's bands in the one attention order every screen reads them in. */
+export const LIVE_BAND_ORDER: readonly Band[] = ["needsYou", "working", "idle"];
+
 export interface ClassifiedRow {
 	row: NavigationSessionSummary;
 	state: BoardState;
@@ -243,6 +246,11 @@ export function liveBands(
 	bands.idle.sort(newestEndedFirst);
 	bands.working.sort(workingOrder(isStuck));
 	return bands;
+}
+
+/** Live's rows, band by band in LIVE_BAND_ORDER. */
+export function liveRows(bands: LiveBands): ClassifiedRow[] {
+	return LIVE_BAND_ORDER.flatMap((band) => bands[band]);
 }
 
 export interface LiveSummary {

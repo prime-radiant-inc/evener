@@ -191,7 +191,7 @@ export class AlertCenter {
 		if (!this.wanted(alert)) return;
 		if (needsYou(alert)) this.remember(alert.ref);
 		// A session you started, or a start that failed, never joins or replaces
-		// a banner that is up either, but it is never lost: it follows that
+		// a banner that is up, but it is never lost: it follows that
 		// banner, or waits out a hold. It lands while you're elsewhere, often
 		// reading or typing, and without it you may start it again.
 		if (followsInTurn(alert) && this.banner !== null && !this.holding()) {

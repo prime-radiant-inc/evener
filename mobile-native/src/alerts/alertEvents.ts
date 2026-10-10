@@ -7,7 +7,7 @@
 // great (Jesse, question 3). Each source's first read on a connection is
 // its baseline and alerts nothing (ruling 2), so opening the app never drops
 // a pile of banners on what the Board already shows.
-import { type BoardState, bandOf, type LiveBands, whyLine } from "../board/attention";
+import { type BoardState, bandOf, type LiveBands, liveRows, whyLine } from "../board/attention";
 import type { Notice } from "../board/notices";
 import type { AlertCenter, NeedsYouKind, NoticeAlert, SessionAlert } from "./alertCenter";
 
@@ -35,7 +35,7 @@ export function detectSessionAlerts(
 	// if that ever changes: the first band it appears in, Needs you first,
 	// decides.
 	const diffed = new Set<string>();
-	for (const item of [...bands.needsYou, ...bands.working, ...bands.idle]) {
+	for (const item of liveRows(bands)) {
 		const { ref, title } = item.row;
 		if (diffed.has(ref)) continue;
 		diffed.add(ref);

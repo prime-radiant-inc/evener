@@ -29,15 +29,7 @@ describe("In-app alerts preferences (spec 12)", () => {
 		expect(new AlertPreferenceStore(memory(new Map([[ALERT_PREFERENCES_KEY, "{not json"]]))).getSnapshot()).toEqual(
 			DEFAULT_ALERT_PREFERENCES,
 		);
-		const stored = JSON.stringify({ failures: false, hold: "yes", extra: true });
-		expect(new AlertPreferenceStore(memory(new Map([[ALERT_PREFERENCES_KEY, stored]]))).getSnapshot()).toEqual({
-			...DEFAULT_ALERT_PREFERENCES,
-			failures: false,
-		});
-	});
-
-	it("ignore the retired finished switch a phone stored before #4093", () => {
-		const stored = JSON.stringify({ failures: false, finished: true });
+		const stored = JSON.stringify({ failures: false, hold: "yes", finished: true });
 		expect(new AlertPreferenceStore(memory(new Map([[ALERT_PREFERENCES_KEY, stored]]))).getSnapshot()).toEqual({
 			...DEFAULT_ALERT_PREFERENCES,
 			failures: false,
