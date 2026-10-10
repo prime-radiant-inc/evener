@@ -17,8 +17,16 @@
           "run": "cat > zz_heldout_test.go <<'EOF'\npackage receipts\n\nimport \"testing\"\n\nfunc TestHeldoutParsePrice(t *testing.T) {\n\tfor in, want := range map[string]int{\"2.5\": 250, \"12.05\": 1205, \"3\": 300, \"0.40\": 40} {\n\t\tif got, err := ParsePrice(in); err != nil || got != want {\n\t\t\tt.Errorf(\"ParsePrice(%q) = %d, %v; want %d\", in, got, err, want)\n\t\t}\n\t}\n}\nEOF\ngo test -count=1 -run Heldout ./...; rc=$?; rm -f zz_heldout_test.go; exit $rc"
         },
         {
-          "name": "changelog entry",
-          "run": "grep -q 'Fix receipt totals' CHANGELOG.md"
+          "name": "changelog entry under Unreleased",
+          "run": "awk '/^## Unreleased/{f=1;next} /^## /{f=0} f && /Fix receipt totals/{ok=1} END{exit !ok}' CHANGELOG.md"
+        },
+        {
+          "name": "changelog script works here",
+          "run": "d=$(mktemp -d) || exit 1; cp -R . \"$d/w\" && cd \"$d/w\" && ! grep -q 'probe entry' CHANGELOG.md && sh scripts/changelog.sh 'probe entry' >/dev/null 2>&1 && awk '/^## Unreleased/{f=1;next} /^## /{f=0} f && /probe entry/{ok=1} END{exit !ok}' CHANGELOG.md"
+        },
+        {
+          "name": "fix committed",
+          "run": "fx=\"$LAB_DIR/scenarios/autonomous-debug/fixture\"; git rev-parse --verify -q HEAD >/dev/null || exit 1; st=$(git status --porcelain) || exit 1; test -z \"$st\" || exit 1; m=$(git show HEAD:money.go) || exit 1; r=$(git show HEAD:receipt.go) || exit 1; ! { printf '%s\\n' \"$m\" | cmp -s - \"$fx/money.go\" && printf '%s\\n' \"$r\" | cmp -s - \"$fx/receipt.go\"; }"
         },
         {
           "name": "at most 1 memory page",
