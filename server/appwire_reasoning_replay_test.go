@@ -677,3 +677,20 @@ func TestServerAppWireStatusSettledDuringAStartedTurnIsNotHeld(t *testing.T) {
 		}
 	}
 }
+
+// An interrupted SESSION_END, which changes no status itself, still drops a
+// rest held during the input it ends.
+func TestServerAppWireHeldStatusSettledDropsAtAnInterruptedSessionEnd(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_held_interrupt")
+	srv.SetProcessing(true)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "th_held_interrupt", Data: events.StatusSettledData{State: "awaiting"}}, nil)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_held_interrupt", Data: events.SessionEndData{Reason: "interrupted", State: "idle", Interrupted: true}}, nil)
+	srv.SetProcessing(false)
+
+	for _, status := range statusNotifications(t, srv, "th_held_interrupt") {
+		if status.Status.Type == appwire.ThreadStatusAwaiting {
+			t.Fatalf("broadcast the held rest after an interrupt: %+v", status)
+		}
+	}
+}

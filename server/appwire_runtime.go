@@ -372,6 +372,11 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
 		}
+		if event.Kind == events.EventSessionEnd {
+			// Every SESSION_END ends the input that held a rest, including an
+			// interrupted one, whose status effect is nil and so can't drop it.
+			s.appHeldSettledEffect = nil
+		}
 		s.appActivity.noteIntent(event)
 		s.appActivity.observe(event.Kind)
 		projected := s.appProjector.Project(event)
