@@ -894,7 +894,20 @@ the custom config, test files, cacheDir and dependency symlink in scratch,
 reuse the frontend's resolve aliases and test setup, omit build plugins
 that write checkout files, and keep at least two workers (the vmThreads
 isolation floor explained below). These runs are
-probes; canonical verdicts stay with `make test-web`.
+probes; canonical verdicts stay with `make test-web`. In a read-only lane
+neither `make test-web` nor `npm test` can start at all: the gate's own
+`vitest run` line uses the default loader and fails with EROFS under
+`node_modules/.vite-temp` before any test runs. A targeted run in the
+checkout itself works as
+`npx vitest run --configLoader runner --cache=false <file>` from
+`cmd/evener-hub/frontend`, though the config's `restore-dist-placeholder`
+plugin still writes `dist/PLACEHOLDER` when the run closes.
+
+The frontend tree has no jest-dom: `src/testSetup.ts` never imports it and
+`package.json` does not depend on it, so matchers such as `toHaveValue`,
+`toBeDisabled` or `toBeInTheDocument` fail `npm run typecheck`. Assert on
+the DOM directly (`input.value`, `el.textContent`, `button.disabled`,
+`document.activeElement`).
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
@@ -978,7 +991,12 @@ durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
 (src/panes/session/composer/queue/testing/flushPendingTurnsProjection.ts),
 and the test asserts directly afterwards. Every storage transaction registers
 with the projection work tracker, so the flush returns once the whole chain
-has settled, and the dispatched request has gone out by then. A `waitFor`
+has settled, and the dispatched request has gone out by then. The flush
+sees only work registered with that tracker: when production code adds an
+awaited step outside the storage (a component awaiting a store call before
+it clears its state), wrap the whole operation in `trackProjectionWork`
+(src/stores/projectionWork.ts), or the flush returns before it finishes.
+A `waitFor`
 on the request races that chain against a 1000ms ceiling, which a loaded
 host can outlast, and it stops as soon as the request appears, with the
 receipt's settle and the refresh after it still to come. A test that holds
@@ -994,7 +1012,7 @@ toast from the previous test can satisfy this test's assertion.
 
 ### Frontend store-fixture contracts
 
-Four contracts that repeatedly bite store-test authors, none of them visible
+Five contracts that repeatedly bite store-test authors, none of them visible
 from the assertion that fails:
 
 - A store fixture's `thread/read` handler must echo the request generation
@@ -1015,6 +1033,12 @@ from the assertion that fails:
   withholds the completion event; it does not prove an active transaction
   lock blocks other writes, so diagnose a stalled successor from its actual
   pending operation.
+- A boundary before commit, where the write can still abort, needs the
+  request instead: a call-through spy on the object-store method that holds
+  that request's `success` event with `holdIndexedDBEvent`, or aborts with
+  `this.transaction.abort()`. Match the call by `this.name` and the exact key
+  the caller builds, never by call order, because production can add an
+  earlier read; src/stores/humanNoteDrafts.test.ts is the worked example.
 - fake-indexeddb throws a synchronous `DataError` from the store method
   itself for a put/add whose key cannot be derived (`buildRecordAddPut`
   throws before any request is created). Such a test proves method-fault
@@ -1691,6 +1715,20 @@ does slip through shows up on the hub's stderr:
 ```
 [hub] past index: skipped /…/projects/alpha-0123456789/sessions/placeholder.meta.json: invalid session id (want a 22-character base62 UUIDv7 payload): invalid UUID payload
 ```
+
+## Driving Turns from a Go Fixture
+
+A session runs one turn at a time: a `turn/start` while a turn is active is
+refused with `turn is already active`, so a fixture that fires several
+starts at once gets only one turn. Wait for each turn to finish before
+starting the next.
+
+On a daemon connection, a `thread/read` without `Subscribe: true` returns a
+snapshot and subscribes to nothing, so `Client.Notifications()` never
+carries that thread's `thread/status/changed` or `history/updated`. A
+fixture that waits on the turn lifecycle reads with
+`ThreadReadParams{Ref: ref, Subscribe: true}` on the same connection before
+it calls `TurnStart`.
 
 ## A Disposable Hub Needs Its Own HOME
 
