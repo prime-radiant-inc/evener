@@ -212,7 +212,7 @@ describe("SessionCacheRow", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await seedCacheWithRecords(1);
     await sessionCacheRowStore.getState().refresh();
-    const hold = holdNextWriteTransaction(["records", "meta"]);
+    const hold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
     const clearing = sessionCacheRowStore.getState().clear();
     try {
       await hold.reached;
@@ -241,7 +241,7 @@ describe("SessionCacheRow", () => {
     await act(async () => {
       await sessionCacheRowStore.getState().refresh();
     });
-    const hold = holdNextWriteTransaction(["records", "meta"]);
+    const hold = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
     let clearing: Promise<void> | undefined;
     try {
       await act(async () => {
