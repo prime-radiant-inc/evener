@@ -60,6 +60,8 @@ The lab runs real models with your configured provider credentials, so it is nev
   "Please don't change anything; just answer. You didn't save X to memory. Did you consider it, and what led you not to?"
 ```
 
+`run` and `report` end with memory writes plus edits per root session (mean, max and session count) and per stage, for each scenario, version and arm. Stages that resume one session count as one session, so in a multi-turn scenario the per-stage numbers are per turn. Errored stages are left out.
+
 For scenarios that declare `"arms": ["on", "off"]` (`off` runs every stage with `--disable-memory`), `report` and `run` also print memory on minus off per check and version, and each arm's mean tool calls and seconds over the stages that ran. An off arm writes no memory, so its memory checks are settled by construction (an `absent` check passes, any other fails): read the delta on behavior and held-out checks.
 
 `ask` resumes the stage's root session, by the id recorded in its `grade.json`, and asks it a question. For a stage that resumed an earlier one, that is the earlier stage's session. A stage that ran in another workspace needs `--workspace` (for example `--workspace work2` for `sed-quirk` stage B). `--effort` (default `high`) and `--timeout` (default 600 seconds) apply too. Use it whenever a trial does something you didn't want, and ask before you reword a prompt. In past rounds the answers named the actual cause:
@@ -121,6 +123,7 @@ The header of `memory-lab` documents every field. In short:
 - each stage has a prompt
 - a scenario can set `fixture_from` to start from a sibling scenario's `fixture/`
 - stages can carry `before`, `seed_project_memory`, `fixture` with `workspace` (`work` plus digits, like `work2`; `run` refuses a `fixture` without one other than `work`) and `resume` (continue an earlier stage's session)
+- a multi-turn session is a run of stages that each `resume` the first one: every stage is the partner's next turn in that one session, and its checks grade the session as it stands after that turn
 - checks come in these types:
   - `checks`: shell commands; `$LAB_DIR` is the lab directory, and `memcheck.py` there holds the shared memory checks (`index-lines`, `new-pages`)
   - `trace`: tool-call regexes
@@ -129,6 +132,7 @@ The header of `memory-lab` documents every field. In short:
   - `transcripts`: a regex over every transcript, delegates included
   - `delegate_calls`: a tool call with a given name and arguments, parsed from the transcripts of delegates created during this stage
   - `whiteboard`: shape and length
+  - `memory_writes`: `max`, the most `memory_write` plus `memory_edit` calls the stage's root session may have made so far, counting this turn and every earlier stage resumed into the same session
 
 Run `./memory-lab check` after editing a scenario. It loads every scenario under `scenarios/` (or the dirs you name) the way `run` does, confirms each loads as itself, that its fixture and seed dirs exist, and that evener reads every seeded page's frontmatter (through `bin/memscope`; an unquoted value holding `: ` is invalid YAML, so quote it), prints one OK or ERROR line per scenario, and exits nonzero on any error. It runs no model.
 

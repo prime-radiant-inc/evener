@@ -543,5 +543,75 @@ class ArmDeltasTest(unittest.TestCase):
         self.assertEqual(bookkeeping.lab.arm_costs(grades), {})
 
 
+class SessionMemoryWritesTest(unittest.TestCase):
+    """A multi-turn scenario delivers each partner turn as a stage that resumes one session; memory_writes
+    checks and the report count memory writes and edits per session and per turn."""
+
+    def setUp(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.trial = root.name
+        os.makedirs(os.path.join(self.trial, "work"))
+        os.makedirs(os.path.join(self.trial, "xdg"))
+        os.makedirs(os.path.join(self.trial, "sessions", "A"))
+
+    def grade(self, name, session, tools, max_writes, earlier):
+        """Grades stage name, whose root session ran the given tool calls, against a memory_writes check."""
+        lines = [event("SESSION_START", session=session)]
+        lines += [event("TOOL_CALL_START", session=session, tool_name=t, call_id=f"c{i}", arguments_json="{}")
+                  for i, t in enumerate(tools)]
+        events = os.path.join(self.trial, f"{name}.events.ndjson")
+        with open(events, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        session_info = {"work": os.path.join(self.trial, "work"), "xdg": os.path.join(self.trial, "xdg"),
+                        "env": dict(os.environ), "state": os.path.join(self.trial, "sessions", "A"),
+                        "events": events, "started": 0, "exit": 0, "seconds": 1, "timeout": 10}
+        stage = {"name": name, "prompt": "p", "memory_writes": [{"name": "few writes", "max": max_writes}]}
+        return bookkeeping.lab.grade_stage("try", "on", "/s/multi", stage, self.trial, session_info, earlier)
+
+    def test_the_check_counts_writes_and_edits_across_the_turns_of_one_session(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_read", "shell"], 2, [])
+        b = self.grade("B", "s1", ["memory_edit"], 2, [a])
+        c = self.grade("C", "s1", ["memory_write", "memory_delete"], 2, [a, b])
+        self.assertEqual([g["checks"]["few writes"] for g in (a, b, c)], [True, True, False])
+
+    def test_a_fresh_session_starts_its_own_count(self):
+        a = self.grade("A", "s1", ["memory_write", "memory_write"], 2, [])
+        b = self.grade("B", "s2", ["memory_write"], 2, [a])
+        self.assertTrue(b["checks"]["few writes"])
+
+    def test_report_counts_writes_per_session_and_per_turn(self):
+        def g(trial, stage, session, calls, error=None):
+            out = {"scenario": "multi", "version": "try", "arm": "on", "trial": trial, "stage": stage,
+                   "session_id": session, "memory_calls": calls}
+            if error:
+                out["error"] = error
+            return out
+        grades = [g("r1", "A", "s1", {"memory_write": 2, "memory_read": 4}), g("r1", "B", "s1", {"memory_edit": 1}),
+                  g("r1", "C", "s2", {}),
+                  g("r2", "A", "s3", {}), g("r2", "B", "s3", {"memory_write": 1}),
+                  g("r2", "C", "s4", {}, error="session timed out")]
+        sessions, turns = bookkeeping.lab.memory_changes(grades)[("multi", "try", "on")]
+        self.assertEqual(sorted(sessions), [0, 1, 3])
+        self.assertEqual(turns, {"A": [2, 0], "B": [1, 1], "C": [0]})
+
+
+class MemoryWritesValidationTest(unittest.TestCase):
+    def load(self, check):
+        scen = tempfile.TemporaryDirectory()
+        self.addCleanup(scen.cleanup)
+        with open(os.path.join(scen.name, "scenario.json"), "w") as f:
+            json.dump({"stages": [{"name": "A", "prompt": "p", "memory_writes": [{"name": "few", **check}]}]}, f)
+        return bookkeeping.lab.load_scenario(scen.name)
+
+    def test_max_must_be_a_non_negative_integer(self):
+        for bad in ({}, {"max": -1}, {"max": "3"}, {"max": True}, {"max": 2.5}):
+            with self.subTest(check=bad):
+                with self.assertRaises(SystemExit) as refused:
+                    self.load(bad)
+                self.assertIn('needs "max"', str(refused.exception))
+        self.assertEqual(self.load({"max": 0})["stages"][0]["memory_writes"][0]["max"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
