@@ -889,8 +889,9 @@ test("a delete with queued work cancels the queued ticket and no queued row reac
   expect(await fixture.cache.deleteHistory(historyKey)).toBe(true);
   owner.dispose();
   gate.release();
-  // The queued ticket is an explicit cancelled disposition, not silent success.
-  await expect(owner.settled()).rejects.toThrow(/cancelled|outstanding|failed/);
+  // The queued ticket is an explicit CANCELLED disposition, not silent success
+  // and not merely outstanding recovery work.
+  await expect(owner.settled()).rejects.toThrow(/cancelled/);
   await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
   await expect(fixture.cache.getByteTotals(historyKey)).resolves.toEqual({ historyBytes: 0, aggregateBytes: 0 });
   await expect(fixture.cache.getHistoryGeneration(historyKey)).resolves.toBe(1);
@@ -1055,7 +1056,10 @@ test("an unverifiable Clear epoch routes a held older lookup to reconciliation w
   await repo.settled();
 
   // A rejected epoch read is not treated as unchanged: the lookup cannot be
-  // certified and routes to the bounded reconciliation.
+  // certified and routes to the bounded reconciliation, publishing nothing.
+  const publications: number[] = [];
+  const unsubscribe = repo.subscribe(() => publications.push(orderedPositions(repo.getSnapshot()).length));
+  const publicationsBefore = publications.length;
   const realEpoch = fixture.cache.getClearEpoch.bind(fixture.cache);
   fixture.cache.getClearEpoch = (() =>
     Promise.reject(new Error("epoch unreadable"))) as typeof fixture.cache.getClearEpoch;
@@ -1063,6 +1067,7 @@ test("an unverifiable Clear epoch routes a held older lookup to reconciliation w
   const rejected = await repo.loadOlderPage(40, 1);
   expect(rejected.kind).toBe("reconcile");
   expect(Date.now() - rejectedAt).toBeLessThan(2_000);
+  expect(publications.length).toBe(publicationsBefore);
 
   // A held epoch read is bounded too.
   fixture.cache.getClearEpoch = (() => new Promise<number>(() => {})) as typeof fixture.cache.getClearEpoch;
@@ -1070,8 +1075,11 @@ test("an unverifiable Clear epoch routes a held older lookup to reconciliation w
   const held = await repo.loadOlderPage(40, 1);
   expect(held.kind).toBe("reconcile");
   expect(Date.now() - heldAt).toBeLessThan(2_000);
+  expect(publications.length).toBe(publicationsBefore);
+  expect(orderedPositions(repo.getSnapshot())).toEqual([6, 7, 8]);
 
   fixture.cache.getClearEpoch = realEpoch;
+  unsubscribe();
   repo.dispose();
 });
 

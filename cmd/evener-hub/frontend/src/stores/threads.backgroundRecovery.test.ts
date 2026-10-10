@@ -1882,6 +1882,7 @@ describe("background transcript recovery", () => {
       clientId: "fixture-client",
       hostId: "fixture-host",
     });
+    let commitSpy: ReturnType<typeof vi.spyOn> | undefined;
     try {
       const fake = new FakeClient("ready");
       fake.on("thread/read", (params) => {
@@ -1928,9 +1929,18 @@ describe("background transcript recovery", () => {
 
       // A real persistence attempt under the old (pre-sibling-Clear) epoch is
       // refused: the sibling Clear's suppression stands without a new
-      // acquisition, while the readable model is retained.
+      // acquisition, while the readable model is retained. Record the batch
+      // outcomes so an empty cache is proved a refused write, not a write never
+      // attempted.
       const threadId = threadsStore.getState().threads.get(selected)?.threadId;
       if (!threadId) throw new Error("expected the held model");
+      const outcomes: string[] = [];
+      const realCommit = entryCache.commitBatch.bind(entryCache);
+      commitSpy = vi.spyOn(entryCache, "commitBatch").mockImplementation(async (batch) => {
+        const outcome = await realCommit(batch);
+        outcomes.push(outcome.outcome === "refused" ? `refused:${outcome.reason}` : outcome.outcome);
+        return outcome;
+      });
       fake.emitNotification({
         method: "history/updated",
         params: {
@@ -1953,15 +1963,19 @@ describe("background transcript recovery", () => {
           ],
         },
       } as AnyNotification);
+      await fixture.settled();
       await settleBackgroundTranscriptsForTests();
-      // The notification was genuinely accepted (the held display advanced),
-      // so an empty cache here is a refused persistence attempt, not an
+      // The notification was genuinely accepted (the held display advanced) and
+      // its write reached the cache and was refused by the durable clear-epoch
+      // fence, so an empty cache here is a refused persistence attempt, not an
       // upstream discard.
       expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toContain("HOLDER_LIVE_BODY");
+      expect(outcomes).toContain("refused:clear-epoch");
       await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
       await expect(entryCache.getByteTotals(historyKey)).resolves.toMatchObject({ historyBytes: 0 });
       expect(threadsStore.getState().threads.get(selected)).toBeDefined();
     } finally {
+      commitSpy?.mockRestore();
       threadsStore.getState().releaseThread(selected);
       await settleBackgroundTranscriptsForTests();
       fixture.dispose();
