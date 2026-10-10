@@ -165,3 +165,24 @@ func writeToolDescriptions(golden *strings.Builder, defs ...llm.ToolDefinition) 
 		}
 	}
 }
+
+// rootPendingAttention lists root's unresolved attention in transcript order,
+// read from its transcript the way restore reads it, or nil when the read
+// fails.
+func rootPendingAttention(root *Session) []string {
+	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
+	if err != nil {
+		return nil
+	}
+	return fold.pendingIDs()
+}
+
+// rootAttentionFold is root's attention fold, read from its transcript.
+func rootAttentionFold(t *testing.T, root *Session) delegateAttentionFold {
+	t.Helper()
+	fold, err := readDelegateAttentionFold(transcriptPath(root.stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("fold root attention: %v", err)
+	}
+	return fold
+}

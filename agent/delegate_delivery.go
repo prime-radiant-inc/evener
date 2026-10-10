@@ -436,6 +436,17 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string)
 	return deliveryID, plans, nil
 }
 
+// deliveryPending reports whether delegateID's delivery queue still holds
+// deliveryID unacknowledged.
+func (c *delegateTreeController) deliveryPending(delegateID, deliveryID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[delegateID]
+	return aggregate != nil && slices.ContainsFunc(aggregate.PendingDeliveries, func(pending delegatestore.PendingDelivery) bool {
+		return pending.DeliveryID == deliveryID
+	})
+}
+
 func (c *delegateTreeController) ReplayDeliveries() []delegateDeliveryPlan {
 	release, err := c.beginRetirementMutation()
 	if err != nil {

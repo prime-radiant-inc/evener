@@ -742,6 +742,7 @@ const ObserverReporting = "Observers send updates with `communicate(end_turn=fal
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
+	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
 	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. " +
 	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 

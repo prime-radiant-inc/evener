@@ -95,6 +95,15 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				return nil, err
 			}
 
+			// A delegate's end_turn=false message is an update for its parent.
+			// The message is already in this transcript, so delivery never
+			// fails the call; the result says where the update stands.
+			var update delegateUpdateDelivery
+			isUpdate := false
+			if !endTurn && deps.postDelegateUpdate != nil {
+				update, isUpdate = deps.postDelegateUpdate(ctx, message)
+			}
+
 			inbox := []string{}
 			if endTurn {
 				// Drain daemon-authored steering context into the terminal inbox.
@@ -143,6 +152,12 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				"end_turn": endTurn,
 				"inbox":    inbox,
 			}
+			if isUpdate {
+				resp["delivery"] = update.Status
+				if update.Reason != "" {
+					resp["reason"] = update.Reason
+				}
+			}
 			if endTurn && deps.runningJobIDs != nil {
 				if ids := deps.runningJobIDs(); len(ids) > 0 {
 					resp["warning"] = runningJobsEndTurnWarning(ids, deps.turnEndsProcess)
@@ -165,6 +180,68 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 type communicateEndState struct {
 	// The key is communicate's own, so no other tool's state can match it.
 	EndReason string `json:"communicate_end_reason"`
+}
+
+// delegateUpdateDelivery is where a delegate's update stands when its
+// communicate(end_turn=false) call returns: the result's delivery and reason.
+type delegateUpdateDelivery struct {
+	Status string
+	Reason string
+}
+
+const (
+	// The update is in the parent's transcript as attention.
+	delegateUpdateDelivered = "delivered"
+	// The update is durable in the delegate's journal and reaches the parent
+	// without anyone acting: the parent holds it for its next model boundary,
+	// or an earlier delivery of the same delegate is ahead of it.
+	delegateUpdateQueued = "queued"
+	// The journal refused the update; the message stays in the delegate's
+	// own transcript only.
+	delegateUpdateNotDelivered = "not_delivered"
+)
+
+// postDelegateUpdate hands a delegate's communicate(end_turn=false) message
+// to its parent as an update. ok is false for a root, whose end_turn=false
+// message is a checkpoint for its human partner and goes nowhere else.
+func (s *Session) postDelegateUpdate(ctx context.Context, message string) (delegateUpdateDelivery, bool) {
+	if !s.reportsToParent() {
+		return delegateUpdateDelivery{}, false
+	}
+	if s.delegateController == nil || s.owningDelegateID == "" {
+		return delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: "this session has no route to a parent agent"}, true
+	}
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return notDeliveredUpdate(err), true
+	}
+	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
+	if err != nil {
+		return notDeliveredUpdate(err), true
+	}
+	if err := s.executeDelegateMutationPlans(plans); err != nil {
+		// The update is durable in the journal. A delivery that failed stays
+		// pending there, and executeDelegateMutationPlans has queued the
+		// journal's pending heads and the rest of its queue for retry.
+		s.emit(events.EventWarning, warningDataFromError("deliver delegate update", err))
+	}
+	if s.delegateController.deliveryPending(s.owningDelegateID, deliveryID) {
+		return delegateUpdateDelivery{Status: delegateUpdateQueued}, true
+	}
+	return delegateUpdateDelivery{Status: delegateUpdateDelivered}, true
+}
+
+// notDeliveredUpdate says, for the delegate's model, why its update was
+// refused.
+func notDeliveredUpdate(err error) delegateUpdateDelivery {
+	reason := "it could not be recorded: " + err.Error()
+	switch {
+	case errors.Is(err, errDelegateStaleLease):
+		reason = "this run of yours is no longer the current one"
+	case errors.Is(err, errDelegateTargetBusy), errors.Is(err, errDelegateNotControllable):
+		reason = "the route to your parent is closed: you are stopping or finishing, your parent is gone, or the session is shutting down"
+	}
+	return delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: reason}
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this
