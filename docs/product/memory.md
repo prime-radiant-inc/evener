@@ -99,7 +99,9 @@ partner's reason (personal memory), and a project plan, constraint, convention
 or decision (project memory), even when the agent implements it in the same
 task, since the code shows the value, not that it is a rule. The agent's own
 findings qualify only as facts about the project or its environment that the
-repository can't show and that would change what a later session does. The
+repository can't show and that would change what a later session does: project
+facts go to project memory, and what holds beyond the project, such as how a
+tool behaves on the machine, to personal memory. The
 guidance names what doesn't qualify: a lesson from one task restated as a
 principle, what the code does, that something is missing, general knowledge of
 a language or tool, where a task or plan stands, approvals and sign-offs
@@ -117,7 +119,7 @@ holds and topic tags that reuse the index's) and to keep run details that go
 stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
 out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
-ends its turn. Progress through longer work belongs
+ends its turn. A status-only index line is a reason to read its page. Progress through longer work belongs
 to the task list (How you work, when the session has `task_list`): one place
 for status, the task list or the ledger a skill keeps, with task notes only
 when something happened that a later step needs; the whiteboard carries status

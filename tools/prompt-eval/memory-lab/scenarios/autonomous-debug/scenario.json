@@ -42,10 +42,6 @@
           "name": "no generalized lesson page",
           "absent": true,
           "regex": "(?i)lesson|root cause|symptom|always (check|verify|trace|test)|don'?t assume|before (blaming|assuming)|off.by"
-        },
-        {
-          "name": "saved BSD sed quirk (reported, not required)",
-          "regex": "(?i)\\bsed\\b"
         }
       ]
     }
