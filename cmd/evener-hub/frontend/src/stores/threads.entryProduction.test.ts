@@ -1,4 +1,10 @@
-import { cachedSessionRecord, hydrateThread, type ThreadReadResponse, type Turn } from "@evener/appwire-client";
+import {
+  cachedSessionRecord,
+  currentTranscriptState,
+  hydrateThread,
+  type ThreadReadResponse,
+  type Turn,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -7,7 +13,7 @@ import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { requestResult, transactionCompletion } from "./idbConnection";
 import { settleProjectionWorkForTests } from "./projectionWork";
-import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import { entryHistoryKey, SESSION_CACHE_DATABASE_NAME } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
@@ -571,4 +577,83 @@ it("ordinary sibling deletion heals entry rows and retires the still-held public
   await settleEntryTranscriptForTests("local:a");
   expect(await storage.getLatest(key, 10)).toEqual([]);
   expect(JSON.stringify(threadsStore.getState().threads.get("local:a"))).not.toContain("sibling-deleted");
+});
+
+function checkpoint(owner: string, itemId: string, entry: number): CurrentSessionRecord {
+  const now = Date.now();
+  const state = currentTranscriptState(hydrateThread(response("local:a", [turn(itemId, entry)]), "local:a", now));
+  if (!state) throw new Error("fixture must encode the actual current checkpoint format");
+  return {
+    ownerToken: owner,
+    ref: "local:a",
+    connectionGeneration: 1,
+    ownershipGeneration: 1,
+    clearEpoch: 0,
+    appliedSequence: 7,
+    savedAt: now,
+    state,
+  };
+}
+
+it("ordinary current-only migration converts each owner checkpoint once without certifying its older seeds", async () => {
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
+  try {
+    expect((await legacy.putCurrent(checkpoint("old-owner-a", "current-a", 0))).outcome).toBe("written");
+    expect((await legacy.putCurrent(checkpoint("old-owner-b", "current-b", 1))).outcome).toBe("written");
+    expect(await legacyCounts()).toEqual([0, 2]);
+    connect(response("local:a", [turn("live-current", 3)]));
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    const storage = cache();
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual([
+      "current-a",
+      "current-b",
+      "live-current",
+    ]);
+    expect(await legacyCounts()).toEqual([0, 0]);
+    const window = await storage.getOlderWindow(key, { entry: 3, item: 0 }, 10);
+    expect(window.rows).toEqual([]);
+    expect(window.coverage.every((range) => range.start === null || range.start.entry >= 3)).toBe(true);
+  } finally {
+    legacy.close();
+  }
+});
+
+it("ordinary current-only migration leaves an aborted checkpoint intact and retries explicit opening", async () => {
+  const legacy = new SessionCacheIndexedDB({ indexedDB: factory });
+  try {
+    expect((await legacy.putCurrent(checkpoint("retry-owner", "retry-current", 0))).outcome).toBe("written");
+    const originalPut = IDBObjectStore.prototype.put;
+    let aborted = false;
+    const fault = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+      this: IDBObjectStore,
+      value,
+      key,
+    ) {
+      if (!aborted && this.name === "transcriptItems" && value.transcriptKey === "retry-current") {
+        aborted = true;
+        this.transaction.abort();
+      }
+      return originalPut.call(this, value, key);
+    });
+    connect(response("local:a", [turn("live-current", 3)]));
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    expect(aborted).toBe(true);
+    fault.mockRestore();
+    expect(await legacyCounts()).toEqual([0, 1]);
+    const storage = cache();
+    const key = entryHistoryKey({ ...identity, clientId: location.origin });
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["live-current"]);
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual([
+      "retry-current",
+      "live-current",
+    ]);
+    expect(await legacyCounts()).toEqual([0, 0]);
+  } finally {
+    legacy.close();
+  }
 });
