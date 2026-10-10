@@ -28,6 +28,7 @@ import { WireError } from "@evener/appwire-client";
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { deleteSession } from "../shell/rail/actions";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -3753,6 +3754,7 @@ describe("exclusive entry transcript fixture route", () => {
       seen.push({ ref: replacement, present: state.localOpenings.has(replacement) });
     });
     let cacheB: SessionEntryCache | undefined;
+    let fixtureB: ReturnType<typeof installEntryTranscriptFixtureForTests> | undefined;
     try {
       const fake = connectFakeClient();
       fake.on("thread/read", (params) =>
@@ -3782,12 +3784,13 @@ describe("exclusive entry transcript fixture route", () => {
             void realB(historyKey, limit, boundary).then(resolve, reject);
           });
         })) as typeof cacheB.getLatestWindow;
-      const fixtureB = installEntryTranscriptFixtureForTests({
+      const fixtureBCreated = installEntryTranscriptFixtureForTests({
         ref: replacement,
         cache: cacheB,
         clientId: "fixture-client",
         hostId: "fixture-host",
       });
+      fixtureB = fixtureBCreated;
       const openingB = threadsStore.getState().ensureThread(replacement);
       await vi.waitFor(() => expect(readsB.length).toBeGreaterThanOrEqual(1));
       const replacementToken = threadsStore.getState().localOpenings.get(replacement);
@@ -3809,6 +3812,7 @@ describe("exclusive entry transcript fixture route", () => {
       expect(seen.some((entry) => entry.ref === replacement && !entry.present)).toBe(true);
     } finally {
       unsubscribe();
+      fixtureB?.dispose();
       fixtureA.dispose();
       cacheA.close();
       await deleteIndexedDatabase(databaseA);
@@ -3816,6 +3820,53 @@ describe("exclusive entry transcript fixture route", () => {
         cacheB.close();
         await deleteIndexedDatabase(databaseB);
       }
+    }
+  });
+
+  it("deleting its fixture ref removes the entry cache rows and coverage and retires only that route", async () => {
+    const selected = "local:entry-delete-fixture";
+    const entryDatabase = "entry-delete-fixture-test";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const turn = turnFixture("entry-delete", "DELETE_BODY");
+        return readResponse(params.ref ?? selected, {
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...turn, items: [{ ...turn.items[0]!, transcriptKey: "entry-delete-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+      });
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+      const generationBefore = await entryCache.getHistoryGeneration(historyKey);
+
+      // A composer draft is independent of cache ownership and must survive.
+      writeComposerDraft(selected, { text: "keep me", skillNames: [] });
+
+      markCacheSessionsDeleted([selected]);
+      await vi.waitFor(async () => expect(await entryCache.getLatest(historyKey, 10)).toEqual([]));
+      await expect(entryCache.getCoverage(historyKey, "read:fixture-read-1")).resolves.toBeUndefined();
+      // The durable deletion fence advanced, so a late pre-delete capture is
+      // refused rather than resurrecting the rows.
+      expect(await entryCache.getHistoryGeneration(historyKey)).toBe(generationBefore + 1);
+      expect(readComposerDraft(selected).text).toBe("keep me");
+      // The store's own model is gone and the route retires without touching an
+      // unrelated ref.
+      expect(threadsStore.getState().deletedRefs.has(selected)).toBe(true);
+    } finally {
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
     }
   });
 });

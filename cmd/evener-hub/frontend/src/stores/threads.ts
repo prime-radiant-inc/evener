@@ -568,6 +568,12 @@ interface EntryTranscriptFixtureForTests extends EntryTranscriptFixtureOptionsFo
   lifetime: number;
   readSequence: number;
   historyKey?: string;
+  // The durable authorities the installed repository captured. A later read
+  // that observes a newer Clear epoch or deletion generation retires it, so a
+  // fresh explicit foreground acquisition begins caching under the current
+  // authorities instead of carrying stale ones.
+  clearEpoch?: number;
+  historyGeneration?: number;
 }
 
 let entryTranscriptFixtureForTests: EntryTranscriptFixtureForTests | undefined;
@@ -722,11 +728,11 @@ function releaseEntryTranscriptFixtureReader(ref: string): void {
   }
 }
 
-function acceptEntryTranscriptHydration(
+async function acceptEntryTranscriptHydration(
   ref: string,
   pending: PendingThreadHydration,
   hydration: ThreadHydration,
-): void {
+): Promise<void> {
   const fixture = entryTranscriptFixtureForTests;
   if (!fixture || fixture.ref !== ref || pending.client !== wiredClient || pending.epoch !== readyEpoch) return;
   const response = hydration.response;
@@ -738,17 +744,39 @@ function acceptEntryTranscriptHydration(
   };
   const historyKey = entryHistoryKey(identity);
   fixture.historyKey = historyKey;
-  if (!fixture.repository || fixture.repository.getSnapshot()?.threadId !== response.thread.id) {
+  // Read the durable Clear epoch and deletion generation BEFORE deciding
+  // whether the installed repository is still current: a genuinely
+  // post-Clear/post-delete acquisition captures the new authorities and may
+  // cache, while an old capture keeps carrying its stale ones and is refused by
+  // the cache fence.
+  const [clearEpoch, historyGeneration] = await Promise.all([
+    fixture.cache.getClearEpoch(),
+    fixture.cache.getHistoryGeneration(historyKey),
+  ]);
+  if (entryTranscriptFixtureForTests !== fixture || pending.client !== wiredClient || pending.epoch !== readyEpoch) {
+    return;
+  }
+  const threadChanged = fixture.repository?.getSnapshot()?.threadId !== response.thread.id;
+  if (
+    !fixture.repository ||
+    threadChanged ||
+    fixture.clearEpoch !== clearEpoch ||
+    fixture.historyGeneration !== historyGeneration
+  ) {
     fixture.reader?.dispose();
     fixture.repository?.dispose();
     fixture.lifetime += 1;
+    fixture.clearEpoch = clearEpoch;
+    fixture.historyGeneration = historyGeneration;
     fixture.repository = new TranscriptRepository(fixture.cache, {
       ref,
       threadId: response.thread.id,
       historyKey,
       identity,
-      clearEpoch: 0,
+      clearEpoch,
+      historyGeneration,
       lifetime: fixture.lifetime,
+      isPreferred: () => heldCountsAtStore(ref) || (backgroundRefCounts.get(ref) ?? 0) > 0,
     });
   }
   const repository = fixture.repository;
@@ -3792,7 +3820,7 @@ async function publishAndReconcileThreadHydration(
 ): Promise<ThreadModel | null> {
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
-  acceptEntryTranscriptHydration(ref, pending, hydration);
+  await acceptEntryTranscriptHydration(ref, pending, hydration);
   threadsStore.setState((state) => {
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (hydration.response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
@@ -6282,6 +6310,18 @@ export function markCacheSessionsDeleted(refs: string[]): void {
   for (const ref of refs) {
     cancelCacheWrite(ref);
     residencyIfCreated?.revoke(ref, "deleted");
+  }
+  // The entry fixture route owns its recorded history in the repository and the
+  // entry cache, not the legacy records store: retire its claims and remove its
+  // rows and coverage, so a late page or write from the deleted capture cannot
+  // resurrect them. The durable per-history generation fence refuses anything
+  // already captured.
+  const fixture = entryTranscriptFixtureForTests;
+  if (fixture && refs.includes(fixture.ref)) {
+    fixture.reader?.dispose();
+    fixture.repository?.dispose();
+    fixture.repository = undefined;
+    if (fixture.historyKey !== undefined) void fixture.cache.deleteHistory(fixture.historyKey);
   }
   void currentSessionCache().deleteRecords(refs);
   cacheChannel.connect();

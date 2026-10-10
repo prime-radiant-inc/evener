@@ -625,6 +625,11 @@ export class SessionEntryCache {
   readonly #ttlMs: number;
   readonly #now: () => number;
   readonly #isPreferred: ((unit: RetentionUnit) => boolean) | undefined;
+  // Per-history demand preferences registered by the live owners of an
+  // identity (the entry repositories). The cache invents no discovery: an
+  // owner registers real Live/demand state, and the policy consults it only as
+  // a fallback to the construction-time `isPreferred` seam.
+  readonly #preferredHistories = new Map<string, () => boolean>();
 
   constructor(options: SessionEntryCacheOptions) {
     if (options.databaseName === SESSION_CACHE_DATABASE_NAME) {
@@ -652,6 +657,19 @@ export class SessionEntryCache {
 
   close(): void {
     this.#connection.close();
+  }
+
+  /**
+   * Register one live owner's real demand for its history identity as that
+   * identity's retention preference. The returned function removes only this
+   * registration, so a replacement owner cannot be unregistered by its
+   * predecessor. Purely scalar: no async work and no transcript bodies.
+   */
+  registerPreferredHistory(historyKey: string, predicate: () => boolean): () => void {
+    this.#preferredHistories.set(historyKey, predicate);
+    return () => {
+      if (this.#preferredHistories.get(historyKey) === predicate) this.#preferredHistories.delete(historyKey);
+    };
   }
 
   /** Compatibility surface for the existing row-based repository; rows commit through the batch transaction. */
@@ -968,6 +986,23 @@ export class SessionEntryCache {
     }
   }
 
+  /** The durable Clear epoch a caller must carry to write any history. */
+  async getClearEpoch(): Promise<number> {
+    const database = await this.#connection.open();
+    const transaction = database.transaction(LEGACY_META_STORE, "readonly");
+    const complete = transactionCompletion(transaction);
+    try {
+      const row = await requestResult(
+        transaction.objectStore(LEGACY_META_STORE).get(CLEAR_EPOCH_KEY) as IDBRequest<{ epoch?: number } | undefined>,
+      );
+      await complete;
+      return row?.epoch ?? 0;
+    } catch (error) {
+      await complete.catch(() => {});
+      throw error;
+    }
+  }
+
   /**
    * Atomically remove every history record - entry stores, legacy records and
    * current checkpoints - and advance the shared durable Clear epoch by one in
@@ -1110,7 +1145,14 @@ export class SessionEntryCache {
     if (combined > this.#maxBytes) {
       const victims: Array<{ unit: RetentionUnit; bytes: number; stamp: number; preferred: boolean }> = [];
       const add = (unit: RetentionUnit, bytes: number, age: number) => {
-        victims.push({ unit, bytes, stamp: age, preferred: this.#isPreferred?.(unit) ?? false });
+        victims.push({
+          unit,
+          bytes,
+          stamp: age,
+          preferred:
+            this.#isPreferred?.(unit) ??
+            (unit.kind === "entry" ? (this.#preferredHistories.get(unit.historyKey)?.() ?? false) : false),
+        });
       };
       for (const row of entryRows) {
         if ((row.encodedBytes ?? 0) > 0) {

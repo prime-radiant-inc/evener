@@ -28,6 +28,30 @@ import { entryHistoryKey } from "./sessionCacheSchema";
 import type { EntryCoverageInput, SessionEntryCache } from "./sessionEntryCache";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 
+/**
+ * A nonce unique to this browser lifetime (this page's module evaluation). The
+ * baseline identity is minted from the tab-local connection lifetime and source
+ * revision, but the lifetime counter resets with the page: without a
+ * per-browser-lifetime nonce a reload mints the same token as the previous page
+ * and could continue its durable page-chaining certificates. The store may
+ * supply its own nonce through the binding so a replacement is explicit.
+ */
+const PAGE_LIFETIME_NONCE = (() => {
+  try {
+    const crypto = globalThis.crypto;
+    if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
+    if (typeof crypto?.getRandomValues === "function") {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+  } catch {
+    // A locked-down page has no random source; a per-load time+math fallback
+    // still separates reloads for the lifetime of one page.
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+})();
+
 function comparePosition(
   left: { entry: number; item: number; sub?: number },
   right: { entry: number; item: number; sub?: number },
@@ -134,6 +158,30 @@ export interface TranscriptRepositoryBinding {
   historyKey: string;
   identity: TranscriptResolvedIdentity;
   clearEpoch: number;
+  /**
+   * The durable per-history deletion generation this binding captured when it
+   * began owning the identity. A batch captured before a `deleteHistory` of the
+   * same identity carries the old value and is refused by the cache's
+   * history fence; a genuinely post-delete acquisition reads the new value
+   * first and may cache. Absent means 0.
+   */
+  historyGeneration?: number;
+  /**
+   * A browser-lifetime nonce. The baseline identity is minted from the
+   * tab-local connection lifetime and source revision, but that lifetime
+   * counter resets with the page: without a per-browser-lifetime nonce a
+   * reload could mint the same baseline token as the previous page and
+   * continue its durable page-chaining certificates. The store supplies the
+   * nonce it minted for this page; absent, the repository mints one at module
+   * load, which still separates reloads in production.
+   */
+  sessionNonce?: string;
+  /**
+   * Whether this binding's history is preferred for disk retention. Supplied
+   * from real Live/demand state; the cache consults it when choosing an
+   * eviction victim while it fits.
+   */
+  isPreferred?: () => boolean;
   lifetime: number;
   seedModel?: ThreadModel;
   seedAuthority?: {
@@ -294,6 +342,10 @@ export class TranscriptRepository {
   // larger one, and the state cannot grow without limit (it holds no item
   // bodies or models, only a kind and two positions).
   #recoveryAbandoned: { kind: "cancelled" | "failed"; reach: AbandonedCoverage } | undefined;
+  // The unregister for this binding's real-demand preference registration with
+  // the shared cache, released on disposal so a replacement owner is the one
+  // whose demand the eviction policy consults.
+  #unregisterPreferred: (() => void) | undefined;
 
   constructor(cache: SessionEntryCache, binding: TranscriptRepositoryBinding) {
     if (entryHistoryKey(binding.identity) !== binding.historyKey) throw new Error("binding history identity mismatch");
@@ -302,6 +354,9 @@ export class TranscriptRepository {
     this.#admission = binding.admission ?? entryWriteAdmissionFor(cache);
     this.#binding = scalarBinding;
     this.#baselineIdentity = this.#mintBaseline();
+    if (binding.isPreferred) {
+      this.#unregisterPreferred = cache.registerPreferredHistory(binding.historyKey, binding.isPreferred);
+    }
     if (seedModel) {
       const history = seedModel.history;
       const authority = binding.seedAuthority;
@@ -517,6 +572,7 @@ export class TranscriptRepository {
     this.#queueWrite({
       historyKey: this.#binding.historyKey,
       clearEpoch: this.#binding.clearEpoch,
+      historyGeneration: this.#binding.historyGeneration,
       items: rows,
       turns: this.#readTurns(response, candidate).map((turn) => ({ ...turn, items: [] })),
       coverage: {
@@ -585,6 +641,7 @@ export class TranscriptRepository {
       this.#queueWrite({
         historyKey: this.#binding.historyKey,
         clearEpoch: this.#binding.clearEpoch,
+        historyGeneration: this.#binding.historyGeneration,
         items: rows,
         turns,
         ...(coverage ? { coverage } : {}),
@@ -657,6 +714,7 @@ export class TranscriptRepository {
     this.#queueWrite({
       historyKey: this.#binding.historyKey,
       clearEpoch: this.#binding.clearEpoch,
+      historyGeneration: this.#binding.historyGeneration,
       items: rows,
       turns,
       coverage: {
@@ -946,6 +1004,8 @@ export class TranscriptRepository {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#unregisterPreferred?.();
+    this.#unregisterPreferred = undefined;
     this.#cancelRetry();
     this.#abandonBackgroundAccepts("cancelled");
     this.#releaseHandoffOverlay();
@@ -959,7 +1019,11 @@ export class TranscriptRepository {
   }
 
   #mintBaseline(): string {
-    return JSON.stringify([this.#binding.lifetime, this.#sourceRevision]);
+    return JSON.stringify([
+      this.#binding.sessionNonce ?? PAGE_LIFETIME_NONCE,
+      this.#binding.lifetime,
+      this.#sourceRevision,
+    ]);
   }
 
   #advanceSourceRevision(): void {

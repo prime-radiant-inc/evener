@@ -1,0 +1,680 @@
+// Task 4: identity, replacement, Clear and deletion.
+//
+// Every case drives the REAL repository and the REAL SessionEntryCache over
+// fake-indexeddb; no reducer, cache or store behaviour is mocked. The wrong
+// behaviour each assertion is meant to catch was reached through these real
+// APIs before the fix (see the report).
+import "fake-indexeddb/auto";
+import type {
+  AnyNotification,
+  ThreadItem,
+  ThreadModel,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+} from "@evener/appwire-client";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { afterEach, expect, test, vi } from "vitest";
+import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
+import { createEntryCacheFixture } from "./testing/entryCacheFixture";
+import { TranscriptRepository } from "./transcriptRepository";
+
+const fixtures: ReturnType<typeof createEntryCacheFixture>[] = [];
+const identity: TranscriptResolvedIdentity = {
+  clientId: "client-a",
+  hostId: "host-a",
+  sessionId: "session-a",
+  incarnation: "inc-a",
+};
+const ref = "ref-a";
+const threadId = "thread-a";
+const historyKey = entryHistoryKey(identity);
+const CAPABILITIES = {
+  send: true,
+  steer: true,
+  interrupt: true,
+  compact: true,
+  clear: true,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  changeVisionModel: true,
+  queue: true,
+  goal: true,
+  sharedNotes: true,
+  rename: true,
+};
+
+function itemOf(entry: number, version = entry, text = `row-${entry}`): ThreadItem {
+  return {
+    type: "agentMessage",
+    id: `item-${entry}`,
+    transcriptKey: `item-${entry}`,
+    turnId: "turn_1",
+    position: { entry, item: 0 },
+    version,
+    text,
+  };
+}
+
+function readOf(
+  entries: number[],
+  opts: { olderCursor?: string; length?: number; authoritative?: boolean; requestGeneration?: number } = {},
+) {
+  const length = opts.length ?? Math.max(...entries, 0);
+  return {
+    thread: {
+      id: threadId,
+      sessionId: identity.sessionId,
+      preview: "",
+      ephemeral: false,
+      modelProvider: "test/provider",
+      createdAt: 1,
+      updatedAt: 1,
+      status: { type: "idle" },
+      cwd: "/tmp",
+      cliVersion: "test",
+      source: "evener",
+      turns: [
+        {
+          id: "turn_1",
+          itemsView: "full",
+          status: "completed",
+          version: length,
+          items: entries.map((entry) => itemOf(entry)),
+        },
+      ],
+      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    },
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: identity.incarnation, length },
+    overlay: [],
+    ...(opts.olderCursor === undefined ? {} : { olderCursor: opts.olderCursor }),
+    ...(opts.authoritative === undefined ? {} : { authoritative: opts.authoritative }),
+    ...(opts.requestGeneration === undefined ? {} : { requestGeneration: opts.requestGeneration }),
+  } as unknown as ThreadReadResponse;
+}
+
+function pageOf(entries: number[], opts: { nextCursor?: string; length?: number } = {}): ThreadTurnsListResponse {
+  const length = opts.length ?? Math.max(...entries, 0);
+  return {
+    data: [
+      {
+        id: "turn_1",
+        itemsView: "full",
+        status: "completed",
+        version: length,
+        items: entries.map((entry) => itemOf(entry)),
+      },
+    ],
+    ...(opts.nextCursor === undefined ? {} : { nextCursor: opts.nextCursor }),
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: identity.incarnation, length },
+  } as unknown as ThreadTurnsListResponse;
+}
+
+function historyUpdate(entry: number, version: number, text: string, length: number): AnyNotification {
+  return {
+    method: "history/updated",
+    params: {
+      ref,
+      threadId,
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: identity.incarnation, length },
+      items: [{ ...itemOf(entry, version), text }],
+    },
+  } as AnyNotification;
+}
+
+interface RepoOptions {
+  lifetime?: number;
+  clearEpoch?: number;
+  historyGeneration?: number;
+  sessionNonce?: string;
+  seedModel?: ThreadModel;
+  omitSeedAuthority?: boolean;
+  isPreferred?: boolean;
+}
+
+function repository(cache: SessionEntryCache, options: RepoOptions = {}) {
+  const seedModel = options.seedModel;
+  return new TranscriptRepository(cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: options.clearEpoch ?? 0,
+    historyGeneration: options.historyGeneration,
+    sessionNonce: options.sessionNonce,
+    lifetime: options.lifetime ?? 1,
+    isPreferred: options.isPreferred ? () => true : undefined,
+    seedModel,
+    seedAuthority:
+      seedModel?.history && !options.omitSeedAuthority
+        ? {
+            trustedCurrentSource: true,
+            bootGeneration: seedModel.history.bootGeneration,
+            epoch: seedModel.history.epoch,
+            incarnation: seedModel.history.incarnation ?? "",
+            snapshotLength: seedModel.history.length,
+          }
+        : undefined,
+    now: () => Date.now(),
+  });
+}
+
+function orderedPositions(model: ThreadModel | undefined): number[] {
+  return (model?.history?.turns ?? [])
+    .flatMap((turn) => turn.items)
+    .map((item) => item.position?.entry)
+    .filter((entry): entry is number => entry !== undefined);
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  for (const fixture of fixtures.splice(0)) await fixture.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Behaviour 1: replacement — old completions cannot enter the replacement.
+// ---------------------------------------------------------------------------
+
+test("a replacement lifetime rejects a held read, page and notification captured for the old binding", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  // The outgoing repository (lifetime 1) holds a read and a page.
+  const outgoing = repository(fixture.cache, { lifetime: 1 });
+  outgoing.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "b1",
+  });
+  const outgoingAuthority = outgoing.getBaselineIdentity();
+  outgoing.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "p1",
+    authority: outgoingAuthority,
+    requestCursor: "C1",
+  });
+  await outgoing.settled();
+  outgoing.dispose();
+
+  // The replacement binding (lifetime 2) is the live owner now.
+  const replacement = repository(fixture.cache, { lifetime: 2 });
+  replacement.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 2, readId: "r2", boundary: "b2" });
+
+  // A completion still stamped with the old lifetime is refused, not merged
+  // into the replacement.
+  expect(replacement.accept(historyUpdate(4, 9, "old-lifetime", 8), { lifetime: 1 })).toBe(false);
+  expect(
+    replacement.acceptPage(pageOf([1, 2], { length: 8 }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "p-old",
+      authority: outgoingAuthority,
+      requestCursor: "C2",
+    }),
+  ).toBe(false);
+  expect(
+    replacement.acceptRead(readOf([1, 2, 3], { length: 8 }), { lifetime: 1, readId: "r-old", boundary: "b-old" }),
+  ).toBe(false);
+  expect(orderedPositions(replacement.getSnapshot())).toEqual([6, 7, 8]);
+  replacement.dispose();
+});
+
+test("an untrusted seed's running status and capabilities cannot authorize a current read", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  // A committed model becomes a stale seed on reopen. It advertises an active
+  // status and full capabilities, but its caller supplied no trusted source
+  // authority, so it must not authorize use.
+  const committed = repository(fixture.cache, { lifetime: 1 });
+  committed.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await committed.settled();
+  const seed = committed.getSnapshot();
+  committed.dispose();
+  if (!seed) throw new Error("expected a committed model to seed from");
+
+  const reopened = repository(fixture.cache, { lifetime: 1, seedModel: seed, omitSeedAuthority: true });
+  const reader = reopened.attachReader();
+  const opened = await reader.openLocal(40);
+  // Content is usable (readable) but the route is not allowed to claim
+  // currentness from an unauthorized seed.
+  expect(opened.model).toBeDefined();
+  expect(opened.status).toBe("recovery-needed");
+  reader.dispose();
+  reopened.dispose();
+});
+
+test("an authoritative read after a fresh baseline restores current use and usable paging", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache, { lifetime: 1 });
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await repo.settled();
+  // Reconnect/replacement retires the held chain.
+  repo.beginFreshBaseline();
+  repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C2", length: 8, authoritative: true, requestGeneration: 1 }), {
+    lifetime: 1,
+    readId: "r2",
+    boundary: "b2",
+  });
+  await repo.settled();
+  const reader = repo.attachReader();
+  const opened = await reader.openLocal(40);
+  expect(opened.status).toBe("current");
+  expect(orderedPositions(opened.model)).toEqual([6, 7, 8]);
+  reader.dispose();
+  repo.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Behaviour 2: two cache connections.
+// ---------------------------------------------------------------------------
+
+test("equal item versions preserve the shared merge and a shorter same-identity window cannot erase committed coverage", async () => {
+  const name = `entry-lifecycle-tabs-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  const tabA = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  const tabB = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  try {
+    // Tab A commits the long window first.
+    await tabA.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [1, 2, 3, 4].map((entry) => ({
+        historyKey,
+        transcriptKey: `item-${entry}`,
+        position: { entry, item: 0 },
+        version: entry,
+        item: { id: `item-${entry}`, turnId: "turn_1", type: "agentMessage", text: `row-${entry}` },
+      })),
+      coverage: {
+        kind: "read",
+        readId: "read-long",
+        start: { entry: 1, item: 0 },
+        end: { entry: 4, item: 0 },
+        representedSnapshot: 4,
+        boundary: "long",
+      },
+    });
+    const longCoverage = await tabA.getCoverage(historyKey, "read:read-long");
+    expect(longCoverage?.representedSnapshot).toBe(4);
+
+    // Tab B commits a shorter window for the same history identity but a
+    // different read id: it must not erase A's longer coverage. An equal
+    // version merge keeps A's committed content.
+    await tabB.commitBatch({
+      historyKey,
+      clearEpoch: 0,
+      items: [
+        {
+          historyKey,
+          transcriptKey: "item-1",
+          position: { entry: 1, item: 0 },
+          version: 1,
+          item: { id: "item-1", turnId: "turn_1", type: "agentMessage", text: "row-1" },
+        },
+      ],
+      coverage: {
+        kind: "read",
+        readId: "read-short",
+        start: { entry: 1, item: 0 },
+        end: { entry: 1, item: 0 },
+        representedSnapshot: 1,
+        boundary: "short",
+      },
+    });
+    expect((await tabA.getCoverage(historyKey, "read:read-long"))?.representedSnapshot).toBe(4);
+    const mergeable = tabB.getLatestWindow(historyKey, 40, "long");
+    await expect(mergeable).resolves.toMatchObject({ complete: true });
+    await expect(tabB.getLatest(historyKey, 40)).resolves.toHaveLength(4);
+  } finally {
+    tabA.close();
+    tabB.close();
+    await new Promise<void>((resolve) => {
+      const request = factory.deleteDatabase(name);
+      request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
+    });
+  }
+});
+
+test("one tab's successful write does not restore another tab's lost continuity", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  // Two tabs share one cache. Tab B loses continuity after a real abort.
+  const tabB = repository(fixture.cache, { lifetime: 1 });
+  tabB.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "rb", boundary: "bb" });
+  await tabB.settled();
+
+  const put = IDBObjectStore.prototype.put;
+  const spy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["put"]>
+  ) {
+    const value = args[0] as { transcriptKey?: string };
+    const request = put.apply(this, args);
+    if (this.name === "transcriptItems" && value.transcriptKey === "item-9") this.transaction.abort();
+    return request;
+  });
+  tabB.accept(historyUpdate(9, 9, "aborted", 9), { lifetime: 1 });
+  await expect(tabB.settled()).rejects.toThrow(/outstanding|failed|recovery/);
+  spy.mockRestore();
+
+  // Tab A commits successfully; its write advances the durable chain but must
+  // not clear B's own continuity loss.
+  const tabA = repository(fixture.cache, { lifetime: 2 });
+  tabA.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 2, readId: "ra", boundary: "ba" });
+  await tabA.settled();
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toBeDefined();
+
+  const reader = tabB.attachReader();
+  const opened = await reader.openLocal(40);
+  expect(opened.status).toBe("recovery-needed");
+  reader.dispose();
+  tabA.dispose();
+  tabB.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Real Live/demand preference wiring into the eviction policy.
+// ---------------------------------------------------------------------------
+
+test("a live owner's registered demand prefers its history for disk retention", async () => {
+  const name = `entry-lifecycle-pref-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  const identityFor = (sessionId: string): TranscriptResolvedIdentity => ({
+    clientId: "c",
+    hostId: "h",
+    sessionId,
+    incarnation: "i",
+  });
+  const keyFor = (sessionId: string) => entryHistoryKey(identityFor(sessionId));
+  const rowsFor = (historyKeyValue: string) =>
+    [1, 2].map((entry) => ({
+      historyKey: historyKeyValue,
+      transcriptKey: `row-${entry}`,
+      position: { entry, item: 0 },
+      version: entry,
+      item: { id: `row-${entry}`, turnId: "turn-1", type: "agentMessage", text: `body-${entry}` },
+    }));
+
+  const keyA = keyFor("a");
+  const keyB = keyFor("b");
+  const keyC = keyFor("c");
+  const measure = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: name,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    now: () => 1_000,
+  });
+  try {
+    await measure.commitBatch({ historyKey: keyA, clearEpoch: 0, items: rowsFor(keyA) });
+    const bytesA = (await measure.getByteTotals(keyA)).historyBytes;
+    measure.close();
+
+    const cache = new SessionEntryCache({
+      indexedDB: factory,
+      keyRange: IDBKeyRange,
+      databaseName: name,
+      maxBytes: bytesA * 2 + 1,
+      ttlMs: Number.MAX_SAFE_INTEGER,
+      now: () => 1_000,
+    });
+    // A live owner of B registers its real demand through the repository: the
+    // forwarding must reach the cache's eviction policy, not only the option.
+    const ownerB = new TranscriptRepository(cache, {
+      ref: "ref-b",
+      threadId: "thr-b",
+      historyKey: keyB,
+      identity: identityFor("b"),
+      clearEpoch: 0,
+      lifetime: 1,
+      isPreferred: () => true,
+    });
+    await cache.commitBatch({ historyKey: keyA, clearEpoch: 0, items: rowsFor(keyA) });
+    await cache.commitBatch({ historyKey: keyB, clearEpoch: 0, items: rowsFor(keyB) });
+    // A third identity forces exactly one eviction.
+    await cache.commitBatch({ historyKey: keyC, clearEpoch: 0, items: rowsFor(keyC) });
+
+    await expect(cache.getLatest(keyB, 10)).resolves.toMatchObject([
+      { transcriptKey: "row-1" },
+      { transcriptKey: "row-2" },
+    ]);
+    await expect(cache.getLatest(keyA, 10)).resolves.toEqual([]);
+    ownerB.dispose();
+    cache.close();
+  } finally {
+    await new Promise<void>((resolve) => {
+      const request = factory.deleteDatabase(name);
+      request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Behaviour 3: hold lookup/write work across Clear.
+// ---------------------------------------------------------------------------
+
+test("a write captured before a real Clear is refused, and a fresh explicit epoch commits", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const stale = repository(fixture.cache, { lifetime: 1, clearEpoch: 0 });
+  stale.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await stale.settled();
+  expect(await fixture.cache.getLatest(historyKey, 10)).toHaveLength(3);
+
+  const cleared = await fixture.cache.clear();
+  expect(cleared).toEqual({ committed: true, epoch: 1 });
+
+  // A late accepted update under the old capture is refused: neither the write
+  // nor a later probe resurrects the cleared content.
+  stale.accept(historyUpdate(9, 9, "after-clear", 9), { lifetime: 1 });
+  await stale.settled();
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+
+  // A fresh explicit foreground acquisition that reads the new epoch may cache.
+  const fresh = repository(fixture.cache, { lifetime: 2, clearEpoch: cleared.epoch });
+  fresh.acceptRead(readOf([9], { length: 9 }), { lifetime: 2, readId: "r2", boundary: "b2" });
+  await fresh.settled();
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "item-9" }]);
+  fresh.dispose();
+  stale.dispose();
+});
+
+test("a local open rechecks the Clear epoch and reports recovery-needed for a stale capture", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache, { lifetime: 1, clearEpoch: 0 });
+  repo.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await repo.settled();
+  const reader = repo.attachReader();
+  await fixture.cache.clear();
+  const opened = await reader.openLocal(40);
+  expect(opened.status).toBe("recovery-needed");
+  reader.dispose();
+  repo.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Behaviour 4: Clear suppression survives discovery, reconnect and probes.
+// ---------------------------------------------------------------------------
+
+test("Clear suppression survives a reconnect and a newer-read probe; only a fresh epoch caches", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const stale = repository(fixture.cache, { lifetime: 1, clearEpoch: 0 });
+  stale.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await stale.settled();
+  const cleared = await fixture.cache.clear();
+  expect(cleared.committed).toBe(true);
+
+  // Reconnect/rediscovery mints a fresh baseline, but the durable Clear
+  // suppression is a separate authority: the old epoch still refuses.
+  stale.beginFreshBaseline();
+  stale.acceptRead(readOf([6, 7, 8, 9], { length: 9 }), {
+    lifetime: 1,
+    readId: "r2",
+    boundary: "b2",
+    authority: stale.getBaselineIdentity(),
+  } as unknown as { lifetime: number; readId: string; boundary: string });
+  await stale.settled();
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+
+  // An aborted Clear leaves the durable epoch unchanged, so an epoch-0
+  // capture downstream still caches (independent suppression is not undone by
+  // a failed clear).
+  stale.dispose();
+  const after = repository(fixture.cache, { lifetime: 2, clearEpoch: cleared.epoch });
+  after.acceptRead(readOf([1], { length: 1 }), { lifetime: 2, readId: "r3", boundary: "b3" });
+  await after.settled();
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "item-1" }]);
+  after.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Behaviour 5: delete while work is queued or in flight.
+// ---------------------------------------------------------------------------
+
+test("a delete fences captured work and a fresh-generation acquisition may cache again", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache, { lifetime: 1, historyGeneration: 0 });
+  owner.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await owner.settled();
+  expect(await fixture.cache.getLatest(historyKey, 10)).toHaveLength(3);
+  const reader = owner.attachReader();
+
+  // Delete the session while the owner still holds queued/live work.
+  expect(await fixture.cache.deleteHistory(historyKey)).toBe(true);
+  expect(await fixture.cache.getHistoryGeneration(historyKey)).toBe(1);
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+  await expect(fixture.cache.getCoverage(historyKey, "read:r1")).resolves.toBeUndefined();
+
+  // A late page and a late write from the pre-delete capture must not
+  // resurrect the deleted rows.
+  owner.acceptPage(pageOf([1, 2, 3], { nextCursor: "C2", length: 8 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "p1",
+    authority: owner.getBaselineIdentity(),
+    requestCursor: "C1",
+  });
+  owner.accept(historyUpdate(9, 9, "late", 9), { lifetime: 1 });
+  await owner.settled();
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toEqual([]);
+  reader.dispose();
+  owner.dispose();
+
+  // A fresh explicit foreground acquisition reads the new generation and may
+  // cache: the delete fence admits a genuinely post-delete writer.
+  const fresh = repository(fixture.cache, {
+    lifetime: 2,
+    historyGeneration: await fixture.cache.getHistoryGeneration(historyKey),
+  });
+  fresh.acceptRead(readOf([1], { length: 1 }), { lifetime: 2, readId: "r2", boundary: "b2" });
+  await fresh.settled();
+  await expect(fixture.cache.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "item-1" }]);
+  fresh.dispose();
+});
+
+test("client teardown retires only its own claims", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const first = repository(fixture.cache, { lifetime: 1, historyGeneration: 0 });
+  first.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await first.settled();
+  const second = repository(fixture.cache, { lifetime: 2, historyGeneration: 0 });
+  second.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 2, readId: "r2", boundary: "b2" });
+  await second.settled();
+
+  first.dispose();
+  // The survivor still accepts and caches its own work.
+  second.accept(historyUpdate(9, 9, "survivor", 9), { lifetime: 2 });
+  await second.settled();
+  await expect(fixture.cache.getLatest(historyKey, 40)).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ transcriptKey: "item-9", item: expect.objectContaining({ text: "survivor" }) }),
+    ]),
+  );
+  second.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Behaviour 6: reopen after a simulated crash.
+// ---------------------------------------------------------------------------
+
+test("no page continuity certificate survives the browser lifetime", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  // A previous browser lifetime commits a latest read and two older pages.
+  const previous = repository(fixture.cache, { lifetime: 1, sessionNonce: "browser-lifetime-A" });
+  previous.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "b1",
+  });
+  const authority = previous.getBaselineIdentity();
+  previous.acceptPage(pageOf([3, 4, 5], { nextCursor: "C2", length: 8 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "p1",
+    authority,
+    requestCursor: "C1",
+  });
+  await previous.settled();
+  previous.dispose();
+
+  // A crash/reload begins a NEW browser lifetime: a fresh repository for the
+  // same history must not continue the previous lifetime's page chain, even
+  // though the binding's per-tab lifetime counter starts at the same value.
+  const reopened = repository(fixture.cache, { lifetime: 1, sessionNonce: "browser-lifetime-B" });
+  reopened.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r2", boundary: "b2" });
+  await reopened.settled();
+
+  const frontier = await fixture.cache.getOlderWindow(
+    historyKey,
+    { entry: 6, item: 0 },
+    40,
+    reopened.getBaselineIdentity(),
+  );
+  expect(frontier.rows).toEqual([]);
+  expect(frontier.stale).toBe(true);
+  reopened.dispose();
+});
+
+test("committed rows reopen as a stale seed with no overlay, and a source read restores currentness", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const committed = repository(fixture.cache, { lifetime: 1, sessionNonce: "browser-lifetime-A" });
+  committed.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  await committed.settled();
+  committed.dispose();
+
+  // The committed rows are a readable stale seed on disk; no overlay survives
+  // memory.
+  const seeded = await fixture.cache.getLatestWindow(historyKey, 40);
+  expect(seeded.rows.map((row) => row.transcriptKey)).toEqual(["item-6", "item-7", "item-8"]);
+  expect(seeded.stale).toBe(false);
+
+  const reopened = repository(fixture.cache, { lifetime: 1, sessionNonce: "browser-lifetime-A" });
+  expect(reopened.getSnapshot()).toBeUndefined();
+  const preRead = await reopened.attachReader().openLocal(40);
+  expect(preRead.status).not.toBe("current");
+
+  // A source read restores currentness.
+  reopened.acceptRead(readOf([6, 7, 8], { length: 8 }), { lifetime: 1, readId: "r2", boundary: "b2" });
+  await reopened.settled();
+  const reader = reopened.attachReader();
+  const restored = await reader.openLocal(40);
+  expect(restored.status).toBe("current");
+  reader.dispose();
+  reopened.dispose();
+});

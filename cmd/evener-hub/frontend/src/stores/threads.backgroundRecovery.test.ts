@@ -8,11 +8,12 @@ import type { ThreadTurnsListResponse } from "@evener/appwire-client";
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, test, vi } from "vitest";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
+import { SessionEntryCache } from "./sessionEntryCache";
 import {
   holdNextCurrentLookup,
   holdNextCurrentLookupBeforeRead,
@@ -24,6 +25,7 @@ import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
+  installEntryTranscriptFixtureForTests,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
   setSessionCacheAdapterForTests,
@@ -1786,6 +1788,84 @@ describe("background transcript recovery", () => {
       resetThreadsStoreForTests();
       restoreOptions();
       cache.close();
+    }
+  });
+
+  test("a sibling Clear of the entry cache lets a fresh explicit open re-cache under the new epoch", async () => {
+    const selected = "local:entry-sibling-clear";
+    const factory = new IDBFactory();
+    const databaseName = `entry-sibling-clear-${crypto.randomUUID()}`;
+    const entryCache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
+    const sibling = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName });
+    resetThreadsStoreForTests();
+    const fixture = installEntryTranscriptFixtureForTests({
+      ref: selected,
+      cache: entryCache,
+      clientId: "fixture-client",
+      hostId: "fixture-host",
+    });
+    try {
+      // A real recorded item so the entry repository has something to cache.
+      const fake = new FakeClient("ready");
+      fake.on("thread/read", (params) => {
+        const response = currentRead(params.ref ?? selected);
+        response.snapshot = { incarnation: "inc-1", length: 1 };
+        response.thread.turns = [
+          {
+            id: "turn_1",
+            itemsView: "full",
+            status: "completed",
+            version: 1,
+            items: [
+              {
+                type: "agentMessage",
+                id: "item-1",
+                transcriptKey: "item-1",
+                turnId: "turn_1",
+                position: { entry: 1, item: 0 },
+                version: 1,
+                text: "ENTRY_CLEAR_BODY",
+              },
+            ],
+          },
+        ];
+        return response;
+      });
+      fake.on("thread/unsubscribe", () => ({}));
+      connectionStore.getState().connect(fake);
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("expected the fixture's resolved history key");
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+
+      // Release the pane so the next explicit open is a fresh acquisition that
+      // must re-hydrate.
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+
+      // A sibling Clear on the same database with no broadcast.
+      await expect(sibling.clear()).resolves.toEqual({ committed: true, epoch: 1 });
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toEqual([]);
+
+      // The fresh explicit foreground acquisition reads the new epoch, so it
+      // caches again instead of carrying the pre-clear authority.
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      await expect(entryCache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+      expect(await entryCache.getHistoryGeneration(historyKey)).toBe(0);
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      sibling.close();
+      resetThreadsStoreForTests();
+      await new Promise<void>((resolve) => {
+        const request = factory.deleteDatabase(databaseName);
+        request.onsuccess = () => resolve();
+        request.onerror = () => resolve();
+      });
     }
   });
 });

@@ -169,6 +169,24 @@ describe("SessionCacheRow", () => {
     }
   });
 
+  // Task 4: readable content stays usable and honest about staleness. A count
+  // that becomes unreadable after content was cached must not keep claiming a
+  // stale "cached" state, and must never fall back to "empty" (which would
+  // claim the privacy remedy's store was certainly cleared).
+  it("a count that becomes unavailable after cached content reports unavailable, not stale cached or empty", {
+    timeout: 3_000,
+  }, async () => {
+    await seedCacheWithRecords(1);
+    await sessionCacheRowStore.getState().refresh();
+    expect(sessionCacheRowStore.getState().status).toBe("cached");
+
+    const adapter = installedAdapters.at(-1);
+    if (adapter === undefined) throw new Error("no cache adapter installed");
+    vi.spyOn(adapter, "count").mockResolvedValue(undefined);
+    await sessionCacheRowStore.getState().refresh();
+    expect(sessionCacheRowStore.getState().status).toBe("unavailable");
+  });
+
   it("a mounted cleared badge yields to the next same-tab write without a forced render", {
     timeout: 3_000,
   }, async () => {
