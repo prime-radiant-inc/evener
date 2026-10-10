@@ -3967,6 +3967,44 @@ func TestClearResolvedDelegateAttentionDropsWakesAfterTheFlagWasLowered(t *testi
 	}
 }
 
+// TestClearResolvedDelegateAttentionLeavesWakesToAPendingStop pins that the
+// clear does not forget a wake while a stop is pending: the stop's cleanup owns
+// it and renews the durability of its resolution marker before forgetting it.
+func TestClearResolvedDelegateAttentionLeavesWakesToAPendingStop(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	controller := root.delegateController
+	const attentionID = "delegate:resolved-during-a-stop"
+	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "already handled"); err != nil || !appended {
+		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
+	}
+	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+		t.Fatalf("open stable attention: %v", err)
+	}
+	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionDiscarded); err != nil {
+		t.Fatalf("resolve stable attention: %v", err)
+	}
+	controller.mu.Lock()
+	controller.durable[fixture.delegateID].PendingStopSeq = 1
+	controller.mu.Unlock()
+
+	if err := controller.clearResolvedDelegateAttention(fixture.delegateID); err != nil {
+		t.Fatalf("clear during a pending stop: %v", err)
+	}
+	controller.mu.Lock()
+	_, kept := attentionWakeIDsOf(controller, fixture.delegateID)[attentionID]
+	controller.mu.Unlock()
+	if !kept {
+		t.Fatal("the clear forgot a wake the pending stop's cleanup owns")
+	}
+}
+
 // warmStableSupervisionDelegate starts the warm run and acknowledges its result.
 // It does NOT wait for that run to quiesce: the run's finalizer outlives the
 // acknowledged result, because `running` goes false at the top of the finalize

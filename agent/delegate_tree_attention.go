@@ -295,8 +295,10 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 }
 
 // clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
-// projection, and drops its noted wakes, once its transcript holds no unresolved attention. A resolution
-// can outrun the committed attention run that would otherwise emit the clearing
+// projection, and drops its noted wakes, once its transcript holds no
+// unresolved attention. While a stop is pending the stop's cleanup owns the
+// wakes (it renews their markers' durability first), so the clear leaves them.
+// A resolution can outrun the committed attention run that would otherwise emit the clearing
 // event (acceptDelegateAttention makes the marker durable first, and a
 // later-declined CommitStart leaves the journal's last event at true), and the
 // transcript-driven drive is the only witness of that state, so it reconciles
@@ -333,7 +335,7 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
 	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
-	if aggregate == nil || !aggregate.NeedsAttention && len(wakeIDs) == 0 {
+	if aggregate == nil || aggregate.PendingStopSeq != 0 || !aggregate.NeedsAttention && len(wakeIDs) == 0 {
 		c.mu.Unlock()
 		return false, nil
 	}
@@ -360,7 +362,7 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 	defer release()
 	c.mu.Lock()
 	aggregate = c.durable[delegateID]
-	if aggregate == nil || aggregate.Descriptor.TranscriptRef != transcriptRef {
+	if aggregate == nil || aggregate.PendingStopSeq != 0 || aggregate.Descriptor.TranscriptRef != transcriptRef {
 		c.mu.Unlock()
 		return false, nil
 	}
