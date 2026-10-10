@@ -955,8 +955,8 @@ export function ConversationScreen({
 		},
 		[store, client, chipsConnected, route.params.hubId, route.params.ref, navigation, route.params.title],
 	);
-	// The title's state line reads live ages ("Working · 38m", "Finished ·
-	// 1h ago"): re-render twice a minute while the session is in front.
+	// The title's state line reads live ages ("Working · 38m", "Idle · 1h
+	// ago"): re-render twice a minute while the session is in front.
 	const [, setClock] = useState(0);
 	useEffect(() => {
 		if (!focused) return;

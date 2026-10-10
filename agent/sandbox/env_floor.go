@@ -41,9 +41,10 @@ var floorPrefixDrops = []string{
 //     system directories, so a spawned `git` is the real git and not the
 //     /usr/bin xcrun shim (which is loud and slow under a sandbox),
 //   - points TMPDIR and EVENER_SCRATCH_DIR at the per-session scratch, and
-//   - redirects the language cache vars (GOCACHE / GOMODCACHE / npm_config_cache /
-//     CARGO_HOME) into the session tmp when the cache strategy is session-private,
-//     so a sandboxed build can never poison a cache a later build consumes.
+//   - redirects the language cache vars (GOCACHE / GOMODCACHE / GOPATH /
+//     npm_config_cache / CARGO_HOME) into the session tmp when the cache strategy
+//     is session-private, so a sandboxed build can never poison a cache a later
+//     build consumes.
 //
 // It is a pure function of its inputs and returns a fresh slice; it never reads
 // the process environment. Called at EVERY spawn site (shell jobs, rg, stdio MCP
@@ -75,12 +76,46 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 			out = append(out,
 				"GOCACHE="+filepath.Join(sessionScratch, goCacheDirName),
 				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
+				envvars.GoPath.Assignment(sessionGoPath(env, policy, sessionScratch)),
 				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
 				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, cargoHomeDirName)),
 			)
 		}
 	}
 	return out
+}
+
+// sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
+// first, because Go writes the checksum database and `go install` output only to
+// the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
+// (Go's $HOME/go default when unset) follows, so GOPATH-mode builds still find
+// the packages already there, read-only; restricted mode cannot read it, so it
+// gets the scratch alone. Entries inside the scratch are dropped from the ambient
+// value, so flooring an already-floored env does not repeat them.
+func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) string {
+	scratchGoPath := filepath.Join(sessionScratch, goPathDirName)
+	if policy.Spawned.Read != ReadAnywhere {
+		return scratchGoPath
+	}
+	var ambient []string
+	home := ""
+	for _, kv := range env {
+		name, val, _ := strings.Cut(kv, "=")
+		switch name {
+		case envvars.GoPath.Name:
+			for _, entry := range filepath.SplitList(val) {
+				if entry != "" && !isUnderAnyRoot(entry, []string{sessionScratch}) {
+					ambient = append(ambient, entry)
+				}
+			}
+		case "HOME":
+			home = val
+		}
+	}
+	if len(ambient) == 0 && home != "" {
+		ambient = []string{filepath.Join(home, "go")}
+	}
+	return strings.Join(append([]string{scratchGoPath}, ambient...), string(filepath.ListSeparator))
 }
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.
@@ -185,8 +220,24 @@ func floorDrops(name string) bool {
 // $HOME/go/pkg — it does not track a custom GOPATH, so an ambient GOMODCACHE
 // computed from a non-default GOPATH would land outside every granted root.
 // Verified 2026-08-06 (see env_floor_test.go).
+//
+// GOPATH is included because Go writes the checksum database's tree heads to
+// $GOPATH/pkg/sumdb whatever GOMODCACHE says, so its first entry must be
+// writable too (see sessionGoPath).
+// GOMODCACHE stays set explicitly: an environment value overrides one written to
+// the user's go env file with `go env -w`, which deriving it from GOPATH would not.
+//
+// PATH is deliberately left alone, so `go install` output in the scratch GOPATH's
+// bin is run by its path rather than found on PATH. The real GOPATH's bin is
+// read-only under this strategy, so `go install` could not land anywhere before.
+// Putting a session-writable directory on PATH would let anything the model
+// writes there shadow the commands every spawn site runs, hooks included.
 func isRedirectedCacheVar(name string) bool {
-	return name == "GOCACHE" || name == envvars.GoModCache.Name || name == "npm_config_cache" || name == envvars.CargoHome.Name
+	switch name {
+	case "GOCACHE", envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
+		return true
+	}
+	return false
 }
 
 // kubeconfigIsExternal reports whether a KUBECONFIG value points outside every

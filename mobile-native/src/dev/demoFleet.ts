@@ -471,7 +471,7 @@ const SESSIONS: RawSession[] = [
 	},
 	{ id: "s-namer", title: "Tune Session Namer Token Cap", state: "restart", ago: 47 * M },
 
-	// Finished, not yet seen (4)
+	// Idle, not yet seen: the blue dot (4)
 	{
 		id: "s-hier",
 		title: "Host Project Hierarchy UI Mockups",
@@ -969,7 +969,7 @@ export interface DemoFleetOptions {
 	// (demoSessions.ts LONG_CONTENT) in place of the usual.
 	long?: boolean;
 	// Mirrors EVENER_DEMO_FLEET_TOOLS: adds "Show Every Tool Family" to
-	// Finished, a session replaying the recorded wire corpora.
+	// Idle, a session replaying the recorded wire corpora.
 	toolFamilies?: boolean;
 	// The provider instance each model id runs on (demoSetup.ts's catalog),
 	// which the fleet's rows don't say: a sign-in notice counts the live
