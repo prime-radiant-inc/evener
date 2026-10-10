@@ -56,7 +56,7 @@ func NewManager(root string) *Manager {
 // DefaultRoot is ~/.config/evener/plugins, honoring XDG_CONFIG_HOME the same way
 // the rest of evener does (envvars.XDGConfigHome).
 func DefaultRoot() string {
-	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), pluginUserHomeDir), "plugins")
+	return userdirs.PluginStore(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), pluginUserHomeDir))
 }
 
 // The store's own files and directories, named once so storePath and the
@@ -70,8 +70,8 @@ const (
 	// outlives the run: a marketplace's other names can still be recorded in a
 	// later one.
 	migrationRecordFileName = "marketplace-migration.json"
-	bundledDirName          = "bundled"
-	cacheDirName            = "cache"
+	bundledDirName          = userdirs.PluginBundledDirName
+	cacheDirName            = userdirs.PluginCacheDirName
 	marketplacesDirName     = "marketplaces"
 	cloneLocksDirName       = "clone-locks"
 )

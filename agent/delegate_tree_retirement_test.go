@@ -1160,6 +1160,77 @@ func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
 	c.Abort(claim, "")
 }
 
+// A closed delegate can never act on a noted wake, so a wake whose item the
+// transcript already resolved (and whose clear failed before the closure)
+// must not hold the tree's retirement.
+func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	const attentionID = "attention-resolved-before-closure"
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-resolved-content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	tree.mu.Lock()
+	_, wakeKept := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
+	tree.mu.Unlock()
+	if !wakeKept {
+		t.Fatal("the resolved wake did not outlive the closure; the scenario is not the one under test")
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("a closed delegate's resolved wake blocks retirement: %+v %v", state, err)
+	}
+	c.Abort(claim, "")
+}
+
+// The other direction of the closed-delegate rule: ignoring a closed
+// delegate's wakes never lets unresolved attention in its transcript through,
+// whether its runtime is resident or not.
+func TestRetirementDelegateUnresolvedAttentionOfClosedDelegateBlocks(t *testing.T) {
+	t.Parallel()
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	const attentionID = "attention-unresolved-at-closure"
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-unresolved-content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		c.Abort(claim, "")
+	}
+	if claim != nil || err != nil {
+		t.Fatalf("unresolved attention of a closed delegate escaped: %+v %v", state, err)
+	}
+}
+
 // Pause an actual read of fixture-owned persisted bytes. The original inode is
 // restored before releasing the reader, so subsequent durable writes/readback
 // use the real original writer and file, not a synthetic persistence result.
