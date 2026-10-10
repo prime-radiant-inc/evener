@@ -65,10 +65,10 @@ const (
 	MemoryContextPages   = "pages"
 )
 
-// MemoryContextBody is the text inside the notification block: the preamble,
-// then sections, blank-line separated.
+// MemoryContextBody is the text the producer wraps in the notification tags:
+// the preamble, then sections, blank-line separated, on lines of their own.
 func MemoryContextBody(sections []string) string {
-	return strings.Join(append([]string{MemoryContextPreamble}, sections...), "\n\n")
+	return "\n" + strings.Join(append([]string{MemoryContextPreamble}, sections...), "\n\n") + "\n"
 }
 
 // MemoryIndexSection reports scope's index: its state, and for a current
@@ -127,14 +127,11 @@ func MemoryPageChangesSection(scope string, pages []MemoryPageChange) string {
 }
 
 // MemoryContextSection is one decoded section of a memory-context message.
-// Text is the section exactly as recorded. An index section also carries its
-// State (current, missing, revoked or unavailable), Truncated and the decoded
-// Content (empty unless current).
+// Text is the section exactly as recorded. Index is set only on an index
+// section.
 type MemoryContextSection struct {
 	Scope, Kind, Text string
-	State             string
-	Truncated         bool
-	Content           string
+	Index             *MemoryContextDisplay
 }
 
 // ParseMemoryContext decodes a recorded memory-context message into its
@@ -143,7 +140,7 @@ type MemoryContextSection struct {
 // section for a known scope. Anything else yields false; the caller keeps the
 // original text.
 func ParseMemoryContext(text string) ([]MemoryContextSection, bool) {
-	body, ok := strings.CutPrefix(text, llm.SystemNotificationOpenTag+"\n")
+	body, ok := strings.CutPrefix(text, llm.SystemNotificationOpenTag+"\n"+MemoryContextPreamble+"\n\n")
 	if !ok {
 		return nil, false
 	}
@@ -151,11 +148,8 @@ func ParseMemoryContext(text string) ([]MemoryContextSection, bool) {
 		return nil, false
 	}
 	chunks := strings.Split(body, "\n\n")
-	if len(chunks) < 2 || chunks[0] != MemoryContextPreamble {
-		return nil, false
-	}
-	sections := make([]MemoryContextSection, 0, len(chunks)-1)
-	for _, chunk := range chunks[1:] {
+	sections := make([]MemoryContextSection, 0, len(chunks))
+	for _, chunk := range chunks {
 		section, ok := parseMemoryContextSection(chunk)
 		if !ok {
 			return nil, false
@@ -184,9 +178,10 @@ func parseMemoryContextSection(chunk string) (MemoryContextSection, bool) {
 			return MemoryContextSection{}, false
 		}
 		section.Kind = MemoryContextIndex
+		section.Index = &MemoryContextDisplay{Scope: scope}
 		for state, line := range memoryStateLines {
 			if head == line {
-				section.State = state
+				section.Index.State = state
 				return section, true
 			}
 		}
@@ -195,13 +190,13 @@ func parseMemoryContextSection(chunk string) (MemoryContextSection, bool) {
 			if quoted, ok = strings.CutPrefix(head, memoryIndexPartialHead); !ok {
 				return MemoryContextSection{}, false
 			}
-			section.Truncated = true
+			section.Index.Truncated = true
 		}
-		content, ok := unquoteWhole(quoted)
-		if !ok {
+		content, tail, ok := unquotePrefix(quoted)
+		if !ok || tail != "" {
 			return MemoryContextSection{}, false
 		}
-		section.State, section.Content = "current", content
+		section.Index.State, section.Index.Content = "current", content
 		return section, true
 	}
 	return MemoryContextSection{}, false
@@ -219,7 +214,7 @@ func validMemoryChangeLines(lines string) bool {
 		if !ok {
 			quoted, ok = strings.CutPrefix(line, memoryChangeRemoved)
 		}
-		if _, valid := unquoteWhole(quoted); !ok || !valid {
+		if _, tail, valid := unquotePrefix(quoted); !ok || !valid || tail != "" {
 			return false
 		}
 	}
@@ -230,49 +225,25 @@ func validMemoryChangeLines(lines string) bool {
 // quoted path, then whether it changed or was removed, per line.
 func validMemoryPageLines(lines string) bool {
 	for line := range strings.SplitSeq(lines, "\n") {
-		literal, tail, ok := splitGoQuotedLiteral(line)
-		if !ok || (tail != memoryPageChanged && tail != memoryPageRemoved) {
-			return false
-		}
-		if _, err := strconv.Unquote(literal); err != nil {
+		if _, tail, ok := unquotePrefix(line); !ok || (tail != memoryPageChanged && tail != memoryPageRemoved) {
 			return false
 		}
 	}
 	return true
 }
 
-// unquoteWhole decodes s when it is exactly one Go-quoted literal.
-func unquoteWhole(s string) (string, bool) {
-	literal, tail, ok := splitGoQuotedLiteral(s)
-	if !ok || tail != "" {
-		return "", false
-	}
-	content, err := strconv.Unquote(literal)
-	return content, err == nil
-}
-
-// splitGoQuotedLiteral splits s into the leading Go-quoted string literal and
-// whatever follows it. The literal starts at s[0] and ends at the first
-// unescaped double quote; scanning backslash parity is exact because
-// strconv.Quote escapes every backslash and quote the content contains, so no
-// real newline or ambiguous quote can appear inside it. Returns false when s
-// does not begin with a quoted literal or the literal never closes.
-func splitGoQuotedLiteral(s string) (literal, tail string, ok bool) {
+// unquotePrefix decodes the double-quoted Go literal s starts with (the form
+// strconv.Quote writes) and returns what follows it.
+func unquotePrefix(s string) (content, tail string, ok bool) {
 	if !strings.HasPrefix(s, `"`) {
 		return "", "", false
 	}
-	escaped := false
-	for i := 1; i < len(s); i++ {
-		switch {
-		case escaped:
-			escaped = false
-		case s[i] == '\\':
-			escaped = true
-		case s[i] == '"':
-			return s[:i+1], s[i+1:], true
-		}
+	literal, err := strconv.QuotedPrefix(s)
+	if err != nil {
+		return "", "", false
 	}
-	return "", "", false
+	content, err = strconv.Unquote(literal)
+	return content, s[len(literal):], err == nil
 }
 
 // MemoryContextDisplay is the display metadata of one index section. It rides
@@ -308,11 +279,8 @@ func memoryContextItems(turnID string, turnIndex int, text string) []appwire.Thr
 	items := make([]appwire.ThreadItem, 0, len(sections))
 	for i, section := range sections {
 		item := memoryContextItem(turnID, turnIndex, i, section.Text)
-		if section.Kind == MemoryContextIndex {
-			raw, err := json.Marshal(memoryContextRawEnvelope{MemoryContext: MemoryContextDisplay{
-				Scope: section.Scope, State: section.State, Truncated: section.Truncated, Content: section.Content,
-			}})
-			if err == nil {
+		if section.Index != nil {
+			if raw, err := json.Marshal(memoryContextRawEnvelope{MemoryContext: *section.Index}); err == nil {
 				item.Raw = raw
 			}
 		}

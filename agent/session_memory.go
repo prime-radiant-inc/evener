@@ -577,7 +577,8 @@ func (s *Session) memoryFlight(scope string, pages []string) *memoryIndexFlight 
 
 // memoryContextSection builds one section of a boundary's memory-context
 // message. It runs under memoryMu, so the session state it updates and the
-// decision to report agree, and returns "" when it has nothing to say.
+// decision to report agree, and returns "" when it has nothing to say. A nil
+// section is skipped.
 type memoryContextSection func() string
 
 // appendMemoryContext appends one memory-context message holding every
@@ -599,6 +600,9 @@ func (s *Session) appendMemoryContext(sections []memoryContextSection) {
 	}
 	var texts []string
 	for _, section := range sections {
+		if section == nil {
+			continue
+		}
 		if text := section(); text != "" {
 			texts = append(texts, text)
 		}
@@ -607,7 +611,7 @@ func (s *Session) appendMemoryContext(sections []memoryContextSection) {
 	if len(texts) == 0 {
 		return
 	}
-	msg := llm.UserMachinery(systemNotification("\n" + apptranscript.MemoryContextBody(texts) + "\n"))
+	msg := llm.UserMachinery(systemNotification(apptranscript.MemoryContextBody(texts)))
 	s.appendTurnWithTranscriptMessage(schema.TurnMemoryContext, msg, msg)
 }
 
@@ -689,7 +693,7 @@ func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memory
 	case "current":
 		return s.memoryIndexSection(p, func() (string, bool) { return memoryIndexDeltaSection(baseline.index, p), true })
 	case baseline.status:
-		return func() string { return "" }
+		return nil
 	default:
 		return s.memoryProjectionSection(p)
 	}
@@ -773,7 +777,7 @@ func (s *Session) restoreMemoryProjection(history []schema.Turn) {
 		}
 		sections, _ := apptranscript.ParseMemoryContext(turn.Message.Text())
 		for _, section := range sections {
-			if section.Kind == apptranscript.MemoryContextIndex && slices.Contains(memoryScopes, section.Scope) {
+			if section.Index != nil && slices.Contains(memoryScopes, section.Scope) {
 				s.memoryEverProjected[section.Scope] = true
 			}
 		}
@@ -815,8 +819,7 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context, turnStart bool) 
 	timer := s.sclock().NewTimer(s.memoryBoundaryWait())
 	defer timer.Stop()
 	flights := make(map[string]*memoryIndexFlight)
-	// revoked holds the scopes whose sections are known before any read.
-	revoked := make(map[string]bool)
+	var sections []memoryContextSection
 	for _, scope := range memoryScopes {
 		if _, err := s.memoryScopeBinding(scope); !s.memoryContextEnabled() || err != nil {
 			s.memoryMu.Lock()
@@ -824,7 +827,7 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context, turnStart bool) 
 				flight.stale = true
 			}
 			s.memoryMu.Unlock()
-			revoked[scope] = true
+			sections = append(sections, s.memoryProjectionSection(memoryProjection{Scope: scope, Status: "revoked"}))
 			continue
 		}
 		if _, known := s.memoryBaselineFor(scope); known && !turnStart {
@@ -860,12 +863,7 @@ func (s *Session) maybeAppendMemoryContext(ctx context.Context, turnStart bool) 
 		}
 	}
 publish:
-	var sections []memoryContextSection
 	for _, scope := range memoryScopes {
-		if revoked[scope] {
-			sections = append(sections, s.memoryProjectionSection(memoryProjection{Scope: scope, Status: "revoked"}))
-			continue
-		}
 		flight := flights[scope]
 		if flight == nil {
 			continue

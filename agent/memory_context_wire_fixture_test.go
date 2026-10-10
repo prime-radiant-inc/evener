@@ -197,6 +197,18 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 		"Regenerate with `go test ./agent -run 'MemoryContextWireFixtures$' -count=1 -update-wire` and read the diff.")
 }
 
+// Every scope the session projects has a label in the memory-context
+// wording, so no scope can write a section the projector rejects.
+func TestMemoryContextLabelsEveryScope(t *testing.T) {
+	t.Parallel()
+	for _, scope := range memoryScopes {
+		text := systemNotification(apptranscript.MemoryContextBody([]string{apptranscript.MemoryIndexSection(scope, "missing", false, "")}))
+		if sections, ok := apptranscript.ParseMemoryContext(text); !ok || len(sections) != 1 || sections[0].Scope != scope {
+			t.Fatalf("scope %s: sections=%+v ok=%t", scope, sections, ok)
+		}
+	}
+}
+
 // memoryContextBoundariesPath pins whole memory-context messages.
 const memoryContextBoundariesPath = "testdata/memorycontextwire/boundaries.md"
 

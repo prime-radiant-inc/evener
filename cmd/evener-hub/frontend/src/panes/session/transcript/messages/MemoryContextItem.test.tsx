@@ -152,7 +152,7 @@ test("opening reveals the scope/state and the decoded index through safe Markdow
   expect(content.querySelector("li")).not.toBeNull();
 });
 
-test("escape and quote syntax from the recorded envelope never appear as the memory body", () => {
+test("escape and quote syntax from the recorded section never appear as the memory body", () => {
   const config = preset("tools");
   renderProjected(project([wireItem()], config), config);
   openSummary();

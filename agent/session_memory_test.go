@@ -178,16 +178,16 @@ func memoryScopeSections(text, scope string) (sections []apptranscript.MemoryCon
 	return sections, ok
 }
 
-// memoryIndexSectionOf returns scope's index section in a memory-context
+// memoryIndexSectionOf returns scope's index observation in a memory-context
 // message, if it has one.
-func memoryIndexSectionOf(text, scope string) (apptranscript.MemoryContextSection, bool) {
+func memoryIndexSectionOf(text, scope string) (apptranscript.MemoryContextDisplay, bool) {
 	sections, _ := memoryScopeSections(text, scope)
 	for _, section := range sections {
-		if section.Kind == apptranscript.MemoryContextIndex {
-			return section, true
+		if section.Index != nil {
+			return *section.Index, true
 		}
 	}
-	return apptranscript.MemoryContextSection{}, false
+	return apptranscript.MemoryContextDisplay{}, false
 }
 
 // Decode only core framing and quoted opaque data, never use steering prose as
@@ -195,7 +195,7 @@ func memoryIndexSectionOf(text, scope string) (apptranscript.MemoryContextSectio
 // full index observation of scope.
 func memoryRequestIndex(t *testing.T, req llm.Request, scope string) (string, string, bool) {
 	t.Helper()
-	var latest *apptranscript.MemoryContextSection
+	var latest *apptranscript.MemoryContextDisplay
 	for _, msg := range req.Messages {
 		section, ok := memoryIndexSectionOf(msg.Text(), scope)
 		if !ok {

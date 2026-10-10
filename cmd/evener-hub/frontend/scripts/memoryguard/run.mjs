@@ -8,9 +8,9 @@
 // desktop (1400px) width, then checks:
 //
 //   1. the refresh is collapsed at both widths, with the exact heading
-//      "Refreshed my memory" and no model-facing envelope in the collapsed row;
+//      "Refreshed my memory" and no model-facing text in the collapsed row;
 //   2. a trusted CDP pointer click opens it to the scope/state line and the
-//      decoded, formatted index (never the escaped envelope);
+//      decoded, formatted index (never the escaped section text);
 //   3. the folded Source keeps the complete original Text verbatim, including
 //      the task-list markers the Markdown sanitizer strips;
 //   4. a real trusted keyboard activation (Space on the native summary) opens
@@ -99,7 +99,7 @@ function assertClosed(snapshot, label, failures) {
     failures.push(`${label}: heading=${JSON.stringify(snapshot.label)}, expected "Refreshed my memory"`);
   }
   if ((snapshot.contentText ?? "").includes("memory index: \"")) {
-    failures.push(`${label}: the collapsed row leaked the model-facing envelope`);
+    failures.push(`${label}: the collapsed row leaked the model-facing text`);
   }
   if (snapshot.docScrollWidth > snapshot.docClientWidth + 1) {
     failures.push(
@@ -138,7 +138,7 @@ async function assertAt(cdpEndpoint, vitePort, width) {
       failures.push(`${label}: the formatted body is missing the decoded index`);
     }
     if ((opened.contentText ?? "").includes("memory index: \"")) {
-      failures.push(`${label}: the formatted body rendered the escaped envelope`);
+      failures.push(`${label}: the formatted body rendered the escaped section text`);
     }
     if (!(opened.sourceText ?? "").includes("- [x] guard checked")) {
       failures.push(`${label}: the Source lost a checked task marker`);

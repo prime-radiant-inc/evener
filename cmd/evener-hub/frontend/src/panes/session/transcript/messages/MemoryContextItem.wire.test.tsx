@@ -87,7 +87,7 @@ test.each(PRESETS)("at the %s preset every recorded refresh is a closed compact 
     const details = screen.getByTestId("memory-context-item") as HTMLDetailsElement;
     expect(details.open).toBe(false);
     expect(screen.getByTestId("memory-context-label").textContent).toBe("Refreshed my memory");
-    // The collapsed row never shows the model-facing envelope.
+    // The collapsed row never shows the model-facing text.
     const summary = details.querySelector("summary");
     expect(summary?.textContent ?? "").not.toContain('memory index: "');
     expect(summary?.textContent ?? "").not.toContain("since you last saw it");
@@ -153,7 +153,7 @@ test("quoted Unicode and tab content survives into the formatted body and the li
   expect(screen.getByTestId("memory-context-source-text").textContent).toBe(item.text);
 });
 
-test("the malformed envelope keeps the exact Text on open, with no manufactured index", () => {
+test("the malformed message keeps the exact Text on open, with no manufactured index", () => {
   const item = memoryContextWireItem(MALFORMED);
   expect(item.raw).toBeFalsy();
   renderItem(item, preset("tools"));

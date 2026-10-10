@@ -19,7 +19,7 @@ import (
 // (agent/memory_context_wire_fixture_test.go) pins that the two agree against
 // the real Session.
 func memoryContextRecord(sections ...string) string {
-	return llm.SystemNotificationOpenTag + "\n" + MemoryContextBody(sections) + "\n" + llm.SystemNotificationCloseTag
+	return llm.SystemNotificationOpenTag + MemoryContextBody(sections) + llm.SystemNotificationCloseTag
 }
 
 func memoryContextTurn(text string) schema.Turn {
