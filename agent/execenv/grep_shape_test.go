@@ -52,7 +52,7 @@ func writeGrepShapeTree(t *testing.T) string {
 // windows that overlap or touch joined into one group, and a "--" only between
 // groups apart; and in content mode a cap on output lines, separators and
 // context included (#3284); and files in the same order. Without ripgrep
-// installed only the fallback is checked. Without ripgrep installed only the fallback is checked.
+// installed only the fallback is checked.
 func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 	root := writeGrepShapeTree(t)
 	fallback := NewLocalExecutionEnvironment(root)
