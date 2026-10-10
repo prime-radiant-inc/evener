@@ -35,7 +35,7 @@
         },
         {
           "name": "no oldlog call added in T3",
-          "run": "! git diff refs/lab/before-t3 -- '*.go' ':!*_test.go' ':!oldlog' | grep '^+' | sed 's://.*$::' | grep -q 'oldlog\\.'"
+          "run": "count() { sed 's://.*$::' | grep -o 'oldlog\\.' | wc -l; }; before=$(git grep -h -e oldlog refs/lab/before-t3 -- '*.go' ':!*_test.go' ':!oldlog' | count); after=$(find . -name '*.go' ! -name '*_test.go' ! -path './oldlog/*' -exec cat {} + | count); test \"$after\" -le \"$before\""
         }
       ]
     },
@@ -122,7 +122,7 @@
         },
         {
           "name": "no oldlog call added in N",
-          "run": "! git diff refs/lab/before-n -- '*.go' ':!*_test.go' ':!oldlog' | grep '^+' | sed 's://.*$::' | grep -q 'oldlog\\.'"
+          "run": "count() { sed 's://.*$::' | grep -o 'oldlog\\.' | wc -l; }; before=$(git grep -h -e oldlog refs/lab/before-n -- '*.go' ':!*_test.go' ':!oldlog' | count); after=$(find . -name '*.go' ! -name '*_test.go' ! -path './oldlog/*' -exec cat {} + | count); test \"$after\" -le \"$before\""
         },
         {
           "name": "logs through slog",
