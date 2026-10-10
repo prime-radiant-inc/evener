@@ -105,7 +105,9 @@ export class HubSeenMarks {
 			const ended = hubTurnEnd(row);
 			const mark = hubTime(row.seen_through);
 			if (ended === null && mark === null) continue;
-			const landed = mark !== null ? mark >= entry.seenThrough : row.unseen !== true;
+			// seen_through doesn't reflect an unread set elsewhere, so a mark
+			// has landed only once the row reads seen as well.
+			const landed = row.unseen !== true && (mark === null || mark >= entry.seenThrough);
 			if (landed || (ended !== null && ended > entry.seenThrough)) {
 				this.pending.delete(row.ref);
 				changed = true;

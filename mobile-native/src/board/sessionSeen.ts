@@ -66,19 +66,22 @@ export function useMarkSeenInFront(
 	// every ten seconds while a session works. Only a hub that tracks
 	// seen-through marks (the row carries seen_through) takes one, and only
 	// motion after its mark is new.
-	const newestMotion = useRef<{ through: number; client: ConversationClientLike | null } | null>(null);
+	const newestMotion = useRef<number | null>(null);
+	// The mark on leaving goes through the newest client, not the one that was
+	// current when the motion was read.
+	const latestClient = useRef(client);
+	latestClient.current = client;
 	const seenMark = fleetRow && tracksSeenThrough(fleetRow) ? (hubTime(fleetRow.seen_through) ?? 0) : null;
 	useEffect(() => {
 		if (!inFront || lastMovedAt === undefined || seenMark === null) return;
-		const kept = newestMotion.current?.through ?? seenMark;
-		if (lastMovedAt > kept) newestMotion.current = { through: lastMovedAt, client };
-	}, [inFront, lastMovedAt, seenMark, client]);
+		if (lastMovedAt > (newestMotion.current ?? seenMark)) newestMotion.current = lastMovedAt;
+	}, [inFront, lastMovedAt, seenMark]);
 	useEffect(() => {
 		if (!inFront) return;
 		return () => {
-			const motion = newestMotion.current;
+			const through = newestMotion.current;
 			newestMotion.current = null;
-			if (motion) hubSeenMarks(hubId).markSeen(motion.client, [{ ref, seenThrough: motion.through }]);
+			if (through !== null) hubSeenMarks(hubId).markSeen(latestClient.current, [{ ref, seenThrough: through }]);
 		};
 	}, [inFront, hubId, ref]);
 	useEffect(() => {

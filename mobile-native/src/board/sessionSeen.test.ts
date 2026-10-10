@@ -370,3 +370,18 @@ it("sends no motion mark to a hub without seen-through marks", async () => {
 	await settleMicrotasks();
 	expect(sent).toEqual([]);
 });
+
+it("sends the leave-the-front motion mark through the newest client", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ state: "active", seen_through: iso(T - 60_000) });
+	view.lastMovedAt = T;
+	hook.rerender();
+	view.client = null;
+	hook.rerender();
+	view.inFront = false;
+	hook.rerender();
+	await settleMicrotasks();
+	// No client now: the mark waits, rather than going through the old one.
+	expect(sent).toEqual([]);
+	hook.unmount();
+});

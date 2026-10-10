@@ -502,6 +502,15 @@ describe("pruning a motion mark", () => {
 		expect(marks.pendingSeenThrough("m")).toBeUndefined();
 	});
 
+	it("keeps a mark while the row still reads unseen, an unread set elsewhere, though seen_through reached it", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "u", seenThrough: T }]);
+		marks.prune([row("u", { turn_ended_at: iso(T), unseen: true, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("u")).toBe(T);
+		marks.prune([row("u", { turn_ended_at: iso(T), unseen: false, seen_through: iso(T) })]);
+		expect(marks.pendingSeenThrough("u")).toBeUndefined();
+	});
+
 	it("keeps a motion mark on a row with no turn end until its seen_through lands", () => {
 		const { marks, client } = setup();
 		marks.markSeen(client, [{ ref: "m", seenThrough: T + 5 }]);
