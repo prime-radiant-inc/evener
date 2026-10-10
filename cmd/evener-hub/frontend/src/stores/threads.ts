@@ -4376,6 +4376,24 @@ function replayHydrationNotifications(
   return { model: hydrated, appliedAt };
 }
 
+function replayEntryHydrationNotifications(
+  repository: TranscriptRepository,
+  lifetime: number,
+  model: ThreadModel,
+  notifications: ReceivedTranscriptUpdate[],
+): { model: ThreadModel; appliedAt: number[] } {
+  let hydrated = model;
+  const appliedAt: number[] = [];
+  for (const update of notifications) {
+    // The repository owns both recorded ingestion and later publications, so
+    // the post-cut tail must join that owner, not a temporary store-only fold.
+    if (!repository.accept(update.notification, { lifetime })) continue;
+    hydrated = repository.getSnapshot() ?? hydrated;
+    appliedAt.push(update.now);
+  }
+  return { model: hydrated, appliedAt };
+}
+
 // A snapshot may publish only for the client and ready generation that own
 // its hydration. Retired connections cannot overwrite replacement state.
 function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
@@ -4391,10 +4409,12 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   }
 
   const live = threadsStore.getState().threads.get(ref);
-  const repositoryModel = productionEntryRoutes.get(ref)?.repository?.getSnapshot();
-  const { model: hydrated, appliedAt } = repositoryModel
-    ? { model: repositoryModel, appliedAt: pending.notifications.map((update) => update.now) }
-    : replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
+  const entry = productionEntryRoutes.get(ref);
+  const repositoryModel = entry?.repository?.getSnapshot();
+  const { model: hydrated, appliedAt } =
+    entry?.repository && repositoryModel
+      ? replayEntryHydrationNotifications(entry.repository, entry.lifetime, repositoryModel, pending.notifications)
+      : replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
   const backgroundModel = isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(hydrated) : hydrated;
   retirePendingHydration(ref, pending, pendingThreadHydrations);
   currentAdmissions.set(ref, {
