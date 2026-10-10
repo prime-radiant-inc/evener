@@ -277,9 +277,18 @@ an observed summary so its counts can become known. A summary with
 `refreshPending` uses the same existing paced summary timer until established
 sources catch up; closing the last holder or going offline cancels that demand.
 
-Scoped activity consumers refresh only resources named by
+Scoped activity consumers refresh the resources named by
 `evener/thread/activity/changed`, honoring its logical owner and the selected
-session/subtree scope. Legacy job lifecycle, delegate-update and tree-update
+session/subtree scope. Delegate field changes are instead applied from the
+pushed `evener/delegate/updated` row when the owning source advertises the
+bounded report preview and is live (`SessionActivityContext.reportPreview` and
+`availability`): the store merges the frame into loaded rows by the delegate's
+logical owner, and reads the collection only for a delegate it has not loaded,
+on observe/paging/resync/reconnect, and when an epoch change clears its push
+state. A source that does not advertise the capability, or a retained context
+whose released runtime receives invalidations but no frames, keeps the
+invalidation read. Delegate membership is append-only within a source epoch;
+jobs and watches are unchanged. Legacy job lifecycle and tree-update
 notifications remain available to other consumers but do not trigger these
 reads. The domain APIs and scoped invalidations form one contract; resync and
 reconnect still refresh observed demand.
