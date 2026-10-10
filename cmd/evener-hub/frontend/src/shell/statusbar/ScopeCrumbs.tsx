@@ -21,6 +21,17 @@ const CLASS = {
   crumbBtn: requireClass(styles.crumbBtn, "scopeCrumbs.module.css", "crumbBtn"),
 };
 
+/** A scope's display title: the loaded thread name, then the navigation row's
+ * title for the same ref, then the caller's fallback. The activity context's
+ * ancestor titles are session ids, not names, so every surface that shows a
+ * scope must resolve through here rather than render its fallback raw. */
+export function useScopeTitle(ref: string, fallback: string): string {
+  const name = useThreadsStore((state) => state.threads.get(ref)?.name);
+  useNavigationStore((state) => state.resources);
+  const row = selectSessionSummary(ref, navigationStore.getState());
+  return name || (row?.ref === ref ? row.title : null) || fallback;
+}
+
 function ScopeCrumbLabel({
   crumb,
   depth,
@@ -34,9 +45,7 @@ function ScopeCrumbLabel({
   hierarchy: boolean;
   onNavigate?: (ref: string) => void;
 }) {
-  const name = useThreadsStore((state) => state.threads.get(crumb.ref)?.name);
-  const row = selectSessionSummary(crumb.ref, navigationStore.getState());
-  const title = name || (row?.ref === crumb.ref ? row.title : null) || crumb.title;
+  const title = useScopeTitle(crumb.ref, crumb.title);
   return (
     <span
       className={CLASS.crumbWrap}

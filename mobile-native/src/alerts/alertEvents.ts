@@ -1,12 +1,13 @@
 // Turns what the hub says into alerts (spec 13.3): a session that becomes
 // Failed, Question, Needs you, Approval, Warning or Restart needed (from any other
-// state, another needs-you state included), a working session that finishes
-// its turn, and a hub notice that appears. A session that stays in one
+// state, another needs-you state included), and a hub notice that appears.
+// A turn that ends otherwise says nothing: the session rests Idle with the
+// Board's blue dot (#4093). A session that stays in one
 // needs-you state says nothing more, whatever it now asks: one alert is
 // great (Jesse, question 3). Each source's first read on a connection is
 // its baseline and alerts nothing (ruling 2), so opening the app never drops
 // a pile of banners on what the Board already shows.
-import { type BoardState, bandOf, type LiveBands, whyLine } from "../board/attention";
+import { type BoardState, bandOf, type LiveBands, liveRows, whyLine } from "../board/attention";
 import type { Notice } from "../board/notices";
 import type { AlertCenter, NeedsYouKind, NoticeAlert, SessionAlert } from "./alertCenter";
 
@@ -34,7 +35,7 @@ export function detectSessionAlerts(
 	// if that ever changes: the first band it appears in, Needs you first,
 	// decides.
 	const diffed = new Set<string>();
-	for (const item of [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle]) {
+	for (const item of liveRows(bands)) {
 		const { ref, title } = item.row;
 		if (diffed.has(ref)) continue;
 		diffed.add(ref);
@@ -43,8 +44,6 @@ export function detectSessionAlerts(
 		if (previous === null) continue;
 		if (needsYou(item.state) && item.state !== before)
 			alerts.push({ kind: item.state as NeedsYouKind, ref, title, why: whyLine(item) });
-		else if (item.state === "finished" && before === "working")
-			alerts.push({ kind: "finished", ref, title, why: null });
 	}
 	// A session that needed you and no longer does, answered here or
 	// elsewhere, has nothing left to alert about. The Needs you section is

@@ -86,7 +86,7 @@ describe("the preview card (spec 7.3)", () => {
 	it("shows the blue dot after the title for an unseen session, and none for a seen one", () => {
 		const unseen = render(
 			<RowPreviewCard
-				item={{ ...item("finished", { state: "idle" }), unseen: true }}
+				item={{ ...item("idle", { state: "idle" }), unseen: true }}
 				hostLabel={hostLabel}
 				onPress={() => {}}
 			/>,
@@ -214,7 +214,7 @@ describe("the row menu sheet (ruling 28)", () => {
 describe("the row's long press, with the sheet", () => {
 	it("opens the sheet after a 500ms press", () => {
 		const openSheet = vi.fn();
-		const shown = item("finished", { state: "idle" });
+		const shown = item("idle", { state: "idle" });
 		const tree = render(
 			<RowMenu
 				item={shown}

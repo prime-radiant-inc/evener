@@ -21,13 +21,14 @@ const sessionScratchTreePrefix = "evener-scratch-"
 const (
 	goCacheDirName    = "gocache"
 	goModCacheDirName = "gomodcache"
+	goPathDirName     = "gopath"
 	npmCacheDirName   = "npm"
 	cargoHomeDirName  = "cargo"
 )
 
 // SessionCacheDirNames are those cache directories. They are regenerable, so a
 // session end prunes them while the rest of the scratch stays.
-var SessionCacheDirNames = []string{goCacheDirName, goModCacheDirName, npmCacheDirName, cargoHomeDirName}
+var SessionCacheDirNames = []string{goCacheDirName, goModCacheDirName, goPathDirName, npmCacheDirName, cargoHomeDirName}
 
 // OpenSessionScratch creates, or reopens, sessionID's scratch in rootID's tree
 // in the first usable scratch base, and holds its lease until Retain or
@@ -67,8 +68,34 @@ func OpenSessionScratch(base, workspaceRoot, rootID, sessionID string) (*Session
 // Named reports whether this scratch lives in a session's tree
 // (OpenSessionScratch) rather than being a disposable one (NewSessionScratch).
 // A named scratch outlives its session's end; a disposable one does not.
+//
+// The answer is fixed at allocation: s.Dir is set once by the allocator and
+// never re-read from disk, and scratchTreeOf is purely lexical, so renaming the
+// directory on disk cannot change it.
 func (s *SessionScratch) Named() bool {
-	return s != nil && strings.HasPrefix(filepath.Base(s.base), sessionScratchTreePrefix)
+	return s != nil && scratchTreeOf(s.Dir) != ""
+}
+
+// isSessionScratchTree reports whether dir is named as a root session's scratch
+// tree.
+func isSessionScratchTree(dir string) bool {
+	return strings.HasPrefix(filepath.Base(dir), sessionScratchTreePrefix)
+}
+
+// scratchTreeOf returns the root session's scratch tree that holds scratchDir
+// (<base>/evener-scratch-<root>/<session>), or "" for a disposable scratch that
+// belongs to no tree. A disposable scratch is recognized by the name its
+// allocator gives it, so one created under a temp base that merely carries the
+// tree prefix still belongs to no tree.
+func scratchTreeOf(scratchDir string) string {
+	if strings.HasPrefix(filepath.Base(scratchDir), sessionScratchPrefix) {
+		return ""
+	}
+	tree := filepath.Dir(scratchDir)
+	if !isSessionScratchTree(tree) {
+		return ""
+	}
+	return tree
 }
 
 // PruneCaches removes the regenerable cache directories (SessionCacheDirNames)
@@ -268,9 +295,11 @@ func ensureOwnedScratchDir(dir string) error {
 	return nil
 }
 
-// safeScratchName reports whether id can name one path component.
+// safeScratchName reports whether id can name one path component. An id
+// carrying the disposable-scratch prefix is refused too, so a named session's
+// scratch can never be taken for a disposable one (see scratchTreeOf).
 func safeScratchName(id string) bool {
-	if id == "" || id == "." || id == ".." {
+	if id == "" || id == "." || id == ".." || strings.HasPrefix(id, sessionScratchPrefix) {
 		return false
 	}
 	return !strings.ContainsAny(id, `/\`) && !strings.ContainsRune(id, 0)
