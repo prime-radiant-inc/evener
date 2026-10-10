@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -512,4 +513,53 @@ func TestBuildBwrapArgvSkipsANonDirectoryCacheRoot(t *testing.T) {
 	if args := buildBwrapArgv(w.policy, w.sessionTmp, cwd); slices.Contains(args, file) {
 		t.Errorf("a non-directory cache root must not be overlaid: %v", args)
 	}
+}
+
+// A persistent writable location inside an overlaid cache root (an extra
+// writable root, a linked worktree's shared git metadata, the session scratch)
+// is bound writable again after the overlay, so writes there persist while the
+// rest of the cache stays write-private.
+func TestBuildBwrapArgvRebindsWritableLocationsInsideACacheOverlay(t *testing.T) {
+	overlayFacts := func(home string) HostFacts {
+		return HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	}
+	rebindAfterOverlay := func(t *testing.T, args []string, cache, w string) {
+		t.Helper()
+		overlay := seqIndex(args, "--overlay-src", cache, "--tmp-overlay", cache)
+		if overlay < 0 {
+			t.Fatalf("the cache root %q must stay overlaid: %v", cache, args)
+		}
+		if seqIndex(args[overlay:], "--bind", w, w) < 0 {
+			t.Errorf("%q must be bound writable after the overlay of %q: %v", w, cache, args)
+		}
+	}
+
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache")
+	library := filepath.Join(cache, "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, overlayFacts(home), cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionTmp := filepath.Join(cache, "tmp", "session")
+	if err := os.MkdirAll(sessionTmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := buildBwrapArgv(rp, sessionTmp, cwd)
+	rebindAfterOverlay(t, args, cache, library)
+	rebindAfterOverlay(t, args, cache, sessionTmp)
+
+	linked := MaterializeWorkspace(t, LinkedWorktree)
+	mainRepo := strings.TrimSuffix(linked, "-wt")
+	facts := overlayFacts(t.TempDir())
+	facts.XDGCacheHome = mainRepo
+	rp, err = Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebindAfterOverlay(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo, rp.Git.CommonDir)
 }
