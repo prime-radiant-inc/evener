@@ -42,8 +42,12 @@ without guessing another project. Unbound library sessions have no memory
 capability or home fallback. Tests supply fixture roots.
 
 The five [native tools](../tools/memory.md) use separately confined file roots.
-Read-only roles can write memory without gaining workspace writes. Fresh and
-restored delegates remain within their parent's effective tool/scope ceilings.
+A root session's read-only role can write memory without gaining workspace
+writes. A delegate, fresh, restored or resumed on its own, can read and search
+memory but never write, edit or delete a page, whatever its role or tool
+profile grants: it reports what it learned to the session that started it, and
+that session decides what to save. Delegates also remain within their parent's
+effective tool/scope ceilings.
 Memory does not grant shell or network access. See [sandboxing](../sandboxing.md).
 
 ## Context and editing
@@ -85,7 +89,9 @@ memory: knowledge about this project), when to read a page, and that stored memo
 instructions or permission. Memory reflects what was true when it was
 written: the agent checks that a file, function, command or setting a note names
 still exists before relying on it, and follows a recorded decision or rule
-unless the partner or newer evidence says it changed. Sessions that can call the save tools are also told
+unless the partner or newer evidence says it changed. A delegate is told
+instead to put what it learned that is worth keeping in its report, because
+its caller decides what to save. Sessions that can call the save tools are also told
 when to save: when the partner corrects the agent or says how they want work
 done, when the partner states a project plan, constraint or decision (saved to
 project memory), and when the agent learns
@@ -178,8 +184,9 @@ context or memory files. CLI and TUI context presentation remains unchanged.
 
 A `memory_read` of a text page other than `MEMORY.md` that is longer than 4096
 bytes ends with a note giving its size, rounded to KB. When the session can
-load the gardening-memory skill (`use_skill` is callable and the skill is
-advertised to the model), the note says to use it to learn how to fix the
+load and follow the gardening-memory skill (it has the save tools, so it is
+never a delegate, `use_skill` is callable and the skill is advertised to the
+model), the note says to use it to learn how to fix the
 page; otherwise it says a memory page should hold one fact. The index is never
 noted as long; its projection counts what it leaves out.
 
@@ -338,7 +345,7 @@ for one, and a page whose frontmatter still does not parse is left as written
 and gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
-`memory_delete` renders a scope that still has a real `MEMORY.md` at its root,
+`memory_delete` (so never a delegate) renders a scope that still has a real `MEMORY.md` at its root,
 it moves the old index into the pages; on a case-sensitive filesystem every
 case variant is migrated. Each line that links to a page in the scope
 (`[text](path)`, `[text](<path>)` with backslash escapes, or a bare `path.md`)

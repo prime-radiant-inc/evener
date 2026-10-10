@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/toolname"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -555,6 +556,34 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 
 	if strings.Contains(subagentSystemPrompt, "ROOT ONLY CUSTOM PROMPT") {
 		t.Fatalf("subagent prompt should not inherit the root-only system prompt override:\n%s", subagentSystemPrompt)
+	}
+}
+
+// A bare resume of a delegate restores with no spawn carrier, so depth is zero;
+// the persisted subagent flag still keeps the root-only prompt override out.
+func TestRestoredDelegate_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	promptFile := filepath.Join(dir, "root-system-prompt.md")
+	if err := os.WriteFile(promptFile, []byte("ROOT ONLY CUSTOM PROMPT"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:         "restored-delegate",
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		IsSubagent: true,
+		Config:     (SessionConfig{SystemPromptFile: promptFile}).toSnapshot(),
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.systemPromptOverride != "" {
+		t.Fatalf("restored delegate loaded the root-only prompt override %q", restored.systemPromptOverride)
 	}
 }
 

@@ -1245,7 +1245,7 @@ func memoryWaitChild(t *testing.T, parent *Session, id string) *subagent {
 	return child
 }
 
-// Catches lost runtime binding on descriptor construction, role writes, late disabled
+// Catches lost runtime binding on descriptor construction, delegate writes, late disabled
 // overrides, restored children regaining live-parent revoked capabilities, and a
 // tree saved before project memory leaving its children unbound once the parent
 // adopts a binding on resume.
@@ -1282,8 +1282,13 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			if mode == "worktree-binding" && child.sess.currentEnv().WorkingDirectory() == workspace {
 				t.Fatal("worktree delegate was not isolated")
 			}
-			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "content": "opaque-child-57"}); res.IsError {
-				t.Fatalf("read-only role memory write: %s", res.Output)
+			// A delegate never writes memory; the stored file stands in for
+			// memory its parent saved, which must survive every restore below.
+			if res := memoryExec(t, child.sess, "memory_write", map[string]any{"scope": "project", "file_path": "child.txt", "content": "opaque-child-57"}); !res.IsError {
+				t.Fatal("delegate wrote memory")
+			}
+			if err := os.WriteFile(filepath.Join(host, "memory", "projects", project.ID, "child.txt"), []byte("opaque-child-57"), 0o600); err != nil {
+				t.Fatal(err)
 			}
 			if res := memoryExec(t, child.sess, "write_file", map[string]any{"file_path": "workspace.txt", "content": "bad"}); !res.IsError {
 				t.Fatal("read-only role regained workspace tool")
@@ -1459,6 +1464,156 @@ func TestMemoryDelegateFreshCeilings(t *testing.T) {
 				t.Fatalf("%s native accesses=%d", mode, calls.Load())
 			}
 		})
+	}
+}
+
+// A delegate reports what it learned to the session that started it, which
+// decides what to save: whatever its role grants, a delegate can read and
+// search the scopes it inherits but never write, edit or delete a page, is
+// never told to save, and never migrates a hand-written index. Its parent keeps
+// every memory tool.
+func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
+	t.Parallel()
+	assertReadOnly := func(t *testing.T, child *Session) {
+		t.Helper()
+		defs := child.ToolDefinitions()
+		for _, name := range memorySaveToolNames {
+			if child.reg.Get(name) != nil || hasToolDef(defs, name) {
+				t.Errorf("delegate has %s", name)
+			}
+		}
+		for _, name := range []string{"memory_read", "memory_search"} {
+			if child.reg.Get(name) == nil || !hasToolDef(defs, name) {
+				t.Errorf("delegate lost %s", name)
+			}
+		}
+		data, _ := child.buildPromptData(child.currentEnv())
+		if !data.MemoryRead || data.MemorySaves || !data.IsSubagent {
+			t.Errorf("delegate MemoryRead=%t MemorySaves=%t IsSubagent=%t, want delegate read guidance without save instructions", data.MemoryRead, data.MemorySaves, data.IsSubagent)
+		}
+	}
+	for _, agentType := range []string{"explorer", "default"} {
+		t.Run(agentType, func(t *testing.T) {
+			t.Parallel()
+			workspace, project := memoryGitFixture(t)
+			root := t.TempDir()
+			const legacy = "- [Cents](cents.md) — opaque-legacy-description\n"
+			memorySeedPage(t, root, "personal", "fact.md", "opaque-delegate-fact-91")
+			writeMemoryPage(t, root, "MEMORY.md", legacy)
+			writeMemoryPage(t, root, "cents.md", "# Cents\n")
+			long := "# Long\n" + strings.Repeat("opaque-long-line-93\n", 300)
+			writeMemoryPage(t, root, "long.md", long)
+			var childTools []llm.ToolDefinition
+			s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(func(req llm.Request) llm.Response {
+				childTools = req.Tools
+				return finalResponse("child finished")
+			}))
+			res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture child", AgentType: agentType, DelegationAllowance: new(0)})
+			if res.Err != nil {
+				t.Fatal(res.Err)
+			}
+			child := memoryWaitChild(t, s, res.ChildSessionID)
+			assertReadOnly(t, child.sess)
+			if child.sess.cfg.MemoryProjectID != project.ID {
+				t.Errorf("delegate project=%q, want the parent's %q", child.sess.cfg.MemoryProjectID, project.ID)
+			}
+			if len(childTools) == 0 {
+				t.Fatal("delegate made no model request")
+			}
+			for _, def := range childTools {
+				if slices.Contains(memorySaveToolNames, def.Name) || strings.Contains(def.Description, memoryReportReminder) {
+					t.Errorf("delegate's model request offers saving through %s", def.Name)
+				}
+			}
+			scope := filepath.Join(root, "memory", "personal")
+			if raw, err := os.ReadFile(filepath.Join(scope, "MEMORY.md")); err != nil || string(raw) != legacy {
+				t.Errorf("delegate migrated MEMORY.md=%q, %v", raw, err)
+			}
+			if raw, err := os.ReadFile(filepath.Join(scope, "cents.md")); err != nil || string(raw) != "# Cents\n" {
+				t.Errorf("delegate migrated cents.md=%q, %v", raw, err)
+			}
+			for _, name := range nativeMemoryToolNames {
+				if s.reg.Get(name) == nil {
+					t.Errorf("parent lost %s", name)
+				}
+			}
+			// The gardening skill fixes a long page with the save tools, so
+			// only the parent's long-page note points at it.
+			for _, tc := range []struct {
+				who       string
+				sess      *Session
+				withSkill bool
+			}{{"parent", s, true}, {"delegate", child.sess, false}} {
+				res := memoryExec(t, tc.sess, "memory_read", map[string]any{"scope": "personal", "file_path": "long.md"})
+				if res.IsError || !strings.HasSuffix(res.Output, memoryPageSizeNote(len(long), tc.withSkill)) {
+					t.Errorf("%s long-page read ends %q, want the note with withSkill=%t", tc.who, res.Output[max(0, len(res.Output)-120):], tc.withSkill)
+				}
+			}
+		})
+	}
+	// A bare resume of a delegate carries no spawn parent; the persisted
+	// subagent flag alone keeps it read-only.
+	t.Run("bare-resume", func(t *testing.T) {
+		t.Parallel()
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		meta := schema.SessionMeta{
+			ID:         "restored-delegate",
+			ProfileID:  "openai",
+			Model:      "gpt-5.2",
+			IsSubagent: true,
+			Config:     (SessionConfig{}).toSnapshot(),
+		}
+		restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{MemoryStateRoot: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer restored.Close()
+		assertReadOnly(t, restored)
+	})
+}
+
+// A stable delegate's persisted tool ceiling never names a save tool, so its
+// descriptor and job status report only what the delegate can call.
+func TestStableDelegateToolNameCeilingOmitsSaveTools(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
+	for _, policy := range []struct {
+		name     string
+		allTools bool
+		allowed  []string
+	}{{"all-tools", true, nil}, {"listed", false, nativeMemoryToolNames}} {
+		ceiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), policy.allTools, policy.allowed, nil, false, "")
+		for _, name := range memorySaveToolNames {
+			if slices.Contains(ceiling, name) {
+				t.Errorf("%s ceiling names %s: %v", policy.name, name, ceiling)
+			}
+		}
+		for _, name := range memoryReadToolNames {
+			if !slices.Contains(ceiling, name) {
+				t.Errorf("%s ceiling lacks %s: %v", policy.name, name, ceiling)
+			}
+		}
+	}
+}
+
+// The parent's delegation guidance lists a role's tools; it never lists a save
+// tool, because no delegate can call one.
+func TestMemoryDelegateToolSummaryOmitsSaveTools(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{MemoryStateRoot: t.TempDir(), MaxSubagentDepth: 2}))
+	for _, agentType := range []string{"explorer", "default"} {
+		summary := s.defaultToolSummaryForAgent(s.pluginAgents[agentType])
+		for _, name := range memorySaveToolNames {
+			if strings.Contains(summary, name) {
+				t.Errorf("%s summary lists %s: %s", agentType, name, summary)
+			}
+		}
+		for _, name := range memoryReadToolNames {
+			if !strings.Contains(summary, name) {
+				t.Errorf("%s summary lacks %s: %s", agentType, name, summary)
+			}
+		}
 	}
 }
 
@@ -2927,7 +3082,8 @@ var updatePromptGoldens = flag.Bool("update-prompt", false,
 
 // Memory guidance follows what the session can do: read guidance (with the
 // trust guard) whenever memory is readable, save instructions and the result
-// tool's reminder only when the save tools are callable, and project-scope
+// tool's reminder only when the save tools are callable (never in a delegate,
+// which reports findings to its parent instead), and project-scope
 // wording only when project memory is bound. Where memory is readable, the
 // guidance and the memory tools' descriptions are prompt text, pinned whole
 // per shape in testdata/memoryprompt, never by substring; regenerate after an
@@ -2948,6 +3104,7 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 		{"personal-only", SessionConfig{MemoryStateRoot: t.TempDir()}, "", true, true, false},
 		{"write-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_write", true, false, true},
 		{"search-revoked", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"}, "memory_search", true, true, true},
+		{"delegate", SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project", spawn: spawnConfig{parentSessionID: "parent-session", depth: 1}}, "", true, false, true},
 		{"disabled", SessionConfig{MemoryStateRoot: t.TempDir(), DisableMemory: true}, "", false, false, false},
 		{"unbound", SessionConfig{}, "", false, false, false},
 	} {
