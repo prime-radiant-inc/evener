@@ -50,6 +50,45 @@ func TestMemoryIndexWritesRefused(t *testing.T) {
 	}
 }
 
+// memory_write and memory_edit refuse a path holding an ASCII control
+// character other than tab, in any segment, and change nothing; memory_delete
+// still removes such a file, which can arrive from outside the tools. A tab
+// is an ordinary path character.
+func TestMemoryControlCharacterPathsRefused(t *testing.T) {
+	t.Parallel()
+	s, scope := memoryWritesSession(t)
+	for _, name := range []string{"bad\nname.md", "dir\r/x.md", "bell\a.txt", "del\x7f.md"} {
+		path := filepath.Join(scope, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for tool, args := range map[string]map[string]any{
+			"memory_write": {"scope": "personal", "file_path": name, "content": "y"},
+			"memory_edit":  {"scope": "personal", "file_path": name, "old_string": "x", "new_string": "y"},
+		} {
+			res := memoryExec(t, s, tool, args)
+			if !res.IsError || res.Output != errMemoryPathControlCharacter.Error() {
+				t.Fatalf("%s %q: %+v", tool, name, res)
+			}
+		}
+		if raw, err := os.ReadFile(path); err != nil || string(raw) != "x" {
+			t.Fatalf("%q changed: %q, %v", name, raw, err)
+		}
+		if res := memoryExec(t, s, "memory_delete", map[string]any{"scope": "personal", "file_path": name}); res.IsError {
+			t.Fatalf("delete %q: %+v", name, res)
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%q still present after delete: %v", name, err)
+		}
+	}
+	if res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "tab\there.md", "content": "---\ndescription: tabbed\n---\n"}); res.IsError {
+		t.Fatalf("tab refused: %+v", res)
+	}
+}
+
 // A successful write or edit of a page stamps updated and by and keeps every
 // other byte; a failed edit stamps nothing.
 func TestMemoryWriteStampsThePage(t *testing.T) {

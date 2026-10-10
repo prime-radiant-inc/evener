@@ -52,6 +52,7 @@ Tags: formatting (3), money (2), vitest (6)
 - One line per page, newest `updated` first; ties and pages with no `updated` order by path. A page with no `updated` uses its file modification date for sorting and shows no date.
 - Title: the first heading if there is one, else the filename without extension.
 - Line shape: `- [Title](relative/path) — description [tags] (updated YYYY-MM-DD)`, omitting `[tags]` when there are none and `(updated …)` when there is no stamp.
+- A page whose path holds an ASCII control character other than tab has no link: its line is the path as a JSON string, then a note (see the product guide).
 
 **Budget.** The projection into context keeps today's 8 KiB cap. When the rendered index is larger, the projection keeps the header, then the newest lines that fit, then one closing line: `Not shown: N pages (vitest 4, indexeddb 3, untagged 2).` The per-tag counts in that line count a page once under each of its tags. In that projection the header and the closing line each list only their most-used tags (ties by name) that fit in 512 bytes, then `and M more tags`; the header shows the tags it keeps alphabetically, the closing line by count. A scope can drift into hundreds of tags, and listed in full they would push every page line out of the projection; the byte cap keeps both lists to about an eighth of the 8 KiB however many or long the tags are, so page lines are never dropped to make room for tag lists. The full rendering that `memory_read` returns has no cap and lists every tag. This replaces today's "the index is too long" sentence; the truncation flag in the projection envelope stays so clients keep decoding it.
 
@@ -62,6 +63,7 @@ Tags: formatting (3), money (2), vitest (6)
 - When `memory_write` or `memory_edit` writes a `.md` page, Evener sets `updated` and `by` in the frontmatter of the bytes the tool writes, creating a frontmatter block if there is none. Every other byte of the page is preserved. The stamps go into the tool's one write: a separate read-modify-write after it could write back content another session had already replaced or deleted. A failed write writes nothing.
 - If the written page has no `description`, the tool result appends one line: `This page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter.`
 - `memory_write`, `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused: `MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead.`
+- `memory_write` and `memory_edit` of a path holding an ASCII control character other than tab are refused; `memory_delete` still takes such a path.
 - `memory_delete` of a page needs no index repair: its line disappears from the next rendering.
 
 ## Per-turn updates and own writes

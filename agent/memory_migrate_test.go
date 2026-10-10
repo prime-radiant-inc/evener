@@ -490,6 +490,19 @@ func TestMigrateMemoryScopeTreatsACaseVariantBackupAsTaken(t *testing.T) {
 	}
 }
 
+// A linked line whose description ends like an unlinked line's note still
+// gives its page that description: only a line with no link is skipped.
+func TestParseLegacyMemoryIndexSkipsOnlyUnlinkedLines(t *testing.T) {
+	t.Parallel()
+	for _, rel := range []string{"bad\n name.md", "bad\n\xff name.md"} {
+		described := "quoting " + memoryIndexLine(filenameMemoryPage(rel, time.Time{}))
+		got := parseLegacyMemoryIndex("- [plain](plain.md) — " + described + "\n")
+		if len(got) != 1 || got[0].Links[0] != "plain.md" || got[0].Description != described {
+			t.Fatalf("%q: got %+v", rel, got)
+		}
+	}
+}
+
 // Migration reads back the link a generated index line writes for any path,
 // so an index an older build copied from a generated one still migrates.
 func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
@@ -501,6 +514,30 @@ func TestParseLegacyMemoryIndexReadsGeneratedLinks(t *testing.T) {
 			if len(got) != 1 || got[0].Links[0] != rel || got[0].Description != "d" {
 				t.Fatalf("%q from %q: got %+v", rel, line, got)
 			}
+		}
+	}
+}
+
+// Migration skips a file whose name holds a newline, and a legacy index
+// holding that file's generated line, copied in by hand, gives it nothing,
+// nor the page its escaped name ends with ("name.md" in "bad\n name.md"),
+// while the other pages still migrate.
+func TestMigrateMemoryScopeLeavesAControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	env, scope := newMemoryMigrateScope(t)
+	bad := "bad\n name.md"
+	index := memoryIndexLine(filenameMemoryPage(bad, time.Time{})) + "\n- [plain](plain.md) — plain page gets this\n"
+	for rel, body := range map[string]string{"MEMORY.md": index, bad: "# Bad\n", "name.md": "# Name\n", "plain.md": "# Plain\n"} {
+		if err := os.WriteFile(filepath.Join(scope, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateMemoryScope(env); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{bad: "# Bad\n", "name.md": "# Name\n", "plain.md": "---\ndescription: plain page gets this\n---\n# Plain\n", memoryLegacyIndexBackup: index} {
+		if raw, err := os.ReadFile(filepath.Join(scope, rel)); err != nil || string(raw) != want {
+			t.Fatalf("%q: got %q, %v", rel, raw, err)
 		}
 	}
 }

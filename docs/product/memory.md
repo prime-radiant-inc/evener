@@ -257,7 +257,15 @@ without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
 or `\` in a title is backslash-escaped. A path holding whitespace, a
 parenthesis or a backslash, or starting with `<`, is written in angle brackets
 (`[Old notes](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
-the link names the whole path. A scope with no pages has the `missing` state.
+the link names the whole path. A file whose name holds an ASCII control
+character other than tab, which `memory_write` refuses but a file can still
+have, gets no link. Its line is the path as a JSON string, then a note, with no
+title, description, tags or date: `- "bad\nname.md" — (no link: the name holds
+a control character, shown JSON-escaped; read or delete it, and save its
+content under another name)`. A name that also holds invalid UTF-8, which no JSON
+string or tool call can carry, is quoted with `\x` escapes instead, and its note
+says to rename or remove the file outside the tools. So every page stays one line. A scope with no
+pages has the `missing` state.
 
 When the rendering passes the 8 KiB projection budget, the projection keeps the
 header, then the newest lines that fit, then one closing line such as
@@ -279,8 +287,12 @@ still an error. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
-ordinary page. Deleting a page needs no index repair; its line is gone from the
-next rendering.
+ordinary page. `memory_write` and `memory_edit` of a path holding an ASCII
+control character other than tab, such as a newline, are refused too: "memory
+path holds a control character, such as a newline; choose a name without one".
+No index line can link to such a path. `memory_delete` still takes one, so a
+file named that way outside the tools can be removed. Deleting a page needs no
+index repair; its line is gone from the next rendering.
 
 **Stamps.** When `memory_write` or `memory_edit` writes a `.md` file that
 counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted so
@@ -302,7 +314,9 @@ gives that page a description: the rest of the line, with the link, list
 markers and separators stripped, or the link text when the rest is empty. A
 link target names the listed page it spells whole, else the page before its
 `#` fragment, so `a#b.md` can be a page so named and `cents.md#rule` is
-`cents.md`. A bare path
+`cents.md`. A generated line with no link (a quoted name holding a
+control character, then its note) names no page, even when its escaped name
+ends in `.md`. A bare path
 counts only when nothing path-like follows `.md` (`a.md.txt` and `a.md/x` name
 no page). A link whose letter case differs from a page's names that page when
 exactly one page matches it ignoring case. A linked page that exists and has no

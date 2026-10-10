@@ -254,3 +254,48 @@ func TestMemoryIndexLineFor(t *testing.T) {
 		}
 	}
 }
+
+// A page whose path holds a control character other than tab gets a line
+// with no link, since no Markdown destination can hold it: the path,
+// JSON-escaped, and a note. The line is one line, and it is that page's line
+// when patching.
+func TestMemoryIndexLineControlCharacterPath(t *testing.T) {
+	t.Parallel()
+	for rel, name := range map[string]string{
+		"bad\nname.txt":    `"bad\nname.txt"`,
+		"dir\r/x.md":       `"dir\r/x.md"`,
+		"bell\a <x>.md":    `"bell\u0007 <x>.md"`,
+		"del\x7f \"q\".md": `"del\u007f \"q\".md"`,
+	} {
+		line := memoryIndexLine(filenameMemoryPage(rel, time.Time{}))
+		if want := "- " + name + " — " + memoryUnlinkedPathNote; line != want {
+			t.Fatalf("%q: got %q, want %q", rel, line, want)
+		}
+		if !memoryIndexLineFor(line, rel) || memoryIndexLineFor(line, "other.md") {
+			t.Fatalf("%q: its line does not belong to it alone", rel)
+		}
+		index := renderMemoryIndex([]memoryPage{filenameMemoryPage(rel, time.Time{}), {Path: "a.md", Title: "A", Description: "d"}})
+		if want := "- [A](a.md) — d\n" + line + "\n"; index != want {
+			t.Fatalf("%q: index %q, want %q", rel, index, want)
+		}
+		if got := patchMemoryIndex(index, rel, ""); got != "- [A](a.md) — d\n" {
+			t.Fatalf("%q: delete patched %q", rel, got)
+		}
+	}
+}
+
+// No JSON string holds invalid UTF-8, so a name holding it is quoted with
+// \x escapes instead, with a note saying no tool can name it: still one
+// line, and two such names that differ only in their invalid bytes keep
+// distinct lines, so patching one never drops the other.
+func TestMemoryIndexLineControlCharacterInvalidUTF8Path(t *testing.T) {
+	t.Parallel()
+	a, b := "bad\n\xff.md", "bad\n\xfe.md"
+	lineA := memoryIndexLine(filenameMemoryPage(a, time.Time{}))
+	if want := `- "bad\n\xff.md" — ` + memoryInvalidUTF8PathNote; lineA != want {
+		t.Fatalf("got %q, want %q", lineA, want)
+	}
+	if memoryIndexLineFor(lineA, b) || memoryIndexLineFor(lineA, "bad\n\ufffd.md") {
+		t.Fatalf("%q also belongs to another name", lineA)
+	}
+}
