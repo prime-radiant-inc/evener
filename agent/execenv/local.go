@@ -51,6 +51,7 @@ var coreEnvVars = []envvars.Var{
 	envvars.Lang,
 	envvars.Term,
 	envvars.TmpDir,
+	envvars.GoEnv,
 	envvars.GoPath,
 	envvars.GoModCache,
 	envvars.CargoHome,

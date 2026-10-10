@@ -38,7 +38,7 @@ func (b Backend) String() string {
 	}
 }
 
-// CacheStrategy is how cache roots (~/.cache, ~/go/pkg, ~/.npm, ~/.cargo, …) are
+// CacheStrategy is how cache roots (~/.cache, ~/.npm, ~/.cargo, Go's, …) are
 // served so a sandboxed session can never poison a cache a later build consumes.
 type CacheStrategy int
 
@@ -122,8 +122,8 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
-	// CacheRoots are the absolute language cache directories (~/.cache, ~/go/pkg,
-	// ~/.npm, ~/.cargo) served under the cache strategy: overlaid read-real/
+	// CacheRoots are the absolute language cache directories (~/.cache, ~/.npm,
+	// ~/.cargo and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
 	// write-private when CacheStrategy is CacheOverlay, or redirected via env to
 	// the session tmp when CacheSessionPrivate. Empty when no cache handling is
 	// needed (off, read-only). Populated for the writable modes.
@@ -157,9 +157,6 @@ type ResolvedPolicy struct {
 	// non-darwin hosts, and whenever any of those checks fails (in which case the
 	// shim path still works, just loudly).
 	ToolchainBinDir string
-
-	// GoPath is the host's GOPATH resolved at session start (HostFacts.GoPath).
-	GoPath string
 
 	// resolveInputs and resolveHost are the request this policy was resolved
 	// FROM, retained so ReRoot / ControlPolicy can re-run the root + gitdir
@@ -407,7 +404,6 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
-		GoPath:        host.GoPath,
 		resolveInputs: policy,
 		resolveHost:   host,
 	}
@@ -513,8 +509,8 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 }
 
 // defaultCacheRoots are the language cache directories served under the cache
-// strategy, expressed relative to $HOME. Go's root is not among them: it follows
-// the host's GOPATH (goPkgRoot).
+// strategy, expressed relative to $HOME. Go's roots follow the host's go settings
+// instead (goCacheRoots).
 var defaultCacheRoots = []string{".cache", ".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
@@ -522,26 +518,31 @@ var defaultCacheRoots = []string{".cache", ".npm", ".cargo"}
 func cacheRootsFor(mode Mode, host HostFacts) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
-		out := make([]string, 0, len(defaultCacheRoots)+1)
+		out := make([]string, 0, len(defaultCacheRoots)+3)
 		for _, rel := range defaultCacheRoots {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
-		return append(out, goPkgRoot(host))
+		return append(out, goCacheRoots(host)...)
 	default:
 		return nil
 	}
 }
 
-// goPkgRoot is the Go cache root: pkg under the first GOPATH entry, which holds
-// the default module cache and the checksum database and is the only entry the
-// go command writes. A GOPATH the go command would refuse (relative) or could
-// not be resolved falls back to Go's $HOME/go default.
-func goPkgRoot(host HostFacts) string {
-	gopath := filepath.Join(host.Home, "go")
-	if first, _, _ := strings.Cut(host.GoPath, string(filepath.ListSeparator)); filepath.IsAbs(first) {
-		gopath = first
+// goCacheRoots are the directories the go command writes caches to: pkg under
+// the first GOPATH entry, which holds the default module cache and the checksum
+// database, plus a GOMODCACHE or GOCACHE configured somewhere else. A relative
+// value, which the go command refuses, contributes nothing.
+func goCacheRoots(host HostFacts) []string {
+	var roots []string
+	if entries := goPathEntries(host); len(entries) > 0 {
+		roots = append(roots, filepath.Join(entries[0], "pkg"))
 	}
-	return filepath.Join(gopath, "pkg")
+	for _, dir := range []string{host.GoModCache, host.GoCache} {
+		if filepath.IsAbs(dir) {
+			roots = append(roots, dir)
+		}
+	}
+	return roots
 }
 
 // cacheStrategyFor picks the cache strategy: workspace-write overlays only on a

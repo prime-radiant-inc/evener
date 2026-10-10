@@ -22,10 +22,10 @@ func requireRealBwrap(t *testing.T) HostFacts {
 	if facts.OS != "linux" || !facts.BwrapCapable || facts.BwrapPath == "" {
 		t.Skip("bwrap not capable on this host")
 	}
-	// The tests anchor their caches at a fixture home; the runner's own GOPATH
-	// would put a real directory (on whatever filesystem the runner keeps it)
-	// under the overlay instead.
-	facts.GoPath = ""
+	// The tests anchor their caches at a fixture home; the runner's own Go
+	// settings would put real directories (on whatever filesystem the runner
+	// keeps them) under the overlay instead.
+	facts.GoPath, facts.GoModCache, facts.GoCache = "", "", ""
 	return facts
 }
 

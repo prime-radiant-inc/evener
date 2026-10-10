@@ -111,11 +111,15 @@ type HostFacts struct {
 	// session start.
 	GitGlobalConfigPaths []string
 
-	// GoPath is the GOPATH a go command would use on this host (an OS path list),
-	// resolved once at session start; see probeGoPath. Empty when it cannot be
-	// resolved. It grants nothing: it places the overlaid Go cache root and the
-	// ambient GOPATH entries the env floor keeps behind the session scratch.
-	GoPath string
+	// GoPath, GoModCache and GoCache are the go command's settings as configured
+	// on this host, in the environment or with `go env -w` (see goEnvValue),
+	// resolved once at session start. Empty means unset: Go's own default
+	// applies, and goPathEntries holds GOPATH's. They grant nothing: they place
+	// the overlaid Go cache roots and the ambient GOPATH the env floor keeps
+	// behind the session scratch.
+	GoPath     string
+	GoModCache string
+	GoCache    string
 
 	// KernelVersion is the best-effort `uname -r` string, informational only
 	// (surfaced in the startup enforcement line, not used for decisions).
@@ -227,7 +231,9 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
-	facts.GoPath = probeGoPath(system)
+	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
+	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
+	facts.GoCache = goEnvValue(system, goCacheVar)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path
@@ -289,33 +295,19 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 	return out
 }
 
-// probeGoPath resolves the GOPATH a go command would use on this host, with the
-// go command's own precedence: $GOPATH, then the GOPATH line of the user's go env
-// file, then $HOME/go. The env file is what `go env -w` writes: $GOENV names it,
-// GOENV=off disables it, and otherwise it is <user config dir>/go/env. Like the
-// go command, a later line overrides an earlier one.
+// goEnvValue returns a go command setting as configured on this host, with the
+// go command's own precedence: the environment, then the user's go env file,
+// which is what `go env -w` writes. $GOENV names that file, GOENV=off disables
+// it, and otherwise it is <user config dir>/go/env; like the go command, a later
+// line overrides an earlier one. It returns "" for an unset setting.
 //
-// It reads the file rather than running `go env GOPATH`: the probe runs at every
-// sandboxed session start, and `go env` would spawn whichever go is first on
-// PATH, which may switch toolchains and download one (GOTOOLCHAIN) before it
-// answers. The file and the precedence above are all `go env` consults for
-// GOPATH.
-func probeGoPath(system probeSystem) string {
-	if gopath := system.getenv(envvars.GoPath.Name); gopath != "" {
-		return gopath
+// It reads the file rather than running `go env`: host facts feed Resolve, so a
+// `go env` here would run before any sandbox exists, executing whichever go is
+// first on PATH, and any toolchain it switches to and downloads, unconfined.
+func goEnvValue(system probeSystem, name string) string {
+	if value := system.getenv(name); value != "" {
+		return value
 	}
-	if gopath := goEnvFileValue(system, envvars.GoPath.Name); gopath != "" {
-		return gopath
-	}
-	home, err := system.userHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, "go")
-}
-
-// goEnvFileValue returns name's value from the user's go env file, or "".
-func goEnvFileValue(system probeSystem, name string) string {
 	file := system.getenv(envvars.GoEnv.Name)
 	switch file {
 	case "off":
@@ -338,6 +330,22 @@ func goEnvFileValue(system probeSystem, name string) string {
 		}
 	}
 	return value
+}
+
+// goPathEntries returns the GOPATH entries the go command uses on this host: the
+// absolute entries of the configured GOPATH (it refuses relative ones), else
+// Go's $HOME/go default, or none without an absolute home.
+func goPathEntries(host HostFacts) []string {
+	var entries []string
+	for _, entry := range filepath.SplitList(host.GoPath) {
+		if filepath.IsAbs(entry) {
+			entries = append(entries, entry)
+		}
+	}
+	if len(entries) == 0 && filepath.IsAbs(host.Home) {
+		entries = []string{filepath.Join(host.Home, "go")}
+	}
+	return entries
 }
 
 // commandLineToolsRoot is the fixed location the standalone Xcode Command Line

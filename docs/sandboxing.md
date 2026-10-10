@@ -395,14 +395,16 @@ denial is by design, not a bug.
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
 - `workspace-write` serves the language cache roots (`~/.cache`, `~/.npm`,
-  `~/.cargo`, the `pkg` directory of your first GOPATH entry, plus any you add) as
-  a **read-real, write-private overlay** where the host's bubblewrap supports it:
-  builds read warm from the real cache, but writes land in a per-session tmpfs that
-  is discarded at session end. The GOPATH is resolved once at session start the way
-  the go command resolves it: `$GOPATH`, then a GOPATH set with `go env -w` (the go
-  env file `$GOENV` names, `<user config dir>/go/env` by default), then `$HOME/go`.
-  Evener reads that file rather than running `go env`, which could switch and
-  download a Go toolchain at every session start.
+  `~/.cargo`, the `pkg` directory of your first GOPATH entry, and a `GOMODCACHE`
+  or `GOCACHE` you set elsewhere) as a **read-real, write-private overlay** where
+  the host's bubblewrap supports it: builds read warm from the real cache, but
+  writes land in a per-session tmpfs that is discarded at session end. The Go
+  settings are resolved once at session start the way the go command resolves
+  them: the environment, then `go env -w` settings (the go env file `$GOENV`
+  names, `<user config dir>/go/env` by default), then Go's defaults (`$HOME/go`
+  for GOPATH). Evener reads that file rather than running `go env`, which would
+  run whichever go is first on PATH, and any toolchain it downloads, before the
+  sandbox exists.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session

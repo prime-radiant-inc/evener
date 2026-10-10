@@ -386,32 +386,35 @@ func assertNoRootIsMasked(t *testing.T, rp ResolvedPolicy) {
 	}
 }
 
-// The overlay serves the Go cache root under the host's effective GOPATH (its
-// first entry, where the go command writes), so a custom GOPATH's module cache
-// and checksum database are writable-private rather than read-only (#4188). A
-// GOPATH the go command would refuse (relative) falls back to Go's default.
-func TestCacheRootsFollowTheHostGoPath(t *testing.T) {
+// The overlay serves Go's cache roots where the go command will write: pkg under
+// the first GOPATH entry (the default module cache and the checksum database),
+// plus a GOMODCACHE or GOCACHE configured elsewhere, so a custom location is
+// writable-private rather than read-only (#4188). Relative values, which the go
+// command refuses, contribute nothing.
+func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 	home := "/home/tester"
 	sep := string(filepath.ListSeparator)
 	for _, tc := range []struct {
-		name, goPath, want string
+		name string
+		host HostFacts
+		want []string
 	}{
-		{"custom", "/custom/gopath" + sep + "/other", "/custom/gopath/pkg"},
-		{"default", filepath.Join(home, "go"), filepath.Join(home, "go", "pkg")},
-		{"unresolved", "", filepath.Join(home, "go", "pkg")},
-		{"relative", "relative/gopath", filepath.Join(home, "go", "pkg")},
+		{"custom GOPATH", HostFacts{Home: home, GoPath: "/custom/gopath" + sep + "/other"}, []string{"/custom/gopath/pkg"}},
+		{"default GOPATH", HostFacts{Home: home}, []string{filepath.Join(home, "go", "pkg")}},
+		{"relative GOPATH", HostFacts{Home: home, GoPath: "relative/gopath"}, []string{filepath.Join(home, "go", "pkg")}},
+		{"explicit caches", HostFacts{Home: home, GoModCache: "/custom/modcache", GoCache: "/custom/gocache"}, []string{"/custom/modcache", "/custom/gocache"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoPath: tc.goPath})
-			if !slices.Contains(roots, tc.want) {
-				t.Errorf("cache roots %v must include the Go root %q", roots, tc.want)
-			}
-			for _, sub := range []string{"mod", "sumdb"} {
-				if !isUnderAnyRoot(filepath.Join(tc.want, sub), roots) {
-					t.Errorf("%s under %q must fall under a cache root, got %v", sub, tc.want, roots)
+			roots := cacheRootsFor(ModeWorkspaceWrite, tc.host)
+			for _, want := range tc.want {
+				if !slices.Contains(roots, want) {
+					t.Errorf("cache roots %v must include %q", roots, want)
 				}
 			}
 		})
+	}
+	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoModCache: "relative"}); slices.Contains(roots, "relative") {
+		t.Errorf("a relative GOMODCACHE must not become a cache root: %v", roots)
 	}
 }
 

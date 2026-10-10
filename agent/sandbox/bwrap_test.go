@@ -251,7 +251,7 @@ func TestBuildBwrapArgvCacheOverlay(t *testing.T) {
 func TestBuildBwrapArgvOverlaysTheHostGoPath(t *testing.T) {
 	home := t.TempDir()
 	goPkg := filepath.Join(t.TempDir(), "pkg")
-	if err := os.MkdirAll(filepath.Join(goPkg, "sumdb"), 0o755); err != nil {
+	if err := os.MkdirAll(goPkg, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cwd := MaterializeWorkspace(t, MainCheckout)

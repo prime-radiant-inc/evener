@@ -74,7 +74,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 	if sessionScratch != "" {
 		if policy.CacheStrategy == CacheSessionPrivate {
 			out = append(out,
-				"GOCACHE="+filepath.Join(sessionScratch, goCacheDirName),
+				goCacheVar+"="+filepath.Join(sessionScratch, goCacheDirName),
 				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
 				envvars.GoPath.Assignment(sessionGoPath(env, policy, sessionScratch)),
 				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
@@ -89,8 +89,8 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // first, because Go writes the checksum database and `go install` output only to
 // the first entry. Where the spawned layer reads anywhere, the ambient GOPATH
 // follows, so GOPATH-mode builds still find the packages already there,
-// read-only: the spawn's own GOPATH when it has one, else the GOPATH resolved at
-// session start (ResolvedPolicy.GoPath, which covers one set with `go env -w`).
+// read-only: the spawn's own GOPATH when it has one, else the host's as resolved
+// at session start (goPathEntries, which covers one set with `go env -w`).
 // Restricted mode cannot read it, so it gets the scratch alone. Entries inside
 // the scratch are dropped from the ambient value, so flooring an already-floored
 // env does not repeat them.
@@ -99,20 +99,24 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 	if policy.Spawned.Read != ReadAnywhere {
 		return scratchGoPath
 	}
-	ambient := policy.GoPath
+	ambient := goPathEntries(policy.resolveHost)
 	for _, kv := range env {
 		if name, val, _ := strings.Cut(kv, "="); name == envvars.GoPath.Name && val != "" {
-			ambient = val
+			ambient = filepath.SplitList(val)
 		}
 	}
 	entries := []string{scratchGoPath}
-	for _, entry := range filepath.SplitList(ambient) {
+	for _, entry := range ambient {
 		if entry != "" && !isUnderAnyRoot(entry, []string{sessionScratch}) {
 			entries = append(entries, entry)
 		}
 	}
 	return strings.Join(entries, string(filepath.ListSeparator))
 }
+
+// goCacheVar names Go's build cache variable, which Evener does not otherwise
+// read and so has no envvars entry.
+const goCacheVar = "GOCACHE"
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.
 // The toolchain directory is inserted immediately BEFORE the first of them.
@@ -227,7 +231,7 @@ func floorDrops(name string) bool {
 // writes there shadow the commands every spawn site runs, hooks included.
 func isRedirectedCacheVar(name string) bool {
 	switch name {
-	case "GOCACHE", envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
+	case goCacheVar, envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
 		return true
 	}
 	return false
