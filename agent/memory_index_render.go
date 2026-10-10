@@ -2,14 +2,13 @@ package agent
 
 import (
 	"cmp"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
@@ -17,15 +16,22 @@ import (
 const memoryProjectionCap = 8192
 
 // memoryPageSortDate is the date a page sorts by: its stamp, else its file's
-// modification date.
+// modification date. A page whose frontmatter is unreadable has none, so it
+// sorts after every dated page: its file date says nothing about what it
+// holds, and a freshly touched broken page must not crowd out the newest
+// real ones.
 func memoryPageSortDate(p memoryPage) string {
-	if p.Updated != "" {
+	switch {
+	case p.Unreadable:
+		return ""
+	case p.Updated != "":
 		return p.Updated
 	}
 	return memoryStampDate(p.ModTime)
 }
 
-// sortedMemoryPages orders pages newest first, ties by path.
+// sortedMemoryPages orders pages newest first by memoryPageSortDate, ties
+// by path, so pages with unreadable frontmatter come last, by path.
 func sortedMemoryPages(pages []memoryPage) []memoryPage {
 	sorted := slices.Clone(pages)
 	slices.SortStableFunc(sorted, func(a, b memoryPage) int {
@@ -63,24 +69,18 @@ const memoryUnlinkedPathNote = "(no link: the name holds a control character, sh
 const memoryInvalidUTF8PathNote = "(no link: the name holds a control character and invalid UTF-8, shown Go-quoted; no tool call can name it, so rename or remove it outside the tools)"
 
 // memoryUnlinkedIndexLine is the index line of the page at rel when rel holds
-// a control character (memoryPathHasControl). No Markdown link destination
-// can hold one, so the line has no link: the path as a JSON string, which a
-// tool call can pass back as file_path, then memoryUnlinkedPathNote, and no
-// title, description or tags. JSON leaves DEL bare, so it is escaped here.
-// No JSON string, and so no tool call, holds invalid UTF-8, which JSON
-// encoding would replace with U+FFFD; such a name is Go-quoted with \x
-// escapes instead, so each name keeps a line of its own, and its note is
-// memoryInvalidUTF8PathNote.
+// a control character (execenv.PathHasControl). No Markdown link destination
+// can hold one, so the line has no link: the path quoted
+// (execenv.QuoteControlPath), as a JSON string a tool call can pass back as
+// file_path, then memoryUnlinkedPathNote, and no title, description or tags.
+// A name holding invalid UTF-8, which no JSON string and so no tool call can
+// carry, is Go-quoted instead, and its note is memoryInvalidUTF8PathNote.
 func memoryUnlinkedIndexLine(rel string) string {
+	note := memoryUnlinkedPathNote
 	if !utf8.ValidString(rel) {
-		return "- " + strconv.Quote(rel) + " — " + memoryInvalidUTF8PathNote
+		note = memoryInvalidUTF8PathNote
 	}
-	var b strings.Builder
-	encoder := json.NewEncoder(&b)
-	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(rel) // a string always encodes
-	name := strings.ReplaceAll(strings.TrimSuffix(b.String(), "\n"), "\x7f", `\u007f`)
-	return "- " + name + " — " + memoryUnlinkedPathNote
+	return "- " + execenv.QuoteControlPath(rel) + " — " + note
 }
 
 // isMemoryUnlinkedIndexLine reports whether line has the shape
@@ -92,7 +92,7 @@ func isMemoryUnlinkedIndexLine(line string) bool {
 
 // memoryIndexLine is one page's index line.
 func memoryIndexLine(p memoryPage) string {
-	if memoryPathHasControl(p.Path) {
+	if execenv.PathHasControl(p.Path) {
 		return memoryUnlinkedIndexLine(p.Path)
 	}
 	var b strings.Builder
@@ -116,7 +116,7 @@ func memoryIndexLine(p memoryPage) string {
 // one quoted in the description is read as this line's page. A path holding
 // a control character has the one line memoryUnlinkedIndexLine writes.
 func memoryIndexLineFor(line, rel string) bool {
-	if memoryPathHasControl(rel) {
+	if execenv.PathHasControl(rel) {
 		return line == memoryUnlinkedIndexLine(rel)
 	}
 	title, ok := strings.CutPrefix(line, "- [")

@@ -241,7 +241,9 @@ kept untouched and ignored.
 
 **Fallback description.** When `description` is missing or empty, the line
 uses the page's first Markdown heading, else its first non-blank body line, cut
-to 120 characters and followed by `(no description)`. A page whose frontmatter
+to 120 characters and followed by `(no description)`. A carriage return ends a
+line as a newline does, and whitespace runs in the heading or line collapse to
+one space. A page whose frontmatter
 does not parse is still a page; it renders as
 `<fallback> (no description) (frontmatter unreadable)`.
 
@@ -257,8 +259,11 @@ The `Tags:` header lists every tag with its page count, alphabetically, and is
 omitted when no page has tags. Lines run newest `updated` first. A page with no
 `updated` sorts by its modification time's UTC date and shows no date; an
 `updated` that is neither a YAML date nor a `YYYY-MM-DD` string is ignored.
-Ties order by path. The title is the page's first heading, else its filename
-without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
+Ties order by path. Pages whose frontmatter is unreadable come after every
+other page, ordered by path: a broken page's file date says nothing about what
+it holds, so a freshly touched one never crowds the newest pages out of the
+projection. The title is the page's first heading (whitespace runs
+collapsed, as in the fallback), else its filename without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
 or `\` in a title is backslash-escaped. A path holding whitespace, a
 parenthesis or a backslash, or starting with `<`, is written in angle brackets
 (`[Old notes](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
@@ -288,7 +293,8 @@ line counts the pages not shown.
 `limit`, or returns `This scope has no pages yet.` `memory_search` skips a
 root `MEMORY.md`, including a hand-written one not yet migrated; a search
 naming it returns nothing, but an invalid pattern or malformed glob braces are
-still an error. `memory_write`,
+still an error. A search result names a file whose path holds a control
+character as a JSON string, so each result stays one line. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
 frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
@@ -306,9 +312,14 @@ in the bytes the tool writes, creating a frontmatter block if there is none and
 keeping every other byte. Frontmatter Evener can't safely edit in place is left
 unstamped. The stamps land in the tool's one write, never a second
 read-modify-write, so a stamp cannot undo another session's later write or
-delete of the page. A failed write writes nothing. A written page with no
-description gets a note asking for one, and a page whose frontmatter does not
-parse gets its own note asking to fix the YAML.
+delete of the page. A failed write writes nothing. Before stamping, a
+top-level `description` or `evidence` value YAML can't read as written, such
+as an unquoted scalar holding `: ` or ending in `:`
+(``description: like `shop: add Count` ``), is written as a quoted
+YAML string, when that makes the frontmatter parse, so the model needs no
+second call to fix it. A written page with no description gets a note asking
+for one, and a page whose frontmatter still does not parse is left as written
+and gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
 `memory_delete` renders a scope that still has a real `MEMORY.md` at its root,
