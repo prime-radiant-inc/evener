@@ -549,6 +549,7 @@ export class SessionActivityStore {
             rows = this.joinDelegateRows(
               rows as readonly SessionDelegate[],
               current.rows as readonly SessionDelegate[],
+              page.page.complete,
             );
           }
           // A clean continuation cannot acknowledge an unresolved root scan.
@@ -835,6 +836,7 @@ export class SessionActivityStore {
   private joinDelegateRows(
     incoming: readonly SessionDelegate[],
     previous: readonly SessionDelegate[],
+    complete: boolean,
   ): SessionDelegate[] {
     const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
     // A page can serve one delegate id twice, and nothing downstream can tell
@@ -842,9 +844,14 @@ export class SessionActivityStore {
     // settled by the read unless the id came back as a single row.
     const served = new Map<string, number>();
     for (const row of incoming) served.set(row.delegateId, (served.get(row.delegateId) ?? 0) + 1);
+    // The loaded rows count too: a later page of the same read can already have
+    // served a second row under the id.
+    for (const row of previous) served.set(row.delegateId, (served.get(row.delegateId) ?? 0) + 1);
     return incoming.map((row) => {
       const identity = rowIdentity("delegates", row);
-      const soleRow = served.get(row.delegateId) === 1;
+      // Only a read that carries the whole collection sees every row under the
+      // id, so only then is a buffered frame's single row really single.
+      const soleRow = complete && served.get(row.delegateId) === 1;
       const existing = previousById.get(identity);
       const applied = this.appliedRevision(identity);
       let merged: SessionDelegate;
