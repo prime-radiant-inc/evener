@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,7 +199,32 @@ func (hostProbeSystem) nonDirectoryFile(path string) bool {
 
 func (hostProbeSystem) userConfigDir() (string, error) { return os.UserConfigDir() }
 
-func (hostProbeSystem) readFile(path string) ([]byte, error) { return os.ReadFile(path) }
+// goEnvFileLimit bounds the go env file the probe reads. `go env -w` writes a
+// few lines; anything near this size is not one.
+const goEnvFileLimit = 64 << 10
+
+// readFile reads a small regular file. GOENV can name anything, and the probe
+// runs before any sandbox exists, so a FIFO (which would block session start),
+// a device such as /dev/zero (which never ends) or an oversized file is refused.
+func (hostProbeSystem) readFile(path string) ([]byte, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > goEnvFileLimit {
+		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", path, goEnvFileLimit)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, goEnvFileLimit+1))
+	if err == nil && len(data) > goEnvFileLimit {
+		err = fmt.Errorf("%s is larger than %d bytes", path, goEnvFileLimit)
+	}
+	return data, err
+}
 
 func (hostProbeSystem) run(ctx context.Context, name string, args ...string) error {
 	return exec.CommandContext(ctx, name, args...).Run()
@@ -237,7 +264,7 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
-	facts.GoCache = goEnvValue(system, goCacheVar)
+	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
 	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
 
 	if path, err := system.lookPath("bwrap"); err == nil {

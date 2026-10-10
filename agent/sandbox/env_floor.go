@@ -74,7 +74,7 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 	if sessionScratch != "" {
 		if policy.CacheStrategy == CacheSessionPrivate {
 			out = append(out,
-				goCacheVar+"="+filepath.Join(sessionScratch, goCacheDirName),
+				envvars.GoCache.Assignment(filepath.Join(sessionScratch, goCacheDirName)),
 				envvars.GoModCache.Assignment(filepath.Join(sessionScratch, goModCacheDirName)),
 				envvars.GoPath.Assignment(sessionGoPath(env, policy, sessionScratch)),
 				"npm_config_cache="+filepath.Join(sessionScratch, npmCacheDirName),
@@ -107,16 +107,13 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 	}
 	entries := []string{scratchGoPath}
 	for _, entry := range ambient {
-		if entry != "" && !isUnderAnyRoot(entry, []string{sessionScratch}) {
+		// The go command refuses relative entries, as goPathEntries does.
+		if filepath.IsAbs(entry) && !isUnderAnyRoot(entry, []string{sessionScratch}) {
 			entries = append(entries, entry)
 		}
 	}
 	return strings.Join(entries, string(filepath.ListSeparator))
 }
-
-// goCacheVar names Go's build cache variable, which Evener does not otherwise
-// read and so has no envvars entry.
-const goCacheVar = "GOCACHE"
 
 // systemBinDirs are the PATH entries the macOS developer-tool shims live in.
 // The toolchain directory is inserted immediately BEFORE the first of them.
@@ -231,7 +228,7 @@ func floorDrops(name string) bool {
 // writes there shadow the commands every spawn site runs, hooks included.
 func isRedirectedCacheVar(name string) bool {
 	switch name {
-	case goCacheVar, envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
+	case envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name:
 		return true
 	}
 	return false

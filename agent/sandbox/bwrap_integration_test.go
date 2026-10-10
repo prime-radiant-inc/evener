@@ -25,7 +25,7 @@ func requireRealBwrap(t *testing.T) HostFacts {
 	// The tests anchor their caches at a fixture home; the runner's own Go
 	// settings would put real directories (on whatever filesystem the runner
 	// keeps them) under the overlay instead.
-	facts.GoPath, facts.GoModCache, facts.GoCache = "", "", ""
+	facts.GoPath, facts.GoModCache, facts.GoCache, facts.XDGCacheHome = "", "", "", ""
 	return facts
 }
 

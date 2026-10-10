@@ -95,7 +95,7 @@ func TestEnvFloorPutsScratchFirstOnGoPathWhenSessionPrivate(t *testing.T) {
 		in     []string
 		want   string
 	}{
-		{"spawn env", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"GOPATH=/custom/a" + sep + "/custom/b"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
+		{"spawn env", readAnywhere(HostFacts{GoPath: "/from/go/env"}), []string{"GOPATH=/custom/a" + sep + "relative" + sep + "/custom/b"}, scratchGoPath + sep + "/custom/a" + sep + "/custom/b"},
 		{"go env -w", readAnywhere(HostFacts{GoPath: "/from/go/env"}), nil, scratchGoPath + sep + "/from/go/env"},
 		{"default", readAnywhere(HostFacts{Home: "/home/u"}), nil, scratchGoPath + sep + "/home/u/go"},
 		{"no home", readAnywhere(HostFacts{}), nil, scratchGoPath},
