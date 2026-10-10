@@ -1116,6 +1116,13 @@ export class TranscriptRepository {
     });
     const work = (async (): Promise<TranscriptRetirementOutcome> => {
       const read = this.#binding.readHistory;
+      console.error("RETIRE-BEGIN", {
+        hasRead: !!read,
+        disposed: this.#disposed,
+        invalidated: this.#invalidated,
+        suppressed: this.#binding.suppressed?.(),
+        sealed: this.#sealed,
+      });
       if (!read || !current()) return { kind: "stale" };
       const response = await read(undefined, controller.signal);
       if (!current()) return { kind: "cancelled" };
@@ -1162,7 +1169,10 @@ export class TranscriptRepository {
         timer = setTimeout(() => resolve({ kind: "stale" }), 30_000);
       }),
     ])
-      .catch((): TranscriptRetirementOutcome => ({ kind: current() ? "stale" : "cancelled" }))
+      .catch((error): TranscriptRetirementOutcome => {
+        console.error("RETIRE-ERROR", String(error));
+        return { kind: current() ? "stale" : "cancelled" };
+      })
       .then((outcome) => {
         if (this.#retirement !== retirement) return { kind: "cancelled" } as const;
         this.#sealed = true;
