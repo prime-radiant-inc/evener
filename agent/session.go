@@ -645,6 +645,11 @@ type Session struct {
 	// needs_response rest arms awaiting only if neither happened during its
 	// quiet period. Guarded by s.mu.
 	restGeneration uint64
+	// restBeforeInput is the resting state the session had when the current
+	// input started, read only by finishNotificationNoop: a notification wake
+	// that turns out to have nothing to deliver runs no turn, so it settles
+	// back to it. Guarded by s.mu.
+	restBeforeInput SessionState
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
