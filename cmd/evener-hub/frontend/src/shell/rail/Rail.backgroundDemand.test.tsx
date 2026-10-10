@@ -5,13 +5,13 @@ import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { startBackgroundTranscripts } from "../../stores/backgroundTranscripts";
 import { connectionStore } from "../../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
-import { resetThreadsStoreForTests, setSessionCacheAdapterForTests } from "../../stores/threads";
+import { SessionEntryCache } from "../../stores/sessionEntryCache";
+import { resetThreadsStoreForTests, setProductionEntryCacheForTests } from "../../stores/threads";
 import { ClientProvider } from "../clientContext";
 import { Rail } from "./Rail";
 
@@ -41,7 +41,7 @@ function resource(key: ResourceKey, refs: string[], remaining: number): Resource
   };
 }
 
-let cache: SessionCacheIndexedDB | undefined;
+let cache: SessionEntryCache | undefined;
 
 beforeEach(() => {
   resetNavigationStoreForTests();
@@ -53,7 +53,6 @@ afterEach(() => {
   cleanup();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
-  setSessionCacheAdapterForTests(undefined);
   cache?.close();
   cache = undefined;
 });
@@ -148,11 +147,12 @@ test("Rail keeps a previously loaded later visible page and Load more through ba
     );
   }
 
-  cache = new SessionCacheIndexedDB({
+  cache = new SessionEntryCache({
     indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
     databaseName: `rail-bg-${crypto.randomUUID()}`,
   });
-  setSessionCacheAdapterForTests(cache);
+  setProductionEntryCacheForTests(cache);
 
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", navigationRead);

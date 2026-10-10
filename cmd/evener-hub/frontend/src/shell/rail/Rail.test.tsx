@@ -35,12 +35,7 @@ import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
-import {
-  resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
-  setSessionCacheAdapterForTests,
-  threadsStore,
-} from "../../stores/threads";
+import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -2130,9 +2125,7 @@ describe("resource-backed Rail", () => {
     resetThreadsStoreForTests();
     const convergence = deferred<void>();
     const applyNavigationMutation = vi.fn(() => convergence.promise);
-    const adapter = new SessionCacheIndexedDB();
-    const deleteRecords = vi.spyOn(adapter, "deleteRecords").mockResolvedValue(true);
-    setSessionCacheAdapterForTests(adapter);
+    const deleteRecords = vi.spyOn(SessionCacheIndexedDB.prototype, "deleteRecords").mockResolvedValue(true);
     const postMessage = vi.fn();
     setCacheChannelFactoryForTests(
       () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
@@ -2184,7 +2177,7 @@ describe("resource-backed Rail", () => {
       await act(async () => {
         convergence.resolve();
       });
-      adapter.close();
+      deleteRecords.mockRestore();
       resetThreadsStoreForTests();
     }
   });

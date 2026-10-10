@@ -1,21 +1,21 @@
-// @vitest-environment node
+// @vitest-environment jsdom
 
 import { type SessionDeleteResponse, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, completeSession, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
-import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
-import { holdNextWriteTransaction } from "../../stores/testing/stalledIndexedDB";
+import { SessionEntryCache } from "../../stores/sessionEntryCache";
+import { holdNextTransaction } from "../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
-  setSessionCacheAdapterForTests,
+  setProductionEntryCacheForTests,
   threadsStore,
 } from "../../stores/threads";
 import {
@@ -348,9 +348,13 @@ describe("delete response fences", () => {
       // Keep the real cache lookup's deadline still while its IndexedDB completion
       // is held. The transport and browser event gates determine the ordering.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const adapter = new SessionCacheIndexedDB({ indexedDB: new IDBFactory() });
-      setSessionCacheAdapterForTests(adapter);
-      const lookup = holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
+      const adapter = new SessionEntryCache({
+        indexedDB: new IDBFactory(),
+        keyRange: IDBKeyRange,
+        databaseName: `actions-${crypto.randomUUID()}`,
+      });
+      setProductionEntryCacheForTests(adapter);
+      const lookup = holdNextTransaction(["transcriptMeta"], "readonly");
       const postMessage = vi.fn();
       setCacheChannelFactoryForTests(
         () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
