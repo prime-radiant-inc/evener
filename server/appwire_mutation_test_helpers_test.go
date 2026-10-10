@@ -12,7 +12,7 @@ import (
 // wireRetrySafeCapabilities installs the retry-safe steer, queue and interrupt
 // seams the AppWire handlers actually dispatch through (handleAppTurnSteer,
 // handleAppTurnQueue, handleAppTurnInterrupt). Capabilities follow those
-// registrations; compatibility setters cannot enable an RPC handler.
+// registrations.
 func wireRetrySafeCapabilities(s *Server) {
 	s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {

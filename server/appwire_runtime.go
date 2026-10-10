@@ -2898,8 +2898,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	active := status == appwire.ThreadStatusActive
 	closed := status == appwire.ThreadStatusClosed
 	// steerAvailable reads the retry-safe callback because that is the seam
-	// handleAppTurnSteer dispatches through. The compatibility setters have
-	// no effect on handlers or capabilities.
+	// handleAppTurnSteer dispatches through.
 	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
