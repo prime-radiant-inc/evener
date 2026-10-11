@@ -1078,7 +1078,7 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
 		if len(commits) != 0 {
 			persistErr = s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, commits, skillState)
-		} else if hasSuccessfulTerminalJobStatusResult(calls, results) {
+		} else if hasTerminalJobResult(calls, results) {
 			persistErr = s.appendToolResultsDurably(live, persisted, skillState)
 		} else if skillState != nil {
 			liveTurn := schema.NewTurn(schema.TurnToolResults, live)

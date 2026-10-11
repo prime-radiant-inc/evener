@@ -182,7 +182,8 @@ latter with the reaper's signal name appended), `ExitCode`, `OutputBytes`, `Star
 `NotifyState` (`terminal_notification_state` on disk — a terminal job still
 `pending` never told its caller; `delivered` was rendered into the caller's own
 notification turn, and `consumed` means the caller read the terminal
-`job_status` itself, settling the notification without a turn), and the links to
+`job_status` itself, or got a kept foreground shell's terminal reply, settling
+the notification without a turn), and the links to
 pivot on (`TranscriptRef`, shell-to-shell `ParentJobID`, and typed
 `ParentDelegateID` for a delegate-owned shell). A JobRecord never represents a
 delegate. Note what the durable log does **not** carry: `Background` and `Phase`
