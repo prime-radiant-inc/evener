@@ -784,6 +784,30 @@ test("a rebound root retires old child edges and readers before replacement cont
   }
 });
 
+test("a rebound live origin retires its stale descendants even though it never renders", async () => {
+  const { fake, identities } = fixture();
+  inspectedCascade();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  // The origin pane beside the cascade is the origin conversation's only
+  // rendered reader; its replacement must still retire the cascade's stale
+  // descendants through the live-origin binding.
+  identities.set("root", "new-root");
+  act(() =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "root", threadId: "wire-new-root" } }),
+  );
+  await waitFor(() => expect(currentParams().ref).toBe("root"));
+  expect(currentParams().edges).toEqual([]);
+  expect(childView.alive).toBe(false);
+  // The popped origin never renders: the emptied pane keeps only the Return
+  // path back to the source conversation.
+  expect(columnRefs()).toEqual([]);
+  expect(spineRefs()).toEqual([]);
+  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+});
+
 test("a new cursor epoch for the same root preserves child branch and retained readers", async () => {
   const { fake, setEpoch } = fixture();
   mount(fake);

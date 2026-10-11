@@ -132,6 +132,21 @@ function scrollToEnd(element: HTMLElement): number {
   return element.scrollLeft;
 }
 
+// The origin conversation never renders in the pane, but its identity is
+// still observed: when the origin's ref resolves to a replacement session,
+// reconcileCascadeBinding retires the cascade's stale descendant edges and
+// readers — the reconciliation the rendered origin column performed before
+// the redesign. The observer renders nothing; it only holds the origin's
+// activity subscription on the cascade's lifetime.
+function CascadeOriginBindingObserver({ pane, originRef }: { pane: OpenPaneRecord; originRef: string }) {
+  const { snapshot } = useSessionActivity(originRef);
+  const sessionId = snapshot?.context?.sessionId;
+  useLayoutEffect(() => {
+    if (sessionId !== undefined) reconcileCascadeBinding(pane, originRef, sessionId);
+  }, [pane, originRef, sessionId]);
+  return null;
+}
+
 export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) {
   const pane = useStore(workspaceStore, (state) =>
     state.panes.find((record) => record.id === paneId && record.type === "sessionZoom"),
@@ -229,6 +244,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
         />
       }
     >
+      {originRef !== null && <CascadeOriginBindingObserver pane={pane} originRef={originRef} />}
       <div className={CLASS.body}>
         {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
         {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}

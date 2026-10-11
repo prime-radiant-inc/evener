@@ -494,7 +494,11 @@ selected conversation, and the compact spines are the clickable breadcrumb.
 
 The origin conversation never renders in the cascade: while a live origin
 association exists, its scope is removed from the pane entirely — no readable
-column and no spine — and no surface in the pane can pop to it. The first
+column and no spine — and no surface in the pane can pop to it. The origin's
+identity is still observed: when the origin's ref resolves to a replacement
+session, the cascade retires its stale descendant edges and readers —
+emptying the pane down to the Return path — rather than showing children the
+replacement did not produce. The first
 drill shows only the subagent's conversation, and that lone column fills the
 pane like an ordinary session pane. Deeper drills keep the selected session
 and its immediate parent as readable columns above the removed origin, with

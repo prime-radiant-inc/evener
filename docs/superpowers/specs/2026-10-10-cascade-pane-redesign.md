@@ -82,18 +82,39 @@ selected read-only leaf, its usable Return and its single-column shape, now
 with no nav and no pane title; the mobile top bar carries the selected
 conversation's name. Ordinary phone Agents entry remains `openTranscript`.
 
+## First review round (2026-10-11)
+
+Three medium findings from the combined review, resolved:
+
+- The pane body's flush layout was order-fragile: a shared CSS module via
+  `composes` lost deterministically to the scaffold's base `.body` rules and
+  its mobile media rule (which restored padding on phones), and the
+  cross-module composes broke the layoutguard harness, which loads per-case
+  CSS sources. The flush variant is now a compound `.body.bodyNoScroll` rule
+  that wins regardless of rule order, and the guard asserts the pane body's
+  overflow, content growth and padding at desktop and phone widths.
+- A layout saved before the redesign can carry the inspector popped to its
+  origin; restoring it binds the origin and leaves an empty track. Ruled by
+  Jesse on 2026-10-11: leave it empty — no compatibility recovery.
+- The unrendered origin's identity change went unobserved, so a rebound
+  origin left stale descendants in the pane. The cascade now holds a
+  hidden observer on the live origin's activity subscription and reconciles
+  its binding; a rebound retires the stale descendants and the emptied pane
+  keeps the Return path.
+
 ## Proof
 
 - jsdom (`Zoom.test.tsx`, `intent.test.ts`): the origin-free shapes at depths
   1–3, the no-live-origin two-column shape, the origin-close recovery, the
-  lone-column fill style, the controls-below-content order, and the
-  no-nav/no-title chrome; the DockHost, AppShell and ActivitySidebar journeys
-  pin the restored and drilled shapes.
+  rebound live origin retiring stale descendants, the lone-column fill style,
+  the controls-below-content order, and the no-nav/no-title chrome; the
+  DockHost, AppShell and ActivitySidebar journeys pin the restored and
+  drilled shapes.
 - The real cascadeguard: first drill asserts one pane-filling column and zero
   spines; six edges settle at four spines over `refs[1..6]`; the pane body
-  owns no unit scrollbar; the branch truncation and paging proofs run through
-  the source-scoped sidebar; phone legs assert the single-column shape with no
-  nav or title.
+  owns no unit scrollbar and renders flush at desktop and phone widths; the
+  branch truncation and paging proofs run through the source-scoped sidebar;
+  phone legs assert the single-column shape with no nav or title.
 
 Verification commands from the repository root:
 

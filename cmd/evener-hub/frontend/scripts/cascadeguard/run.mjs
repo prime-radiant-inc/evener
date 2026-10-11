@@ -23,6 +23,21 @@ const cascadeUntitledExpr = `(() => {
   return body.previousElementSibling?.querySelector("h2") === null
     && document.querySelector('nav[aria-label="Agent path"]') === null;
 })()`;
+// The pane body's scroll ownership and flush padding, asserted at both
+// widths: the body owns no unit scrollbar (a true non-scroller: clip, with
+// hidden as the pre-clip fallback), never grows with column content, and
+// carries no padding around the internally scrolling columns — not even on
+// the phone, where the scaffold's media .body rule restores padding for
+// ordinary scrollable panes.
+async function assertPaneBodyFlush(label) {
+  const paneBody = await read(`(() => {
+    const body = document.querySelector(${q(inspectorRoot)});
+    return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY, padding: getComputedStyle(body).padding };
+  })()`);
+  assert.ok(["clip", "hidden"].includes(paneBody.overflowY), `${label}: the cascade pane body owns no unit scrollbar`);
+  assert.ok(paneBody.scrollHeight <= paneBody.clientHeight + 1, `${label}: the cascade pane body does not grow with column content`);
+  assert.equal(paneBody.padding, "0px", `${label}: the cascade pane body renders flush around the internally scrolling columns`);
+}
 // The rendered track at full depth, mirroring the shipped rule in
 // src/panes/zoom/intent.ts: the live origin conversation (the fixture's
 // rootRef) never renders in the pane.
@@ -1253,6 +1268,7 @@ async function reloadAndMobileJourney() {
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only selected readonly leaf");
   await wait(cascadeUntitledExpr, "the phone cascade has no path nav and no pane title");
+  await assertPaneBodyFlush("phone");
   assert.equal(await read('document.querySelectorAll("[role=textbox]").length'), 0, "saved phone cascade has no composer");
   await wait(`document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`, "real selected phone transcript");
   driver.milestone("mobile-saved-cascade");
@@ -1572,12 +1588,7 @@ try {
   // The pane body hosting the spines and columns never scrolls as a unit:
   // its height is the track's own allocation, and each column's transcript
   // viewport scrolls internally instead.
-  const paneBody = await read(`(() => {
-    const body = document.querySelector(${q(inspectorRoot)});
-    return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY };
-  })()`);
-  assert.ok(["clip", "hidden"].includes(paneBody.overflowY), "the cascade pane body owns no unit scrollbar");
-  assert.ok(paneBody.scrollHeight <= paneBody.clientHeight + 1, "the cascade pane body does not grow with column content");
+  await assertPaneBodyFlush("desktop");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
   // A user pop/drill after the resize must reveal the selected leaf. Resizing
   // itself is not a drill and must not move the retained reader's position.
