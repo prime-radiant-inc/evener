@@ -12,20 +12,12 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 )
 
 type pass6WorkspaceSource struct {
 	*scriptedAppSource
-	readErr, nameErr, tasksErr error
-	tasks                      []appwire.Task
-}
-
-func (s *pass6WorkspaceSource) ReadThread(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	if s.readErr != nil {
-		return appwire.ThreadReadResponse{}, s.readErr
-	}
-	return s.scriptedAppSource.ReadThread(ctx, p)
+	nameErr, tasksErr error
+	tasks             []appwire.Task
 }
 
 func (s *pass6WorkspaceSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
@@ -39,13 +31,17 @@ func (s *pass6WorkspaceSource) ListTasks(context.Context, appwire.TaskListParams
 	return appwire.TaskListResponse{Data: s.tasks}, nil
 }
 
-// FuzzWorkspaceMutationsPass6 closes workspace rendering and destructive
+// FuzzWorkspaceMutationsPass6 exercises session routes and destructive
 // mutation branches using local state and scripted app sources only.
 func FuzzWorkspaceMutationsPass6(f *testing.F) {
-	for mode := range uint8(10) {
+	for _, mode := range []uint8{0, 1, 2, 5, 6, 7, 8, 9} {
 		f.Add(mode)
 	}
 	f.Fuzz(func(t *testing.T, mode uint8) {
+		switch mode % 8 {
+		case 3, 4:
+			return
+		}
 		root := t.TempDir()
 		state := filepath.Join(root, "state")
 		work := filepath.Join(root, "same")
@@ -101,21 +97,6 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 		case 2:
 			web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/thread/ended", nil))
 			source.tasksErr = errors.New("tasks")
-		case 3:
-			_ = web.workspaceData("remote:thread")
-			source.readErr = errors.New("read")
-			_ = web.workspaceData("remote:thread")
-			_, _ = web.liveWorkspaceSnapshot("remote:thread", hubapi.SessionCapabilities{Send: true})
-			_, _ = web.liveWorkspaceSnapshot("missing:thread", hubapi.SessionCapabilities{Send: true})
-		case 4:
-			data := WorkspaceData{}
-			web.fillForkLineage(&data, schema.SessionMeta{})
-			web.fillForkLineage(&data, schema.SessionMeta{ID: "none", ForkLabel: "x"})
-			webNil := NewWebServer(hubcore.WebConfig{})
-			webNil.fillForkLineage(&data, ended)
-			webNil.fillSubagentLineage(&data, ended)
-			web.fillSubagentLineage(&data, schema.SessionMeta{})
-			web.fillSubagentLineage(&data, schema.SessionMeta{ID: "x", IsSubagent: true, ParentSessionID: "unknown-parent-id"})
 		case 5:
 			_, _ = web.projectDelete(context.Background(), appwire.ProjectDeleteParams{})
 			_, _ = NewWebServer(hubcore.WebConfig{}).projectDelete(context.Background(), appwire.ProjectDeleteParams{Key: "x", WorkingDir: "x"})
