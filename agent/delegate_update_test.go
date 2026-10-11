@@ -1218,7 +1218,23 @@ func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm
 			return finalResponse("worker done")
 		},
 	)
-	root := newMessagingRoot(t, adapter, nil)
+	// The worker's own report can start another coordinator generation, which
+	// would change the preview. Hold the first generation at its release
+	// boundary, where its report is delivered, and read both views there.
+	atRelease, releaseGeneration := make(chan struct{}, 1), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseGeneration) })
+	defer release()
+	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+		cfg.testOnly.subagentBeforeGenerationReleased = func(a *subagent, lease delegateLease) {
+			a.mu.Lock()
+			isCoordinator := a.stableDescriptor != nil && strings.HasPrefix(a.stableDescriptor.Task, "COORD-BRIEF")
+			a.mu.Unlock()
+			if isCoordinator && lease.generation == 1 {
+				atRelease <- struct{}{}
+				<-releaseGeneration
+			}
+		}
+	})
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1229,12 +1245,9 @@ func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm
 	adapter.waitForRequests(t, "COORD-BRIEF", 2)
 	coordinator := waitForSoleChildIdle(t, root)
 	close(coordinatorIdle)
-	awaitRootReport(t, root)
-	fold := rootAttentionFold(t, root)
-	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
-	frame = fold.content[fold.order[reportAt]].Text()
-	// The preview follows the settled run, which can land just after the
-	// report reaches the root's transcript.
+	awaitSignal(t, atRelease, "the coordinator's first generation to reach its release boundary")
+	// The preview follows the settled run, which is finished while the
+	// generation is held.
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	waitForCondition(t, 30*time.Second, "the report preview to settle", func() bool {
 		page, err := root.ListActivityDelegates(ctx, appwire.SessionActivityListParams{Ref: encodeRef("", root.ID())})
@@ -1244,6 +1257,14 @@ func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm
 		preview = page.Delegates[0].ReportPreview
 		return preview != ""
 	})
+	release()
+	awaitRootReport(t, root)
+	fold := rootAttentionFold(t, root)
+	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
+	if id := fold.order[reportAt]; !strings.HasSuffix(id, "/delivery/1") {
+		t.Fatalf("the root's first report is %q, want the first generation's delivery", id)
+	}
+	frame = fold.content[fold.order[reportAt]].Text()
 	transcriptRaw, err := os.ReadFile(transcriptPath(coordinator.stateDir, coordinator.ID()))
 	if err != nil {
 		t.Fatalf("read the coordinator's transcript: %v", err)

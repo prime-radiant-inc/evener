@@ -63,3 +63,20 @@ func TestDrainTurnWithoutAReportKeepsOtherErrors(t *testing.T) {
 		})
 	}
 }
+
+// Two inputs of one drain call that both report leave the later report alone,
+// not the call's accumulated output.
+func TestDrainTurnReturnsOnlyTheLatestReport(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	inputRunning(s, "REPORT_A")
+	process := s.keepingReport(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		inputRunning(s, "REPORT_B")
+		inputRunning(s, "REPORT_C")
+		return "REPORT_B\nREPORT_C", nil
+	})
+	res, err := process(context.Background(), "", nil, EntryNotification)
+	if err != nil || res != "REPORT_C" || s.CommunicateOutput() != "REPORT_C" {
+		t.Fatalf("result=%q output=%q err=%v, want report C alone", res, s.CommunicateOutput(), err)
+	}
+}

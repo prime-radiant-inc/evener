@@ -975,18 +975,21 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 		reported := s.Communicated()
 		res, err := process(ctx, input, images, kind)
-		s.mu.Lock()
-		if !reported || s.comm.called {
-			s.mu.Unlock()
+		if !reported {
 			return res, err
 		}
-		s.comm = s.latestReport
-		restored := s.comm.reply
-		s.mu.Unlock()
-		if isNoReportFailure(err) {
-			err = nil
+		// One call can run several inputs and returns their accumulated
+		// output; the delegate's report is the latest accepted one alone.
+		s.mu.Lock()
+		if !s.comm.called {
+			s.comm = s.latestReport
+			if isNoReportFailure(err) {
+				err = nil
+			}
 		}
-		return restored, err
+		latest := s.latestReport.reply
+		s.mu.Unlock()
+		return latest, err
 	}
 }
 
