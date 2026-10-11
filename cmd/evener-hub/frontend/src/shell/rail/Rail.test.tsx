@@ -2378,6 +2378,29 @@ describe("resource-backed Rail", () => {
     ]);
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
   });
+  test("refuses an empty pin-section name with an alert the name field describes", async () => {
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "pins", name: "Pins", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "pins", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [summary({ title: "Pinned" })], remaining: 0, truncated: false },
+      ),
+    ]);
+    const client = new FakeClient();
+    render(<Rail />, client);
+    fireEvent.click(screen.getByRole("button", { name: /actions for pins/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename section" }));
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("Section name is required");
+    expect(input.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(client.calls).toEqual([]);
+  });
   test("shows a project root retry while retaining the summary row after a load error", async () => {
     const loadProject = vi.fn().mockRejectedValue(new Error("offline"));
     const catalog = catalogResource([{ key: "p", name: "Retry project", session_count: 1 }]);
