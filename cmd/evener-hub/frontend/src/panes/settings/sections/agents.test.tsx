@@ -94,7 +94,7 @@ describe("AgentsSection", () => {
 
   test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {
     expect(css).not.toMatch(/\.row\s*\{[^}]*justify-content:\s*space-between/);
-    expect(css).toMatch(/\.builtin\s*\{[^}]*margin-left:\s*auto/);
+    expect(css).toMatch(/\.trailing\s*\{[^}]*margin-left:\s*auto/);
   });
 });
 

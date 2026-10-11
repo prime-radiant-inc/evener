@@ -10,7 +10,7 @@ import type { MarketplaceSourceInput } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type FormEvent, useId, useState } from "react";
-import { Button, Chevron, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
+import { Button, Chevron, Chip, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
@@ -22,7 +22,6 @@ const CLASS = {
   rowButton: requireClass(styles.rowButton, "marketplacesPlugins.module.css", "rowButton"),
   rowMain: requireClass(styles.rowMain, "marketplacesPlugins.module.css", "rowMain"),
   rowText: requireClass(styles.rowText, "marketplacesPlugins.module.css", "rowText"),
-  rowKind: requireClass(styles.rowKind, "marketplacesPlugins.module.css", "rowKind"),
   rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
   rowChevron: requireClass(styles.rowChevron, "marketplacesPlugins.module.css", "rowChevron"),
   empty: requireClass(styles.empty, "marketplacesPlugins.module.css", "empty"),
@@ -96,7 +95,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
               <button type="button" className={CLASS.rowButton} onClick={() => onSelect(m.name)}>
                 <div className={CLASS.rowMain}>
                   <div className={CLASS.rowText}>
-                    {m.name} <span className={CLASS.rowKind}>{m.source.kind}</span>
+                    {m.name} <Chip>{m.source.kind}</Chip>
                   </div>
                   <div className={CLASS.rowMeta}>{marketplaceSourceLabel(m.source)}</div>
                 </div>
