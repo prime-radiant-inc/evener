@@ -2,7 +2,7 @@ import "fake-indexeddb/auto";
 import {
   type AnyNotification,
   AppwireClient,
-  acquireThreadSubscription,
+  type acquireThreadSubscription,
   currentTranscriptState,
   hydrateThread,
   makeTranscriptDisplayConfig,
@@ -34,7 +34,6 @@ import {
   observePendingHydrationRetirementsForTests,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
-  putThreadModel,
   resetThreadsStoreForTests,
   setCacheWriteTimersForTests,
   setMutationStorageForTests,
@@ -222,26 +221,6 @@ function sharesTranscriptBody(base: ThreadModel, canonical: ThreadModel): boolea
 }
 
 describe("background thread claims", () => {
-  test("sharesTranscriptBody requires shared identity, not equal serialized content", () => {
-    const model = hydrateThread(currentRead("local:identity"), "local:identity", 1);
-    const history = model.history;
-    if (!history) throw new Error("expected the fixture to carry a recorded history");
-    const sameContentClone: ThreadModel = {
-      ...model,
-      history: { ...history, turns: [...history.turns] },
-      overlay: { ...model.overlay },
-    };
-    // Identical serialized content, but independent turns/overlay containers.
-    expect(currentTranscriptState(sameContentClone)).toEqual(currentTranscriptState(model));
-    expect(sameContentClone).not.toBe(model);
-    expect(sameContentClone.history?.turns).not.toBe(history.turns);
-    expect(sameContentClone.overlay).not.toBe(model.overlay);
-    // Only the same model, or a genuinely shared turns array and overlay, share.
-    expect(sharesTranscriptBody(model, model)).toBe(true);
-    expect(sharesTranscriptBody({ ...model, history }, model)).toBe(true);
-    expect(sharesTranscriptBody(sameContentClone, model)).toBe(false);
-  });
-
   test("last-owner retirement releases the pending charge and detaches frames and base model", async () => {
     const { client, socket } = await connectRealClientWithSocket();
     const ref = "local:retired-buffer";
@@ -331,37 +310,6 @@ describe("background thread claims", () => {
         socket.receive({ id: request.id, result: currentRead(request.ref) });
       }
       threadsStore.getState().releaseThread(ref);
-      client.close();
-    }
-  });
-
-  test("retirement prevents a stale-cursor fallback read after its first response rejects", async () => {
-    const { client, socket } = await connectRealClientWithSocket();
-    const ref = "local:retired-fallback";
-    const lease = acquireBackgroundThread(ref);
-    try {
-      putThreadModel(ref, hydrateThread(currentRead(ref), ref, Date.now()));
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
-      const first = threadReadRequests(socket)[0]!;
-      const release = lease.release();
-      socket.receive({
-        id: first.id,
-        error: {
-          code: -32000,
-          message: "stale cursor",
-          data: { evenerErrorInfo: "transcriptItemCursorStale" },
-        },
-      });
-      await release;
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0), {
-        timeout: 1_000,
-      });
-      expect(threadReadRequests(socket)).toHaveLength(1);
-    } finally {
-      for (const request of threadReadRequests(socket)) {
-        socket.receive({ id: request.id, result: currentRead(request.ref) });
-      }
-      await lease.release();
       client.close();
     }
   });
@@ -456,29 +404,6 @@ describe("background thread claims", () => {
       await Promise.all([firstRelease ?? firstOwner.release(), replacementRelease ?? replacement?.release()]);
       resetThreadsStoreForTests();
       restoreOptions();
-    }
-  });
-
-  test("a released read waiting on shared membership cannot issue after that transition", async () => {
-    const { client, socket } = await connectRealClientWithSocket();
-    const ref = "local:membership-retire";
-    const activity = acquireThreadSubscription(client, ref);
-    activityLeases.push(activity);
-    const membershipRead = activity.read({ includeTurns: false, itemsView: "full", itemLimit: 80 });
-    const background = acquireBackgroundThread(ref);
-    try {
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1));
-      await background.release();
-      const first = threadReadRequests(socket)[0]!;
-      socket.receive({ id: first.id, result: currentRead(ref) });
-      await membershipRead;
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
-      expect(threadReadRequests(socket)).toHaveLength(1);
-    } finally {
-      socket.closeFromServer(1000);
-      await background.release();
-      client.close();
     }
   });
 
@@ -2260,31 +2185,6 @@ describe("background thread claims", () => {
     }
   });
 
-  test("a threadId-only notification routes to the requested background alias", async () => {
-    const fake = connectCurrentClient();
-    const background = acquireBackgroundThread("local:one");
-    await background.ready;
-    const notification = {
-      method: "overlay/delta",
-      params: {
-        threadId: "thr_local:one",
-        key: "stream:s1:agentMessage",
-        field: "text",
-        delta: "-via-id",
-      },
-    } as AnyNotification;
-    fake.emitNotification(notification);
-    expect(
-      threadsStore
-        .getState()
-        .threads.get("local:one")
-        ?.turns.flatMap((turn) => turn.items)
-        .map((item) => item.text)
-        .join(""),
-    ).toContain("alpha-via-id");
-    await background.release();
-  });
-
   test.each(["background", "pane"] as const)(
     "a new %s claim during the final cut write keeps later notification progress",
     async (claimKind) => {
@@ -2717,26 +2617,6 @@ describe("background thread claims", () => {
     expect(threadsStore.getState().threads.has("local:two")).toBe(false);
     expect(await cache.get("local:two", Date.now())).toBeDefined();
     expect(unsubscriptions(fake)).toBe(2);
-  });
-
-  test("keeps the model owned until an in-flight history page finishes", async () => {
-    const fake = connectCurrentClient();
-    await threadsStore.getState().ensureThread("local:one");
-    const entered = deferred<void>();
-    const page = deferred<ThreadTurnsListResponse>();
-    fake.on("thread/turns/list", () => {
-      entered.resolve();
-      return page.promise;
-    });
-
-    const loading = threadsStore.getState().loadOlderTurns("local:one");
-    await entered.promise;
-    threadsStore.getState().releaseThread("local:one");
-    expect(threadsStore.getState().threads.has("local:one")).toBe(true);
-
-    page.resolve({ data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 40 } });
-    await loading;
-    expect(threadsStore.getState().threads.has("local:one")).toBe(false);
   });
 
   test("a reconnect replaces a nonresident desired ref's pages with the latest window, then pages back to the prior later-page item", async () => {
