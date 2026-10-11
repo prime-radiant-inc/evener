@@ -455,7 +455,12 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
       );
     }
     if (rows === null) {
-      if (error) return <EmptyState title={error.headline} hint={error.detail} action={retry} />;
+      if (error)
+        return (
+          <InlineNotice tone="danger" title={error.headline} action={retry}>
+            {error.detail}
+          </InlineNotice>
+        );
       return <p className={CLASS.state}>Loading tasks…</p>;
     }
     return (

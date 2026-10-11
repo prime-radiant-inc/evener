@@ -24,6 +24,7 @@ import {
   Dialog,
   EmptyState,
   Eyebrow,
+  InlineNotice,
   ShortcutList,
   type ShortcutListItem,
   Skeleton,
@@ -861,7 +862,7 @@ function renderResults(args: {
 
   // No rows: the mode-specific placeholder.
   if (mode === "search") {
-    if (searchFailed) return <EmptyState size="compact" title="Search failed" />;
+    if (searchFailed) return <InlineNotice tone="danger">Search failed</InlineNotice>;
     if (!query.trim()) return null;
     return <EmptyState size="compact" title="No matches" hint="Nothing in live, past, or this session." />;
   }

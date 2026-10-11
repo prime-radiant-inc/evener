@@ -8,7 +8,7 @@
 // - buildView: recent commands header (735), handoff row (744-746)
 // - renderResults: enum loading/error empty states (829-832)
 
-import { act, cleanup, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
@@ -146,7 +146,7 @@ describe("remote search results", () => {
 
   // --- search failure (lines 283-285) ---
 
-  test("a failed search shows 'Search failed' empty state", async () => {
+  test("a failed search raises an alert in the results in place of any rows", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     scriptSearchFailure();
 
@@ -154,7 +154,9 @@ describe("remote search results", () => {
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "query");
 
-    await waitFor(() => expect(screen.getByText("Search failed")).toBeTruthy());
+    const results = screen.getByRole("listbox");
+    await waitFor(() => expect(within(results).getByRole("alert")).toBeTruthy());
+    expect(within(results).queryAllByRole("option")).toHaveLength(0);
   });
 
   // --- search result activation: live/past with newTab (lines 505-506) ---

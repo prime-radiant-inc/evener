@@ -1,7 +1,7 @@
 import type { Task, TaskListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
@@ -769,11 +769,11 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await screen.findByText(/couldn.t load tasks: tasks boom/i);
-  // The toast and the inline state both surface the same failure - assert
-  // the inline one separately from the toast region so this doesn't just
-  // pass because the toast's own text happened to match.
-  expect(screen.getAllByText(/couldn.t load tasks/i).length).toBeGreaterThanOrEqual(2);
+  // The toast and the inline state both surface the same failure - each is
+  // found in its own place so neither passes on the other's text.
+  const notifications = screen.getByRole("region", { name: "Notifications" });
+  await waitFor(() => expect(notifications.textContent).toContain("tasks boom"));
+  expect((await screen.findByRole("alert")).textContent).toContain("tasks boom");
 });
 
 // The store already rejects an obsolete completion (fetchID mismatch), so the
@@ -824,8 +824,10 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
 test("a failed auto-resume names the resume in BOTH the toast and the inline state", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
+  let resumeFails = false;
   fake.on("evener/tasks/list", () => {
-    throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
+    if (resumeFails) throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
+    throw new Error("tasks boom");
   });
 
   render(
@@ -836,11 +838,22 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
   );
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  await screen.findByText("Couldn't start this session: evener launch-check timed out"); // the toast
-  expect(screen.getByText("Couldn't start this session")).toBeTruthy(); // the inline heading
-  expect(screen.getByText("evener launch-check timed out")).toBeTruthy(); // the inline detail
-  // The action's own name is gone from both, not merely absent from one.
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  // A toast reads "<headline>: <detail>"; the inline state shows the same
+  // headline over the same detail.
+  const notifications = screen.getByRole("region", { name: "Notifications" });
+  const toastHeadline = async (detail: RegExp) =>
+    (await within(notifications).findByText(detail)).textContent!.split(": ")[0]!;
+
+  const genericHeadline = await toastHeadline(/tasks boom/);
+  resumeFails = true;
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+  const resumeHeadline = await toastHeadline(/evener launch-check timed out/);
+
+  expect(resumeHeadline).not.toBe(genericHeadline);
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("evener launch-check timed out"));
+  const inline = screen.getByRole("alert").textContent!;
+  expect(inline).toContain(resumeHeadline);
+  expect(inline).not.toContain(genericHeadline);
 });
 
 // The toast drops the separator when a rejection carries no text of its own
@@ -858,8 +871,9 @@ test("a rejection with no text of its own shows the headline alone, with no empt
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
-  const headline = await screen.findByText("Couldn't load tasks");
-  expect(headline.parentElement?.querySelectorAll("p")).toHaveLength(1);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).not.toBe("");
+  expect([...alert.querySelectorAll("*")].filter((element) => element.textContent === "")).toEqual([]);
 });
 
 // --- a failed LIVE re-fetch keeps the list it already has -------------------
@@ -1092,19 +1106,14 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
-  // Headline and detail are asserted separately here, unlike the stale-notice
-  // tests above: with no previous page to keep, this path renders EmptyState,
-  // whose title and hint are two elements. The stale notice renders the same
-  // failure as one sentence in one element. Same words either way - a combined
-  // matcher just cannot span the EmptyState pair.
-  await screen.findByText("Couldn't load tasks");
-  await screen.findByText("tasks boom");
+  expect((await screen.findByRole("alert")).textContent).toContain("tasks boom");
+  expect(screen.queryAllByTestId("task-row")).toHaveLength(0);
 
   await user.click(screen.getByRole("button", { name: "Try again" }));
 
   expect(await screen.findAllByTestId("task-row")).toHaveLength(2);
   expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
-  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test("cancelled history never claims completion and preserves every current and remaining task", async () => {
