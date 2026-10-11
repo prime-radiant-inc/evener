@@ -41,13 +41,8 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { FailureGlyph, Markdown } from "../../../../widgets";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  setDisclosureOpen,
-  toggleDisclosure,
-} from "../../../../widgets/disclosure/disclosureStore";
+import { Disclosure, FailureGlyph, Markdown } from "../../../../widgets";
+import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
@@ -63,11 +58,7 @@ const CLASS = {
   line: requireClass(styles.line, "systemnoticeitem.module.css", "line"),
   failure: requireClass(styles.failure, "systemnoticeitem.module.css", "failure"),
   failureText: requireClass(styles.failureText, "systemnoticeitem.module.css", "failureText"),
-  group: requireClass(styles.group, "systemnoticeitem.module.css", "group"),
-  summary: requireClass(styles.summary, "systemnoticeitem.module.css", "summary"),
   groupBody: requireClass(styles.groupBody, "systemnoticeitem.module.css", "groupBody"),
-  scaffold: requireClass(styles.scaffold, "systemnoticeitem.module.css", "scaffold"),
-  scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
   literalBody: requireClass(styles.literalBody, "systemnoticeitem.module.css", "literalBody"),
   approval: requireClass(styles.approval, "systemnoticeitem.module.css", "approval"),
@@ -138,27 +129,19 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
   const isNotesSnapshot = item.eventKind === "notes-context";
   const disclosureFallback =
     !isNotesSnapshot && (expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false));
-  const open = isDisclosureOpen(
-    disclosureKey,
-    disclosureFallback,
-    isNotesSnapshot ? { ignoreBaseline: true } : undefined,
-  );
   return (
-    <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
-      <summary
-        className={CLASS.scaffoldSummary}
-        onClick={(e) => {
-          e.preventDefault();
-          setDisclosureOpen(disclosureKey, !open);
-        }}
-      >
-        {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
-      </summary>
+    <Disclosure
+      variant="quiet"
+      id={disclosureKey}
+      defaultOpen={disclosureFallback}
+      ignoreBaseline={isNotesSnapshot}
+      data-testid="system-notice-scaffold"
+      summary={`${scaffoldLabel(item)} · ${formatCharCount(item.text.length)}`}
+    >
       <div className={CLASS.scaffoldBody} data-testid="system-notice-scaffold-body">
         {isNotesSnapshot ? <pre className={CLASS.literalBody}>{item.text}</pre> : <Markdown source={item.text} />}
       </div>
-    </details>
+    </Disclosure>
   );
 }
 
@@ -350,25 +333,20 @@ function SystemGroup({
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(disclosureScope, firstItem.id);
   const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, firstItem.id, false);
-  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   return (
-    <details className={CLASS.group} data-testid="system-notice-group" open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
-      <summary
-        className={CLASS.summary}
-        onClick={(e) => {
-          e.preventDefault();
-          toggleDisclosure(disclosureKey, disclosureFallback);
-        }}
-      >
-        {count} system events · {first}
-      </summary>
+    <Disclosure
+      variant="quiet"
+      id={disclosureKey}
+      defaultOpen={disclosureFallback}
+      data-testid="system-notice-group"
+      summary={`${count} system events · ${first}`}
+    >
       <div className={CLASS.groupBody}>
         {run.items.map((it) => (
           <SystemLine key={it.id} item={it} turn={turn} sessionRef={sessionRef} metadata={metadata} />
         ))}
       </div>
-    </details>
+    </Disclosure>
   );
 }
 

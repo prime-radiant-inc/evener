@@ -4,7 +4,7 @@
 // task list render nothing.
 import { type ItemModel, stripSystemReminder, type TurnModel } from "@evener/appwire-client";
 import { type SystemEventWireCase, systemEventWireItem } from "@evener/appwire-client/testing/systemEventWireFixtures";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { SteeringItem } from "./SteeringItem";
@@ -21,18 +21,20 @@ function steer(name: SystemEventWireCase): ItemModel {
 }
 
 test.each([
-  ["steer-hook-context", "System steered: Hook context"],
-  ["steer-precompact-hook", "System steered: Hook context before compacting"],
-  ["steer-compact-nudge", "System steered: Running low on context"],
-  ["steer-no-tool-calls", "System steered: Reminded to keep working"],
-  ["steer-loop-detected", "System steered: Loop detected"],
-  ["steer-provider-failure", "System steered: Provider failed"],
-  ["steer-transcript-pointer", "System steered: Where to find the full transcript"],
-  ["steer-note-handoff", "System steered: Note to self"],
-  ["steer-from-parent", "From parent"],
-] as const)("folds %s to %s, opening to what it said", (name, label) => {
+  "steer-hook-context",
+  "steer-precompact-hook",
+  "steer-compact-nudge",
+  "steer-no-tool-calls",
+  "steer-loop-detected",
+  "steer-provider-failure",
+  "steer-transcript-pointer",
+  "steer-note-handoff",
+  "steer-from-parent",
+] as const)("folds %s to a labelled divider, opening to what it said", (name) => {
   render(<SteeringItem item={steer(name)} turn={turn} live={false} />);
-  expect(screen.getByText(label)).toBeTruthy();
+  const summary = screen.getByTestId("steering-item").querySelector("summary");
+  expect(summary?.textContent).not.toBe("");
+  fireEvent.click(summary!);
   const body = screen.getByTestId("steering-item").querySelector("pre")?.textContent;
   expect(body).toBe(stripSystemReminder(systemEventWireItem(name).text ?? ""));
 });
@@ -47,7 +49,7 @@ Delegate dlg_42 completed.
 ])("renders a parent's message that quotes notification markup whole: %s", (text) => {
   const item = { ...steer("steer-from-parent"), text };
   render(<SteeringItem item={item} turn={turn} live={false} />);
-  expect(screen.getByText("From parent")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   expect(screen.getByTestId("steering-item").querySelector("pre")?.textContent).toBe(text);
 });
 

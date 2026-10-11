@@ -127,6 +127,14 @@ test("the same scaffold item id has independent disclosure state in different se
   expect(scaffolds[1]?.open).toBe(false);
 });
 
+test("a collapsed group keeps its lines out of the document until a click opens it", () => {
+  const items = [item("a"), item("b"), item("c")];
+  renderTurnTools(turnWith(items));
+  expect(screen.queryByText("notice b")).toBeNull();
+  fireEvent.click(screen.getByTestId("system-notice-group").querySelector("summary")!);
+  expect(screen.getByText("notice b")).toBeTruthy();
+});
+
 test("the group's summary names the count and the first event", () => {
   const items = [item("a", { text: "first thing happened" }), item("b"), item("c")];
   render(<TurnBlock turn={turnWith(items)} />);
@@ -205,7 +213,7 @@ test("a system_prompt eventKind item renders as a collapsed scaffold disclosure,
   expect(scaffold.querySelector("summary")?.textContent).toBe("System prompt · 5 chars");
 });
 
-test("an expanded system prompt keeps its summary and Markdown body in full-width rows", () => {
+test("a system prompt mounts its Markdown body below the summary only once opened", () => {
   showSystemPrompt();
   const text = `## Identity\n\n${"You are a careful assistant. ".repeat(1000)}`;
   // At activity level the scaffold auto-expands; use tools level to test the
@@ -213,34 +221,32 @@ test("an expanded system prompt keeps its summary and Markdown body in full-widt
   renderTurnTools(turnWith([item("prompt", { text, eventKind: "system_prompt" })]));
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   const summary = scaffold.querySelector("summary");
-  const body = scaffold.querySelector('[data-testid="system-notice-scaffold-body"]');
-  expect(summary?.textContent).toBe(`System prompt · ${formatCharCount(text.length)}`);
   expect(scaffold.open).toBe(false);
   expect(scaffold.querySelectorAll("details")).toHaveLength(0);
-  expect(scaffold.children).toHaveLength(2);
+  expect(scaffold.children).toHaveLength(1);
   expect(scaffold.children[0]).toBe(summary);
-  expect(scaffold.children[1]).toBe(body);
+  expect(screen.queryByTestId("system-notice-scaffold-body")).toBeNull();
   expect(summary?.tagName).toBe("SUMMARY");
   expect(summary?.getAttribute("role")).toBeNull();
 
   fireEvent.click(summary!);
   expect(scaffold.open).toBe(true);
-  expect(body?.querySelector("h2")?.textContent).toBe("Identity");
+  const body = screen.getByTestId("system-notice-scaffold-body");
+  expect(scaffold.children).toHaveLength(2);
+  expect(scaffold.children[1]?.contains(body)).toBe(true);
+  expect(body.querySelector("h2")?.textContent).toBe("Identity");
   expect(body?.textContent).toContain("You are a careful assistant.");
 });
 
-test("the system prompt scaffold CSS makes the summary and body block rows", () => {
+test("the system prompt body is a full-width block row under the summary", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "systemnoticeitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const rule = (selector: string): string => {
     const match = css.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));
     return match?.[1] ?? "";
   };
-  expect(rule("scaffold")).toContain("display: block");
-  expect(rule("scaffold")).not.toContain("display: flex");
-  expect(rule("scaffoldSummary")).toContain("display: list-item");
-  expect(rule("scaffoldSummary")).toContain("min-width: 0");
-  expect(rule("scaffoldSummary")).toContain("max-width: 100%");
+  expect(rule("scaffoldBody")).toContain("display: block");
+  expect(rule("scaffoldBody")).toContain("min-width: 0");
   expect(rule("scaffoldBody")).toContain("width: 100%");
 });
 

@@ -17,7 +17,8 @@ import {
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import "./tools";
-import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
+import { Disclosure } from "../../../widgets";
+import { disclosureDefault, isDisclosureOpen } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
@@ -113,6 +114,20 @@ function runAnchorFor(run: ToolRun, viewAnchorIndex: number | undefined) {
   return { ...anchor, "data-view-anchor-members": run.entries.map((entry) => entry.id).join(",") };
 }
 
+// A closed intent group mounts none of its entries, so the group itself
+// stands in for them: its first entry's anchor, listing every entry it holds.
+// Open, each entry carries its own anchor instead.
+function closedIntentGroupAnchorFor(
+  entries: readonly Extract<ProjectedEntry, { kind: "intent" }>[],
+  viewAnchorIndex: number | undefined,
+) {
+  const first = entries[0];
+  if (!first) return undefined;
+  const anchor = projectedEntryAnchor(first, viewAnchorIndex);
+  if (!anchor) return undefined;
+  return { ...anchor, "data-view-anchor-members": entries.map((entry) => entry.id).join(",") };
+}
+
 export interface ProjectedIntentGroupProps {
   entries: readonly Extract<ProjectedEntry, { kind: "intent" }>[];
   rowId?: string;
@@ -147,44 +162,41 @@ export function ProjectedIntentGroup({
   return (
     <>
       {showSeenDivider && <SeenDivider />}
-      <details
+      <div
         className={transcriptStyles.intentGroup}
-        data-testid="intent-group"
         data-transcript-row-id={rowId}
         data-transcript-source-turn-ids={sourceTurnIds.join(",") || undefined}
-        open={open}
+        {...(open ? undefined : closedIntentGroupAnchorFor(entries, viewAnchorIndex))}
       >
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: summary is natively keyboard-operable */}
-        <summary
-          className={transcriptStyles.intentGroupSummary}
-          onClick={(event) => {
-            event.preventDefault();
-            toggleDisclosure(disclosureKey, fallback);
-          }}
+        <Disclosure
+          variant="quiet"
+          id={disclosureKey}
+          defaultOpen={fallback}
+          data-testid="intent-group"
+          summary={`${entries.length} action${entries.length === 1 ? "" : "s"}`}
         >
-          {entries.length} action{entries.length === 1 ? "" : "s"}
-        </summary>
-        <div className={transcriptStyles.intentGroupItems}>
-          {entries.map((entry) => (
-            <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
-              <ToolCallItem
-                item={entry.item}
-                turn={{ id: entry.turnId, status: "completed", items: [entry.item] }}
-                live={entry.item.status === "inProgress"}
-                sessionRef={sessionRef}
-                projectedSummary={!entry.item.description?.trim() ? entry.rationale : undefined}
-                renderContext={renderContext ?? context}
-                thread={thread}
-                threadFingerprint={threadFingerprintForItem(
-                  entry.item,
-                  thread,
-                  toolRendererFor(entry.item.toolName ?? "").summarySuffix?.(entry.item, thread),
-                )}
-              />
-            </div>
-          ))}
-        </div>
-      </details>
+          <div className={transcriptStyles.intentGroupItems}>
+            {entries.map((entry) => (
+              <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+                <ToolCallItem
+                  item={entry.item}
+                  turn={{ id: entry.turnId, status: "completed", items: [entry.item] }}
+                  live={entry.item.status === "inProgress"}
+                  sessionRef={sessionRef}
+                  projectedSummary={!entry.item.description?.trim() ? entry.rationale : undefined}
+                  renderContext={renderContext ?? context}
+                  thread={thread}
+                  threadFingerprint={threadFingerprintForItem(
+                    entry.item,
+                    thread,
+                    toolRendererFor(entry.item.toolName ?? "").summarySuffix?.(entry.item, thread),
+                  )}
+                />
+              </div>
+            ))}
+          </div>
+        </Disclosure>
+      </div>
       {separatorTurn && <TurnSeparator turn={separatorTurn} />}
     </>
   );
