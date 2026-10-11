@@ -99,7 +99,10 @@ func (a *visionIdleCaptureAdapter) Complete(ctx context.Context, req llm.Request
 func TestProviderIdleVisionUsesSessionPolicyWithoutTotalDeadline(t *testing.T) {
 	t.Parallel()
 	adapter := &visionIdleCaptureAdapter{name: "openai"}
-	sess := newSession(t, withAdapter(adapter), withProfile(NewOpenAIProfile("gpt-5.2")), withConfig(SessionConfig{ProviderIdleTimeout: "45s"}))
+	// The fixture is the text-only gpt-5.2-codex row: a session model that
+	// sees tool-result images natively skips image descriptions by default,
+	// and this test is about the idle policy the request carries.
+	sess := newSession(t, withAdapter(adapter), withProfile(NewOpenAIProfile("gpt-5.2-codex")), withConfig(SessionConfig{ProviderIdleTimeout: "45s"}))
 	drainSessionEvents(sess)
 	sess.describeImageCall(context.Background(), tool.ExecResult{ImageData: []byte("png"), ImageMediaType: "image/png"})
 	if adapter.request.AdapterTimeout == nil {

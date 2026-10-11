@@ -6,18 +6,20 @@ Branch: `main`
 
 ## Summary
 
-Evener describes every image a tool returns through a vision side-channel: a
-separate, tool-free completion that asks the session's own model to describe the
-image, then injects the result as steering. This call fires even when the
-session model is vision-capable and already receives the same bytes inline in
-the tool result.
+Evener describes images a tool returns through a vision side-channel: a
+separate, tool-free completion that asks the session's active model to describe
+the image, then injects the result as steering. The original design fired this
+call unconditionally; the revision below keys that default to catalog
+capability — when the setting is unset and every model that could serve the
+session sees tool-result image bytes natively, the side-channel does not fire
+and the inline bytes are the vision support.
 
 This design makes the side-channel configurable through one per-session
 setting, `vision_model`, with three states:
 
 | Setting | Behavior |
 |---|---|
-| unset (default) | Side-channel on, using the session's active model — today's behavior |
+| unset (default) | Capability-keyed native vision: no describing call when the session's whole serving chain sees tool-result images inline, otherwise the side-channel runs on the session's active model |
 | `off` | Side-channel skipped; the model still receives image bytes inline in the tool result; no vision steering is emitted |
 | `provider/model` or bare `model` | Side-channel on, routed to that model; cross-provider allowed; provider refusal falls back to the session model |
 
@@ -43,8 +45,9 @@ mutation through the appwire method.
 
 ## Non-goals
 
-- An `auto` mode that infers the side-channel from catalog vision capability.
-  The setting is explicit; capability metadata only filters picker entries.
+- An `auto` picker state. The unset default itself is capability-keyed (see
+  the revision below), but the picker keeps three entries; capability metadata
+  filters the picker's model entries and nothing else gains a fourth state.
 - A spawn-pane field in the launch UI. The CLI flag covers launch-time
   selection; the pickers cover running sessions.
 - A `hubapi` Go HTTP client method. The TUI and the web frontend both consume
@@ -67,9 +70,11 @@ description arrives as steering ("Image description (from vision)"); timeouts
 and provider failures arrive as "vision unavailable" steering.
 
 The image bytes also travel inline to the session model: the Anthropic and
-OpenAI Responses adapters embed them in the tool result itself. A
-vision-capable session model therefore sees every image twice today — once
-inline, once through the forced description.
+OpenAI Responses adapters embed them in the tool result itself. With the
+setting unset, a session whose serving chain sees those bytes natively gets no
+describing call — the bytes appear once, inline, and no vision steering is
+emitted for what the model already sees. A session that cannot see them inline
+receives the description alone.
 
 Auxiliary calls that need a different model (naming, summarization, web fetch)
 already route through `agent/internal/cheapmodel.Caller`: the profile carries a
@@ -286,7 +291,83 @@ All gates run per AGENTS.md: `make lint`, `make vet`, `make test`, plus
 
 ## Rollout and compatibility
 
-Default behavior is unchanged: an unset `vision_model` describes with the
-session model exactly as today. Persisted sessions without the field load as
-unset. The new wire method and notification are additive; older frontends
-ignore the capability and never render the picker.
+An unset `vision_model` follows the 2026-10-10 revision above: capability-based
+skipping for image results on sessions whose model sees them inline, the
+describing call everywhere else. Persisted sessions without the field load as
+unset. The wire method and notification are additive; older frontends ignore
+the capability and never render the picker.
+
+## Revision (2026-10-10): native vision is the default for vision-capable session models
+
+This revision supersedes the design's non-goal "an `auto` mode that infers
+the side-channel from catalog vision capability": the default is now
+capability-based, and the setting is the explicit override.
+
+When `vision_model` is unset and the session model sees tool-result image
+bytes inline (the row declares image input and its adapter embeds
+tool-result images), the side-channel does not fire for image tool results.
+The inline bytes are the vision support: no describing call, no image
+description steering, and no "vision unavailable" notice for what the model
+already sees. The same research grounded the scope: images inside tool
+results are the official pattern on both Anthropic and OpenAI, and Claude
+Code passes images inline with no describing call at all.
+
+- Images only. No adapter vouches for inline PDF tool results — the Responses
+  builder gates on image/*, and the Anthropic and Google builders write the
+  claimed media type but their APIs accept images only (the written-but-rejected
+  case is #4209) — so document results always take the side-channel.
+- An explicit `provider/model` or bare ref stays honored even when the session
+  model is vision-capable: configuring a vision model is a deliberate
+  instruction to describe with that model — the knob the ecosystem's
+  vision-fallback plugins offer for text-only models.
+- `off` is unchanged.
+- Chat-protocol rows and Google rows without `multimodal_tool_results` keep
+  the side-channel: their adapters leave tool-result images off the wire, so
+  the side-channel is the only path.
+- The skip holds only while every model that could serve a later round sees
+  the bytes — including each `model_fallbacks` entry. Those capability facts
+  resolve at facts depth (`ResolveInstanceModelFacts`): the question is
+  metadata about a model that may never serve, while the full resolution the
+  round runner uses to serve an entry materializes credentials — including
+  command-bearing keys that would spend a mint and prompt the user's
+  password manager just to read an image. An entry whose facts cannot be
+  resolved right now keeps the side-channel: the runner re-resolves every
+  entry on each failing round, so an image-stripping fallback that recovers
+  must find the description still flowing.
+
+Failure fallback: the description retries once on the session model only
+when the failed attempt did not already run there — cheapmodel reports the
+fact, which covers rerouted unservable routes and its own refusal fallback —
+when the side-channel's fixed deadline is not already spent, and when the
+result is media the session model can actually see: a raster image needs
+image input (a user-message image is the one shape every protocol vouches
+for), and a document needs the row's pdf input plus an adapter that
+represents a user-message document (only the Responses builder writes
+input_file today; the Anthropic and Google builders reject the kind and chat
+strips it). A session model that cannot see the media
+never receives the retry's describe request: providers reject it, and the
+ones that do not answer with a confident hallucinated description. cheapmodel's refusal
+fallback is gated the same way: a media-bearing request never lands on a
+session model that cannot see it (`ErrSessionModelCannotTakeMedia`, images
+requiring image input and documents requiring the row's pdf input plus
+user-message document delivery, across the live refusal
+and both latched-refusal reroutes), so a refusing configured route against a
+media-blind session reports
+unavailable instead of describing; the caller's own choice of the session
+route stays ungated as the try-the-session-model default. What remains open
+under #4213 is the effort refit: the refusal leg still sends the refused
+route's clamped effort to the session model. Side-channel timeouts do not
+retry — the fixed deadline is spent.
+
+Deliberate tradeoff, recorded with the design: the skip means an image read
+by a native-vision session leaves the transcript holding the bytes and no
+text form of them. A later `SetModel` to a model that cannot carry
+tool-result images (a chat-protocol row strips them; the switch preflight
+checks wire representability, and stripped images still represent) therefore
+loses sight of those images, where the pre-revision side-channel would have
+left a description behind. The revision accepts that cost for the default:
+the unset default assumes the session's chosen model consumes its own images,
+and a session that expects to hand history to a sightless model pins an
+explicit `vision_model` (or `off`) instead. Extending the model-switch
+preflight to warn about or reject switches that would orphan undescribed
+inline images is an open product choice (#4217).
