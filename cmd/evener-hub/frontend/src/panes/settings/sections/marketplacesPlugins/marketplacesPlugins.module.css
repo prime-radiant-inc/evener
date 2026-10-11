@@ -239,11 +239,6 @@
   gap: var(--space-1);
 }
 
-.sheetActions > button {
-  justify-content: flex-start;
-  width: 100%;
-}
-
 .sheetDivider {
   margin: var(--space-3) 0;
   border: none;
