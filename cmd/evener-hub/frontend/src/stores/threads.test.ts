@@ -328,21 +328,6 @@ function connectMutationClient(): FakeClient {
   return fake;
 }
 
-async function ensureActiveMutationTarget(fake: FakeClient, ref: string): Promise<void> {
-  fake.on("thread/read", (params) =>
-    readResponse(params.ref ?? ref, {
-      turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
-      evener: {
-        ref: params.ref ?? ref,
-        capabilities: CAPABILITIES,
-        queue: { revision: 7 },
-        activeTurnId: "turn_1",
-      },
-    }),
-  );
-  await threadsStore.getState().ensureThread(ref);
-}
-
 async function deleteMutationDatabase(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const request = indexedDB.deleteDatabase("evener-mutation-outbox");
@@ -7572,91 +7557,6 @@ test("a foldable ref whose outbox has not loaded is not foldable", async () => {
   expect(hasBlockedUnknown(ref)).toBe(false);
   expect(hasQueuedNonSend(ref)).toBe(false);
   expect(resumeOnlyLocalModel(ref)).toBe(true);
-});
-
-// docs/design/stop-cancellation-outbox.md §9 items 2-4: the durability
-// integrations only a full store can express. Units 1-3 pinned the storage
-// transitions, the Stop paths, and the dispatcher's race guards in isolation;
-// these run the real threads store end to end over rows a real Stop canceled -
-// across a reload (fresh runtime, fresh connection, same durable database),
-// across a second connection to that database, and across an explicit Resume
-// followed by the explicit Retry that is a canceled row's only release.
-//
-// §9 item 8 (clear/delete removal) is already pinned store-level above
-// ("clearThread removes the ref's canceled rows once the clear lands" and the
-// deletion-fence test beside it), so it is not re-run here.
-describe("Stop cancellation durability across reload, tabs, and resume", () => {
-  // §9 item 9: every wait in this battery fails loudly when its condition never
-  // arrives. flushIndexedDBUntil above ends silently at its turn bound and
-  // relies on the caller's next expect to notice; that is not enough for waits
-  // whose negative is the point (a resend that must never happen), so this
-  // variant names what failed to arrive.
-  async function flushUntilArrived(what: string, arrived: () => boolean | Promise<boolean>, maxTurns = 60) {
-    const probe = new MutationOutboxIndexedDB();
-    try {
-      for (let turn = 0; turn < maxTurns && !(await arrived()); turn += 1) await probe.listTargetRefs();
-    } finally {
-      probe.close();
-    }
-    if (!(await arrived())) throw new Error(`never arrived after ${maxTurns} IndexedDB turns: ${what}`);
-  }
-
-  // RoboRev PR #1873 low, the pins half: the discard that removes a ref's
-  // last row must refresh the mutation pin. Without the refresh the stale pin
-  // keeps releaseThread from dropping the model of a thread the hub has
-  // proven deleted.
-  test("the deletion fence's discard refreshes the pin so the last release drops the model", async () => {
-    const storage = new MutationOutboxIndexedDB();
-    setMutationStorageForTests(storage);
-    const fake = connectMutationClient();
-    await ensureActiveMutationTarget(fake, "ref_gone");
-    // A pinned durable row: enqueued durably, then canceled by a real Stop
-    // whose interrupt settles.
-    const canceled = await storage.enqueueIntent({
-      targetRef: "ref_gone",
-      threadId: "thr_ref_gone",
-      method: "turn/queue",
-      payload: { ref: "ref_gone", input: [{ type: "text", text: "canceled before the deletion" }] },
-      attachments: [],
-      optimisticDisplay: null,
-    });
-    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
-    await threadsStore.getState().interrupt("ref_gone");
-    await flushUntilArrived(
-      "the Stop to cancel the queued row",
-      async () => (await storage.getOutbox(canceled.clientMutationId))?.state === "canceled",
-    );
-    // Let the interrupt's own dispatch tail run out of the way; the canceled
-    // row is the ref's pin, exactly the pin the fence's discard must refresh.
-    await flushIndexedDBUntil(() => false, 4);
-
-    // The hub's deletion fence lands: the canceled row leaves with the ref.
-    fake.on("thread/read", () => {
-      throw new WireError("target has been deleted: local:ref_gone", -32001, {
-        evenerErrorInfo: "actionUnavailable",
-        mutationOutcome: "targetDeleted",
-        retryDisposition: "none",
-      });
-    });
-    await threadsStore
-      .getState()
-      .refreshThread("ref_gone")
-      .catch(() => undefined);
-    await waitFor(() => {
-      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
-    });
-    await flushUntilArrived(
-      "the fence's discard to remove the canceled row",
-      async () => (await storage.getOutbox(canceled.clientMutationId)) === undefined,
-    );
-    await flushIndexedDBUntil(() => false, 4);
-
-    // The pane goes away: with the pin refreshed, the last release drops the
-    // deleted thread's model instead of holding it for a row that no longer
-    // exists.
-    threadsStore.getState().releaseThread("ref_gone");
-    expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
-  });
 });
 
 describe("pending shared membership acquisition", () => {
