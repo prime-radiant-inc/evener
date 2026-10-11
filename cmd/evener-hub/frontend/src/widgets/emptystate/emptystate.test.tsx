@@ -99,3 +99,33 @@ test("size=compact declares a left-aligned block on the UI type step", () => {
   const hint = /\.compact \.hint\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(hint).toContain("font-size: var(--font-size-caption)");
 });
+
+test("several actions passed as a fragment all land in the action slot", () => {
+  render(
+    <EmptyState
+      title="t"
+      action={
+        <>
+          <button type="button">First</button>
+          <button type="button">Second</button>
+        </>
+      }
+    />,
+  );
+  const first = screen.getByRole("button", { name: "First" });
+  const second = screen.getByRole("button", { name: "Second" });
+  expect(first.parentElement).toBe(second.parentElement);
+});
+
+// Several actions sit in one wrapping row with the system gap, so callers pass
+// a fragment instead of spacing buttons with text nodes.
+test("the action slot lays its children out in a wrapping row with a token gap", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "emptystate.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const action = /(?:^|\n)\.action\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(action).toContain("display: flex");
+  expect(action).toContain("flex-wrap: wrap");
+  expect(action).toMatch(/gap: var\(--space-\d\)/);
+});

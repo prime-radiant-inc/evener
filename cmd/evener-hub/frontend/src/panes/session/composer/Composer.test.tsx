@@ -36,6 +36,7 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
+import { SHOW_DELAY_MS } from "../../../widgets/hovercard/useFloatingLabel";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -4402,8 +4403,10 @@ test("an active fenced local session offers Send and drives the resume", async (
 // parked intent. The button itself says why (kata 2f41), and the press-time
 // gate re-reads the obligation live - a Stop can arm the fence between the
 // render and the press, and Shift+Enter reaches the handler with no button on
-// screen at all.
-test("an active fenced local session renders a disabled Steer and parks nothing", async () => {
+// screen at all. The refusal is aria-disabled, not the native attribute: a
+// natively disabled button takes no focus and no hover, so its reason would be
+// unreachable.
+test("an active fenced local session renders a refused Steer that explains itself and parks nothing", async () => {
   const user = userEvent.setup();
   const ref = "local:active-fenced-steer";
   const fake = await mountComposer(ref, {
@@ -4418,12 +4421,27 @@ test("an active fenced local session renders a disabled Steer and parks nothing"
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
-  expect(steerButton().disabled).toBe(true);
+  const steer = steerButton();
+  expect(steer.disabled).toBe(false);
+  expect(steer.getAttribute("aria-disabled")).toBe("true");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => steer.focus());
+    act(() => {
+      vi.advanceTimersByTime(SHOW_DELAY_MS);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(document.activeElement).toBe(steer);
+  expect(steer.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+  await user.click(steer);
+  expect(getToasts()).toHaveLength(0);
   // The keyboard chord still reaches the press handler; the fence refuses it.
   await user.click(textarea());
   await user.keyboard("{Shift>}{Enter}{/Shift}");
   await flushPendingTurnsProjectionForTests();
-  expect(getToasts().map((t) => t.text)).toContain("Steer isn't available until this session is resumed");
+  expect(getToasts()).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
   const storage = new MutationOutboxIndexedDB();
   const parked = await storage.listOutbox(ref);

@@ -49,19 +49,16 @@ class DockChunkBoundary extends Component<DockChunkBoundaryProps, DockChunkBound
         title="Couldn't load the workspace"
         hint={this.state.failure}
         action={
-          <span>
+          <>
             <Button size="sm" onClick={this.retry}>
               Retry
             </Button>
             {this.props.reloadAvailable && isStaleDockHostChunkError(this.state.failure) && (
-              <>
-                {" "}
-                <Button size="sm" variant="quiet" onClick={reloadPage}>
-                  Reload page
-                </Button>
-              </>
+              <Button size="sm" variant="quiet" onClick={reloadPage}>
+                Reload page
+              </Button>
             )}
-          </span>
+          </>
         }
       />
     );

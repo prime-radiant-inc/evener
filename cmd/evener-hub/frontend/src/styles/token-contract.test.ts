@@ -425,6 +425,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
   "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
+  "card", // attention tone: the "a human is needed right now" envelope (ask batch, sandbox approval)
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
@@ -448,17 +449,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // module-level "a child failed" signal parity §12 calls for - the failure
 // colour has to come from somewhere, and this is the same deliberate,
 // exact-path route RailRow.module.css already established, not a new one.
-//
-// kata crcf: panes/session/composer/askDock/askdock.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/session/composer/askDock/, not widgets/<name>/, so it can never
-// match WIDGET_STYLESHEET_RE either. Its pending-ask batch is the app's
-// clearest "a human is needed right now" moment (docs/web-ui/decisions.md
-// topic 16); before this it was drawn in neutral ink alone, same-color as
-// everything else. The amber container is --attention-bg/-edge on the
-// batch envelope - the primary Send action inside it stays --accent (blue),
-// which is not gated at all, per the amber-owns-the-container/blue-owns-
-// the-action split the mockup settled on.
 //
 // tasklist-checklist-card: panes/session/transcript/tools/taskcheck.module.css
 // earns the same exception for the same structural reason - it lives under
@@ -497,15 +487,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // RailRow.module.css established for the rail's own activity rows - the hue
 // IS the state signal, and all text stays on the ink scale.
 //
-// reviewed-ux-fixes fix 1: panes/session/transcript/tools/sandboxescalation.
-// module.css earns the same exception for the same structural reason - it
-// lives under panes/session/transcript/tools/, not widgets/<name>/, so it
-// can never match WIDGET_STYLESHEET_RE either. A sandbox escalation card is
-// a BLOCKING approval (the tool-exec goroutine is parked waiting on
-// evener/sandbox/escalation/resolve) - the app's SECOND "a human is needed
-// right now" moment after askDock's ask batch (kata crcf, above), same
-// structural reason, so it earns the same --attention-bg/--attention-edge
-// container tint askDock's .batch uses instead of a neutral Card.
 // focus-sentence: panes/session/composer/currentwork.module.css earns the same
 // exact-path exception because it is pane content, not a widget stylesheet.
 // Its --alive ring marks an actually in-progress task, which is precisely the
@@ -524,7 +505,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
-  "panes/session/composer/askDock/askdock.module.css",
   "panes/session/composer/currentwork.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/activitypanel.module.css",
@@ -536,7 +516,6 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   // the production task card/pane stylesheets are allowlisted on their own
   // above.
   "dev/taskcardmockups/taskcardmockups.module.css",
-  "panes/session/transcript/tools/sandboxescalation.module.css",
   "panes/session/transcript/entityref.module.css",
   "shell/activitybar/activitybar.module.css",
 ]);
@@ -602,14 +581,6 @@ test("the activitybar.module.css semantic-var exception is scoped to its exact p
   expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/activitybar.module.css")).toBe(false);
 });
 
-test("the askdock.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/composer/askDock/askdock.module.css")).toBe(true);
-  // A same-named decoy anywhere else must still go through the normal
-  // widget-allowlist check, exactly like the dockview-theme.css precedent.
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/askdock.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("askdock.module.css")).toBe(false);
-});
-
 test("the currentwork.module.css semantic-var exception is scoped to its exact path", () => {
   expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/composer/currentwork.module.css")).toBe(true);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/currentwork/currentwork.module.css")).toBe(false);
@@ -627,14 +598,6 @@ test("the taskcardmockups.module.css semantic-var exception is scoped to its exa
   // normal widget-allowlist check, exactly like every other entry.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("taskcardmockups.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/taskcardmockups.module.css")).toBe(false);
-});
-
-test("the sandboxescalation.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/transcript/tools/sandboxescalation.module.css")).toBe(true);
-  // A same-named decoy anywhere else must still go through the normal
-  // widget-allowlist check, exactly like the dockview-theme.css precedent.
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/sandboxescalation.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("sandboxescalation.module.css")).toBe(false);
 });
 
 test("the entityref.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {

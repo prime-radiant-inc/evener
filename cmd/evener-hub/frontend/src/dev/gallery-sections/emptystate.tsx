@@ -23,6 +23,20 @@ export default function EmptyStateGallerySection() {
             />
           </div>
           <div className={styles.sample}>
+            <EmptyState
+              title="Couldn't load the workspace"
+              hint="Several actions: a fragment in the action slot."
+              action={
+                <>
+                  <Button size="sm">Retry</Button>
+                  <Button size="sm" variant="quiet">
+                    Reload page
+                  </Button>
+                </>
+              }
+            />
+          </div>
+          <div className={styles.sample}>
             <EmptyState title="No session open" hint="size=display: the welcome hero" size="display" />
           </div>
           <div className={styles.sample}>

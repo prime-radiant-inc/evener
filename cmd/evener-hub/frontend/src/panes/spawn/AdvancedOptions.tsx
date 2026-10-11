@@ -33,6 +33,7 @@ import {
 import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
 import {
   Button,
+  Card,
   CodeBlock,
   CollectionEditor,
   FormRow,
@@ -219,36 +220,38 @@ export function AdvancedOptions({
         Advanced options
       </button>
       {open && (
-        <div id={panelId} className={CLASS.panel}>
-          {children}
-          {options.map((opt) => (
-            <Control
-              key={opt.wireField}
-              option={opt}
-              value={values[opt.wireField]}
-              error={errors[opt.wireField]}
-              loadCatalog={loadCatalog}
-              complete={complete}
-              validatePath={validatePath}
-              createDirectory={createDirectory}
-              resolvedDefaults={resolvedDefaults}
-              onScalar={(v) => updateScalar(opt, v)}
-              onValue={(field) => update(opt.wireField, field)}
-            />
-          ))}
-          <div>
-            <Button variant="quiet" size="sm" onClick={() => void showResolved()}>
-              Show resolved config
-            </Button>
-          </div>
-          {resolveError && <InlineNotice tone="danger">Couldn't resolve: {resolveError}</InlineNotice>}
-          {resolved !== null && (
-            // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
-            <div role="group" aria-label="Resolved config">
-              <CodeBlock text={resolved} language="json" fold={false} />
+        <Card variant="outlined">
+          <div id={panelId} className={CLASS.panel}>
+            {children}
+            {options.map((opt) => (
+              <Control
+                key={opt.wireField}
+                option={opt}
+                value={values[opt.wireField]}
+                error={errors[opt.wireField]}
+                loadCatalog={loadCatalog}
+                complete={complete}
+                validatePath={validatePath}
+                createDirectory={createDirectory}
+                resolvedDefaults={resolvedDefaults}
+                onScalar={(v) => updateScalar(opt, v)}
+                onValue={(field) => update(opt.wireField, field)}
+              />
+            ))}
+            <div>
+              <Button variant="quiet" size="sm" onClick={() => void showResolved()}>
+                Show resolved config
+              </Button>
             </div>
-          )}
-        </div>
+            {resolveError && <InlineNotice tone="danger">Couldn't resolve: {resolveError}</InlineNotice>}
+            {resolved !== null && (
+              // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
+              <div role="group" aria-label="Resolved config">
+                <CodeBlock text={resolved} language="json" fold={false} />
+              </div>
+            )}
+          </div>
+        </Card>
       )}
     </section>
   );

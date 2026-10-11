@@ -39,12 +39,12 @@ import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Button, Chip } from "../../../../widgets";
+import { Button, Card, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./sandboxescalation.module.css";
 
 const CLASS = {
-  card: requireClass(styles.card, "sandboxescalation.module.css", "card"),
+  content: requireClass(styles.content, "sandboxescalation.module.css", "content"),
   rail: requireClass(styles.rail, "sandboxescalation.module.css", "rail"),
   label: requireClass(styles.label, "sandboxescalation.module.css", "label"),
   body: requireClass(styles.body, "sandboxescalation.module.css", "body"),
@@ -69,9 +69,7 @@ export interface SandboxEscalationCardProps {
 // Amber envelope, not a neutral Card (reviewed UX fix): this is a BLOCKING
 // approval - the tool-exec goroutine is parked waiting on it - the app's
 // SECOND "a human is needed right now" moment after askDock's ask batch, so
-// it gets the same container treatment (sandboxescalation.module.css's
-// .card, allowlisted in token-contract.test.ts's SEMANTIC_PATH_EXCEPTIONS
-// for the same structural reason askdock.module.css is).
+// it gets the same Card tone="attention" container.
 //
 // Mod+Enter approves (handleKeyDown below); Escape deliberately does NOT
 // deny - denial must never be one accidental keypress away, so Deny stays
@@ -88,30 +86,31 @@ export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved,
     // grouping, not a hand-rolled generic <div> - the WAI-ARIA "group"
     // role is the right one for a set of controls with a shared
     // keybinding, and there is no native element for it.
-    // biome-ignore lint/a11y/useSemanticElements: role="group" is deliberate, see above
-    <div className={CLASS.card} role="group" aria-label="Sandbox approval" onKeyDown={handleKeyDown}>
-      <div className={CLASS.label}>Sandbox approval — requested by evener, not the agent</div>
-      <div className={CLASS.body}>
-        The sandbox blocked {escalation.tool} from accessing {escalation.deniedPath} [--sandbox {escalation.mode}].
-        Allow this one action?
-      </div>
-      {/* Danger treatment comes entirely from Chip's own tone prop (already
+    <Card tone="attention" role="group" aria-label="Sandbox approval" onKeyDown={handleKeyDown}>
+      <div className={CLASS.content}>
+        <div className={CLASS.label}>Sandbox approval — requested by evener, not the agent</div>
+        <div className={CLASS.body}>
+          The sandbox blocked {escalation.tool} from accessing {escalation.deniedPath} [--sandbox {escalation.mode}].
+          Allow this one action?
+        </div>
+        {/* Danger treatment comes entirely from Chip's own tone prop (already
           allowlisted in token-contract.test.ts) - this file's own CSS module
           stays tokens-only with no bare --danger reference of its own. */}
-      {error !== undefined && (
-        <div className={CLASS.error}>
-          <Chip tone="danger">Failed</Chip> {error}
+        {error !== undefined && (
+          <div className={CLASS.error}>
+            <Chip tone="danger">Failed</Chip> {error}
+          </div>
+        )}
+        <div className={CLASS.actions}>
+          <Button variant="primary" size="sm" onClick={onApprove} disabled={resolved} data-sandbox-escalation-allow>
+            Allow
+          </Button>
+          <Button variant="danger" size="sm" onClick={onDeny} disabled={resolved}>
+            Deny
+          </Button>
         </div>
-      )}
-      <div className={CLASS.actions}>
-        <Button variant="primary" size="sm" onClick={onApprove} disabled={resolved} data-sandbox-escalation-allow>
-          Allow
-        </Button>
-        <Button variant="danger" size="sm" onClick={onDeny} disabled={resolved}>
-          Deny
-        </Button>
       </div>
-    </div>
+    </Card>
   );
 }
 
