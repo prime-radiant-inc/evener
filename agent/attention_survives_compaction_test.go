@@ -183,3 +183,46 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompaction(t *testing.T) {
 		t.Fatalf("pending after the notification turn = %v (err %v), want both consumed", pending, err)
 	}
 }
+
+// A restored attention turn lands ahead of the in-flight turn, so the fold's
+// baseline correction counts it: the in-flight turn stays exactly where the
+// boundary says it starts, and replay filtering still treats it as in flight.
+func TestRootDelegateAttentionRestoredAheadOfTheInFlightTurnMovesTheBaseline(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	deliver := func(attentionID, text string) {
+		t.Helper()
+		if _, err := sess.appendDelegateNotificationDurably(attentionID, text); err != nil {
+			t.Fatalf("append attention: %v", err)
+		}
+	}
+	deliver("delegate:dlg_worker/delivery/1", `<delegate-notification delegate_id="dlg_worker" kind="update">FIRST_ITEM</delegate-notification>`)
+	seedNumberedSessionHistory(t, sess, 12)
+	deliver("delegate:dlg_worker/delivery/2", `<delegate-notification delegate_id="dlg_worker" kind="update">SECOND_ITEM</delegate-notification>`)
+	seedNumberedSessionHistory(t, sess, 2)
+	history := currentHistory(t, sess)
+	inFlightText := history[len(history)-2].Message.Text()
+	sess.mu.Lock()
+	sess.turnHistoryBaseline = len(history) - 2
+	sess.mu.Unlock()
+
+	if err := sess.requestForceCompact(""); err != nil {
+		t.Fatal(err)
+	}
+	sess.applyPendingForceCompact(context.Background())
+
+	post := currentHistory(t, sess)
+	want := indexOfTurnText(post, inFlightText)
+	if want < 0 {
+		t.Fatalf("in-flight turn %q did not survive the fold", inFlightText)
+	}
+	if indexOfTurnText(post, `<delegate-notification delegate_id="dlg_worker" kind="update">FIRST_ITEM</delegate-notification>`) < 0 {
+		t.Fatal("test setup: the fold did not summarize away and restore the first item")
+	}
+	sess.mu.Lock()
+	got := sess.turnHistoryBaseline
+	sess.mu.Unlock()
+	if got != want {
+		t.Fatalf("turnHistoryBaseline = %d, want %d (the in-flight turn's post-fold index)", got, want)
+	}
+}

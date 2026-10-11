@@ -730,10 +730,11 @@ func attentionTurns(history []schema.Turn) []schema.Turn {
 // withAttentionTurns restores to history the attention turns it does not hold.
 // Each goes before the first held turn of a later-arriving item (attention is
 // in arrival order), or at the end when none is held, so the model still reads
-// the items in the order they were delivered. It is the lock-free form of
+// the items in the order they were delivered. It also returns where each was
+// inserted, in order, for the caller's in-flight boundary. It is the lock-free form of
 // retainDelegateAttentionTurn's append, for a caller that already holds s.mu
 // and owns the slice.
-func withAttentionTurns(history, attention []schema.Turn) []schema.Turn {
+func withAttentionTurns(history, attention []schema.Turn) (_ []schema.Turn, restoredAt []int) {
 	for i, turn := range attention {
 		if slices.ContainsFunc(history, func(held schema.Turn) bool { return held.AttentionID == turn.AttentionID }) {
 			continue
@@ -746,8 +747,9 @@ func withAttentionTurns(history, attention []schema.Turn) []schema.Turn {
 			at = len(history)
 		}
 		history = slices.Insert(history, at, turn)
+		restoredAt = append(restoredAt, at)
 	}
-	return history
+	return history, restoredAt
 }
 
 // acceptDelegateAttention records the exact reserved generation in the child

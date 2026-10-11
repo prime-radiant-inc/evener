@@ -182,7 +182,7 @@ func (s *Session) bumpHistoryRevisionLocked() {
 // reports the loss must not call it a race the operator can win.
 // The returned published slice is a defensive copy taken under s.mu, never
 // s.history's own backing array — callers may read it without locks.
-func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool, refusal error) {
+func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn, restoredAt []int)) (published []schema.Turn, ok bool, refusal error) {
 	s.attentionMu.Lock()
 	// Fail closed on a transcript that has stopped accepting records, before
 	// anything is published rather than after the markers fail to land. This
@@ -235,7 +235,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		return nil, false, nil
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
-	published = withAttentionTurns(published, keptAttention)
+	published, restoredAt := withAttentionTurns(published, keptAttention)
 	s.history = published
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from
@@ -276,7 +276,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	s.persistedAppendLogBase += len(s.persistedAppendLog)
 	s.persistedAppendLog = nil
 	if onPublishLocked != nil {
-		onPublishLocked(published)
+		onPublishLocked(published, restoredAt)
 	}
 	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
 	commit.claimNoteLocked()
@@ -387,8 +387,9 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
 
-		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func([]schema.Turn) {
+		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func(_ []schema.Turn, restoredAt []int) {
 			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
+			s.growTurnHistoryBaseline(restoredAt)
 		})
 		if published {
 			return true, nil
