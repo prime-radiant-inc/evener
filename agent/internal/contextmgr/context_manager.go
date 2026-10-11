@@ -1453,35 +1453,44 @@ const partnerMessageEdgeChars = 1000
 // conversation must already be cleaned (cleanCheckpointConversation), so the
 // rendered slice and the entries line up.
 func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int) []checkpointConversationEntry {
-	conversation = slices.Clone(conversation)
-	rendered := len(renderCheckpointConversation(conversation))
-	for rendered > budget {
-		agent := slices.IndexFunc(conversation, func(entry checkpointConversationEntry) bool { return entry.Role != "user" })
-		if agent < 0 {
-			break
-		}
-		conversation = slices.Delete(conversation, agent, agent+1)
-		rendered = len(renderCheckpointConversation(conversation))
+	// The rendering is the section heading plus one block per entry, so its
+	// length is the sum of the entries' block lengths and the heading's.
+	blockLen := func(entry checkpointConversationEntry) int {
+		return len(renderCheckpointConversation([]checkpointConversationEntry{entry})) - len(checkpointConversationHeading+"\n\n")
 	}
-	trimmed := make([]bool, len(conversation))
-	for rendered > budget {
-		longest := -1
-		for i, entry := range conversation {
-			if !trimmed[i] && len(entry.Text) > 2*partnerMessageEdgeChars && (longest < 0 || len(entry.Text) > len(conversation[longest].Text)) {
-				longest = i
-			}
+	rendered := len(renderCheckpointConversation(conversation))
+	// Shed the agent's own replies, oldest first, until the rest fits.
+	kept := make([]checkpointConversationEntry, 0, len(conversation))
+	for _, entry := range conversation {
+		if rendered > budget && entry.Role != "user" {
+			rendered -= blockLen(entry)
+			continue
 		}
-		if longest < 0 {
+		kept = append(kept, entry)
+	}
+	if rendered <= budget {
+		return kept
+	}
+	// Only the partner's messages are left: trim the longest first, each once.
+	long := make([]int, 0, len(kept))
+	for i, entry := range kept {
+		if len(entry.Text) > 2*partnerMessageEdgeChars {
+			long = append(long, i)
+		}
+	}
+	slices.SortStableFunc(long, func(a, b int) int { return len(kept[b].Text) - len(kept[a].Text) })
+	for _, i := range long {
+		if rendered <= budget {
 			break
 		}
-		text := conversation[longest].Text
+		before := blockLen(kept[i])
+		text := kept[i].Text
 		// Keep what the budget allows, leaving room for the note.
 		keep := max(2*partnerMessageEdgeChars, len(text)-(rendered-budget)-len(trimmedMessageNote(len(text))))
-		conversation[longest].Text = middleTrim(text, keep/2)
-		trimmed[longest] = true
-		rendered = len(renderCheckpointConversation(conversation))
+		kept[i].Text = middleTrim(text, keep/2)
+		rendered += blockLen(kept[i]) - before
 	}
-	return conversation
+	return kept
 }
 
 // middleTrim keeps edge characters at each end of text, cut on rune
@@ -1492,9 +1501,6 @@ func middleTrim(text string, edge int) string {
 	}
 	head := runetrim.Cut(text, edge)
 	tail := string(runetrim.TrimLeadingPartial([]byte(text[len(text)-edge:])))
-	if len(head)+len(tail) >= len(text) {
-		return text
-	}
 	return head + trimmedMessageNote(len(text)-len(head)-len(tail)) + tail
 }
 
