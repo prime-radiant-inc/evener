@@ -994,15 +994,3 @@ func TestEvenerContentRootsHonourAStoredSpellingConfigMaskBeforeTheDirExists(t *
 		t.Errorf("an explicit stored-spelling config mask must keep content masked, got %v", rp.UnmaskedRoots)
 	}
 }
-
-// With ~/.config/evener removed from the denylist there is no mask to carve
-// from: nothing is listed as a carve-out, so no layer treats its .git as
-// masked against the user's explicit choice.
-func TestEvenerContentRootsNeedAConfigMaskToCarveFrom(t *testing.T) {
-	root := mainRepo(t)
-	host, _, _ := contentHost()
-	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistRemove: []string{".config/evener"}}, host, root)
-	if len(rp.UnmaskedRoots) != 0 {
-		t.Errorf("without Evener's config mask nothing is carved out, got %v", rp.UnmaskedRoots)
-	}
-}

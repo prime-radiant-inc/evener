@@ -3,8 +3,10 @@ package sandbox
 import (
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -240,14 +242,23 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 			granted[resolved] = ok
 			if ok {
 				add("--ro-bind", resolved, resolved)
-				carvedGitDirs = append(carvedGitDirs, gitDirs...)
+				// Only a carve-out still under a mask keeps its .git masked:
+				// with the user's own removal of Evener's config mask, its
+				// .git is as readable as the file tools say (Masks).
+				if rp.MasksWrite(r) || rp.MasksWrite(resolved) {
+					carvedGitDirs = append(carvedGitDirs, gitDirs...)
+				}
 			}
 		}
 		// The host's link is missing where the namespace has no host view:
 		// everywhere in restricted mode, and under the private /tmp in the
 		// read-anywhere modes.
+		// A spelling already exposed by an earlier bind (a read root, or a
+		// cwd or scratch tree re-bound under /tmp) needs no link.
 		hidden := sp.Read != ReadAnywhere || pathUnder(r, "/tmp")
-		if ok && r != resolved && hidden && !isUnderAnyRoot(r, sp.ReadRoots) {
+		exposed := isUnderAnyRoot(r, sp.ReadRoots) || isUnderAnyRoot(r, slices.Collect(maps.Keys(reboundRO))) ||
+			(sessionTmp != "" && pathUnder(r, sessionTmp))
+		if ok && r != resolved && hidden && !exposed {
 			add("--symlink", resolved, r)
 		}
 	}

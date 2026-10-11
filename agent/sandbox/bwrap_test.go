@@ -688,3 +688,68 @@ func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderTmp(t *testing.T) {
 		t.Errorf("a carve-out spelled under /tmp must be recreated as a link in read-anywhere modes: %v", args)
 	}
 }
+
+// With Evener's config mask removed by the user, the carve-out is still bound
+// (restricted mode needs the read grant) but its .git is not masked: nothing
+// masks that directory any more.
+func TestBuildBwrapArgvLeavesGitUnmaskedWithoutTheConfigMask(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	gitDir := filepath.Join(skills, "mine", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.FileTool.ReadRoots, skills) {
+		t.Errorf("the skills read grant must stay when the config mask is removed: %v", rp.FileTool.ReadRoots)
+	}
+	args := buildBwrapArgv(rp, t.TempDir(), cwd)
+	if !hasSeq(args, "--ro-bind", skills, skills) {
+		t.Errorf("restricted mode must still bind the skills dir: %v", args)
+	}
+	if hasSeq(args, "--tmpfs", gitDir) {
+		t.Errorf("a .git the user unmasked must not be masked: %v", args)
+	}
+}
+
+// A carve-out spelling already exposed by the read-only re-bind of a /tmp cwd
+// gets no link of its own (creating one over the existing path would make
+// bubblewrap fail).
+func TestBuildBwrapArgvSkipsALinkForASpellingTheCwdBindExposes(t *testing.T) {
+	cwd := tmpMainCheckout(t)
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	xdg := filepath.Join(cwd, ".xdg")
+	if err := os.MkdirAll(xdg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(xdg, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(xdg, "evener", "skills")
+	facts := bwrapFacts(t.TempDir())
+	facts.EvenerConfigRoot = filepath.Join(xdg, "evener")
+	facts.EvenerContentRoots = []string{skills}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Skipf("fixture: the skills dir is not carved out here: %v", rp.UnmaskedRoots)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); slices.Contains(args, "--symlink") {
+		t.Errorf("a spelling the cwd bind already exposes must get no link: %v", args)
+	}
+}
