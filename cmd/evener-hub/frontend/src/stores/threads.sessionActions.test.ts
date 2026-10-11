@@ -28,6 +28,7 @@ import { connectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
+import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   ConflictError,
   installHydrationRetrySchedulerForTests,
@@ -37,6 +38,7 @@ import {
   retryBlockedMutation,
   setMutationStorageForTests,
   setProductionEntryCacheForTests,
+  subscribeMutationPersistence,
   threadsStore,
 } from "./threads";
 
@@ -1897,4 +1899,224 @@ test("recovery resend rebuilds queue CAS values from the current thread", async 
       input: [{ type: "text", text: "edited" }],
     },
   });
+});
+
+test("the first submission commits while startup discovery is stalled", async ({ onTestFailed }) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "outbox" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  // Neither the storage watchdog nor lifecycle retries may rescue this send.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const release = () => {
+    hold?.release();
+    vi.useRealTimers();
+  };
+  onTestFailed(release);
+  const fake = connectMutationClient();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  try {
+    await readHeld;
+    await threadsStore.getState().send("ref_a", "saved before startup discovery finishes");
+    expect(await storage.listOutbox("ref_a")).toMatchObject([
+      {
+        state: "submitting",
+        method: "turn/start",
+        payload: { input: [{ type: "text", text: "saved before startup discovery finishes" }] },
+      },
+    ]);
+  } finally {
+    release();
+  }
+});
+
+test("reset retires an outbox discovery before the next runtime starts", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  let finishOldDiscovery!: (targetRefs: string[]) => void;
+  const oldDiscovery = new Promise<string[]>((resolve) => {
+    finishOldDiscovery = resolve;
+  });
+  let announceDiscovery: (() => void) | undefined;
+  const discoveryStarted = new Promise<void>((resolve) => {
+    announceDiscovery = resolve;
+  });
+  vi.spyOn(oldStorage, "listTargetRefs").mockImplementationOnce(() => {
+    announceDiscovery?.();
+    return oldDiscovery;
+  });
+  setMutationStorageForTests(oldStorage);
+
+  const oldRead = readMutationPersistence();
+  await discoveryStarted;
+  await oldRead;
+  expect(oldStorage.listTargetRefs).toHaveBeenCalledTimes(1);
+  resetThreadsStoreForTests();
+
+  const newStorage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(newStorage);
+  let newMutationDispatched!: () => void;
+  const dispatched = new Promise<void>((resolve) => {
+    newMutationDispatched = resolve;
+  });
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("stale_ref"));
+  fake.on("turn/start", (params) => {
+    newMutationDispatched();
+    return {
+      turn: { id: "turn_new", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().send("new_ref", "new runtime");
+  await dispatched;
+
+  finishOldDiscovery(["stale_ref"]);
+  await newStorage.listOutbox();
+
+  expect(fake.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).not.toContainEqual(
+    expect.objectContaining({ ref: "stale_ref" }),
+  );
+});
+
+test("reset retires an in-flight dispatcher's persistence callback", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  let finishOldSettlement!: (settled: boolean) => void;
+  const oldSettlement = new Promise<boolean>((resolve) => {
+    finishOldSettlement = resolve;
+  });
+  let oldSettlementStarted!: () => void;
+  const settlementStarted = new Promise<void>((resolve) => {
+    oldSettlementStarted = resolve;
+  });
+  vi.spyOn(oldStorage, "settleReceipt").mockImplementation(() => {
+    oldSettlementStarted();
+    return oldSettlement;
+  });
+  setMutationStorageForTests(oldStorage);
+
+  const oldClient = connectMutationClient();
+  oldClient.on("turn/start", (params) => ({
+    turn: { id: "turn_old", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(params.clientMutationId),
+  }));
+  await threadsStore.getState().send("old_ref", "old runtime");
+  await settlementStarted;
+
+  resetThreadsStoreForTests();
+  const persisted: string[][] = [];
+  const unsubscribe = subscribeMutationPersistence((targetRefs) => persisted.push(targetRefs));
+  finishOldSettlement(true);
+  await settleCallerContinuations();
+  unsubscribe();
+
+  expect(persisted).toEqual([]);
+});
+
+test("reset retires an in-flight pin refresh before it can repin the next runtime", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  const realListOutbox = oldStorage.listOutbox.bind(oldStorage);
+  let holdRefresh = false;
+  let finishOldRefresh!: (records: Awaited<ReturnType<MutationOutboxIndexedDB["listOutbox"]>>) => void;
+  const oldRefresh = new Promise<Awaited<ReturnType<MutationOutboxIndexedDB["listOutbox"]>>>((resolve) => {
+    finishOldRefresh = resolve;
+  });
+  let oldRefreshStarted!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    oldRefreshStarted = resolve;
+  });
+  const listOutbox = vi.spyOn(oldStorage, "listOutbox").mockImplementation((targetRef) => {
+    if (!holdRefresh) return realListOutbox(targetRef);
+    oldRefreshStarted();
+    return oldRefresh;
+  });
+  setMutationStorageForTests(oldStorage);
+  await readMutationPersistence();
+  const listOptimistic = vi.spyOn(oldStorage, "listOptimistic").mockResolvedValue([]);
+  const oldClient = connectFakeClient("connecting");
+  holdRefresh = true;
+  oldClient.emitNotification({
+    method: "history/updated",
+    params: {
+      threadId: "thr_stale_ref",
+      ref: "stale_ref",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      items: [
+        {
+          ...{
+            type: "commandExecution",
+            id: "item_1",
+            turnId: "turn_1",
+            clientMutationId: "old-mutation",
+            output: "done",
+            status: "completed",
+          },
+          turnId: "turn_1",
+        },
+      ],
+    },
+  });
+  await refreshStarted;
+  expect(listOutbox).toHaveBeenCalledWith("stale_ref");
+  expect(listOptimistic).toHaveBeenCalledWith("stale_ref");
+
+  resetThreadsStoreForTests();
+  threadsStore.setState({
+    threads: new Map([["stale_ref", hydrateThread(readResponse("stale_ref"), "stale_ref", 1000)]]),
+  });
+  finishOldRefresh([]);
+  await settleCallerContinuations();
+
+  expect(threadsStore.getState().threads.has("stale_ref")).toBe(true);
+});
+
+test("reset retires a ready scan before it can pin refs in the next runtime", async () => {
+  const oldStorage = new MutationOutboxIndexedDB();
+  let finishOldReadyScan!: (targetRefs: string[]) => void;
+  const oldReadyScan = new Promise<string[]>((resolve) => {
+    finishOldReadyScan = resolve;
+  });
+  let oldReadyScanStarted!: () => void;
+  const readyScanStarted = new Promise<void>((resolve) => {
+    oldReadyScanStarted = resolve;
+  });
+  let scans = 0;
+  vi.spyOn(oldStorage, "listTargetRefs").mockImplementation(() => {
+    scans += 1;
+    if (scans === 1) return Promise.resolve([]);
+    oldReadyScanStarted();
+    return oldReadyScan;
+  });
+  setMutationStorageForTests(oldStorage);
+
+  const oldClient = connectFakeClient("connecting");
+  oldClient.emitReady();
+  await readyScanStarted;
+
+  resetThreadsStoreForTests();
+  const newStorage = new MutationOutboxIndexedDB();
+  vi.spyOn(newStorage, "listTargetRefs").mockResolvedValue([]);
+  setMutationStorageForTests(newStorage);
+  finishOldReadyScan(["stale_ref"]);
+  await settleCallerContinuations();
+
+  const newClient = new FakeClient("ready");
+  newClient.on("thread/read", () => readResponse("stale_ref"));
+  connectionStore.getState().connect(newClient);
+
+  expect(newClient.calls.filter((call) => call.method === "thread/read")).toEqual([]);
 });
