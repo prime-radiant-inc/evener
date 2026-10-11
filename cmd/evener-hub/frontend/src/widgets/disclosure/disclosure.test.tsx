@@ -93,6 +93,38 @@ test("ignoreBaseline keeps a disclosure on its default through expand-all while 
   expect(screen.getByText("Body")).toBeTruthy();
 });
 
+test("variant defaults to the filled row and quiet is reported on the disclosure", () => {
+  render(
+    <>
+      <Disclosure id="v-default" summary="Default" data-testid="default">
+        Body
+      </Disclosure>
+      <Disclosure id="v-quiet" summary="Quiet" data-testid="quiet" variant="quiet">
+        Body
+      </Disclosure>
+    </>,
+  );
+  expect(screen.getByTestId("default").dataset.variant).toBe("default");
+  expect(screen.getByTestId("quiet").dataset.variant).toBe("quiet");
+  fireEvent.click(screen.getByText("Quiet"));
+  expect((screen.getByTestId("quiet") as HTMLDetailsElement).open).toBe(true);
+});
+
+// Declaration-level (jsdom runs no cascade): the quiet variant drops the hover
+// fill and the open-state wash, and keeps the summary flush with the content
+// column, while the default variant keeps both washes.
+test("the quiet variant declares no hover fill, no open wash, and no inline inset", () => {
+  const css = motionCss();
+  const rule = (selector: string) =>
+    css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+  expect(rule('.details[data-variant="quiet"] > .summary')).toMatch(/padding-inline:\s*0/);
+  expect(rule('.details[data-variant="quiet"] > .summary:hover:not([aria-disabled="true"])')).toMatch(
+    /background:\s*none/,
+  );
+  expect(rule('.details[data-variant="quiet"][open] > .summary')).toMatch(/background:\s*none/);
+  expect(rule(".details[open] > .summary")).toMatch(/background:\s*var\(--hover-2\)/);
+});
+
 test("controlled harness owns the open state", () => {
   render(<ControlledHarness />);
   expect(screen.queryByText("Advanced body")).toBeNull();

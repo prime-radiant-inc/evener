@@ -14,6 +14,10 @@ const CLASS = {
 interface DisclosureCommonProps {
   summary: ReactNode;
   children: ReactNode;
+  /** "quiet" drops the hover fill, the open-state wash, and the summary's
+   * inline inset: chevron and summary text in the content column, the body
+   * below. For rows inside a reading surface such as the transcript. */
+  variant?: "default" | "quiet";
   disabled?: boolean;
   "data-testid"?: string;
 }
@@ -51,13 +55,14 @@ interface DisclosureViewProps extends DisclosureCommonProps {
 function DisclosureView({
   summary,
   children,
+  variant = "default",
   disabled = false,
   open,
   requestToggle,
   "data-testid": testId,
 }: DisclosureViewProps) {
   return (
-    <details className={CLASS.details} open={open} data-testid={testId}>
+    <details className={CLASS.details} open={open} data-testid={testId} data-variant={variant}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; see ToolCallItem.tsx */}
       <summary
         className={CLASS.summary}

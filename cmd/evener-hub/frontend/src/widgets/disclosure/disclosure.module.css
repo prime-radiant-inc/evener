@@ -43,6 +43,22 @@
   background: var(--hover-2);
 }
 
+/* The quiet variant: no hover fill, no open-state wash, and no inline inset,
+ * so the chevron and summary text sit in the content column of a reading
+ * surface (the transcript) with the body below. The focus ring is the
+ * global one and stays. Declared after the default washes so it wins. */
+.details[data-variant="quiet"] > .summary {
+  padding-inline: 0;
+}
+
+.details[data-variant="quiet"] > .summary:hover:not([aria-disabled="true"]) {
+  background: none;
+}
+
+.details[data-variant="quiet"][open] > .summary {
+  background: none;
+}
+
 /* Turns the shared widgets/chevron icon rather than a text triangle. The
  * icon's box is square, so the rotation below cannot widen its painted box -
  * a `▸` glyph's 6x18 line box, turned 90°, painted 18px wide and escaped
