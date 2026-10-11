@@ -742,11 +742,8 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 // there. Rounds a mid-input compaction dropped can still differ from live.
 func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int, attemptStarts map[string]int) bool {
 	turnID := history[toolResultsIdx].TurnID
-	from := 0
-	if start, reopened := attemptStarts[turnID]; reopened && turnID != "" {
-		from = start
-	}
-	for j := toolResultsIdx; j >= from; j-- {
+	// A turn recovery never reopened has no start, so the walk may reach 0.
+	for j := toolResultsIdx; j >= attemptStarts[turnID]; j-- {
 		turn := history[j]
 		if j != toolResultsIdx && (turnID == "" || turn.TurnID != turnID) {
 			break

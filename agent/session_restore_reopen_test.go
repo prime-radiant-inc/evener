@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,10 +93,9 @@ func TestRestoreReadsTheEndReasonOfTheLatestAttemptOnly(t *testing.T) {
 	if got := rerun.State(); got != SessionIdle {
 		t.Fatalf("live state after the failed rerun = %q, want idle", got)
 	}
-	reopened := false
-	for _, turn := range transcriptTurnsOf(t, rerun) {
-		reopened = reopened || (turn.Kind == schema.TurnReopen && turn.TurnID == started.Turn.ID)
-	}
+	reopened := slices.ContainsFunc(transcriptTurnsOf(t, rerun), func(turn schema.Turn) bool {
+		return turn.Kind == schema.TurnReopen && turn.TurnID == started.Turn.ID
+	})
 	if !reopened {
 		t.Fatal("the rerun recorded no reopen marker for the crashed turn")
 	}
