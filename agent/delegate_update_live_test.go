@@ -96,7 +96,7 @@ wait:
 	settleCtx, stopSettling := context.WithTimeout(context.Background(), time.Minute)
 	defer stopSettling()
 	delegates := delegateRuns(settleCtx, t, root)
-	unsettled := 0
+	unsettled, runErrUnknown := 0, 0
 	// A provider or runtime failure in a delegate is not model behavior, so it
 	// stops the run instead of being tallied as an unanswered question. That
 	// covers a failed turn in its transcript and the run error the session
@@ -107,6 +107,9 @@ wait:
 	for _, d := range delegates {
 		if d.unsettled {
 			unsettled++
+		}
+		if d.runErrUnknown {
+			runErrUnknown++
 		}
 		if d.runErr != nil && !isModelResponseFailure(d.runErr.Error()) {
 			t.Fatalf("a delegate's run failed, so this run says nothing about the model: %v", d.runErr)
@@ -120,7 +123,7 @@ wait:
 		r, leaked := childReceivedCodename(d.entries, codename)
 		received, briefLeaked = received || r, briefLeaked || leaked
 	}
-	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s delegates=%d unsettled=%d child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, len(delegates), unsettled, received, briefLeaked, reportWritten, modelFailures)
+	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s delegates=%d unsettled=%d run_error_unknown=%d child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, len(delegates), unsettled, runErrUnknown, received, briefLeaked, reportWritten, modelFailures)
 }
 
 // delegateRun is one delegate the root started: its transcript and the run
@@ -130,6 +133,9 @@ type delegateRun struct {
 	entries   []transcript.Entry
 	runErr    error
 	unsettled bool
+	// runErrUnknown marks a delegate the session already reclaimed, whose
+	// run error is no longer readable.
+	runErrUnknown bool
 }
 
 // delegateRuns reads every delegate the root started: each transcript in the
@@ -147,7 +153,10 @@ func delegateRuns(ctx context.Context, t *testing.T, root *Session) []delegateRu
 	runs := make([]delegateRun, 0, len(paths))
 	for _, path := range paths {
 		run := delegateRun{}
-		if sub := root.getSub(strings.TrimSuffix(filepath.Base(path), ".transcript.jsonl")); sub != nil {
+		sub := root.getSub(strings.TrimSuffix(filepath.Base(path), ".transcript.jsonl"))
+		if sub == nil {
+			run.runErrUnknown = true
+		} else {
 			sub.mu.Lock()
 			done := sub.done
 			sub.mu.Unlock()
@@ -230,11 +239,14 @@ func childReceivedCodename(entries []transcript.Entry, codename string) (receive
 			continue
 		}
 		carries := strings.Contains(e.Turn.Message.Text(), codename)
-		if !seenBrief && e.Turn.Kind == schema.TurnUserInput {
+		switch {
+		case !seenBrief && e.Turn.Kind == schema.TurnUserInput:
 			seenBrief, briefLeaked = true, carries
-			continue
+		case !seenBrief, e.Turn.Kind == schema.TurnEnvironment, e.Turn.Kind == schema.TurnNotesContext:
+			// Harness context, and anything before the brief, is not the parent.
+		default:
+			received = received || carries
 		}
-		received = received || carries
 	}
 	return received && !briefLeaked, briefLeaked
 }
@@ -246,12 +258,14 @@ func TestChildReceivedCodename(t *testing.T) {
 		e.Turn.Message = llm.User(text)
 		return e
 	}
-	environment := func(text string) transcript.Entry {
+	harness := func(kind schema.TurnKind, text string) transcript.Entry {
 		var e transcript.Entry
-		e.Turn.Kind = schema.TurnEnvironment
+		e.Turn.Kind = kind
 		e.Turn.Message = llm.User(text)
 		return e
 	}
+	environment := func(text string) transcript.Entry { return harness(schema.TurnEnvironment, text) }
+	notes := func(text string) transcript.Entry { return harness(schema.TurnNotesContext, text) }
 	assistant := func(text string) transcript.Entry {
 		var e transcript.Entry
 		e.Turn.Message = llm.Assistant(text)
@@ -269,6 +283,8 @@ func TestChildReceivedCodename(t *testing.T) {
 		{"parent never answered", []transcript.Entry{user("ask me"), assistant("waiting"), user("keep going")}, false, false},
 		{"codename in the brief", []transcript.Entry{user("the codename is HALCYON-42"), user("HALCYON-42 again")}, false, true},
 		{"codename in the brief after environment context", []transcript.Entry{environment("cwd: /work"), user("the codename is HALCYON-42")}, false, true},
+		{"notes context carries the codename after the brief", []transcript.Entry{user("ask me"), notes("note: HALCYON-42")}, false, false},
+		{"codename before the brief is not an answer", []transcript.Entry{environment("HALCYON-42"), user("ask me")}, false, false},
 		{"answer steered in after environment context", []transcript.Entry{environment("cwd: /work"), user("ask me"), user("It is HALCYON-42")}, true, false},
 	} {
 		received, leaked := childReceivedCodename(tc.entries, "HALCYON-42")
@@ -461,6 +477,9 @@ func TestDelegateRunsReadsEveryDelegate(t *testing.T) {
 	for i, run := range runs {
 		if run.unsettled {
 			t.Errorf("delegate %d did not settle", i)
+		}
+		if run.runErrUnknown {
+			t.Errorf("delegate %d was reclaimed before its run error was read", i)
 		}
 		if len(run.entries) == 0 {
 			t.Errorf("delegate %d has no transcript entries", i)
