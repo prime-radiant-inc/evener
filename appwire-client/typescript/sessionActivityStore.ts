@@ -747,6 +747,10 @@ export class SessionActivityStore {
       !this.retiredDelegateEpochs.has(context.epoch) &&
       delegates.announcedEpoch !== context.epoch
     ) {
+      // An announcement this one replaces is retired: a response that still
+      // names it is behind the ordering, and retiring keeps it from reclaiming
+      // the announcement and clearing the current epoch's records.
+      if (delegates.announcedEpoch !== undefined) this.retiredDelegateEpochs.add(delegates.announcedEpoch);
       // Announced before the retire: a frame that arrives while the forced read
       // is in flight is the replacement's own, and the retire's publish can
       // reach a listener that handles one before this method returns.

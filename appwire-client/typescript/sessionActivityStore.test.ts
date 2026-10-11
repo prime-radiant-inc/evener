@@ -3982,6 +3982,101 @@ test("an explicit summary read is no substitute for the delegates read", async (
   expect(store.getSnapshot().context?.availability).toBe("retained");
 });
 
+test("a superseded announcement cannot be reclaimed by a delayed response", async () => {
+  const client = pushClient();
+  const jobB = deferred<SessionJobsResponse>(),
+    jobC = deferred<SessionJobsResponse>(),
+    jobLate = deferred<SessionJobsResponse>();
+  const readReplacement = deferred<SessionDelegatesResponse>(),
+    readReconcile = deferred<SessionDelegatesResponse>(),
+    readLate = deferred<SessionDelegatesResponse>();
+  const jobAnswers = [jobB.promise, jobC.promise, jobLate.promise];
+  const readAnswers = [readReplacement.promise, readReconcile.promise, readLate.promise];
+  let job = 0;
+  let read = 0;
+  let armed = false;
+  client.on("evener/thread/jobs/list", ({ scope }) =>
+    armed
+      ? (jobAnswers[job++] ?? jobLate.promise)
+      : {
+          context: pushContext(),
+          scope: scope ?? "session",
+          page: { complete: true, issues: [] },
+          jobs: [jobFixture()],
+        },
+  );
+  client.on("evener/thread/delegates/list", ({ scope }) =>
+    armed
+      ? (readAnswers[read++] ?? readLate.promise)
+      : {
+          context: pushContext(),
+          scope: scope ?? "session",
+          page: { complete: true, issues: [] },
+          delegates: [delegateRow()],
+        },
+  );
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  store.observe("jobs");
+  await activityState(
+    store,
+    () =>
+      store.getSnapshot().summary !== null &&
+      store.getSnapshot().delegates.complete &&
+      store.getSnapshot().jobs.complete,
+  );
+  expect(store.getSnapshot().delegates.context?.epoch).toBe("epoch-1");
+  const replacement = (epoch: string): SessionDelegatesResponse => ({
+    context: pushContext({ epoch }),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 2, status: "completed" })],
+  });
+  const sibling = (epoch: string): SessionJobsResponse => ({
+    context: pushContext({ epoch }),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    jobs: [jobFixture()],
+  });
+  armed = true;
+  // Sibling responses announce B while the delegates still hold A, and then C,
+  // while the delegate read that follows each announcement stays in flight.
+  activityChanged(client, ["jobs"]);
+  await vi.advanceTimersByTimeAsync(0);
+  jobB.resolve(sibling("epoch-2"));
+  await vi.advanceTimersByTimeAsync(0);
+  activityChanged(client, ["jobs"]);
+  await vi.advanceTimersByTimeAsync(0);
+  jobC.resolve(sibling("epoch-3"));
+  await vi.advanceTimersByTimeAsync(0);
+  // The delegate read moves from A straight to C, so B is only ever announced.
+  readReplacement.resolve(replacement("epoch-3"));
+  await vi.advanceTimersByTimeAsync(0);
+  readReconcile.resolve(replacement("epoch-3"));
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.context?.epoch === "epoch-3" && !store.getSnapshot().delegates.loading,
+  );
+  const settledReads = callsTo(client, "evener/thread/delegates/list");
+  // The delayed B response arrives after C settled.
+  activityChanged(client, ["jobs"]);
+  await vi.advanceTimersByTimeAsync(0);
+  jobLate.resolve(sibling("epoch-2"));
+  await vi.advanceTimersByTimeAsync(0);
+  readLate.resolve(replacement("epoch-3"));
+  await vi.advanceTimersByTimeAsync(0);
+  // The ordering still belongs to C, so the served revision stands.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 1, status: "failed", reportPreview: "stale" })));
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    projectionRevision: 2,
+    status: "completed",
+  });
+  expect(store.getSnapshot().delegates.rows[0]?.reportPreview).not.toBe("stale");
+  // And the delayed response forced no read: its epoch is behind the ordering.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(settledReads);
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
