@@ -132,6 +132,9 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 
 func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	target := strings.TrimSpace(stringArg(args, "to"))
+	if target == runtimeMessageAliasCaller {
+		return nil, errors.New("invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with end_turn=false")
+	}
 	message := strings.TrimSpace(stringArg(args, "message"))
 	wait := 0
 	if n, ok := shellIntArg(args, "max_wait_ms"); ok {
@@ -143,9 +146,6 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 	requestedWait := wait
 	if wait > 0 {
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
-	}
-	if target == runtimeMessageAliasCaller {
-		return nil, errors.New("invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with end_turn=false")
 	}
 	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
 	outcome.result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, outcome.result.Status, outcome.result.Action)

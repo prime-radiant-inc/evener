@@ -424,10 +424,6 @@ func (c *delegateTreeController) BeginTool(lease delegateLease) error {
 }
 
 func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
-	return s.appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, "user", "")
-}
-
-func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, source, kind string) (delegateTranscriptEntry, error) {
 	s.mu.Lock()
 	ready := s.transcriptReady && s.transcript != nil
 	s.mu.Unlock()
@@ -436,8 +432,7 @@ func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnI
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(message))
 	turn.Timestamp = s.sclock().Now().UTC()
-	turn.SteeringSource = source
-	turn.SteeringKind = kind
+	turn.SteeringSource = "user"
 	turn.StableTurnID = stableTurnID
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
