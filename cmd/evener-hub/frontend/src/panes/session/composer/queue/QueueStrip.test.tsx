@@ -100,7 +100,7 @@ function queuedCount(): string | undefined {
 }
 
 function queryRow(kind: string): HTMLElement | null {
-  return document.querySelector(`li[data-row-kind="${kind}"]`);
+  return document.querySelector(`li[data-kind="${kind}"]`);
 }
 
 async function findRow(kind: string): Promise<HTMLElement> {
@@ -790,7 +790,7 @@ describe("durable recovery rows", () => {
     renderStrip(defaultProps({ activeRecoveryId: first.clientMutationId }));
 
     const rows = await screen.findAllByRole("listitem");
-    expect(rows.map((row) => row.dataset.rowKind)).toEqual(["refused", "orphaned"]);
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["refused", "orphaned"]);
     expect(within(rows[0]!).getByText("later")).toBeTruthy();
     expect(within(rows[1]!).getByText("copy me")).toBeTruthy();
     expect(within(rows[1]!).getByRole("button", { name: "Copy" })).toBeTruthy();

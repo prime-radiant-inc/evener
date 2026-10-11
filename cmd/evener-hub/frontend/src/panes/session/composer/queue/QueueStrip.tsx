@@ -545,7 +545,7 @@ export function QueueStrip({
             // reports one; index is only a last-resort fallback for a
             // degraded/old daemon that reports no ids array at all, where no
             // better identity exists.
-            <li key={entryId ?? index} className={CLASS.row} data-row-kind="queued">
+            <li key={entryId ?? index} className={CLASS.row} data-kind="queued">
               <span className={CLASS.rowText}>{displayText}</span>
               <div className={CLASS.rowActions}>
                 <ActionButton
@@ -602,7 +602,7 @@ export function QueueStrip({
           );
         })}
         {pendingQueueEntries.map((entry) => (
-          <li key={entry.id} className={`${CLASS.row} ${CLASS.rowPending}`} data-row-kind="pending">
+          <li key={entry.id} className={`${CLASS.row} ${CLASS.rowPending}`} data-kind="pending">
             <span className={CLASS.rowText}>{pendingPreview(entry)}</span>
           </li>
         ))}
@@ -617,7 +617,7 @@ export function QueueStrip({
             // cancellation the user's own click wrote. The Retry affordance,
             // its gating, and the error slot are identical.
             return (
-              <li key={record.clientMutationId} className={CLASS.row} data-row-kind={kind}>
+              <li key={record.clientMutationId} className={CLASS.row} data-kind={kind}>
                 <span className={CLASS.rowText}>
                   <span>{kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain"}</span>
                   {" — "}
@@ -659,7 +659,7 @@ export function QueueStrip({
           }
           if (record.recoveryKind === "orphaned") {
             return (
-              <li key={record.clientMutationId} className={CLASS.row} data-row-kind="orphaned">
+              <li key={record.clientMutationId} className={CLASS.row} data-kind="orphaned">
                 <span className={CLASS.rowText}>
                   <span>Destination deleted</span>
                   {" — "}
@@ -687,7 +687,7 @@ export function QueueStrip({
             <li
               key={record.clientMutationId}
               className={CLASS.row}
-              data-row-kind={isInterrupt ? "refused-stop" : "refused"}
+              data-kind={isInterrupt ? "refused-stop" : "refused"}
             >
               <span className={CLASS.rowText}>
                 {isInterrupt ? "Stop didn't reach the session" : recordPreview(record)}
