@@ -553,6 +553,7 @@ export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export {
+  isParentSteer,
   isSuppressedSteeringKind,
   type LabelledSteeringKind,
   STEERING_KIND_LABELS,

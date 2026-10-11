@@ -369,3 +369,44 @@ func TestTUIDelegateUpdateNotificationStaysVisible(t *testing.T) {
 	}
 	t.Fatalf("messages = %+v, want the recorded update visible", m.session.messages)
 }
+
+// systemEventWireItem returns one recorded case from the system-event corpus,
+// which agent.TestSystemEventWireFixtures produces from the real producers.
+func systemEventWireItem(t *testing.T, name string) appwire.ThreadItem {
+	t.Helper()
+	raw, err := os.ReadFile("../../agent/testdata/systemeventwire/events.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Items []struct {
+			Case string             `json:"case"`
+			Item appwire.ThreadItem `json:"item"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fixture.Items {
+		if c.Case == name {
+			return c.Item
+		}
+	}
+	t.Fatalf("no %s case in the system-event corpus", name)
+	return appwire.ThreadItem{}
+}
+
+// A parent's recorded steer into its delegate stays a visible steering row.
+func TestTUIParentSteerStaysVisible(t *testing.T) {
+	m := newTUIStableDelegateModel()
+	sendTUINotification(t, &m, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		Ref:   "local:root",
+		Items: []appwire.ThreadItem{systemEventWireItem(t, "steer-from-parent")},
+	})
+	for _, msg := range m.session.messages {
+		if msg.Kind == transcript.MsgSteering && strings.Contains(msgrender.RenderMessage(msg, 240, false), "Use the drain_log table") {
+			return
+		}
+	}
+	t.Fatalf("messages = %+v, want the parent's steer visible", m.session.messages)
+}

@@ -514,6 +514,10 @@ Semantics:
 
 - If `to` identifies a running or currently-driven delegate, Evener injects the
   message into that exact generation. The return `action` is `steered`.
+  The injected steering turn has source `parent`, and the delegate's model reads
+  it after the line `Message from your parent agent:`; clients label it "From
+  parent". A message that starts an idle delegate opens its next generation as
+  user input, as the original brief does.
 - If `to` identifies an idle/resumable delegate, Evener starts its next private
   generation in the same child conversation. The return `action` is `started`.
 - If `to` is a `job_id`, `transcript_ref`, unknown/unauthorized delegate,
