@@ -56,6 +56,11 @@ export function cascadeOrigin(inspector: OpenPaneRecord): OpenPaneRecord | null 
   return boundOrigin(conversationPaneLifetime(inspector));
 }
 
+export function cascadeOriginRef(inspector: OpenPaneRecord): string | null {
+  const origin = cascadeOrigin(inspector);
+  return origin === null ? null : refParam(origin.params);
+}
+
 export function associatedCascade(origin: OpenPaneRecord): OpenPaneRecord | null {
   if (!workspaceStore.getState().panes.includes(origin)) return null;
   return (

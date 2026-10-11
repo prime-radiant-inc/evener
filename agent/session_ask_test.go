@@ -836,7 +836,10 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 			func(req llm.Request) llm.Response { return finalResponse("thanks, going with Postgres") },
-			func(req llm.Request) llm.Response { return finalResponse("delegate completion ack") },
+			func(req llm.Request) llm.Response {
+				t.Error("the reply turn already showed the model the attention; no notification turn should run (#4247)")
+				return finalResponse("delegate completion ack")
+			},
 		},
 	}
 	sess := newSession(t,
@@ -884,11 +887,14 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
 	requests := f.Requests()
-	if got := len(requests); got != 3 {
-		t.Fatalf("requests after reply = %d, want 3 (reply turn + root attention turn)", got)
+	// #4247: the attention was armed before the reply turn and the reply
+	// turn's request presented it, so that turn consumes it and no separate
+	// notification turn runs.
+	if got := len(requests); got != 2 {
+		t.Fatalf("requests after reply = %d, want 2 (the reply turn presents the attention)", got)
 	}
-	if !requestContainsText(requests[2], firstContent) {
-		t.Error("root attention turn did not deliver the delegate notification to the model")
+	if !requestContainsText(requests[1], firstContent) {
+		t.Error("reply turn did not deliver the delegate notification to the model")
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, sess.ID()), sess.ID())
 	if err != nil {
