@@ -171,6 +171,7 @@ describe("trust states", () => {
     await screen.findByText(/Trusted/);
     expect(screen.getByText("abc123")).toBeTruthy();
     expect(screen.getByText("model = 'x'")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /trust this file/i })).toBeNull();
   });
 
