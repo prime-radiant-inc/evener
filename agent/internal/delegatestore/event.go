@@ -17,6 +17,7 @@ const (
 	EventDelegateDeliveryAcknowledged EventKind = "delegate_delivery_acknowledged"
 	EventDelegateAttentionChanged     EventKind = "delegate_attention_changed"
 	EventDelegateUpdatePosted         EventKind = "delegate_update_posted"
+	EventDelegateIntentStated         EventKind = "delegate_intent_stated"
 )
 
 type Event struct {
@@ -35,6 +36,7 @@ type Event struct {
 	DeliveryAcknowledged *DeliveryAcknowledged     `json:"delivery_acknowledged,omitempty"`
 	AttentionChanged     *DelegateAttentionChanged `json:"attention_changed,omitempty"`
 	UpdatePosted         *UpdatePosted             `json:"update_posted,omitempty"`
+	IntentStated         *IntentStated             `json:"intent_stated,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -102,6 +104,14 @@ type DelegateAttentionChanged struct {
 type UpdatePosted struct {
 	Generation uint64 `json:"generation"`
 	Message    string `json:"message"`
+}
+
+// IntentStated is a running generation's newest tool-call intent, journaled
+// so retained rows show the last intent of a run a restart interrupted. An
+// empty Intent folds as the turn-start clear.
+type IntentStated struct {
+	Generation uint64 `json:"generation"`
+	Intent     string `json:"intent"`
 }
 
 type versionRecord struct {

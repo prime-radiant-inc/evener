@@ -22,6 +22,7 @@ var envelopeKinds = []struct {
 	{EventDelegateDeliveryAcknowledged, func(e *Event) { e.DeliveryAcknowledged = &DeliveryAcknowledged{} }},
 	{EventDelegateAttentionChanged, func(e *Event) { e.AttentionChanged = &DelegateAttentionChanged{} }},
 	{EventDelegateUpdatePosted, func(e *Event) { e.UpdatePosted = &UpdatePosted{} }},
+	{EventDelegateIntentStated, func(e *Event) { e.IntentStated = &IntentStated{} }},
 }
 
 // FuzzDelegateEventEnvelope drives the envelope rule over the cross product of
@@ -38,15 +39,16 @@ var envelopeKinds = []struct {
 // switch in validateEventEnvelope is maintained by hand — a kind added to the
 // enum but forgotten there is exactly what this finds.
 func FuzzDelegateEventEnvelope(f *testing.F) {
-	f.Add(0, uint16(1), "dlg_1")    // created, matching payload
-	f.Add(0, uint16(0), "dlg_1")    // created, no payload
-	f.Add(0, uint16(3), "dlg_1")    // created, two payloads
-	f.Add(1, uint16(1), "dlg_1")    // run started, created's payload
-	f.Add(0, uint16(1), "")         // matching payload, no delegate id
-	f.Add(99, uint16(1), "dlg_1")   // unknown kind
-	f.Add(3, uint16(1023), "dlg_1") // every payload at once
-	f.Add(8, uint16(256), "dlg_1")  // attention changed, matching payload
-	f.Add(9, uint16(512), "dlg_1")  // update posted, matching payload
+	f.Add(0, uint16(1), "dlg_1")     // created, matching payload
+	f.Add(0, uint16(0), "dlg_1")     // created, no payload
+	f.Add(0, uint16(3), "dlg_1")     // created, two payloads
+	f.Add(1, uint16(1), "dlg_1")     // run started, created's payload
+	f.Add(0, uint16(1), "")          // matching payload, no delegate id
+	f.Add(99, uint16(1), "dlg_1")    // unknown kind
+	f.Add(3, uint16(1023), "dlg_1")  // every payload at once
+	f.Add(8, uint16(256), "dlg_1")   // attention changed, matching payload
+	f.Add(9, uint16(512), "dlg_1")   // update posted, matching payload
+	f.Add(10, uint16(1024), "dlg_1") // intent stated, matching payload
 
 	f.Fuzz(func(t *testing.T, kindIndex int, payloadMask uint16, delegateID string) {
 		if len(delegateID) > 256 {
