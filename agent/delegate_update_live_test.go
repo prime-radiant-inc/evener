@@ -91,7 +91,12 @@ wait:
 
 	sawUpdate := slices.ContainsFunc(rootAttentionFold(t, root).order, func(id string) bool { return strings.Contains(id, "/update/") })
 	answer := classifyParentAnswer(toolCallsAfterQuestion(rootEntries(t, root)), codename)
-	delegates := delegateRuns(t, root)
+	// TRIPWIRE: a delegate that already reported settles within moments; the
+	// bound only keeps a wedged one from hanging the run.
+	settleCtx, stopSettling := context.WithTimeout(context.Background(), time.Minute)
+	defer stopSettling()
+	delegates := delegateRuns(settleCtx, t, root)
+	unsettled := 0
 	// A provider or runtime failure in a delegate is not model behavior, so it
 	// stops the run instead of being tallied as an unanswered question. That
 	// covers a failed turn in its transcript and the run error the session
@@ -100,6 +105,9 @@ wait:
 	// line.
 	received, briefLeaked := false, false
 	for _, d := range delegates {
+		if d.unsettled {
+			unsettled++
+		}
 		if d.runErr != nil && !isModelResponseFailure(d.runErr.Error()) {
 			t.Fatalf("a delegate's run failed, so this run says nothing about the model: %v", d.runErr)
 		}
@@ -112,20 +120,24 @@ wait:
 		r, leaked := childReceivedCodename(d.entries, codename)
 		received, briefLeaked = received || r, briefLeaked || leaked
 	}
-	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s delegates=%d child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, len(delegates), received, briefLeaked, reportWritten, modelFailures)
+	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s delegates=%d unsettled=%d child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, len(delegates), unsettled, received, briefLeaked, reportWritten, modelFailures)
 }
 
 // delegateRun is one delegate the root started: its transcript and the run
-// error its session settled with.
+// error its session settled with. unsettled marks a run still going when the
+// settle wait ran out, whose error is not yet known.
 type delegateRun struct {
-	entries []transcript.Entry
-	runErr  error
+	entries   []transcript.Entry
+	runErr    error
+	unsettled bool
 }
 
 // delegateRuns reads every delegate the root started: each transcript in the
 // root's state directory other than the root's own. The model may start more
-// than one, so the count is part of the result rather than an assumption.
-func delegateRuns(t *testing.T, root *Session) []delegateRun {
+// than one, so the count is part of the result rather than an assumption. A
+// delegate still running is given until ctx ends to settle, because its run
+// error is assigned as it finishes.
+func delegateRuns(ctx context.Context, t *testing.T, root *Session) []delegateRun {
 	t.Helper()
 	paths, err := filepath.Glob(transcriptPath(root.stateDir, "*"))
 	if err != nil {
@@ -134,12 +146,21 @@ func delegateRuns(t *testing.T, root *Session) []delegateRun {
 	paths = slices.DeleteFunc(paths, func(path string) bool { return path == root.TranscriptPath() })
 	runs := make([]delegateRun, 0, len(paths))
 	for _, path := range paths {
-		run := delegateRun{entries: readEntries(t, path)}
+		run := delegateRun{}
 		if sub := root.getSub(strings.TrimSuffix(filepath.Base(path), ".transcript.jsonl")); sub != nil {
+			sub.mu.Lock()
+			done := sub.done
+			sub.mu.Unlock()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				run.unsettled = true
+			}
 			sub.mu.Lock()
 			run.runErr = sub.err
 			sub.mu.Unlock()
 		}
+		run.entries = readEntries(t, path)
 		runs = append(runs, run)
 	}
 	return runs
@@ -420,11 +441,14 @@ func TestDelegateRunsReadsEveryDelegate(t *testing.T) {
 	}
 	adapter.waitForRequests(t, "FIRST-CHILD", 1)
 	adapter.waitForRequests(t, "SECOND-CHILD", 1)
-	runs := delegateRuns(t, root)
+	runs := delegateRuns(ctx, t, root)
 	if len(runs) != 2 {
 		t.Fatalf("delegateRuns found %d delegates, want 2", len(runs))
 	}
 	for i, run := range runs {
+		if run.unsettled {
+			t.Errorf("delegate %d did not settle", i)
+		}
 		if len(run.entries) == 0 {
 			t.Errorf("delegate %d has no transcript entries", i)
 		}
