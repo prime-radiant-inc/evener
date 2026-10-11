@@ -255,7 +255,7 @@ try {
       }
       await evalJS("window.nativeTrace=[]");
       const native = await evalJS("document.querySelector('[data-tool-name=read_file] [data-testid=tool-call-body]').innerText");
-      assert(native.includes('retained native source evidence'), `${label}: native evidence missing`);
+      assert(native.includes('const fixtureLine1 = "evidence 1"'), `${label}: native evidence missing`);
       assert(native.includes('long-path/'.repeat(90)), `${label}: complete long native source line missing`);
       const scrollStart = await evalJS("(() => {const e=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;const r=e.getBoundingClientRect();return {top:e.scrollTop,x:r.x+r.width/2,y:r.y+r.height/2};})()");
       assert(await evalJS(`document.elementFromPoint(${scrollStart.x},${scrollStart.y})?.closest('[data-testid=transcript-virtual-list]') !== null`), `${label}: native scroll target hit-test`);

@@ -885,6 +885,45 @@ test("a replaced nested origin never renders a non-leaf column on the phone", as
   expect(chromeStore.getState().paneTitle).toBe("child");
 });
 
+test("the phone cascade keeps one title, with status and Open conversation at the column bottom", async () => {
+  const { fake } = fixture();
+  installMobileViewport();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  // The mobile top bar owns the conversation name: the column's own h3 title
+  // is desktop-only, so the phone shows no duplicate title row.
+  expect(chromeStore.getState().paneTitle).toBe("child");
+  expect(document.querySelector('[data-testid="cascade-column"] h3')).toBeNull();
+  // The pane footer's status bar is desktop-only on the cascade: the
+  // column's own controls below the transcript carry the activity, so no
+  // second chips row piles under the transcript.
+  expect(screen.queryByTestId("statusbar")).toBeNull();
+  expect(screen.getByTestId("cascade-activity-controls")).toBeTruthy();
+  // The column's runtime state and Open-conversation action sit below the
+  // transcript content, in the column's own footer bar.
+  const footerBar = screen.getByTestId("cascade-column-footer");
+  expect(within(footerBar).getByRole("button", { name: "Open conversation" })).toBeTruthy();
+  expect(
+    screen.getByTestId("cascade-column-content").compareDocumentPosition(footerBar) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+});
+
+test("the desktop cascade column keeps its own title and the pane footer status bar", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  const childColumn = document.querySelector('[data-scope-ref="child"]') as HTMLElement;
+  expect(childColumn.querySelector("h3")?.textContent).toBe("child");
+  expect(screen.queryByTestId("cascade-column-footer")).toBeNull();
+  expect(screen.getByTestId("statusbar")).toBeTruthy();
+  const inColumn = within(childColumn);
+  const headerButton = inColumn.getByRole("button", { name: "Open conversation" });
+  expect(
+    inColumn.getByTestId("cascade-column-content").compareDocumentPosition(headerButton) &
+      Node.DOCUMENT_POSITION_PRECEDING,
+  ).toBeTruthy();
+});
+
 test("a new cursor epoch for the same root preserves child branch and retained readers", async () => {
   const { fake, setEpoch } = fixture();
   mount(fake);

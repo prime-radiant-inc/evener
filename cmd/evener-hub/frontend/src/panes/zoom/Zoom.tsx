@@ -245,16 +245,18 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       bodyScroll={false}
       actions={mobile ? undefined : returnAction}
       edgeFooter={
-        <StatusBar
-          sessionRef={params.ref}
-          paneId={paneId}
-          leading={
-            <ScopeCrumbs
-              path={renderedPath.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
-              onNavigate={(ref) => popAgentCascade(paneId, ref)}
-            />
-          }
-        />
+        mobile ? undefined : (
+          <StatusBar
+            sessionRef={params.ref}
+            paneId={paneId}
+            leading={
+              <ScopeCrumbs
+                path={renderedPath.map((scope) => ({ ref: scope.requestedRef, title: scope.title }))}
+                onNavigate={(ref) => popAgentCascade(paneId, ref)}
+              />
+            }
+          />
+        )
       }
     >
       {originRef !== null && (

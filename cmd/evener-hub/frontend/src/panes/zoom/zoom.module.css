@@ -68,6 +68,12 @@
   border-bottom: 1px solid var(--edge);
 }
 
+.columnFooterBar {
+  composes: header;
+  border-bottom: 0;
+  border-top: 1px solid var(--edge);
+}
+
 .title {
   overflow: hidden;
   margin: 0;
@@ -241,5 +247,13 @@
 
   .column .activityLabel {
     display: none;
+  }
+
+  /* The cascade pane renders flush, and on the phone its column's activity
+   * controls are the pane's last tappable row: they own the home-indicator
+   * clearance the composer dock owns elsewhere (the inset yields when the
+   * on-screen keyboard covers the home-indicator band). */
+  .column .activityControls {
+    padding-bottom: calc(var(--space-2) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
   }
 }

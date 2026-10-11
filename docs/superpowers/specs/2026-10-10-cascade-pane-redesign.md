@@ -119,6 +119,30 @@ Two follow-on medium findings from later combined reviews, resolved:
   leaf, the phone keeps only the Return path, matching the ruled
   origin-at-root shape at every depth. The desktop track is unchanged.
 
+## Phone chrome (post-merge, Jesse's live feedback 2026-10-11)
+
+Jesse's phone screenshot of the merged redesign showed a pile of chrome
+around the single column: the conversation name twice (the mobile top bar
+and the column's own title), an "Open conversation / Awaiting" header row
+above the transcript, and the pane footer's chips row stacking under the
+column's own controls. All three are phone-only fixes; the desktop track is
+unchanged:
+
+- The column's own `h3` title is desktop-only: the mobile top bar already
+  publishes the selected conversation's name, so the phone shows no second
+  title row.
+- The column's runtime state and its Open-conversation action render in the
+  column's bottom bar, above the column's activity controls, instead of a
+  header row above the transcript.
+- The pane footer's status bar (status, chips, scope crumbs) is
+  desktop-only for the cascade pane: the column's own controls below the
+  transcript carry the activity, so the phone no longer stacks two chip
+  rows plus crumbs at the pane bottom.
+- The phone column's activity controls own the home-indicator clearance the
+  composer dock owns elsewhere (the same space + safe-area-inset minus
+  keyboard-inset formula), since with the pane footer gone they are the
+  pane's last tappable row. Found by the #4336 review round.
+
 ## Proof
 
 - jsdom (`Zoom.test.tsx`, `intent.test.ts`): the origin-free shapes at depths

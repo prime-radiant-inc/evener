@@ -75,10 +75,31 @@ test.each(["memory_read", "memory_search"])(
     const body = screen.getByTestId("tool-call-body");
     expect(body.textContent).toContain("opaque-delivery-040-");
     expect(body.textContent).toContain(ref);
-    fireEvent.click(within(body).getByRole("button", { name: /Show \d+ earlier lines/ }));
+    // At the 100-line fold window this 24-line output renders unfolded: the
+    // earlier marker is visible with no fold control on the body at all.
+    expect(within(body).queryByRole("button", { name: /earlier lines/ })).toBeNull();
     expect(body.textContent).toContain("opaque-delivery-001-");
   },
 );
+
+test("a generic body over the fold window folds in the expanded row and reveals its head", () => {
+  // 101 lines at a 100-line window: exactly one earlier line, worded in the
+  // singular - the boundary the CodeBlock unit suite pins, proven here
+  // through a real tool row's expanded body, the journey the recorded memory
+  // fixture's test above no longer exercises once its output stops folding.
+  const lines = Array.from({ length: 101 }, (_, i) => (i === 0 ? "FIRST LINE MARKER" : `output line ${i}`));
+  const generic = item({ toolName: "some_unregistered_tool", output: lines.join("\n"), status: "completed" });
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+    "test:fold",
+    <ToolCallItem item={generic} turn={turn} live={false} />,
+  );
+  const body = screen.getByTestId("tool-call-body");
+  expect(within(body).queryByText("FIRST LINE MARKER")).toBeNull();
+  fireEvent.click(within(body).getByRole("button", { name: "Show 1 earlier line" }));
+  expect(within(body).getByText("FIRST LINE MARKER")).toBeTruthy();
+  expect(within(body).getByRole("button", { name: "Show fewer lines" })).toBeTruthy();
+});
 
 test.each(["running", "completed"])(
   "a historical %s receipt is not current lifecycle without an owner projection",
