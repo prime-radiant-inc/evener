@@ -425,6 +425,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
+  "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;

@@ -51,6 +51,8 @@ export { FormRow } from "./formrow";
 export type { IconButtonProps } from "./iconbutton";
 // --- primitives batch (W2T2) ---
 export { IconButton } from "./iconbutton";
+export type { InlineNoticeLive, InlineNoticeProps, InlineNoticeTone } from "./inlinenotice";
+export { InlineNotice } from "./inlinenotice";
 export type { InputProps } from "./input";
 export { Input } from "./input";
 export type { Insight, InsightCardProps } from "./insightcard";
