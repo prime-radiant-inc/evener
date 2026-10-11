@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -38,7 +39,7 @@ func TestRunAnswerIsTheRootsLatestReport(t *testing.T) {
 					t.Errorf("open gate: %v", err)
 				}
 			}, nil)
-			gateWait := ": GATE-WAIT; while [ ! -f " + gate + " ]; do sleep 0.02; done"
+			gateWait := ": GATE-WAIT; while [ ! -f " + shellquote.Literal(gate) + " ]; do sleep 0.02; done"
 			notified := false
 			step := func(req llm.Request) llm.Response {
 				text := requestFullText(req)
