@@ -41,6 +41,8 @@ export type { DropzoneProps } from "./dropzone";
 export { Dropzone } from "./dropzone";
 export type { EmptyStateProps } from "./emptystate";
 export { EmptyState } from "./emptystate";
+export type { EyebrowProps } from "./eyebrow";
+export { Eyebrow } from "./eyebrow";
 export { FailureGlyph } from "./failureglyph";
 export type { FocusScopeProps } from "./focusscope";
 // --- overlays batch (W2T3) ---
