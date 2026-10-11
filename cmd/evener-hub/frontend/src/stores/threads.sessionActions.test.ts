@@ -7845,3 +7845,397 @@ for (const status of ["active", "idle"]) {
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
   });
 }
+
+for (const state of ["blockedUnknown", "submitting"] as const) {
+  test(`incompatible refresh preserves ${state} until a compatible snapshot arrives`, async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "upgrade-pending" });
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    if (state === "blockedUnknown") await storage.markUnknown(record.clientMutationId, state);
+    storage.close();
+    const fake = connectFakeClient("connecting");
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().refreshThread("ref_a");
+    const inspector = new MutationOutboxIndexedDB();
+    expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
+    expect((await inspector.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    status = "notLoaded";
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
+    expect((await inspector.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    status = "idle";
+    await threadsStore.getState().refreshThread("ref_a");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    inspector.close();
+  });
+}
+
+test("compatible refresh wins over a delayed incompatible receipt write", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "delayed-upgrade" });
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  await storage.markAttempted(record.clientMutationId);
+  const writeStarted = deferred<void>();
+  const releaseWrite = deferred<void>();
+  const markUnknown = storage.markUnknown.bind(storage);
+  vi.spyOn(storage, "markUnknown").mockImplementation(async (id, state) => {
+    writeStarted.resolve();
+    await releaseWrite.promise;
+    return markUnknown(id, state);
+  });
+  const settled = deferred<void>();
+  const settleReceipt = storage.settleReceipt.bind(storage);
+  vi.spyOn(storage, "settleReceipt").mockImplementation(async (id, projectionState) => {
+    const result = await settleReceipt(id, projectionState);
+    if (id === record.clientMutationId) settled.resolve();
+    return result;
+  });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+  const receipt = deferred<{ receipt: ReturnType<typeof mutationReceipt> }>();
+  fake.on("turn/queue", () => receipt.promise);
+  fake.emitReady();
+  const firstRead = threadsStore.getState().ensureThread("ref_a");
+  await writeStarted.promise;
+  status = "idle";
+  const refresh = threadsStore.getState().refreshThread("ref_a");
+  await flushIndexedDBUntil(() => threadsStore.getState().threads.get("ref_a")?.status.type === "idle");
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+  releaseWrite.resolve();
+  await Promise.all([firstRead, refresh]);
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+  expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("submitting");
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  receipt.resolve({ receipt: mutationReceipt(record.clientMutationId) });
+  await settled.promise;
+});
+
+test.each([false, true])(
+  "stopped refresh retains an overlapping blocking obligation (reconnect=%s)",
+  async (reconnect) => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "overlapping-stop" });
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    const scanStarted = deferred<void>();
+    const releaseScan = deferred<void>();
+    const listOutbox = storage.listOutbox.bind(storage);
+    let held = false;
+    vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+      const records = await listOutbox(ref);
+      if (ref && !held && threadsStore.getState().threads.get(ref)?.status.type === "restartRequired") {
+        held = true;
+        scanStarted.resolve();
+        await releaseScan.promise;
+      }
+      return records;
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    const firstRead = threadsStore.getState().ensureThread("ref_a");
+    await scanStarted.promise;
+    status = "notLoaded";
+    if (reconnect) {
+      fake.emitStateChange("reconnecting");
+      fake.emitReady();
+    }
+    const refresh = threadsStore.getState().refreshThread("ref_a");
+    await flushIndexedDBUntil(() => threadsStore.getState().threads.get("ref_a")?.status.type === "notLoaded");
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("notLoaded");
+    releaseScan.resolve();
+    await Promise.all([firstRead, refresh]);
+    expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    status = "idle";
+    await threadsStore.getState().refreshThread("ref_a");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  },
+);
+
+for (const failure of ["listOutbox", "markUnknown"] as const) {
+  test.each([false, true])(
+    `restart blocking survives ${failure} failure and stopped refresh (overlap=%s)`,
+    async (overlap) => {
+      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "failed-restart-block" });
+      const record = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+        attachments: [],
+        optimisticDisplay: { text: "sentinel" },
+      });
+      await storage.markAttempted(record.clientMutationId);
+      const blockingStarted = deferred<void>();
+      const releaseFailure = deferred<void>();
+      let faultEnabled = true;
+      let held = false;
+      const failStorage = async () => {
+        if (!held) {
+          held = true;
+          blockingStarted.resolve();
+          await releaseFailure.promise;
+        }
+        throw new DOMException("IndexedDB transaction aborted", "AbortError");
+      };
+      if (failure === "listOutbox") {
+        const listOutbox = storage.listOutbox.bind(storage);
+        vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+          if (
+            faultEnabled &&
+            ref &&
+            (held || threadsStore.getState().threads.get(ref)?.status.type === "restartRequired")
+          )
+            await failStorage();
+          return listOutbox(ref);
+        });
+      } else {
+        const markUnknown = storage.markUnknown.bind(storage);
+        vi.spyOn(storage, "markUnknown").mockImplementation(async (id, state) => {
+          if (faultEnabled && state === "blockedUnknown") await failStorage();
+          return markUnknown(id, state);
+        });
+      }
+      setMutationStorageForTests(storage);
+      const fake = connectFakeClient("connecting");
+      let status = "restartRequired";
+      fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+      fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+      fake.emitReady();
+      const firstRead = threadsStore
+        .getState()
+        .ensureThread("ref_a")
+        .catch(() => undefined);
+      await blockingStarted.promise;
+      let stopped: Promise<unknown> | undefined;
+      if (overlap) {
+        status = "notLoaded";
+        stopped = threadsStore
+          .getState()
+          .refreshThread("ref_a")
+          .catch(() => undefined);
+        await flushIndexedDBUntil(() => threadsStore.getState().threads.get("ref_a")?.status.type === "notLoaded");
+      }
+      releaseFailure.resolve();
+      await firstRead;
+      status = "notLoaded";
+      await (stopped ??
+        threadsStore
+          .getState()
+          .refreshThread("ref_a")
+          .catch(() => undefined));
+      expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("submitting");
+      expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+      faultEnabled = false;
+      await threadsStore.getState().refreshThread("ref_a");
+      expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+      expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+      status = "idle";
+      await threadsStore.getState().refreshThread("ref_a");
+      await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+      expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    },
+  );
+}
+
+test("periodic discovery recovers failed compatible reconciliation after storage returns", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "recovery-after-storage" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    let faultEnabled = false;
+    let failures = 0;
+    const listOutbox = storage.listOutbox.bind(storage);
+    vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+      if (
+        faultEnabled &&
+        ref &&
+        (failures > 0 || threadsStore.getState().threads.get(ref)?.status.type === "restartRequired")
+      ) {
+        failures += 1;
+        throw new DOMException("IndexedDB transaction aborted", "AbortError");
+      }
+      return listOutbox(ref);
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    faultEnabled = true;
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(failures).toBeGreaterThan(0);
+    status = "idle";
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    expect(failures).toBeGreaterThan(1);
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    faultEnabled = false;
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("periodic discovery recovers reconciliation after the final durable record settles", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "last-record" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    let faultEnabled = false;
+    const listOutbox = storage.listOutbox.bind(storage);
+    vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+      const records = await listOutbox(ref);
+      if (faultEnabled && ref && records.length === 0)
+        throw new DOMException("IndexedDB transaction aborted", "AbortError");
+      return records;
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let compatible = false;
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: compatible ? "idle" : "restartRequired" },
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: compatible ? ["last-record"] : [] },
+        },
+      }),
+    );
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    compatible = true;
+    faultEnabled = true;
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(await storage.listTargetRefs()).toEqual([]);
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    faultEnabled = false;
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationFailures.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each(["active", "idle"])(
+  "recovered %s descendant without uncertain messages permits new sends",
+  async (status) => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "fresh-descendant-send" });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let snapshot = readResponse("ref_a", { status: { type: "restartRequired" } });
+    fake.on("thread/read", (params) => ({ ...snapshot, requestGeneration: params.requestGeneration }));
+    const delivered = deferred<void>();
+    fake.on("turn/queue", (params) => {
+      delivered.resolve();
+      return { receipt: mutationReceipt(params.clientMutationId) };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    snapshot = readResponse("ref_a", { status: { type: status } });
+    Object.assign(snapshot.thread.evener, { mutationStateAuthoritative: false, kind: "subagent" });
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().mutationAuthorityRefs.has("ref_a")).toBe(false);
+    await threadsStore.getState().queue("ref_a", "new message after restart");
+    await delivered.promise;
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  },
+);
+test.each(["active", "idle"])(
+  "recovered %s descendant with a never-attempted intent permits delivery",
+  async (status) => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "unsent-descendant-send" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "unsent" }] },
+      attachments: [],
+      optimisticDisplay: { text: "unsent" },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let snapshot = readResponse("ref_a", { status: { type: "restartRequired" } });
+    fake.on("thread/read", (params) => ({ ...snapshot, requestGeneration: params.requestGeneration }));
+    const delivered = deferred<void>();
+    fake.on("turn/queue", (params) => {
+      delivered.resolve();
+      return { receipt: mutationReceipt(params.clientMutationId) };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    snapshot = readResponse("ref_a", { status: { type: status } });
+    Object.assign(snapshot.thread.evener, { mutationStateAuthoritative: false, kind: "subagent" });
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().mutationAuthorityRefs.has("ref_a")).toBe(false);
+
+    await delivered.promise;
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  },
+);
