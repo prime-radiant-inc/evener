@@ -1460,3 +1460,161 @@ describe("useThreadsStore.send", () => {
     expect(fake.calls).toHaveLength(0); // never sent
   });
 });
+
+async function ensureActiveMutationTarget(fake: FakeClient, ref: string): Promise<void> {
+  fake.on("thread/read", (params) =>
+    readResponse(params.ref ?? ref, {
+      turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+      evener: {
+        ref: params.ref ?? ref,
+        capabilities: CAPABILITIES,
+        queue: { revision: 7 },
+        activeTurnId: "turn_1",
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+}
+
+async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
+  const probe = new MutationOutboxIndexedDB();
+  for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
+  probe.close();
+}
+
+describe("useThreadsStore.steer / queue / interrupt", () => {
+  async function ensureActiveTurn(fake: FakeClient, ref: string): Promise<void> {
+    fake.on("thread/read", (params) =>
+      readResponse((params as { ref: string }).ref, {
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+        evener: {
+          ref: (params as { ref: string }).ref,
+          capabilities: CAPABILITIES,
+          queue: { revision: 7 },
+          activeTurnId: "turn_1",
+        },
+      }),
+    );
+    await threadsStore.getState().ensureThread(ref);
+  }
+
+  test("steer sends turn/steer with the composer input and no turn id", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveTurn(fake, "ref_a");
+    fake.on("turn/steer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore.getState().steer("ref_a", "steer text");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/steer"));
+
+    const call = fake.calls.find((c) => c.method === "turn/steer");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+      input: [{ type: "text", text: "steer text" }],
+    });
+  });
+
+  test("steer includes a base64 image attachment when provided", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveTurn(fake, "ref_a");
+    fake.on("turn/steer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore
+      .getState()
+      .steer("ref_a", "steer text", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/steer"));
+
+    const call = fake.calls.find((c) => c.method === "turn/steer");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+      input: [
+        { type: "text", text: "steer text" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    });
+  });
+
+  // Stop never names a turn, even here, where this client is tracking one.
+  // Naming it could only ever make Stop fail -- the id goes stale when a turn
+  // rolls over between the click and the request -- and a refused Stop is the
+  // failure the button exists to prevent.
+  test("interrupt asks for whatever is running even when this client knows the turn id", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveTurn(fake, "ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore.getState().interrupt("ref_a");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+
+    const call = fake.calls.find((c) => c.method === "turn/interrupt");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+    });
+  });
+
+  // Same request from the opposite client state: the session is working, so
+  // Stop is on screen, but no turn id has reached this client -- a turn the
+  // session started for itself, a boundary between two turns of one drain, or a
+  // cold client. This is the window a turn-scoped Stop could not address at all,
+  // and the request it produces is identical to the one above.
+  test("interrupt with no turn id asks the daemon to stop whatever is running", async () => {
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref, { status: { type: "active" } }));
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId ?? "").toBe("");
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore.getState().interrupt("ref_a");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+
+    const call = fake.calls.find((c) => c.method === "turn/interrupt");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+    });
+  });
+
+  test("queue sends turn/queue with the composer input and no turn id", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore.getState().queue("ref_a", "queued text");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const call = fake.calls.find((c) => c.method === "turn/queue");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+      input: [{ type: "text", text: "queued text" }],
+    });
+  });
+
+  test("queue includes a base64 image attachment when provided", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore
+      .getState()
+      .queue("ref_a", "", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const call = fake.calls.find((c) => c.method === "turn/queue");
+    // queueText allows empty text when attachments are present (parity
+    // finding §B: "image-only queue entries are valid") - buildInput's
+    // text.trim() guard means an empty string contributes no text item.
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [{ type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }],
+    });
+  });
+});
