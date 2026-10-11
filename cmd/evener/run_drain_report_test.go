@@ -30,6 +30,15 @@ func TestRunAnswerIsTheRootsLatestReport(t *testing.T) {
 			tmp := t.TempDir()
 			childArtifact := filepath.Join(tmp, "child-artifact.txt")
 			const rootPrompt = "ROOT-REPORT-PROMPT"
+			// The delegate waits at a gate that opens when the drain starts,
+			// so the root has reported A before any completion can reach it.
+			gate := filepath.Join(tmp, "drain-started")
+			releaseOnDrainStart(t, func() {
+				if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
+					t.Errorf("open gate: %v", err)
+				}
+			}, nil)
+			gateWait := ": GATE-WAIT; while [ ! -f " + gate + " ]; do sleep 0.02; done"
 			notified := false
 			step := func(req llm.Request) llm.Response {
 				text := requestFullText(req)
@@ -43,6 +52,9 @@ func TestRunAnswerIsTheRootsLatestReport(t *testing.T) {
 					default:
 						return scriptedDelegateCall("del_1", "CHILD-TASK write the artifact")
 					}
+				}
+				if !strings.Contains(text, "GATE-WAIT") {
+					return scriptedToolCalls(scriptedForegroundShellCall("gate_1", gateWait))
 				}
 				if _, err := os.Stat(childArtifact); err != nil {
 					return scriptedToolCalls(scriptedWriteFileCall("cw_1", childArtifact, "artifact"))
