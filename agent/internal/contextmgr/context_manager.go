@@ -1119,6 +1119,10 @@ type checkpointData struct {
 // OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
 func (d *checkpointData) collectCompaction(text string, summary bool) {
 	if summary {
+		if !carriesPartnerMessages(text) {
+			d.earlierSummaries = append(d.earlierSummaries, text)
+			return
+		}
 		d.conversation = append(d.conversation, extractMarkdownConversation(text)...)
 		d.earlierSummaries = append(d.earlierSummaries, withoutMarkdownSection(text, checkpointConversationHeading))
 		return
@@ -1171,8 +1175,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 
 		case schema.TurnSteering:
 			// Steering the human partner sent during a turn is their message
-			// too; daemon nudges are not.
-			if text := t.Message.Text(); isPartnerSteering(t) && text != "" {
+			// too, and so is a parent agent's steer into its delegate, which
+			// carries its own attribution; daemon nudges are not.
+			if text := t.Message.Text(); (isPartnerSteering(t) || isParentSteering(t)) && text != "" {
 				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 			}
 
@@ -1793,18 +1798,13 @@ func checkSummaryReply(reply, instructions string) error {
 	// only "## Permissions and Holds\nNone." is no summary.
 	// A heading inside a fenced block is quoted text, not a section.
 	inSection := false
-	inFence, fenceMarker := false, ""
+	var fence fenceTracker
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
-		if marker := markdownFenceMarker(line); marker != "" {
-			if !inFence {
-				inFence, fenceMarker = true, marker
-			} else if line == fenceMarker {
-				inFence, fenceMarker = false, ""
-			}
+		if fence.step(line) {
 			continue
 		}
-		if section, rest, ok := summarySectionHeading(line); ok && !inFence {
+		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
 			inSection = !strings.EqualFold(section, permissionsSection)
 			if inSection && isSummaryContent(rest) {
 				return nil
@@ -1877,6 +1877,15 @@ Follow the caller instructions above when deciding what to preserve verbatim and
 // whose words a steer is.
 func isPartnerSteering(t schema.Turn) bool {
 	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceUser
+}
+
+// isParentSteering reports whether a steering turn is the delegate's parent
+// agent speaking into the running turn (delegate_send). Compaction keeps it
+// like the partner's own messages, since it is the instruction the delegate
+// works from, but it is not the human partner's: only isPartnerSteering
+// answers for them.
+func isParentSteering(t schema.Turn) bool {
+	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceParent
 }
 
 // noteElicitationPrompt asks the model, at compaction time, to enumerate the
@@ -2156,9 +2165,9 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if checkpointed != nil {
 		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
-	summaryText := "[CONTEXT SUMMARY]\n" + cm.metaFor(ctx).compactionPointer("summary") +
-		renderCompactionModelText("## Summary", resp.Text()) +
-		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + "[END SUMMARY]"
+	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") +
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) +
+		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

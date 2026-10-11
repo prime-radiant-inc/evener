@@ -33,13 +33,49 @@ func (r *StreamResult) Close() error { return r.stream.Close() }
 
 // TextStream returns a channel that yields only the text delta strings from the
 // stream. The channel is closed when the underlying event stream ends.
+//
+// The forwarding goroutine also exits when the stream is closed via Close, so a
+// consumer that abandons the channel (stops reading) does not leave the forwarder
+// parked on its downstream send once the 16-entry buffer fills. Consumers must
+// therefore drain the channel or call Close.
+//
+// Shutdown is prompt but not atomic with the send: the forwarder stops at the
+// first delta it processes after Close, so at most the single delta already in
+// flight when Close lands can still be delivered. Serializing the send with Close
+// would deadlock when the buffer is full and the consumer has abandoned it.
 func (r *StreamResult) TextStream() <-chan string {
 	ch := make(chan string, 16)
 	go func() {
 		defer close(ch)
-		for ev := range r.stream.Events() {
-			if ev.Type == StreamEventTextDelta {
-				ch <- ev.Delta
+		events := r.stream.Events()
+		for {
+			// Wait for the next event or for the stream to close: an idle
+			// forwarder must stop on Close even if Events() never closes.
+			var ev StreamEvent
+			select {
+			case <-r.stream.closing:
+				return
+			case e, ok := <-events:
+				if !ok {
+					return
+				}
+				ev = e
+			}
+			if ev.Type != StreamEventTextDelta {
+				continue
+			}
+			// If the stream was already closed before this delta was processed,
+			// stop now instead of forwarding it. (A Close racing with the send
+			// below may still let this one delta through.)
+			select {
+			case <-r.stream.closing:
+				return
+			default:
+			}
+			select {
+			case ch <- ev.Delta:
+			case <-r.stream.closing:
+				return
 			}
 		}
 	}()

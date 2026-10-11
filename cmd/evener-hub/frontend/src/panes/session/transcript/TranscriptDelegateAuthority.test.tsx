@@ -43,8 +43,13 @@ test.each([
     const current = response.delegates.find((row) => row.delegateId === "dlg_reported");
     if (!current) throw new Error("recorded resumed delegate missing");
     expect(current.runGeneration).toBe(2);
+    // The recorded row now carries a projectionRevision. Pin the diagnostics
+    // authority to the same revision so the revision tie-break is inert: the
+    // chosen snapshot must follow runGeneration (and, at equal proven
+    // generations, settlement).
+    expect(current.projectionRevision).toBeTypeOf("number");
+    const sharedRevision = current.projectionRevision;
     current.runGeneration = apiGeneration;
-    expect(current).not.toHaveProperty("projectionRevision");
     const recorded = subagentWireStep("call_delegate_1");
     const receipt = {
       ...recorded,
@@ -57,6 +62,7 @@ test.each([
     const model = seedCurrentDelegate(response.context.ref, current.delegateId, "running", undefined, {
       runGeneration: diagnosticGeneration ?? 1,
       transcriptRef: current.childRef,
+      projectionRevision: sharedRevision,
     });
     if (diagnosticGeneration === undefined) model.delegates = undefined;
     model.turns = [{ id: receipt.turnId, status: "completed", items: [receipt] }];

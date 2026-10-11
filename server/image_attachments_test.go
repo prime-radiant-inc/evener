@@ -23,24 +23,22 @@ import (
 // pngSig is a tiny PNG signature used as opaque image bytes.
 var pngSig = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 
-// TestServerAppWireTurnQueueImageItemReachesQueueFunc exercises Path 3:
+// TestServerAppWireTurnQueueImageItemReachesQueueHandler exercises Path 3:
 // a turn/queue request that carries an InputItem of type "image" must
-// deliver the bytes to the daemon's queueFunc as an EnqueueWithImages-
-// equivalent call. We observe via a queueFunc shim that captures the
-// arguments.
-func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
+// deliver the bytes to the active queue handler.
+func TestServerAppWireTurnQueueImageItemReachesQueueHandler(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_qimg")
-	srv.SetProcessing(true) // queue requires an in-flight turn
+	srv.SetProcessing(true) // Exercise an in-flight turn.
 
 	var gotText string
 	var gotImages []ImageAttachment
-	srv.SetQueueWithImagesFunc(func(text string, images []ImageAttachment) error {
-		gotText = text
-		gotImages = images
-		return nil
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			gotText, gotImages = inputFromItems("", params.Input)
+			return appwire.TurnQueueResponse{}, nil
+		},
 	})
-	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -62,17 +60,17 @@ func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
 		t.Fatalf("turn/queue kind=%v", resp.Kind())
 	}
 	if gotText != "queued describe" {
-		t.Errorf("queueFunc text=%q, want %q", gotText, "queued describe")
+		t.Errorf("queue text=%q, want %q", gotText, "queued describe")
 	}
 	if len(gotImages) != 1 {
-		t.Fatalf("queueFunc images: got %d, want 1", len(gotImages))
+		t.Fatalf("queue images: got %d, want 1", len(gotImages))
 	}
 	img := gotImages[0]
 	if img.MediaType != "image/png" || !bytes.Equal(img.Data, pngSig) {
-		t.Errorf("queueFunc image mismatch: media=%q data=%x", img.MediaType, img.Data)
+		t.Errorf("queue image mismatch: media=%q data=%x", img.MediaType, img.Data)
 	}
 	if img.Name != "q.png" {
-		t.Errorf("queueFunc image name=%q, want q.png", img.Name)
+		t.Errorf("queue image name=%q, want q.png", img.Name)
 	}
 }
 
@@ -81,8 +79,8 @@ func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
 // turn/drainAsSteer must produce a steering queue entry on the actual
 // agent session that carries the image bytes. We register a real
 // agent.Session as the daemon's queue + drain backend so the wire path,
-// the session's queue, and DrainAsSteer's SteerWithImages call all
-// participate.
+// the durable mutation store, and the session's input and steering queues
+// all participate.
 func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -107,34 +105,44 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
 	srv.SetProcessing(true)
-	srv.SetQueueWithImagesFunc(func(text string, images []ImageAttachment) error {
-		return sess.EnqueueWithImages(context.Background(), text, images)
+	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Queue: sess.AcceptClientMutationQueue,
+		Drain: sess.AcceptClientMutationDrainAsSteer,
 	})
-	srv.SetDrainAsSteerFunc(func() error { return sess.DrainAsSteer(context.Background()) })
 	publishSessionQueueEnvelope(srv, sess)
-	installProjectedMutationCallbacksForTest(srv)
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	if init.Kind() != appwire.MessageResponse {
 		t.Fatalf("init=%v", init.Kind())
 	}
-	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sess.ID(), Ref: "local:" + sess.ID(),
+	queued := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{ClientMutationID: "queue-image", ExpectedInstanceID: sess.ID(), Ref: "local:" + sess.ID(),
 		Input: []appwire.InputItem{{Type: "text", Text: "drain me"}, {
 			Type:      "image",
 			MediaType: "image/png",
 			Data:      pngSig,
 			Name:      "d.png",
 		}},
-	})); r.Kind() != appwire.MessageResponse {
-		raw, _ := json.Marshal(r)
+	}))
+	if queued.Kind() != appwire.MessageResponse {
+		raw, _ := json.Marshal(queued)
 		t.Fatalf("turn/queue: %s", raw)
 	}
-	if r := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sess.ID(), ExpectedQueueRevision: 0,
+	queueReceipt := queued.Response.Result.(appwire.TurnQueueResponse).Receipt
+	if queueReceipt.ClientMutationID != "queue-image" || queueReceipt.InstanceID != sess.ID() || len(queueReceipt.QueueEntryIDs) != 1 {
+		t.Fatalf("image queue receipt: %+v", queueReceipt)
+	}
+	queue, _ := sess.ClientMutationProjection()
+	drained := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{ClientMutationID: "drain-image", ExpectedInstanceID: sess.ID(), ExpectedQueueRevision: queue.Revision,
 		Ref: "local:" + sess.ID(),
-	})); r.Kind() != appwire.MessageResponse {
-		raw, _ := json.Marshal(r)
+	}))
+	if drained.Kind() != appwire.MessageResponse {
+		raw, _ := json.Marshal(drained)
 		t.Fatalf("turn/drainAsSteer: %s", raw)
+	}
+	drainReceipt := drained.Response.Result.(appwire.TurnDrainAsSteerResponse).Receipt
+	if drainReceipt.ClientMutationID != "drain-image" || drainReceipt.InstanceID != sess.ID() || len(drainReceipt.ConsumedClientMutationIDs) != 1 || drainReceipt.ConsumedClientMutationIDs[0] != "queue-image" {
+		t.Fatalf("image drain receipt: %+v", drainReceipt)
 	}
 
 	// At this point the session's steering queue must hold one entry
@@ -183,7 +191,7 @@ func (a *blockingServerAdapter) Stream(context.Context, llm.Request) (llm.Stream
 func TestServerAppWireTurnStartImageItemReachesInputCh(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_img1")
-	installProjectedMutationCallbacksForTest(srv)
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))

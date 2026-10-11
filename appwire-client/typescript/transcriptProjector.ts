@@ -9,6 +9,7 @@ import {
 } from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { comparePositions } from "./reducer";
+import { isParentSteer } from "./steeringLabels";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
   type ContentVector,
@@ -291,9 +292,10 @@ function isToolRepairNotice(item: ItemModel): boolean {
 }
 
 // A daemon steer: instructions the daemon sent the agent, never a steer the
-// human wrote (source "user", the human-note kind included).
+// human wrote (source "user", the human-note kind included) and not a message
+// from the session's parent agent (source "parent").
 function isDaemonSteer(item: ItemModel): boolean {
-  return item.type === "steering" && item.source !== "user";
+  return item.type === "steering" && item.source !== "user" && !isParentSteer(item.source);
 }
 
 function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vector: ContentVector): Decision {

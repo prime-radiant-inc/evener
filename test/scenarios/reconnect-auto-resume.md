@@ -70,7 +70,7 @@ placeholder is not a stable hook at all — see step 6.
    ```
    `handleSend` re-resolves the session and, finding no live daemon, spawns
    one through the same `resumeRequestFor` → `Spawner.Resume` path before
-   starting the turn (`cmd/evener-hub/web_session.go:69-171`, kata `x3hp`).
+   starting the turn (kata `x3hp`).
 
 6. **[browser, optional]** Repeat steps 2-3 to kill the respawned daemon,
    then drive the *other* entry point from a browser: navigate to
@@ -91,7 +91,7 @@ placeholder is not a stable hook at all — see step 6.
 
 ## Expected
 
-- Step 5's POST returns `202 Accepted` (`web_session.go:170`) — the turn is
+- Step 5's POST returns `202 Accepted` — the turn is
   started asynchronously, so the resume has already succeeded by the time the
   status line lands.
 - Within ~10-15 seconds of step 5 (or 6):
@@ -108,7 +108,7 @@ placeholder is not a stable hook at all — see step 6.
   appear as `[data-testid="turn-block"]` entries without a reload, and no
   `[data-testid="turn-failure"]` row is rendered.
 - Falsification: the send returns `502` with `daemon unreachable` /
-  `resume failed` (`web_session.go:165`), or a diagnostic appears with text
+  `resume failed`, or a diagnostic appears with text
   like "stream ended" or "rendezvous timeout" — the resume chain failed. Or
   no new daemon spawned at all.
 

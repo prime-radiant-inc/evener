@@ -459,8 +459,6 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "lifecycle method", symbol: "BeginSteerPersistence"}:                                                    1,
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "lifecycle method", symbol: "CompleteSteerPersistence"}:                                                 1,
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "lifecycle method", symbol: "AbortSteerPersistence"}:                                                    1,
-	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).SteerCaller", kind: "lifecycle method", symbol: "AbortSteerPersistence"}:                                              1,
-	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).SteerCaller", kind: "lifecycle method", symbol: "CompleteSteerPersistence"}:                                           1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "BeginModelRequest"}:                                                 1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "CompleteModelRequest"}:                                              1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "AbortModelRequest"}:                                                 1,
@@ -786,8 +784,21 @@ func seedDelegateControllerRunning(t testing.TB, c *delegateTreeController, id, 
 			lease:  delegateLease{delegateID: id, generation: 1},
 			cancel: func() {},
 			ready:  true,
+			// An initial run's binding always carries report-required
+			// evidence, as CommitStart attaches it.
+			evidence: &delegateGenerationEvidence{requirement: delegateCompletionReportRequired},
 		},
 	}
+}
+
+// seedDelegateControllerRunningWithoutEvidence seeds a running delegate whose
+// binding omits the completion evidence a production start always attaches.
+func seedDelegateControllerRunningWithoutEvidence(t testing.TB, c *delegateTreeController, id, parentID string) {
+	t.Helper()
+	seedDelegateControllerRunning(t, c, id, parentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.live[id].binding.evidence = nil
 }
 
 func delegateControllerCreatedEvent(id, parentID string) delegatestore.Event {

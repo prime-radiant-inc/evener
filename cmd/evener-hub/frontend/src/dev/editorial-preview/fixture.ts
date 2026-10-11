@@ -42,7 +42,7 @@ export function createEditorialClient(): EditorialClient {
     if (!result) throw new Error(`Unknown fixture thread: ${ref}`);
     return structuredClone(result);
   };
-  client.scriptConnect(() => ({
+  client.scriptHandshake({
     serverInfo: { name: "Editorial fixture — no live hub", version: "fixture" },
     protocolVersion: APPWIRE_PROTOCOL_VERSION,
     sourceId: "fixture",
@@ -61,7 +61,7 @@ export function createEditorialClient(): EditorialClient {
       auth: true,
     },
     navigation: { version: 1, readVersions: [3], generationId: "generation_test", sequence: 0 },
-  }));
+  });
   client.on("evener/navigation/read", (params) => {
     const wrap = (data: unknown) => wireSnapshot(params, data, `"editorial-${revision}"`, revision);
     switch (params.resource) {
