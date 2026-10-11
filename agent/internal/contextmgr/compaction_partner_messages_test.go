@@ -51,7 +51,7 @@ func partnerTestManager(reply string) *Manager {
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
-	cm.Meta = CompactionMeta{SessionID: "SESSION_ID_SENTINEL", AvailableTranscriptTools: []string{"read_transcript"}}
+	cm.Meta = CompactionMeta{SessionID: "SESSION_ID_SENTINEL", AvailableTranscriptTools: []string{"read_transcript"}, TranscriptKept: true}
 	return cm
 }
 
@@ -510,7 +510,7 @@ func TestForceCompact_CarryKeepsAStopBesideALongLog(t *testing.T) {
 
 // persistentMeta is a persistent session's compaction metadata: its transcript
 // holds every message in full, so a trimmed message can point there.
-var persistentMeta = &CompactionMeta{SessionID: "SESSION_ID_SENTINEL", AvailableTranscriptTools: []string{"read_transcript"}}
+var persistentMeta = &CompactionMeta{SessionID: "SESSION_ID_SENTINEL", AvailableTranscriptTools: []string{"read_transcript"}, TranscriptKept: true}
 
 // A partner message only just over the trim threshold is kept whole: trimming
 // it would add the note without saving anything.
@@ -538,8 +538,13 @@ func TestFormatCheckpoint_KeepsMessagesWholeWithoutATranscript(t *testing.T) {
 		toolCounts:      map[string]int{},
 		conversation:    []checkpointConversationEntry{{Role: "user", Text: log}},
 	}
-	entries := extractCheckpointConversation(formatCheckpoint(data, nil, 20_000))
-	if len(entries) != 1 || entries[0].Text != log {
-		t.Fatalf("a message was trimmed with no transcript to recover it from")
+	for name, meta := range map[string]*CompactionMeta{
+		"non-persistent":               nil,
+		"transcript could not be made": {SessionID: "SESSION_ID_SENTINEL"},
+	} {
+		entries := extractCheckpointConversation(formatCheckpoint(data, meta, 20_000))
+		if len(entries) != 1 || entries[0].Text != log {
+			t.Fatalf("%s: a message was trimmed with no transcript to recover it from", name)
+		}
 	}
 }

@@ -41,6 +41,12 @@ type CompactionMeta struct {
 	// or a session with no state directory at all, must not be pointed at one
 	// (ruled 2026-08-06). Empty means the artifact says nothing about recovery.
 	AvailableTranscriptTools []string
+
+	// TranscriptKept reports that the session is writing its durable
+	// transcript, which holds every message in full. A persistent session
+	// whose transcript could not be created has a session id but no kept
+	// transcript.
+	TranscriptKept bool
 }
 
 // compactionPointer is the line a compaction artifact opens with to say that
@@ -48,16 +54,16 @@ type CompactionMeta struct {
 // names the artifact ("checkpoint", "summary"). Empty when the session is not
 // persistent.
 func (m *CompactionMeta) compactionPointer(artifact string) string {
-	if !m.hasTranscript() {
+	if m == nil || m.SessionID == "" {
 		return ""
 	}
 	return fmt.Sprintf("Earlier history was compacted into this %s to free context-window headroom. This session's id is %s.%s\n", artifact, m.SessionID, m.TranscriptRecoverySentence())
 }
 
-// hasTranscript reports whether the session keeps a durable transcript, which
-// holds every message in full: a persistent session (one with a session id).
+// hasTranscript reports whether the session is writing a durable transcript,
+// which holds every message in full.
 func (m *CompactionMeta) hasTranscript() bool {
-	return m != nil && m.SessionID != ""
+	return m != nil && m.SessionID != "" && m.TranscriptKept
 }
 
 // TranscriptRecoverySentence is the trailing instruction a compaction artifact
