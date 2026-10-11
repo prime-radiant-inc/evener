@@ -19,7 +19,9 @@ const CONTROLS = ["button", "input", "select", "textarea"];
 const WIDGET_CONCEPTS =
   /^(?:[a-zA-Z]*?)(chip|badge|pill|btn|button|card|empty|menu|tooltip|switch|toggle|skeleton|kbd|meter)/i;
 
-const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+// One pass, so whichever comment form starts first wins: a "//" comment that
+// mentions a glob like widgets/** must not open a block comment.
+const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
 
 // Native controls written directly in TSX instead of through a widget.
 export function rawControlsIn(tsx) {
