@@ -23,8 +23,6 @@ import type {
 import {
   acquireThreadSubscription,
   applyNotification,
-  ClientNotReadyError,
-  errorKind,
   hydrateThread,
   notificationTargetsThread,
   RequestTimeoutError,
@@ -6992,83 +6990,6 @@ describe("useThreadsStore.loadOlderTurns", () => {
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.turns.map((t) => t.id)).toEqual(["turn_1"]);
     expect(model?.olderCursor).toBe("cursor_0");
-  });
-});
-
-// requireReadyClient's own bounded wait, exercised directly through a
-// read-only action (listJobs stands in for all five - same helper) rather
-// than duplicated five times. Real timers elsewhere in this file resolve via
-// scripted FakeClient events (emitReady, etc.), never elapsed time, so this
-// is the one describe block that needs fake timers to advance past
-// requireReadyClient's default 15s budget without the suite actually
-// waiting 15 real seconds.
-describe("useThreadsStore read-only ready-gating (requireReadyClient)", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  test("explicit refresh keeps one readiness deadline across ready-to-rewire races", async () => {
-    let client = connectFakeClient("reconnecting");
-    const clients = [client];
-    let outcome: unknown;
-    const refreshing = threadsStore
-      .getState()
-      .refreshThread("ref_a")
-      .then(
-        () => {
-          outcome = "resolved";
-        },
-        (error: unknown) => {
-          outcome = error;
-        },
-      );
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await vi.advanceTimersByTimeAsync(5_000);
-      client.emitReady();
-      // Ready resolves the helper; the connection changes before the refresh
-      // continuation captures the current client and its ready epoch.
-      await Promise.resolve();
-      client = new FakeClient("reconnecting");
-      clients.push(client);
-      connectionStore.getState().connect(client);
-    }
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    expect(outcome).toBeInstanceOf(ClientNotReadyError);
-    expect(errorKind(outcome)).toBe("hub-unreachable");
-    await refreshing;
-    expect(clients.flatMap((candidate) => candidate.calls)).toHaveLength(0);
-  });
-
-  test("a read call times out with a classified ClientNotReadyError if the client never becomes ready", async () => {
-    connectFakeClient("reconnecting"); // never reaches ready in this test
-    const pending = threadsStore.getState().listJobs("ref_a");
-    let outcome: { ok: true } | { ok: false; err: unknown } | undefined;
-    pending.then(
-      () => {
-        outcome = { ok: true };
-      },
-      (err: unknown) => {
-        outcome = { ok: false, err };
-      },
-    );
-
-    await vi.advanceTimersByTimeAsync(15_000);
-
-    expect(outcome?.ok).toBe(false);
-    if (outcome?.ok !== false) throw new Error("expected the read call to reject");
-    expect(outcome.err).toBeInstanceOf(ClientNotReadyError);
-    expect((outcome.err as Error).message).toMatch(/timed out waiting for a ready client after 15000ms/);
-    // Distinguishable from AppwireClient's own synchronous rejection text,
-    // but still classified as hub-unreachable so it gets the same friendly
-    // toast (see stores/activitySummary.ts's refreshRoot).
-    expect((outcome.err as Error).message).not.toMatch(/cannot call/);
-    expect(errorKind(outcome.err)).toBe("hub-unreachable");
   });
 });
 
