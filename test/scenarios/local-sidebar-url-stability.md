@@ -67,7 +67,7 @@ is no `.sb-row` class and no `data-ref` attribute.
   session pane. Falsify: the bare id resolves to a session pane — back-compat
   has crept back in, and step 3's double-pane bug is reachable again.
   Note this is a **client-side** 404: `/s/` serves the SPA shell for any id
-  (`cmd/evener-hub/web_workspace.go:38-39`), so `curl -o /dev/null -w '%{http_code}'`
+  (`handleSession` in `cmd/evener-hub/web_workspace.go`), so `curl -o /dev/null -w '%{http_code}'`
   returns 200 here. Assert the rendered text, never the status code.
 
 ## Cleanup

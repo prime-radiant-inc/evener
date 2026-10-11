@@ -543,7 +543,7 @@ func TestRetirementStartReplayExecutesOnce(t *testing.T) {
 
 func TestRetirementClaimFirstPrivateInputHandoffs(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"queue-claim", "steering-carrier-claim", "turn-owned-steer", "durable-caller-steer"} {
+	for _, name := range []string{"queue-claim", "steering-carrier-claim", "turn-owned-steer"} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := retirementRefusalRoot(t)
 			before := root.clientMutations.snapshot()
@@ -565,10 +565,6 @@ func TestRetirementClaimFirstPrivateInputHandoffs(t *testing.T) {
 			case "turn-owned-steer":
 				if root.trySteerTurnOwnedMessage(steeringMessage{Text: "opaque-input"}, &struct{ _ byte }{}) {
 					t.Fatal("refused turn-owned steering appended")
-				}
-			case "durable-caller-steer":
-				if err := root.enqueueDelegateCallerSteeringDurably("opaque-input", nil); !errors.Is(err, ErrRetirementUnavailable) {
-					t.Fatalf("durable caller steering = %v", err)
 				}
 			}
 			if name == "queue-claim" || name == "steering-carrier-claim" {

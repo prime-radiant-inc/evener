@@ -412,10 +412,6 @@ type Server struct {
 	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
 	retrySafeTurns       RetrySafeTurnFunctions
 	cancelFunc           context.CancelFunc
-	steerFunc            func(string) error
-	steerWithImagesFunc  func(string, []ImageAttachment) error
-	queueFunc            func(string) error
-	queueWithImagesFunc  func(string, []ImageAttachment) error
 	goalFunc             func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
@@ -426,9 +422,6 @@ type Server struct {
 	// outer mutation (success replays after the entry is gone; a reused ID
 	// with a different entry id conflicts without mutating).
 	urlsRemoveFunc           func(outerID, id string) (bool, error)
-	drainSteerFunc           func() error
-	drainSteerInputFunc      func(string, []ImageAttachment) error
-	cancelQueuedFunc         func(int, string) (string, int, error)
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
 	clearJournalPath         string
@@ -679,31 +672,6 @@ func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.Delegat
 	s.mu.Unlock()
 }
 
-// SetSteerFunc sets the function called by turn/steer. It is invoked
-// regardless of whether the session is currently processing.
-func (s *Server) SetSteerFunc(fn func(string) error) {
-	s.mu.Lock()
-	s.steerFunc = fn
-	s.mu.Unlock()
-}
-
-// SetSteerWithImagesFunc sets the function called by AppWire turn/steer when
-// the input carries image attachments.
-func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment) error) {
-	s.mu.Lock()
-	s.steerWithImagesFunc = fn
-	s.mu.Unlock()
-}
-
-// SetQueueFunc sets the function called by turn/queue (kata 111a). The
-// callback should append the message to the underlying session's input
-// queue. Returns an error when the session refuses the message.
-func (s *Server) SetQueueFunc(fn func(string) error) {
-	s.mu.Lock()
-	s.queueFunc = fn
-	s.mu.Unlock()
-}
-
 // SetGoalFunc sets the function called by the appwire goal/set method. The
 // callback sets (or, for an empty objective, clears) the session's /goal and
 // returns whether the goal loop started immediately.
@@ -731,49 +699,6 @@ func (s *Server) SetNotesHumanSetFunc(fn func(outerID, note string) (appwire.Not
 func (s *Server) SetUrlsRemoveFunc(fn func(outerID, id string) (bool, error)) {
 	s.mu.Lock()
 	s.urlsRemoveFunc = fn
-	s.mu.Unlock()
-}
-
-// SetQueueWithImagesFunc sets the function called when the appwire
-// turn/queue request carries image attachments (kata t5j6). The callback
-// should append a queued entry that pairs the text with the attached
-// images. When unset, image-bearing queue requests fall back to the
-// text-only queueFunc (text portion only — image bytes are dropped). Wire
-// callers must therefore set this function whenever they accept
-// image-bearing queue requests.
-func (s *Server) SetQueueWithImagesFunc(fn func(string, []ImageAttachment) error) {
-	s.mu.Lock()
-	s.queueWithImagesFunc = fn
-	s.mu.Unlock()
-}
-
-// SetDrainAsSteerFunc sets the function called by turn/drainAsSteer
-// (kata 0bq1). The callback should pop every queued message and inject
-// them as a single STEERING message to the in-flight turn.
-func (s *Server) SetDrainAsSteerFunc(fn func() error) {
-	s.mu.Lock()
-	s.drainSteerFunc = fn
-	s.mu.Unlock()
-}
-
-// SetDrainAsSteerWithInputFunc sets the function called when drain-as-steer
-// carries a composer payload. The callback must append and drain atomically.
-func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment) error) {
-	s.mu.Lock()
-	s.drainSteerInputFunc = fn
-	s.mu.Unlock()
-}
-
-// SetCancelQueuedFunc sets the function called by appwire
-// turn/cancelQueued (issue #23). The callback should remove the queued
-// message at the given FIFO index so it is never consumed, returning the
-// removed entry's full text and image count. A non-empty expectedID must
-// match the queue-entry id minted at enqueue time so a queue that shifted
-// under the client's snapshot is rejected rather than removing the wrong
-// message (review F1). Like promote, no active turn is required.
-func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {
-	s.mu.Lock()
-	s.cancelQueuedFunc = fn
 	s.mu.Unlock()
 }
 

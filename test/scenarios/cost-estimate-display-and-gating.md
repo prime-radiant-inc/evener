@@ -2,7 +2,7 @@
 
 **What this covers**: `llm/pricing.go` `PriceFromCost`/`EstimateCost` → `appwire.EstimateCost` →
 the three cost-bearing surfaces added in Track C: the input-strip status row
-(`cmd/evener-hub/web_workspace.go` `renderInputStrip`), the details panel
+(the retired `renderInputStrip`), the details panel
 (`tokensAndCostRows`/`detailsRow`, `data-row="cost"`), and the per-turn
 `.turn-meta` badge (`cmd/evener-hub/assets/renderer.js`). The Show-cost toggle
 (`cmd/evener-hub/assets/settings-display.js`, default ON) gates all three via a

@@ -759,7 +759,10 @@ func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.Jo
 	if jm == nil || rec == nil || rec.TerminalGen == "" {
 		return
 	}
-	if !rec.Status.IsTerminal() || rec.NotifyState != jobstore.NotifyPending {
+	// not_armed is a terminal job whose notification was never armed: a kept
+	// foreground shell, or one a crash stopped before arming. The caller has
+	// learned it ended either way, so it settles just as a pending one does.
+	if !rec.Status.IsTerminal() || (rec.NotifyState != jobstore.NotifyPending && rec.NotifyState != jobstore.NotifyNotArmed) {
 		return
 	}
 	ownerSessionID := rec.OwnerSessionID

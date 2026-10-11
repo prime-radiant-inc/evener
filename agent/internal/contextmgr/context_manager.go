@@ -1119,6 +1119,10 @@ type checkpointData struct {
 // OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
 func (d *checkpointData) collectCompaction(text string, summary bool) {
 	if summary {
+		if !carriesPartnerMessages(text) {
+			d.earlierSummaries = append(d.earlierSummaries, text)
+			return
+		}
 		d.conversation = append(d.conversation, extractMarkdownConversation(text)...)
 		d.earlierSummaries = append(d.earlierSummaries, withoutMarkdownSection(text, checkpointConversationHeading))
 		return
@@ -1793,18 +1797,13 @@ func checkSummaryReply(reply, instructions string) error {
 	// only "## Permissions and Holds\nNone." is no summary.
 	// A heading inside a fenced block is quoted text, not a section.
 	inSection := false
-	inFence, fenceMarker := false, ""
+	var fence fenceTracker
 	for line := range strings.Lines(text) {
 		line = strings.TrimSpace(line)
-		if marker := markdownFenceMarker(line); marker != "" {
-			if !inFence {
-				inFence, fenceMarker = true, marker
-			} else if line == fenceMarker {
-				inFence, fenceMarker = false, ""
-			}
+		if fence.step(line) {
 			continue
 		}
-		if section, rest, ok := summarySectionHeading(line); ok && !inFence {
+		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
 			inSection = !strings.EqualFold(section, permissionsSection)
 			if inSection && isSummaryContent(rest) {
 				return nil
@@ -2156,9 +2155,9 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if checkpointed != nil {
 		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
-	summaryText := "[CONTEXT SUMMARY]\n" + cm.metaFor(ctx).compactionPointer("summary") +
-		renderCompactionModelText("## Summary", resp.Text()) +
-		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + "[END SUMMARY]"
+	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") +
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) +
+		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

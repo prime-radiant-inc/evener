@@ -14,6 +14,7 @@ const context: SessionActivityContext = {
 };
 const delegate = (id: string, ownerRef = "remote:root"): SessionDelegate => ({
 	runGeneration: 1,
+	projectionRevision: 1,
 	delegateId: id,
 	ownerRef,
 	rootRef: context.rootRef,

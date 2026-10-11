@@ -31,16 +31,10 @@ type residualServeServer struct {
 	input          chan server.InputMessage
 	escalate       func(string, bool) error
 	compact        func(context.Context) error
-	steer          func(string) error
-	steerImages    func(string, []server.ImageAttachment) error
-	queue          func(string) error
-	queueImages    func(string, []server.ImageAttachment) error
+	turns          server.RetrySafeTurnFunctions
 	goal           func(string) (bool, error)
 	notesHumanSet  func(outerID, note string) (appwire.NotesHumanSetResponse, error)
 	urlsRemove     func(outerID, id string) (bool, error)
-	drain          func() error
-	drainInput     func(string, []server.ImageAttachment) error
-	cancel         func(int, string) (string, int, error)
 	envelopeSource server.ThreadEnvelopeSource
 	meta           func() schema.SessionMeta
 	model          func(string) error
@@ -64,13 +58,9 @@ func (s *residualServeServer) SetSandboxEscalationResolveFunc(f func(string, boo
 	s.escalate = f
 }
 func (s *residualServeServer) SetCompactFunc(f func(context.Context) error) { s.compact = f }
-func (s *residualServeServer) SetSteerFunc(f func(string) error)            { s.steer = f }
-func (s *residualServeServer) SetSteerWithImagesFunc(f func(string, []server.ImageAttachment) error) {
-	s.steerImages = f
-}
-func (s *residualServeServer) SetQueueFunc(f func(string) error) { s.queue = f }
-func (s *residualServeServer) SetQueueWithImagesFunc(f func(string, []server.ImageAttachment) error) {
-	s.queueImages = f
+func (s *residualServeServer) SetRetrySafeTurnFunctions(functions server.RetrySafeTurnFunctions) {
+	s.turns = functions
+	s.Server.SetRetrySafeTurnFunctions(functions)
 }
 func (s *residualServeServer) SetGoalFunc(f func(string) (bool, error)) { s.goal = f }
 func (s *residualServeServer) SetNotesHumanSetFunc(f func(outerID, note string) (appwire.NotesHumanSetResponse, error)) {
@@ -78,13 +68,6 @@ func (s *residualServeServer) SetNotesHumanSetFunc(f func(outerID, note string) 
 }
 func (s *residualServeServer) SetUrlsRemoveFunc(f func(outerID, id string) (bool, error)) {
 	s.urlsRemove = f
-}
-func (s *residualServeServer) SetDrainAsSteerFunc(f func() error) { s.drain = f }
-func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []server.ImageAttachment) error) {
-	s.drainInput = f
-}
-func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, int, error)) {
-	s.cancel = f
 }
 func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
 	s.envelopeSource = src
@@ -114,22 +97,60 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	ctx := context.Background()
 	_ = s.escalate("missing", false)
 	_ = s.compact(ctx)
-	if err := s.steer("x"); err != nil {
+	if _, err := s.turns.Steer(appwire.TurnSteerParams{
+		ClientMutationID: "residual-steer", ExpectedInstanceID: sessionID,
+		Input: []appwire.InputItem{{Type: "text", Text: "x"}},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.steerImages("x", nil); err != nil {
+	if _, err := s.turns.Steer(appwire.TurnSteerParams{
+		ClientMutationID: "residual-steer-image", ExpectedInstanceID: sessionID,
+		Input: []appwire.InputItem{{Type: "text", Text: "x"}, {Type: "image", MediaType: "image/png", Data: []byte("png")}},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	_ = s.queue("queued")
-	_ = s.queueImages("queued", nil)
+	queued, err := s.turns.Queue(appwire.TurnQueueParams{
+		ClientMutationID: "residual-queue", ExpectedInstanceID: sessionID,
+		Input: []appwire.InputItem{{Type: "text", Text: "queued"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Receipt.InstanceID != sessionID || len(queued.Receipt.QueueEntryIDs) != 1 {
+		t.Fatalf("queue receipt: %+v", queued.Receipt)
+	}
+	if _, err := s.turns.Queue(appwire.TurnQueueParams{
+		ClientMutationID: "residual-queue-image", ExpectedInstanceID: sessionID,
+		Input: []appwire.InputItem{{Type: "text", Text: "queued"}, {Type: "image", MediaType: "image/png", Data: []byte("png")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.goal(" "); err != nil {
 		t.Error(err)
 	}
 	_, _ = s.goal("objective")
 	_, _ = s.notesHumanSet("outer-1", "note")
 	_, _ = s.urlsRemove("outer-1", "u1")
-	_ = s.drain()
-	_ = s.drainInput("x", nil)
+	if _, err := s.turns.Cancel(appwire.TurnCancelQueuedParams{
+		ClientMutationID: "residual-cancel", ExpectedInstanceID: sessionID,
+		Index: 0, ExpectedEntryID: queued.Receipt.QueueEntryIDs[0],
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queue, _ := s.envelopeSource.ClientMutationProjection()
+	if _, err := s.turns.Drain(appwire.TurnDrainAsSteerParams{
+		ClientMutationID: "residual-drain", ExpectedInstanceID: sessionID,
+		ExpectedQueueRevision: queue.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queue, _ = s.envelopeSource.ClientMutationProjection()
+	if _, err := s.turns.Drain(appwire.TurnDrainAsSteerParams{
+		ClientMutationID: "residual-drain-input", ExpectedInstanceID: sessionID,
+		ExpectedQueueRevision: queue.Revision, Input: []appwire.InputItem{{Type: "text", Text: "x"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	// Every envelope facet now enters the daemon through one seam. Exercising
 	// each method keeps the residual sweep's coverage of the live producers.
 	_ = s.envelopeSource.ContextPressure()

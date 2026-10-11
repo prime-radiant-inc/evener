@@ -1,8 +1,8 @@
 // The web's one connection store: the package's createConnectionStore with
 // zustand's useStore for the reactive read. The client-swap safety and
-// notification-following are the package's; serverInfo/features stay plain
-// fields the web writes from AppShell's and ConnectionBanner's own handshake
-// read (the one InitializeResponse), exactly as before.
+// notification-following are the package's; its ready publication also
+// adopts the current client's negotiated serverInfo/features on every
+// handshake, including automatic reconnect.
 //
 // The core keeps `connect` as a sibling of the triple, not a state key (a
 // partial setState can only ever replace state keys, so keeping it out of

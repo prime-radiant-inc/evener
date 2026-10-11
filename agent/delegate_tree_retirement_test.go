@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
@@ -1574,27 +1575,14 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	c.Abort(claim, "")
 }
 
-func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
+// A daemon steer the root has queued but not consumed is retained input: it
+// blocks retirement as root-owned input, retirement leaves the persisted queue
+// bytes alone, and consuming it lets retirement claim.
+func TestRetirementRetainedRootSteeringBlocksUntilConsumed(t *testing.T) {
 	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
-	d := retirementIdleDelegate(t, root)
-	adapter := &retirementModelBarrier{name: "openai", sessionID: d.ChildSessionID, entered: make(chan struct{}), resume: make(chan struct{})}
-	var release sync.Once
-	defer release.Do(func() { close(adapter.resume) })
-	root.client.Register(adapter)
-	if result := (delegateRuntime{owner: root}).send(context.Background(), d.DelegateID, "caller-source-sentinel", 0).result; result.Err != nil {
-		t.Fatal(result.Err)
-	}
-	retirementAwait(t, adapter.entered)
-	tree.mu.Lock()
-	lease := tree.live[d.DelegateID].binding.lease
-	tree.mu.Unlock()
-	plans, err := tree.SteerCaller(context.Background(), delegateActor{lease: &lease}, "caller-root-sentinel", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
+	if err := root.SteerKind("retained-root-sentinel", events.SteeringKindAgentMessage); err != nil {
 		t.Fatal(err)
 	}
 	original, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
@@ -1602,51 +1590,27 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	steering, _, err := loadQueues(root.stateDir, root.ID())
-	if err != nil || len(steering) != 1 || steering[0].Text != "caller-root-sentinel" {
-		t.Fatalf("original root queue missing: %#v %v", steering, err)
+	if err != nil || len(steering) != 1 || steering[0].Text != "retained-root-sentinel" {
+		t.Fatalf("persisted root queue missing: %#v %v", steering, err)
 	}
-	claim, state, err := c.TryClaim(true)
+	claim, state, err := retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim != nil {
-		t.Fatalf("running caller handoff admitted retirement: %+v %v", state, err)
+		t.Fatalf("retained root input admitted retirement: %+v %v", state, err)
 	}
-	sub := root.subagents.get(d.ChildSessionID)
-	sub.mu.Lock()
-	done := sub.done
-	sub.mu.Unlock()
-	release.Do(func() { close(adapter.resume) })
-	retirementAwait(t, done)
-	// Do not consume root input while settling the caller: establish that the
-	// root's retained input, independently of the completed tree, still blocks.
 	blockers, _, err := tree.retirementEvidence()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The whole-tree collector now includes the root's own evidence by design
-	// (task-4 brief: resident/root narrow projections replaced with
-	// Session-local retirementEvidence). "Settled independently" means no
-	// delegate-category blocker remains for the settled caller; the retained
-	// root input must still surface, root-owned, in the same pass.
-	if slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
-		return b.Category == "delegate" || b.DelegateID != ""
-	}) {
-		t.Fatalf("caller did not settle independently: %+v", blockers)
-	}
 	if !slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
 		return b.Category == "input" && b.SessionID == root.ID() && b.DelegateID == ""
 	}) || len(root.retirementInputBlockers()) == 0 {
-		t.Fatalf("original root input lost handoff ownership: %+v", blockers)
-	}
-	claim, state, err = c.TryClaim(true)
-	if err != nil || claim != nil {
-		t.Fatalf("retained root input admitted retirement: %+v %v", state, err)
+		t.Fatalf("retained root input not reported as root-owned: %+v", blockers)
 	}
 	preserved, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
 	if err != nil || !bytes.Equal(original, preserved) {
-		t.Fatalf("retirement changed original persisted root input: %v", err)
+		t.Fatalf("retirement changed persisted root input: %v", err)
 	}
-	if _, err := root.ProcessInput(context.Background(), "consume-caller-root-sentinel", nil); err != nil {
-		t.Fatal(err)
-	}
+	root.injectDrainedSteering()
 	claim, state, err = retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("consumed root input blocks: %+v %v", state, err)
