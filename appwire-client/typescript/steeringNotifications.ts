@@ -250,6 +250,9 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   // An update names its kind; its body is the delegate's text whatever its
   // shape, so it routes before the packet and watchdog shapes are tried.
   if (attrs.kind === "update") return delegateUpdateNotification(block, name, delegateId, body);
+  // No update packet without a kind attribute ever existed (PacketUpdate first
+  // appeared with it), so a packet-shaped body whose packet kind is "update"
+  // is deliberately not read as a legacy update.
   const packet = parseTerminalPacket(body);
   if (packet) return delegatePacketNotification(block, name, delegateId, packet);
   const quiet = parseQuietWatchdog(body);

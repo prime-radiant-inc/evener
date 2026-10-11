@@ -669,10 +669,11 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 	if s.underMasked(abs) {
 		return false
 	}
-	// A granted root itself exists even though its parent may be outside policy
-	// (under restricted, the worktree root's parent is not a read root).
+	// A granted root's parent may be outside policy, so judge the root by
+	// opening it; a root not created yet does not exist.
 	if s.isGrantedRoot(abs) {
-		return true
+		_, err := s.rootFd(abs)
+		return err == nil
 	}
 	// Resolve the parent for reading, then Fstatat the leaf without following a
 	// final symlink. A symlinked leaf reports false (sandbox refuses symlinks).
