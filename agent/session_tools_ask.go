@@ -682,8 +682,9 @@ func roundEntryResolvesAskBoundary(history []schema.Turn, idx, boundaryStart int
 // does (steeringOriginBoundary): a forked child's inherited prefix is
 // decided with nil origins regardless of what origins carries, since a
 // reused client mutation id in the child's OWN journal must never reclassify
-// a turn the parent wrote.
-func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) SessionState {
+// a turn the parent wrote. attemptStarts is latestAttemptStarts' map for
+// the transcript history came from (nil when there is none).
+func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin, attemptStarts map[string]int) SessionState {
 	if _, isAskRound := deriveRestoredAskPending(history, divergenceTurn, origins); isAskRound {
 		return SessionAwaiting
 	}
@@ -711,7 +712,7 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 				// a PostToolUse hook failure turned its result into an error:
 				// its tool state still carries the end reason.
 				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && (!part.ToolResult.IsError || communicateEndReasonOf(part.ToolResult) != "") {
-					if endedOnNeedsResponse(history, i) {
+					if endedOnNeedsResponse(history, i, attemptStarts) {
 						return SessionAwaiting
 					}
 					return SessionIdle
@@ -731,18 +732,18 @@ func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[
 // (acceptCommunicateTerminal is first-wins, and a Stop hook can send the
 // input on past it), and that call alone records its end reason in its
 // result's tool state, so this looks for that state among the input's
-// rounds: the turns sharing the decisive turn's TurnID. The latest state
-// wins, because a recovery reopen reruns an input under the same TurnID and
-// the rerun's own accepted call is the one live settled on. A history
+// rounds: the turns sharing the decisive turn's TurnID, from the first turn
+// of its latest attempt on. A recovery rerun runs an input again under the
+// same TurnID without recording its user input again, so only the
+// transcript's reopen marker separates its rounds from the crashed
+// attempt's; attemptStarts carries where that marker falls in history, and
+// live settled on the rerun's own accepted call or on none. A history
 // without turn ids predates end_reason, so only the decisive round is read
-// there. Two cases can still differ from live: rounds a mid-input
-// compaction dropped, and a rerun that failed before accepting a
-// communicate, where this can return the earlier attempt's reason. The
-// second is harmless: restingFailureLocked makes the session publish
-// systemError whether it rests idle or awaiting.
-func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int) bool {
+// there. Rounds a mid-input compaction dropped can still differ from live.
+func endedOnNeedsResponse(history []schema.Turn, toolResultsIdx int, attemptStarts map[string]int) bool {
 	turnID := history[toolResultsIdx].TurnID
-	for j := toolResultsIdx; j >= 0; j-- {
+	// A turn recovery never reopened has no start, so the walk may reach 0.
+	for j := toolResultsIdx; j >= attemptStarts[turnID]; j-- {
 		turn := history[j]
 		if j != toolResultsIdx && (turnID == "" || turn.TurnID != turnID) {
 			break

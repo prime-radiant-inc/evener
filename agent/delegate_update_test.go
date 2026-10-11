@@ -1186,7 +1186,7 @@ func TestNotDeliveredUpdateExplainsARetiringController(t *testing.T) {
 //
 // With undisposedJob the coordinator starts a background shell job instead of
 // a worker and never disposes of it, so its drain announces the job to it.
-func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...func(llm.Request) llm.Response) (frame, preview, transcript string) {
+func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...func(llm.Request) llm.Response) (frame, preview, transcript string, coordinatorRequests int) {
 	t.Helper()
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
 	coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
@@ -1268,6 +1268,8 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 		preview = page.Delegates[0].ReportPreview
 		return preview != ""
 	})
+	// Counted while the generation is held, before a successor can start.
+	coordinatorRequests = len(adapter.requestsFor("COORD-BRIEF"))
 	release()
 	awaitRootReport(t, root)
 	fold := rootAttentionFold(t, root)
@@ -1280,7 +1282,7 @@ func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...f
 	if err != nil {
 		t.Fatalf("read the coordinator's transcript: %v", err)
 	}
-	return frame, preview, string(transcriptRaw)
+	return frame, preview, string(transcriptRaw), coordinatorRequests
 }
 
 // bareTextDrainTurn is a drain turn whose model never calls communicate.
@@ -1293,7 +1295,7 @@ func bareTextDrainTurn(llm.Request) llm.Response {
 // and the earlier one stays in the coordinator's transcript.
 func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
 	t.Parallel()
-	frame, preview, transcript := drainingCoordinatorReport(t, false, func(llm.Request) llm.Response {
+	frame, preview, transcript, _ := drainingCoordinatorReport(t, false, func(llm.Request) llm.Response {
 		return communicateResponse(true, "REPORT_B: told the worker to use the v2 schema")
 	})
 	if !strings.Contains(frame, "REPORT_B") || strings.Contains(frame, "REPORT_A") {
@@ -1307,17 +1309,39 @@ func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
 	}
 }
 
-// A drain turn that ends without a terminal communicate reports nothing new:
-// the earlier report stands as a completed report, not as a failure.
+// A drain turn whose model never reports ends the turn, not the run: the
+// earlier report stands as a completed report, not as a failure. A reply of
+// bare text ends a notification turn at once, and an empty response is
+// retried until it gives up.
 func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 	t.Parallel()
-	// Bare text is retried within the turn before the turn gives up.
-	frame, preview, _ := drainingCoordinatorReport(t, false, slices.Repeat([]func(llm.Request) llm.Response{bareTextDrainTurn}, 5)...)
-	if !strings.Contains(frame, "REPORT_A") || !strings.Contains(frame, `"kind":"reported"`) || !strings.Contains(frame, `"outcome":"completed"`) {
-		t.Fatalf("the root's report frame = %q, want the earlier completed report A", frame)
+	emptyResponse := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant}}
 	}
-	if preview != "REPORT_A: waiting on the worker" {
-		t.Fatalf("reportPreview = %q, want report A", preview)
+	for name, tc := range map[string]struct {
+		turn     func(llm.Request) llm.Response
+		attempts int
+	}{
+		"bare text":      {bareTextDrainTurn, 1},
+		"empty response": {emptyResponse, maxEmptyRetries + 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// Scripted past the attempts, so an extra request would be a model
+			// turn the drain turn should not have made.
+			turns := slices.Repeat([]func(llm.Request) llm.Response{tc.turn}, tc.attempts+1)
+			frame, preview, _, requests := drainingCoordinatorReport(t, false, turns...)
+			if !strings.Contains(frame, "REPORT_A") || !strings.Contains(frame, `"kind":"reported"`) || !strings.Contains(frame, `"outcome":"completed"`) {
+				t.Fatalf("the root's report frame = %q, want the earlier completed report A", frame)
+			}
+			if preview != "REPORT_A: waiting on the worker" {
+				t.Fatalf("reportPreview = %q, want report A", preview)
+			}
+			// The delegate call, report A, and the drain turn's attempts.
+			if want := 2 + tc.attempts; requests != want {
+				t.Fatalf("the coordinator made %d model requests, want %d", requests, want)
+			}
+		})
 	}
 }
 
@@ -1326,7 +1350,7 @@ func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 // latest accepted report, never from the text the drain returned.
 func TestDelegateDrainAnnouncementReportReplacesTheEarlierReport(t *testing.T) {
 	t.Parallel()
-	frame, preview, _ := drainingCoordinatorReport(t, true,
+	frame, preview, _, _ := drainingCoordinatorReport(t, true,
 		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_B: left the job running") },
 		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_C: detached the job") },
 	)

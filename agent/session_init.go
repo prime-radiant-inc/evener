@@ -1051,10 +1051,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
+	// Where each reopened turn's latest attempt begins in resumeHistory: the
+	// restored state reads an end reason from that attempt alone.
+	var attemptStarts map[string]int
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
 		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
+		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1568,7 +1572,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// alone, so a forked child's inherited prefix is never decided by a
 	// reused client mutation id in the child's OWN journal.
 	steeringProvenance := s.clientMutations.steeringOrigins()
-	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
+	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance, attemptStarts)
 	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
 	// spec §2): deriveRestoredState alone only re-derives that the session
 	// rests awaiting, but every hold keyed on askPending itself — the entry
@@ -1591,7 +1595,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.mu.Unlock()
 	// Settle before the session start announces the state.
 	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState(divergenceTurn)
+		s.recomputeRestoredState(divergenceTurn, attemptStarts)
 	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{
