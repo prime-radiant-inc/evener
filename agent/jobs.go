@@ -107,6 +107,11 @@ type jobManager struct {
 	// replaced mid-delivery. Their receipts are released when the claim is,
 	// whichever way the deliverer exits. Guarded by mu.
 	supersededWatchSends map[string]struct{}
+	// unsettledWatchSends holds the claimed stable frames the receiver took
+	// whose acknowledgement failed. If a coalesced frame replaced one, no
+	// redelivery will come, so releasing the claim hands it to the
+	// settlement retry. Guarded by mu.
+	unsettledWatchSends map[string]pendingWatchSendDelivery
 	// watchesLostAtRestore holds the durable records of the watches this restore
 	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
 	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read

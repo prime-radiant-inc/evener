@@ -176,3 +176,48 @@ func TestSupersededStableWatchDelivererBeforeRuntimeCommit(t *testing.T) {
 		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
 	}
 }
+
+// The receiver takes the first frame, a replacement coalesces over it before
+// its acknowledgement, and the acknowledgement fails. The accepted frame is
+// no longer pending, so nothing would redeliver it: its receipt stays held
+// for a settlement retry, which acknowledges it on the next pass.
+func TestSupersededAcceptedFrameRetriesItsAcknowledgement(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	if !jm.claimWatchSendDelivery(first.DeliveryID) {
+		t.Fatal("claim first frame")
+	}
+	ackFailure := errors.New("acknowledgement failed")
+	failed := false
+	originalAppend := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		if !failed && event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.DeliveryID == first.DeliveryID {
+			failed = true
+			onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
+			return ackFailure
+		}
+		return originalAppend(event)
+	}
+	_, err := jm.deliverStableWatchSend(cfg, first)
+	jm.appendEvent = originalAppend
+	jm.releaseWatchSendDeliveryClaim(first.DeliveryID)
+	if !errors.Is(err, ackFailure) {
+		t.Fatalf("deliver first frame: err = %v, want the acknowledgement failure", err)
+	}
+	second := fixture.requireOnePending(t).state
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
+		t.Fatalf("the accepted, unacknowledged frame lost its receipt: %v", got)
+	}
+	if _, err := jm.retryStableWatchSettlements(); err != nil {
+		t.Fatalf("settlement retry: %v", err)
+	}
+	if !jm.watchSendDelivered(first.DeliveryID) {
+		t.Fatal("the retry did not acknowledge the accepted frame")
+	}
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
+		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
+	}
+}
