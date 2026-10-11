@@ -102,23 +102,6 @@
   text-align: left;
 }
 
-.row {
-  composes: rowContent;
-  padding: var(--space-1) var(--space-2);
-}
-
-.rowBtn {
-  width: 100%;
-  border: none;
-  background: none;
-  cursor: pointer;
-  border-radius: var(--radius-pane);
-}
-
-.rowBtn:hover {
-  background: var(--hover-1);
-}
-
 .rowGlyph {
   flex: none;
   width: 14px;
@@ -186,12 +169,6 @@
   font-size: var(--font-size-caption);
   color: var(--ink-low);
   padding: 2px var(--space-1);
-}
-
-.emptyNote {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  padding: var(--space-2) var(--space-1);
 }
 
 .scope {

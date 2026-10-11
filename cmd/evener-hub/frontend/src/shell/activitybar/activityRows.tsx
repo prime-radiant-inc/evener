@@ -8,14 +8,13 @@ import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/
 import { activityDelegateState, activityNodeID, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
-import { Disclosure } from "../../widgets";
+import { Disclosure, ListRow } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 
 import styles from "./activitybar.module.css";
 
 const CLASS = {
-  row: requireClass(styles.row, "activitybar.module.css", "row"),
   rowContent: requireClass(styles.rowContent, "activitybar.module.css", "rowContent"),
   rowGlyph: requireClass(styles.rowGlyph, "activitybar.module.css", "rowGlyph"),
   glyphAlive: requireClass(styles.glyphAlive, "activitybar.module.css", "glyphAlive"),
@@ -26,7 +25,6 @@ const CLASS = {
   rowName: requireClass(styles.rowName, "activitybar.module.css", "rowName"),
   rowMeta: requireClass(styles.rowMeta, "activitybar.module.css", "rowMeta"),
   rowMono: requireClass(styles.rowMono, "activitybar.module.css", "rowMono"),
-  rowBtn: requireClass(styles.rowBtn, "activitybar.module.css", "rowBtn"),
   watchGlyph: requireClass(styles.watchGlyph, "activitybar.module.css", "watchGlyph"),
 };
 
@@ -63,63 +61,42 @@ function agentStateText(sub: SessionDelegate): string {
   return activityDelegateState({ ...sub, branch: {} }).status;
 }
 
-function AgentRowBody({ sub }: { sub: SessionDelegate }) {
-  return (
-    <>
-      <span className={`${CLASS.rowGlyph} ${TONE_CLASS[agentTone(sub)]}`} aria-hidden="true">
-        ⌘
-      </span>
-      <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{sub.name?.trim() || sub.description || sub.task || sub.delegateId}</span>
-        <span className={CLASS.rowMeta}>{agentStateText(sub)}</span>
-      </span>
-    </>
-  );
-}
-
 export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () => void }) {
-  const anchor = activityNodeID({ ...sub, kind: "delegate" });
-  if (onDrill === undefined) {
-    return (
-      <div className={CLASS.row} data-activity-anchor={anchor}>
-        <AgentRowBody sub={sub} />
-      </div>
-    );
-  }
   return (
-    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onDrill} data-activity-anchor={anchor}>
-      <AgentRowBody sub={sub} />
-    </button>
+    <ListRow
+      variant="plain"
+      leading={
+        <span className={`${CLASS.rowGlyph} ${TONE_CLASS[agentTone(sub)]}`} aria-hidden="true">
+          ⌘
+        </span>
+      }
+      label={sub.name?.trim() || sub.description || sub.task || sub.delegateId}
+      meta={agentStateText(sub)}
+      onSelect={onDrill}
+      data-activity-anchor={activityNodeID({ ...sub, kind: "delegate" })}
+    />
   );
 }
 
 export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => void }) {
-  const anchor = activityNodeID({ ...job, kind: "shell" });
   const description = job.description?.trim();
-  const label = description || job.command?.trim() || job.jobId;
-  const body = (
-    <>
-      <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job)]}`} aria-hidden="true">
-        $
-      </span>
-      <span className={CLASS.rowBody}>
-        <span className={`${CLASS.rowName}${description ? "" : ` ${CLASS.rowMono}`}`} title={job.command}>
-          {label}
-        </span>
-        <span className={CLASS.rowMeta}>{jobStatusDisplay(job.status, job.reason)}</span>
-      </span>
-    </>
-  );
-  if (onOpen === undefined)
-    return (
-      <div className={CLASS.row} data-activity-anchor={anchor}>
-        {body}
-      </div>
-    );
   return (
-    <button type="button" className={`${CLASS.row} ${CLASS.rowBtn}`} onClick={onOpen} data-activity-anchor={anchor}>
-      {body}
-    </button>
+    <ListRow
+      variant="plain"
+      leading={
+        <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job)]}`} aria-hidden="true">
+          $
+        </span>
+      }
+      label={
+        <span className={description ? undefined : CLASS.rowMono} title={job.command}>
+          {description || job.command?.trim() || job.jobId}
+        </span>
+      }
+      meta={jobStatusDisplay(job.status, job.reason)}
+      onSelect={onOpen}
+      data-activity-anchor={activityNodeID({ ...job, kind: "shell" })}
+    />
   );
 }
 
