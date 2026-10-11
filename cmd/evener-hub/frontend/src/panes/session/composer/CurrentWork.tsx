@@ -1,4 +1,4 @@
-import { VisuallyHidden } from "../../../widgets";
+import { Button, Eyebrow, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { GoalGlyph } from "../GoalGlyph";
 import styles from "./currentwork.module.css";
@@ -17,11 +17,8 @@ const CLASS = {
   goal: requireClass(styles.goal, "currentwork.module.css", "goal"),
   dot: requireClass(styles.dot, "currentwork.module.css", "dot"),
   flag: requireClass(styles.flag, "currentwork.module.css", "flag"),
-  label: requireClass(styles.label, "currentwork.module.css", "label"),
-  value: requireClass(styles.value, "currentwork.module.css", "value"),
   status: requireClass(styles.status, "currentwork.module.css", "status"),
   statusBlocked: requireClass(styles.statusBlocked, "currentwork.module.css", "statusBlocked"),
-  link: requireClass(styles.link, "currentwork.module.css", "link"),
   divider: requireClass(styles.divider, "currentwork.module.css", "divider"),
 };
 
@@ -65,17 +62,16 @@ export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }:
           {currentTask && (
             <div className={CLASS.task} data-testid="current-work-task">
               <span className={CLASS.dot} aria-hidden="true" />
-              <span className={CLASS.label}>Task</span>
-              <button
-                type="button"
-                className={`${CLASS.value} ${CLASS.link}`}
+              <Eyebrow as="span">Task</Eyebrow>
+              <Button
+                variant="link"
                 data-testid="current-work-task-value"
                 title={task}
                 aria-label={`Open tasks: ${currentTask}`}
                 onClick={onOpenTasks}
               >
                 {currentTask}
-              </button>
+              </Button>
             </div>
           )}
           {currentTask && currentGoal && (
@@ -84,17 +80,16 @@ export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }:
           {currentGoal && (
             <div className={CLASS.goal} data-testid="current-work-goal">
               <GoalGlyph className={CLASS.flag} />
-              <span className={CLASS.label}>Goal</span>
-              <button
-                type="button"
-                className={`${CLASS.value} ${CLASS.link}`}
+              <Eyebrow as="span">Goal</Eyebrow>
+              <Button
+                variant="link"
                 data-testid="current-work-goal-value"
                 title={goal}
                 aria-label={`Edit goal: ${currentGoal}`}
                 onClick={onEditGoal}
               >
                 {currentGoal}
-              </button>
+              </Button>
               {currentGoalStatus && (
                 <span
                   className={statusKey === "blocked" ? `${CLASS.status} ${CLASS.statusBlocked}` : CLASS.status}

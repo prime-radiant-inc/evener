@@ -92,6 +92,18 @@ test("a note over 100 lines clamps behind an honest disclosure", () => {
   expect(screen.getByTestId("job-watch-note").textContent).toContain("note line 101");
 });
 
+test("the clamped note's toggle is a button that reports whether the full note is showing", async () => {
+  const user = userEvent.setup();
+  renderCreateNoteBody(Array.from({ length: 101 }, (_, i) => `note line ${i + 1}`).join("\n"));
+  const show = screen.getByRole("button", { name: "Show full note" });
+  expect(show.getAttribute("aria-expanded")).toBe("false");
+  await user.click(show);
+  const less = screen.getByRole("button", { name: "Show less" });
+  expect(less.getAttribute("aria-expanded")).toBe("true");
+  await user.click(less);
+  expect(screen.getByRole("button", { name: "Show full note" }).getAttribute("aria-expanded")).toBe("false");
+});
+
 test("a note at exactly 100 lines renders in full with no disclosure", () => {
   renderCreateNoteBody(Array.from({ length: 100 }, (_, i) => `note line ${i + 1}`).join("\n"));
   expect(screen.queryByText("Show full note")).toBeNull();
