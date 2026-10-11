@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -489,6 +490,20 @@ func applyUpdatePosted(state State, event Event) error {
 // so the receiver's attention id for an update never repeats.
 func UpdateDeliveryID(delegateID string, seq uint64) string {
 	return fmt.Sprintf("%s/update/%d", delegateID, seq)
+}
+
+// IsUpdateDeliveryID reports whether deliveryID names an update's delivery,
+// the shape UpdateDeliveryID builds, rather than a generation's report.
+// Classifying by id shape is safe because ids are minted only by
+// UpdateDeliveryID and delegateDeliveryID, and the fuzz invariant pins each
+// kind's shape.
+func IsUpdateDeliveryID(deliveryID string) bool {
+	delegateID, seq, ok := strings.Cut(deliveryID, "/update/")
+	if !ok || delegateID == "" {
+		return false
+	}
+	_, err := strconv.ParseUint(seq, 10, 64)
+	return err == nil
 }
 
 func validateEventEnvelope(event Event) error {

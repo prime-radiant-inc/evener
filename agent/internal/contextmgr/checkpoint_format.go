@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// checkpointConversationHeading heads the conversation a compaction turn
+// carries verbatim.
+const checkpointConversationHeading = "## Conversation"
+
 type checkpointConversationEntry struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
@@ -21,7 +25,7 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("## Conversation\n\n")
+	b.WriteString(checkpointConversationHeading + "\n\n")
 	for _, entry := range entries {
 		switch entry.Role {
 		case "agent":
@@ -76,6 +80,18 @@ func extractCheckpointEarlierSummaries(text string) []string {
 		summaries = append(summaries, block.Text)
 	}
 	return summaries
+}
+
+// renderCompactionModelText renders a model-written compaction turn's own text
+// under heading, fenced. It comes first in the turn: a summarizer reads a
+// previous compaction from its head, so the model's text must not sit behind
+// the partner's messages the turn carries. Fencing it keeps its own headings
+// and code fences from being read as the sections that follow.
+func renderCompactionModelText(heading, text string) string {
+	var b strings.Builder
+	b.WriteString(heading + "\n\n")
+	writeMarkdownFence(&b, text)
+	return b.String()
 }
 
 func writeMarkdownFence(b *strings.Builder, text string) {
@@ -144,7 +160,7 @@ func extractCheckpointConversation(text string) []checkpointConversationEntry {
 }
 
 func extractMarkdownConversation(text string) []checkpointConversationEntry {
-	section := markdownSection(text, "## Conversation")
+	section := markdownSection(text, checkpointConversationHeading)
 	if section == "" {
 		return nil
 	}
@@ -184,6 +200,16 @@ func markdownSection(text, heading string) string {
 		return ""
 	}
 	return text[body:end]
+}
+
+// withoutMarkdownSection returns text with heading's section removed, or text
+// unchanged when it has no such section.
+func withoutMarkdownSection(text, heading string) string {
+	start, _, end, ok := markdownSectionSpan(text, heading)
+	if !ok {
+		return text
+	}
+	return text[:start] + text[end:]
 }
 
 // markdownSectionSpan locates heading's section in text: start is where the

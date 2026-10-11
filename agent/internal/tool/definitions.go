@@ -336,7 +336,7 @@ func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to a child delegate you created or, from a delegate, to its controlling caller. " +
-			"Use the contextual `caller` route for a non-terminal update that should not end your turn; use communicate for your final result or observer completion. " +
+			"Use the contextual `caller` route to steer your controlling caller. Send a non-terminal update with `communicate(end_turn=false)`, and your final result or observer completion with communicate. " +
 			"Send child follow-ups by durable delegate_id. `to` accepts a `dlg_...` delegate_id or contextual `caller`; it rejects job/turn handles and unrelated runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -742,6 +742,7 @@ const ObserverReporting = "Observers send updates with `communicate(end_turn=fal
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
+	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
 	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. " +
 	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 
