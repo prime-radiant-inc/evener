@@ -6312,3 +6312,82 @@ test("a foldable ref whose outbox has not loaded is not foldable", async () => {
   expect(hasQueuedNonSend(ref)).toBe(false);
   expect(resumeOnlyLocalModel(ref)).toBe(true);
 });
+
+describe("pending shared membership acquisition", () => {
+  test("a resync surviving a timed-out first acquisition retries in its current owner", async () => {
+    const fake = connectFakeClient();
+    const initial = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () =>
+      ++reads === 1
+        ? initial.promise
+        : readResponse("ref_a", { turns: [{ id: "turn_current", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    const first = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushMicrotasks();
+    expect(reads).toBe(1);
+    initial.reject(new RequestTimeoutError("first acquisition timed out"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    runScheduledHydrationRetry();
+    await first;
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("turn_current");
+    expect(
+      fake.calls
+        .filter((call) => call.method === "thread/read")
+        .every((call) => (call.params as { subscribe: boolean }).subscribe),
+    ).toBe(true);
+    threadsStore.getState().releaseThread("ref_a");
+  });
+  test("a rich watcher surviving a failed lean acquisition retries with its required turns", async () => {
+    const fake = connectFakeClient(),
+      initial = deferred<ThreadReadResponse>();
+    const includes: boolean[] = [];
+    fake.on("thread/read", (params) => {
+      includes.push(params.includeTurns === true);
+      return includes.length === 1
+        ? initial.promise
+        : readResponse("ref_a", { turns: [{ id: "rich", status: "completed", itemsView: "full", items: [] }] });
+    });
+    const lean = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => includes.length === 1);
+    const rich = threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    await flushMicrotasks();
+    expect(includes).toEqual([false]);
+    initial.reject(new RequestTimeoutError("lean acquisition timed out"));
+    await flushUntil(() => scheduledHydrationRetries.length > 0);
+    runScheduledHydrationRetry();
+    await Promise.all([lean, rich]);
+    expect(includes).toEqual([false, true]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("rich");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+  test("release and reacquire waits for pending membership and fences the retired model", async () => {
+    const fake = connectFakeClient(),
+      initial = deferred<ThreadReadResponse>(),
+      replacement = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () => (++reads === 1 ? initial.promise : replacement.promise));
+    const first = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+    threadsStore.getState().releaseThread("ref_a");
+    const second = threadsStore.getState().ensureThread("ref_a");
+    await flushMicrotasks();
+    expect(reads).toBe(1);
+    initial.resolve(
+      readResponse("ref_a", { turns: [{ id: "old", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await flushUntil(() => reads === 2);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    replacement.resolve(
+      readResponse("ref_a", { turns: [{ id: "new", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await Promise.all([first, second]);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.id).toBe("new");
+    threadsStore.getState().releaseThread("ref_a");
+  });
+});
