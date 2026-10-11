@@ -292,7 +292,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				// Include the file path so the agent can correlate descriptions to
 				// specific files when multiple images/documents are read in one round.
 				label := "Image description (from vision)"
-				if strings.HasPrefix(r.ImageMediaType, "application/pdf") {
+				if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.ImageMediaType)), "application/pdf") {
 					label = "Document description (from content analysis)"
 				}
 				if path != "" {

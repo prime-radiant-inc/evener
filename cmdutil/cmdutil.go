@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/schema"
@@ -217,7 +216,7 @@ func ModelDescriptorFromResolved(res registry.Resolved) appwire.ModelDescriptor 
 		d.SupportsTools = new(*caps.Tools)
 	}
 	if len(caps.InputModalities) > 0 {
-		d.SupportsVision = new(slices.Contains(caps.InputModalities, "image"))
+		d.SupportsVision = new(caps.AcceptsModality("image"))
 	}
 	if caps.WebSearch != nil {
 		d.SupportsWebSearch = new(*caps.WebSearch)
