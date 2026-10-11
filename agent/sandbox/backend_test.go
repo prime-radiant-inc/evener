@@ -213,3 +213,29 @@ func TestPrepareCacheRootsDropsAnOverlayWhoseWriteRootCannotBeCreated(t *testing
 		t.Errorf("a cache holding a write root that could not be created must not be overlaid: %v", got.CacheRoots)
 	}
 }
+
+// A granted write root spelled inside the worktree but resolving through a
+// link into a cache is created too: only git's own entries are skipped.
+func TestWrapperCreatesAWorktreeSpelledWriteRootThatResolvesInsideACache(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache")
+	worktree := filepath.Join(home, "repo")
+	for _, d := range []string{cache, filepath.Join(worktree, ".git")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(cache, filepath.Join(worktree, "cache")); err != nil {
+		t.Fatal(err)
+	}
+	library := filepath.Join(worktree, "cache", "library")
+	rp := ResolvedPolicy{CacheRoots: []string{cache}}
+	rp.Git.WorktreeRoot = worktree
+	rp.Git.GitDir = filepath.Join(worktree, ".git")
+	rp.Git.CommonDir = rp.Git.GitDir
+	rp.Spawned.WriteRoots = []string{library}
+	createWriteRootsInsideCaches(rp)
+	if fi, err := os.Stat(library); err != nil || !fi.IsDir() {
+		t.Errorf("a write root reached through a worktree link into a cache must be created (err=%v)", err)
+	}
+}

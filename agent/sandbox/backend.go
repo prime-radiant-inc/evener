@@ -92,7 +92,7 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 // vanishing. Git's own entries (some of them files, such as packed-refs) are
 // never created here.
 func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
-	gitRoots := appendNonEmpty(appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir), rp.Git.WorktreeRoot)
+	gitRoots := appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir)
 	for _, w := range bwrapWriteRoots(rp) {
 		if _, err := os.Lstat(w); !errors.Is(err, fs.ErrNotExist) || isUnderAnyRoot(w, gitRoots) {
 			continue
