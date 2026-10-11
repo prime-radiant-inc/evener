@@ -3,6 +3,7 @@ import { Button } from "../button";
 import { IconButton } from "../iconbutton";
 import { Input } from "../input";
 import { requireClass } from "../internal/requireClass";
+import { VisuallyHidden } from "../visuallyhidden";
 import styles from "./collectioneditor.module.css";
 
 export type CollectionAddResult = { ok: true } | { ok: false; error: string };
@@ -74,7 +75,6 @@ const CLASS = {
   inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),
   addField: requireClass(styles.addField, "collectioneditor.module.css", "addField"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "collectioneditor.module.css", "visuallyHidden"),
   error: requireClass(styles.error, "collectioneditor.module.css", "error"),
 };
 
@@ -166,7 +166,7 @@ export function CollectionEditor<T>({
         ) : (
           <>
             <label className={CLASS.addField}>
-              <span className={CLASS.visuallyHidden}>{label}</span>
+              <VisuallyHidden>{label}</VisuallyHidden>
               <Input
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}

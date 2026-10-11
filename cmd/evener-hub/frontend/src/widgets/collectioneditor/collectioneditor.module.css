@@ -80,20 +80,3 @@
   font-size: var(--font-size-caption);
 }
 
-/* Standard clip-to-1px visually-hidden technique: hides the add field's
- * accessible-name text visually (the placeholder already conveys it
- * sighted) while keeping it in the accessibility tree - `display:none`
- * would remove it from that tree too, which is the one thing this must
- * not do.
- */
-.visuallyHidden {
-  position: absolute;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  white-space: nowrap;
-  border: 0;
-}

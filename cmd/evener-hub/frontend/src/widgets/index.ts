@@ -5,6 +5,8 @@
 
 export type { BadgeProps, BadgeTone } from "./badge";
 export { Badge } from "./badge";
+export type { BannerAction, BannerProps, BannerTone } from "./banner";
+export { Banner } from "./banner";
 export type { ButtonProps, ButtonSize, ButtonVariant } from "./button";
 export { Button } from "./button";
 export type { CadenceProps, CadenceState } from "./cadence";
@@ -119,3 +121,5 @@ export type { TreeNode, TreeProps, TreeRowInfo } from "./tree";
 export { Tree } from "./tree";
 export type { CommittedVirtualListLayout, VirtualListHandle, VirtualListProps } from "./virtuallist";
 export { VirtualList } from "./virtuallist";
+export type { VisuallyHiddenProps } from "./visuallyhidden";
+export { VisuallyHidden } from "./visuallyhidden";
