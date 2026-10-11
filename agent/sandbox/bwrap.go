@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,6 +201,54 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		}
 		maskInvisible(&a, masked, m)
 	}
+	// The roots carved out of the mask (installed plugins and the user skills
+	// directory) are re-bound read-only on top of it. Like the masks, they are
+	// bound at their symlink-resolved real path, where the mask landed. A root
+	// listed under two spellings (a symlinked home or config dir) resolves to
+	// one directory and is bound once.
+	//
+	// A .git inside a carve-out stays masked (see ResolvedPolicy.Masks). bwrap
+	// cannot mask by pattern, so the existing ones are found at each spawn and
+	// masked after every carve-out bind, so no later bind covers them; one
+	// cloned in mid-command is masked from the next spawn on. A root too large
+	// to inspect within gitWalkBudget is not re-granted at all, so it stays
+	// masked rather than exposing an unseen .git.
+	//
+	// The restricted namespace starts empty, so a root named through a symlink
+	// gets that spelling recreated as a link to the real path: skill discovery
+	// advertises the literal spelling, and the link reaches only the bind and
+	// its masks. A read-anywhere namespace already has the host's link.
+	granted := make(map[string]bool)
+	var carvedGitDirs []string
+	for _, r := range rp.UnmaskedRoots {
+		// Checked again here: a symlink can appear after resolution. Like
+		// every bind in this argv (see buildBwrapArgv), the source is a path
+		// bwrap opens when it starts, so a swap between this check and that
+		// open is not caught here. Only a writer outside the sandbox can make
+		// one: the carve-out and the config directory above it are read-only
+		// or masked for every sandboxed process, and the next spawn's check
+		// refuses the swapped root.
+		resolved, err := bwrapEvalSymlinks(r)
+		if err != nil || !rp.CarveOutResolvesTo(r, resolved) {
+			continue
+		}
+		ok, seen := granted[resolved]
+		if !seen {
+			gitDirs, complete := gitDirsUnder(resolved, gitWalkBudget)
+			ok = complete
+			granted[resolved] = ok
+			if ok {
+				add("--ro-bind", resolved, resolved)
+				carvedGitDirs = append(carvedGitDirs, gitDirs...)
+			}
+		}
+		if ok && r != resolved && sp.Read != ReadAnywhere && !isUnderAnyRoot(r, sp.ReadRoots) {
+			add("--symlink", resolved, r)
+		}
+	}
+	for _, g := range carvedGitDirs {
+		maskInvisible(&a, masked, g)
+	}
 
 	// ModeReadOnly and WriteBlocked allow only session scratch writes. Remount
 	// /tmp after all binds and masks have created their mountpoints: doing it
@@ -332,6 +382,73 @@ func maskHandledByNamespace(path string) bool {
 		return false
 	}
 	return path == "/proc" || path == "/dev" || strings.HasPrefix(path, "/dev/")
+}
+
+// gitWalkBudget bounds how many entries gitDirsUnder visits below one carve-out
+// root at each spawn. Installed plugins and user skills are small trees; one
+// past this bound is left masked for spawned processes instead of walked.
+const gitWalkBudget = 50_000
+
+// gitReadDirChunk reads up to n entries of an open directory (os.File.ReadDir),
+// a seam for tests.
+var gitReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) { return f.ReadDir(n) }
+
+// gitDirsUnder returns the .git entries (directories or gitdir files) at any
+// depth below root, without descending into them or following symlinks (the
+// bind exposes a symlink's target only where it is already visible), and
+// whether it saw the whole tree within budget entries, every directory listed.
+// Directories are read in chunks, so the budget bounds the reading itself.
+//
+// A .git that is a symlink is masked at its target when that lies inside root;
+// one pointing anywhere else (the workspace's .git, or /) makes the tree count
+// as uninspectable, since masking its target would hide something unrelated.
+func gitDirsUnder(root string, budget int) ([]string, bool) {
+	var found []string
+	visited := 0
+	chunk := min(256, budget+1)
+	pending := []string{root}
+	for len(pending) > 0 {
+		dir := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		f, err := os.Open(dir)
+		if err != nil {
+			// A directory the walk cannot list may still hold a .git
+			// reachable by name (search without read permission).
+			return found, false
+		}
+		for {
+			entries, err := gitReadDirChunk(f, chunk)
+			for _, e := range entries {
+				if visited++; visited > budget {
+					_ = f.Close()
+					return found, false
+				}
+				p := filepath.Join(dir, e.Name())
+				switch {
+				case isGitName(e.Name()) && e.Type()&os.ModeSymlink != 0:
+					target, terr := bwrapEvalSymlinks(p)
+					if terr != nil || !pathUnder(target, root) {
+						_ = f.Close()
+						return found, false
+					}
+					found = append(found, target)
+				case isGitName(e.Name()):
+					found = append(found, p)
+				case e.IsDir():
+					pending = append(pending, p)
+				}
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				_ = f.Close()
+				return found, false
+			}
+		}
+		_ = f.Close()
+	}
+	return found, true
 }
 
 // pathExists reports whether path exists on the host (following symlinks).
