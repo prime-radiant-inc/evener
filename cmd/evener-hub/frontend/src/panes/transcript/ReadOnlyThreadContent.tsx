@@ -10,7 +10,7 @@ import { useStore } from "zustand";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { EmptyState, type VirtualListHandle, VisuallyHidden } from "../../widgets";
+import { EmptyState, Loader, type VirtualListHandle, VisuallyHidden } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
@@ -114,7 +114,7 @@ export function ReadOnlyThreadContent({
         />
       );
     }
-    return <EmptyState title="Loading transcript…" />;
+    return <Loader label="Loading transcript" />;
   }
   return (
     <SessionNowContext.Provider value={now}>
