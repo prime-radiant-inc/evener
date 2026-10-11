@@ -714,29 +714,31 @@ func TestCacheRootsNeverCoverTheWorktreeThroughAMissingPathsSymlinkedParent(t *t
 	}
 }
 
-// A configured cache "root" that is an existing file is not a cache root the
-// overlay can serve, so it is left out of CacheRoots.
-func TestCacheRootsLeaveOutAnExistingNonDirectory(t *testing.T) {
-	file := filepath.Join(clean(t.TempDir()), "gocache-is-a-file")
+// A cache root that is a file, or a dangling symlink (a drive not mounted at
+// session start), is not overlaid while it is so, but stays in the policy:
+// once it is a directory (the drive mounted), the next spawn serves it.
+func TestCacheRootsUnavailableAtResolutionAreServedOnceAvailable(t *testing.T) {
+	dir := clean(t.TempDir())
+	file := filepath.Join(dir, "gocache-is-a-file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/home/tester", GoCache: file}, "/work/project")
-	if slices.Contains(roots, file) {
-		t.Errorf("an existing non-directory must not be a cache root: %v", roots)
-	}
-}
-
-// A cache root that is a dangling symlink can neither be overlaid nor created,
-// so it is left out of the cache roots.
-func TestCacheRootsLeaveOutADanglingSymlink(t *testing.T) {
-	dir := clean(t.TempDir())
-	link := filepath.Join(dir, "gocache")
-	if err := os.Symlink(filepath.Join(dir, "unmounted", "drive"), link); err != nil {
+	drive := filepath.Join(dir, "unmounted", "drive")
+	link := filepath.Join(dir, "modcache")
+	if err := os.Symlink(drive, link); err != nil {
 		t.Fatal(err)
 	}
-	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoCache: link}, "/work/project"); slices.Contains(roots, link) {
-		t.Errorf("a dangling-symlink cache root must be left out: %v", roots)
+	host := HostFacts{OS: "linux", Home: clean(t.TempDir()), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: file, GoModCache: link}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, host, mainRepo(t))
+	live := liveCacheRoots(rp)
+	if slices.Contains(live, file) || slices.Contains(live, link) {
+		t.Errorf("a file or dangling-symlink cache root must not be overlaid: %v", live)
+	}
+	if err := os.MkdirAll(drive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(liveCacheRoots(rp), link) {
+		t.Errorf("a cache root whose drive is now mounted must be overlaid: %v (policy %v)", liveCacheRoots(rp), rp.CacheRoots)
 	}
 }
 

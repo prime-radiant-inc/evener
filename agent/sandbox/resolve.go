@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -546,14 +545,10 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 			out = append(out, filepath.Join(host.Home, rel))
 		}
 		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
+		// A root that is not a directory yet (a file, a dangling link to an
+		// unmounted drive) stays: each spawn decides whether it is overlaid
+		// (liveCacheRoots), so one that becomes available is served.
 		roots = slices.DeleteFunc(roots, func(r string) bool {
-			// A file, or a dangling symlink, can neither be overlaid nor
-			// created.
-			if fi, err := os.Stat(r); err == nil && !fi.IsDir() {
-				return true
-			} else if _, lerr := os.Lstat(r); err != nil && lerr == nil {
-				return true
-			}
 			return pathUnder(r, worktree) || pathUnder(resolveExistingPrefix(r), worktree)
 		})
 		return dedupeRoots(roots)
