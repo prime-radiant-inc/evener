@@ -792,3 +792,34 @@ func TestCacheRootsLeaveOutALinkChainThroughAPrivateMount(t *testing.T) {
 		t.Errorf("a cache root whose resolution passes through a link in /tmp must not be overlaid: %v", roots)
 	}
 }
+
+// A ".." in a link target climbs from where the previous link resolved, as
+// the kernel follows it: /var/tmp/d/front -> hop/../../r with hop -> /tmp/x/in
+// resolves inside /tmp even though the target reads as /var/tmp/r lexically.
+func TestLinksThroughPrivateMountFollowsDotDotPhysically(t *testing.T) {
+	d, err := os.MkdirTemp("/var/tmp", "evener-dotdot-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	x, err := os.MkdirTemp("/tmp", "evener-dotdot-x-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(x) })
+	if err := os.MkdirAll(filepath.Join(x, "in"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(x, "r"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(x, "in"), filepath.Join(d, "hop")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("hop/../r", filepath.Join(d, "front")); err != nil {
+		t.Fatal(err)
+	}
+	if !linksThroughPrivateMount(filepath.Join(d, "front", "cache")) {
+		t.Error("a link whose target climbs out of a link into /tmp must count as passing through /tmp")
+	}
+}

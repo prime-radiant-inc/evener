@@ -1,7 +1,11 @@
 package sandbox
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -145,5 +149,46 @@ func TestConfineTrustedInfraNilIsIdentity(t *testing.T) {
 	w.ConfineTrustedInfra(cmd, "/somewhere")
 	if !slices.Equal(cmd.Args, want) || cmd.Dir != "" {
 		t.Errorf("nil wrapper must be identity, got args=%v dir=%q", cmd.Args, cmd.Dir)
+	}
+}
+
+// Git's own write grants include files (packed-refs and its lock), so a
+// missing one inside an overlaid cache root is never created as a directory:
+// git would then fail to write it.
+func TestWrapperLeavesAMissingGitFileGrantInsideACacheUncreated(t *testing.T) {
+	cache := t.TempDir()
+	commonDir := filepath.Join(cache, "repo", ".git")
+	if err := os.MkdirAll(commonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packedRefs := filepath.Join(commonDir, "packed-refs")
+	rp := ResolvedPolicy{CacheRoots: []string{cache}}
+	rp.Git.CommonDir = commonDir
+	rp.Git.GitDir = commonDir
+	rp.Spawned.WriteRoots = []string{packedRefs}
+	createWriteRootsInsideCaches(rp)
+	if _, err := os.Lstat(packedRefs); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a missing git file grant must not be created (err=%v)", err)
+	}
+}
+
+// A missing write root spelled through a link that resolves inside an
+// overlaid cache root is created too: the overlay covers where it resolves.
+func TestWrapperCreatesAMissingWriteRootThatResolvesInsideACache(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "cachelink")
+	if err := os.Symlink(cache, link); err != nil {
+		t.Fatal(err)
+	}
+	library := filepath.Join(link, "library")
+	rp := ResolvedPolicy{CacheRoots: []string{cache}}
+	rp.Spawned.WriteRoots = []string{library}
+	createWriteRootsInsideCaches(rp)
+	if fi, err := os.Stat(library); err != nil || !fi.IsDir() {
+		t.Errorf("a missing write root resolving inside a cache must be created (err=%v)", err)
 	}
 }

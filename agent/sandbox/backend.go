@@ -83,17 +83,22 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 }
 
 // createWriteRootsInsideCaches creates each missing persistent write root
-// that lies inside a cache root. bwrap binds only existing roots, and one
-// missing inside an overlaid cache would be created by the spawn in the
-// overlay's discarded upper layer, so writes there would vanish. Creating it
-// empty first lets it be bound writable over the overlay; it is a directory
-// the user granted for writing.
+// that lies inside a cache root, by spelling or resolved location. bwrap binds
+// only existing roots, and one missing inside an overlaid cache would be
+// created by the spawn in the overlay's discarded upper layer, so writes
+// there would vanish. Creating it empty first lets it be bound writable over
+// the overlay; it is a directory the user granted for writing. Git's own
+// entries (some of them files, such as packed-refs) are never created here.
 func createWriteRootsInsideCaches(rp ResolvedPolicy) {
+	gitRoots := appendNonEmpty(appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir), rp.Git.WorktreeRoot)
 	for _, w := range bwrapWriteRoots(rp) {
-		if _, err := os.Lstat(w); !errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Lstat(w); !errors.Is(err, fs.ErrNotExist) || isUnderAnyRoot(w, gitRoots) {
 			continue
 		}
-		if slices.ContainsFunc(rp.CacheRoots, func(c string) bool { return pathUnder(w, c) }) {
+		rw := resolveExistingPrefix(w)
+		if slices.ContainsFunc(rp.CacheRoots, func(c string) bool {
+			return pathUnder(w, c) || pathUnder(rw, resolveExistingPrefix(c))
+		}) {
 			_ = os.MkdirAll(w, 0o755)
 		}
 	}

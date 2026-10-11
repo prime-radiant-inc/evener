@@ -586,36 +586,46 @@ func inPrivateMount(p string) bool {
 }
 
 // linksThroughPrivateMount reports whether resolving p follows a symlink that
-// lies in, or points into, a private mount (inPrivateMount), at any step of
-// the chain. Inside the sandbox such a link is hidden or leads elsewhere, so
-// an overlay at p would not sit over the storage p names on the host.
+// lies in a private mount (inPrivateMount), or after following any symlink
+// reaches into one, at any step of the chain. Links are followed physically
+// (a ".." in a target climbs from where the link resolved, not lexically), as
+// the kernel does. Inside the sandbox such a link is hidden or leads
+// elsewhere, so an overlay at p would not sit over the storage p names on the
+// host.
 func linksThroughPrivateMount(p string) bool {
-	pending := strings.Split(strings.TrimPrefix(filepath.Clean(p), "/"), "/")
-	cur := "/"
+	pending := strings.Split(p, "/")
+	cur, followed := "/", false
 	for hops := 0; len(pending) > 0; {
 		comp := pending[0]
 		pending = pending[1:]
-		if comp == "" {
+		switch comp {
+		case "", ".":
 			continue
-		}
-		next := filepath.Join(cur, comp)
-		fi, err := os.Lstat(next)
-		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		case "..":
+			cur = filepath.Dir(cur)
+		default:
+			next := filepath.Join(cur, comp)
+			fi, err := os.Lstat(next)
+			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				if inPrivateMount(next) {
+					return true
+				}
+				target, err := os.Readlink(next)
+				if hops++; err != nil || hops > 40 {
+					return false
+				}
+				if filepath.IsAbs(target) {
+					cur = "/"
+				}
+				followed = true
+				pending = append(strings.Split(target, "/"), pending...)
+				continue
+			}
 			cur = next
-			continue
 		}
-		target, err := os.Readlink(next)
-		if hops++; err != nil || hops > 40 {
-			return false
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(cur, target)
-		}
-		if inPrivateMount(next) || inPrivateMount(target) {
+		if followed && inPrivateMount(cur) {
 			return true
 		}
-		pending = append(strings.Split(strings.TrimPrefix(filepath.Clean(target), "/"), "/"), pending...)
-		cur = "/"
 	}
 	return false
 }
