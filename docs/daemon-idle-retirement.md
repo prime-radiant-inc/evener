@@ -70,12 +70,13 @@ calls, subscriptions and polling a mounted Settings → Hub section never extend
 residency. A long-lived subscription receives closure when retirement commits;
 it does not pin the daemon.
 
-Work a Stop parked does not count. A Stop holds the queue and parks delegate
-attention for the root until you send your next message; nothing in the
-process can deliver that attention before then, and both the attention and
-the park are saved, so the daemon retires and the resumed session comes back
-with the same attention waiting. Your next message releases the park and the
-attention is delivered after your own turn.
+Delegate attention a Stop parked does not count. A Stop parks the root's
+delegate attention until you send your next message; nothing in the process
+can deliver it before then, and both the attention and the park are saved, so
+the daemon retires and the resumed session comes back with the same attention
+waiting. Your next message releases the park and the attention is delivered
+after your own turn. Messages a Stop left queued and steering it parked are
+still accepted input and keep the daemon resident.
 
 Questions and watches **can** pin the daemon indefinitely. An unanswered
 `ask_user` question is a human-decision blocker, and an active watch is a watch
