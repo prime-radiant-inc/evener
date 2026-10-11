@@ -813,7 +813,7 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 		tone: "info" as const,
 	};
 	if (notifications) return { ...common, text: it.text, notifications };
-	return { ...common, text: stripSystemReminder(it.text), label: steeringLabel(it.steeringKind) };
+	return { ...common, text: stripSystemReminder(it.text), label: steeringLabel(it.steeringKind, it.source) };
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {

@@ -50,3 +50,9 @@ test("says a steer as the system's, naming its kind, or bare when the kind has n
   expect(steeringLabel("some-future-kind")).toBe("System steered");
   expect(steeringLabel(undefined)).toBe("System steered");
 });
+
+test("a steer from the session's parent agent says so, whatever its kind", () => {
+  expect(steeringLabel(undefined, "parent")).toBe("From parent");
+  expect(steeringLabel("agent-message", "parent")).toBe("From parent");
+  expect(steeringLabel(undefined, undefined)).toBe("System steered");
+});

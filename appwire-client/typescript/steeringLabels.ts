@@ -63,10 +63,17 @@ function steeringKindLabel(kind: string | undefined): string | undefined {
 // name, because the row's own words say "System steered").
 const STEERED = "System steered";
 
-/** The label a daemon steer folds to in both clients: "System steered:
- * <what it did>", or a bare "System steered" for a kind with no label, since
- * a colon promises a value. */
-export function steeringLabel(kind: string | undefined): string {
+// A steer the session's parent agent sent with delegate_send (the wire's
+// source "parent", events.SteeringSourceParent) is the parent speaking, not
+// the system, so it says so instead of "System steered".
+const FROM_PARENT = "From parent";
+
+/** The label a steer folds to in both clients: "From parent" for a steer from
+ * the session's parent agent; otherwise "System steered: <what it did>", or a
+ * bare "System steered" for a kind with no label, since a colon promises a
+ * value. */
+export function steeringLabel(kind: string | undefined, source?: string): string {
+  if (source === "parent") return FROM_PARENT;
   const label = steeringKindLabel(kind);
   return label === undefined ? STEERED : `${STEERED}: ${label}`;
 }

@@ -29,6 +29,7 @@ test.each([
   ["steer-provider-failure", "System steered: Provider failed"],
   ["steer-transcript-pointer", "System steered: Where to find the full transcript"],
   ["steer-note-handoff", "System steered: Note to self"],
+  ["steer-from-parent", "From parent"],
 ] as const)("folds %s to %s, opening to what it said", (name, label) => {
   render(<SteeringItem item={steer(name)} turn={turn} live={false} />);
   expect(screen.getByText(label)).toBeTruthy();

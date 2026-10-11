@@ -64,7 +64,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
-  const label = steeringLabel(item.steeringKind);
+  const label = steeringLabel(item.steeringKind, item.source);
   if (fragments) {
     return (
       <>

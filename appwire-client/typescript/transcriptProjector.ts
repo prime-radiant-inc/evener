@@ -291,9 +291,10 @@ function isToolRepairNotice(item: ItemModel): boolean {
 }
 
 // A daemon steer: instructions the daemon sent the agent, never a steer the
-// human wrote (source "user", the human-note kind included).
+// human wrote (source "user", the human-note kind included) and not a message
+// from the session's parent agent (source "parent").
 function isDaemonSteer(item: ItemModel): boolean {
-  return item.type === "steering" && item.source !== "user";
+  return item.type === "steering" && item.source !== "user" && item.source !== "parent";
 }
 
 function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vector: ContentVector): Decision {
