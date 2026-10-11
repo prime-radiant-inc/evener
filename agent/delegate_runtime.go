@@ -2048,7 +2048,13 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err := llm.ValidateReasoningEffort(llm.NormalizeReasoningEffort(args.ReasoningEffort)); err != nil {
 		return delegateStartFailed(err)
 	}
-	selection, err := s.selectSubagentModel(ctx, args.Model, args.AgentType)
+	var selection subagentModelSelection
+	var err error
+	if args.runtimeRole != "" {
+		selection, err = s.selectRuntimeRoleModel(args.runtimeRole)
+	} else {
+		selection, err = s.selectSubagentModel(ctx, args.Model, args.AgentType)
+	}
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -2262,7 +2268,11 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 
 func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.grantsDelegation())
-	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), isolationName)
+	ceiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), isolationName)
+	if args.runtimeRole == memoryLibrarianRole {
+		ceiling = librarianToolNameCeiling(s.reg, ceiling, allowedTools)
+	}
+	return ceiling
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
@@ -2370,6 +2380,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		Config:                        childConfig,
 		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,
 		ParentWatchGranted:            args.WatchParent,
+		RuntimeRole:                   args.runtimeRole,
 		Provenance:                    s.activeCausalProvenance(),
 		Resumable:                     true,
 	}

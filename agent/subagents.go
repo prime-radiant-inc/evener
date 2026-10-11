@@ -882,6 +882,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.subscriberCount = subscriberCount
 	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentWatchGranted = false
+	subCfg.spawn.memoryLibrarian = frozen != nil && frozen.RuntimeRole == memoryLibrarianRole
 	if frozen != nil {
 		subCfg.spawn.rolePromptOverride = ""
 		subCfg.spawn.activatedSkillBodies = nil

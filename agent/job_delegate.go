@@ -39,6 +39,10 @@ type delegateArgs struct {
 	SandboxNet          *bool
 	ResultSchema        map[string]any
 	TaskList            []taskpkg.TaskTemplate
+	// runtimeRole names a runtime-only role (runtimeOnlyAgentRoles). Only
+	// runtime code sets it; decodeDelegateArgs never does, so a model's
+	// delegate call cannot claim one.
+	runtimeRole string
 }
 
 type delegateWorktreeReport struct {

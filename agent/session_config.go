@@ -57,6 +57,12 @@ type SessionConfig struct {
 	MemoryStateRoot string `json:"-"`
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`
+	// MemoryLibrarian selects who saves memory for a root session: "off" (or
+	// empty with EVENER_MEMORY_LIBRARIAN unset) leaves it to the main agent,
+	// "turn" starts a librarian delegate after each human turn, and "sidecar"
+	// keeps one long-lived librarian per root. A spike switch; process-scoped
+	// and never persisted.
+	MemoryLibrarian string `json:"-"`
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
@@ -812,6 +818,11 @@ type spawnConfig struct {
 	// subscriberCount preserves the root daemon's live observer probe for child
 	// escalation decisions.
 	subscriberCount func() int
+
+	// memoryLibrarian marks the delegate session the runtime started in the
+	// memory-librarian role (Descriptor.RuntimeRole): the one delegate that
+	// keeps the memory save tools.
+	memoryLibrarian bool
 
 	// parentSessionID links sub-agent sessions to their parent (set by spawnAgent).
 	parentSessionID string

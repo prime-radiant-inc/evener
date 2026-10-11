@@ -19,9 +19,42 @@ var builtinAgentsCache struct {
 
 var builtinAgentsFS = bundled.Agents
 
+// runtimeOnlyAgentRoles are bundled roles that only the runtime starts. They
+// are left out of the catalog a model can delegate to, so no model can ask
+// for one (or for the capabilities its identity carries).
+var runtimeOnlyAgentRoles = map[string]bool{memoryLibrarianRole: true}
+
 // builtinAgents parses and returns the core agents embedded directly into the
-// binary. These are keyed by their public name (no plugin prefix).
+// binary, without the runtime-only roles. These are keyed by their public
+// name (no plugin prefix).
 func builtinAgents() (map[string]plugin.Agent, error) {
+	all, err := allBuiltinAgents()
+	if err != nil {
+		return nil, err
+	}
+	for name := range runtimeOnlyAgentRoles {
+		delete(all, name)
+	}
+	return all, nil
+}
+
+// runtimeRoleAgent returns the bundled runtime-only role named name.
+func runtimeRoleAgent(name string) (plugin.Agent, error) {
+	if !runtimeOnlyAgentRoles[name] {
+		return plugin.Agent{}, fmt.Errorf("%q is not a runtime role", name)
+	}
+	all, err := allBuiltinAgents()
+	if err != nil {
+		return plugin.Agent{}, err
+	}
+	agent, ok := all[name]
+	if !ok {
+		return plugin.Agent{}, fmt.Errorf("runtime role %q is not bundled", name)
+	}
+	return agent, nil
+}
+
+func allBuiltinAgents() (map[string]plugin.Agent, error) {
 	builtinAgentsCache.once.Do(func() {
 		builtinAgentsCache.agents, builtinAgentsCache.err = loadBuiltinAgents()
 	})

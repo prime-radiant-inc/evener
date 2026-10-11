@@ -191,7 +191,13 @@ func (s *Session) renderMemoryScope(env *execenv.LocalExecutionEnvironment, p *m
 
 func (s *Session) unavailableMemoryToolNames() []string {
 	var denied []string
+	librarianRoot := s.librarianMode() != librarianOff
 	for _, name := range nativeMemoryToolNames {
+		// A root under the librarian dropped its own save tools; they are not
+		// revoked for the tree, since its librarian delegate saves with them.
+		if librarianRoot && slices.Contains(memorySaveToolNames, name) {
+			continue
+		}
 		if s.reg == nil || s.reg.Get(name) == nil {
 			denied = append(denied, name)
 		}
@@ -213,7 +219,8 @@ func (s *Session) filterUnavailableMemoryTools() {
 		}
 		return
 	}
-	if s.isSubagentSession() {
+	// Under the librarian the root reads memory but no longer saves it.
+	if (s.isSubagentSession() && !s.cfg.spawn.memoryLibrarian) || s.librarianMode() != librarianOff {
 		for _, name := range memorySaveToolNames {
 			s.reg.Remove(name)
 		}

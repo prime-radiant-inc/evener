@@ -39,6 +39,12 @@ type promptData struct {
 	// MemorySaves is true when the session may be told to save memory (the
 	// memory save tools are callable).
 	MemorySaves bool
+	// MemoryByLibrarian is true on a root whose memory the librarian saves:
+	// it reads memory, and is told the librarian handles saving.
+	MemoryByLibrarian bool
+	// MemoryLibrarian is true in the librarian delegate itself, whose role
+	// prompt carries the save guidance the template would otherwise repeat.
+	MemoryLibrarian bool
 	// ProjectMemory is true when memory is readable and a project id is set.
 	ProjectMemory bool
 

@@ -129,6 +129,10 @@ type Descriptor struct {
 	Config                        schema.ConfigSnapshot `json:"config"`
 	SharedTaskStoreOwnerSessionID string                `json:"shared_task_store_owner_session_id,omitempty"`
 	ParentWatchGranted            bool                  `json:"parent_watch_granted,omitempty"`
+	// RuntimeRole names the runtime-only role a delegate was started in
+	// (memory-librarian). Only runtime code sets it, never a model's delegate
+	// call; it is what grants that role's capabilities.
+	RuntimeRole string `json:"runtime_role,omitempty"`
 	Provenance                    *provenance.Causal    `json:"provenance,omitempty"`
 	Resumable                     bool                  `json:"resumable"`
 }
