@@ -1,4 +1,5 @@
 import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode } from "react";
+import { Badge, type BadgeProps } from "../badge";
 import { type ButtonSize, type ButtonVariant, isAriaRefusal } from "../button";
 import buttonStyles from "../button/button.module.css";
 import { requireClass } from "../internal/requireClass";
@@ -20,6 +21,10 @@ export interface IconButtonProps
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   type?: "button" | "submit" | "reset";
+  /** A count riding the icon's top-right corner (a needs-you total). It is
+   * decoration on the button: `label` stays the accessible name, so put the
+   * count in `label` too when a reader needs it. */
+  badge?: BadgeProps;
 }
 
 // Reuses button.module.css's own base/variant/icon classes directly
@@ -50,6 +55,11 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
   md: requireClass(styles.md, "iconbutton.module.css", "md"),
 };
 
+const BADGE_CLASS = {
+  badged: requireClass(styles.badged, "iconbutton.module.css", "badged"),
+  badge: requireClass(styles.badge, "iconbutton.module.css", "badge"),
+};
+
 /**
  * An icon-only Button: same variants/sizes/states, square instead of
  * padded for a text label. label is required and becomes the button's
@@ -69,23 +79,29 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
  * "arriving via untyped spread" test in iconbutton.test.tsx.
  */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { label, icon, variant = "primary", size = "md", onClick, disabled = false, type = "button", ...rest },
+  { label, icon, variant = "primary", size = "md", onClick, disabled = false, type = "button", badge, ...rest },
   ref,
 ) {
   // The same refusal Button makes: aria-disabled keeps the control focusable,
   // so the browser still delivers the click and the widget swallows it here.
   const refused = isAriaRefusal(rest["aria-disabled"]);
+  const className = `${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`;
   return (
     <button
       ref={ref}
       {...rest}
       type={type}
       aria-label={label}
-      className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
+      className={badge === undefined ? className : `${className} ${BADGE_CLASS.badged}`}
       onClick={refused ? undefined : onClick}
       disabled={disabled}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>
+      {badge !== undefined && (
+        <span className={BADGE_CLASS.badge}>
+          <Badge {...badge} />
+        </span>
+      )}
     </button>
   );
 });

@@ -187,6 +187,28 @@ test("xs size is square at 24px, matching Button's own xs height", () => {
   expect(/\.xs\s*\{([^}]*)\}/.exec(buttonCss)?.[1] ?? "").toMatch(/height:\s*24px/);
 });
 
+// badge: a count riding the icon's corner (the hidden rail's Show sidebar,
+// the phone's Sessions trigger). It is part of the button, so it hides,
+// moves and clicks with it, and it never renames the button.
+test("a badge renders its count inside the button without changing the accessible name", () => {
+  render(<IconButton label="Sessions" icon={<DotIcon />} badge={{ count: 3, tone: "attention" }} />);
+  const button = screen.getByRole("button", { name: "Sessions" });
+  expect(button.textContent).toBe("3");
+});
+
+test("a click on a badged button still reaches onClick", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(<IconButton label="Sessions" icon={<DotIcon />} badge={{ count: 3 }} onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  expect(onClick).toHaveBeenCalledTimes(1);
+});
+
+test("without a badge the button carries no count", () => {
+  render(<IconButton label="Sessions" icon={<DotIcon />} />);
+  expect(screen.getByRole("button", { name: "Sessions" }).textContent).toBe("");
+});
+
 // Mobile touch-target floor (2026-07-30-mobile-session-layout-design.md,
 // decision 4): the square icon-only sizes (the top bar's Back/drawer, the
 // composer's attach) reach 44px in both dimensions on the phone. min-*, not
