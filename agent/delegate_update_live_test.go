@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -112,12 +113,15 @@ wait:
 		if d.runErrUnknown {
 			runErrUnknown++
 		}
-		// A delegate the model stopped (job_stop) ends canceled; that is model
-		// behavior, named in the RESULT line, not a harness failure.
-		if errors.Is(d.runErr, context.Canceled) {
-			modelFailures = append(modelFailures, "delegate canceled")
-		} else if d.runErr != nil && !isModelResponseFailure(d.runErr.Error()) {
-			t.Fatalf("a delegate's run failed, so this run says nothing about the model: %v", d.runErr)
+		// A delegate the model stopped (job_stop) ends canceled, and one that
+		// kept returning empty or bare text ends with that error: model
+		// behavior, named in the RESULT line. Any other error, alone or joined
+		// to those, is a harness failure.
+		if d.runErr != nil {
+			if !isModelBehaviorError(d.runErr) {
+				t.Fatalf("a delegate's run failed, so this run says nothing about the model: %v", d.runErr)
+			}
+			modelFailures = append(modelFailures, d.runErr.Error())
 		}
 		for _, failure := range turnFailures(d.entries) {
 			if !isModelResponseFailure(failure) {
@@ -205,11 +209,28 @@ func recordRootStep(ctx context.Context, t *testing.T, modelFailures []string, e
 	switch {
 	case err == nil || ctx.Err() != nil:
 		return modelFailures
-	case errors.Is(err, errEmptyResponseExhausted) || errors.Is(err, errBareTextWithoutResultTool):
+	case isModelBehaviorError(err):
 		return append(modelFailures, err.Error())
 	}
 	t.Fatalf("the root's turn failed, so this run says nothing about the model: %v", err)
 	return modelFailures
+}
+
+// isModelBehaviorError reports whether every error inside err, looking through
+// wrapping and joins, is the model's own doing: the session giving up on empty
+// or bare-text responses, or a cancellation (a stopped delegate). One
+// provider or runtime error anywhere in a join makes the whole error not
+// model behavior.
+func isModelBehaviorError(err error) bool {
+	switch e := err.(type) {
+	case nil:
+		return false
+	case interface{ Unwrap() []error }:
+		return len(e.Unwrap()) > 0 && !slices.ContainsFunc(e.Unwrap(), func(inner error) bool { return !isModelBehaviorError(inner) })
+	case interface{ Unwrap() error }:
+		return isModelBehaviorError(e.Unwrap())
+	}
+	return errors.Is(err, errEmptyResponseExhausted) || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, context.Canceled)
 }
 
 // turnFailures lists the message of every failed turn, in order.
@@ -331,6 +352,29 @@ func TestTurnFailures(t *testing.T) {
 	}
 	if got := turnFailures([]transcript.Entry{{}}); len(got) != 0 {
 		t.Errorf("got %q, want none", got)
+	}
+}
+
+func TestIsModelBehaviorError(t *testing.T) {
+	model := &emptyResponseExhaustedError{retries: maxEmptyRetries}
+	runtime := errors.New("write transcript: disk full")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty responses exhausted", model, true},
+		{"wrapped bare text", fmt.Errorf("turn: %w", &bareTextWithoutResultToolError{toolName: "communicate", retries: maxBareTextRetries}), true},
+		{"canceled", context.Canceled, true},
+		{"runtime error", runtime, false},
+		{"model error joined to a runtime error", errors.Join(model, runtime), false},
+		{"cancellation joined to a runtime error", errors.Join(context.Canceled, runtime), false},
+		{"model error joined to cancellation", errors.Join(model, context.Canceled), true},
+	} {
+		if got := isModelBehaviorError(tc.err); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
