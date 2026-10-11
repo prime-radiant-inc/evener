@@ -253,6 +253,11 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, map[st
 		// spelled under /tmp or /dev, or whose link chain passes through or
 		// into them at any step, is hidden by bwrap's private mounts (the
 		// overlay strategy is bwrap's), so the spawn's go does not read it.
+		// A go env file the user masked (a denylist entry over ~/.config/go)
+		// is still read here: its spawn then falls back to Go's defaults,
+		// whose caches this floor judges as usual, and at worst one the spawn
+		// pointed into its own workspace stays there, inside its grants
+		// (docs/sandboxing.md#threat-model).
 		judged := spawnFile == host.GoEnvFile && filepath.IsAbs(spawnFile) && !inPrivateMount(spawnFile) && !linksThroughPrivateMount(spawnFile)
 		if judged {
 			var ok bool
