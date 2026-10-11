@@ -117,22 +117,37 @@ wait:
 		// kept returning empty or bare text ends with that error: model
 		// behavior, named in the RESULT line. Any other error, alone or joined
 		// to those, is a harness failure.
-		if d.runErr != nil {
-			if !isModelBehaviorError(d.runErr) {
-				t.Fatalf("a delegate's run failed, so this run says nothing about the model: %v", d.runErr)
-			}
-			modelFailures = append(modelFailures, d.runErr.Error())
+		failures, harnessFailure := delegateModelFailures(d)
+		if harnessFailure != nil {
+			t.Fatalf("a delegate failed, so this run says nothing about the model: %v", harnessFailure)
 		}
-		for _, failure := range turnFailures(d.entries) {
-			if !isModelResponseFailure(failure) {
-				t.Fatalf("a delegate's turn failed, so this run says nothing about the model: %s", failure)
-			}
-			modelFailures = append(modelFailures, failure)
-		}
+		modelFailures = append(modelFailures, failures...)
 		r, leaked := childReceivedCodename(d.entries, codename)
 		received, briefLeaked = received || r, briefLeaked || leaked
 	}
 	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s delegates=%d unsettled=%d run_error_unknown=%d child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, len(delegates), unsettled, runErrUnknown, received, briefLeaked, reportWritten, modelFailures)
+}
+
+// delegateModelFailures lists the model-behavior failures of one delegate,
+// each once: its recorded failed turns, plus its run error when no failed turn
+// already carries it (the final failure is usually both). harnessFailure is
+// the first failure that is not the model's doing.
+func delegateModelFailures(d delegateRun) (failures []string, harnessFailure error) {
+	for _, failure := range turnFailures(d.entries) {
+		if !isModelResponseFailure(failure) {
+			return nil, errors.New(failure)
+		}
+		failures = append(failures, failure)
+	}
+	if d.runErr != nil {
+		if !isModelBehaviorError(d.runErr) {
+			return nil, d.runErr
+		}
+		if !slices.Contains(failures, d.runErr.Error()) {
+			failures = append(failures, d.runErr.Error())
+		}
+	}
+	return failures, nil
 }
 
 // delegateRun is one delegate the root started: its transcript and the run
@@ -340,6 +355,30 @@ func TestIsModelResponseFailure(t *testing.T) {
 		if got := isModelResponseFailure(message); got != want {
 			t.Errorf("isModelResponseFailure(%q) = %v, want %v", message, got, want)
 		}
+	}
+}
+
+func TestDelegateModelFailuresCountsTheFinalFailureOnce(t *testing.T) {
+	exhausted := &emptyResponseExhaustedError{retries: maxEmptyRetries}
+	failed := func(message string) transcript.Entry {
+		var e transcript.Entry
+		e.Turn.Kind = schema.TurnFailure
+		e.Turn.Error = &schema.TurnFailureInfo{Message: message}
+		return e
+	}
+	// The final failure is both a recorded turn and the run error; an earlier
+	// one that the delegate recovered from is recorded once.
+	got, harness := delegateModelFailures(delegateRun{
+		entries: []transcript.Entry{failed((&bareTextWithoutResultToolError{toolName: tool.DefaultResultToolName, retries: maxBareTextRetries}).Error()), failed(exhausted.Error())},
+		runErr:  exhausted,
+	})
+	if harness != nil || len(got) != 2 {
+		t.Errorf("got %q, harness %v; want the two distinct failures once each", got, harness)
+	}
+	// A run error with no recorded turn is still counted.
+	got, _ = delegateModelFailures(delegateRun{runErr: exhausted})
+	if len(got) != 1 {
+		t.Errorf("got %q, want the run error once", got)
 	}
 }
 
