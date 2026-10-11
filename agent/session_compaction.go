@@ -213,13 +213,18 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// Attention turns are not folded content: the item stays pending until a
 	// turn presents it, and a turn that cannot see it would never consume it.
 	// Only a fold that dropped an attention turn reads the transcript, which
-	// is the authority, under the door, for which items are pending.
-	var pendingAttention []schema.Turn
+	// is the authority, under the door, for which items are pending. When that
+	// read fails the pending set is unknown, so every attention turn the
+	// history held stays: a resolved one is only extra history.
+	var keptAttention []schema.Turn
 	s.mu.Lock()
-	heldAttention := attentionTurnCount(s.history)
+	heldAttention := attentionTurns(s.history)
 	s.mu.Unlock()
-	if attentionTurnCount(folded) < heldAttention {
-		pendingAttention = s.pendingAttentionTurnsLocked()
+	if len(attentionTurns(folded)) < len(heldAttention) {
+		var err error
+		if keptAttention, err = s.pendingAttentionTurnsLocked(); err != nil {
+			keptAttention = heldAttention
+		}
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
@@ -230,7 +235,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		return nil, false, nil
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
-	published = withAttentionTurns(published, pendingAttention)
+	published = withAttentionTurns(published, keptAttention)
 	s.history = published
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from

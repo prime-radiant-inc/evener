@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +16,7 @@ const compactedAttentionText = `<delegate-notification delegate_id="dlg_worker" 
 
 // newCompactableSession builds a session whose summarizer is scripted and whose
 // main model records its requests and answers each with a final report.
-func newCompactableSession(t *testing.T) (*Session, *fakeAdapter) {
+func newCompactableSession(t *testing.T, configure ...func(*SessionConfig)) (*Session, *fakeAdapter) {
 	t.Helper()
 	main := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("answered the update") },
@@ -26,7 +28,11 @@ func newCompactableSession(t *testing.T) (*Session, *fakeAdapter) {
 	}})
 	stateDir := t.TempDir()
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "compact-cheap/model")
-	sess := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot(), withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}))
+	cfg := SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}
+	for _, configure := range configure {
+		configure(&cfg)
+	}
+	sess := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot(), withDir(stateDir), withConfig(cfg))
 	return sess, main
 }
 
@@ -91,6 +97,42 @@ func TestRootDelegateAttentionPendingAcrossCompactionIsPresentedAndConsumed(t *t
 		t.Fatalf("arm attention: %v", err)
 	}
 	compactAfterAttention(t, sess)
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn: %v", err)
+	}
+	if len(main.requests) != 1 || !requestMessagesContainText(main.requests[0].Messages, "COMPACTED_UPDATE") {
+		t.Fatalf("the notification turn made %d model requests; want 1 that presents the attention item pending across compaction", len(main.requests))
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after the notification turn = %v (err %v), want it consumed", pending, err)
+	}
+}
+
+// A transcript read that fails during the fold cannot say which attention items
+// are pending, so the fold keeps every attention turn the history held: the
+// item is still presented to, and consumed by, the turn that follows.
+func TestRootDelegateAttentionSurvivesCompactionWhenTheTranscriptReadFails(t *testing.T) {
+	t.Parallel()
+	var failReads atomic.Bool
+	sess, main := newCompactableSession(t, func(cfg *SessionConfig) {
+		cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+			if failReads.Load() {
+				return delegateAttentionFold{}, errors.New("transient transcript read failure")
+			}
+			return readDelegateAttentionFold(path, sessionID)
+		}
+	})
+	const attentionID = "delegate:dlg_worker/delivery/1"
+	if _, err := sess.appendDelegateNotificationDurably(attentionID, compactedAttentionText); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if err := sess.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+	failReads.Store(true)
+	compactAfterAttention(t, sess)
+	failReads.Store(false)
 
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("notification turn: %v", err)

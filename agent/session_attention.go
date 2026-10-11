@@ -707,25 +707,24 @@ func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 }
 
 // pendingAttentionTurnsLocked returns the turns behind the pending attention
-// items. A fold read failure returns none: the restart rearm restores them
-// (rearmRootDelegateAttentionFromTranscript). The caller holds attentionMu.
-func (s *Session) pendingAttentionTurnsLocked() []schema.Turn {
+// items. The caller holds attentionMu.
+func (s *Session) pendingAttentionTurnsLocked() ([]schema.Turn, error) {
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return fold.pendingTurns()
+	return fold.pendingTurns(), nil
 }
 
-// attentionTurnCount counts the turns that carry an attention identity.
-func attentionTurnCount(history []schema.Turn) int {
-	count := 0
+// attentionTurns returns the turns of history that carry an attention identity.
+func attentionTurns(history []schema.Turn) []schema.Turn {
+	var turns []schema.Turn
 	for _, turn := range history {
 		if turn.AttentionID != "" {
-			count++
+			turns = append(turns, turn)
 		}
 	}
-	return count
+	return turns
 }
 
 // withAttentionTurns appends to history the attention turns it does not hold.
