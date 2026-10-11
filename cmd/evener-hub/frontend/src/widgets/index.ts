@@ -140,3 +140,5 @@ export type { CommittedVirtualListLayout, VirtualListHandle, VirtualListProps } 
 export { VirtualList } from "./virtuallist";
 export type { VisuallyHiddenProps } from "./visuallyhidden";
 export { VisuallyHidden } from "./visuallyhidden";
+export type { ZoomableMediaProps } from "./zoomablemedia";
+export { ZoomableMedia } from "./zoomablemedia";

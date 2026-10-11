@@ -5,26 +5,18 @@
   margin-top: var(--space-2);
 }
 
+/* The thumbnail's frame; the ZoomableMedia inside it is the control. */
 .thumb {
-  display: flex;
-  flex-direction: column;
-  /* flex:none + min-width:0 pin the button to thumbImg's own 96px regardless
+  /* flex:none + min-width:0 pin the frame to thumbImg's own 96px regardless
      of caption length - a flex item's default min-width:auto would otherwise
      let a long unbroken caption stretch it past the thumbnail grid. */
   flex: none;
   width: 96px;
   min-width: 0;
-  padding: 0;
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
   overflow: hidden;
-  cursor: pointer;
   background: var(--surface-2);
-}
-
-.thumb:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
 }
 
 .thumbImg {
