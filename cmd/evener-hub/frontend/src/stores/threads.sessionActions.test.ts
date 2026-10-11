@@ -1290,3 +1290,173 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(fake.calls).toHaveLength(0); // never sent - the real client never reaches socket.send() either
   });
 });
+
+function mutationReceipt(clientMutationId: string, disposition = "applied") {
+  return {
+    clientMutationId,
+    disposition,
+    threadId: "thr_ref_a",
+    projectionState: "reflected",
+  };
+}
+
+describe("useThreadsStore.send", () => {
+  test("calls turn/start with text and a base64 image attachment (wire InputItem.data/mediaType/name - appwire/types.go:561-570)", async () => {
+    const fake = connectMutationClient();
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "hello", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+    const params = await dispatched;
+
+    expect(params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "hello" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+  });
+
+  test("send with no attachments sends text-only input", async () => {
+    const fake = connectMutationClient();
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore.getState().send("ref_a", "hello");
+    const params = await dispatched;
+
+    expect(params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [{ type: "text", text: "hello" }],
+    });
+  });
+
+  // kata 6nmz: a raw "[image N]" marker on the wire misleads small models -
+  // haiku read one as a file path and called read_file("[image 1]") instead of
+  // looking at the vision block it was sitting next to. The composer keeps the
+  // marker as its tile anchor; the wire gets prose.
+  test("translates the composer's [image N] markers to prose on the wire (kata 6nmz)", async () => {
+    const fake = connectMutationClient();
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "[image 1]Describe the attached image", [
+        { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ]);
+    const params = await dispatched;
+
+    expect(params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "(attached image 1: pic.png)Describe the attached image" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+  });
+
+  // kata 1gm2: the marker number rides InputAttachment so the composer, the
+  // durable record and the recovery draft can pair text to attachment by
+  // identity. It is client-side state and the daemon must never see it.
+  test("the attachment's marker number never reaches the wire (kata 1gm2)", async () => {
+    const fake = connectMutationClient();
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "[image 7]look", [{ marker: 7, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
+    const params = await dispatched;
+
+    expect(params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "(attached image 7: pic.png)look" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+    expect(JSON.stringify(params)).not.toContain("marker");
+  });
+
+  test("an unnamed attachment's marker translates without a dangling name separator (kata 6nmz)", async () => {
+    const fake = connectMutationClient();
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "look: [image 1]", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
+    const params = await dispatched;
+
+    expect(params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "look: (attached image 1)" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    });
+  });
+
+  test("a marker-less text reaches the wire byte-identical, untrimmed (kata 6nmz / floor §1.12)", async () => {
+    const fake = connectMutationClient();
+    const dispatched = nextHandledRequest(fake, "turn/start", (params) => ({
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore
+      .getState()
+      .send("ref_a", "  keep\n  every\n  byte  ", [
+        { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ]);
+    const params = await dispatched;
+
+    expect(params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      input: [
+        { type: "text", text: "  keep\n  every\n  byte  " },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+      ],
+    });
+  });
+
+  // Issue #195's RCA / PR #211's rejected transport-queuing design: a
+  // mutation whose first attempt may already be executing server-side must
+  // never blind-retry across a reconnect - it could double-fire a
+  // non-idempotent method like turn/start. Unlike the read-only actions
+  // (listJobs and siblings, gated through requireReadyClient), the mutation
+  // outbox's own enqueueMutationIntent (stores/threads.ts) checks
+  // client.state itself and rejects synchronously with no ready-wait -
+  // representative of the whole outbox family (steer/queue/interrupt/
+  // drainAsSteer/promoteQueuedAsSteer/cancelQueued all funnel through the
+  // same gate).
+  test("rejects synchronously while reconnecting, unlike the read-only actions (representative outbox mutation)", async () => {
+    const fake = connectFakeClient();
+    fake.emitStateChange("reconnecting");
+
+    await expect(threadsStore.getState().send("ref_a", "hello")).rejects.toThrow(
+      /cannot enqueue mutation while reconnecting/,
+    );
+    expect(fake.calls).toHaveLength(0); // never sent
+  });
+});
