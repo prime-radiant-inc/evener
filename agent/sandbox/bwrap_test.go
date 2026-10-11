@@ -563,6 +563,13 @@ func TestBuildBwrapArgvRebindsWritableLocationsInsideACacheOverlay(t *testing.T)
 		t.Fatal(err)
 	}
 	rebindAfterOverlay(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo, rp.Git.CommonDir)
+	// Through the wrapper too: git's missing entries under the bound common
+	// dir (packed-refs and its lock) must not cost the cache its overlay.
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebindAfterOverlay(t, w.Wrap([]string{"/bin/true"}, linked), mainRepo, rp.Git.CommonDir)
 }
 
 // A persistent writable root inside an overlaid cache root that does not exist

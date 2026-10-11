@@ -405,3 +405,21 @@ func TestPrepareCacheRootsDropsAnOverlayHoldingADanglingLinkIntoGit(t *testing.T
 		t.Errorf("git metadata must not be created (err=%v)", err)
 	}
 }
+
+// A missing write root inside another write root that binds cleanly is
+// reachable through that bind (a missing packed-refs under a bound common
+// dir), so it persists when created and keeps the cache overlaid.
+func TestPrepareCacheRootsKeepsAnOverlayWhoseMissingWriteRootABindCovers(t *testing.T) {
+	cache := t.TempDir()
+	commonDir := filepath.Join(cache, "repo", ".git")
+	if err := os.MkdirAll(commonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Git.CommonDir = commonDir
+	rp.Git.GitDir = commonDir
+	rp.Spawned.WriteRoots = []string{commonDir, filepath.Join(commonDir, "packed-refs")}
+	if got := prepareCacheRoots(rp); !slices.Contains(got.CacheRoots, cache) {
+		t.Errorf("a missing write root under a bound one must not drop the overlay: %v", got.CacheRoots)
+	}
+}

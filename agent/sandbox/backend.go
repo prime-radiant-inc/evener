@@ -104,6 +104,9 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 		// Every place a write to w touches on the host, links on the way and
 		// where it lands, dangling links included.
 		places := physicalPlaces(w)
+		if insideABoundWriteRoot(rp, w) {
+			continue
+		}
 		holds := func(c string) bool {
 			rc := resolveExistingPrefix(c)
 			return pathUnder(w, c) || slices.ContainsFunc(places, func(l string) bool { return l == rc || pathUnder(l, rc) })
@@ -119,6 +122,21 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 		}
 	}
 	return rp
+}
+
+// insideABoundWriteRoot reports whether w lands (physicalLanding, dangling
+// links included) inside another write root that binds cleanly: that bind
+// already reaches w (a missing packed-refs under a bound common dir), so
+// whatever the spawn creates there persists.
+func insideABoundWriteRoot(rp ResolvedPolicy, w string) bool {
+	lw := physicalLanding(w)
+	return slices.ContainsFunc(bwrapWriteRoots(rp), func(b string) bool {
+		if _, err := os.Stat(b); b == w || err != nil {
+			return false
+		}
+		lb := physicalLanding(b)
+		return lw == lb || pathUnder(lw, lb)
+	})
 }
 
 // isGitEntry reports whether w is one of git's own entries, under the git or
