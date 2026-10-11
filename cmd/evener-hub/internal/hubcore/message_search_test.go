@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -169,6 +170,38 @@ func TestMessageSearchKeepsUserAndAgentMessagesUnderTheirReadKeys(t *testing.T) 
 		t.Fatal(err)
 	}
 	if want := []string{"The settle pass takes the tree lock first.", "Why does the settle pass race the drain?"}; !reflect.DeepEqual(texts, want) {
+		t.Fatalf("texts = %q, want %q", texts, want)
+	}
+}
+
+// A steer from the partner is a message of the conversation: the user's own
+// steer, and a parent's steer into its delegate. The daemon's own nudges are
+// not.
+func TestMessageSearchKeepsPartnerSteersAndSkipsDaemonNudges(t *testing.T) {
+	steer := func(text, source string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.SteeringSource = source
+		return turn
+	}
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1",
+		steer("quokka from the user", events.SteeringSourceUser),
+		steer("quokka from the parent", events.SteeringSourceParent),
+		steer("quokka from the daemon", ""),
+	)
+	index := openTestMessageSearch(t)
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := index.Match(context.Background(), "quokka", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts, err := index.Texts(context.Background(), matches["s1"].Hits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"quokka from the parent", "quokka from the user"}; !reflect.DeepEqual(texts, want) {
 		t.Fatalf("texts = %q, want %q", texts, want)
 	}
 }
