@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
@@ -232,16 +233,19 @@ func isModelResponseFailure(message string) bool {
 
 // childReceivedCodename reports whether the delegate was handed the codename
 // after its brief. The parent's delegate_send arrives in the delegate's
-// transcript as a user-input entry, as does the brief (the first one); harness
-// entries such as environment and notes context, steering nudges and
-// compaction summaries are not the parent and never count. received is true
-// only when a later user-input entry carries the codename. A codename already
+// transcript as a user-input entry when the delegate was idle, as does the
+// brief (the first one), or as steering sourced from the parent when it was
+// running; harness entries such as environment and notes context, the
+// harness's own steering nudges and compaction summaries are not the parent
+// and never count. received is true only when a later such entry carries the
+// codename. A codename already
 // in the brief means the delegate never had to ask, so briefLeaked marks runs
 // that cannot show an answer arriving. Files the delegate wrote do not count.
 func childReceivedCodename(entries []transcript.Entry, codename string) (received, briefLeaked bool) {
 	seenBrief := false
 	for _, e := range entries {
-		if e.Turn.Kind != schema.TurnUserInput {
+		fromParent := e.Turn.Kind == schema.TurnSteering && e.Turn.SteeringSource == events.SteeringSourceParent
+		if e.Turn.Kind != schema.TurnUserInput && !fromParent {
 			continue
 		}
 		carries := strings.Contains(e.Turn.Message.Text(), codename)
@@ -286,6 +290,7 @@ func TestChildReceivedCodename(t *testing.T) {
 		{"parent never answered", []transcript.Entry{user("ask me"), assistant("waiting"), user("keep going")}, false, false},
 		{"codename in the brief", []transcript.Entry{user("the codename is HALCYON-42"), user("HALCYON-42 again")}, false, true},
 		{"codename in the brief after environment context", []transcript.Entry{environment("cwd: /work"), user("the codename is HALCYON-42")}, false, true},
+		{"parent steering into a running delegate", []transcript.Entry{user("ask me"), {Turn: parentSteeringTurn("It is HALCYON-42", "turn-1", time.Time{})}}, true, false},
 		{"steering nudge carries the codename", []transcript.Entry{user("ask me"), harness(schema.TurnSteering, "HALCYON-42")}, false, false},
 		{"compaction summary carries the codename", []transcript.Entry{user("ask me"), harness(schema.TurnSummary, "HALCYON-42")}, false, false},
 		{"notes context carries the codename after the brief", []transcript.Entry{user("ask me"), notes("note: HALCYON-42")}, false, false},
