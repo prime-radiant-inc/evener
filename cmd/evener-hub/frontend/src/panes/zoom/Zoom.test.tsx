@@ -835,6 +835,56 @@ test("a live origin replaced before its first summary resolves still retires sta
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
 });
 
+// AppShell.test.tsx's installMobileViewport, verbatim: the mobile query
+// matches, every other query (the reduced-motion read included) does not.
+function installMobileViewport(): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+}
+
+test("a replaced nested origin never renders a non-leaf column on the phone", async () => {
+  const { fake, identities } = fixture();
+  installMobileViewport();
+  // A nested origin: the cascade inspects child, drilled to grandchild, so the
+  // full path is root -> child(origin) -> grandchild and only grandchild
+  // renders on the phone.
+  const origin: OpenPaneRecord = { id: "child-origin", type: "session", params: { ref: "child" }, slot: "main" };
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "grandchild",
+      source: { type: "transcript", params: { ref: "child" } },
+      edges: [{ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }],
+      inspection: { origin: { paneId: origin.id, type: "session", ref: "child" } },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [origin, inspector], focusedPaneId: inspector.id });
+  recordCascadeOrigin(inspector, origin);
+  mount(fake);
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["grandchild"]);
+  identities.set("child", "new-child");
+  act(() =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "child", threadId: "wire-new-child" } }),
+  );
+  await waitFor(() => expect(currentParams().ref).toBe("child"));
+  // The popped origin never renders, at any depth: the phone keeps only the
+  // Return path, never the non-leaf root column under the selected
+  // conversation's name.
+  expect(columnRefs()).toEqual([]);
+  expect(spineRefs()).toEqual([]);
+  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(chromeStore.getState().paneTitle).toBe("child");
+});
+
 test("a new cursor epoch for the same root preserves child branch and retained readers", async () => {
   const { fake, setEpoch } = fixture();
   mount(fake);

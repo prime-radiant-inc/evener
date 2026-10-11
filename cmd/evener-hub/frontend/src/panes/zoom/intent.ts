@@ -154,6 +154,15 @@ export function firstReadableIndex(scopes: CascadeScope[], originRef: string | n
   return duplicateOrigin ? scopes.length - 1 : Math.max(0, scopes.length - 2);
 }
 
+/** The scopes the phone renders: the selected leaf alone. When the removed
+ * live origin is that leaf — its identity replacement popped the selection
+ * onto the never-rendering origin — the phone keeps the Return path instead
+ * of an ancestor column the selected conversation's title does not describe. */
+export function phoneScopes(scopes: CascadeScope[], rendered: CascadeScope[]): CascadeScope[] {
+  const leaf = scopes[scopes.length - 1];
+  return leaf !== undefined && rendered.includes(leaf) ? rendered.slice(-1) : [];
+}
+
 export function drillZoomIntent(params: SessionZoomParams, edge: DelegateEdgeIntent): SessionZoomParams {
   const refs = deriveCascadePath(params, null).scopes.map((scope) => scope.requestedRef);
   const owner = refs.indexOf(edge.ownerRef);

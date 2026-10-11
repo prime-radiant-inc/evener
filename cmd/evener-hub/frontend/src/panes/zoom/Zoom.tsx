@@ -30,6 +30,7 @@ import {
   type CascadeScope,
   deriveCascadePath,
   firstReadableIndex,
+  phoneScopes,
   renderedScopes,
   type SessionZoomParams,
 } from "./intent";
@@ -224,7 +225,7 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
   // association and the full path renders again.
   const originRef = cascadeOriginRef(pane);
   const renderedPath = renderedScopes(path.scopes, originRef);
-  const scopes = mobile ? renderedPath.slice(-1) : renderedPath;
+  const scopes = mobile ? phoneScopes(path.scopes, renderedPath) : renderedPath;
   // The readable set stays over the full path: the leaf and its immediate
   // parent, with the parent dropped when it is the removed origin.
   const firstReadable = firstReadableIndex(path.scopes, originRef);

@@ -541,9 +541,12 @@ The origin conversation never renders in the cascade: while a live origin
 association exists, its scope is removed from the pane entirely — no readable
 column and no spine — and no surface in the pane can pop to it. The origin's
 identity is still observed: when the origin's ref resolves to a replacement
-session, the cascade retires its stale descendant edges and readers —
-emptying the pane down to the Return path — rather than showing children the
-replacement did not produce. The first
+session, the cascade retires its stale descendant edges and readers rather
+than showing children the replacement did not produce. The pop that follows
+lands the selection on the origin itself, which never renders: the pane keeps
+the Return path above whatever earlier ancestors remain, and the phone — which
+renders the selected leaf alone — keeps only the Return path rather than an
+ancestor column under the selected conversation's name. The first
 drill shows only the subagent's conversation, and that lone column fills the
 pane like an ordinary session pane. Deeper drills keep the selected session
 and its immediate parent as readable columns above the removed origin, with

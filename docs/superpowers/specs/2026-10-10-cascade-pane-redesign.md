@@ -102,11 +102,30 @@ Three medium findings from the combined review, resolved:
   its binding; a rebound retires the stale descendants and the emptied pane
   keeps the Return path.
 
+## Second review round (2026-10-11)
+
+Two follow-on medium findings from later combined reviews, resolved:
+
+- The origin observer watched only the origin's own activity summary: with
+  the child's ancestry already carrying the origin's identity, an origin
+  replaced before that summary resolved registered the replacement as the
+  first identity and never retired the stale descendants. The observer now
+  falls back to the origin scope's ancestry identity from the unfiltered
+  path while the summary is pending.
+- After a nested origin's replacement popped the selection onto the
+  never-rendering origin, the phone rendered the nearest ancestor column
+  under the selected conversation's title. The phone's single column is now
+  the selected leaf itself (`phoneScopes`): when the removed origin is that
+  leaf, the phone keeps only the Return path, matching the ruled
+  origin-at-root shape at every depth. The desktop track is unchanged.
+
 ## Proof
 
 - jsdom (`Zoom.test.tsx`, `intent.test.ts`): the origin-free shapes at depths
   1–3, the no-live-origin two-column shape, the origin-close recovery, the
-  rebound live origin retiring stale descendants, the lone-column fill style,
+  rebound live origin retiring stale descendants (including before its first
+  summary resolves and with the phone keeping only the Return path when the
+  pop lands on a nested origin), the lone-column fill style,
   the controls-below-content order, and the no-nav/no-title chrome; the
   DockHost, AppShell and ActivitySidebar journeys pin the restored and
   drilled shapes.

@@ -7,6 +7,7 @@ import {
   drillZoomIntent,
   firstReadableIndex,
   parseZoomParams,
+  phoneScopes,
   popZoomIntent,
   renderedScopes,
   type SessionZoomParams,
@@ -58,6 +59,20 @@ test("rendered scopes drop the live origin wherever it sits in the path", () => 
   expect(renderedScopes(scopes(["root", "child"]), "root")).toEqual(scopes(["child"]));
   expect(renderedScopes(scopes(["root", "child", "grandchild"]), "root")).toEqual(scopes(["child", "grandchild"]));
   expect(renderedScopes(scopes(["owner", "child", "grandchild"]), "child")).toEqual(scopes(["owner", "grandchild"]));
+});
+
+test("the phone renders the selected leaf alone", () => {
+  const path = scopes(["root", "child", "grandchild"]);
+  expect(phoneScopes(path, renderedScopes(path, null))).toEqual(scopes(["grandchild"]));
+});
+
+test("the phone keeps only the Return path when the removed origin is the leaf", () => {
+  // An origin replacement can pop the selection onto the never-rendering
+  // origin, leaving the nearest ancestor as the last rendered column: the
+  // phone must not show that non-leaf column under the leaf's title.
+  const path = scopes(["root", "child"]);
+  expect(phoneScopes(path, renderedScopes(path, "child"))).toEqual([]);
+  expect(phoneScopes(scopes(["root"]), renderedScopes(scopes(["root"]), "root"))).toEqual([]);
 });
 
 test("a cascade without a live origin renders every scope", () => {
