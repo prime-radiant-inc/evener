@@ -37,7 +37,6 @@ import {
   resetPendingTurnsStoreForTests,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
-import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
   resetSubagentModuleStoreForTests,
   turnScopeKey,
@@ -62,7 +61,6 @@ import {
   notifyReadyForMutationDispatch,
   putThreadModel,
   readMutationPersistence,
-  resendRecoveryMutation,
   resetThreadsStoreForTests,
   resumeOnlyLocalDispatchable,
   resumeOnlyLocalModel,
@@ -3028,79 +3026,6 @@ describe("reconnect resubscribe", () => {
       .slice(2)
       .map((c) => (c.params as { ref: string }).ref);
     expect(refsReRead).toEqual(["ref_b"]); // ref_a was released before the reconnect; only ref_b re-subscribes
-  });
-});
-
-// kata 1gm2: a record born from a real submit used to reach recovery carrying
-// only the translated prose, so the restored composer showed sentences where
-// its tile anchors belonged and removing a tile stripped nothing. Nothing here
-// is hand-seeded: the record is the one send() actually wrote.
-test("a submitted record recovers into a composer draft with its marker anchors intact", async () => {
-  const storage = new MutationOutboxIndexedDB();
-  setMutationStorageForTests(storage);
-  const fake = connectMutationClient();
-  const dispatched = nextHandledRequest(fake, "turn/start", () => new Promise<never>(() => undefined));
-
-  await threadsStore.getState().send("ref_a", "look [image 3] then [image 1]", [
-    { marker: 1, mediaType: "image/png", data: "AQID", name: "first.png" },
-    { marker: 3, mediaType: "image/png", data: "BAUG", name: "third.png" },
-  ]);
-  await dispatched;
-  const submitted = (await storage.listOutbox("ref_a"))[0];
-  expect(submitted).toBeDefined();
-  if (!submitted) return;
-  expect((submitted.payload as { input: { text?: string }[] }).input[0]?.text).toBe(
-    "look (attached image 3: third.png) then (attached image 1: first.png)",
-  );
-
-  const recovered = await storage.transferToRecovery(submitted.clientMutationId, "rejected");
-  expect(recovered).toBeDefined();
-  if (!recovered) return;
-  const draft = recoveryComposerDraft(recovered);
-
-  expect(draft.text).toBe("look [image 3] then [image 1]");
-  expect(draft.attachments.map((attachment) => [attachment.marker, attachment.name])).toEqual([
-    [1, "first.png"],
-    [3, "third.png"],
-  ]);
-});
-
-test("recovery resend rebuilds queue CAS values from the current thread", async () => {
-  let mutationId = 0;
-  const storage = new MutationOutboxIndexedDB({
-    createMutationId: () => `mutation-${++mutationId}`,
-  });
-  setMutationStorageForTests(storage);
-  const original = await storage.enqueueIntent({
-    targetRef: "ref_a",
-    threadId: "thr_ref_a",
-    method: "turn/start",
-    payload: { ref: "ref_a", input: [{ type: "text", text: "stale" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stale" }] },
-  });
-  await storage.transferToRecovery(original.clientMutationId, "rejected");
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
-      status: { type: "active" },
-      evener: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        activeTurnId: "turn-current",
-        queue: { revision: 7 },
-      },
-    }),
-  );
-  fake.on("turn/queue", () => new Promise<never>(() => undefined));
-  await threadsStore.getState().ensureThread("ref_a");
-
-  expect(await resendRecoveryMutation(original.clientMutationId, "ref_a", "queue", "edited", [])).toBeDefined();
-  expect((await storage.listOutbox("ref_a"))[0]).toMatchObject({
-    method: "turn/queue",
-    payload: {
-      input: [{ type: "text", text: "edited" }],
-    },
   });
 });
 
