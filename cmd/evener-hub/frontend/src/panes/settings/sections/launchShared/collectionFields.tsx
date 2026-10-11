@@ -462,13 +462,23 @@ export interface McpServerListFieldProps {
   inheritedItems?: readonly MCPServerSpec[];
 }
 
-function specKey(spec: MCPServerSpec): string {
+export function mcpServerKey(spec: MCPServerSpec): string {
   return `${spec.name}|${spec.command}|${(spec.args ?? []).join(" ")}`;
 }
 
-function renderSpec(spec: MCPServerSpec): string {
+export function mcpServerLabel(spec: MCPServerSpec): string {
   const args = spec.args && spec.args.length > 0 ? ` ${spec.args.join(" ")}` : "";
   return `${spec.name} → ${spec.command}${args}`;
+}
+
+export const MCP_SERVER_ENTRY_USAGE = "Use: name command [args...]";
+
+/** Splits a "name command [args...]" add entry on whitespace; null when the
+ * name or command is missing. */
+export function parseMcpServerEntry(entry: string): { name: string; command: string; args: string[] } | null {
+  const [name, command, ...args] = entry.split(/\s+/).filter(Boolean);
+  if (!name || !command) return null;
+  return { name, command, args };
 }
 
 /** mcpServerList kind: `mcps`. Add syntax is "name command [args...]"
@@ -483,12 +493,11 @@ export function McpServerListField({
   inheritedItems = [],
 }: McpServerListFieldProps) {
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
-    const tokens = trimmed.split(/\s+/).filter(Boolean);
-    const [name, command, ...args] = tokens;
-    if (!name || !command) return { ok: false, error: "Use: name command [args...]" };
-    const result = await validateCommand(command);
+    const entry = parseMcpServerEntry(trimmed);
+    if (entry === null) return { ok: false, error: MCP_SERVER_ENTRY_USAGE };
+    const result = await validateCommand(entry.command);
     if (!result.valid) return { ok: false, error: result.error || "invalid command" };
-    onChange([...items, { name, command: result.path || command, args }]);
+    onChange([...items, { ...entry, command: result.path || entry.command }]);
     return { ok: true };
   }
 
@@ -499,10 +508,10 @@ export function McpServerListField({
         label={option.label}
         items={items}
         inheritedItems={inheritedItems}
-        getKey={specKey}
-        renderItem={renderSpec}
-        removeLabel={(spec) => `Remove ${renderSpec(spec)}`}
-        onRemove={(spec) => onChange(items.filter((i) => specKey(i) !== specKey(spec)))}
+        getKey={mcpServerKey}
+        renderItem={mcpServerLabel}
+        removeLabel={(spec) => `Remove ${mcpServerLabel(spec)}`}
+        onRemove={(spec) => onChange(items.filter((i) => mcpServerKey(i) !== mcpServerKey(spec)))}
         emptyMessage="No MCP servers configured."
         addPlaceholder="name command args..."
         onAdd={handleAdd}
