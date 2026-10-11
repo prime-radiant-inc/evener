@@ -325,7 +325,7 @@ func (ss *sidecarScript) step(req llm.Request) llm.Response {
 	}
 	last := req.Messages[len(req.Messages)-1]
 	if ss.generations == 0 && last.Role != llm.RoleTool {
-		args, _ := json.Marshal(map[string]any{"operation": "create", "source": "parent", "events": []string{"user.message", "turn.end"}})
+		args, _ := json.Marshal(map[string]any{"operation": "create", "source": "parent", "events": []string{"user.message", "communicate", "turn.end"}})
 		return toolCallResponse(llm.ToolCallData{ID: "sidecar-watch", Name: "job_watch", Arguments: args})
 	}
 	ss.generations++
@@ -390,6 +390,12 @@ func TestLibrarianSidecarStartsOnceAndWakesOnTurnEnd(t *testing.T) {
 	}
 	if got := s.loadLibrarianCursor().SidecarDelegateID; got != sidecar {
 		t.Fatalf("sidecar changed from %s to %s", sidecar, got)
+	}
+	// The root's messages and communicate calls coalesce into frames while
+	// the sidecar is busy; every frame's delivery receipt is released once it
+	// is delivered or superseded, so none outlives the run to stall Close.
+	if got := stableWatchDeliveryReceiptIDs(s.delegateController); len(got) != 0 {
+		t.Fatalf("delivery receipts outlived their frames: %v", got)
 	}
 	s.delegateController.mu.Lock()
 	librarians := 0

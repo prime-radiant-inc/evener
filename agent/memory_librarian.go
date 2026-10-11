@@ -400,7 +400,7 @@ func librarianSidecarBrief(rootSessionID string) string {
 	return fmt.Sprintf(`You are the long-lived memory librarian for the main session %[1]q. You stay with it across its turns and keep your own notes in this conversation.
 
 First, subscribe to the main session:
-job_watch(operation="create", source="parent", events=["user.message", "turn.end"], note="memory librarian: read the main session's new turns")
+job_watch(operation="create", source="parent", events=["user.message", "communicate", "turn.end"], note="memory librarian: read the main session's new turns")
 
 Then do one pass now, and one pass each time a frame wakes you:
 1. Read the main session's turns you have not read yet with read_transcript(transcript_ref=%[1]q, range="N-M"). Keep track of the last turn number you read; the transcript's turn numbers only grow. A user.message frame means a turn is starting; you may save an explicit "remember this" right away, but most of the evidence arrives by the turn.end frame.
@@ -410,4 +410,4 @@ Then do one pass now, and one pass each time a frame wakes you:
 If a frame or notice says your watch ended, create it again with the same call before you read.`, rootSessionID)
 }
 
-const librarianSidecarResumeBrief = `The main session restarted, so your watch on it ended. Create it again with job_watch(operation="create", source="parent", events=["user.message", "turn.end"], note="memory librarian: read the main session's new turns"), then read any turns you have not read yet, write what your role says to keep, and end with communicate(end_turn=true) and your short report.`
+const librarianSidecarResumeBrief = `The main session restarted, so your watch on it ended. Create it again with job_watch(operation="create", source="parent", events=["user.message", "communicate", "turn.end"], note="memory librarian: read the main session's new turns"), then read any turns you have not read yet, write what your role says to keep, and end with communicate(end_turn=true) and your short report.`

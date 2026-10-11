@@ -4587,6 +4587,14 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			}
 			return false, nil
 		}
+		// A newer frame for the same key coalesced over this one while it was
+		// being delivered: the newer frame carries this one's content forward,
+		// so stand down and release this frame's receipt, which nothing else
+		// will (releaseSupersededStableWatchReceipt skipped it for this claim).
+		if pending != nil && pending.UpdateSeq > state.UpdateSeq {
+			jm.releaseStableWatchReceipt(state.DeliveryID)
+			return false, nil
+		}
 		return false, errors.New("stable watch delivery is not the durable pending head")
 	}
 	receiver, err := controller.stableWatchReceiver(state.ReceiverSessionID, state.ReceiverDelegateID)
@@ -4750,6 +4758,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			return state, false, err
 		}
 		jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+		jm.releaseSupersededStableWatchReceipt(record)
 		var evictionDiagnostics []jobNotification
 		for _, eviction := range record.evictions {
 			applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
@@ -4788,6 +4797,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		return state, false, err
 	}
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+	jm.releaseSupersededStableWatchReceipt(record)
 	// The eviction events landed with the pending event above: drop the
 	// evicted keys from the runtime map (releasing their receipts) and surface
 	// their diagnostics BEFORE the fallible stable-enqueue verification below,
@@ -4905,6 +4915,26 @@ func (jm *jobManager) stableWatchReceipt(deliveryID string) *delegateWatchReceip
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	return jm.stableWatchReceipts[deliveryID]
+}
+
+// releaseSupersededStableWatchReceipt releases the delivery receipt of the
+// pending frame a coalesced frame just replaced. Coalescing mints the new
+// frame its own delivery id, so nothing would ever deliver, drop or settle the
+// old id again, and its receipt would fence the receiver's stop until the
+// close budget ran out. A deliverer that holds the old id's claim is mid-hand-
+// off; it settles or releases the receipt itself.
+func (jm *jobManager) releaseSupersededStableWatchReceipt(record watchSendPendingRecord) {
+	previous := record.previous
+	if previous == nil || previous.DeliveryID == "" || previous.DeliveryID == record.persisted.DeliveryID {
+		return
+	}
+	jm.mu.Lock()
+	_, delivering := jm.deliveringWatchSends[previous.DeliveryID]
+	jm.mu.Unlock()
+	if delivering {
+		return
+	}
+	jm.releaseStableWatchReceipt(previous.DeliveryID)
 }
 
 func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
