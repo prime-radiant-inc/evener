@@ -386,26 +386,71 @@ func assertNoRootIsMasked(t *testing.T, rp ResolvedPolicy) {
 	}
 }
 
-// TestCacheRootsCoverDefaultGoModCache verifies the overlay strategy's coverage
-// claim for GOMODCACHE: cacheRootsFor grants a FIXED $HOME/go/pkg (it does not
-// read the actual GOPATH), so overlay coverage of GOMODCACHE holds only when
-// GOPATH is at its default ($HOME/go, so GOMODCACHE defaults to
-// $HOME/go/pkg/mod). This pins that the default case is covered; a custom
-// GOPATH under the overlay strategy is a known, unaddressed residual (Linux-only
-// — this host's Seatbelt backend always uses CacheSessionPrivate, which
-// isRedirectedCacheVar now covers unconditionally, so the residual has no
-// exposure on macOS or in restricted mode on any host).
-func TestCacheRootsCoverDefaultGoModCache(t *testing.T) {
+// The overlay serves Go's cache roots where the go command will write: pkg under
+// the first GOPATH entry (the default module cache and the checksum database),
+// plus a GOMODCACHE or GOCACHE configured elsewhere, so a custom location is
+// writable-private rather than read-only (#4188). Relative values, which the go
+// command refuses, contribute nothing.
+func TestCacheRootsFollowTheHostGoSettings(t *testing.T) {
 	home := "/home/tester"
-	defaultGoModCache := filepath.Join(home, "go", "pkg", "mod")
-	roots := cacheRootsFor(ModeWorkspaceWrite, home)
-	if !isUnderAnyRoot(defaultGoModCache, roots) {
-		t.Errorf("default-GOPATH GOMODCACHE %q must fall under a cache root, got roots %v", defaultGoModCache, roots)
+	sep := string(filepath.ListSeparator)
+	for _, tc := range []struct {
+		name string
+		host HostFacts
+		want []string
+	}{
+		// Go's default stays served too: a spawn whose environment does not carry
+		// the custom GOPATH (or the GOENV that set it) falls back to it.
+		{"custom GOPATH", HostFacts{Home: home, GoPath: "/custom/gopath" + sep + "/other"}, []string{"/custom/gopath/pkg", filepath.Join(home, "go", "pkg")}},
+		{"default GOPATH", HostFacts{Home: home}, []string{filepath.Join(home, "go", "pkg")}},
+		{"relative GOPATH", HostFacts{Home: home, GoPath: "relative/gopath"}, []string{filepath.Join(home, "go", "pkg")}},
+		{"explicit caches", HostFacts{Home: home, GoModCache: "/custom/modcache", GoCache: "/custom/gocache"}, []string{"/custom/modcache", "/custom/gocache"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roots := cacheRootsFor(ModeWorkspaceWrite, tc.host, "/work/project")
+			for _, want := range tc.want {
+				if !slices.Contains(roots, want) {
+					t.Errorf("cache roots %v must include %q", roots, want)
+				}
+			}
+		})
 	}
+	if roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: home, GoModCache: "relative"}, "/work/project"); slices.Contains(roots, "relative") {
+		t.Errorf("a relative GOMODCACHE must not become a cache root: %v", roots)
+	}
+}
 
-	customGoModCache := "/custom/gopath/pkg/mod"
-	if isUnderAnyRoot(customGoModCache, roots) {
-		t.Errorf("custom-GOPATH GOMODCACHE %q unexpectedly fell under a cache root %v — the known residual has been closed elsewhere; update this test's comment", customGoModCache, roots)
+// Go's default GOCACHE is under $XDG_CACHE_HOME when that is set, so the
+// overlay serves $XDG_CACHE_HOME in place of ~/.cache.
+func TestCacheRootsFollowXDGCacheHome(t *testing.T) {
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", XDGCacheHome: "/xdg/cache"}, "/work/project")
+	// ~/.cache stays served too, for tools that write it whatever XDG says.
+	if !slices.Contains(roots, "/xdg/cache") || !slices.Contains(roots, "/home/tester/.cache") {
+		t.Errorf("cache roots %v must serve XDG_CACHE_HOME alongside ~/.cache", roots)
+	}
+}
+
+// An overlay over a directory that holds the worktree would hide the real
+// worktree behind a discarded upper layer, so edits would vanish at session end.
+// A cache root at, above or inside the worktree (or at or above home, or a
+// temp root) is dropped.
+func TestCacheRootsNeverCoverTheWorktree(t *testing.T) {
+	const worktree = "/home/tester/src/project"
+	for _, host := range []HostFacts{
+		{Home: "/home/tester", GoModCache: "/home/tester/src"},
+		{Home: "/home/tester", GoCache: worktree},
+		{Home: "/home/tester", GoPath: "/home/tester/src/project/..", GoModCache: "/home/tester"},
+		{Home: "/home/tester", XDGCacheHome: "/home/tester/src"},
+		// A cache inside the worktree is workspace the session writes for good;
+		// an overlay there would discard those writes too.
+		{Home: "/home/tester", GoModCache: worktree + "/.cache/mod"},
+		{Home: "/home/tester", GoPath: worktree + "/gopath"},
+	} {
+		for _, r := range cacheRootsFor(ModeWorkspaceWrite, host, worktree) {
+			if pathUnder(worktree, r) || pathUnder(r, worktree) || r == host.Home {
+				t.Errorf("cache root %q covers the worktree %q or home (host %+v)", r, worktree, host)
+			}
+		}
 	}
 }
 
@@ -633,5 +678,148 @@ func TestWriteBlockedOffGrantsSessionScratch(t *testing.T) {
 	// layer, so a scratch grant would be a meaningless (and misleading) root.
 	if plain := mustResolve(t, SandboxPolicy{Mode: ModeOff}, bareLinuxHost(), dir).WithSessionScratch(scratch); len(plain.FileTool.WriteRoots) != 0 {
 		t.Fatalf("plain off gained a file-tool write root: %v", plain.FileTool.WriteRoots)
+	}
+}
+
+// A cache root spelled through a symlink that resolves inside the worktree is
+// dropped too: the overlay would land on worktree data all the same.
+func TestCacheRootsNeverCoverTheWorktreeThroughASymlink(t *testing.T) {
+	worktree := clean(t.TempDir())
+	link := filepath.Join(clean(t.TempDir()), "link")
+	if err := os.Symlink(worktree, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(worktree, "mod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoModCache: filepath.Join(link, "mod")}, worktree)
+	if slices.Contains(roots, filepath.Join(link, "mod")) {
+		t.Errorf("a cache root resolving inside the worktree must be dropped: %v", roots)
+	}
+}
+
+// A cache root that does not exist yet, under a symlinked parent that resolves
+// inside the worktree, is dropped as well: the wrapper would otherwise create it
+// through the link inside the worktree and overlay it there.
+func TestCacheRootsNeverCoverTheWorktreeThroughAMissingPathsSymlinkedParent(t *testing.T) {
+	worktree := clean(t.TempDir())
+	link := filepath.Join(clean(t.TempDir()), "link")
+	if err := os.Symlink(worktree, link); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(link, "not", "yet", "modcache")
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{Home: "/home/tester", GoModCache: missing}, worktree)
+	if slices.Contains(roots, missing) {
+		t.Errorf("a missing cache root whose parent resolves inside the worktree must be dropped: %v", roots)
+	}
+}
+
+// An overlay at or inside a persistent write root (an extra writable root)
+// would discard writes the user granted for good, so such a cache root is
+// dropped, like one inside the worktree, and so is one holding a write root
+// (TestBuildBwrapArgvDoesNotOverlayACacheHoldingAWriteRoot).
+func TestCacheRootsNeverLieInsideAPersistentWriteRoot(t *testing.T) {
+	shared := clean(t.TempDir())
+	gocache := filepath.Join(shared, "gocache")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := HostFacts{OS: "linux", Home: clean(t.TempDir()), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{shared}}, host, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rp.CacheRoots, gocache) {
+		t.Errorf("a cache root inside an extra writable root must be dropped: %v", rp.CacheRoots)
+	}
+}
+
+// bwrap mounts a private /tmp and /dev before the overlays, so a cache root
+// spelled there through a symlink would be overlaid at the link's path inside
+// the private mount, not at the storage the link names. Such a root is never
+// overlaid.
+func TestCacheRootsLeaveOutALinkSpelledInsideAPrivateMount(t *testing.T) {
+	store, err := os.MkdirTemp("/var/tmp", "evener-cache-store-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(store) })
+	linkDir, err := os.MkdirTemp("/tmp", "evener-cache-link-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
+	link := filepath.Join(linkDir, "cache")
+	if err := os.Symlink(store, link); err != nil {
+		t.Fatal(err)
+	}
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/home/tester", XDGCacheHome: link}, "/work/project")
+	if slices.Contains(roots, link) {
+		t.Errorf("a cache root reached through a link under /tmp must not be overlaid: %v", roots)
+	}
+}
+
+// A cache root spelled outside /tmp whose resolution passes through a link in
+// /tmp (/var/tmp/front -> /tmp/router -> store) would also be overlaid at a
+// path bwrap's private /tmp hides, so it is left out too.
+func TestCacheRootsLeaveOutALinkChainThroughAPrivateMount(t *testing.T) {
+	store, err := os.MkdirTemp("/var/tmp", "evener-cache-store-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(store) })
+	routerDir, err := os.MkdirTemp("/tmp", "evener-cache-router-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(routerDir) })
+	router := filepath.Join(routerDir, "router")
+	if err := os.Symlink(store, router); err != nil {
+		t.Fatal(err)
+	}
+	front := filepath.Join(store+"-front", "front")
+	if err := os.MkdirAll(filepath.Dir(front), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(front)) })
+	if err := os.Symlink(router, front); err != nil {
+		t.Fatal(err)
+	}
+	xdg := filepath.Join(front, "cache")
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/home/tester", XDGCacheHome: xdg}, "/work/project")
+	if slices.Contains(roots, xdg) {
+		t.Errorf("a cache root whose resolution passes through a link in /tmp must not be overlaid: %v", roots)
+	}
+}
+
+// A ".." in a link target climbs from where the previous link resolved, as
+// the kernel follows it: /var/tmp/d/front -> hop/../../r with hop -> /tmp/x/in
+// resolves inside /tmp even though the target reads as /var/tmp/r lexically.
+func TestLinksThroughPrivateMountFollowsDotDotPhysically(t *testing.T) {
+	d, err := os.MkdirTemp("/var/tmp", "evener-dotdot-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	x, err := os.MkdirTemp("/tmp", "evener-dotdot-x-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(x) })
+	if err := os.MkdirAll(filepath.Join(x, "in"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(x, "r"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(x, "in"), filepath.Join(d, "hop")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("hop/../r", filepath.Join(d, "front")); err != nil {
+		t.Fatal(err)
+	}
+	if !linksThroughPrivateMount(filepath.Join(d, "front", "cache")) {
+		t.Error("a link whose target climbs out of a link into /tmp must count as passing through /tmp")
 	}
 }

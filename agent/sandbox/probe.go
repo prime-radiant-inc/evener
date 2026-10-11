@@ -125,12 +125,19 @@ type HostFacts struct {
 	// hub configuration and credentials are kept.
 	EvenerConfigRoot string
 
-	// GoPath is the go command's GOPATH as configured on this host, in the
-	// environment or with `go env -w` (see goEnvValue), resolved once at session
-	// start. Empty means unset, and goPathEntries applies Go's $HOME/go default.
-	// It grants nothing: it is the ambient GOPATH the env floor keeps behind the
-	// session scratch.
-	GoPath string
+	// GoPath, GoModCache and GoCache are the go command's settings as configured
+	// on this host, in the environment or with `go env -w` (see goEnvValue),
+	// resolved once at session start. Empty means unset: Go's own default
+	// applies, and goPathEntries holds GOPATH's. They grant nothing: they place
+	// the overlaid Go cache roots and the ambient GOPATH the env floor keeps
+	// behind the session scratch.
+	GoPath     string
+	GoModCache string
+	GoCache    string
+
+	// XDGCacheHome is $XDG_CACHE_HOME, which moves ~/.cache and with it Go's
+	// default GOCACHE; empty when unset.
+	XDGCacheHome string
 
 	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
 	// so the env floor can tell whether a spawn's go would read the same one.
@@ -277,6 +284,9 @@ func probeHost(system probeSystem) HostFacts {
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
+	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
+	facts.GoCache = goEnvValue(system, envvars.GoCache.Name)
+	facts.XDGCacheHome = system.getenv(envvars.XDGCacheHome.Name)
 
 	if path, err := system.lookPath("bwrap"); err == nil {
 		facts.BwrapPath = path

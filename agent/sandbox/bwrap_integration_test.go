@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ func requireRealBwrap(t *testing.T) HostFacts {
 	if facts.OS != "linux" || !facts.BwrapCapable || facts.BwrapPath == "" {
 		t.Skip("bwrap not capable on this host")
 	}
+	// The tests anchor their caches at a fixture home; the runner's own Go
+	// settings would put real directories (on whatever filesystem the runner
+	// keeps them) under the overlay instead.
+	facts.GoPath, facts.GoModCache, facts.GoCache, facts.XDGCacheHome = "", "", "", ""
 	return facts
 }
 
@@ -414,6 +419,103 @@ if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
 				t.Errorf("host /tmp outside the scratch tree must stay hidden:\n%s", out)
 			}
 		})
+	}
+}
+
+// Under real bwrap, a cache root holding an extra writable root is not
+// overlaid: the write to the granted root persists, and a write elsewhere in
+// that cache fails where it happens instead of vanishing with an overlay.
+// Another cache that holds no write root stays overlaid (its write succeeds
+// and is discarded).
+func TestBwrapCacheHoldingAWritableRootIsNotOverlaid(t *testing.T) {
+	facts := requireRealBwrap(t)
+	if !facts.OverlaySupported {
+		t.Skip("this bwrap has no overlay support")
+	}
+	home, err := os.MkdirTemp("/var/tmp", "evener-overlay-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	cache := filepath.Join(home, ".cache")
+	library := filepath.Join(cache, "library")
+	npm := filepath.Join(home, ".npm")
+	for _, dir := range []string{library, npm} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	facts.Home = home
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rp.CacheStrategy != CacheOverlay {
+		t.Skipf("cache strategy is %v, not overlay", rp.CacheStrategy)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `echo kept > "$1/kept"; echo private > "$3/private" && echo NPM-WRITABLE; if echo gone > "$2/stray" 2>/dev/null; then echo STRAY-WRITTEN; fi`
+	argv := w.Wrap([]string{"/bin/sh", "-c", script, "overlay-test", library, cache, npm}, cwd)
+	out, _ := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput()
+	if _, err := os.Stat(filepath.Join(library, "kept")); err != nil {
+		t.Errorf("a write to the granted root must persist: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "STRAY-WRITTEN") {
+		t.Errorf("a write elsewhere in a cache holding a writable root must fail, not land in an overlay:\n%s", out)
+	}
+	if !strings.Contains(string(out), "NPM-WRITABLE") {
+		t.Errorf("a cache holding no writable root must stay overlaid and writable:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(npm, "private")); !os.IsNotExist(err) {
+		t.Errorf("a write into an overlaid cache must be discarded: %v", err)
+	}
+}
+
+// A cache root sharing storage with a writable root through another symlink
+// is not overlaid either, and the write to the writable root persists.
+func TestBwrapCacheSharingAWritableRootThroughASymlinkIsNotOverlaid(t *testing.T) {
+	facts := requireRealBwrap(t)
+	if !facts.OverlaySupported {
+		t.Skip("this bwrap has no overlay support")
+	}
+	base, err := os.MkdirTemp("/var/tmp", "evener-overlay-links-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	storage := filepath.Join(base, "storage")
+	library := filepath.Join(storage, "cache", "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "links")
+	if err := os.Symlink(storage, link); err != nil {
+		t.Fatal(err)
+	}
+	facts.Home = filepath.Join(base, "home")
+	facts.GoCache = filepath.Join(link, "cache")
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rp.CacheRoots, facts.GoCache) {
+		t.Errorf("a cache holding a writable root through a symlink must not be overlaid: %v", rp.CacheRoots)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := w.Wrap([]string{"/bin/sh", "-c", `echo kept > "$1/kept"`, "rebind-test", library}, cwd)
+	if out, err := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(library, "kept")); err != nil {
+		t.Errorf("a write to the writable root must persist: %v", err)
 	}
 }
 

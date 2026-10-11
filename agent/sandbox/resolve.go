@@ -39,7 +39,7 @@ func (b Backend) String() string {
 	}
 }
 
-// CacheStrategy is how cache roots (~/.cache, ~/go/pkg, ~/.npm, ~/.cargo, …) are
+// CacheStrategy is how cache roots (~/.cache, ~/.npm, ~/.cargo, Go's, …) are
 // served so a sandboxed session can never poison a cache a later build consumes.
 type CacheStrategy int
 
@@ -123,8 +123,8 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
-	// CacheRoots are the absolute language cache directories (~/.cache, ~/go/pkg,
-	// ~/.npm, ~/.cargo) served under the cache strategy: overlaid read-real/
+	// CacheRoots are the absolute language cache directories (~/.cache, ~/.npm,
+	// ~/.cargo and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
 	// write-private when CacheStrategy is CacheOverlay, or redirected via env to
 	// the session tmp when CacheSessionPrivate. Empty when no cache handling is
 	// needed (off, read-only). Populated for the writable modes.
@@ -471,7 +471,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:    cacheRootsFor(policy.Mode, host.Home),
+		CacheRoots:    cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
@@ -508,6 +508,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, wholeMask)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
+	rp.CacheRoots = dropCacheRootsSharingWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
 
 	// File-tool read roots: restricted needs the grant, and the read-anywhere
 	// modes' file tools use it as an open anchor.
@@ -607,22 +608,198 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 }
 
 // defaultCacheRoots are the language cache directories served under the cache
-// strategy, expressed relative to $HOME.
-var defaultCacheRoots = []string{".cache", "go/pkg", ".npm", ".cargo"}
+// strategy, expressed relative to $HOME. $XDG_CACHE_HOME joins ~/.cache when
+// set, and Go's roots follow the host's go settings (goCacheRoots).
+var defaultCacheRoots = []string{".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
-// serve caches (overlaid or redirected), off/read-only need none.
-func cacheRootsFor(mode Mode, home string) []string {
+// serve caches (overlaid or redirected), off/read-only need none. Every root
+// passes the shared-tree guard, and none lies inside the worktree: an overlay
+// over the worktree, a directory holding it, the home directory or a temp root
+// would hide the real files behind an upper layer discarded at session end, so
+// edits there would silently vanish.
+func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
-		out := make([]string, 0, len(defaultCacheRoots))
-		for _, rel := range defaultCacheRoots {
-			out = append(out, filepath.Join(home, rel))
+		// ~/.cache stays served alongside $XDG_CACHE_HOME, for tools that
+		// write it whatever XDG says.
+		out := []string{filepath.Join(host.Home, ".cache")}
+		if filepath.IsAbs(host.XDGCacheHome) {
+			out = append(out, host.XDGCacheHome)
 		}
-		return out
+		for _, rel := range defaultCacheRoots {
+			out = append(out, filepath.Join(host.Home, rel))
+		}
+		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
+		// A root that is not a directory yet (a file, a dangling link to an
+		// unmounted drive) stays listed; bwrap overlays only a directory.
+		roots = slices.DeleteFunc(roots, func(r string) bool {
+			rr := resolveExistingPrefix(r)
+			// bwrap mounts a private /tmp and /dev before the overlays, so a
+			// root whose resolution follows a link in or into those would be
+			// overlaid where the sandbox cannot see that link, not at the
+			// storage it names. Spellings are compared exactly; a worktree
+			// matched only by letter case on a case-insensitive Linux volume
+			// is the known Low tracked in #4306.
+			return pathUnder(r, worktree) || pathUnder(rr, worktree) || linksThroughPrivateMount(r)
+		})
+		return dedupeRoots(roots)
 	default:
 		return nil
 	}
+}
+
+// dropCacheRootsSharingWriteRoots drops each cache root that shares storage
+// with a persistent write root (an extra writable root, a linked worktree's
+// git metadata): the cache at or inside the write root, or the write root
+// inside the cache, by spelling or by where each lands with every link
+// followed, dangling ones included, and any link on the write root's way
+// (physicalPlaces). An overlay there would discard writes the user granted
+// for good. Such a cache is simply not overlaid: the granted root is bound
+// writable as usual, and other writes into it fail where they happen instead
+// of vanishing. (Redirecting the Go cache variables that pointed there to the
+// session scratch is the env floor's job once it judges which cache
+// directories an overlay serves, #4303.)
+//
+// This is judged at resolution and for the scratch at wrapper creation;
+// judging it again at each spawn, after a granted root is retargeted, is the
+// per-spawn judgement stacked on this change (servableCacheRoot, #4302). A
+// retarget by the session itself would at worst send its own writes into the
+// discarded layer, which the threat model leaves to the session
+// (docs/sandboxing.md#threat-model).
+//
+// Containment compares resolved spellings exactly. Two spellings that differ
+// only by letter case on a case-insensitive Linux volume are not matched:
+// that friction case is tracked as a known Low in #4306, alongside the same
+// limit for carve-outs, rather than handled by identity checks here.
+func dropCacheRootsSharingWriteRoots(cacheRoots, writeRoots []string) []string {
+	within := func(c, w string) bool { return c == w || pathUnder(c, w) }
+	return slices.DeleteFunc(cacheRoots, func(c string) bool {
+		rc := physicalLanding(c)
+		return slices.ContainsFunc(writeRoots, func(w string) bool {
+			return within(c, w) || within(w, c) || slices.ContainsFunc(physicalPlaces(w), func(l string) bool {
+				return within(rc, l) || within(l, rc)
+			})
+		})
+	})
+}
+
+// inPrivateMount reports whether p is spelled under a directory bwrap gives
+// each spawn its own copy of (a private /tmp and a minimal /dev), where host
+// symlinks are not visible.
+func inPrivateMount(p string) bool {
+	return pathUnder(p, "/tmp") || pathUnder(p, "/dev")
+}
+
+// linksThroughPrivateMount reports whether resolving p follows a symlink that
+// lies in a private mount (inPrivateMount), or after following any symlink
+// reaches into one, at any step of the chain. Inside the sandbox such a link
+// is hidden or leads elsewhere, so an overlay at p would not sit over the
+// storage p names on the host.
+func linksThroughPrivateMount(p string) bool {
+	found := false
+	walkPhysical(p, func(path string, link, followed bool) bool {
+		found = (link || followed) && inPrivateMount(path)
+		return found
+	})
+	return found
+}
+
+// physicalLanding returns where p lands once every symlink on its way is
+// followed, dangling ones included: for a path that does not exist yet, where
+// creating it would put it.
+func physicalLanding(p string) string {
+	places := physicalPlaces(p)
+	return places[len(places)-1]
+}
+
+// physicalPlaces returns the host locations a write to p touches: each
+// symlink on its way, where it sits (a spawn could replace a dangling one with
+// a directory), and where p lands once every link is followed, dangling ones
+// included (for a path that does not exist yet, where creating it would put
+// it).
+func physicalPlaces(p string) []string {
+	var places []string
+	landing, _ := walkPhysical(p, func(path string, link, _ bool) bool {
+		if link {
+			places = append(places, StripDataVolumeAlias(path))
+		}
+		return false
+	})
+	return append(places, StripDataVolumeAlias(landing))
+}
+
+// walkPhysical resolves p one component at a time as the kernel does: each
+// symlink is followed (a ".." in a target climbs from where the link
+// resolved, not lexically), and missing components are kept as spelled. When
+// visit is non-nil it sees each symlink before it is followed (link true) and
+// each path the walk then settles on (link false), with followed saying
+// whether any link was followed before; returning true stops the walk. It
+// returns the path reached, and false when a link cannot be read or the chain
+// passes 40 links.
+func walkPhysical(p string, visit func(path string, link, followed bool) bool) (string, bool) {
+	pending := strings.Split(p, "/")
+	cur, followed := "/", false
+	for hops := 0; len(pending) > 0; {
+		comp := pending[0]
+		pending = pending[1:]
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+		default:
+			next := filepath.Join(cur, comp)
+			fi, err := os.Lstat(next)
+			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				if visit != nil && visit(next, true, followed) {
+					return next, true
+				}
+				target, err := os.Readlink(next)
+				if hops++; err != nil || hops > 40 {
+					return next, false
+				}
+				if filepath.IsAbs(target) {
+					cur = "/"
+				}
+				followed = true
+				pending = append(strings.Split(target, "/"), pending...)
+				continue
+			}
+			cur = next
+		}
+		if visit != nil && visit(cur, false, followed) {
+			return cur, true
+		}
+	}
+	return cur, true
+}
+
+// goCacheRoots are the directories the go command writes caches to: pkg under
+// the first GOPATH entry, which holds the default module cache and the checksum
+// database, Go's default $HOME/go/pkg, plus a GOMODCACHE or GOCACHE configured
+// somewhere else. A relative value, which the go command refuses, contributes
+// nothing. A configured root nested in another (GOMODCACHE=$HOME/go/pkg/mod)
+// is listed here and gets its own overlay until the per-spawn judgement
+// stacked on this change (liveCacheRoots, #4302) serves it through the outer
+// one, so go clean -modcache can remove it again.
+func goCacheRoots(host HostFacts) []string {
+	var roots []string
+	if entries := goPathEntries(host); len(entries) > 0 {
+		roots = append(roots, filepath.Join(entries[0], "pkg"))
+	}
+	// Go's default stays served alongside a custom GOPATH: a spawn whose
+	// environment does not carry that GOPATH (or the GOENV that set it) falls
+	// back to $HOME/go.
+	if def := goPathEntries(HostFacts{Home: host.Home}); len(def) > 0 {
+		roots = append(roots, filepath.Join(def[0], "pkg"))
+	}
+	for _, dir := range []string{host.GoModCache, host.GoCache} {
+		if filepath.IsAbs(dir) {
+			roots = append(roots, dir)
+		}
+	}
+	return roots
 }
 
 // cacheStrategyFor picks the cache strategy: workspace-write overlays only on a

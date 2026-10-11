@@ -458,10 +458,23 @@ denial is by design, not a bug.
 
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
-- `workspace-write` serves the language cache roots (`~/.cache`, `~/go/pkg`,
-  `~/.npm`, `~/.cargo`, plus any you add) as a **read-real, write-private overlay**
-  where the host's bubblewrap supports it: builds read warm from the real cache, but
-  writes land in a per-session tmpfs that is discarded at session end.
+- `workspace-write` serves the language cache roots (`~/.cache`, and
+  `$XDG_CACHE_HOME` when set, `~/.npm`, `~/.cargo`, the `pkg` directory of your
+  first GOPATH entry and of Go's `$HOME/go` default, and a `GOMODCACHE` or
+  `GOCACHE` you set elsewhere) as a **read-real, write-private overlay** where the
+  host's bubblewrap supports it: builds read warm from the real cache, but writes
+  land in a per-session tmpfs that is discarded at session end. The Go settings
+  are the host's, resolved once at session start (see the GOPATH note below). A
+  root at, above or inside the worktree, sharing storage with another
+  persistent write root (an extra writable root or a linked worktree's git
+  metadata inside it, or it inside one, by any spelling or link), at or above
+  your home directory or a temp root, or one that is not a directory, is never
+  overlaid, since the discarded upper layer would swallow writes there. Such a
+  cache is left as it is: the granted root is writable, and other writes into
+  it fail rather than vanish. The same holds for a cache holding the session
+  scratch. A root that does not exist yet is created empty at
+  session start (as the go command itself would) so it can be overlaid; a file
+  or a dangling symlink is left out.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
