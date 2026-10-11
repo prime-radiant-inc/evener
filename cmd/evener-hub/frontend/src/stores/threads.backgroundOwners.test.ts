@@ -1,9 +1,10 @@
 import "fake-indexeddb/auto";
+import { type AnyNotification, acquireThreadSubscription, WireError } from "@evener/appwire-client";
 import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
@@ -11,14 +12,17 @@ import { nextRealTask } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   installHydrationRetrySchedulerForTests,
+  productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   setProductionEntryCacheForTests,
+  settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
 
 let cache: SessionEntryCache;
 const mutationStorages: MutationOutboxIndexedDB[] = [];
+const activityLeases: Array<ReturnType<typeof acquireThreadSubscription>> = [];
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -32,6 +36,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const lease of activityLeases.splice(0)) lease.release();
   resetThreadsStoreForTests();
   for (const storage of mutationStorages.splice(0)) storage.close();
   cache.close();
@@ -46,6 +51,30 @@ function mutationStorage(): MutationOutboxIndexedDB {
   mutationStorages.push(storage);
   setMutationStorageForTests(storage);
   return storage;
+}
+
+async function blockedOutboxRow(storage: MutationOutboxIndexedDB, ref: string) {
+  const queued = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/queue",
+    payload: { ref, expectedTurnId: "", input: [{ type: "text", text: "blocked queue" }] },
+    attachments: [],
+    optimisticDisplay: { text: "blocked queue" },
+  });
+  await storage.markAttempted(queued.clientMutationId);
+  await storage.markUnknown(queued.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+  return storage.getOutbox(queued.clientMutationId);
+}
+
+function waitForHydration(ref: string, count: number): Promise<void> {
+  if ((threadsStore.getState().hydrations.get(ref) ?? 0) >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if ((state.hydrations.get(ref) ?? 0) < count) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 function connectCurrentClient(): FakeClient {
@@ -117,6 +146,72 @@ describe("background thread claims", () => {
     const params = await dispatched.promise;
     expect(params.input).toContainEqual({ type: "text", text: "foreground send" });
     await background.release();
+  });
+
+  test("pane adopts a background-hydrated model and releases only its own claim", async () => {
+    const fake = connectCurrentClient();
+    const activity = acquireThreadSubscription(fake, "local:one");
+    activityLeases.push(activity);
+    await activity.ensure();
+
+    const first = acquireBackgroundThread("local:one");
+    const second = acquireBackgroundThread("local:one");
+    await Promise.all([first.ready, second.ready]);
+    const resident = threadsStore.getState().threads.get("local:one");
+    expect(
+      resident?.turns
+        .flatMap((turn) => turn.items)
+        .map((item) => item.text)
+        .join(""),
+    ).toContain("alpha");
+    const readsBeforeAdoption = fake.calls.filter((call) => call.method === "thread/read").length;
+    const subscribedReads = membershipReads(fake);
+    expect(subscribedReads).toBe(1);
+
+    await Promise.all([
+      threadsStore.getState().ensureThread("local:one"),
+      threadsStore.getState().ensureThread("local:one"),
+    ]);
+    // R45: adoption replaces the background projection with the canonical model.
+    // This fixture prunes no substantive body, so only here do the values match.
+    const adopted = threadsStore.getState().threads.get("local:one");
+    expect(adopted).toStrictEqual(resident);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforeAdoption);
+    expect(adopted).toBe(productionEntryTranscriptForTests("local:one").repository?.getSnapshot());
+    expect(membershipReads(fake)).toBe(subscribedReads);
+
+    const ownerCalls = fake.calls.length;
+    await first.release();
+    await second.release();
+    expect(
+      fake.calls
+        .slice(ownerCalls)
+        .filter((call) =>
+          ["turn/start", "turn/steer", "turn/queue", "thread/resume", "thread/unsubscribe"].includes(call.method),
+        ),
+    ).toEqual([]);
+    fake.emitNotification(textDelta("local:one", "-after-background-close"));
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:one")
+        ?.turns.flatMap((turn) => turn.items)
+        .map((item) => item.text)
+        .join(""),
+    ).toContain("alpha-after-background-close");
+    expect(unsubscriptions(fake)).toBe(0);
+
+    threadsStore.getState().releaseThread("local:one");
+    expect(unsubscriptions(fake)).toBe(0);
+    const unsubscribed = deferred<void>();
+    fake.on("thread/unsubscribe", () => {
+      unsubscribed.resolve();
+      return {};
+    });
+    threadsStore.getState().releaseThread("local:one");
+    activity.release();
+    await unsubscribed.promise;
+    expect(unsubscriptions(fake)).toBe(1);
   });
 
   test("foreground release leaves background routing alive until its final claim", async () => {
@@ -209,5 +304,203 @@ describe("background thread claims", () => {
     } finally {
       restore();
     }
+  });
+  test("background retry does not reconcile or dispatch an uncertain durable row", async () => {
+    const storage = mutationStorage();
+    const retryScheduled = deferred<() => void>();
+    const restore = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+      retryScheduled.resolve(retry);
+      return () => {};
+    });
+    const restoreSpy = vi.spyOn(storage, "restoreProvenAbsent");
+    const initialScans = deferred<void>();
+    const listTargetRefs = storage.listTargetRefs.bind(storage);
+    let scanCount = 0;
+    const scanSpy = vi.spyOn(storage, "listTargetRefs").mockImplementation(async () => {
+      const refs = await listTargetRefs();
+      scanCount += 1;
+      if (scanCount === 3) initialScans.resolve();
+      return refs;
+    });
+    try {
+      const fake = connectCurrentClient();
+      await initialScans.promise;
+      await nextRealTask();
+      const blocked = await blockedOutboxRow(storage, "local:one");
+      let reads = 0;
+      fake.on("thread/read", (params) => {
+        reads += 1;
+        if (reads === 1) throw new Error("temporary read failure");
+        const response = currentRead("local:one");
+        return {
+          ...response,
+          requestGeneration: params.requestGeneration,
+          thread: {
+            ...response.thread,
+            evener: { ...response.thread.evener, mutationStateAuthoritative: true },
+          },
+        };
+      });
+      const background = acquireBackgroundThread("local:one");
+      try {
+        await background.ready;
+        const hydration = waitForHydration("local:one", 1);
+        const retry = await retryScheduled.promise;
+        retry();
+        await hydration;
+        await nextRealTask();
+        expect(restoreSpy).not.toHaveBeenCalled();
+        await expect(storage.getOutbox(blocked?.clientMutationId ?? "missing")).resolves.toEqual(blocked);
+        expect(fake.calls.filter((call) => call.method.startsWith("turn/") || call.method === "thread/resume")).toEqual(
+          [],
+        );
+      } finally {
+        await background.release();
+      }
+    } finally {
+      scanSpy.mockRestore();
+      restoreSpy.mockRestore();
+      restore();
+    }
+  });
+
+  test("background history invalidation does not reconcile an uncertain durable row", async () => {
+    const storage = mutationStorage();
+    const restoreSpy = vi.spyOn(storage, "restoreProvenAbsent");
+    const initialScans = deferred<void>();
+    const listTargetRefs = storage.listTargetRefs.bind(storage);
+    let scanCount = 0;
+    const scanSpy = vi.spyOn(storage, "listTargetRefs").mockImplementation(async () => {
+      const refs = await listTargetRefs();
+      scanCount += 1;
+      if (scanCount === 3) initialScans.resolve();
+      return refs;
+    });
+    try {
+      const fake = connectCurrentClient();
+      await initialScans.promise;
+      await nextRealTask();
+      const blocked = await blockedOutboxRow(storage, "local:one");
+      let reads = 0;
+      fake.on("thread/read", (params) => {
+        reads += 1;
+        const response = currentRead("local:one");
+        return {
+          ...response,
+          epoch: reads === 1 ? 2 : 3,
+          requestGeneration: params.requestGeneration ?? response.requestGeneration,
+          thread: {
+            ...response.thread,
+            evener: { ...response.thread.evener, mutationStateAuthoritative: true },
+          },
+        };
+      });
+      const background = acquireBackgroundThread("local:one");
+      try {
+        await background.ready;
+        const invalidatedHydration = waitForHydration("local:one", 2);
+        fake.emitNotification({
+          method: "history/updated",
+          params: {
+            ref: "local:one",
+            threadId: "thr_local:one",
+            bootGeneration: "1",
+            epoch: 3,
+            snapshot: { incarnation: "inc-1", length: 41 },
+            items: [],
+          },
+        } as AnyNotification);
+        expect(threadsStore.getState().threads.get("local:one")?.history?.invalidatedAtGeneration).toBeDefined();
+        await invalidatedHydration;
+        await nextRealTask();
+        expect(restoreSpy).not.toHaveBeenCalled();
+        await expect(storage.getOutbox(blocked?.clientMutationId ?? "missing")).resolves.toEqual(blocked);
+        expect(fake.calls.filter((call) => call.method.startsWith("turn/") || call.method === "thread/resume")).toEqual(
+          [],
+        );
+      } finally {
+        await background.release();
+      }
+    } finally {
+      scanSpy.mockRestore();
+      restoreSpy.mockRestore();
+    }
+  });
+
+  test("repeated background release shares one final drain", async () => {
+    const fake = connectCurrentClient();
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    const first = background.release();
+    const second = background.release();
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+    expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+    expect(unsubscriptions(fake)).toBe(1);
+  });
+
+  test("a replacement client hydrates while the old client's held response is fenced", async () => {
+    const oldClient = connectCurrentClient();
+    const oldEntered = deferred<void>();
+    const oldResponse = deferred<ReturnType<typeof currentRead>>();
+    let oldReadCount = 0;
+    oldClient.on("thread/read", (params) => {
+      oldReadCount += 1;
+      if (oldReadCount === 1) {
+        oldEntered.resolve();
+        return oldResponse.promise.then((response) => ({ ...response, requestGeneration: params.requestGeneration }));
+      }
+      return { ...currentRead("local:one"), requestGeneration: params.requestGeneration };
+    });
+    const background = acquireBackgroundThread("local:one");
+    await oldEntered.promise;
+    const replacement = new FakeClient("ready");
+    replacement.on("thread/read", (params) => ({
+      ...currentRead(params.ref ?? "local:one"),
+      requestGeneration: params.requestGeneration,
+    }));
+    replacement.on("thread/unsubscribe", () => ({}));
+    const hydrated = deferred<void>();
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if (state.threads.get("local:one")?.turns.length) hydrated.resolve();
+    });
+    let readySettled = false;
+    void background.ready.then(() => {
+      readySettled = true;
+    });
+    try {
+      connectionStore.getState().connect(replacement);
+      await hydrated.promise;
+      // Finish the successor's own checkpoint before capturing its identity,
+      // while the predecessor response remains held at the original boundary.
+      await settleEntryTranscriptForTests("local:one");
+      const replacementModel = threadsStore.getState().threads.get("local:one");
+      expect(replacement.calls.some((call) => call.method === "thread/read")).toBe(true);
+      await nextRealTask();
+      expect(readySettled).toBe(true);
+      oldResponse.resolve(currentRead("local:one"));
+      await nextRealTask();
+      expect(threadsStore.getState().threads.get("local:one")).toBe(replacementModel);
+    } finally {
+      oldResponse.resolve(currentRead("local:one"));
+      unsubscribe();
+      await background.release();
+    }
+  });
+
+  test("a deletion response settles the background attempt and records the deleted ref", async () => {
+    const fake = connectCurrentClient();
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:one", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    expect(threadsStore.getState().deletedRefs.has("local:one")).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+    await background.release();
   });
 });
