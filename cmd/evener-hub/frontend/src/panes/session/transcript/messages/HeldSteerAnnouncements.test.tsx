@@ -364,7 +364,11 @@ test("the region stays silent on the timer's cadence", async () => {
 // The VisuallyHidden widget's sr-only class, through the project's canonical
 // requireClass (noUncheckedIndexedAccess makes a bare styles.root read
 // string | undefined; a missing class must fail loudly, not silently).
-const VISUALLY_HIDDEN_CLASS = requireClass(visuallyHiddenStyles.root, "visuallyhidden.module.css", "root");
+const VISUALLY_HIDDEN_CLASS = requireClass(
+  visuallyHiddenStyles.visuallyHidden,
+  "visuallyhidden.module.css",
+  "visuallyHidden",
+);
 
 // The region's text renders through the shared VisuallyHidden widget - the
 // same sr-only wrapping Session.tsx's own transcript-view-announcement region

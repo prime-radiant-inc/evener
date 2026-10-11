@@ -9,5 +9,5 @@ export interface VisuallyHiddenProps {
 }
 
 export function VisuallyHidden({ children }: VisuallyHiddenProps) {
-  return <span className={styles.root}>{children}</span>;
+  return <span className={styles.visuallyHidden}>{children}</span>;
 }

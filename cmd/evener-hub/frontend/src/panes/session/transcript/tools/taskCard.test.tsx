@@ -975,7 +975,11 @@ test("a legacy cancelled row without a settle stamp never outranks a stamped set
 
 // The VisuallyHidden widget's sr-only class, through requireClass so a
 // renamed class fails loudly.
-const VISUALLY_HIDDEN_CLASS = requireClass(visuallyHiddenStyles.root, "visuallyhidden.module.css", "root");
+const VISUALLY_HIDDEN_CLASS = requireClass(
+  visuallyHiddenStyles.visuallyHidden,
+  "visuallyhidden.module.css",
+  "visuallyHidden",
+);
 
 test("the status rides along visually-hidden on every window row", () => {
   renderItem(mainUpdate());

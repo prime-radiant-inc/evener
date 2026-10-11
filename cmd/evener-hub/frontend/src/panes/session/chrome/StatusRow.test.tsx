@@ -637,7 +637,9 @@ test("context has one meter semantic with wide and compact visual variants", () 
   expect(meter.tagName).toBe("METER");
   const hiddenMeter = meter.parentElement;
   expect(
-    hiddenMeter?.classList.contains(requireClass(visuallyHiddenStyles.root, "visuallyhidden.module.css", "root")),
+    hiddenMeter?.classList.contains(
+      requireClass(visuallyHiddenStyles.visuallyHidden, "visuallyhidden.module.css", "visuallyHidden"),
+    ),
   ).toBe(true);
   expect(meter.getAttribute("value")).toBe("64000");
   expect(meter.getAttribute("max")).toBe("128000");

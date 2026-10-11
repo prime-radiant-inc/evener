@@ -342,7 +342,11 @@ test("every row leads with the shared TaskCheck glyph matching its task's status
 
 // The VisuallyHidden widget's sr-only class, through requireClass so a
 // renamed class fails loudly.
-const VISUALLY_HIDDEN_CLASS = requireClass(visuallyHiddenStyles.root, "visuallyhidden.module.css", "root");
+const VISUALLY_HIDDEN_CLASS = requireClass(
+  visuallyHiddenStyles.visuallyHidden,
+  "visuallyhidden.module.css",
+  "visuallyHidden",
+);
 
 test("every row carries a visually hidden status word beside its aria-hidden glyph", async () => {
   // TaskCheck is a picture of state, deliberately aria-hidden; the row's
