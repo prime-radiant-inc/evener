@@ -1237,24 +1237,11 @@ func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm
 	if err != nil || len(page.Delegates) != 1 {
 		t.Fatalf("list the root's delegates: %d rows, err=%v", len(page.Delegates), err)
 	}
-	raw, err := json.Marshal(page.Delegates[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var row struct {
-		ReportPreview string `json:"reportPreview"` //nolint:tagliatelle // AppWire fixture asserts the public camelCase wire contract.
-	}
-	if err := json.Unmarshal(raw, &row); err != nil {
-		t.Fatal(err)
-	}
-	coordinator.mu.Lock()
-	path := transcriptPath(coordinator.stateDir, coordinator.id)
-	coordinator.mu.Unlock()
-	transcriptRaw, err := os.ReadFile(path)
+	transcriptRaw, err := os.ReadFile(transcriptPath(coordinator.stateDir, coordinator.ID()))
 	if err != nil {
 		t.Fatalf("read the coordinator's transcript: %v", err)
 	}
-	return frame, row.ReportPreview, string(transcriptRaw)
+	return frame, page.Delegates[0].ReportPreview, string(transcriptRaw)
 }
 
 // bareTextDrainTurn is a drain turn whose model never calls communicate.

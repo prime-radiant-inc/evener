@@ -974,10 +974,11 @@ func (s *Session) processKeepingReport(ctx context.Context, input string, images
 	report := s.comm
 	s.mu.Unlock()
 	res, err := s.ProcessInputKind(ctx, input, images, kind)
-	if !report.called || s.Communicated() {
+	s.mu.Lock()
+	if !report.called || s.comm.called {
+		s.mu.Unlock()
 		return res, err
 	}
-	s.mu.Lock()
 	s.comm = report
 	s.mu.Unlock()
 	if errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
