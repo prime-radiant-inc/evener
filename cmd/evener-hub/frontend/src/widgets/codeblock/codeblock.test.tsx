@@ -207,9 +207,10 @@ test("uses the mono font for code content", () => {
 });
 
 // The reader expanded this tool result on purpose, so the window before any
-// fold is a substantial read, not a viewport-height teaser (Jesse's
-// 2026-10-11 call: 100 lines). Past TAIL_VISIBLE_LINES lines, only the tail
-// renders by default, mirroring this codebase's own tailFold
+// fold is a substantial read, not a viewport-height teaser (the number and
+// its rationale live at TAIL_VISIBLE_LINES in index.tsx). Past
+// TAIL_VISIBLE_LINES lines, only the tail renders by default, mirroring
+// this codebase's own tailFold
 // (protocol/toolCallText.ts) - keep the tail, not the head, because the
 // informative part of a long dump (a pytest FAILURES section) is almost
 // always at the end, not the start. jsdom reports zero for all layout, so a

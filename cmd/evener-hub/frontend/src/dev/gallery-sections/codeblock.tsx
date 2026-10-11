@@ -16,11 +16,12 @@ const SHELL_SAMPLE = `$ npm run test
 // blocks are generated so the sample clears the window without 100+
 // hand-written lines of mock output.
 const PYTEST_FAILURES = 20;
+const PYTEST_PASSED = 4;
 const LONG_PYTEST_SAMPLE = [
   "============================= test session starts ==============================",
-  "collected 24 items",
+  `collected ${PYTEST_FAILURES + PYTEST_PASSED} items`,
   "",
-  `tests/test_widgets.py ${"F".repeat(PYTEST_FAILURES)}....                              [100%]`,
+  `tests/test_widgets.py ${"F".repeat(PYTEST_FAILURES)}${".".repeat(PYTEST_PASSED)}                              [100%]`,
   "",
   ...Array.from({ length: PYTEST_FAILURES }, (_, block) => [
     `________________________________ test_case_${block + 1} _________________________________`,
@@ -32,7 +33,7 @@ const LONG_PYTEST_SAMPLE = [
     `tests/test_widgets.py:${88 + block * 16}: AssertionError`,
   ]).flat(),
   "",
-  `=========================== ${PYTEST_FAILURES} failed, 4 passed in 0.41s ===========================`,
+  `=========================== ${PYTEST_FAILURES} failed, ${PYTEST_PASSED} passed in 0.41s ===========================`,
 ].join("\n");
 
 export default function CodeBlockGallerySection() {

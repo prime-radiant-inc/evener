@@ -7,10 +7,9 @@
 //
 // Decisions locked in the mockup pass: humanize every duration (after 300s
 // → "in 5m", progress_interval_ms 120000 → "every 2m"; absolute clock only
-// for created_at); notes render in full to 100 lines (Jesse's 2026-10-11
-// call, matching CodeBlock's fold window), disclosure only beyond; no watch
-// id on single-watch surfaces (list rows, inspect summaries, raw
-// disclosures only); status chips only in list rows, where
+// for created_at); notes render in full to NOTE_CLAMP_LINES, disclosure
+// only beyond; no watch id on single-watch surfaces (list rows, inspect
+// summaries, raw disclosures only); status chips only in list rows, where
 // watching vs ended varies per row; clear and terminal catch-up are quiet
 // one-liners — the summary line IS the rendering, expanded body empty.
 
