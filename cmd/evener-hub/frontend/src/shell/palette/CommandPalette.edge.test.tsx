@@ -24,7 +24,15 @@ import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../openInNewTab.te
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
-import { renderPalette as render, scriptSearch, scriptSearchFailure } from "./paletteTestUtils";
+import {
+  helpChords,
+  paletteEmptyReason,
+  paletteRowsOfKind,
+  paletteSection,
+  renderPalette as render,
+  scriptSearch,
+  scriptSearchFailure,
+} from "./paletteTestUtils";
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -121,9 +129,11 @@ afterEach(() => {
 test("commandErrorMessage falls back to String(err) for non-Error, non-hub-launch values", () => {
   expect(commandErrorMessage("plain string error")).toBe("plain string error");
   expect(commandErrorMessage(42)).toBe("42");
-  expect(commandErrorMessage(null)).toBe("command failed");
-  expect(commandErrorMessage(undefined)).toBe("command failed");
-  expect(commandErrorMessage("  ")).toBe("command failed");
+  // Empty values share one non-empty default, so the error strip never renders blank.
+  const fallback = commandErrorMessage(null);
+  expect(fallback.trim()).not.toBe("");
+  expect(commandErrorMessage(undefined)).toBe(fallback);
+  expect(commandErrorMessage("  ")).toBe(fallback);
 });
 
 test("commandErrorMessage uses err.message for Error instances", () => {
@@ -146,7 +156,7 @@ describe("remote search results", () => {
 
   // --- search failure (lines 283-285) ---
 
-  test("a failed search shows 'Search failed' empty state", async () => {
+  test("a failed search shows the search-failed empty state", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     scriptSearchFailure();
 
@@ -154,7 +164,7 @@ describe("remote search results", () => {
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "query");
 
-    await waitFor(() => expect(screen.getByText("Search failed")).toBeTruthy());
+    await waitFor(() => expect(paletteEmptyReason()).toBe("search-failed"));
   });
 
   // --- search result activation: live/past with newTab (lines 505-506) ---
@@ -171,7 +181,7 @@ describe("remote search results", () => {
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "live");
 
-    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    await waitFor(() => expect(paletteSection("live")).not.toBeNull());
     await user.keyboard("{Meta>}{Enter}{/Meta}");
 
     // The anchor's rel keeps the opened tab from copying this tab's
@@ -197,8 +207,8 @@ describe("remote search results", () => {
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), "old");
 
-    await waitFor(() => expect(screen.getByText("Past · 1")).toBeTruthy());
-    const row = screen.getAllByRole("option").find((o) => o.textContent?.includes("old session"));
+    await waitFor(() => expect(paletteSection("past")).not.toBeNull());
+    const [row] = paletteRowsOfKind("past");
     await user.click(row as HTMLElement);
 
     expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:past1");
@@ -217,7 +227,7 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "search");
 
-  await waitFor(() => expect(screen.getByText("In session · 1")).toBeTruthy());
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -265,5 +275,6 @@ test("/help command shows the help panel", async () => {
 
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 
-  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+  expect(paletteSection("help")).not.toBeNull();
+  expect(helpChords().length).toBeGreaterThan(0);
 });
