@@ -15,7 +15,6 @@ import { WatchRow } from "./activityRows";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
-  passiveMore: requireClass(styles.passiveMore, "activitybar.module.css", "passiveMore"),
 };
 
 export function WatchesTab({ scope }: { scope: ActivityScope }) {
