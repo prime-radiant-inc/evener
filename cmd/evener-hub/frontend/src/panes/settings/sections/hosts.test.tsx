@@ -35,6 +35,15 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+// openHost opens a host's detail sheet from its list row - every per-host
+// action lives in the sheet (design-system §10) - and returns the sheet. The
+// row is found by the host's name, the fixture's own data.
+async function openHost(name: string): Promise<HTMLElement> {
+  const label = await screen.findByText(name, { selector: "button *" });
+  fireEvent.click(label.closest("button")!);
+  return screen.findByRole("dialog", { name });
+}
+
 // planFixture is the controller-minted plan a scripted `evener/host/plan`
 // answers with (deploy-pipeline spec 08b §10).
 function planFixture(overrides: Partial<HostPlan> = {}): HostPlan {
@@ -60,7 +69,7 @@ beforeEach(() => {
   hostOpsStore.getState().resetForTests();
 });
 
-test("lists hosts with online/offline state chips", async () => {
+test("lists each host as one row that opens its sheet, where the host's actions live", async () => {
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({
     hosts: [
@@ -79,17 +88,46 @@ test("lists hosts with online/offline state chips", async () => {
   render(<HostsSection sectionId="hosts" />);
   expect(await screen.findByText("alpha")).toBeTruthy();
   expect(await screen.findByText("beta")).toBeTruthy();
-  expect(screen.getByText("online")).toBeTruthy();
-  expect(screen.getByText("offline")).toBeTruthy();
-  // Every row shows the address and the one origin; every live host is
-  // editable and removable (the file is machine-managed).
+  // design-system §10: a row is one target and never a cluster of actions.
+  const rows = screen.getAllByRole("listitem");
+  expect(rows).toHaveLength(2);
+  for (const listRow of rows) expect(within(listRow).getAllByRole("button")).toHaveLength(1);
+  // Every row shows the address the fixture gave it.
   expect(screen.getByText(/a\.example/)).toBeTruthy();
-  const alphaRow = screen.getByText("alpha").closest("li")!;
-  expect(within(alphaRow).getByRole("button", { name: "Remove" })).toBeTruthy();
-  expect(within(alphaRow).getByRole("button", { name: "Edit" })).toBeTruthy();
-  const betaRow = screen.getByText("beta").closest("li")!;
-  expect(within(betaRow).getByRole("button", { name: "Remove" })).toBeTruthy();
-  expect(within(betaRow).getByRole("button", { name: "Connect" })).toBeTruthy();
+  // Every live host is editable and removable (the file is machine-managed);
+  // only a detached one offers Connect.
+  const alphaSheet = await openHost("alpha");
+  expect(within(alphaSheet).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(alphaSheet).getByRole("button", { name: "Edit" })).toBeTruthy();
+  expect(within(alphaSheet).queryByRole("button", { name: "Connect" })).toBeNull();
+  fireEvent.click(within(alphaSheet).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "alpha" })).toBeNull());
+  const betaSheet = await openHost("beta");
+  expect(within(betaSheet).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(betaSheet).getByRole("button", { name: "Connect" })).toBeTruthy();
+});
+
+test("a host's sheet closes itself when the host leaves the listing", async () => {
+  const fake = connectFakeClient();
+  let listed = true;
+  fake.on("evener/host/list", () => ({ hosts: listed ? [row({ name: "beta", address: "b.example" })] : [] }));
+  render(<HostsSection sectionId="hosts" />);
+  await openHost("beta");
+
+  listed = false;
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "beta" })).toBeNull());
+
+  // A host re-added under the same name is a new host: its sheet stays closed
+  // until someone opens it.
+  listed = true;
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+  expect(await screen.findByText("beta")).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "beta" })).toBeNull();
 });
 
 test("an offline row keeps rendering its retained facts", async () => {
@@ -104,7 +142,6 @@ test("an offline row keeps rendering its retained facts", async () => {
   }));
   render(<HostsSection sectionId="hosts" />);
   expect(await screen.findByText("beta")).toBeTruthy();
-  expect(screen.getByText("offline")).toBeTruthy();
   expect(screen.getByText(/hub 1\.4\.2/)).toBeTruthy();
   expect(screen.getByText(/linux\/arm64/)).toBeTruthy();
 });
@@ -156,11 +193,10 @@ test("a host row offers Edit, prefills the whole entry, and sends no name input"
     host: row({ name: "beta", address: "b2.example" }),
   }));
   render(<HostsSection sectionId="hosts" />);
-  const rowEl = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
+  const sheet = await openHost("beta");
+  await user.click(within(sheet).getByRole("button", { name: "Edit" }));
 
-  const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByText("Edit beta")).toBeTruthy();
+  const dialog = await screen.findByRole("dialog", { name: "Edit beta" });
   // The prefilled entry, and no name input: the name is the dialog's title.
   expect((within(dialog).getByLabelText("SSH address") as HTMLInputElement).value).toBe("b.example");
   expect((within(dialog).getByLabelText("User") as HTMLInputElement).value).toBe("bob");
@@ -185,9 +221,9 @@ test("a hub.toml row offers Edit and Remove like every other row", async () => {
     hosts: [row({ name: "alpha", address: "a.example", generation: 1, incarnationId: "inc-1", origin: "hub.toml" })],
   }));
   render(<HostsSection sectionId="hosts" />);
-  const rowEl = (await screen.findByText("alpha")).closest("li")!;
-  expect(within(rowEl).getByRole("button", { name: "Edit" })).toBeTruthy();
-  expect(within(rowEl).getByRole("button", { name: "Remove" })).toBeTruthy();
+  const sheet = await openHost("alpha");
+  expect(within(sheet).getByRole("button", { name: "Edit" })).toBeTruthy();
+  expect(within(sheet).getByRole("button", { name: "Remove" })).toBeTruthy();
 });
 
 test("a validation refusal lands on the input the hub blamed", async () => {
@@ -201,9 +237,9 @@ test("a validation refusal lands on the input the hub blamed", async () => {
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const rowEl = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
-  const dialog = await screen.findByRole("dialog");
+  const sheet = await openHost("beta");
+  await user.click(within(sheet).getByRole("button", { name: "Edit" }));
+  const dialog = await screen.findByRole("dialog", { name: "Edit beta" });
   await user.clear(within(dialog).getByLabelText("SSH address"));
   await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
@@ -238,9 +274,9 @@ test("an edit made while someone else changed the host is refused and never save
     return { outcome: "committed", host: current };
   });
   render(<HostsSection sectionId="hosts" />);
-  const rowEl = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
-  const dialog = await screen.findByRole("dialog");
+  const sheet = await openHost("beta");
+  await user.click(within(sheet).getByRole("button", { name: "Edit" }));
+  const dialog = await screen.findByRole("dialog", { name: "Edit beta" });
 
   // Another client edits beta, and the section's poll brings it in while this
   // dialog is still open on generation 1.
@@ -270,9 +306,9 @@ test("an edit refusal blaming the unrendered name is form-level", async () => {
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const rowEl = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
-  const dialog = await screen.findByRole("dialog");
+  const sheet = await openHost("beta");
+  await user.click(within(sheet).getByRole("button", { name: "Edit" }));
+  const dialog = await screen.findByRole("dialog", { name: "Edit beta" });
   await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
   const alert = await within(dialog).findByRole("alert");
@@ -308,31 +344,27 @@ test("Connect drives evener/host/attach and fails with retry intact", async () =
     throw new Error("dial tcp: connection refused");
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Connect" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Connect" }));
   await waitFor(() => expect(attaches).toBe(1));
   // Retry affordance: the button is back after the failure.
-  await waitFor(() => expect(within(betaRow).getByRole("button", { name: "Connect" })).toBeTruthy());
+  await waitFor(() => expect(within(betaSheet).getByRole("button", { name: "Connect" })).toBeTruthy());
 });
 
-test("a server-reported midAttach row renders connecting and disables Connect", async () => {
+test("a server-reported midAttach row disables Connect", async () => {
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({
     hosts: [row({ name: "beta", address: "b.example", midAttach: true })],
   }));
   render(<HostsSection sectionId="hosts" />);
-  expect(await screen.findByText("beta")).toBeTruthy();
-  // The chip reports the server's in-progress attach, not offline.
-  expect(screen.getByText("connecting")).toBeTruthy();
-  expect(screen.queryByText("offline")).toBeNull();
   // Connect is disabled while the server-side attach is in flight — the same
   // disabled action the local connecting state gets.
-  const betaRow = screen.getByText("beta").closest("li")!;
-  const connect = within(betaRow).getByRole("button", { name: "Connecting…" }) as HTMLButtonElement;
+  const betaSheet = await openHost("beta");
+  const connect = within(betaSheet).getByRole("button", { name: "Connecting…" }) as HTMLButtonElement;
   expect(connect.disabled).toBe(true);
 });
 
-test("an external detach converges via the mounted poll: online -> offline", async () => {
+test("an external detach converges via the mounted poll: attached -> Connect offered", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
     const fake = connectFakeClient();
@@ -345,7 +377,8 @@ test("an external detach converges via the mounted poll: online -> offline", asy
       ],
     }));
     render(<HostsSection sectionId="hosts" />);
-    expect(await screen.findByText("online")).toBeTruthy();
+    const betaSheet = await openHost("beta");
+    expect(within(betaSheet).queryByRole("button", { name: "Connect" })).toBeNull();
 
     // The host drops out-of-band — a detach this tab observed no action for
     // (the SSH supervisor gave up, another client's remove). No row is
@@ -354,10 +387,7 @@ test("an external detach converges via the mounted poll: online -> offline", asy
     detached = true;
     await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
 
-    await waitFor(() => expect(screen.getByText("offline")).toBeTruthy());
-    expect(screen.queryByText("online")).toBeNull();
-    const betaRow = screen.getByText("beta").closest("li")!;
-    expect(within(betaRow).getByRole("button", { name: "Connect" })).toBeTruthy();
+    await waitFor(() => expect(within(betaSheet).getByRole("button", { name: "Connect" })).toBeTruthy());
   } finally {
     vi.useRealTimers();
   }
@@ -374,8 +404,8 @@ test("remove confirms then calls evener/host/remove", async () => {
     host: { ...row({ name: "beta" }), removed: true, attached: false, midEnsure: false },
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Remove" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Remove" }));
   const dialog = await screen.findByRole("dialog", { name: /Remove beta/ });
   await user.click(within(dialog).getByRole("button", { name: "Remove" }));
   await waitFor(() => {
@@ -416,8 +446,8 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
       ],
     }));
     render(<HostsSection sectionId="hosts" />);
-    const betaRow = (await screen.findByText("beta")).closest("li")!;
-    const connecting = within(betaRow).getByRole("button", { name: "Connecting…" }) as HTMLButtonElement;
+    const betaSheet = await openHost("beta");
+    const connecting = within(betaSheet).getByRole("button", { name: "Connecting…" }) as HTMLButtonElement;
     expect(connecting.disabled).toBe(true);
 
     // The attach settles out-of-band — the SSH supervisor's background
@@ -426,13 +456,13 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
     settled = true;
     await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
 
-    const settledRow = screen.getByText("beta").closest("li")!;
+    // The open sheet follows the live row: Connect re-enables in place.
     await waitFor(() => {
-      const connect = within(settledRow).getByRole("button", { name: "Connect" }) as HTMLButtonElement;
+      const connect = within(betaSheet).getByRole("button", { name: "Connect" }) as HTMLButtonElement;
       expect(connect.disabled).toBe(false);
     });
-    expect(screen.getByText("offline")).toBeTruthy();
-    expect(screen.queryByText("connecting")).toBeNull();
+    expect(within(betaSheet).queryByRole("button", { name: "Connecting…" })).toBeNull();
+    // The settled attach's own error (the fixture's data) reaches the row.
     expect(screen.getByText(/dial tcp: connection refused/)).toBeTruthy();
   } finally {
     vi.useRealTimers();
@@ -447,14 +477,14 @@ test("a live row offers Deploy and Restart; a tombstone row renders both disable
     hosts: [row({ name: "beta", address: "b.example" }), row({ name: "gamma", removed: true })],
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  const gammaRow = screen.getByText("gamma").closest("li")!;
-  expect(within(betaRow).getByRole("button", { name: "Deploy" })).toBeTruthy();
-  expect(within(betaRow).getByRole("button", { name: "Restart" })).toBeTruthy();
+  const betaSheet = await openHost("beta");
+  const gammaSheet = await openHost("gamma");
+  expect(within(betaSheet).getByRole("button", { name: "Deploy" })).toBeTruthy();
+  expect(within(betaSheet).getByRole("button", { name: "Restart" })).toBeTruthy();
   // Registry spec 08 §13: on tombstone rows Connect, Deploy, Restart, Edit and
   // Remove render disabled and never fire.
-  const deploy = within(gammaRow).getByRole("button", { name: "Deploy" }) as HTMLButtonElement;
-  const restart = within(gammaRow).getByRole("button", { name: "Restart" }) as HTMLButtonElement;
+  const deploy = within(gammaSheet).getByRole("button", { name: "Deploy" }) as HTMLButtonElement;
+  const restart = within(gammaSheet).getByRole("button", { name: "Restart" }) as HTMLButtonElement;
   expect(deploy.disabled).toBe(true);
   expect(restart.disabled).toBe(true);
   fireEvent.click(deploy);
@@ -468,8 +498,8 @@ test("Deploy opens the plan confirmation and renders the controller-minted plan"
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
   fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
 
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
@@ -492,8 +522,8 @@ test("the confirmation submits exactly the displayed plan's token and operation 
   fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
   fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
@@ -503,7 +533,7 @@ test("the confirmation submits exactly the displayed plan's token and operation 
   expect(call.params).toMatchObject({ name: "beta", token: "tok-1" });
   expect((call.params as { operationId: string }).operationId).not.toBe("");
   // The started operation closes the confirmation.
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 });
 
 test("a stale token re-plans and re-renders the confirmation before any retry", async () => {
@@ -524,8 +554,8 @@ test("a stale token re-plans and re-renders the confirmation before any retry", 
     return { id: "op-2", clientOperationId: "client-op-2", state: "pending" };
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/t1")).toBeTruthy());
 
@@ -543,7 +573,7 @@ test("a stale token re-plans and re-renders the confirmation before any retry", 
   await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(2));
   expect(fake.calls.filter((c) => c.method === "evener/host/deploy")[1]!.params).toMatchObject({ token: "tok-2" });
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 });
 
 test("the no-token unattached arm directs Connect first", async () => {
@@ -568,8 +598,8 @@ test("the no-token unattached arm directs Connect first", async () => {
   });
   fake.on("evener/host/attach", () => ({ attached: true, host: "beta" }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText(/is not attached; connect it and plan again/)).toBeTruthy());
   // No token was minted, so the confirmation cannot proceed.
@@ -602,8 +632,8 @@ test("refresh-failed retries the plan and never offers Connect", async () => {
     return { outcome: "planned", plan: planFixture(), token: "tok-2" };
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText(/preflight facts failed: ssh timeout/)).toBeTruthy());
   expect(within(dialog).queryByRole("button", { name: /Connect/ })).toBeNull();
@@ -628,8 +658,8 @@ test("handler-absent surfaces the one-time migration step, never Connect", async
     terminal: false,
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText(/upgrade the host's build before planning/)).toBeTruthy());
   expect(within(dialog).queryByRole("button", { name: /Connect/ })).toBeNull();
@@ -661,8 +691,8 @@ test("remnant-open names the blocking remnant and offers teardown-retry, never C
     remnantId: "remnant-7",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   // §13: surfaces the blocking remnantId with a teardown-retry affordance;
   // never Connect, never re-plan (a re-plan mints nothing while the remnant is
@@ -700,8 +730,8 @@ test("a terminal no-token reason disables the deploy button and offers no retry"
     terminal: true,
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText(/rebuild from a clean tree/)).toBeTruthy());
   // Terminal refusals disable the confirmation; there is no retry affordance.
@@ -719,8 +749,8 @@ test("host-busy-operation renders the running operation and offers no bare retry
     throw new WireError("busy", -32013, { evenerErrorInfo: "host-busy-operation", operationId: "op-42" });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
@@ -748,8 +778,8 @@ test("host-detached offers Connect and re-plan", async () => {
   });
   fake.on("evener/host/attach", () => ({ attached: true, host: "beta" }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
@@ -772,8 +802,8 @@ test("a lost response can be retried under the same operation ID", async () => {
     return { id: "op-1", clientOperationId: "client-op-1", state: "pending" };
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
@@ -786,7 +816,7 @@ test("a lost response can be retried under the same operation ID", async () => {
   expect((calls[0]!.params as { operationId: string }).operationId).toBe(
     (calls[1]!.params as { operationId: string }).operationId,
   );
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 });
 
 test("Restart confirms then submits the intended pair and a client operation ID", async () => {
@@ -795,8 +825,8 @@ test("Restart confirms then submits the intended pair and a client operation ID"
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
   fake.on("evener/host/restart", () => ({ id: "op-9", clientOperationId: "client-op-9", state: "pending" }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
 
@@ -805,7 +835,7 @@ test("Restart confirms then submits the intended pair and a client operation ID"
   const params = call.params as { operationId: string; generation: number; incarnationId: string };
   expect(call.params).toMatchObject({ name: "beta", generation: 1, incarnationId: "inc-1" });
   expect(params.operationId).not.toBe("");
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Restart beta?" })).toBeNull());
 });
 
 test("a restart busy refusal renders concretely and disables its retry", async () => {
@@ -816,8 +846,8 @@ test("a restart busy refusal renders concretely and disables its retry", async (
     throw new WireError("busy", -32013, { evenerErrorInfo: "host-busy-operation", operationId: "op-42" });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
 
@@ -842,8 +872,8 @@ test("a restart stale-entry re-reads and retries once with the fresh pair", asyn
     return { id: "op-10", clientOperationId: "client-op-10", state: "pending" };
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
 
@@ -853,7 +883,7 @@ test("a restart stale-entry re-reads and retries once with the fresh pair", asyn
     generation: 4,
     incarnationId: "inc-4",
   });
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Restart beta?" })).toBeNull());
 });
 
 test("a host-detached restart offers Connect and restart, never a bare repeat", async () => {
@@ -879,8 +909,8 @@ test("a host-detached restart offers Connect and restart, never a bare repeat", 
   });
   fake.on("evener/host/attach", () => ({ attached: true, host: "beta" }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
 
@@ -904,7 +934,7 @@ test("a host-detached restart offers Connect and restart, never a bare repeat", 
     generation: 4,
     incarnationId: "inc-4",
   });
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Restart beta?" })).toBeNull());
 });
 
 test("the Deploy confirmation cannot submit before a plan is rendered", async () => {
@@ -913,8 +943,8 @@ test("the Deploy confirmation cannot submit before a plan is rendered", async ()
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
   const plans = gateSettlements(fake, "evener/host/plan");
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
 
   // The plan is still in flight: there is no confirmed plan to submit.
@@ -933,8 +963,8 @@ test("the Restart confirm is disabled while no attempt is seeded, so it can neve
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
   fake.on("evener/host/restart", () => ({ id: "op-15", clientOperationId: "client-op-15", state: "pending" }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   // No attempt to submit: the confirm is inert (restart() is a no-op without
   // one), exactly as it is on the first frame before the seeding effect runs.
@@ -958,8 +988,8 @@ test("a surfaced restart stale-entry names the operation, not a plan", async () 
     throw new WireError('host "beta": registration moved; retry', -32013, { evenerErrorInfo: "stale-entry" });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
 
@@ -991,18 +1021,18 @@ function operationRecord(overrides: Partial<OperationRecord> = {}): OperationRec
 
 // startDeploy drives one Deploy dialog to a started operation, the row the
 // operations poll then tracks.
-async function startDeploy(fake: FakeClient): Promise<{ betaRow: HTMLElement; view: ReturnType<typeof render> }> {
+async function startDeploy(fake: FakeClient): Promise<{ betaSheet: HTMLElement; view: ReturnType<typeof render> }> {
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
   fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
   fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
   const view = render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  fireEvent.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  return { betaRow, view };
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
+  return { betaSheet, view };
 }
 
 const operationReads = (fake: FakeClient): number =>
@@ -1017,22 +1047,22 @@ test("an operation's progress renders on its host row, then its failure renders 
       progress: [{ ts: "2026-09-28T08:00:05Z", message: "pushing evener to /srv/evener/evener" }],
     });
     fake.on("evener/host/operations", () => ({ operations: [record] }));
-    const { betaRow } = await startDeploy(fake);
+    const { betaSheet } = await startDeploy(fake);
 
     // The pane's mounted poll reads the started operation and renders its
     // progress on the operation's own row (registry spec 08 §13).
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
-    await waitFor(() => expect(within(betaRow).getByText("pushing evener to /srv/evener/evener")).toBeTruthy());
-    expect(within(betaRow).getByText("Deploying…")).toBeTruthy();
+    await waitFor(() => expect(within(betaSheet).getByText("pushing evener to /srv/evener/evener")).toBeTruthy());
+    expect(within(betaSheet).getByText("Deploying…")).toBeTruthy();
 
     // The operation fails with the worker's 04b error: the row surfaces it
     // VERBATIM — never a rewritten or generic message.
     const verbatim = "deploy failed: the remote evener service exited with status 1 after the swap";
     record = operationRecord({ state: "failed", result: { ok: false, message: verbatim } });
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
-    await waitFor(() => expect(within(betaRow).getByText(verbatim)).toBeTruthy());
-    expect(within(betaRow).getByText("Deploy failed")).toBeTruthy();
-    expect(within(betaRow).queryByText("Deploying…")).toBeNull();
+    await waitFor(() => expect(within(betaSheet).getByText(verbatim)).toBeTruthy());
+    expect(within(betaSheet).getByText("Deploy failed")).toBeTruthy();
+    expect(within(betaSheet).queryByText("Deploying…")).toBeNull();
   } finally {
     vi.useRealTimers();
   }
@@ -1058,20 +1088,20 @@ test("a replayed operation renders its past terminal outcome, never a fresh Depl
       ],
     }));
     render(<HostsSection sectionId="hosts" />);
-    const betaRow = (await screen.findByText("beta")).closest("li")!;
-    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    const betaSheet = await openHost("beta");
+    fireEvent.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
     const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
     await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
     fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 
     // The terminal seed is read once for its retained body: the row renders the
     // past outcome, marked as the compacted replay — not a running operation.
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
-    await waitFor(() => expect(within(betaRow).getByText(verbatim)).toBeTruthy());
-    expect(within(betaRow).getByText("Deploy failed")).toBeTruthy();
-    expect(within(betaRow).getByText(/replayed from a compacted operation/)).toBeTruthy();
-    expect(within(betaRow).queryByText("Deploying…")).toBeNull();
+    await waitFor(() => expect(within(betaSheet).getByText(verbatim)).toBeTruthy());
+    expect(within(betaSheet).getByText("Deploy failed")).toBeTruthy();
+    expect(within(betaSheet).getByText(/replayed from a compacted operation/)).toBeTruthy();
+    expect(within(betaSheet).queryByText("Deploying…")).toBeNull();
   } finally {
     vi.useRealTimers();
   }
@@ -1084,10 +1114,10 @@ test("the mounted poll stops reading once the record is terminal", async () => {
     fake.on("evener/host/operations", () => ({
       operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
     }));
-    const { betaRow } = await startDeploy(fake);
+    const { betaSheet } = await startDeploy(fake);
 
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
-    await waitFor(() => expect(within(betaRow).getByText("Deploy complete")).toBeTruthy());
+    await waitFor(() => expect(within(betaSheet).getByText("Deploy complete")).toBeTruthy());
     const reads = operationReads(fake);
     expect(reads).toBe(1);
 
@@ -1126,16 +1156,16 @@ test("a stopped read renders a visible progress state on the row, never a silent
     fake.on("evener/host/operations", () => ({
       operations: [operationRecord({ state: "running", progress: [{ ts: "t", message: "installing" }] })],
     }));
-    const { betaRow } = await startDeploy(fake);
+    const { betaSheet } = await startDeploy(fake);
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
-    await waitFor(() => expect(within(betaRow).getByText("installing")).toBeTruthy());
+    await waitFor(() => expect(within(betaSheet).getByText("installing")).toBeTruthy());
 
     // The connection drops: the last-known progress stays, and the row says the
     // updates stopped instead of pretending the operation is still reporting.
     connectionStore.setState({ client: null });
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
-    await waitFor(() => expect(within(betaRow).getByText(/Progress updates stopped/)).toBeTruthy());
-    expect(within(betaRow).getByText("installing")).toBeTruthy();
+    await waitFor(() => expect(within(betaSheet).getByText(/Progress updates stopped/)).toBeTruthy());
+    expect(within(betaSheet).getByText("installing")).toBeTruthy();
   } finally {
     vi.useRealTimers();
   }
@@ -1150,12 +1180,12 @@ test("a slow read is not re-issued by later ticks, and still publishes when it l
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     const settlements = gateSettlements(fake, "evener/host/operations");
     render(<HostsSection sectionId="hosts" />);
-    const betaRow = (await screen.findByText("beta")).closest("li")!;
-    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    const betaSheet = await openHost("beta");
+    fireEvent.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
     const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
     await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
     fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 
     // The first tick's read hangs. Later ticks must not pile more reads on top
     // of it (one outstanding read per operation)...
@@ -1169,8 +1199,8 @@ test("a slow read is not re-issued by later ticks, and still publishes when it l
         operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
       });
     });
-    await waitFor(() => expect(within(betaRow).getByText("deployed 1.5.0")).toBeTruthy());
-    expect(within(betaRow).getByText("Deploy complete")).toBeTruthy();
+    await waitFor(() => expect(within(betaSheet).getByText("deployed 1.5.0")).toBeTruthy());
+    expect(within(betaSheet).getByText("Deploy complete")).toBeTruthy();
   } finally {
     vi.useRealTimers();
   }
@@ -1196,33 +1226,33 @@ test("an operation from a previous incarnation is not rendered, and still settle
     fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
     fake.on("evener/host/operations", () => ({ operations: [record] }));
     render(<HostsSection sectionId="hosts" />);
-    const betaRow = (await screen.findByText("beta")).closest("li")!;
-    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    const betaSheet = await openHost("beta");
+    fireEvent.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
     const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
     await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
     fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 
     // The operation runs on the incarnation the row displays (generation 1):
     // its progress renders.
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(hostOpsStore.getState().operations.beta?.fetched).toBe(true));
-    expect(within(betaRow).getByText("old incarnation work")).toBeTruthy();
+    expect(within(betaSheet).getByText("old incarnation work")).toBeTruthy();
 
     // The name is removed and re-added (a new generation): the old operation
     // no longer belongs to the row and stops rendering...
     reCreated = true;
     await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
-    await waitFor(() => expect(within(betaRow).queryByText("old incarnation work")).toBeNull());
-    expect(within(betaRow).queryByText("Deploying…")).toBeNull();
+    await waitFor(() => expect(within(betaSheet).queryByText("old incarnation work")).toBeNull());
+    expect(within(betaSheet).queryByText("Deploying…")).toBeNull();
 
     // ...but it is still polled to its terminal state, so the ref can settle
     // and never lingers non-terminal while the name exists.
     record = operationRecord({ state: "failed", result: { ok: false, message: "push failed" } });
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(hostOpsStore.getState().operations.beta?.state).toBe("failed"));
-    expect(within(betaRow).queryByText("old incarnation work")).toBeNull();
-    expect(within(betaRow).queryByText("Deploy failed")).toBeNull();
+    expect(within(betaSheet).queryByText("old incarnation work")).toBeNull();
+    expect(within(betaSheet).queryByText("Deploy failed")).toBeNull();
   } finally {
     vi.useRealTimers();
   }
@@ -1238,18 +1268,18 @@ test("a dedup hit that is still running does not toast a fresh start", async () 
   fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "running" }));
   fake.on("evener/host/operations", () => ({ operations: [operationRecord({ state: "running" })] }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  fireEvent.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 
   const texts = getToasts().map((toast) => toast.text);
   expect(texts).toContain("Deploy beta repeated its existing operation (running).");
   expect(texts.join(" ")).not.toContain("Deploy started");
   // The row renders the running operation it adopted.
-  expect(within(betaRow).getByText("Deploying…")).toBeTruthy();
+  expect(within(betaSheet).getByText("Deploying…")).toBeTruthy();
 });
 
 // --- S16: remnant retry/recover ----------------------------------------------
@@ -1267,12 +1297,12 @@ test("a remnant-gated row carries the teardown-retry affordance and submits its 
     remnantId: "remnant-7",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const alphaRow = (await screen.findByText("alpha")).closest("li")!;
+  const alphaSheet = await openHost("alpha");
   // Only a row whose name holds an open remnant carries the repair.
-  expect(within(alphaRow).queryByRole("button", { name: "Teardown retry" })).toBeNull();
+  expect(within(alphaSheet).queryByRole("button", { name: "Teardown retry" })).toBeNull();
 
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
 
@@ -1293,8 +1323,8 @@ test("a live-attempt busy refusal renders the typed busy with retry-later, never
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
 
@@ -1318,9 +1348,9 @@ test("an escalated row offers the audited recover and collects its attestation",
     hostKind: "live",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  const betaSheet = await openHost("beta");
   // §13: past the escalation bound the row carries the recover affordance.
-  await user.click(within(betaRow).getByRole("button", { name: "Recover remnant" }));
+  await user.click(within(betaSheet).getByRole("button", { name: "Recover remnant" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
 
   // The wire's attestation fields, field-for-field (registry spec 08 §11).
@@ -1349,17 +1379,16 @@ test("a tombstone row with an open remnant carries the retry affordance while li
     hosts: [row({ name: "beta", removed: true, openRemnantId: "remnant-7", retainedRows: 0 })],
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  const betaSheet = await openHost("beta");
 
-  expect(within(betaRow).getByText("removed")).toBeTruthy();
   // §13: a tombstone row's live-host actions render disabled (never firing);
   // the remnant repair is its one action.
-  expect((within(betaRow).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
-  expect((within(betaRow).getByRole("button", { name: "Restart" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(within(betaRow).queryByRole("button", { name: "Edit" })).toBeNull();
-  expect(within(betaRow).queryByRole("button", { name: "Remove" })).toBeNull();
-  expect(within(betaRow).queryByRole("button", { name: "Connect" })).toBeNull();
-  expect(within(betaRow).getByRole("button", { name: "Teardown retry" })).toBeTruthy();
+  expect((within(betaSheet).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(betaSheet).getByRole("button", { name: "Restart" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(within(betaSheet).queryByRole("button", { name: "Edit" })).toBeNull();
+  expect(within(betaSheet).queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(within(betaSheet).queryByRole("button", { name: "Connect" })).toBeNull();
+  expect(within(betaSheet).getByRole("button", { name: "Teardown retry" })).toBeTruthy();
 });
 
 test("a failed retry arm past the escalation bound escalates to the recover affordance", async () => {
@@ -1377,10 +1406,10 @@ test("a failed retry arm past the escalation bound escalates to the recover affo
     escalationAgeSec: 7200,
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  expect(within(betaRow).queryByRole("button", { name: "Recover remnant" })).toBeNull();
+  const betaSheet = await openHost("beta");
+  expect(within(betaSheet).queryByRole("button", { name: "Recover remnant" })).toBeNull();
 
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
 
@@ -1416,18 +1445,18 @@ test("a failed retry arm converges the row, so the row-level recover affordance 
     seam: "update-host",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  expect(within(betaRow).queryByRole("button", { name: "Recover remnant" })).toBeNull();
+  const betaSheet = await openHost("beta");
+  expect(within(betaSheet).queryByRole("button", { name: "Recover remnant" })).toBeNull();
 
   // The retry ran past the escalation bound: the hub stamps the row the next
   // list read answers, and the FAILURE arm must converge it — otherwise the
   // row-level recover affordance never appears.
   escalation = 7200;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
 
-  await waitFor(() => expect(within(betaRow).getByRole("button", { name: "Recover remnant" })).toBeTruthy());
+  await waitFor(() => expect(within(betaSheet).getByRole("button", { name: "Recover remnant" })).toBeTruthy());
 });
 
 test("the repair dialog follows the live row: an escalation lands while it is open", async () => {
@@ -1443,8 +1472,8 @@ test("the repair dialog follows the live row: an escalation lands while it is op
     ],
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   expect(within(dialog).queryByRole("button", { name: "Recover remnant" })).toBeNull();
 
@@ -1468,8 +1497,8 @@ test("a different remnant on the name renders neutral, never the previous remnan
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const first = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(first).getByRole("button", { name: "Teardown retry" }));
   await waitFor(() => expect(within(first).getByText(/The host is busy right now\./)).toBeTruthy());
@@ -1493,15 +1522,15 @@ test("the repair dialog closes honestly when the remnant disappears", async () =
     hosts: [showRemnant ? row({ name: "beta", openRemnantId: "remnant-7" }) : row({ name: "beta" })],
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   expect(await screen.findByRole("dialog", { name: "Repair remnant remnant-7" })).toBeTruthy();
 
   showRemnant = false;
   await act(async () => {
     await hostsStore.getState().refresh();
   });
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Repair remnant remnant-7" })).toBeNull());
 });
 
 test("the restart surface continues after the remnant resolves, against a fresh pair", async () => {
@@ -1525,8 +1554,8 @@ test("the restart surface continues after the remnant resolves, against a fresh 
     remnantId: "remnant-7",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
   await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
@@ -1556,9 +1585,9 @@ test("a row whose remnant id is empty carries no repair affordance", async () =>
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", openRemnantId: "" })] }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  expect(within(betaRow).queryByRole("button", { name: "Teardown retry" })).toBeNull();
-  expect(within(betaRow).queryByRole("button", { name: "Recover remnant" })).toBeNull();
+  const betaSheet = await openHost("beta");
+  expect(within(betaSheet).queryByRole("button", { name: "Teardown retry" })).toBeNull();
+  expect(within(betaSheet).queryByRole("button", { name: "Recover remnant" })).toBeNull();
 });
 
 test("closing the repair dialog drops its refusal, so a later opening starts clean", async () => {
@@ -1571,8 +1600,8 @@ test("closing the repair dialog drops its refusal, so a later opening starts cle
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   let dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
   await waitFor(() => expect(within(dialog).getByText(/The host is busy right now\./)).toBeTruthy());
@@ -1581,10 +1610,10 @@ test("closing the repair dialog drops its refusal, so a later opening starts cle
   // the same onClose, which owns the repair-state clear.
   const closes = within(dialog).getAllByRole("button", { name: "Close" });
   await user.click(closes[closes.length - 1]!);
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Repair remnant remnant-7" })).toBeNull());
   expect(hostOpsStore.getState().repairs.beta).toBeUndefined();
 
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   expect(within(dialog).queryByText(/The host is busy right now\./)).toBeNull();
   expect(within(dialog).getByRole("button", { name: "Teardown retry" })).toBeTruthy();
@@ -1610,8 +1639,8 @@ test("closing the deploy dialog drops its remnant repair state", async () => {
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
@@ -1619,7 +1648,7 @@ test("closing the deploy dialog drops its remnant repair state", async () => {
   expect(hostOpsStore.getState().repairs.beta).toBeDefined();
 
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
   expect(hostOpsStore.getState().repairs.beta).toBeUndefined();
 });
 
@@ -1637,8 +1666,8 @@ test("a resolved remnant's state never suppresses a new remnant's repair", async
     remnantId: "remnant-7",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
   await waitFor(() =>
@@ -1664,8 +1693,8 @@ test("a dialog whose remnant disappeared does not auto-open for a later remnant"
     hosts: [remnant === undefined ? row({ name: "beta" }) : row({ name: "beta", openRemnantId: remnant })],
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   expect(await screen.findByRole("dialog", { name: "Repair remnant remnant-7" })).toBeTruthy();
 
   // The remnant disappears: the dialog unmounts and must not stay armed.
@@ -1673,15 +1702,15 @@ test("a dialog whose remnant disappeared does not auto-open for a later remnant"
   await act(async () => {
     await hostsStore.getState().refresh();
   });
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Repair remnant remnant-7" })).toBeNull());
 
   // A later remnant on the name must not re-open the dialog by itself.
   remnant = "remnant-8";
   await act(async () => {
     await hostsStore.getState().refresh();
   });
-  await waitFor(() => expect(within(betaRow).getByRole("button", { name: "Teardown retry" })).toBeTruthy());
-  expect(screen.queryByRole("dialog")).toBeNull();
+  await waitFor(() => expect(within(betaSheet).getByRole("button", { name: "Teardown retry" })).toBeTruthy());
+  expect(screen.queryByRole("dialog", { name: /Repair remnant/ })).toBeNull();
 });
 
 test("a resolved remnant's inline state never suppresses a new remnant's repair", async () => {
@@ -1709,8 +1738,8 @@ test("a resolved remnant's inline state never suppresses a new remnant's repair"
     remnantId: "remnant-7",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
@@ -1740,8 +1769,8 @@ test("a refusal that forbids recovery never offers the recover escalation", asyn
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
 
@@ -1771,8 +1800,8 @@ test("a successful recovery leaves the attestation form and shows the continuati
     hostKind: "live",
   }));
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Restart" }));
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
   await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
@@ -1814,8 +1843,8 @@ test("a refused recovery resumes the recovery with its attestation, never a bare
     };
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Recover remnant" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Recover remnant" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.type(within(dialog).getByLabelText("Operator"), "operator-1");
   await user.click(within(dialog).getByRole("button", { name: "Recover remnant" }));
@@ -1866,19 +1895,19 @@ test("a resolved repair still offers its continuation after a later poll", async
       remnantId: "remnant-7",
     }));
     render(<HostsSection sectionId="hosts" />);
-    const betaRow = (await screen.findByText("beta")).closest("li")!;
+    const betaSheet = await openHost("beta");
 
     // A tracked operation exists (the deploy the row's dialog started).
-    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    fireEvent.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
     let dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
     await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
     fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(hostOpsStore.getState().operations.beta?.fetched).toBe(true));
 
     // The next plan refuses on the remnant: repair it from the inline controls.
-    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    fireEvent.click(within(betaSheet).getByRole("button", { name: "Deploy" }));
     dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
     await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
     fireEvent.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
@@ -1909,8 +1938,8 @@ test("a teardown-unknown-key refusal offers a re-read path out, not a dead end",
     });
   });
   render(<HostsSection sectionId="hosts" />);
-  const betaRow = (await screen.findByText("beta")).closest("li")!;
-  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const betaSheet = await openHost("beta");
+  await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
   await waitFor(() => expect(within(dialog).getByText(/does not know teardown remnant remnant-7/)).toBeTruthy());
