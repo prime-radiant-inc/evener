@@ -239,6 +239,12 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, map[st
 	out[envvars.GoModCache.Name] = vars[envvars.GoModCache.Name]
 	out[envvars.GoCache.Name] = vars[envvars.GoCache.Name]
 	if gopath != "" {
+		// GOPATH is judged at pkg, the overlay's root, not at each entry go
+		// writes under it (pkg/sumdb). A host whose pkg/sumdb is a file or a
+		// link elsewhere is left to go: at worst its downloads fail, or the
+		// checksum state lands where that link points, inside storage the
+		// session may already write; nothing leaves the session's grants
+		// (docs/sandboxing.md#threat-model).
 		out[envvars.GoPath.Name] = filepath.Join(gopath, "pkg")
 		if out[envvars.GoModCache.Name] == "" {
 			out[envvars.GoModCache.Name] = filepath.Join(gopath, "pkg", "mod")
