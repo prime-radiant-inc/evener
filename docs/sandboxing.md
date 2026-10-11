@@ -418,13 +418,16 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   would) so it can be; a file or a dangling symlink is left out. A Go cache the
   overlay does not serve (set in the spawn's environment, with `go env -w`, which
   is read again at each spawn as go itself does, or by Go's defaults under the
-  spawn's own `HOME`), one inside a persistent write root (re-bound writable on
-  top of the overlay), one that cannot be a directory, or one whose root has
+  spawn's own `HOME`), one at, inside or holding a persistent write root
+  (re-bound writable on top of the overlay), one whose root no longer resolves
+  outside the persistent roots, one that cannot be a directory, or one whose root has
   since been removed, is redirected into the session scratch instead. So are all
   three Go settings when the spawn's go env file can't be judged: named by a
   relative path, or not the file read at session start. When the spawn's go env
   file exists but cannot be read at that spawn (a FIFO, a device, an oversized
-  file), the Go settings go to the scratch and that spawn gets `GOENV=off`,
+  file), or is named by a relative path the floor cannot check against the
+  spawn's directory, the Go settings go to the scratch and that spawn gets
+  `GOENV=off`,
   since reading it would block it too; once the file is readable again, spawns
   read it as usual.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay

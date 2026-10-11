@@ -128,10 +128,14 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 			out[name] = true
 		}
 	case CacheOverlay:
+		// npm's and cargo's caches are left as they are under the overlay: a
+		// cache root of theirs dropped from CacheRoots lies at or inside a
+		// directory the user made writable on purpose, whose writes this
+		// must not override.
 		dirs, goKnown := overlayGoCacheDirs(env, policy.resolveHost)
 		writeRoots := bwrapWriteRoots(policy)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
-			if dir := dirs[name]; !goKnown || (filepath.IsAbs(dir) && (!overlayServes(policy.CacheRoots, dir) || insideAnyRoot(dir, writeRoots))) {
+			if dir := dirs[name]; !goKnown || (filepath.IsAbs(dir) && (!overlayServes(policy, dir) || overlapsAnyRoot(dir, writeRoots))) {
 				out[name] = true
 			}
 		}
@@ -143,12 +147,11 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 // an existing cache root by spelling, can be a directory, and its real destination
 // (following any symlink on the way, existing or not yet created) still lies
 // under one, so a link from a served root into the worktree does not count.
-func overlayServes(roots []string, dir string) bool {
-	// Only an existing directory is overlaid at spawn (buildBwrapArgv skips
-	// a root removed since the wrapper was built), so only one serves.
-	roots = slices.DeleteFunc(slices.Clone(roots), func(r string) bool {
-		fi, err := os.Stat(r)
-		return err != nil || !fi.IsDir()
+func overlayServes(policy ResolvedPolicy, dir string) bool {
+	// Only a root bwrap overlays at this spawn serves (servableCacheRoot: an
+	// existing directory still outside the persistent roots).
+	roots := slices.DeleteFunc(slices.Clone(policy.CacheRoots), func(r string) bool {
+		return !servableCacheRoot(policy, r)
 	})
 	if !isUnderAnyRoot(dir, roots) || !canBeDirectory(dir) {
 		return false
@@ -162,14 +165,16 @@ func overlayServes(roots []string, dir string) bool {
 	return false
 }
 
-// insideAnyRoot reports whether dir lies at or under one of roots, by spelling
-// or resolved location. A persistent write root inside an overlaid cache root
-// is bound writable on top of the overlay (buildBwrapArgv), so a cache there
-// persists and is not served.
-func insideAnyRoot(dir string, roots []string) bool {
+// overlapsAnyRoot reports whether dir lies at or under one of roots, or holds
+// one, by spelling or resolved location. A persistent write root inside an
+// overlaid cache root is bound writable on top of the overlay (buildBwrapArgv),
+// so a cache at, in or around one persists, at least in part, and is not
+// served.
+func overlapsAnyRoot(dir string, roots []string) bool {
 	rd := resolveExistingPrefix(dir)
 	return slices.ContainsFunc(roots, func(r string) bool {
-		return pathUnder(dir, r) || pathUnder(rd, resolveExistingPrefix(r))
+		rr := resolveExistingPrefix(r)
+		return pathUnder(dir, r) || pathUnder(r, dir) || pathUnder(rd, rr) || pathUnder(rr, rd)
 	})
 }
 
@@ -264,11 +269,16 @@ func envVars(env []string) map[string]string {
 
 // spawnGoEnvFileRefused reports whether the go env file a spawn's go would read
 // exists now but cannot be read as a small regular file (a FIFO, a device, an
-// oversized file), the way the probe reads it.
+// oversized file), the way the probe reads it, or is named by a relative path.
 func spawnGoEnvFileRefused(env []string, goos string) bool {
 	file := goEnvFileFor(envVars(env), goos)
-	if !filepath.IsAbs(file) {
+	if file == "" {
 		return false
+	}
+	// A relative file resolves against the spawn's own directory, which the
+	// floor does not know, so it cannot be checked and is refused.
+	if !filepath.IsAbs(file) {
+		return true
 	}
 	_, err := readGoEnvFileSettings(hostProbeSystem{}, file)
 	return err != nil && !errors.Is(err, fs.ErrNotExist)

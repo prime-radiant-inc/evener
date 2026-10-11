@@ -547,3 +547,77 @@ func TestEnvFloorRedirectsAGoCacheInsideAWritableRootUnderTheOverlay(t *testing.
 		t.Errorf("a GOCACHE elsewhere in the overlaid cache must be left alone, got %q", v)
 	}
 }
+
+// A Go cache whose root's symlinked parent was retargeted into the worktree
+// after resolution is no longer served (bwrap skips its overlay), so the floor
+// sends it to the scratch at that spawn.
+func TestEnvFloorRedirectsACacheRootRetargetedIntoTheWorktree(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(realDir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(link, "cache")
+	facts := HostFacts{OS: "linux", Home: servedHome(t), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	env := []string{"HOME=" + facts.Home, "GOENV=off", "GOCACHE=" + gocache}
+	if _, ok := envValue(ApplyEnvFloor(env, rp, tmp), "GOCACHE"); !ok {
+		t.Fatal("GOCACHE missing")
+	}
+	if v, _ := envValue(ApplyEnvFloor(env, rp, tmp), "GOCACHE"); strings.HasPrefix(v, tmp+"/") {
+		t.Fatalf("fixture: the cache must be served at first, got %q", v)
+	}
+	if err := os.MkdirAll(filepath.Join(cwd, "sub", "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(cwd, "sub"), link); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := envValue(ApplyEnvFloor(env, rp, tmp), "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a cache retargeted into the worktree must go to the scratch, got %q", v)
+	}
+}
+
+// A persistent write root inside a Go cache directory (a writable
+// $HOME/go/pkg/sumdb under the GOPATH pkg overlay) makes that cache persist in
+// part, so GOPATH goes to the scratch.
+func TestEnvFloorRedirectsAGoCacheHoldingAWritableRoot(t *testing.T) {
+	home := servedHome(t)
+	sumdb := filepath.Join(home, "go", "pkg", "sumdb")
+	if err := os.MkdirAll(sumdb, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{sumdb}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	out := ApplyEnvFloor([]string{"HOME=" + home, "GOENV=off"}, rp, tmp)
+	if v, _ := envValue(out, "GOPATH"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a GOPATH whose pkg holds a writable root must get the scratch first, got %q", v)
+	}
+}
+
+// A relative GOENV resolves against the spawn's own directory, which the floor
+// does not know, so it is turned off for the spawn rather than read blind (it
+// could be a FIFO there).
+func TestEnvFloorTurnsARelativeGoEnvOff(t *testing.T) {
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/home/u"}}
+	if v, _ := envValue(ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=go.env"}, policy, "/tmp/s"), "GOENV"); v != "off" {
+		t.Errorf("a relative GOENV must be turned off, got %q", v)
+	}
+}
