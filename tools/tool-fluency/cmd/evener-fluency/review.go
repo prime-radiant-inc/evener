@@ -107,9 +107,13 @@ var packetSections = map[string]string{
 // harnessSteeringSection labels steering the person never saw, such as the
 // bare-text nudge the harness injects after a turn without a message to the
 // user. Rendering it under "User" would tell the blind reader the person said
-// it; a steering turn is the partner's own words only when its source is
-// SteeringSourceUser or SteeringSourceParent (a delegate's instructing side).
+// it; a steering turn is the person's own words only when its source is
+// SteeringSourceUser.
 const harnessSteeringSection = "Evener (not shown to the user)"
+
+// parentSteeringSection labels a delegate's parent steering it: an agent
+// instructing, which a blind reader must not take for a human.
+const parentSteeringSection = "Parent agent"
 
 // packetToolResultMax caps each tool result in a packet. The reader judges
 // the agent's work and writing, and a whole file or test log adds little.
@@ -137,8 +141,14 @@ func renderPacket(tr doctor.TranscriptResult) string {
 		if !ok {
 			continue
 		}
-		if turn.Kind == string(schema.TurnSteering) && turn.SteeringSource != events.SteeringSourceUser && turn.SteeringSource != events.SteeringSourceParent {
-			section = harnessSteeringSection
+		if turn.Kind == string(schema.TurnSteering) {
+			switch turn.SteeringSource {
+			case events.SteeringSourceUser:
+			case events.SteeringSourceParent:
+				section = parentSteeringSection
+			default:
+				section = harnessSteeringSection
+			}
 		}
 		fmt.Fprintf(&b, "## %s\n\n", section)
 		if turn.Text != "" {
