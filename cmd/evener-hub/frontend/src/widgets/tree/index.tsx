@@ -259,6 +259,9 @@ export function Tree<T extends TreeNode = TreeNode>({
         break;
       }
       case "Enter": {
+        // A control nested in the row (a project row's Retry) owns its own
+        // Enter; activating the row would swallow that control's click.
+        if (event.target !== event.currentTarget) break;
         event.preventDefault();
         onActivate(node);
         break;

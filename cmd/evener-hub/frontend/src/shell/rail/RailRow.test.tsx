@@ -904,7 +904,7 @@ describe("loading row", () => {
 });
 
 describe("project row retry", () => {
-  test("retries without activating the row and stays off the Tab order", async () => {
+  test("retries from the keyboard without activating the row", async () => {
     const retry = vi.fn();
     const rowInfo = info();
     render(
@@ -915,8 +915,11 @@ describe("project row retry", () => {
       />,
     );
     const button = screen.getByRole("button", { name: "Retry" });
-    expect(button.tabIndex).toBe(-1);
-    await userEvent.setup().click(button);
+    expect(button.tabIndex).toBe(0);
+    const user = userEvent.setup();
+    await user.tab();
+    expect(document.activeElement).toBe(button);
+    await user.keyboard("{Enter}");
     expect(retry).toHaveBeenCalledTimes(1);
     expect(rowInfo.activate).not.toHaveBeenCalled();
   });
