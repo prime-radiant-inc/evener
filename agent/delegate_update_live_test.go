@@ -89,43 +89,60 @@ wait:
 	for _, id := range rootAttentionFold(t, root).order {
 		sawUpdate = sawUpdate || strings.Contains(id, "/update/")
 	}
-	sends, updates := rootAnswerCalls(t, root)
-	answer := "none"
-	switch {
-	case sends > 0:
-		answer = "delegate_send"
-	case updates > 0:
-		answer = "communicate"
-	}
+	answer := classifyParentAnswer(rootToolCalls(t, root), codename)
 	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v", *delegateUpdateEvalModel, sawUpdate, answer, childReceived)
 }
 
-// rootAnswerCalls counts the root's delegate_send calls and its
-// communicate(end_turn=false) calls: the two tools a parent can answer a
-// delegate with.
-func rootAnswerCalls(t *testing.T, root *Session) (sends, updates int) {
+// rootToolCalls lists the root's tool calls in transcript order.
+func rootToolCalls(t *testing.T, root *Session) []llm.ToolCallData {
 	t.Helper()
 	data, err := readTranscriptFull(root.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
+	var calls []llm.ToolCallData
 	for _, e := range data.Entries {
 		for _, part := range e.Turn.Message.Content {
-			if part.Kind != llm.ContentToolCall || part.ToolCall == nil {
-				continue
-			}
-			switch part.ToolCall.Name {
-			case "delegate_send":
-				sends++
-			case "communicate":
-				var args struct {
-					EndTurn bool `json:"end_turn"`
-				}
-				if json.Unmarshal(part.ToolCall.Arguments, &args) == nil && !args.EndTurn {
-					updates++
-				}
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+				calls = append(calls, *part.ToolCall)
 			}
 		}
 	}
-	return sends, updates
+	return calls
+}
+
+// classifyParentAnswer names the tool the parent used to hand the delegate
+// the codename: delegate_send (right), communicate (wrong: it reaches the
+// parent's own human partner), or none. Only a call whose arguments carry the
+// codename answers; narration such as "starting the delegate" does not. The
+// first answering call decides.
+func classifyParentAnswer(calls []llm.ToolCallData, codename string) string {
+	for _, call := range calls {
+		if (call.Name == "delegate_send" || call.Name == "communicate") && strings.Contains(string(call.Arguments), codename) {
+			return call.Name
+		}
+	}
+	return "none"
+}
+
+func TestClassifyParentAnswer(t *testing.T) {
+	call := func(name, args string) llm.ToolCallData {
+		return llm.ToolCallData{Name: name, Arguments: json.RawMessage(args)}
+	}
+	for _, tc := range []struct {
+		name  string
+		calls []llm.ToolCallData
+		want  string
+	}{
+		{"no calls", nil, "none"},
+		{"narration is not an answer", []llm.ToolCallData{call("communicate", `{"message":"Starting the delegate","end_turn":false}`)}, "none"},
+		{"delegate_send with the codename", []llm.ToolCallData{call("delegate", `{"prompt":"ask me"}`), call("delegate_send", `{"to":"dlg_1","message":"It is HALCYON-42"}`)}, "delegate_send"},
+		{"communicate update with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":false}`)}, "communicate"},
+		{"terminal communicate with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":true}`)}, "communicate"},
+		{"first answer decides", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":false}`), call("delegate_send", `{"message":"HALCYON-42"}`)}, "communicate"},
+	} {
+		if got := classifyParentAnswer(tc.calls, "HALCYON-42"); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
 }
