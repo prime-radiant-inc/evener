@@ -584,7 +584,7 @@ func TestFormatCheckpoint_KeepsMessagesWholeWithoutATranscript(t *testing.T) {
 // stay verbatim, a reminder points at the transcript for the rest, and a hold
 // from an older message survives as the summary's quote (#4309).
 func TestForceCompact_PartnerMessagesPastTheCeilingAreSummarized(t *testing.T) {
-	const window = 20_000 // tokens; the ceiling is window*4/4 chars
+	const window = 20_000 // tokens; the ceiling is a quarter of it, 20_000 chars
 	reply := "## Permissions and Holds\n\"" + partnerHold + "\" (message 0)\n\n## Progress\nDone"
 	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(reply)} }
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}

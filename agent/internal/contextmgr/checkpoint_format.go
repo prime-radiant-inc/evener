@@ -143,8 +143,8 @@ func isSummaryTurnOpening(prefix string) bool {
 		rest = after
 	}
 	// Then, when some partner messages were summarized, the one reminder.
-	return rest == "" || (strings.HasPrefix(rest, "<SYSTEM-REMINDER>\n") &&
-		strings.HasSuffix(rest, "</SYSTEM-REMINDER>\n") && strings.Count(rest, "</SYSTEM-REMINDER>") == 1)
+	reminder, ok := strings.CutSuffix(rest, "\n")
+	return rest == "" || (ok && sysmsg.IsReminderBlock(reminder))
 }
 
 // soleFencedText returns the content of the one fenced block section holds,

@@ -1558,27 +1558,35 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 		}
 	}
 	partner = fitCheckpointConversation(partner, maxCheckpointChars, recoverable)
-	markdown = renderCheckpointConversation(partner)
-	for ceiling > 0 && len(markdown) > ceiling && summarized < len(partner)-1 {
-		summarized++
-		markdown = renderCheckpointConversation(partner[summarized:])
+	if ceiling > 0 {
+		// Keep the newest messages whose blocks fit the ceiling beside the
+		// section heading, and always the newest one.
+		heading := len(checkpointConversationHeading + "\n\n")
+		size, kept := heading, 0
+		for _, entry := range slices.Backward(partner) {
+			block := len(renderCheckpointConversation([]checkpointConversationEntry{entry})) - heading
+			if kept > 0 && size+block > ceiling {
+				break
+			}
+			size += block
+			kept++
+		}
+		summarized = len(partner) - kept
 	}
-	return markdown, summarized
+	return renderCheckpointConversation(partner[summarized:]), summarized
 }
 
-// partnerCarryWindowShare bounds the partner's messages a model-written
-// compaction turn carries verbatim to a quarter of the model's context window.
-// Compaction starts at 80% of the window; a carry of at most a quarter leaves
-// the rest for the system prompt and tools, the model's own summary, the
-// preserved recent turns and the work until the next compaction, so the carry
-// alone can never push a compacted context back over the threshold.
-const partnerCarryWindowShare = 4
-
-// partnerCarryCeiling is the verbatim carry's ceiling in characters, at the
-// char/4 token estimate the context manager uses elsewhere, or 0 when the
-// model's window is unknown (and compaction never runs).
+// partnerCarryCeiling bounds the partner's messages a model-written
+// compaction turn carries verbatim to a quarter of the model's context window,
+// in characters at the char/4 token estimate the context manager uses
+// elsewhere: a quarter of W tokens is W characters. Compaction starts at 80% of
+// the window; a carry of at most a quarter leaves the rest for the system
+// prompt and tools, the model's own summary, the preserved recent turns and the
+// work until the next compaction, so the carry alone can never push a compacted
+// context back over the threshold. It is 0, no ceiling, when the model's window
+// is unknown (and compaction never runs).
 func partnerCarryCeiling(prof *provider.Profile) int {
-	return contextWindowOf(prof) * 4 / partnerCarryWindowShare
+	return contextWindowOf(prof)
 }
 
 // partnerCarry renders the partner's messages a model-written compaction turn
