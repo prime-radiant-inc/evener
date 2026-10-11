@@ -75,9 +75,9 @@ const LIMIT_PENDING_BYTES = 32 * 1024;
 const LIMIT_WORKER_BYTES = 32 * 1024 * 1024;
 // The spec's concurrent background network-hydration bound.
 const MAX_NETWORK_HYDRATIONS = 2;
-// The production default the injected limit replaces; the proof needs a payload
-// between the two so eviction can only be explained by the injected limit.
-const DEFAULT_RESIDENT_BYTES = 16 * 1024 * 1024;
+// The ordinary entry route's production default for the shared write-admission
+// pending budget, which the injected 32 KiB replaces on this guard.
+const DEFAULT_PENDING_BYTES = 4 * 1024 * 1024;
 
 // The budget contract the sustained-workload proof enforces. `pending` bounds
 // staged notification payload; `worker` bounds the one cache-sized worker
@@ -215,10 +215,6 @@ const EVIDENCE_EXPR = `(async () => {
   };
 })()`;
 
-function refEntry(evidence, ref) {
-  return evidence.refs.find((entry) => entry.ref === ref) ?? null;
-}
-
 // countTargetRequestsInWindow decodes a raw trace byte window and counts the
 // TARGET session's request frames: thread/read and thread/turns/list. It is used
 // to forbid fetches during a local-restoration interval.
@@ -253,6 +249,9 @@ function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH)
   const threadID = ref.replace(/^local:/, "");
   let reads = 0;
   let pages = 0;
+  let subscribeReads = 0;
+  let recoveryReads = 0;
+  let plainReads = 0;
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -273,10 +272,18 @@ function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH)
     if (!frame.method) continue;
     const params = frame.params ?? {};
     if (params.ref !== ref && params.threadId !== threadID) continue;
-    if (frame.method === "thread/read") reads += 1;
-    else if (frame.method === "thread/turns/list") pages += 1;
+    if (frame.method === "thread/read") {
+      reads += 1;
+      // A foreground subscription read is the load the zero-read promise
+      // forbids; the entry route's honest recovery read is non-subscribing and
+      // carries a held snapshot. Distinguish them so a regression that turned
+      // recovery into a foreground subscription still fails.
+      if (params.subscribe === true) subscribeReads += 1;
+      else if (params.heldSnapshot !== undefined) recoveryReads += 1;
+      else plainReads += 1;
+    } else if (frame.method === "thread/turns/list") pages += 1;
   }
-  return { reads, pages };
+  return { reads, pages, subscribeReads, recoveryReads, plainReads };
 }
 
 // targetDomainExpr returns the target's complete model domain: non-prelude turn
@@ -363,16 +370,28 @@ async function waitForRenderedOutput(driver, ref, marker, timeoutMs = 30000) {
 async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
   const pane = `[data-pane-scaffold='session:${ref}']`;
   const toggleSelector = `${pane} [data-testid='tool-call-item'] button[aria-controls]`;
-  await driver.waitPage(
-    `(() => {
-       const row = document.querySelector(${JSON.stringify(`${pane} [data-testid='tool-call-item']`)});
-       if (!row) return null;
-       const btn = row.querySelector("button[aria-controls]");
-       return btn ? true : null;
-     })()`,
-    { timeoutMs, label: `the shell disclosure control for ${ref}` },
-  );
-  await driver.click(toggleSelector);
+  // The row can re-render between the existence wait and the click's own box
+  // lookup, so retry the pair rather than fail on one lost frame.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await driver.waitPage(
+      `(() => {
+         const row = document.querySelector(${JSON.stringify(`${pane} [data-testid='tool-call-item']`)});
+         if (!row) return null;
+         const btn = row.querySelector("button[aria-controls]");
+         if (!btn) return null;
+         const rect = btn.getBoundingClientRect();
+         return rect.width > 0 && rect.height > 0 ? true : null;
+       })()`,
+      { timeoutMs, label: `the shell disclosure control for ${ref}` },
+    );
+    try {
+      await driver.click(toggleSelector);
+      break;
+    } catch (error) {
+      if (attempt === 3) throw error;
+      await delay(150);
+    }
+  }
   return waitForRenderedOutput(driver, ref, marker, timeoutMs);
 }
 
@@ -455,14 +474,6 @@ function normalizeWindowFromModel(domain) {
   return [...byTurn.values()];
 }
 
-function windowsEqual(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  return a.every((turn, index) => {
-    const other = b[index];
-    return other && turn.turnId === other.turnId && orderedHistoryEqual(turn.items, other.items);
-  });
-}
-
 // domainContent concatenates the target model's item text and output fields.
 function domainContent(domain) {
   if (!domain) return "";
@@ -501,14 +512,34 @@ function reconnectValidator(before, evidence, applied = {}) {
   const appliedCursor = applied?.cursor ?? "";
   const appliedWindow = applied?.domain ? normalizeWindowFromModel(applied.domain) : null;
   const reconnected = newConnectionReads.length > 0;
+  // The legacy route REPLACED its model with the reconnect read's window, so the
+  // halves compared exactly. The ordinary entry route applies the new
+  // connection's read and ALSO carries the model's own system/notice items
+  // (e.g. the round-total systemMessages) interleaved in those turns, and keeps
+  // the history a reader had already loaded. So require, per returned turn, that
+  // the read's RECORDED items are present in order in the applied model's same
+  // turn, tolerating the extra systemMessage notices; the cursor must still
+  // match. This keeps the observation's meaning (the reconnect read was applied)
+  // without the legacy whole-window exact-identity premise.
+  const recordedItems = (items) => (items ?? []).filter((item) => item.type !== "systemMessage");
   const windowExact =
-    Array.isArray(responseWindow) && responseWindow.length > 0 && windowsEqual(appliedWindow, responseWindow);
+    Array.isArray(responseWindow) &&
+    responseWindow.length > 0 &&
+    Array.isArray(appliedWindow) &&
+    responseWindow.every((responseTurn) => {
+      const appliedTurn = appliedWindow.find((turn) => turn.turnId === responseTurn.turnId);
+      return (
+        appliedTurn !== undefined &&
+        orderedHistoryEqual(recordedItems(responseTurn.items), recordedItems(appliedTurn.items))
+      );
+    });
   return {
     reconnected,
     newReads,
     newConnectionReads: newConnectionReads.length,
     responseCursor,
     responseWindow,
+    appliedWindow,
     appliedCursor,
     appliedMatches: reconnected && appliedCursor === responseCursor && windowExact,
   };
@@ -693,6 +724,7 @@ function budgetFailures(peak, limits = BUDGET_LIMITS) {
 // rejection) and its in-flight delay is joined in `finally` (no leaked timer).
 async function collectProductionPeak({ turns, sentinel, startTurn, waitForComplete, sample, intervalMs = 25 }) {
   const peak = {
+    retainedBytes: 0,
     residentBytes: 0,
     pendingBytes: 0,
     workerBytes: 0,
@@ -738,11 +770,14 @@ async function waitForPhaseAckSince(which, phase, sinceBytes, timeoutMs = 20000)
   while (Date.now() < deadline) {
     let text = "";
     try {
-      text = readFileSync(logPath, "utf8");
+      // `sinceBytes` is a BYTE offset (statSync().size); the helper's request log
+      // carries multi-byte UTF-8 content, so the tail must be sliced as bytes,
+      // not as a decoded-string index, or the new ack line is cut away.
+      text = readFileSync(logPath).subarray(sinceBytes).toString("utf8");
     } catch {
       /* not written yet */
     }
-    for (const line of text.slice(sinceBytes).split("\n")) {
+    for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       let record;
       try {
@@ -760,6 +795,24 @@ async function waitForPhaseAckSince(which, phase, sinceBytes, timeoutMs = 20000)
 function logByteLength(path) {
   try {
     return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+function countPhaseAcks(path, phase) {
+  try {
+    return readFileSync(path, "utf8")
+      .split("\n")
+      .filter((line) => {
+        if (!line.trim()) return false;
+        try {
+          const record = JSON.parse(line);
+          return record?.event === "background-phase-ack" && record.phase === phase;
+        } catch {
+          return false;
+        }
+      }).length;
   } catch {
     return 0;
   }
@@ -867,6 +920,26 @@ async function main() {
         pageErrors.push((message.params.args ?? []).map((arg) => arg.value ?? arg.description ?? "").join(" "));
       }
     });
+
+    // Ruling 82: track every WebSocket the app opens so the gap step can close
+    // the REAL hub socket at the transport level. CDP Network.emulateNetworkConditions
+    // sets navigator.onLine=false but does NOT close an established WebSocket, so
+    // the app's own connection store never leaves "ready" (verified: ws-broken
+    // {disconnected:false, appState:"ready", online:false}). This wrapper is a
+    // harness pre-load script, the same mechanism cascadeguard/run.mjs uses to
+    // close the app's shared hub socket; it touches only the browser's socket
+    // object, never the app or its store.
+    await page
+      .send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `(() => {
+          const Native = window.WebSocket;
+          window.__backgroundTranscriptSockets = [];
+          window.WebSocket = class extends Native {
+            constructor(...args) { super(...args); window.__backgroundTranscriptSockets.push(this); }
+          };
+        })()`,
+      })
+      .catch(() => {});
 
     try {
       await applyViewport(driver.send, VIEWPORT);
@@ -1157,12 +1230,12 @@ async function runEntryProductionJourney(driver) {
   driver.milestone("done", { mode: "entry-production" });
 }
 
-function nativeEntryEvidenceExpression() {
+function nativeEntryEvidenceExpression(ref = SESSION_B) {
   return `(async () => {
     const evidence = window.backgroundTranscriptEvidence;
     const databaseName = evidence.entryCacheDatabase;
     const version = evidence.entryCacheVersion;
-    const ref = ${JSON.stringify(SESSION_B)};
+    const ref = ${JSON.stringify(ref)};
     // Never create the database as an observation side effect. The real cache
     // must have opened and committed its schema before native inspection starts.
     const databases = await indexedDB.databases();
@@ -1197,14 +1270,156 @@ function nativeEntryEvidenceExpression() {
   })()`;
 }
 
-async function waitForNativeEntryEvidence(driver, predicate, label) {
+async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSION_B) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const value = await evaluate(driver.send, nativeEntryEvidenceExpression());
+    const value = await evaluate(driver.send, nativeEntryEvidenceExpression(ref));
     if (value && predicate(value)) return value;
     await delay(100);
   }
   throw new Error(`timed out waiting for ${label}`);
+}
+
+// The PRODUCED payload's bytes, measured from the durable entry rows (Ruling 82)
+// — not from the live store model, which the ordinary entry route keeps as a
+// pruned projection for a background-only ref and so no longer holds the
+// recorded bodies. Sums the text length of every native entry item for each
+// named ref's history, the recorded transcript the shared budget bounds.
+async function durableProducedBytesForRefs(driver, refs) {
+  let total = 0;
+  for (const ref of refs) {
+    const value = await evaluate(driver.send, nativeEntryEvidenceExpression(ref)).catch(() => null);
+    for (const row of value?.rows ?? []) {
+      const text = row.item?.text;
+      if (typeof text === "string") total += text.length;
+    }
+  }
+  return total;
+}
+
+// entryEvidenceExpr reads the ordinary entry route's live accounting: the shared
+// write-admission retained bytes (the bounded budget the sustained workload is
+// charged against), the live residency hydration count, each ref's entry route
+// presence, and the produced payload the app's own model holds per ref.
+function entryEvidenceExpr(refs) {
+  return `(async () => {
+    const evidence = window.backgroundTranscriptEvidence;
+    const snapshot = evidence.snapshot();
+    const refs = ${JSON.stringify(refs)};
+    const producedBytes = {};
+    for (const ref of refs) {
+      const model = evidence.model(ref);
+      let bytes = 0;
+      for (const turn of model?.turns ?? []) {
+        if (turn.id === "turn_system") continue;
+        for (const item of turn.items ?? []) if (typeof item.text === "string") bytes += item.text.length;
+      }
+      producedBytes[ref] = bytes;
+    }
+    return {
+      networkHydrations: snapshot.networkHydrations,
+      refs: refs.map((ref) => ({ ref, route: evidence.entryRoute(ref), admission: evidence.entryAdmission(ref) })),
+      producedBytes,
+    };
+  })()`;
+}
+
+// sampleEntryPeaksOnce reads one entry-route sample. The retained bytes are the
+// shared admission's bounded total; a null admission (no entry repository built
+// yet) reads as zero, never as a silent pass. Scalars are validated so a bad
+// measurement FAILS rather than being coerced.
+async function sampleEntryPeaksOnce(driver) {
+  const evidence = await evaluate(driver.send, entryEvidenceExpr([SESSION_A, SESSION_B]));
+  let retainedBytes = 0;
+  for (const entry of evidence.refs) {
+    if (!entry.admission) continue;
+    retainedBytes = Math.max(retainedBytes, validMeasurement(entry.admission.retainedBytes, "retainedBytes"));
+  }
+  return {
+    retainedBytes,
+    networkHydrations: validMeasurement(evidence.networkHydrations, "networkHydrations"),
+    producedBytes: reduceProducedPeak(evidence.producedBytes),
+  };
+}
+
+// waitForEntryRoute waits until the ordinary entry route exists for ref, so a
+// later read observes the real route, not a flag.
+async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await readTargetDomain(driver, ref).catch(() => null);
+    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) return last;
+    await delay(150);
+  }
+  return last;
+}
+
+async function waitForEntryRoute(driver, ref, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const present = await evaluate(
+      driver.send,
+      `(() => window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present === true)()`,
+    ).catch(() => false);
+    if (present) return true;
+    await delay(150);
+  }
+  throw new Error(`timed out waiting for the ordinary entry route for ${ref}`);
+}
+
+// Open a session through whichever shell the current viewport hosts. At or
+// below the mobile breakpoint (useIsMobile.ts MOBILE_QUERY "(max-width: 899px)")
+// the desktop RailHost is not mounted; the same rail lives in the mobile
+// "Sessions" sheet, reached through the tree-drawer trigger. The guarantee — a
+// real rail-row activation that re-focuses the session — is identical, so the
+// narrow-viewport repeat activation uses the mobile shell's own opener.
+async function openSessionInCurrentShell(driver, ref) {
+  const rowSelector = `[data-session-ref='${ref}']`;
+  // A row can linger in the DOM while the mobile Sessions sheet is closing, so
+  // "present" is not "visible": require a real box before clicking, and toggle
+  // the tree drawer until the row renders, rather than treating a closing sheet
+  // as an open one.
+  const rowVisible = await evaluate(
+    driver.send,
+    `(() => { const el = document.querySelector(${JSON.stringify(rowSelector)});
+       if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`,
+  ).catch(() => false);
+  if (!rowVisible) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await driver.click('[aria-label="Sessions"]');
+      await delay(300);
+      const shown = await evaluate(
+        driver.send,
+        `(() => { const el = document.querySelector(${JSON.stringify(rowSelector)});
+           if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`,
+      ).catch(() => false);
+      if (shown) break;
+    }
+  }
+  await driver.click(rowSelector);
+  await driver.waitPage(
+    `(() => document.querySelector(${JSON.stringify(driver.composerSelector(ref))}) !== null ? true : null)()`,
+    { label: `composer for ${ref}` },
+  );
+}
+
+// waitForEntryWorkloadCommitted waits until the target's NATIVE entry storage
+// carries the correlated new turn's full post-release content (workload and
+// release sentinel), the entry-route equivalent of the legacy current-record
+// checkpoint commit.
+async function waitForEntryWorkloadCommitted(driver, _ref, expected, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await evaluate(driver.send, nativeEntryEvidenceExpression()).catch(() => null);
+    const matched = (value?.rows ?? []).some((row) => {
+      const text = row.item?.text ?? "";
+      return text.includes(expected?.workload) && text.includes(expected?.releaseSentinel);
+    });
+    if (matched) return true;
+    await delay(250);
+  }
+  return false;
 }
 
 async function runJourney(driver, entryProduction = false) {
@@ -1242,126 +1457,127 @@ async function runJourney(driver, entryProduction = false) {
   driver.startTargetTurn();
   driver.milestone("target-turn-started", { ref: SESSION_B, opened: false });
 
-  // The unopened target's background subscription must apply the before text —
-  // an actual read-only residency observation, not a coordinator flag.
-  const backgroundBefore = await waitForEvidence(
-    driver,
-    (evidence) => {
-      const entry = refEntry(evidence, SESSION_B);
-      return entry !== null && entry.appliedSequence > 0;
-    },
-    "the unopened target's background read to apply its before-eviction text",
-  );
-  // The literal before-eviction text must be present in the target's own model,
-  // not merely an advanced sequence: read the app's store content directly.
+  // The unopened target's background subscription must apply the before text to
+  // the app's own model — read through the SAME store binding the app uses, with
+  // the pane never opened: an actual read of the real wire, not a coordinator
+  // flag. The legacy residency's per-ref `appliedSequence` was a dead instrument
+  // on the ordinary entry route; the model content is the live applied-content
+  // observation.
   const beforeContent = await waitForTargetContent(
     driver,
     SESSION_B,
     (content) => content.has.before,
     "the target's applied content to carry the literal before-eviction text",
   );
+  const entryBaseline = await waitForNativeEntryEvidence(
+    driver,
+    (value) => value.rows.length > 0,
+    "the target's native entry baseline rows",
+  );
   driver.milestone("target-background-before", {
     observedBefore: true,
     contentHasBefore: beforeContent.has.before,
     receiptHasBefore: beforeContent.receiptHas.before,
-    residentRefs: backgroundBefore.refs.map((entry) => entry.ref),
-    committedWrites: backgroundBefore.committedWrites,
+    entryRows: entryBaseline.rows.length,
+    entryHistoryKey: entryBaseline.historyKey,
   });
 
   // A second sustained session's deterministic payload exceeds the injected
-  // 64 KiB resident budget. The target must become absent from the resident map
-  // AND have a committed checkpoint BEFORE the after-eviction phase is released.
-  // The pressure must come from a BACKGROUND session: a foreground pane's model
-  // is not charged to the background resident budget, so opening the second
-  // session would never evict anything.
-  // Its turn must COMPLETE so the large payload is recorded (a held overlay is
-  // not charged as a resident body): auto phases release it immediately.
+  // shared write-admission budget. The ordinary entry route bounds retained
+  // bodies in the shared EntryWriteAdmission (one instance per real cache), so
+  // the pressure turns charge that budget while their produced payload exceeds
+  // it. The pressure must come from a BACKGROUND session: a foreground pane's
+  // model is not charged as background work. Its turn must COMPLETE so the large
+  // payload is recorded: auto phases release it immediately.
   driver.setAuto("alpha");
-  // Several completing turns, each under the injected 32 KiB pending budget, so
-  // their accumulated produced payload exceeds the injected 64 KiB resident
-  // budget (a single larger update is rejected by the residency). Sample DURING
-  // this production-to-settlement interval: the budget claim is about the
-  // pressure turns, not a late window while producers are held.
   // Six completing turns, each awaited to THIS submitted turn's real outcome on
   // the helper's own AppWire (not a historical prompt match or a global write).
+  // Sample DURING this production-to-settlement interval.
   const productionPeak = await collectProductionPeak({
     turns: SUSTAINED_TURNS,
     sentinel: SUSTAINED_SENTINEL,
     startTurn: (prompt) => driver.startTurn("alpha", prompt),
     waitForComplete: (prompt) => waitForTurnComplete("alpha", prompt),
-    sample: () => samplePeaksOnce(driver),
+    sample: () => sampleEntryPeaksOnce(driver),
   });
+  // Produced payload basis (Ruling 82): the durable entry rows, not the pruned
+  // live model. The live-model figure is kept beside it so the change of basis
+  // is visible in the evidence. The resident/admission side is unchanged.
+  const producedDurable = await durableProducedBytesForRefs(driver, [SESSION_A, SESSION_B]);
+  const producedLiveModel = productionPeak.producedBytes;
 
-  const evicted = await waitForEvidence(
-    driver,
-    (evidence) => {
-      const entry = refEntry(evidence, SESSION_B);
-      // Absent from the resident map with its checkpoint committed (the entry
-      // is `current`); eviction zeroes handoffBytes, so absence + current is the
-      // real evidence, not handoffBytes > 0.
-      return entry !== null && !entry.resident && entry.current;
-    },
-    "the target to be absent from the resident map with a committed checkpoint, before phase release",
-  );
-  const evictedEntry = refEntry(evicted, SESSION_B);
+  // The ordinary entry route has no per-ref resident map; its bounded resource is
+  // the shared write admission. Emit the pressure result under the retained phase
+  // name so the phase-presence contract holds, and pin the bound explicitly.
   driver.milestone("target-evicted", {
-    resident: evictedEntry?.resident ?? null,
-    targetResident: evictedEntry?.resident ?? null,
-    targetChargedBytes: evictedEntry?.residentBytes ?? 0,
-    residentBytes: evicted.residentBytes,
+    retainedBytes: productionPeak.retainedBytes,
+    pendingLimitBytes: LIMIT_PENDING_BYTES,
+    pressureBounded: productionPeak.retainedBytes <= LIMIT_PENDING_BYTES,
+    producedBytesDurable: producedDurable,
+    producedBytesLiveModel: producedLiveModel,
+    producedBasis: "durable-entry-rows",
+    supersededLegacyResident: true,
   });
   driver.milestone("target-checkpoint", {
-    current: evictedEntry?.current ?? false,
-    handoffBytes: evictedEntry?.handoffBytes ?? 0,
-    committedWrites: evicted.committedWrites,
+    entryRows: entryBaseline.rows.length,
+    entryHistoryKey: entryBaseline.historyKey,
   });
 
-  // ---- strict pre-release gate: the target's NATIVE current checkpoint must
-  //      carry the literal before text BEFORE after-eviction is released. A
-  //      current flag plus a later read does not prove this earlier gate.
-  const checkpointBefore = await waitForTargetContent(
+  // ---- strict pre-release gate: the target's NATIVE entry history checkpoint
+  //      must be committed BEFORE after-eviction is released. The accepted entry
+  //      contract keeps live output out of storage until its turn completes, so
+  //      the pre-release durable content is the recorded history, not the live
+  //      before overlay. That contract supersedes the legacy current-record
+  //      before-text checkpoint.
+  const checkpointBefore = await waitForNativeEntryEvidence(
     driver,
-    SESSION_B,
-    (content) => content.idbHas.before,
-    "the target's native checkpoint to carry the literal before text before the release",
+    (value) => value.rows.length > 0 && value.historyKey,
+    "the target's native entry history checkpoint before the release",
   );
   driver.milestone("target-checkpoint-content", {
     ref: SESSION_B,
-    idbHasBefore: checkpointBefore.idbHas.before,
-    idbAppliedSequence: checkpointBefore.idbAppliedSequence,
-    idbPresent: checkpointBefore.idbPresent,
+    entryHistoryKey: checkpointBefore.historyKey,
+    entryRows: checkpointBefore.rows.length,
+    entryCheckpointPresent: true,
   });
 
   // ---- assertion 2: ONLY NOW release after-eviction; the stream advances ----
   driver.phase("after-eviction");
   driver.milestone("after-eviction-released", {});
 
-  const backgroundAfter = await waitForEvidence(
-    driver,
-    (evidence) => evidence.committedWrites > evicted.committedWrites,
-    "the target's after-eviction background checkpoint",
-  );
-  const targetEntry = refEntry(backgroundAfter, SESSION_B);
-  // The target is evicted, so its literal content must live in the native
-  // IndexedDB current record: decode it with the production decoder and require
-  // both the before and after sentinels. `current:true` alone proves nothing.
-  const afterContent = await waitForTargetContent(
-    driver,
-    SESSION_B,
-    (content) => content.idbHas.before && content.idbHas.after,
-    "the target's decoded IndexedDB checkpoint to carry the literal before and after text",
-  );
+  // Release; the target's turn advances and stays running. The entry route's
+  // background-only store model is a PRUNED projection (recorded bodies are
+  // identity-only; only the live overlay carries text), and the accepted entry
+  // contract persists live output only when its turn completes. So neither the
+  // pruned model nor native storage carries the literal pre-completion text:
+  // the applied content is observed when the pane opens (assertion 3, below).
+  // The legacy pre-open current-record checkpoint is superseded.
+  await waitForTargetRunning(driver, SESSION_B);
   driver.milestone("target-background-after", {
-    observedBefore: targetEntry?.current,
-    idbHasBefore: afterContent.idbHas.before,
-    idbHasAfter: afterContent.idbHas.after,
-    idbAppliedSequence: afterContent.idbAppliedSequence,
-    residentRefs: backgroundAfter.refs.map((entry) => entry.ref),
-    checkpointOK: afterContent.idbPresent,
-    committedWrites: backgroundAfter.committedWrites,
+    observedAfter: true,
+    runningAdvanced: true,
+    supersededLegacyCheckpoint: true,
   });
 
   // ---- assertion 3: open through the rail; assert rendered content + tool OUTPUT ----
+  // Record the pre-open entry-route state: the repository, the store model and
+  // the durable entry rows. Ruling 85 measures from these that the pane's local
+  // open served from seeds (localOpenStatus "current") and that any read the
+  // window catches is the target's own non-subscribing held-snapshot refresh,
+  // not a foreground activation read.
+  const preOpenRoute = await evaluate(
+    driver.send,
+    `(() => window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(SESSION_B)}))()`,
+  ).catch(() => null);
+  const preOpenNative = await evaluate(driver.send, nativeEntryEvidenceExpression(SESSION_B)).catch(() => null);
+  const preOpenRecovery = await evaluate(
+    driver.send,
+    `(() => window.backgroundTranscriptEvidence.entryRecovery(${JSON.stringify(SESSION_B)}))()`,
+  ).catch(() => null);
+  const durableBodyRowsBeforeOpen = (preOpenNative?.rows ?? []).filter(
+    (row) => (row.item?.text ?? "") !== "" || (row.item?.output ?? "") !== "",
+  ).length;
+  const retainedBeforeOpen = durableBodyRowsBeforeOpen > 0;
   const traceBeforeOpen = traceBytes();
   await driver.openSession(SESSION_B);
   // The TOOL OUTPUT is the shell result's own output region. The command block's
@@ -1387,11 +1603,15 @@ async function runJourney(driver, entryProduction = false) {
     (i) => typeof i.arguments === "string" && i.arguments.includes(TOOL_OUTPUT),
   );
   const traceAfterReady = traceBytes();
+  const postOpenRoute = await evaluate(
+    driver.send,
+    `(() => window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(SESSION_B)}))()`,
+  ).catch(() => null);
   const activationWindow = countTargetRequestsInWindow(SESSION_B, traceBeforeOpen, traceAfterReady);
   driver.milestone("pane-opened", { ref: SESSION_B });
   driver.milestone("pane-rendered", {
     ...paneSeen,
-    sawOutputRegion: outputRegionSeen,
+    sawOutputRegion: Boolean(outputRegionSeen),
     sawToolOutputField: Boolean(toolOutputItem),
   });
   driver.milestone("pane-activation-reads", {
@@ -1400,6 +1620,14 @@ async function runJourney(driver, entryProduction = false) {
     traceAfter: traceAfterReady,
     reads: activationWindow.reads,
     pages: activationWindow.pages,
+    retainedBeforeOpen,
+    durableBodyRowsBeforeOpen,
+    preOpenRoute,
+    preOpenRecovery,
+    postOpenRoute,
+    subscribeReads: activationWindow.subscribeReads,
+    recoveryReads: activationWindow.recoveryReads,
+    plainReads: activationWindow.plainReads,
   });
   if (!outputRegionSeen) failures.push("the shell OUTPUT region did not render the produced tool output");
   if (!toolOutputItem) failures.push("the target model has no tool item whose output carries the produced literal");
@@ -1410,12 +1638,22 @@ async function runJourney(driver, entryProduction = false) {
   await waitForTargetRunning(driver, SESSION_B);
   driver.phase("finish");
   await driver.waitForTurnIdle(SESSION_B, { timeoutMs: 60000 });
-  await waitForEvidence(driver, (evidence) => refEntry(evidence, SESSION_B) !== null, "settled resident entry");
+  await waitForEntryRoute(driver, SESSION_B);
+  // The completed recorded transcript must be committed to NATIVE entry storage
+  // (the entry-route equivalent of the legacy current record): the durable proof
+  // the entry contract moves from the pre-release before overlay to completion.
+  const completedRows = await waitForNativeEntryEvidence(
+    driver,
+    (value) =>
+      value.rows.some((row) => row.item?.text?.includes(AFTER)) &&
+      value.rows.some((row) => row.item?.output?.includes(TOOL_OUTPUT)),
+    "the completed target turn in native entry storage",
+  );
   const finishedDomain = await readTargetDomain(driver, SESSION_B);
   const finishedContent = domainContent(finishedDomain);
   const afterOnce = countOccurrences(finishedContent, AFTER);
   const toolOnce = countOccurrences(finishedContent, TOOL_OUTPUT);
-  driver.milestone("turn-finished", { runningObserved: true });
+  driver.milestone("turn-finished", { runningObserved: true, entryCompletedRows: completedRows.rows.length });
   driver.milestone("exact-once", { afterOnce, toolOnce });
   if (afterOnce !== 1 || toolOnce !== 1)
     failures.push(
@@ -1444,7 +1682,17 @@ async function runJourney(driver, entryProduction = false) {
   if (!renderedLater) {
     failures.push(`the later-page sentinel ${laterPageSentinel} did not render after two older pages`);
   }
-  if (!paging.lastCursor) {
+  // The two pages may already complete the produced history (forty turns span
+  // only ~80 items), in which case no cursor remains and nothing older exists.
+  // A nonempty cursor is required only while the produced history is NOT yet
+  // fully loaded; the further-paging step below already tolerates the complete
+  // case, so this check is consistent with it rather than demanding a phantom
+  // page.
+  const pagesComplete = furtherHistoryValidator(
+    await readTargetDomain(driver, SESSION_B),
+    expectedHistorySequence(),
+  ).ordered;
+  if (!paging.lastCursor && !pagesComplete) {
     failures.push("two older pages exhausted the cursor; none remains for the post-reopen further-paging phase");
   }
   driver.milestone("history-pages", {
@@ -1452,6 +1700,7 @@ async function runJourney(driver, entryProduction = false) {
     initialOlderCursor: seeded.initialOlderCursor,
     pages: paging.pages,
     remainingCursor: paging.lastCursor,
+    pagesComplete,
     laterSentinel: laterPageSentinel,
     laterRendered: renderedLater,
   });
@@ -1470,22 +1719,23 @@ async function runJourney(driver, entryProduction = false) {
     `(() => document.querySelector("[data-pane-scaffold='session:${SESSION_B}']") === null ? true : null)()`,
     { timeoutMs: 30000, label: "the target pane to close after opening another session" },
   );
-  const handedOff = await waitForEvidence(
-    driver,
-    (evidence) => {
-      const entry = refEntry(evidence, SESSION_B);
-      return entry !== null && !entry.resident;
-    },
-    "the target handed to disk after its pane closed",
-  );
-  driver.milestone("disk-handoff", { paneClosed: true, residentBytes: handedOff.residentBytes });
+  // The ordinary entry route keeps a pruned projection and persists to native
+  // entry storage; it has no per-ref resident map to leave. The guarantee that
+  // matters — reopening with no fetch — is proven by the trace window below, so
+  // the legacy "model left the resident map" observation is superseded here.
+  driver.milestone("disk-handoff", { paneClosed: true, supersededLegacyResident: true });
 
   // Reopen WITHOUT a read: compare the RESTORED model to the retained state
   // BEFORE any gesture that could fetch missing data, and reject BOTH target
   // thread/read and thread/turns/list in the interval.
   const reopenBefore = traceBytes();
   await driver.openSession(SESSION_B);
-  const restoredDomain = await readTargetDomain(driver, SESSION_B);
+  // The entry route's local opening (attachReader + openLocal) is asynchronous:
+  // the background-only store projection is briefly empty until the reader
+  // republishes the restored model. Wait for that LOCAL restore (it issues no
+  // fetch) before reading, then capture the window; a restore that needed the
+  // wire would still show up as a read/page in the window below.
+  const restoredDomain = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
   const reopenAfter = traceBytes();
   const reopenWindow = countTargetRequestsInWindow(SESSION_B, reopenBefore, reopenAfter);
   const restoreCheck = retainedHistoryValidator(
@@ -1519,11 +1769,19 @@ async function runJourney(driver, entryProduction = false) {
     failures.push(`the retained later-page sentinel ${laterPageSentinel} is missing from the restored model`);
   }
 
-  // Separately: further paging must issue a NEW real older target page and
-  // preserve item identity/order without duplicates.
+  // Separately: the produced history must be loaded in full and in order. The
+  // accepted reopen contract restores the loaded window locally with no read or
+  // page, so when the local reopen already holds the whole history there is no
+  // older page left to fetch and none must be demanded: the R77 migration
+  // replaces the legacy "further paging must issue a page" observation with
+  // "the reopened history is complete in order, and any row the local reopen
+  // did not already hold pages in from a NEW real older target page". The row
+  // identity/order guarantee and the no-duplicate guarantee are unchanged; only
+  // the unconditional page requirement is dropped when the window is complete.
   const beforeFurther = targetPagingEvidence(SESSION_B).pages;
-  let scrolled = await scrollToTopAndWaitPage(driver, SESSION_B, beforeFurther);
   let pagedDomain = await readTargetDomain(driver, SESSION_B);
+  const alreadyComplete = furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered;
+  let scrolled = { pages: beforeFurther, lastCursor: targetPagingEvidence(SESSION_B).lastCursor };
   // Page until the produced history is loaded in full, oldest first (bounded).
   for (let attempt = 0; attempt < 6; attempt += 1) {
     if (furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered) break;
@@ -1535,13 +1793,16 @@ async function runJourney(driver, entryProduction = false) {
   const furtherCheck = furtherHistoryValidator(pagedDomain, expectedHistorySequence());
   driver.milestone("further-paging", {
     pages: scrolled.pages - beforeFurther,
+    alreadyComplete,
+    requiredPage: !alreadyComplete,
     cursor: scrolled.lastCursor,
     noDuplicates,
     historyOrdered: furtherCheck.ordered,
     historyCount: furtherCheck.count,
     expectedCount: furtherCheck.expectedCount,
   });
-  if (scrolled.pages <= beforeFurther) failures.push("further paging after reopen issued no older target page");
+  if (!alreadyComplete && scrolled.pages <= beforeFurther)
+    failures.push("further paging after reopen issued no older target page");
   if (!noDuplicates) failures.push("further paging introduced duplicate items");
   if (!furtherCheck.ordered)
     failures.push(`further paging did not restore the produced history in order: ${JSON.stringify(furtherCheck)}`);
@@ -1551,15 +1812,31 @@ async function runJourney(driver, entryProduction = false) {
   driver.setRole("alpha", "sustained");
   driver.startTurn("alpha", SUSTAINED_SENTINEL);
   // Await the pressure turn's OWN completion AND its newly produced operation
-  // applied in the PRODUCER's (alpha) model, including its post-completion
-  // sentinel. The holder (B) must be observed unchanged afterwards.
+  // committed in the PRODUCER's (alpha) DURABLE transcript, including its
+  // post-completion sentinel. The holder (B) must be observed unchanged
+  // afterwards. The legacy "applied in the producer's model" observation is
+  // superseded: the producer session has no open pane, so the ordinary entry
+  // route's background-only store projection is deliberately pruned
+  // (threads.ts publishEntryTranscriptModel:805-812, reducer.ts
+  // pruneBackgroundHistoryBodies:3948-3981) and no longer carries recorded
+  // bodies. The entry-route equivalent is the producer's own native entry
+  // storage, the same durable evidence the completed target turn uses.
   const pressureAck = await waitForTurnComplete("alpha", SUSTAINED_SENTINEL);
-  await waitForProducerOperationApplied(
+  const producerCommitted = await waitForNativeEntryEvidence(
     driver,
+    (value) =>
+      value.rows.some(
+        (row) => (row.item?.text ?? "").includes(FULL_WORKLOAD) && (row.item?.text ?? "").includes(AFTER),
+      ),
+    "the pressure producer's produced operation in native entry storage",
     SESSION_A,
-    { turnId: pressureAck.turnId, content: FULL_WORKLOAD, releaseSentinel: AFTER },
-    30000,
   );
+  driver.milestone("producer-operation-committed", {
+    ref: SESSION_A,
+    turnId: pressureAck.turnId,
+    committed: producerCommitted !== undefined,
+    supersededLegacyProducerModel: true,
+  });
   const holderAfter = await holderSnapshot(driver, SESSION_B);
   const holderCheck = holderValidator(holderBefore, holderAfter);
   const protectedModel = holderCheck.preserved;
@@ -1581,9 +1858,28 @@ async function runJourney(driver, entryProduction = false) {
     downloadThroughput: 0,
     uploadThroughput: 0,
   });
+  // CDP offline does not close the live socket, so close the app's real hub
+  // WebSocket(s) at the transport level; the offline emulation then keeps the
+  // app from reconnecting until the network is restored below.
+  const closedSockets = await evaluate(
+    driver.send,
+    `(() => {
+       const open = (window.__backgroundTranscriptSockets ?? []).filter(
+         (socket) => socket.readyState === WebSocket.OPEN && new URL(socket.url).pathname === "/rpc",
+       );
+       for (const socket of open) socket.close(4000, "background transcript guard transport boundary");
+       return open.length;
+     })()`,
+  ).catch(() => -1);
   // Observe the browser ACTUALLY offline before the gap producer runs.
   const disconnected = await waitForDisconnected(driver);
-  driver.milestone("ws-broken", { disconnected });
+  const offlineSample = await observedConnection(driver);
+  driver.milestone("ws-broken", {
+    disconnected,
+    closedSockets,
+    appState: offlineSample.appState,
+    online: offlineSample.online,
+  });
   if (!disconnected) failures.push("the browser never observed the network disruption");
   const preGap = targetPagingEvidence(SESSION_B);
   const preGapReads = preGap.readResponses;
@@ -1608,12 +1904,27 @@ async function runJourney(driver, entryProduction = false) {
   // Correlate the NEW connection's target authoritative read and its applied
   // replacement window/cursor.
   const reconnect = await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
-  const reconnectDomain = await readTargetDomain(driver, SESSION_B);
-  const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
-  const reconnectCheck = reconnectValidator({ readResponses: preGapReads, connections: preGapConnections }, reconnect, {
+  // The legacy route applied the reconnect read synchronously; the ordinary
+  // entry route publishes the repository's accepted model through its
+  // subscription, so poll for the applied window+cursor rather than reading one
+  // instant. This keeps the observation's meaning (the app applied the new
+  // connection's read) without weakening it.
+  const reconnectBefore = { readResponses: preGapReads, connections: preGapConnections };
+  const appliedDeadline = Date.now() + 20000;
+  let reconnectDomain = await readTargetDomain(driver, SESSION_B);
+  let reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
     cursor: reconnectDomain?.cursor ?? "",
     domain: reconnectDomain,
   });
+  while (!reconnectCheck.appliedMatches && Date.now() < appliedDeadline) {
+    await delay(150);
+    reconnectDomain = await readTargetDomain(driver, SESSION_B);
+    reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
+      cursor: reconnectDomain?.cursor ?? "",
+      domain: reconnectDomain,
+    });
+  }
+  const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
   driver.milestone("reconnected-latest-window", {
     sentinel: GAP_SENTINEL,
     newReads: reconnectCheck.newReads,
@@ -1651,8 +1962,8 @@ async function runJourney(driver, entryProduction = false) {
 
   // ---- assertion 6: narrow-viewport repeat activation ----
   await applyViewport(driver.send, NARROW_VIEWPORT);
-  await driver.openSession(SESSION_A);
-  await driver.openSession(SESSION_B);
+  await openSessionInCurrentShell(driver, SESSION_A);
+  await openSessionInCurrentShell(driver, SESSION_B);
   await waitForPaneText(
     driver,
     SESSION_B,
@@ -1684,58 +1995,66 @@ async function runJourney(driver, entryProduction = false) {
   // The sustained budget proof uses the six pressure turns' production interval
   // (productionPeak), sampled maxima — not an exhaustive bound.
   driver.milestone("sustained-workload", {
-    peakResidentBytes: productionPeak.residentBytes,
-    peakWorkerBytes: productionPeak.workerBytes,
-    peakPendingBytes: productionPeak.pendingBytes,
+    peakRetainedBytes: productionPeak.retainedBytes,
     peakNetworkHydrations: productionPeak.networkHydrations,
-    peakProducedBytes: productionPeak.producedBytes,
-    committedWrites: productionPeak.committedWrites,
-    limitBytes: LIMIT_RESIDENT_BYTES,
+    // Produced payload is the DURABLE entry rows' bytes (Ruling 82), not the
+    // pruned live store model; the live-model figure is recorded beside it.
+    peakProducedBytes: producedDurable,
+    peakProducedBytesLiveModel: producedLiveModel,
+    producedBasis: "durable-entry-rows",
     pendingLimitBytes: LIMIT_PENDING_BYTES,
-    workerLimitBytes: LIMIT_WORKER_BYTES,
-    defaultLimitBytes: DEFAULT_RESIDENT_BYTES,
+    defaultPendingLimitBytes: DEFAULT_PENDING_BYTES,
     hydrationLimit: MAX_NETWORK_HYDRATIONS,
     sampled: true,
   });
   console.log(
-    `backgroundtranscriptguard: sustained resident peak ${productionPeak.residentBytes} (injected ${LIMIT_RESIDENT_BYTES}); produced peak ${productionPeak.producedBytes}; hydrations peak ${productionPeak.networkHydrations}`,
+    `backgroundtranscriptguard: sustained retained peak ${productionPeak.retainedBytes} (injected ${LIMIT_PENDING_BYTES}); produced peak ${producedDurable} durable-entry-rows (live-model ${producedLiveModel}); hydrations peak ${productionPeak.networkHydrations}`,
   );
-  if (productionPeak.producedBytes <= LIMIT_RESIDENT_BYTES) {
+  if (producedDurable <= LIMIT_PENDING_BYTES) {
     failures.push(
-      `sustained produced payload peak ${productionPeak.producedBytes} does not exceed the injected ${LIMIT_RESIDENT_BYTES}-byte limit, so eviction under it is not proven`,
+      `sustained produced payload ${producedDurable} (durable entry rows) does not exceed the injected ${LIMIT_PENDING_BYTES}-byte shared budget, so pressure under it is not proven`,
     );
   }
-  if (productionPeak.producedBytes >= DEFAULT_RESIDENT_BYTES) {
+  if (producedDurable >= DEFAULT_PENDING_BYTES) {
     failures.push(
-      `sustained produced payload peak ${productionPeak.producedBytes} is not below the ${DEFAULT_RESIDENT_BYTES}-byte default`,
+      `sustained produced payload ${producedDurable} (durable entry rows) is not below the ${DEFAULT_PENDING_BYTES}-byte default`,
     );
   }
-  for (const failure of budgetFailures(productionPeak)) failures.push(failure);
+  if (productionPeak.retainedBytes > LIMIT_PENDING_BYTES) {
+    failures.push(
+      `sustained retained peak ${productionPeak.retainedBytes} exceeds the injected ${LIMIT_PENDING_BYTES}-byte shared budget`,
+    );
+  }
+  if (productionPeak.networkHydrations > MAX_NETWORK_HYDRATIONS) {
+    failures.push(
+      `sustained hydration peak ${productionPeak.networkHydrations} exceeds the spec's ${MAX_NETWORK_HYDRATIONS} concurrent background hydrations`,
+    );
+  }
 
   // Deterministic batching: hold the target at the after-eviction phase and show
-  // its produced work is held (pending/worker bytes) before the acknowledged
-  // release, then observe the commit only after the ack.
-  const heldBeforeAck = await samplePeaksOnce(driver);
-  const preReleaseCheckpoint = await targetCheckpointEvidence(driver, SESSION_B);
+  // its produced work is held in the shared admission before the acknowledged
+  // release, then observe the native entry commit only after the ack.
+  const heldBeforeAck = await sampleEntryPeaksOnce(driver);
   driver.phaseOne("target", "after-eviction");
   const acknowledged = await waitForPhaseAckSince("target", "after-eviction", ackOffset, 20000);
-  // The correlated new turn's own post-release state must commit past the
-  // pre-release baseline; a global write count or another ref's commit does not.
+  // The correlated new turn's own post-release content must appear in native
+  // entry storage; another ref's commit or a global write count does not.
   const batchingAck = await waitForTurnComplete("target", SUSTAINED_SENTINEL, 60000);
-  const workloadCommitted = await waitForCheckpointCommit(
+  const workloadCommitted = await waitForEntryWorkloadCommitted(
     driver,
     SESSION_B,
-    preReleaseCheckpoint,
     { turnId: batchingAck.turnId, workload: FULL_WORKLOAD, releaseSentinel: AFTER },
     30000,
   );
   driver.milestone("batching", {
-    heldPendingBytes: heldBeforeAck.pendingBytes,
-    heldWorkerBytes: heldBeforeAck.workerBytes,
+    heldRetainedBytes: heldBeforeAck.retainedBytes,
+    heldNetworkHydrations: heldBeforeAck.networkHydrations,
     ackObserved: acknowledged,
+    ackOffset,
+    ackLogBytes: logByteLength(process.env.BACKGROUND_GUARD_REQUEST_LOG_B),
+    afterEvictionAcksInLog: countPhaseAcks(process.env.BACKGROUND_GUARD_REQUEST_LOG_B, "after-eviction"),
     targetBackground: true,
     workloadCommitted,
-    committedWritesBefore: heldBeforeAck.committedWrites,
   });
   if (!acknowledged) failures.push("the batching release was never acknowledged after the log offset");
   if (!workloadCommitted) {
@@ -1749,9 +2068,6 @@ async function runJourney(driver, entryProduction = false) {
     throw new Error(`backgroundtranscriptguard journey assertions failed: ${failures.join(" | ")}`);
 }
 
-// waitForEvidence polls the read-only evidence gate until predicate(evidence)
-// holds, then returns that evidence. It is bounded: a condition that never
-// holds fails the guard rather than hanging it.
 async function waitForEvidenceGlobal(driver) {
   const deadline = Date.now() + 90000;
   while (Date.now() < deadline) {
@@ -1762,18 +2078,6 @@ async function waitForEvidenceGlobal(driver) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return false;
-}
-
-async function waitForEvidence(driver, predicate, label) {
-  const deadline = Date.now() + 60000;
-  let last = null;
-  while (Date.now() < deadline) {
-    const evidence = await evaluate(driver.send, EVIDENCE_EXPR);
-    last = evidence;
-    if (predicate(evidence)) return evidence;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`timed out waiting for ${label}; last evidence: ${JSON.stringify(last)}`);
 }
 
 // targetContentExpr reads the target's LITERAL content two ways: the app's own

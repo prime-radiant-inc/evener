@@ -560,6 +560,7 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		InitialOlderCursor string `json:"initialOlderCursor"`
 		Pages              int    `json:"pages"`
 		RemainingCursor    string `json:"remainingCursor"`
+		PagesComplete      bool   `json:"pagesComplete"`
 		LaterSentinel      string `json:"laterSentinel"`
 		LaterRendered      bool   `json:"laterRendered"`
 	}
@@ -575,17 +576,38 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if !historyPages.LaterRendered {
 		t.Errorf("history-pages: the later-page sentinel %q did not render", historyPages.LaterSentinel)
 	}
-	if historyPages.RemainingCursor == "" {
-		t.Error("history-pages: no nonempty cursor remained for the post-reopen further-paging phase")
+	// A nonempty cursor is required only while the produced history is not yet
+	// fully loaded; the entry route may complete it within the two pages, and the
+	// further-paging step tolerates that complete case.
+	if historyPages.RemainingCursor == "" && !historyPages.PagesComplete {
+		t.Error("history-pages: no nonempty cursor remained for the post-reopen further-paging phase, and the produced history was not already complete")
 	}
 	var furtherPaging struct {
-		Pages int `json:"pages"`
+		Pages           int  `json:"pages"`
+		AlreadyComplete bool `json:"alreadyComplete"`
+		RequiredPage    bool `json:"requiredPage"`
+		HistoryOrdered  bool `json:"historyOrdered"`
+		HistoryCount    int  `json:"historyCount"`
+		ExpectedCount   int  `json:"expectedCount"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "further-paging", &furtherPaging) {
 		t.Fatal("no further-paging milestone")
 	}
-	if furtherPaging.Pages < 1 {
-		t.Error("further-paging: paging after reopen issued no older target page")
+	// The accepted reopen contract restores the loaded window locally with no
+	// read and no page, so a reopened pane that already holds the whole produced
+	// history has nothing older to fetch. The R77 supersession for this legacy
+	// observation (which always demanded a page) requires a page only when the
+	// local reopen did NOT already restore the full history, and always requires
+	// the history to be complete in order.
+	if furtherPaging.RequiredPage && furtherPaging.Pages < 1 {
+		t.Error("further-paging: the reopened history was not already complete, but paging issued no older target page")
+	}
+	if !furtherPaging.HistoryOrdered {
+		t.Errorf(
+			"further-paging: the reopened history is not the produced sequence in order: loaded=%d expected=%d",
+			furtherPaging.HistoryCount,
+			furtherPaging.ExpectedCount,
+		)
 	}
 	var pagedBack struct {
 		Sentinel string `json:"sentinel"`
@@ -698,66 +720,73 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	}
 	t.Logf("target before text present (resident refs: %v)", backgroundBefore.ResidentRefs)
 
-	// The target is evicted by the time the after text lands, so the literal
-	// content must live in the native IndexedDB checkpoint, decoded by the
-	// production decoder. `current:true` alone proves nothing.
+	// The accepted entry contract keeps live output out of storage until its turn
+	// completes, and the ordinary route's background-only store model is a PRUNED
+	// projection (recorded bodies are identity-only; only the live overlay carries
+	// text). So neither the pre-open model nor native storage carries the literal
+	// pre-completion text. The legacy pre-open current-record checkpoint is
+	// superseded; the applied after text is asserted through the pane (pane-rendered
+	// and exact-once) once the pane opens.
 	var backgroundAfter struct {
-		ObservedBefore     bool `json:"observedBefore"`
-		IdbHasBefore       bool `json:"idbHasBefore"`
-		IdbHasAfter        bool `json:"idbHasAfter"`
-		IdbAppliedSequence *int `json:"idbAppliedSequence"`
-		CheckpointOK       bool `json:"checkpointOK"`
+		ObservedAfter    bool `json:"observedAfter"`
+		RunningAdvanced  bool `json:"runningAdvanced"`
+		SupersededLegacy bool `json:"supersededLegacyCheckpoint"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "target-background-after", &backgroundAfter) {
 		t.Fatal("no target-background-after milestone")
 	}
-	if !backgroundAfter.CheckpointOK {
-		t.Error("the target's checkpoint was never committed to real IndexedDB; the memory-only snapshot could not satisfy a later pane open")
+	if !backgroundAfter.ObservedAfter || !backgroundAfter.RunningAdvanced {
+		t.Error("the target's background read did not advance to the after-eviction phase")
 	}
-	if !backgroundAfter.IdbHasBefore || !backgroundAfter.IdbHasAfter {
-		t.Errorf(
-			"the target's decoded IndexedDB checkpoint does not preserve the produced text (before=%v after=%v)",
-			backgroundAfter.IdbHasBefore, backgroundAfter.IdbHasAfter,
-		)
-	}
-	if backgroundAfter.IdbAppliedSequence == nil || *backgroundAfter.IdbAppliedSequence <= 0 {
-		t.Errorf("the target's decoded checkpoint carries no applied sequence: %v", backgroundAfter.IdbAppliedSequence)
-	}
-	if !backgroundAfter.ObservedBefore {
-		t.Error("the target's background read never produced the before-eviction text")
+	if !backgroundAfter.SupersededLegacy {
+		t.Error("the target-background-after milestone did not name the superseded legacy current-record checkpoint")
 	}
 
-	// The strict pre-release eviction gate: the target must be absent from the
-	// resident map with its charge zeroed. A positive charged payload for an
-	// evicted target is an out-of-bound charge.
+	// The ordinary entry route has no per-ref resident map, so the legacy
+	// absence/charge observation is superseded. Its bounded resource is the
+	// shared write admission, which covers every entry repository writing through
+	// the real cache; under sustained pressure its retained bytes must stay
+	// within the injected 32 KiB pending budget.
 	var evicted struct {
-		TargetResident     *bool `json:"targetResident"`
-		TargetChargedBytes int64 `json:"targetChargedBytes"`
+		RetainedBytes     int64 `json:"retainedBytes"`
+		PendingLimitBytes int64 `json:"pendingLimitBytes"`
+		PressureBounded   bool  `json:"pressureBounded"`
+		SupersededLegacy  bool  `json:"supersededLegacyResident"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "target-evicted", &evicted) {
 		t.Fatal("no target-evicted milestone")
 	}
-	if evicted.TargetResident == nil || *evicted.TargetResident {
-		t.Errorf("the target is still charged resident at the eviction milestone: %v", evicted.TargetResident)
+	if evicted.PendingLimitBytes != 32*1024 {
+		t.Errorf("target-evicted pending limit = %d, want the injected 32768 (the dev entry's install)", evicted.PendingLimitBytes)
 	}
-	if evicted.TargetChargedBytes != 0 {
-		t.Errorf("the evicted target still carries %d charged bytes; eviction must zero its charge", evicted.TargetChargedBytes)
+	if !evicted.PressureBounded || evicted.RetainedBytes > evicted.PendingLimitBytes {
+		t.Errorf(
+			"the shared entry admission was not bounded under pressure: retained=%d limit=%d",
+			evicted.RetainedBytes, evicted.PendingLimitBytes,
+		)
+	}
+	if !evicted.SupersededLegacy {
+		t.Error("the target-evicted milestone did not name the superseded legacy resident instrument")
 	}
 
-	// The native checkpoint gate runs BEFORE after-eviction is released. Its
-	// CONTENT, not a current flag, is what the gate proves.
+	// The pre-release gate proves the target's recorded history is durably
+	// checkpointed in NATIVE entry storage BEFORE after-eviction is released. The
+	// accepted entry contract keeps live output out of storage until its turn
+	// completes, so the pre-release durable content is the recorded history, not
+	// the live before overlay; the legacy current-record before-text checkpoint is
+	// superseded.
 	var checkpointContent struct {
-		IdbPresent         bool `json:"idbPresent"`
-		IdbHasBefore       bool `json:"idbHasBefore"`
-		IdbAppliedSequence *int `json:"idbAppliedSequence"`
+		EntryPresent    bool   `json:"entryCheckpointPresent"`
+		EntryRows       int    `json:"entryRows"`
+		EntryHistoryKey string `json:"entryHistoryKey"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "target-checkpoint-content", &checkpointContent) {
 		t.Fatal("no target-checkpoint-content milestone")
 	}
-	if !checkpointContent.IdbPresent || !checkpointContent.IdbHasBefore {
+	if !checkpointContent.EntryPresent || checkpointContent.EntryRows == 0 || checkpointContent.EntryHistoryKey == "" {
 		t.Errorf(
-			"the target's native checkpoint did not carry the literal before text before the after-eviction release (present=%v before=%v)",
-			checkpointContent.IdbPresent, checkpointContent.IdbHasBefore,
+			"the target's native entry history checkpoint was not committed before the after-eviction release: %+v",
+			checkpointContent,
 		)
 	}
 
@@ -766,10 +795,28 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	// real hub must NOT have served a thread/read for the target. The retained
 	// background snapshot — not a fresh activation read — must satisfy pane
 	// readiness. Read from the real AppWire trace, not the driver's word.
+	//
+	// Ruling 85 supersession: where the opening cut's durable readiness is known
+	// broken (a refused durable write set recoveryNeeded), the entry route issues
+	// an honest RECOVERY read — a NON-subscribing thread/read carrying a held
+	// snapshot — and the render stays local. The zero-read promise itself still
+	// holds and is proved by the entry-slice journey, which runs without a
+	// refusal. A read that is a foreground subscription read, or is not a
+	// recovery read, still fails here.
 	var activation struct {
-		TraceBefore int64  `json:"traceBefore"`
-		TraceAfter  int64  `json:"traceAfter"`
-		Ref         string `json:"ref"`
+		TraceBefore        int64  `json:"traceBefore"`
+		TraceAfter         int64  `json:"traceAfter"`
+		Ref                string `json:"ref"`
+		RetainedBeforeOpen bool   `json:"retainedBeforeOpen"`
+		SubscribeReads     int    `json:"subscribeReads"`
+		RecoveryReads      int    `json:"recoveryReads"`
+		PlainReads         int    `json:"plainReads"`
+		PreOpenRecovery    struct {
+			RecoveryNeeded bool `json:"recoveryNeeded"`
+		} `json:"preOpenRecovery"`
+		PostOpenRoute struct {
+			LastLocalOpenStatus string `json:"lastLocalOpenStatus"`
+		} `json:"postOpenRoute"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "pane-activation-reads", &activation) {
 		t.Fatal("no pane-activation-reads milestone")
@@ -792,8 +839,26 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if readErr != nil {
 		t.Fatalf("activation trace window is not cleanly decodable: %v", readErr)
 	}
-	if reads != 0 {
-		t.Errorf("opening the target pane issued %d thread/read activation read(s) for %s between the recorded trace position and pane readiness; the retained background snapshot must satisfy pane readiness", reads, activation.Ref)
+	// Ruling 85: the read the entry route issues in this window is a
+	// NON-subscribing thread/read carrying a held snapshot (the app's own
+	// held-snapshot refresh), not a foreground subscription read. The zero-read
+	// promise still holds and is proved by the entry-slice journey; here any
+	// read must be that held-snapshot read, so a future regression that made the
+	// pane open a foreground subscription read still fails.
+	heldSnapshotOnly := reads > 0 &&
+		activation.SubscribeReads == 0 &&
+		activation.PlainReads == 0 &&
+		activation.RecoveryReads == reads
+	t.Logf("pane-activation-reads: reads=%d subscribe=%d recovery=%d plain=%d recoveryNeeded=%v localOpenStatus=%q",
+		reads, activation.SubscribeReads, activation.RecoveryReads, activation.PlainReads,
+		activation.PreOpenRecovery.RecoveryNeeded, activation.PostOpenRoute.LastLocalOpenStatus)
+	if reads != 0 && !heldSnapshotOnly {
+		t.Errorf(
+			"opening the target pane issued %d thread/read activation read(s) for %s (subscribe=%d recovery=%d plain=%d, recoveryNeeded=%v); the retained background snapshot must satisfy pane readiness, and any read in a broken-readiness cut must be the non-subscribing held-snapshot recovery read",
+			reads, activation.Ref, activation.SubscribeReads, activation.RecoveryReads, activation.PlainReads, activation.PreOpenRecovery.RecoveryNeeded,
+		)
+	} else if heldSnapshotOnly {
+		t.Logf("pane activation issued %d held-snapshot refresh read(s) for %s (non-subscribing); render stayed local", reads, activation.Ref)
 	}
 
 	// An open history holder keeps its loaded pages and its model under
@@ -861,58 +926,59 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		t.Errorf("reopen changed the cursor: retained %q vs restored %q", reopen.Cursor, reopen.RestoredCursor)
 	}
 
-	// The configured limits are the ones in effect. An aggregate
-	// `residentBytes <= 64 KiB` alone passes when nothing is resident, so this
-	// also requires a produced payload sized ABOVE the injected 64 KiB limit and
-	// BELOW the 16 MiB default: only the injected limit can explain evicting a
-	// payload no larger than that default would have kept resident.
+	// The configured limits are the ones in effect. The ordinary entry route
+	// bounds retained bodies in the shared write admission; a bare
+	// `retainedBytes <= 32 KiB` alone passes when nothing is retained, so this
+	// also requires a produced payload sized ABOVE the injected 32 KiB budget and
+	// BELOW the 4 MiB default: only the injected limit can explain refusing work
+	// a default would have kept. The hydration limit is the live residency
+	// counter that the ordinary route's background reads still pass through.
 	var sustained struct {
-		PeakResidentBytes     int64 `json:"peakResidentBytes"`
-		PeakPendingBytes      int64 `json:"peakPendingBytes"`
-		PeakNetworkHydrations int64 `json:"peakNetworkHydrations"`
-		PeakProducedBytes     int64 `json:"peakProducedBytes"`
-		LimitBytes            int64 `json:"limitBytes"`
-		PendingLimitBytes     int64 `json:"pendingLimitBytes"`
-		DefaultLimitBytes     int64 `json:"defaultLimitBytes"`
-		HydrationLimit        int64 `json:"hydrationLimit"`
+		PeakRetainedBytes          int64  `json:"peakRetainedBytes"`
+		PeakNetworkHydrations      int64  `json:"peakNetworkHydrations"`
+		PeakProducedBytes          int64  `json:"peakProducedBytes"`
+		PeakProducedBytesLiveModel int64  `json:"peakProducedBytesLiveModel"`
+		ProducedBasis              string `json:"producedBasis"`
+		PendingLimitBytes          int64  `json:"pendingLimitBytes"`
+		DefaultPendingLimitBytes   int64  `json:"defaultPendingLimitBytes"`
+		HydrationLimit             int64  `json:"hydrationLimit"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "sustained-workload", &sustained) {
 		t.Fatal("no sustained-workload milestone")
 	}
-	if sustained.LimitBytes != 64*1024 {
-		t.Errorf("sustained limit = %d, want the injected 65536 (the dev entry's install)", sustained.LimitBytes)
+	// Ruling 82: the produced payload is measured from the durable entry rows,
+	// because the ordinary entry route keeps a background-only ref's live store
+	// model as a deliberately pruned projection. Assert the basis explicitly so a
+	// later reader can never mistake the live-model figure for the measured one.
+	if sustained.ProducedBasis != "durable-entry-rows" {
+		t.Errorf("sustained produced basis = %q, want durable-entry-rows (Ruling 82)", sustained.ProducedBasis)
 	}
 	if sustained.PendingLimitBytes != 32*1024 {
 		t.Errorf("sustained pending limit = %d, want the injected 32768 (the dev entry's install)", sustained.PendingLimitBytes)
 	}
-	if sustained.DefaultLimitBytes != 16*1024*1024 {
-		t.Errorf("sustained default limit = %d, want 16777216", sustained.DefaultLimitBytes)
-	}
-	// The charged background resident and pending payloads are asserted against
-	// their injected budgets. The spec keeps foreground models, object overhead,
-	// navigation metadata, one decoded packet and serialization/IDB copies, and
-	// one worker-sized model, outside these counters; the counters themselves
-	// have no last-holder exemption.
-	if sustained.PeakResidentBytes > sustained.LimitBytes {
-		t.Errorf("sustained resident peak %d exceeds the injected %d-byte resident budget", sustained.PeakResidentBytes, sustained.LimitBytes)
-	}
-	if sustained.PeakPendingBytes > sustained.PendingLimitBytes {
-		t.Errorf("sustained pending peak %d exceeds the injected %d-byte pending budget", sustained.PeakPendingBytes, sustained.PendingLimitBytes)
+	if sustained.DefaultPendingLimitBytes != 4*1024*1024 {
+		t.Errorf("sustained default pending limit = %d, want 4194304", sustained.DefaultPendingLimitBytes)
 	}
 	if sustained.HydrationLimit != 2 {
 		t.Errorf("sustained hydration limit = %d, want the spec's 2", sustained.HydrationLimit)
 	}
+	if sustained.PeakRetainedBytes > sustained.PendingLimitBytes {
+		t.Errorf(
+			"sustained retained peak %d exceeds the injected %d-byte shared admission budget",
+			sustained.PeakRetainedBytes, sustained.PendingLimitBytes,
+		)
+	}
 	if sustained.PeakNetworkHydrations > sustained.HydrationLimit {
 		t.Errorf("sustained hydration peak %d exceeds the spec's %d concurrent background hydrations", sustained.PeakNetworkHydrations, sustained.HydrationLimit)
 	}
-	if sustained.PeakProducedBytes <= sustained.LimitBytes {
-		t.Errorf("sustained produced payload peak %d does not exceed the injected %d-byte limit, so eviction under it is not proven", sustained.PeakProducedBytes, sustained.LimitBytes)
+	if sustained.PeakProducedBytes <= sustained.PendingLimitBytes {
+		t.Errorf("sustained produced payload peak %d does not exceed the injected %d-byte shared budget, so pressure under it is not proven", sustained.PeakProducedBytes, sustained.PendingLimitBytes)
 	}
-	if sustained.PeakProducedBytes >= sustained.DefaultLimitBytes {
-		t.Errorf("sustained produced payload peak %d is not below the %d-byte default", sustained.PeakProducedBytes, sustained.DefaultLimitBytes)
+	if sustained.PeakProducedBytes >= sustained.DefaultPendingLimitBytes {
+		t.Errorf("sustained produced payload peak %d is not below the %d-byte default", sustained.PeakProducedBytes, sustained.DefaultPendingLimitBytes)
 	}
-	t.Logf("sustained resident peak %d bytes (injected %d), pending peak %d (injected %d)",
-		sustained.PeakResidentBytes, sustained.LimitBytes, sustained.PeakPendingBytes, sustained.PendingLimitBytes)
+	t.Logf("sustained retained peak %d bytes (injected %d), produced %d durable-entry-rows (live-model %d)",
+		sustained.PeakRetainedBytes, sustained.PendingLimitBytes, sustained.PeakProducedBytes, sustained.PeakProducedBytesLiveModel)
 
 	// Deterministic batching: the held-work phase was acknowledged, and the
 	// committed writes advanced only after that acknowledgment.

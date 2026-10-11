@@ -30,6 +30,43 @@ try {
       entryCacheDatabase: SESSION_CACHE_DATABASE_NAME,
       entryCacheVersion: SESSION_CACHE_DATABASE_VERSION,
       connectionState: () => connection.connectionStore.getState().state,
+      // The ordinary entry route's own accounting, read through the same store
+      // binding the app uses. The shared write admission covers every entry
+      // repository writing through the real cache, so its retained bytes are
+      // the bounded shared budget the sustained workload is charged against.
+      entryAdmission: (ref: string) => {
+        const route = threads.productionEntryTranscriptForTests(ref);
+        const repository = route.repository;
+        if (!repository) return null;
+        const admission = repository.getAdmissionSnapshotForTesting();
+        return {
+          retainedBytes: admission.retainedBytes,
+          retainedIdentities: admission.retainedIdentities,
+          exemptBytes: admission.exemptBytes,
+          backgroundInFlight: admission.backgroundInFlight,
+        };
+      },
+      entryRoute: (ref: string) => {
+        const route = threads.productionEntryTranscriptForTests(ref);
+        const store = threads.threadsStore.getState().threads.get(ref);
+        const items = (store?.turns ?? []).flatMap((turn) => turn.items ?? []);
+        return {
+          present: route.repository !== undefined,
+          historyKey: route.historyKey ?? null,
+          storeModelPresent: store !== undefined,
+          storeItemCount: items.length,
+          storeNonEmptyItems: items.filter((item) => (item.text ?? "") !== "" || (item.output ?? "") !== "").length,
+          lastLocalOpenStatus: route.lastLocalOpenStatus ?? null,
+        };
+      },
+      // Read-only recovery state: why a local open does or does not report
+      // "current" for the entry route, measured rather than inferred.
+      entryRecovery: (ref: string) => {
+        const route = threads.productionEntryTranscriptForTests(ref);
+        const repository = route.repository;
+        if (!repository) return { repositoryPresent: false };
+        return { repositoryPresent: true, ...repository.getRecoveryStateForTesting() };
+      },
     }),
   });
 } catch (error) {

@@ -600,6 +600,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     readerRetention: route?.reader?.getRetentionSnapshotForTesting(),
     repository: route?.repository,
     reader: route?.reader,
+    lastLocalOpenStatus: route?.lastLocalOpenStatus,
   };
 }
 
@@ -660,6 +661,10 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   migrationComplete?: boolean;
   cachedUnverified?: boolean;
   cachedOpening?: Promise<void>;
+  // The status the last local open (`openEntryTranscript`) reported for this
+  // route. Read-only test evidence for why a pane open did or did not need a
+  // source read; never consulted by product logic.
+  lastLocalOpenStatus?: string;
 }
 
 let entryTranscriptFixtureForTests: EntryTranscriptRoute | undefined;
@@ -827,6 +832,7 @@ async function openEntryTranscript(ref: string): Promise<void> {
     fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptModel(ref));
     publishEntryTranscriptModel(ref);
     const result = await fixture.reader.openLocal(200);
+    fixture.lastLocalOpenStatus = result.status;
     if (
       result.model &&
       entryTranscriptRoute(ref) === fixture &&
@@ -936,7 +942,8 @@ async function openCachedEntryTranscript(ref: string, generation: number): Promi
       });
       const token = beginEntryTranscriptLocalOpening(ref);
       try {
-        await route.reader.openLocal(200);
+        const cachedResult = await route.reader.openLocal(200);
+        route.lastLocalOpenStatus = cachedResult.status;
       } finally {
         settleEntryTranscriptLocalOpening(ref, token);
       }
