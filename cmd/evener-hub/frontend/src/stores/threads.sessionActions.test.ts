@@ -19,7 +19,10 @@ import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { type IDBDatabase, IDBFactory, IDBKeyRange, IDBVersionChangeEvent } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
+import {
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
@@ -34,11 +37,15 @@ import { holdIndexedDBEvent, holdNextWriteTransaction, neverSettlingRequest } fr
 import {
   ConflictError,
   discardRecoveryMutation,
+  hasBlockedUnknown,
+  hasQueuedNonSend,
   installHydrationRetrySchedulerForTests,
   notifyReadyForMutationDispatch,
+  putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeOnlyLocalModel,
   resumeStopBaseline,
   retryBlockedMutation,
   setMutationStorageForTests,
@@ -6093,4 +6100,215 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     threadsStore.getState().releaseThread("ref_gone");
     expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
   });
+});
+
+// The merely-resumable snapshot the three tests below drive: ResumeRequired with
+// no send capability, and optionally the hub's foldable bit. A ref that is not
+// foldable is the one whose fence a status fold must NOT clear - the hub stamped
+// ResumeRequired for a cause whose turn/start it still refuses.
+function resumeOnlySnapshot(ref: string, foldable = false): ThreadReadResponse {
+  return readResponse(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...CAPABILITIES, send: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      ...(foldable ? { resumeOnlyFoldable: true } : {}),
+      queue: { revision: 0 },
+    },
+  });
+}
+
+// RoboRev Medium (round 13): the off-shut-down clear ends only the
+// merely-resumable window a genuinely resume-only snapshot opened. A ref that
+// was never resume-only - a restart-required daemon, an unconfirmed force-stop
+// exit, connection recovery - carries no resumeOnlyFoldable bit, so a status
+// fold off the shut-down set is not evidence the hub resumed it. Clearing that
+// ref's recovery obligation would admit mutations the hub still rejects.
+test("an off-shut-down status fold keeps the fence for a ref that was never resume-only", async () => {
+  const ref = "local:not-resume-only-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    // No foldable bit: the hub stamped ResumeRequired for a cause whose
+    // turn/start it still refuses, so this fold is no evidence it resumed.
+    resumeOnlySnapshot(ref),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active");
+  // The bit was never set, so the fold is not evidence the hub resumed it: the
+  // recovery obligation the snapshot armed must survive.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+});
+
+// RoboRev Medium (round 13): a status fold must not drop a fence an in-flight
+// Stop this page started owns. The Stop's group holds the obligation on purpose
+// until its RPC settles, and the hub holds Stopping > 0 (refusing even
+// turn/start) for that whole window, so the off-shut-down clear skips it.
+test("an off-shut-down status fold leaves a stop-owned fence armed", async () => {
+  const ref = "local:stop-owned-off-shutdown";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => resumeOnlySnapshot(ref, true));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+
+  const stop = deferred<void>();
+  fake.on("evener/thread/forceStop", () => stop.promise);
+  const pending = threadsStore.getState().forceStop(ref);
+  await flushUntil(() => threadsStore.getState().stoppingRefs.has(ref));
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+    });
+  });
+
+  // The stop group still owns the obligation: the fold did not drop its fence.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+
+  stop.resolve();
+  await pending;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 13): the resumeOnlyFoldable bit is the PREVIOUS
+// connection's answer (applyThreadResumeRequirement stamped it on a snapshot
+// that connection produced). After the connection generation changes the hub's
+// connection-recovery fence can refuse a folded turn/start on the new
+// connection, so the retained bit must not fold a send. A connection change
+// invalidates it (invalidateHeldHistoriesForReconnect, the store's single
+// reconnect hook), and only a fresh read on the current connection re-stamps
+// folding.
+test("a connection generation change invalidates a retained resumeOnlyFoldable bit", async () => {
+  const ref = "local:resume-only-reconnect";
+  const snapshot = (threadRef: string) => resumeOnlySnapshot(threadRef, true);
+  const first = connectFakeClient("ready");
+  first.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  await threadsStore.getState().ensureThread(ref);
+  await flushPendingTurnsProjectionForTests();
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // The connection that produced the snapshot is replaced by a fresh one.
+  const next = new FakeClient("ready");
+  next.on("thread/read", (params) => snapshot(params.ref ?? ref));
+  connectionStore.getState().connect(next);
+
+  // Synchronously after the rewire the outgoing connection's bit is gone: no
+  // folded send is admitted from a bit the previous connection produced.
+  expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+
+  // A fresh read on the current connection, still carrying the bit, restores
+  // folding.
+  await waitFor(() => expect(resumeOnlyLocalModel(ref)).toBe(true));
+});
+
+// RoboRev Medium (round 8): an ATTEMPTED non-send row survives a force stop
+// (cancelUnattemptedMutations keeps attempted rows) and still parks at the
+// target's FIFO. The method-aware dispatcher parks any non-turn/start head of a
+// resume-only ref BEFORE markAttempted, so such a row is both attempted and
+// still "submitting". The queued-non-send read must count it as blocking: a new
+// send is otherwise admitted, enqueued behind the parked head, and never
+// dispatched - while the Resume notice/button is already removed for a
+// resume-only session, leaving no UI path out.
+test("an attempted non-send row blocks the foldable predicate", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:attempted-nonsend";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  const row = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "parked non-send" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  // Dispatched once, then parked by the resume-only fence: attempted, still
+  // "submitting", never settled.
+  expect(await storage.markAttempted(row.clientMutationId)).toBe(true);
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 8): the projection answers from an empty outbox until
+// its first durable read resolves. Failing closed only on a never-installed
+// projection left an installed-but-not-yet-refreshed one reporting "no
+// uncertainty", so a resume could fold ahead of an unreconciled blockedUnknown
+// row in the window between hydration and the refresh completing. Readiness is
+// per ref: an unloaded ref is not foldable, and folds only once its own durable
+// outbox has loaded.
+test("a foldable ref whose outbox has not loaded is not foldable", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:not-yet-loaded";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  // The module's own subscription started a refresh for this ref, but it has
+  // not resolved: the projection holds no durable rows for it yet, so the
+  // predicate must fail closed rather than fold a resume ahead of a row it has
+  // not read.
+  // The two direct reads the store-wide predicate folds in fail closed too
+  // (the readiness seam), before any durable read has loaded.
+  expect(hasBlockedUnknown(ref)).toBe(true);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+  // Only once the durable outbox has loaded is the ref foldable.
+  await refreshPendingTurnsProjection(ref);
+  // The runtime's startup discovery scan starts an all-targets read that
+  // out-ranks this specific one; readiness now waits for the latest read, so
+  // settle the outstanding work before asserting the ref is loaded.
+  await flushPendingTurnsProjectionForTests();
+  expect(hasBlockedUnknown(ref)).toBe(false);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
 });
