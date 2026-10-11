@@ -331,22 +331,22 @@ func DelegateSandboxEnumFromModes(modes []string, parentNetwork, parentModeOff b
 }
 
 // DefDelegateSend defines the delegate_send tool, the single follow-up surface
-// for durable delegates.
+// for your own durable delegates.
 func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
-		Description: "Sends a message to a child delegate you created or, from a delegate, to its controlling caller. " +
-			"Use the contextual `caller` route for a non-terminal update that should not end your turn; use communicate for your final result or observer completion. " +
-			"Send child follow-ups by durable delegate_id. `to` accepts a `dlg_...` delegate_id or contextual `caller`; it rejects job/turn handles and unrelated runtime aliases. " +
+		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
+			"To reach your own parent, use communicate instead: end_turn=false for an update, end_turn=true for your final report. " +
+			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"to":          map[string]any{"type": "string", "description": "A child delegate_id (`dlg_...`) owned by this session, or `caller` from within a delegate to steer its controlling caller."},
-				"message":     map[string]any{"type": "string", "description": "The message to deliver to the addressed delegate or caller."},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate or caller returns once delivered."},
+				"to":          map[string]any{"type": "string", "description": "The delegate_id (`dlg_...`) of a delegate this session created."},
+				"message":     map[string]any{"type": "string", "description": "The message to deliver to that delegate."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate returns once delivered."},
 			},
 			"required": []string{"to", "message"},
 		},
@@ -742,6 +742,7 @@ const ObserverReporting = "Observers send updates with `communicate(end_turn=fal
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
+	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
 	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. " +
 	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 

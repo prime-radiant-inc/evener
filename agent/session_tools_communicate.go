@@ -95,6 +95,14 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				return nil, err
 			}
 
+			// A delegate's end_turn=false message is an update for its parent.
+			// The message is already in this transcript, so delivery never
+			// fails the call; the result says where the update stands.
+			var update *delegateUpdateDelivery
+			if !endTurn && deps.postDelegateUpdate != nil {
+				update = deps.postDelegateUpdate(ctx, message)
+			}
+
 			inbox := []string{}
 			if endTurn {
 				// Drain daemon-authored steering context into the terminal inbox.
@@ -143,6 +151,12 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				"end_turn": endTurn,
 				"inbox":    inbox,
 			}
+			if update != nil {
+				resp["delivery"] = update.Status
+				if update.Reason != "" {
+					resp["reason"] = update.Reason
+				}
+			}
 			if endTurn && deps.runningJobIDs != nil {
 				if ids := deps.runningJobIDs(); len(ids) > 0 {
 					resp["warning"] = runningJobsEndTurnWarning(ids, deps.turnEndsProcess)
@@ -165,6 +179,77 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 type communicateEndState struct {
 	// The key is communicate's own, so no other tool's state can match it.
 	EndReason string `json:"communicate_end_reason"`
+}
+
+// delegateUpdateDelivery is where a delegate's update stands when its
+// communicate(end_turn=false) call returns: the result's delivery and reason.
+type delegateUpdateDelivery struct {
+	Status string
+	Reason string
+}
+
+const (
+	// The update is in the parent's transcript as attention.
+	delegateUpdateDelivered = "delivered"
+	// The update is durable in the delegate's journal and reaches the parent
+	// without anyone acting: the parent holds it for its next model boundary,
+	// or an earlier delivery of the same delegate is ahead of it.
+	delegateUpdateQueued = "queued"
+	// The journal refused the update; the message stays in the delegate's
+	// own transcript only.
+	delegateUpdateNotDelivered = "not_delivered"
+)
+
+// postDelegateUpdate hands a delegate's communicate(end_turn=false) message
+// to its parent as an update. It returns nil for a root, whose end_turn=false
+// message is a checkpoint for its human partner and goes nowhere else.
+//
+// An update carries the message and nothing else, the way a report does: it
+// travels the delegate delivery path, which has never carried a watch's causal
+// provenance. A feedback loop between an observer and the parent it watches is
+// bounded the same way for updates as for reports: the update is a communicate
+// event, which the watch on the sender counts toward watchDeliveryBudget, and
+// the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
+func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
+	if !s.reportsToParent() {
+		return nil
+	}
+	if s.delegateController == nil || s.owningDelegateID == "" {
+		return &delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: "this session has no route to a parent agent"}
+	}
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return notDeliveredUpdate(err)
+	}
+	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
+	if err != nil {
+		return notDeliveredUpdate(err)
+	}
+	if err := s.executeDelegateMutationPlans(plans); err != nil {
+		// The update is durable in the journal. A delivery that failed stays
+		// pending there, and executeDelegateMutationPlans has queued the
+		// journal's pending heads and the rest of its queue for retry.
+		s.emit(events.EventWarning, warningDataFromError("deliver delegate update", err))
+	}
+	// A missing aggregate reads as not pending: it cannot occur while the run
+	// that just posted is open.
+	if s.delegateController.deliveryPending(s.owningDelegateID, deliveryID) {
+		return &delegateUpdateDelivery{Status: delegateUpdateQueued}
+	}
+	return &delegateUpdateDelivery{Status: delegateUpdateDelivered}
+}
+
+// notDeliveredUpdate says, for the delegate's model, why its update was
+// refused.
+func notDeliveredUpdate(err error) *delegateUpdateDelivery {
+	reason := "it could not be recorded: " + err.Error()
+	switch {
+	case errors.Is(err, errDelegateStaleLease):
+		reason = "this run of yours is no longer the current one"
+	case errors.Is(err, errDelegateTargetBusy), errors.Is(err, errDelegateNotControllable), errors.Is(err, ErrRetirementUnavailable):
+		reason = "you are stopping or finishing, or this run can no longer report to your parent"
+	}
+	return &delegateUpdateDelivery{Status: delegateUpdateNotDelivered, Reason: reason}
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this

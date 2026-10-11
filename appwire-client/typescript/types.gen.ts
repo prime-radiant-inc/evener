@@ -434,6 +434,11 @@ export interface DaemonLifecycle {
   deadline?: string;
   blockers: DaemonBlocker[];
   failure?: string;
+  /**
+   * LastAttempt is why the most recent automatic retirement attempt did not
+   * retire the process; absent until the idle timer has made one.
+   */
+  lastAttempt?: DaemonRetirementAttempt;
 }
 
 export interface DaemonListParams {
@@ -463,6 +468,12 @@ export interface DaemonRetireParams {
 export interface DaemonRetireResponse {
   accepted: boolean;
   lifecycle: DaemonLifecycle;
+}
+
+export interface DaemonRetirementAttempt {
+  at: string;
+  blockers: DaemonBlocker[];
+  error?: string;
 }
 
 export interface DaemonStatusParams {

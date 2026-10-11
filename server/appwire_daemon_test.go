@@ -116,6 +116,33 @@ func TestDaemonLifecycleFromSnapshotMapping(t *testing.T) {
 	}
 }
 
+// TestDaemonLifecycleFromSnapshotMapsLastAttempt pins the wire shape of the
+// last automatic attempt: a UTC instant, its full-evidence blockers as a
+// non-nil array, and its error; no attempt yet stays absent.
+func TestDaemonLifecycleFromSnapshotMapsLastAttempt(t *testing.T) {
+	at := time.Date(2026, 10, 10, 21, 34, 19, 0, time.FixedZone("UTC+2", 2*60*60))
+	got := DaemonLifecycleFromSnapshot(agent.RetirementSnapshot{Phase: "resident", LastAttempt: &agent.RetirementAttempt{
+		At:       at,
+		Blockers: []agent.RetirementBlocker{{Category: "watch", SessionID: "sess_1"}},
+		Error:    "retirement preparation: job store: closed",
+	}})
+	want := &appwire.DaemonRetirementAttempt{
+		At:       at.UTC().Format(time.RFC3339Nano),
+		Blockers: []appwire.DaemonBlocker{{Category: "watch", SessionID: "sess_1"}},
+		Error:    "retirement preparation: job store: closed",
+	}
+	if !reflect.DeepEqual(got.LastAttempt, want) {
+		t.Fatalf("lastAttempt=%+v, want %+v", got.LastAttempt, want)
+	}
+	failed := DaemonLifecycleFromSnapshot(agent.RetirementSnapshot{Phase: "resident", LastAttempt: &agent.RetirementAttempt{At: at, Error: "boom"}})
+	if failed.LastAttempt == nil || failed.LastAttempt.Blockers == nil {
+		t.Fatalf("attempt blockers must be a non-nil array: %+v", failed.LastAttempt)
+	}
+	if none := DaemonLifecycleFromSnapshot(agent.RetirementSnapshot{Phase: "resident"}); none.LastAttempt != nil {
+		t.Fatalf("lastAttempt=%+v before any attempt, want absent", none.LastAttempt)
+	}
+}
+
 // TestDaemonStatusDoesNotResetRetirementInterval proves a lifecycle status
 // request is a detached read: it must not mark activity, clear eligibility, or
 // otherwise mutate controller state, even while a timeout is configured.

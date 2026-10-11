@@ -126,23 +126,26 @@ func TestBundledCoordinatorUsesStableDelegateAndShellIdentities(t *testing.T) {
 	}
 }
 
-// TestBundledSubagentPreservesCallerRouteAndCommunicateFinal pins the
-// subagent's declared capability surface, not the wording of its role prompt.
-// delegate_send is the caller route (delegate_send(to="caller")), so it must be
-// in the tools: allowlist. The communicate-final surface is the session result
-// tool, injected for every session regardless of tools: — it is not an
-// allowlist entry the shipped asset can or should declare, and the agent
-// package's result-tool tests cover it.
+// TestBundledSubagentCanDelegateAndFollowUp pins the subagent's declared
+// capability surface, not the wording of its role prompt. The subagent
+// delegates in turn, and delegate_send reaches only its own delegates, so
+// delegate and delegate_send must both be in the tools: allowlist. It reaches
+// its parent through communicate, the session result tool injected for every
+// session regardless of tools:, so communicate is not an allowlist entry the
+// shipped asset can or should declare; the agent package's communicate tests
+// cover it.
 //
 // Not parallel: Agents() reads the package-wide subFS seam that TestMustSubPanics
 // swaps out.
-func TestBundledSubagentPreservesCallerRouteAndCommunicateFinal(t *testing.T) {
+func TestBundledSubagentCanDelegateAndFollowUp(t *testing.T) {
 	meta := bundledMeta(t, Agents(), "subagent.md")
 	if name := bundledMetaString(t, meta, "name"); name != "subagent" {
 		t.Fatalf("subagent agent name = %q, want %q", name, "subagent")
 	}
 	tools := bundledMetaStringList(t, meta, "tools")
-	if !slices.Contains(tools, "delegate_send") {
-		t.Errorf("subagent tools = %v, missing caller-route tool %q", tools, "delegate_send")
+	for _, want := range []string{"delegate", "delegate_send"} {
+		if !slices.Contains(tools, want) {
+			t.Errorf("subagent tools = %v, missing %q", tools, want)
+		}
 	}
 }
