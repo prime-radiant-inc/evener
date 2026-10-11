@@ -55,6 +55,7 @@ export function activityDelegate(overrides: Partial<SessionDelegate> = {}): Sess
     status: "running",
     terminal: false,
     resumable: true,
+    projectionRevision: 1,
     ...overrides,
   };
 }

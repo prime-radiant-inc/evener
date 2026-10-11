@@ -283,11 +283,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn, restoredAt []int) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
 					s.shrinkTurnHistoryBaseline(preManageLen, managedLen, injectedTurns)
+					s.growTurnHistoryBaseline(restoredAt)
 				}
 				inFlightFrom = s.turnHistoryBaseline
 				baselineSynced = true
@@ -531,6 +532,17 @@ func (s *Session) shrinkTurnHistoryBaseline(preLen, postLen, injected int) {
 	s.turnHistoryBaseline -= shrink
 	if s.turnHistoryBaseline < 0 {
 		s.turnHistoryBaseline = 0
+	}
+}
+
+// growTurnHistoryBaseline moves the boundary past each restored attention turn
+// inserted ahead of it, in insertion order (restoredAt), so the in-flight turn
+// still starts where the boundary says. Callers must hold s.mu.
+func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
+	for _, at := range restoredAt {
+		if at < s.turnHistoryBaseline {
+			s.turnHistoryBaseline++
+		}
 	}
 }
 

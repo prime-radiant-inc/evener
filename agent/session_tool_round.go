@@ -263,7 +263,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 	if abortErr := s.appendToolResults(ctx, calls, results, parts); abortErr != nil {
 		return abortErr
 	}
-	s.consumePersistedTerminalJobStatusNotifications(calls, results)
+	s.consumePersistedTerminalJobNotifications(calls, results)
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
@@ -314,42 +314,77 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 	return nil
 }
 
-func hasSuccessfulTerminalJobStatusResult(calls []llm.ToolCallData, results []tool.ExecResult) bool {
+// hasTerminalJobResult reports whether any reply in the round tells the caller
+// a job ended (terminalJobResult). Such a round is written durably, because
+// consumePersistedTerminalJobNotifications settles those jobs' notifications
+// only on the strength of the reply having reached the transcript.
+func hasTerminalJobResult(calls []llm.ToolCallData, results []tool.ExecResult) bool {
 	if len(calls) != len(results) {
 		return false
 	}
 	for i, call := range calls {
-		if call.Name != "job_status" {
-			continue
-		}
-		if _, ok := decodeTerminalJobStatusResult(results[i]); ok {
+		if _, ok := terminalJobResult(call, results[i]); ok {
 			return true
 		}
 	}
 	return false
 }
 
-func decodeTerminalJobStatusResult(result tool.ExecResult) (jobStatusResult, bool) {
-	if result.IsError {
-		return jobStatusResult{}, false
+// terminalJobResult returns the job a tool reply told the caller had ended: a
+// terminal job_status read, or a foreground shell kept as a job because its
+// output was too big to ride inline (its reply carries the job_id and the
+// terminal status). Both replies spell those two fields the same way. A shell
+// reply in background mode never counts, whatever its status: it tells the
+// caller the job carries on and will notify (a foreground runtime timeout
+// whose finalization failed replies failed/finalize_failed that way).
+func terminalJobResult(call llm.ToolCallData, result tool.ExecResult) (string, bool) {
+	if result.IsError || (call.Name != "job_status" && call.Name != "shell") {
+		return "", false
 	}
-	var status jobStatusResult
-	if err := json.Unmarshal(result.ToolState, &status); err != nil || !jobstore.Status(status.Status).IsTerminal() {
-		return jobStatusResult{}, false
+	var reply struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
 	}
-	return status, true
+	if err := json.Unmarshal(result.ToolState, &reply); err != nil || reply.JobID == "" || !jobstore.Status(reply.Status).IsTerminal() {
+		return "", false
+	}
+	if call.Name == "shell" && reply.Mode != string(shellModeForeground) {
+		return "", false
+	}
+	return reply.JobID, true
 }
 
-func (s *Session) consumePersistedTerminalJobStatusNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
+// consumePersistedTerminalJobNotifications settles the notification of every
+// job a just-persisted tool reply told the caller had ended. Settling only
+// after the reply is durable keeps the crash case right: a reply that never
+// reached the transcript leaves the job for restore to re-arm. The durable
+// append reports success for a line it wrote but could not sync (fsync and
+// rollback both failed), so durability is established here before anything
+// settles; if it cannot be, nothing does, and a restore re-arms the jobs. (A
+// session with no transcript attached has no durability to establish.) A
+// crash after the reply is durable but before a settlement is written re-arms
+// too: a repeated notification, never a lost one. So does a kept shell whose
+// job_finished write failed and is still being retried when its reply
+// persists: the record is not yet terminal, nothing settles, and the later
+// finalization leaves it not_armed. Both are rare fault paths, and both err
+// toward telling the caller twice rather than not at all.
+func (s *Session) consumePersistedTerminalJobNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
+	if !hasTerminalJobResult(calls, results) {
+		return
+	}
+	if tw := s.attachedTranscript(); tw != nil && tw.EstablishDurability() != nil {
+		return
+	}
 	for i, call := range calls {
-		if call.Name != "job_status" || i >= len(results) {
+		if i >= len(results) {
 			continue
 		}
-		status, ok := decodeTerminalJobStatusResult(results[i])
+		jobID, ok := terminalJobResult(call, results[i])
 		if !ok {
 			continue
 		}
-		jm, rec, err := s.nestedOrLocalJobManager(status.JobID)
+		jm, rec, err := s.nestedOrLocalJobManager(jobID)
 		if err != nil {
 			continue
 		}

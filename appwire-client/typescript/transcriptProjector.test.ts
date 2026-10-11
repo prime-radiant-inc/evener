@@ -261,6 +261,17 @@ describe("transcript projector", () => {
     expect(entriesFor(model, preset("chat")).every((entry) => entry.kind === "critical")).toBe(true);
   });
 
+  test("a steer from the parent agent shows at chat: it is a colleague's message, not daemon plumbing", () => {
+    const model = threadWith(item("steer-parent", "steering", { text: "Use the drain_log table.", source: "parent" }));
+
+    expect(entriesFor(model, preset("chat")).map((entry) => [entry.id, entry.kind])).toEqual([
+      ["steer-parent", "critical"],
+    ]);
+    expect(
+      entriesFor(threadWith(item("steer", "steering", { text: "Hook context", source: "" })), preset("chat")),
+    ).toEqual([]);
+  });
+
   test("the terminal fallback does not resurrect a daemon steer chat hid when the error end cap renders", () => {
     const failedTurn = turn([item("daemon-steer", "steering", { text: "steer", source: "" })], {
       status: "failed",

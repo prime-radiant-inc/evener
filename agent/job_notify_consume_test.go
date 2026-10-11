@@ -393,3 +393,178 @@ func TestRunningJobStatusReadLeavesNotificationArmed(t *testing.T) {
 		t.Fatal("a running job's status read must not consume its terminal notification")
 	}
 }
+
+// keptForegroundShellCall runs a real foreground shell whose output is too big
+// to ride inline, so the tool keeps it as a durable job and returns a digest
+// with its job_id and terminal status.
+func keptForegroundShellCall(t *testing.T, s *Session) (llm.ToolCallData, tooldefs.ExecResult, string) {
+	t.Helper()
+	call := llm.ToolCallData{
+		ID:        "kept",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"head -c 70000 </dev/zero | tr '\\0' 'x'"}`),
+	}
+	result := s.reg.ExecuteCall(context.Background(), s.env, call)
+	if result.IsError {
+		t.Fatalf("shell: %s", result.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(result), &out); err != nil || out.JobID == "" {
+		t.Fatalf("the large-output command was not kept as a job: %v (%s)", err, result.Output)
+	}
+	return call, result, out.JobID
+}
+
+// TestPersistedKeptForegroundShellIsNotRenotifiedOnRestore pins #4290. A
+// kept foreground shell already told the caller, in its own tool reply, that
+// the job ended. Once that reply is durable the job's notification is
+// consumed, so a restore does not re-announce it and wake the session for a
+// turn nobody asked for.
+func TestPersistedKeptForegroundShellIsNotRenotifiedOnRestore(t *testing.T) {
+	t.Parallel()
+	s := newQueuePersistTestSession(t, t.TempDir())
+	call, result, jobID := keptForegroundShellCall(t, s)
+	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	s.Close()
+
+	meta, err := schema.LoadSessionMeta(s.stateDir, s.id)
+	if err != nil {
+		t.Fatalf("load meta: %v", err)
+	}
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: s.stateDir})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	restored.mu.Lock()
+	_, replied := findToolResultInHistory(restored.history, call.ID)
+	restored.mu.Unlock()
+	if !replied {
+		t.Fatal("the kept shell's reply did not survive the restore")
+	}
+	if rec := loadShellRecord(t, restored.jobManager, jobID); rec.NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("restored terminal_notification_state = %q, want %q", rec.NotifyState, jobstore.NotifyConsumed)
+	}
+	if got := restored.peekNotifications(); got != 0 {
+		t.Fatalf("restore queued %d notification(s) for a result the caller already read", got)
+	}
+}
+
+// TestUnpersistedKeptForegroundShellIsRenotifiedOnRestore pins the other side
+// of #4290's fix: when the process stops before the kept shell's reply reaches
+// the transcript, the caller never learned the job ended, so a restore still
+// arms its notification.
+func TestUnpersistedKeptForegroundShellIsRenotifiedOnRestore(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	_, _, jobID := keptForegroundShellCall(t, s)
+	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("terminal_notification_state = %q, want %q for a reply that never persisted", rec.NotifyState, jobstore.NotifyPending)
+	}
+	if got := s.peekNotifications(); got != 1 {
+		t.Fatalf("restore queued %d notification(s), want 1 for a reply that never persisted", got)
+	}
+}
+
+// TestKeptForegroundShellTranscriptFailureLeavesNotificationUnsettled pins
+// that the settlement waits for a reply that is actually durable: when the
+// transcript write of a kept shell's reply fails, the caller never got it, so
+// the job is left for restore to arm.
+func TestKeptForegroundShellTranscriptFailureLeavesNotificationUnsettled(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	call, result, jobID := keptForegroundShellCall(t, s)
+
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.ID()})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	s.transcript = writer
+	fs.fail = true
+
+	err = s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result})
+	if !errors.Is(err, errInjectedTranscriptWrite) {
+		t.Errorf("persistToolResults error = %v, want %v", err, errInjectedTranscriptWrite)
+	}
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("terminal_notification_state = %q after a failed reply write, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
+	}
+}
+
+// TestKeptForegroundShellUnsyncedReplyLeavesNotificationUnsettled pins that a
+// reply whose line reached the file but could not be synced (fsync and the
+// rollback both failed, so the durable append retains it and reports success)
+// does not settle the job: a crash could still lose that line, and restore
+// must then be free to arm the notification.
+func TestKeptForegroundShellUnsyncedReplyLeavesNotificationUnsettled(t *testing.T) {
+	t.Parallel()
+	s := newQueuePersistTestSession(t, t.TempDir())
+	t.Cleanup(func() { s.Close() })
+	call, result, jobID := keptForegroundShellCall(t, s)
+
+	fs := attachEnvironmentFailureFS(t, s)
+	syncFailure := errors.New("kept shell reply sync failure")
+	fs.mu.Lock()
+	fs.failure = syncFailure
+	fs.rollbackFailure = errors.New("kept shell reply rollback failure")
+	fs.onFailure = func() {
+		fs.mu.Lock()
+		fs.failure = syncFailure
+		fs.mu.Unlock()
+	}
+	fs.mu.Unlock()
+
+	_ = s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result})
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("terminal_notification_state = %q after an unsynced reply, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
+	}
+}
+
+// TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending pins
+// that only a foreground completion settles a job's notification. A
+// foreground command whose runtime timeout could not be finalized replies
+// status failed / finalize_failed in background mode, which tells the caller
+// the job carries on and will notify; if the retried finalization lands before
+// that reply is persisted, its completion notification must stay pending.
+func TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	watcher := newJobNotifyWatcher(s, nil)
+	jobID := startBackgroundShellJob(t, s, "printf 'finishes later\\n'")
+	watcher.await(t, "terminal notification queued", func() bool {
+		return s.peekNotifications() > 0
+	})
+
+	reply, err := marshalShellToolResult(shellResult{
+		JobID:               jobID,
+		Type:                string(jobstore.JobShell),
+		Status:              string(jobstore.StatusFailed),
+		Reason:              "finalize_failed",
+		RunningInBackground: true,
+	}, 100000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := json.Marshal(reply.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 999"}`)}
+	result := tooldefs.ExecResult{ToolName: "shell", CallID: call.ID, Output: reply.Output, ToolState: state}
+	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("terminal_notification_state = %q after a background reply, want %q", rec.NotifyState, jobstore.NotifyPending)
+	}
+}

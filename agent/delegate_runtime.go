@@ -3195,7 +3195,7 @@ func (s *Session) emitStableDelegateUpdate(plan delegateUpdatePlan) {
 		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
 		s.delegateController.mu.Unlock()
 		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
-		data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(now, rootID, row))
+		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
 		// A subagent's own thread lists its subtree, so each live ancestor
 		// subagent's stream carries the update too. A released ancestor gets

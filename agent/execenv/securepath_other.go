@@ -53,6 +53,9 @@ func errSandboxUnsupported() error {
 
 func (s *sandboxFS) close() { s.closed.Store(true) }
 
+// closeStaleFds has nothing to close where no root fds are cached.
+func (s *sandboxFS) closeStaleFds() {}
+
 func (s *sandboxFS) rootFd(root string) (int, error) {
 	return -1, errSandboxUnsupported()
 }

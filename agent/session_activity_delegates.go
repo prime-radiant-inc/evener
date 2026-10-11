@@ -1,16 +1,13 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"encoding/json/jsontext"
-	"errors"
-	"io"
 	"os"
 	"sort"
 	"time"
 
+	"primeradiant.com/evener/agent/activitybound"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
 )
@@ -128,10 +125,9 @@ func (read *sessionActivityRead) delegatesPage(ctx context.Context, params appwi
 	return result, nil
 }
 
-// A Unicode code point needs at most twelve JSON bytes (an escaped surrogate
-// pair). One extra decoded code point proves truncation; the opening quote
-// needs one more byte. This also bounds whitespace and malformed input work.
-const activityMaxReportPreviewBytes = 1 + 12*(activityMaxDelegateProseRunes+1)
+// activityMaxReportPreviewBytes is the raw-byte window agent/activitybound
+// bounds a reported packet's preview with.
+const activityMaxReportPreviewBytes = activitybound.MaxReportPreviewBytes
 
 // Stop capture after reaching this owned-report allowance, with at most one
 // already-bounded candidate overshoot. Other candidate facts have separate bounds.
@@ -222,7 +218,7 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	}
 	status := projectStableDelegateStatus(now, snapshot)
 	d := aggregate.Descriptor
-	row := appwire.SessionDelegate{Name: truncateActivityText(d.Name, activityMaxLabelRunes), DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: truncateActivityText(d.Description, activityMaxDelegateProseRunes), Task: truncateActivityText(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: truncateActivityText(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: truncateActivityText(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt}
+	row := appwire.SessionDelegate{Name: truncateActivityText(d.Name, activityMaxLabelRunes), DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, ProjectionRevision: aggregate.ProjectionRevision, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: truncateActivityText(d.Description, activityMaxDelegateProseRunes), Task: truncateActivityText(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: truncateActivityText(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: truncateActivityText(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt}
 	if outcome := aggregate.LatestOutcome; outcome != nil {
 		row.Reason = truncateActivityText(outcome.Reason, activityMaxDelegateProseRunes)
 		row.Error = truncateActivityText(outcome.Error, activityMaxDelegateProseRunes)
@@ -236,13 +232,7 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	// RunFinished replaces the immutable packet for the exact open generation
 	// and closes that run atomically. A resumed run still owns the old packet.
 	if packet := aggregate.LatestPacket; !aggregate.CurrentRunOpen && aggregate.LatestOutcome != nil && packet != nil && packet.Kind == delegatestore.PacketReported {
-		window := packet.Message[:min(len(packet.Message), activityMaxReportPreviewBytes)]
-		if content := bytes.TrimLeft(window, " \t\r\n"); len(content) > 0 {
-			start := len(window) - len(content)
-			end := min(len(packet.Message), start+activityMaxReportPreviewBytes)
-			candidate.report = bytes.Clone(packet.Message[start:end])
-			candidate.reportComplete = end == len(packet.Message)
-		}
+		candidate.report, candidate.reportComplete = activitybound.BoundMessage(packet.Message)
 	}
 	if packet := aggregate.LatestPacket; packet != nil && len(packet.Metadata) <= activityMaxDelegatePayloadBytes {
 		var metadata delegateTerminalPacketMetadata
@@ -259,23 +249,8 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 
 func (candidate sessionActivityDelegateCandidate) project() appwire.SessionDelegate {
 	row := candidate.row
-	decoded, err := jsontext.AppendUnquote(nil, candidate.report)
-	partial := !candidate.reportComplete && errors.Is(err, io.ErrUnexpectedEOF)
-	report := string(decoded)
-	if err != nil && !partial {
-		// The bounded complete value may contain surrounding whitespace or
-		// replacement characters accepted by the durable JSON decoder.
-		if json.Unmarshal(candidate.report, &report) != nil {
-			return row
-		}
-	}
-	preview := truncateActivityText(report, activityMaxDelegateProseRunes)
-	if partial && preview == report {
-		// Only a prefix beyond the text cap proves a truncated preview. The
-		// durable packet validates the full JSON; the suffix is never read here.
-		return row
-	}
+	preview, truncated := activitybound.Preview(candidate.report, candidate.reportComplete)
 	row.ReportPreview = preview
-	row.ReportPreviewTruncated = preview != report
+	row.ReportPreviewTruncated = truncated
 	return row
 }

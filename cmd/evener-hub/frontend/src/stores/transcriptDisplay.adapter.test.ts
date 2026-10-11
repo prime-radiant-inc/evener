@@ -184,7 +184,7 @@ describe("transcript display adapter (package store delegation)", () => {
     });
     await transcriptDisplayStore.getState().refreshHubDefaults();
 
-    const second = new FakeClient("ready");
+    const second = new FakeClient("connecting");
     second.on("evener/settings/transcriptDisplay/get", () => ({
       desktop: { revision: 7, config: preset("full") },
       mobile: { revision: 7, config: shippedMobileConfig },
@@ -227,9 +227,8 @@ describe("transcript display adapter (package store delegation)", () => {
 
     // The replacement's own handshake completes: only now does its read land,
     // and the fenced restore must stay fenced.
-    connectionStore.setState({
-      features: { ...(await second.connect()).features, transcriptDisplaySettings: true },
-    });
+    const initialize = await second.connect();
+    second.emitReady({ ...initialize, features: { ...initialize.features, transcriptDisplaySettings: true } });
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 7, config: preset("full") });
     expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
@@ -249,7 +248,7 @@ describe("transcript display adapter (package store delegation)", () => {
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1);
 
-    const second = new FakeClient("ready");
+    const second = new FakeClient("connecting");
     second.on("evener/settings/transcriptDisplay/get", () => ({
       desktop: { revision: 7, config: preset("full") },
       mobile: { revision: 7, config: shippedMobileConfig },
@@ -279,9 +278,8 @@ describe("transcript display adapter (package store delegation)", () => {
     expect(transcriptDisplayStore.getState().hub).toEqual({});
     expect(transcriptDisplayStore.getState().hubSupport).toBe("unknown");
 
-    connectionStore.setState({
-      features: { ...(await second.connect()).features, transcriptDisplaySettings: true },
-    });
+    const initialize = await second.connect();
+    second.emitReady({ ...initialize, features: { ...initialize.features, transcriptDisplaySettings: true } });
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().hub).toEqual({
       desktop: { revision: 7, config: preset("full") },
@@ -497,15 +495,14 @@ describe("transcript display adapter (package store delegation)", () => {
   });
 
   test("draft actions forward to the package store and the checkpoint survives a client swap", async () => {
-    const client = new FakeClient("ready");
+    const client = new FakeClient("connecting");
     client.on("evener/settings/transcriptDisplay/get", () => ({
       desktop: { revision: 3, config: preset("intent") },
       mobile: { revision: 2, config: shippedMobileConfig },
     }));
+    const initialize = await client.connect();
+    client.emitReady({ ...initialize, features: { ...initialize.features, transcriptDisplaySettings: true } });
     connectionStore.getState().connect(client);
-    connectionStore.setState({
-      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
-    });
     await transcriptDisplayStore.getState().refreshHubDefaults();
 
     // editDraft forwards and the composed draft mirrors into the web state.
@@ -521,7 +518,7 @@ describe("transcript display adapter (package store delegation)", () => {
     // A replacement client builds a fresh package store: the browser port
     // hands it the same durable checkpoint, and the new generation's read
     // stamps it.
-    const replacement = new FakeClient("ready");
+    const replacement = new FakeClient("connecting");
     replacement.on("evener/settings/transcriptDisplay/get", () => ({
       desktop: { revision: 3, config: preset("intent") },
       mobile: { revision: 2, config: shippedMobileConfig },
@@ -532,8 +529,10 @@ describe("transcript display adapter (package store delegation)", () => {
       revision: 2,
       config: preset("tools"),
     });
-    connectionStore.setState({
-      features: { ...(await replacement.connect()).features, transcriptDisplaySettings: true },
+    const replacementInitialize = await replacement.connect();
+    replacement.emitReady({
+      ...replacementInitialize,
+      features: { ...replacementInitialize.features, transcriptDisplaySettings: true },
     });
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().draft).toEqual({

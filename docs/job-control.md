@@ -514,6 +514,10 @@ Semantics:
 
 - If `to` identifies a running or currently-driven delegate, Evener injects the
   message into that exact generation. The return `action` is `steered`.
+  The injected steering turn has source `parent`, and the delegate's model reads
+  it after the line `Message from your parent agent:`; clients label it "From
+  parent". A message that starts an idle delegate opens its next generation as
+  user input, as the original brief does.
 - If `to` identifies an idle/resumable delegate, Evener starts its next private
   generation in the same child conversation. The return `action` is `started`.
 - If `to` is a `job_id`, `transcript_ref`, unknown/unauthorized delegate,
@@ -1267,6 +1271,13 @@ Delegate generations never create job records. A shell job record contains:
   "terminal_notification_state": "not_armed|pending|delivered|consumed"
 }
 ```
+
+A kept within-bound completion arms no completion notification: its tool reply
+already told the caller the job ended. Once that reply is durable in the
+transcript the job's notification is recorded `consumed`, the same settlement a
+terminal `job_status` read gets, so a restore never re-announces it. If the
+process stops before the reply is durable, the record is still `not_armed` and
+the restore arms its notification.
 
 `parent_job_id` links shell-to-shell work. `parent_delegate_id` names the stable
 delegate that caused a shell job; a shell never points at a private delegate

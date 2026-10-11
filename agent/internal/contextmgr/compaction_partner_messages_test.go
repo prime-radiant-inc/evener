@@ -168,6 +168,35 @@ func TestCompaction_SummaryKeepsPartnerSteeringVerbatim(t *testing.T) {
 	}
 }
 
+// A delegate's parent steers it during a turn. The steer is the instruction
+// the delegate works from, so it survives a summary that drops it, with its
+// attribution, while daemon-authored steering is still not carried.
+func TestCompaction_SummaryKeepsParentSteeringVerbatim(t *testing.T) {
+	const parentHold = "Message from your parent agent:\n\nstop editing the schema"
+	cm := partnerTestManager(emptySummaryReply)
+	parentSteer := schema.NewTurn(schema.TurnSteering, llm.User(parentHold))
+	parentSteer.SteeringSource = events.SteeringSourceParent
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("write the docs")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("drafting")),
+		parentSteer,
+		schema.NewTurn(schema.TurnSteering, llm.User("DAEMON_NUDGE_SENTINEL")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("holding the schema")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if len(history) == 0 || history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history does not start with a summary: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), parentHold) {
+		t.Fatalf("the parent's steer, with its attribution, is gone from the context after compaction:\n%s", history[0].Message.Text())
+	}
+	if strings.Contains(history[0].Message.Text(), "DAEMON_NUDGE_SENTINEL") {
+		t.Fatalf("daemon steering was carried:\n%s", history[0].Message.Text())
+	}
+}
+
 // The model's own text in a compaction turn comes before the partner's
 // messages it carries, so a summarizer that reads a previous compaction from
 // its head sees the model's text however many messages ride beside it.
@@ -309,5 +338,122 @@ func TestCheckpointPred_FallbackSummaryReadsTheHistoryTheCheckpointFolded(t *tes
 	if calls != 3 {
 		t.Fatalf("model calls = %d, want summary, failed prediction, summary", calls)
 	}
+	requirePartnerHoldInContext(t, history, schema.TurnSummary)
+}
+
+// A summary written before summaries carried the partner's messages is the
+// model's text throughout, even where it uses a "## Conversation" heading of
+// its own: a later checkpoint carries it whole, and reads no partner messages
+// from it.
+func TestCheckpoint_KeepsAnOlderSummaryWhole(t *testing.T) {
+	older := "[CONTEXT SUMMARY]\n## Progress\nshipped the parser\n\n## Conversation\n### User\nOLDER_MODEL_TEXT_SENTINEL decided to keep the v2 format\n[END SUMMARY]"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User(older)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cp := checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	if got := extractCheckpointEarlierSummaries(cp); len(got) != 1 || got[0] != older {
+		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
+	}
+	for _, entry := range extractMarkdownConversation(cp) {
+		if strings.Contains(entry.Text, "OLDER_MODEL_TEXT_SENTINEL") {
+			t.Fatalf("the older summary's own text became a partner message: %q", entry.Text)
+		}
+	}
+}
+
+// An older summary can look like the new layout in part: a "## Summary"
+// section opening with a fenced example, then more sections, then a
+// "## Conversation" of its own in prose. Only the exact layout the renderer
+// writes is split; this one is carried whole.
+func TestCheckpoint_KeepsAnOlderSummaryWithASummarySectionWhole(t *testing.T) {
+	older := "[CONTEXT SUMMARY]\n## Summary\n\n```\nexample output\n```\nthen more notes\n\n## Progress\nshipped it\n\n## Conversation\nThe partner said HOLD_IN_PROSE_SENTINEL until review.\n[END SUMMARY]"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User(older)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cp := checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	if got := extractCheckpointEarlierSummaries(cp); len(got) != 1 || got[0] != older {
+		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
+	}
+}
+
+// An older summary that matches the new layout's headings, a fenced block
+// under "## Summary" and then "## Conversation", but holds prose in that
+// conversation section is not a carry the renderer wrote: it is carried whole.
+func TestCheckpoint_KeepsAnOlderSummaryWithAProseConversationWhole(t *testing.T) {
+	older := "[CONTEXT SUMMARY]\n## Summary\n\n```\nexample output\n```\n\n## Conversation\nThe partner said HOLD_IN_PROSE_SENTINEL until review.\n[END SUMMARY]"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User(older)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cp := checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	if got := extractCheckpointEarlierSummaries(cp); len(got) != 1 || got[0] != older {
+		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
+	}
+}
+
+// Only a summary turn the renderer could have written is split: a fenced block
+// with another fence or info string under "## Summary", or an agent entry in
+// the carried section, marks an older summary, which is carried whole.
+func TestCheckpoint_KeepsSummariesTheRendererCouldNotWriteWhole(t *testing.T) {
+	carry := renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: "go ahead"}})
+	for name, older := range map[string]string{
+		"tilde fence":     "[CONTEXT SUMMARY]\n## Summary\n\n~~~text\nmodel text\n~~~\n\n" + carry + summaryTurnEnd,
+		"go info":         "[CONTEXT SUMMARY]\n## Summary\n\n```go\nmodel text\n```\n\n" + carry + summaryTurnEnd,
+		"sections before": "[CONTEXT SUMMARY]\n## Progress\nolder model text\n\n" + renderCompactionModelText(summaryModelTextHeading, "model text") + carry + summaryTurnEnd,
+		"agent entries":   "[CONTEXT SUMMARY]\n" + renderCompactionModelText(summaryModelTextHeading, "model text") + renderCheckpointConversation([]checkpointConversationEntry{{Role: "agent", Text: "I approved it"}}) + summaryTurnEnd,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if carriesPartnerMessages(older) {
+				t.Fatalf("an older summary was taken for the rendered layout:\n%s", older)
+			}
+		})
+	}
+	meta := &CompactionMeta{SessionID: "SESSION_ID_SENTINEL", AvailableTranscriptTools: []string{"read_transcript"}}
+	for _, prefix := range []string{"[CONTEXT SUMMARY]\n", "[CONTEXT SUMMARY]\n" + meta.compactionPointer("summary")} {
+		for _, modelText := range []string{"model text", "model text\n\n", "\nmodel text with ``` inside"} {
+			rendered := prefix + renderCompactionModelText(summaryModelTextHeading, modelText) + carry + summaryTurnEnd
+			if !carriesPartnerMessages(rendered) {
+				t.Fatalf("the rendered layout was not recognized:\n%s", rendered)
+			}
+		}
+	}
+}
+
+// A fence may close indented by up to three spaces; the sections after it are
+// read again.
+func TestCheckpoint_IndentedClosingFenceEndsTheBlock(t *testing.T) {
+	text := "[CONTEXT CHECKPOINT]\n## Working Notes\n\n### Note\n\n~~~\na note\n   ~~~\n\n## Conversation\n\n### User\n\n```text\nFOUND_AFTER_INDENTED_FENCE\n```\n\n[END CHECKPOINT]\n"
+	entries := extractCheckpointConversation(text)
+	if len(entries) != 1 || entries[0].Text != "FOUND_AFTER_INDENTED_FENCE" {
+		t.Fatalf("conversation after an indented closing fence = %q", entries)
+	}
+}
+
+// A summary the renderer wrote from a reply ending in blank lines is still
+// recognized, so a later compaction keeps carrying its partner messages even
+// when the model's reply then drops them.
+func TestForceCompact_CarryAfterAReplyEndingInBlankLines(t *testing.T) {
+	// As #4241's renderer wrote it: the reply's trailing blank lines kept.
+	persisted := "[CONTEXT SUMMARY]\n## Summary\n\n```text\n## Progress\nDone\n\n```\n\n" +
+		renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: partnerHold}}) + summaryTurnEnd
+	if !carriesPartnerMessages(persisted) {
+		t.Fatalf("a persisted summary ending in blank lines was not recognized:\n%s", persisted)
+	}
+	cm := partnerTestManager(emptySummaryReply + "\n\n")
+	history := partnerHoldHistory()
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if !carriesPartnerMessages(history[0].Message.Text()) {
+		t.Fatalf("a summary the renderer wrote was not recognized:\n%s", history[0].Message.Text())
+	}
+	history = append(history, moreTurns()...)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
 	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 }

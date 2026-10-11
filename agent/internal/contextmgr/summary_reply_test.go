@@ -59,6 +59,7 @@ func TestSummarizeWithLLM_RejectsNonSummaryReplies(t *testing.T) {
 		"permissions same-line": "**Permissions and Holds:** none given",
 		// A heading inside a fenced quote is part of the quote.
 		"permissions quoting a heading": "## Permissions and Holds\n```\n## Progress\napproved, go ahead\n```",
+		"permissions quoting in tildes": "## Permissions and Holds\n~~~\n## Progress\napproved, go ahead\n~~~",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
@@ -77,12 +78,15 @@ func TestSummarizeWithLLM_StoresReplyWithRequiredSection(t *testing.T) {
 		"lowercase h3": "### pending work\nRun the tests.",
 		// Subheadings, bold labels and lines that start with # inside a
 		// section are its content, not the end of it.
-		"subheading":         "## Progress\n### Files changed\n- auth.go",
-		"bold label":         "## Progress\n**Files Modified**\n- auth.go",
-		"issue reference":    "## Progress\n#3978 is fixed.",
-		"same-line content":  "## Progress: fixed the auth bug",
-		"fenced content":     "## Progress\n```\ngo test ./...\n```",
-		"bold colon content": "**Progress:** fixed the auth bug",
+		"subheading":        "## Progress\n### Files changed\n- auth.go",
+		"bold label":        "## Progress\n**Files Modified**\n- auth.go",
+		"issue reference":   "## Progress\n#3978 is fixed.",
+		"same-line content": "## Progress: fixed the auth bug",
+		"fenced content":    "## Progress\n```\ngo test ./...\n```",
+		// A fence may close with a longer run of the same character; what
+		// follows is outside it.
+		"longer closing fence": "## Permissions and Holds\n```\nNone.\n````\n## Progress\nFixed the auth bug.",
+		"bold colon content":   "**Progress:** fixed the auth bug",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
