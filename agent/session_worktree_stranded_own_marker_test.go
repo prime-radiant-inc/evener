@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -425,5 +426,45 @@ func TestLaneResidueSweep_LeavesAnAgedDelegateLaneCarryingOwnMarkerAlone(t *test
 	}
 	if _, locked, reason := r.laneLocked(t, path); !locked || reason != own {
 		t.Errorf("lane lock = locked=%v reason=%q, want the session's marker kept (%q)", locked, reason, own)
+	}
+}
+
+// TestWorktreePrune_RestoresTheMarkerWhenGitIsUnreachableAfterTheFailure: a
+// collection can fail because the prune request was cancelled, and every git
+// query the request's runner issues after that fails the same way. The marker
+// must still go back, or the surviving lane is left open to another session's
+// prune.
+func TestWorktreePrune_RestoresTheMarkerWhenGitIsUnreachableAfterTheFailure(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	first, err := r.create(t, map[string]any{"name": "stranded"})
+	if err != nil {
+		t.Fatalf("create stranded lane: %v", err)
+	}
+	strandedPath := first["path"].(string)
+	if _, err := r.create(t, map[string]any{"name": "current"}); err != nil {
+		t.Fatalf("create current lane: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(r.s.id), strandedPath)
+
+	var cancelled atomic.Bool
+	withStrandedLaneRunner(t, r, func(inner worktree.GitRunner, args []string) (string, error, bool) {
+		if cancelled.Load() {
+			return "", context.Canceled, true
+		}
+		if len(args) >= 4 && args[0] == "worktree" && args[1] == "remove" &&
+			filepath.Clean(args[len(args)-1]) == filepath.Clean(strandedPath) {
+			cancelled.Store(true)
+			return "", context.Canceled, true
+		}
+		return "", nil, false
+	})
+
+	if _, err := r.pruneOp(t); err == nil {
+		t.Fatal("prune reported success despite the injected cancellation")
+	}
+	_, locked, reason := r.laneLocked(t, strandedPath)
+	if want := worktree.FormatSessionMarker(r.s.id); !locked || reason != want {
+		t.Errorf("lane lock = locked=%v reason=%q, want this session's own marker back (%q)", locked, reason, want)
 	}
 }

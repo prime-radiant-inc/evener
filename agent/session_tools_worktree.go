@@ -3149,7 +3149,7 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 			// protected as it was, rather than left open to another session's
 			// sweep (whose live-work view cannot see this session's work under it).
 			if staleOwnMarker {
-				s.restoreStrandedOwnMarker(run, e.Path)
+				s.restoreStrandedOwnMarker(e.Path)
 			}
 			if policy.abortOnError {
 				return nil, nil, fmt.Errorf("manage_worktree prune: %w", cErr)
@@ -3268,23 +3268,32 @@ func laneLockFile(lanePath string) (string, error) {
 
 // restoreStrandedOwnMarker puts this session's own marker back on a lane whose
 // release was made for a collection that then failed, so a lane this pass could
-// not collect keeps the protection it had. It is a no-op when the lane is gone
-// (a remove that succeeded before a later step failed has nothing left to lock)
-// or when the lane now carries someone else's marker — a foreign lock is never
-// displaced. Best-effort: a failure warns, and the lane is left as the failure
-// found it.
-func (s *Session) restoreStrandedOwnMarker(run worktree.GitRunner, lanePath string) {
-	if _, statErr := s.statLaneGitDir(lanePath); statErr != nil {
+// not collect keeps the protection it had. It writes the lock file directly,
+// exactly as the release removed it: the failure may be the prune request's own
+// cancellation, and every git query on that request's runner would then fail the
+// same way and leave the lane unlocked. Creating the file exclusively makes it a
+// no-op when the lane is gone (a remove that succeeded before a later step
+// failed has nothing left to lock) and when the lane was locked since — a foreign
+// lock is never displaced. Best-effort: a failure warns, and the lane is left as
+// the failure found it.
+func (s *Session) restoreStrandedOwnMarker(lanePath string) {
+	lockFile, err := laneLockFile(lanePath)
+	if err != nil {
 		return
 	}
-	locked, _, err := lockStateOf(run, lanePath)
-	if err != nil || locked {
-		// Unverifiable, already re-locked, or someone else's: leave it alone.
+	f, err := os.OpenFile(lockFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if !os.IsExist(err) && !os.IsNotExist(err) {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, err)})
+		}
 		return
 	}
-	marker := worktree.FormatSessionMarker(s.id)
-	if _, lockErr := run("worktree", "lock", "--reason", marker, lanePath); lockErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, lockErr)})
+	_, writeErr := f.WriteString(worktree.FormatSessionMarker(s.id) + "\n")
+	if closeErr := f.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("re-locking stranded own worktree marker at %s after a failed collection failed: %v", lanePath, writeErr)})
 	}
 }
 
