@@ -168,6 +168,35 @@ func TestCompaction_SummaryKeepsPartnerSteeringVerbatim(t *testing.T) {
 	}
 }
 
+// A delegate's parent steers it during a turn. The steer is the instruction
+// the delegate works from, so it survives a summary that drops it, with its
+// attribution, while daemon-authored steering is still not carried.
+func TestCompaction_SummaryKeepsParentSteeringVerbatim(t *testing.T) {
+	const parentHold = "Message from your parent agent:\n\nstop editing the schema"
+	cm := partnerTestManager(emptySummaryReply)
+	parentSteer := schema.NewTurn(schema.TurnSteering, llm.User(parentHold))
+	parentSteer.SteeringSource = events.SteeringSourceParent
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("write the docs")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("drafting")),
+		parentSteer,
+		schema.NewTurn(schema.TurnSteering, llm.User("DAEMON_NUDGE_SENTINEL")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("holding the schema")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if len(history) == 0 || history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history does not start with a summary: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), parentHold) {
+		t.Fatalf("the parent's steer, with its attribution, is gone from the context after compaction:\n%s", history[0].Message.Text())
+	}
+	if strings.Contains(history[0].Message.Text(), "DAEMON_NUDGE_SENTINEL") {
+		t.Fatalf("daemon steering was carried:\n%s", history[0].Message.Text())
+	}
+}
+
 // The model's own text in a compaction turn comes before the partner's
 // messages it carries, so a summarizer that reads a previous compaction from
 // its head sees the model's text however many messages ride beside it.

@@ -392,7 +392,7 @@ func TestDelegateControllerModelSnapshotDefersUncompletedSteerUntilNextRequest(t
 	if err != nil {
 		t.Fatalf("current model request: %v", err)
 	}
-	if countMessageText(current, "in-flight steer") != 0 {
+	if countMessageText(current, parentMessageAttribution+"in-flight steer") != 0 {
 		t.Fatalf("uncompleted steer entered current request: %#v", current)
 	}
 	if _, err := c.CompleteSteerPersistence(steerClaim, entry); err != nil {
@@ -423,7 +423,7 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 	if err != nil {
 		t.Fatalf("CompleteModelRequest: %v", err)
 	}
-	if countMessageText(current, "late accepted steer") != 0 {
+	if countMessageText(current, parentMessageAttribution+"late accepted steer") != 0 {
 		t.Fatalf("late accepted steer entered already-bound request: %#v", current)
 	}
 	next, err := completeDelegateModelRequest(c, lease)
