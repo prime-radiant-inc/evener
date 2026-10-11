@@ -77,8 +77,8 @@ test("create timer body renders the full note as prose with no disclosure at thi
   expect(screen.queryByText("Show full note")).toBeNull();
 });
 
-test("a note over ~20 lines clamps behind an honest disclosure", () => {
-  const longNote = Array.from({ length: 25 }, (_, i) => `note line ${i + 1}`).join("\n");
+test("a note over 100 lines clamps behind an honest disclosure", () => {
+  const longNote = Array.from({ length: 101 }, (_, i) => `note line ${i + 1}`).join("\n");
   const d = toolRendererFor("job_watch");
   const Body = d.body!;
   render(
@@ -88,7 +88,31 @@ test("a note over ~20 lines clamps behind an honest disclosure", () => {
     />,
   );
   expect(screen.getByText("Show full note")).toBeTruthy();
-  expect(screen.getByTestId("job-watch-note").textContent).toContain("note line 25");
+  expect(screen.getByTestId("job-watch-note").textContent).toContain("note line 101");
+});
+
+test("a note at exactly 100 lines renders in full with no disclosure", () => {
+  const hundredLineNote = Array.from({ length: 100 }, (_, i) => `note line ${i + 1}`).join("\n");
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem({ operation: "create" }, { ...TIMER_RAW, note: hundredLineNote, after_seconds: 60 })}
+      live={false}
+    />,
+  );
+  expect(screen.queryByText("Show full note")).toBeNull();
+  expect(screen.getByTestId("job-watch-note").textContent).toContain("note line 100");
+});
+
+test("the clamped view's CSS window matches the note policy's 100 lines", () => {
+  // jsdom cannot apply -webkit-line-clamp, so the CSS half of the clamp is
+  // pinned by the stylesheet's own text (the toolRowGrammar pattern), with
+  // comments stripped - a grep test a comment can satisfy passes while
+  // asserting nothing.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "jobWatch.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.noteClamped\s*\{[^}]*-webkit-line-clamp:\s*100/);
 });
 
 test("the single-watch body never shows the watch id", () => {

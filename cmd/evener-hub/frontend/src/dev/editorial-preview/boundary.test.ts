@@ -72,8 +72,8 @@ test("distinct child reads and owner projections never derive current lifecycle 
   expect(items.find((item) => item.id === "failure")).toMatchObject({ status: "failed" });
   expect(items.find((item) => item.id === "active")).toMatchObject({ status: "inProgress" });
   const native = items.find((item) => item.id === "long")?.output ?? "";
-  expect(native.split("\n")).toHaveLength(120);
-  expect(native).toContain("120\tconst fixtureLine120");
+  expect(native.split("\n")).toHaveLength(160);
+  expect(native).toContain("160\tconst fixtureLine160");
 });
 
 test("fixture answer is reflected once, clears attention, and publishes real notifications", async () => {
