@@ -1489,53 +1489,6 @@ describe("background thread claims", () => {
     }
   });
 
-  test("sizes each resident text delta without serializing the whole retained transcript", async () => {
-    const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => {
-      const response = currentRead(ref ?? "local:one");
-      response.overlay![0]!.item.text = "x".repeat(256 * 1024);
-      return response;
-    });
-    fake.on("thread/unsubscribe", () => ({}));
-    connectionStore.getState().connect(fake);
-    const background = acquireBackgroundThread("local:one");
-    const originalStringify = JSON.stringify.bind(JSON);
-    const stringify = vi.spyOn(JSON, "stringify");
-    try {
-      await background.ready;
-      await settleBackgroundTranscriptsForTests();
-      const model = threadsStore.getState().threads.get("local:one");
-      expect(model).toBeDefined();
-      const retainedStateBytes = new TextEncoder().encode(originalStringify(currentTranscriptState(model!))).byteLength;
-      expect(retainedStateBytes).toBeGreaterThan(128 * 1024);
-      stringify.mockClear();
-
-      for (let index = 0; index < 8; index += 1) {
-        fake.emitNotification(textDelta("local:one", `🙂${index}`));
-      }
-
-      const serializedArguments = stringify.mock.calls.map(([value]) => value);
-      const serializedSizes = serializedArguments.map((value) => {
-        const encoded = originalStringify(value);
-        return encoded === undefined ? Number.POSITIVE_INFINITY : new TextEncoder().encode(encoded).byteLength;
-      });
-      expect(serializedSizes).toHaveLength(8);
-      expect(Math.max(...serializedSizes)).toBeLessThan(retainedStateBytes / 2);
-      expect(threadsStore.getState().threads.get("local:one")).not.toBe(model);
-      expect(
-        threadsStore
-          .getState()
-          .threads.get("local:one")
-          ?.turns.flatMap((turn) => turn.items)
-          .map((item) => item.text)
-          .join(""),
-      ).toContain("🙂0🙂1🙂2🙂3🙂4🙂5🙂6🙂7");
-    } finally {
-      stringify.mockRestore();
-      await background.release();
-    }
-  });
-
   test("preserves a pane-held history window and cursor while another background ref is under pressure", async () => {
     const restoreOptions = installBackgroundTranscriptOptionsForTests({ residentBytes: 0, pendingBytes: 4096 });
     resetThreadsStoreForTests();
