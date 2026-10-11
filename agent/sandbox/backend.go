@@ -70,19 +70,88 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 // yet. Such a root has no lower to overlay and a mount target bwrap cannot create
 // in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
 // still point at it; the go command would create the same empty directory on its
-// first unsandboxed run. An empty directory cannot poison a cache. One whose
-// creation would land inside a persistent write root or the worktree is left
-// alone.
+// first unsandboxed run. An empty directory cannot poison a cache. A root that
+// cannot be served yet stays in the policy: each spawn judges it again
+// (liveCacheRoots), so one that becomes available is served.
 func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
-	if rp.CacheStrategy != CacheOverlay {
-		return rp
+	if rp.CacheStrategy == CacheOverlay {
+		recreateMissingCacheRoots(rp)
 	}
+	return rp
+}
+
+// recreateMissingCacheRoots creates, empty, each cache root that has gone
+// missing, at wrapper creation and again at every spawn (go clean -modcache on
+// the host removes one), unless creating it would land inside a persistent
+// write root or the worktree.
+func recreateMissingCacheRoots(rp ResolvedPolicy) {
 	for _, c := range rp.CacheRoots {
 		if _, err := os.Lstat(c); errors.Is(err, fs.ErrNotExist) && !landsInPersistentRoot(rp, c) {
 			_ = os.MkdirAll(c, 0o755)
 		}
 	}
-	return rp
+}
+
+// servableCacheRoot reports whether the overlay can serve cache root c now: it
+// is a directory, it shares no storage with a persistent write root or the
+// worktree (dropCacheRootsSharingWriteRoots, landsInPersistentRoot), and
+// resolving it follows no link in or into bwrap's private /tmp or /dev. It is
+// judged at each spawn, since a symlinked parent retargeted after resolution
+// would otherwise move the overlay, and its discarded upper layer, into the
+// workspace.
+//
+// The session scratch is checked once, when the wrapper is built (NewWrapper):
+// a cache link retargeted onto the scratch mid-session would at worst send the
+// session's own scratch writes into the discarded layer, which the threat
+// model leaves to the session (docs/sandboxing.md#threat-model).
+func servableCacheRoot(rp ResolvedPolicy, c string) bool {
+	fi, err := os.Stat(c)
+	if err != nil || !fi.IsDir() || landsInPersistentRoot(rp, c) || linksThroughPrivateMount(c) ||
+		len(dropCacheRootsSharingWriteRoots([]string{c}, bwrapWriteRoots(rp))) == 0 {
+		return false
+	}
+	// The shared-tree guard Resolve applied, applied again to where the root
+	// resolves now: a retargeted parent must not make it a temp root or /.
+	return len(guardedHostRoots([]string{resolveExistingPrefix(c)}, rp.resolveHost.Home, rp.Git.WorktreeRoot)) == 1
+}
+
+// liveCacheRoots returns the cache roots bwrap overlays at this spawn: the
+// servable ones (servableCacheRoot), minus any whose real location lies inside
+// another's, which that outer overlay serves (a nested overlay would be a
+// mountpoint go clean -modcache cannot remove). A root merely spelled under
+// another but linked elsewhere keeps its own overlay. Of two spellings of one
+// directory, the first is kept.
+func liveCacheRoots(rp ResolvedPolicy) []string {
+	var servable, resolved []string
+	for _, c := range rp.CacheRoots {
+		if servableCacheRoot(rp, c) {
+			servable = append(servable, c)
+			resolved = append(resolved, resolveExistingPrefix(c))
+		}
+	}
+	var live []string
+	for i, c := range servable {
+		nested := false
+		for j := range servable {
+			if j == i {
+				continue
+			}
+			// A root whose real location lies inside another's is covered by
+			// that overlay, provided the sandbox reaches it there: spelled
+			// inside the outer root, or the outer root not spelled under a
+			// private mount (bwrap's own /tmp and /dev hide host symlinks, so
+			// such an overlay sits elsewhere in the sandbox).
+			inside := resolved[i] != resolved[j] && pathUnder(resolved[i], resolved[j]) || resolved[i] == resolved[j] && j < i
+			reached := pathUnder(servable[i], servable[j]) || !inPrivateMount(servable[j])
+			if inside && reached {
+				nested = true
+			}
+		}
+		if !nested {
+			live = append(live, c)
+		}
+	}
+	return live
 }
 
 // landsInPersistentRoot reports whether c's real location (or, not created
@@ -172,6 +241,9 @@ func (w *Wrapper) Wrap(argv []string, cwd string) []string {
 			panic(fmt.Sprintf("sandbox: seatbelt backend selected on a host that cannot enforce it: %v", err))
 		}
 		return wrapped
+	}
+	if w.policy.CacheStrategy == CacheOverlay {
+		recreateMissingCacheRoots(w.policy)
 	}
 	flags := buildBwrapArgv(w.policy, w.sessionTmp, cwd)
 	out := make([]string, 0, 1+len(flags)+3+len(argv))

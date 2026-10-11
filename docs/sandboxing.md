@@ -472,28 +472,45 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   overlaid, since the discarded upper layer would swallow writes there. Such a
   cache is left as it is: the granted root is writable, and other writes into
   it fail rather than vanish. The same holds for a cache holding the session
-  scratch. A root that does not exist yet is created empty at
-  session start (as the go command itself would) so it can be overlaid; a file
-  or a dangling symlink is left out.
+  scratch. A root that does not exist yet is created empty at session start
+  (as the go command itself would) so it can be overlaid. Each spawn judges
+  the roots again: one removed since is recreated, one that is not a directory
+  (a file, a link to an unmounted drive) is overlaid only once it is, one
+  whose real location has since moved into the workspace, onto a shared tree,
+  or to share storage with a write root is not overlaid, and one inside
+  another is served by the outer overlay. A Go cache the overlay does not
+  serve (set in the spawn's environment, with `go env -w`, which is read again
+  at each spawn as go itself does, or by Go's defaults under the spawn's own
+  `HOME`), one at, inside or holding a persistent write root, one whose root
+  no longer resolves outside the persistent roots, one that cannot be a
+  directory, or one whose root has since been removed, is redirected into the
+  session scratch instead. So are all three Go settings when the spawn's go
+  env file can't be judged: named by a relative path, or not the file read at
+  session start, or hidden from the spawn (under a mask, or behind a link in
+  bwrap's private /tmp or /dev, at any step of its link chain; the file is
+  judged on the descriptor actually opened). A relative one is still left to
+  the spawn, so its other settings (`GOPROXY`, `GOPRIVATE`) keep applying.
+  When the spawn's go env file exists but cannot be read at that spawn (a
+  FIFO, a device, an oversized file), the Go settings go to the scratch and
+  that spawn gets `GOENV=off`, since reading it would block it too; once the
+  file is readable again, spawns read it as usual.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
-  redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
-  granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
-  session scratch as its first entry too: Go records the checksum database's tree
-  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
-  module or toolchain download needs it writable. In `workspace-write` the ambient
-  GOPATH stays after it, so GOPATH-mode builds still find the packages already
-  there: the spawn's own `$GOPATH`, else the host's resolved once at session start
-  the way the go command resolves it (`$GOPATH`, then a `go env -w` setting in the
-  go env file `$GOENV` names, `<user config dir>/go/env` by default, then
-  `$HOME/go`). Evener reads that file rather than running `go env`, which would
-  run whichever go is first on PATH, and any toolchain it downloads, before the
-  sandbox exists. A spawn whose environment gives go no way to find those
-  settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`) gets the scratch alone, as
-  does `restricted`, which cannot read it.
+  redirected alongside GOCACHE, because an ambient value can name any directory.
+  `GOPATH` gets the session scratch as its first entry too: Go records the checksum
+  database's tree heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE`
+  says, so a cold module or toolchain download needs it writable. In
+  `workspace-write` the ambient GOPATH stays after it, so GOPATH-mode builds still
+  find the packages already there: the spawn's own `$GOPATH`, else the host's
+  resolved once at session start the way the go command resolves it (`$GOPATH`,
+  then a `go env -w` setting in the go env file `$GOENV` names,
+  `<user config dir>/go/env` by default, then `$HOME/go`). Evener reads that file
+  rather than running `go env`, which would run whichever go is first on PATH, and
+  any toolchain it downloads, before the sandbox exists. A spawn whose environment
+  gives go no way to find those settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`)
+  gets the scratch alone, as does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -511,9 +528,10 @@ spawned process:
   `GCLOUD_*`, and `VAULT_*`.
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
-- Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/
-  `CARGO_HOME` there.
+- Points `TMPDIR` at the per-session temp and redirects the language cache
+  variables (`GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/`CARGO_HOME`)
+  there: all of them under the session-private cache strategy, and under the
+  overlay the Go ones whose directory it does not serve.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every

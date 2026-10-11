@@ -168,3 +168,38 @@ func TestNewWrapperDropsACacheRootHoldingTheSessionScratch(t *testing.T) {
 		t.Errorf("a cache root holding the session scratch must not be overlaid: %v", w.Policy().CacheRoots)
 	}
 }
+
+// Each spawn applies the sharing rule again: a write root whose link has been
+// retargeted into a cache since resolution keeps that cache from being
+// overlaid at the next spawn, and the cache is served again once it points
+// elsewhere.
+func TestServableCacheRootJudgesSharingAtEachSpawn(t *testing.T) {
+	cache, elsewhere := t.TempDir(), t.TempDir()
+	link := filepath.Join(t.TempDir(), "library")
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Spawned.WriteRoots = []string{link}
+	if !servableCacheRoot(rp, cache) {
+		t.Fatalf("fixture: the cache must be served while the write root points elsewhere")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cache, link); err != nil {
+		t.Fatal(err)
+	}
+	if servableCacheRoot(rp, cache) {
+		t.Errorf("a cache a write root now lands in must not be overlaid")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	if !servableCacheRoot(rp, cache) {
+		t.Errorf("the cache must be served again once the write root points elsewhere")
+	}
+}

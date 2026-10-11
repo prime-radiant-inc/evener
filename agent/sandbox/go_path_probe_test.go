@@ -88,3 +88,21 @@ func TestGoPathEntriesApplyGosDefault(t *testing.T) {
 		})
 	}
 }
+
+// The probe records the go env file's own GOPATH/GOMODCACHE/GOCACHE lines apart
+// from the host process's environment, which a spawned child may not share.
+func TestProbeRecordsTheGoEnvFileSettingsApartFromTheEnvironment(t *testing.T) {
+	t.Parallel()
+	const config = "/home/u/.config"
+	system := goPathProbeSystem{
+		env:       map[string]string{"GOMODCACHE": "/from/env"},
+		configDir: config,
+		files:     map[string]string{filepath.Join(config, "go", "env"): "GOMODCACHE=/from/file\nGOPROXY=direct\n"},
+	}
+	if got := goEnvFileSettings(system); got["GOMODCACHE"] != "/from/file" || len(got) != 1 {
+		t.Errorf("goEnvFileSettings = %v, want only GOMODCACHE=/from/file", got)
+	}
+	if got := goEnvValue(system, "GOMODCACHE"); got != "/from/env" {
+		t.Errorf("goEnvValue(GOMODCACHE) = %q, want the environment's /from/env", got)
+	}
+}

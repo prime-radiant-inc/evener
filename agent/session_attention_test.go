@@ -45,6 +45,11 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
 
+	// The trigger is latched by the time its consumed marker is being made
+	// durable, so a fold that sees the item resolved already knows to keep it.
+	// The hook runs inside the resolution's attentionMu section.
+	var latchedDuringResolution string
+	fs.atSync = func() { latchedDuringResolution = runtime.attentionAcceptedID }
 	fs.arm()
 	type startResult struct {
 		started delegateStartCommit
@@ -77,6 +82,9 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	first := <-done
 	if first.err != nil {
 		t.Fatalf("accept first attention: %v", first.err)
+	}
+	if latchedDuringResolution != firstID {
+		t.Fatalf("trigger latched while its consumed marker was made durable = %q, want %q", latchedDuringResolution, firstID)
 	}
 	aggregate := c.durable["dlg_target"]
 	if aggregate.Generation != 1 || aggregate.Trigger != delegatestore.TriggerAttention || !aggregate.CurrentRunOpen || !aggregate.NeedsAttention || aggregate.ProjectionRevision != beforeRevision+1 {
@@ -597,6 +605,13 @@ func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing
 	fs.failNextResolutionDurability()
 	if err := runtime.acceptDelegateAttention(reservation); err == nil {
 		t.Fatal("consumed attention resolution unexpectedly survived injected sync failure")
+	}
+	// The marker may have landed, so the retry still needs the trigger's turn.
+	runtime.attentionMu.Lock()
+	latched := runtime.attentionAcceptedID
+	runtime.attentionMu.Unlock()
+	if latched != attentionID {
+		t.Fatalf("trigger latched after the ambiguous failure = %q, want %q", latched, attentionID)
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
 	if err != nil {
@@ -4088,6 +4103,12 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	if err != nil {
 		t.Fatalf("open child attention transcript: %v", err)
 	}
+	// A compaction landed after the three items arrived, so the resumed
+	// history starts at its summary and holds none of them.
+	if err := writer.AppendDurable(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nfold after the items\n[END SUMMARY]"))); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append compaction marker: %v", err)
+	}
 	owedResolution := delegateAttentionResolutionTurn(owedID, delegateAttentionConsumed)
 	owedResolution.AttentionResolution.ResumeGeneration = 1
 	if err := writer.AppendDurable(owedResolution); err != nil {
@@ -4176,6 +4197,17 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	}
 	if fold.resumeGenerations[owedID] != 1 || fold.resumeGenerations[historicalID] != 0 || fold.resolutions[historicalID] != delegateAttentionConsumed {
 		t.Fatalf("restart resolution generations = %#v resolutions=%#v", fold.resumeGenerations, fold.resolutions)
+	}
+	// The recovered generation's first request is in flight and nothing has
+	// presented the trigger yet, so a fold now must still keep its turn.
+	root.delegateController.mu.Lock()
+	recovered := root.delegateController.live[fixture.delegateID].binding.runtime
+	root.delegateController.mu.Unlock()
+	recovered.attentionMu.Lock()
+	heldTrigger := recovered.attentionAcceptedID
+	recovered.attentionMu.Unlock()
+	if heldTrigger != owedID {
+		t.Fatalf("recovered generation holds trigger %q before its first request settles, want %q", heldTrigger, owedID)
 	}
 	releaseOnce.Do(func() { close(releaseAttention) })
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -4362,6 +4394,9 @@ type attentionSyncBarrierFS struct {
 	allowSync   chan struct{}
 	enterOnce   sync.Once
 	releaseOnce sync.Once
+	// atSync, when set, runs on the syncing goroutine just before the barrier
+	// is entered.
+	atSync func()
 }
 
 type delegateAttentionLiveModelsAdapter struct {
@@ -4447,6 +4482,9 @@ func (file *attentionSyncBarrierFile) Sync() error {
 	file.fs.mu.Unlock()
 	if !armed {
 		return nil
+	}
+	if file.fs.atSync != nil {
+		file.fs.atSync()
 	}
 	file.fs.enterOnce.Do(func() { close(file.fs.syncEntered) })
 	<-file.fs.allowSync

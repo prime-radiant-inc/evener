@@ -177,16 +177,15 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// failed.
 	if rp.CacheStrategy == CacheOverlay {
 		// Only a directory can be an overlay lower (overlayfs rejects anything
-		// else and bwrap would abort the whole sandbox over it).
+		// else and bwrap would abort the whole sandbox over it), and only one
+		// still safe to overlay is served (liveCacheRoots).
 		//
 		// The overlay is mounted at the cache root itself, so the root is a
 		// mountpoint: go clean -modcache empties a standalone GOMODCACHE (in
 		// the session's private layer) and then reports the root busy.
 		// Mounting its parent instead would overlay unrelated directories.
-		for _, c := range rp.CacheRoots {
-			if fi, err := os.Stat(c); err == nil && fi.IsDir() {
-				add("--overlay-src", c, "--tmp-overlay", c)
-			}
+		for _, c := range liveCacheRoots(rp) {
+			add("--overlay-src", c, "--tmp-overlay", c)
 		}
 	}
 

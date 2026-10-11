@@ -283,3 +283,71 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testi
 		t.Fatalf("resumed history holds the items at %d and %d, want both with the first ahead", first, second)
 	}
 }
+
+// An accepted generation's trigger is resolved as consumed before its first
+// request presents it. A fold in that first request must keep the trigger's
+// turn, or the model never sees what woke it and no pending wake remains.
+func TestAcceptedDelegateAttentionTriggerSurvivesCompactionBeforeItsFirstRequest(t *testing.T) {
+	t.Parallel()
+	sess := acceptedTriggerSession(t)
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if indexOfTurnText(currentHistory(t, sess), acceptedTriggerText) < 0 {
+		t.Fatal("the fold dropped the accepted generation's trigger before any request presented it")
+	}
+}
+
+// Once a settled request has presented the trigger, a later fold may summarize
+// it away like any other consumed turn.
+func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
+	t.Parallel()
+	sess := acceptedTriggerSession(t)
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
+	sess.stagePresentedAttentionCoverage(ctx, currentHistory(t, sess))
+	sess.promoteStagedAttentionCoverage(llm.Request{})
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if indexOfTurnText(currentHistory(t, sess), acceptedTriggerText) >= 0 {
+		t.Fatal("the fold kept a trigger a settled request already presented")
+	}
+}
+
+const acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
+
+// acceptedTriggerSession is a delegate runtime that has accepted an attention
+// generation whose trigger is old enough for a fold to summarize away, with a
+// later item still pending.
+func acceptedTriggerSession(t *testing.T) *Session {
+	t.Helper()
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, controller, "dlg_target", "")
+	controller.mu.Lock()
+	controller.live["dlg_target"] = &delegateLiveState{runtime: sess}
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_target"
+
+	const triggerID, laterID = "delegate:dlg_worker/delivery/1", "delegate:dlg_worker/delivery/2"
+	const laterText = `<delegate-notification delegate_id="dlg_worker" kind="update">LATER_ITEM</delegate-notification>`
+	if _, err := sess.appendDelegateNotificationDurably(triggerID, acceptedTriggerText); err != nil {
+		t.Fatalf("append trigger: %v", err)
+	}
+	controller.noteDelegateAttention("dlg_target", triggerID)
+	seedNumberedSessionHistory(t, sess, 12)
+	if _, err := sess.appendDelegateNotificationDurably(laterID, laterText); err != nil {
+		t.Fatalf("append later item: %v", err)
+	}
+	controller.noteDelegateAttention("dlg_target", laterID)
+
+	reservation, err := controller.ReserveAttention(sess, triggerID)
+	if err != nil {
+		t.Fatalf("ReserveAttention: %v", err)
+	}
+	if err := sess.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("acceptDelegateAttention: %v", err)
+	}
+	return sess
+}

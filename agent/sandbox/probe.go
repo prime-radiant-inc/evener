@@ -139,8 +139,9 @@ type HostFacts struct {
 	// default GOCACHE; empty when unset.
 	XDGCacheHome string
 
-	// GoEnvFile is the go env file the probe read GoPath from ("" when none),
-	// so the env floor can tell whether a spawn's go would read the same one.
+	// GoEnvFile is the go env file the probe read GoPath from ("" when none).
+	// The env floor reads it again at each spawn whose go reads the same file,
+	// since go reads it at every run.
 	GoEnvFile string
 
 	// KernelVersion is the best-effort `uname -r` string, informational only
@@ -223,13 +224,24 @@ const goEnvFileLimit = 64 << 10
 // runs before any sandbox exists, so a FIFO (which would block session start),
 // a device such as /dev/zero (which never ends) or an oversized file is refused.
 func (hostProbeSystem) readFile(path string) ([]byte, error) {
-	// Open without blocking (a FIFO's open waits for a writer), then judge the
-	// descriptor itself, so a file swapped in after a path check cannot slip by.
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	f, err := openGoEnvFile(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	return readGoEnvFile(f, path)
+}
+
+// openGoEnvFile opens a go env file without blocking (a FIFO's open waits for
+// a writer); readGoEnvFile then judges the descriptor itself, so a file
+// swapped in after a path check cannot slip by.
+func openGoEnvFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+}
+
+// readGoEnvFile reads an opened go env file: a regular file of at most
+// goEnvFileLimit bytes.
+func readGoEnvFile(f *os.File, path string) ([]byte, error) {
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -387,21 +399,44 @@ func goEnvValue(system probeSystem, name string) string {
 	if value := system.getenv(name); value != "" {
 		return value
 	}
+	return goEnvFileSettings(system)[name]
+}
+
+// goEnvFileSettings returns the GOPATH, GOMODCACHE and GOCACHE lines of the go
+// env file alone, parsed as goEnvValue describes (nil when there is no file).
+func goEnvFileSettings(system probeSystem) map[string]string {
 	file := goEnvFile(system)
 	if file == "" {
-		return ""
+		return nil
 	}
-	data, err := system.readFile(file)
+	settings, err := readGoEnvFileSettings(system, file)
 	if err != nil {
-		return ""
+		return nil
 	}
-	value := ""
+	return settings
+}
+
+// readGoEnvFileSettings reads the GOPATH, GOMODCACHE and GOCACHE lines of the go
+// env file at path, through the probe's bounded, non-blocking read.
+func readGoEnvFileSettings(system probeSystem, path string) (map[string]string, error) {
+	data, err := system.readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseGoEnvSettings(data), nil
+}
+
+// parseGoEnvSettings returns the Go cache settings a go env file's contents
+// set.
+func parseGoEnvSettings(data []byte) map[string]string {
+	settings := map[string]string{}
 	for line := range strings.SplitSeq(string(data), "\n") {
-		if key, val, ok := strings.Cut(line, "="); ok && key == name {
-			value = val
+		key, val, ok := strings.Cut(line, "=")
+		if ok && (key == envvars.GoPath.Name || key == envvars.GoModCache.Name || key == envvars.GoCache.Name) {
+			settings[key] = val
 		}
 	}
-	return value
+	return settings
 }
 
 // goEnvFile returns the go env file the go command reads: $GOENV, or
