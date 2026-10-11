@@ -1475,10 +1475,15 @@ type PendingHydrationRouting = {
   ref: string;
   threadId?: string;
 };
+type PendingTranscriptUpdate = ReceivedTranscriptUpdate & {
+  // A live acceptance can make the later history replay a no-op. Its banking
+  // still belongs to this buffered arrival, under the same repository owner.
+  acceptedEntry?: { repository: TranscriptRepository; lifetime: number };
+};
 type PendingThreadHydration = {
   client: AppwireClientLike;
   epoch: number;
-  notifications: ReceivedTranscriptUpdate[];
+  notifications: PendingTranscriptUpdate[];
   backgroundBytes: number;
   backgroundInvalidated?: boolean;
   routing: PendingHydrationRouting;
@@ -4162,11 +4167,19 @@ function collectPendingRefs(
   n: AnyNotification,
   refs: Set<string>,
   targetedRefs?: Set<string>,
+  entryAcceptedRefs?: ReadonlySet<string>,
 ): void {
   const ref = notificationRef(n);
   for (const [pendingRef, pending] of pendingHydrations) {
     if (targetsPendingHydration(n, pending)) {
-      bufferPendingNotification(pendingRef, pending, n, pendingHydrations);
+      const entry = entryAcceptedRefs?.has(pendingRef) ? entryTranscriptRoute(pendingRef) : undefined;
+      bufferPendingNotification(
+        pendingRef,
+        pending,
+        n,
+        pendingHydrations,
+        entry?.repository ? { repository: entry.repository, lifetime: entry.lifetime } : undefined,
+      );
       refs.add(pendingRef);
       targetedRefs?.add(pendingRef);
     } else if (ref === pendingRef) {
@@ -4358,9 +4371,16 @@ function bufferPendingNotification(
   pending: PendingThreadHydration,
   notification: AnyNotification,
   pendingHydrations: Map<string, PendingThreadHydration>,
+  acceptedEntry?: PendingTranscriptUpdate["acceptedEntry"],
 ): void {
   const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
-  const update = { sequence, now: Date.now(), notification, bytes: encodedPayloadBytes(notification) };
+  const update: PendingTranscriptUpdate = {
+    sequence,
+    now: Date.now(),
+    notification,
+    bytes: encodedPayloadBytes(notification),
+    ...(acceptedEntry ? { acceptedEntry } : {}),
+  };
   if ((backgroundRefCounts.get(ref) ?? 0) > 0) {
     if (!transcriptResidency().reservePending(ref, update.bytes)) {
       if (usesEntryTranscripts(ref)) {
@@ -4400,15 +4420,19 @@ function replayEntryHydrationNotifications(
   repository: TranscriptRepository,
   lifetime: number,
   model: ThreadModel,
-  notifications: ReceivedTranscriptUpdate[],
+  notifications: PendingTranscriptUpdate[],
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
   for (const update of notifications) {
     // The repository owns both recorded ingestion and later publications, so
     // the post-cut tail must join that owner, not a temporary store-only fold.
-    if (!repository.accept(update.notification, { lifetime })) continue;
+    const accepted = repository.accept(update.notification, { lifetime });
+    const acceptedLive = update.acceptedEntry?.repository === repository && update.acceptedEntry.lifetime === lifetime;
+    if (!accepted && !acceptedLive) continue;
     hydrated = repository.getSnapshot() ?? hydrated;
+    // One update is one arrival, even when both live ingestion and replay
+    // accept it. A receipt never transfers across a repository lifetime.
     appliedAt.push(update.now);
   }
   return { model: hydrated, appliedAt };
@@ -4905,7 +4929,7 @@ function handleNotification(n: AnyNotification): void {
   let pendingRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingThreadHydrations.size > 0) {
     const refs = new Set<string>();
-    collectPendingRefs(pendingThreadHydrations, n, refs, acceptedPendingRefs);
+    collectPendingRefs(pendingThreadHydrations, n, refs, acceptedPendingRefs, entryAcceptedRefs);
     if (refs.size > 0) pendingRefs = refs;
   }
   let pendingWatchedRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
@@ -5004,11 +5028,12 @@ function handleNotification(n: AnyNotification): void {
   // Metadata may already be published by the repository's synchronous accept
   // subscription, leaving no diff for the store fold. Account those accepted
   // refs too, once each even when the store also publishes the same frame.
-  // Pending hydration banks its own accepted tail at snapshot publication;
-  // recorded and overlay input retain their repository-owned handling above.
+  // This includes recorded and overlay input whose store ingestion is skipped.
+  // Pending hydration carries a live acceptance receipt and banks each tail
+  // arrival once at publication, including an unchanged history replay.
   const acceptedFrameRefs = new Set(publishableChangedThreads);
   for (const ref of entryAcceptedRefs) {
-    if (!pendingRefs.has(ref) && !fixtureRecordedRefs.has(ref)) acceptedFrameRefs.add(ref);
+    if (!pendingRefs.has(ref)) acceptedFrameRefs.add(ref);
   }
   if (!nextThreads && !nextWatchedThreads && acceptedFrameRefs.size === 0) return;
 
