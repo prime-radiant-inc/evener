@@ -842,3 +842,26 @@ func TestMasksJudgeTheFirmlinkSpellingAsThePlainOne(t *testing.T) {
 		t.Errorf("content must stay readable under the firmlink spelling")
 	}
 }
+
+// An explicit denylist entry spelling the config root as it is stored on disk,
+// while home is configured in another case and the config directory does not
+// exist yet, is still the user's boundary: nothing is carved from it.
+func TestEvenerContentRootsHonourAStoredSpellingConfigMaskBeforeTheDirExists(t *testing.T) {
+	root := mainRepo(t)
+	parent := clean(t.TempDir())
+	stored := filepath.Join(parent, "casehome")
+	if err := os.MkdirAll(stored, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spelled := filepath.Join(parent, "CASEHOME")
+	if _, err := os.Stat(spelled); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = spelled
+	host.EvenerContentRoots = []string{filepath.Join(spelled, ".config", "evener", "skills")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{filepath.Join(stored, ".config", "evener")}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("an explicit stored-spelling config mask must keep content masked, got %v", rp.UnmaskedRoots)
+	}
+}

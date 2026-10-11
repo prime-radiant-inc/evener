@@ -822,9 +822,11 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 // sameDir reports whether a and b name the same directory: by file identity,
 // since neither spelling nor resolved path tells on a case-insensitive volume
 // (~/.CONFIG/EVENER is ~/.config/evener), or, for one not created yet, by
-// where creating each would land.
+// where creating each would land, in the filesystem's own spelling of the
+// existing part.
 func sameDir(a, b string) bool {
-	return a == b || sameFile(a, b) || resolveExistingPrefix(a) == resolveExistingPrefix(b)
+	return a == b || sameFile(a, b) || resolveExistingPrefix(a) == resolveExistingPrefix(b) ||
+		onDiskSpelling(resolveExistingPrefix(a)) == onDiskSpelling(resolveExistingPrefix(b))
 }
 
 // sameFile reports whether a and b both exist and are the same file.
