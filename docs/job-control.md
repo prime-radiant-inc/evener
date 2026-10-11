@@ -1273,11 +1273,12 @@ Delegate generations never create job records. A shell job record contains:
 }
 ```
 
-A kept within-bound completion already handed its result to the caller in the
-tool reply, so it arms no completion notification: its `job_finished` event
-carries `result_inline`, and the record folds to `consumed`. A restore re-arms
-only terminal records still `not_armed` or `pending`, so it never re-delivers a
-result the model already read.
+A kept within-bound completion arms no completion notification: its tool reply
+already told the caller the job ended. Once that reply is durable in the
+transcript the job's notification is recorded `consumed`, the same settlement a
+terminal `job_status` read gets, so a restore never re-announces it. If the
+process stops before the reply is durable, the record is still `not_armed` and
+the restore arms its notification.
 
 `parent_job_id` links shell-to-shell work. `parent_delegate_id` names the stable
 delegate that caused a shell job; a shell never points at a private delegate

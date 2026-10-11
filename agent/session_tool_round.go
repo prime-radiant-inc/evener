@@ -340,13 +340,19 @@ func decodeTerminalJobStatusResult(result tool.ExecResult) (jobStatusResult, boo
 	return status, true
 }
 
+// consumePersistedTerminalJobStatusNotifications settles the notification of
+// every job a just-persisted tool reply told the caller had ended: a terminal
+// job_status read, and a foreground shell kept as a job because its output was
+// too big to ride inline (its reply carries the job_id and terminal status).
+// Settling only after the reply is durable keeps the crash case right: a reply
+// that never reached the transcript leaves the job for restore to re-arm.
 func (s *Session) consumePersistedTerminalJobStatusNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
 	for i, call := range calls {
-		if call.Name != "job_status" || i >= len(results) {
+		if (call.Name != "job_status" && call.Name != "shell") || i >= len(results) {
 			continue
 		}
 		status, ok := decodeTerminalJobStatusResult(results[i])
-		if !ok {
+		if !ok || status.JobID == "" {
 			continue
 		}
 		jm, rec, err := s.nestedOrLocalJobManager(status.JobID)

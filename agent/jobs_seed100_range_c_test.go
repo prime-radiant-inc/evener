@@ -41,7 +41,7 @@ func seed100JobsRangeC(t *testing.T) {
 		delete(jm.running, run.rec.JobID)
 		return nil
 	}
-	if _, err := jm.writeFinishJob(run, jobstore.StatusCompleted, "stale", nil, false); err != nil {
+	if _, err := jm.writeFinishJob(run, jobstore.StatusCompleted, "stale", nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -222,9 +222,6 @@ func applyEvent(r *JobRecord, e Event) {
 		}
 		r.Status = e.Status
 		r.Reason = e.Reason
-		if e.ResultInline && r.NotifyState == NotifyNotArmed {
-			r.NotifyState = NotifyConsumed
-		}
 		r.ExhaustionBudget = e.ExhaustionBudget
 		r.ExhaustionLimit = e.ExhaustionLimit
 		r.ExitCode = e.ExitCode

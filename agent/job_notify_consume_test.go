@@ -393,3 +393,68 @@ func TestRunningJobStatusReadLeavesNotificationArmed(t *testing.T) {
 		t.Fatal("a running job's status read must not consume its terminal notification")
 	}
 }
+
+// keptForegroundShellCall runs a real foreground shell whose output is too big
+// to ride inline, so the tool keeps it as a durable job and returns a digest
+// with its job_id and terminal status.
+func keptForegroundShellCall(t *testing.T, s *Session) (llm.ToolCallData, tooldefs.ExecResult, string) {
+	t.Helper()
+	call := llm.ToolCallData{
+		ID:        "kept",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"head -c 70000 </dev/zero | tr '\\0' 'x'"}`),
+	}
+	result := s.reg.ExecuteCall(context.Background(), s.env, call)
+	if result.IsError {
+		t.Fatalf("shell: %s", result.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(result), &out); err != nil || out.JobID == "" {
+		t.Fatalf("the large-output command was not kept as a job: %v (%s)", err, result.Output)
+	}
+	return call, result, out.JobID
+}
+
+// TestPersistedKeptForegroundShellIsNotRenotifiedOnRestore pins #4290. A
+// kept foreground shell already told the caller, in its own tool reply, that
+// the job ended. Once that reply is durable the job's notification is
+// consumed, so a restore does not re-announce it and wake the session for a
+// turn nobody asked for.
+func TestPersistedKeptForegroundShellIsNotRenotifiedOnRestore(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	call, result, jobID := keptForegroundShellCall(t, s)
+	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("terminal_notification_state = %q after the reply persisted, want %q", rec.NotifyState, jobstore.NotifyConsumed)
+	}
+	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	if got := s.peekNotifications(); got != 0 {
+		t.Fatalf("restore queued %d notification(s) for a result the caller already read", got)
+	}
+}
+
+// TestUnpersistedKeptForegroundShellIsRenotifiedOnRestore pins the other side
+// of #4290's fix: when the process stops before the kept shell's reply reaches
+// the transcript, the caller never learned the job ended, so a restore still
+// arms its notification.
+func TestUnpersistedKeptForegroundShellIsRenotifiedOnRestore(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	_, _, jobID := keptForegroundShellCall(t, s)
+	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("terminal_notification_state = %q, want %q for a reply that never persisted", rec.NotifyState, jobstore.NotifyPending)
+	}
+	if got := s.peekNotifications(); got != 1 {
+		t.Fatalf("restore queued %d notification(s), want 1 for a reply that never persisted", got)
+	}
+}

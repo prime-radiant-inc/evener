@@ -1719,7 +1719,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	jm.mu.Unlock()
 	if terminal == nil {
 		var err error
-		terminal, err = jm.writeFinishJob(run, status, reason, exitCode, true)
+		terminal, err = jm.writeFinishJob(run, status, reason, exitCode)
 		if err != nil {
 			return err
 		}
@@ -1819,7 +1819,7 @@ func (jm *jobManager) finalizeWithRunMode(jobID string, prepare func(*runningJob
 }
 
 func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
-	terminal, err := jm.writeFinishJob(run, status, reason, exitCode, false)
+	terminal, err := jm.writeFinishJob(run, status, reason, exitCode)
 	if err != nil {
 		return err
 	}
@@ -1828,11 +1828,8 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 
 // writeFinishJob writes EventJobFinished and updates the in-memory record but
 // does not arm owner notification. It is split out so finalizeKeptSync can
-// finalize without notification-arming (spec §6.4d). resultInline records that
-// the caller already received the complete result in its tool reply, which
-// settles the job's notification in the durable fold so restore never re-arms
-// it.
-func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int, resultInline bool) (*terminalJob, error) {
+// finalize without notification-arming (spec §6.4d).
+func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int) (*terminalJob, error) {
 	var outputBytes int64
 	if _, total, _, err := run.output.Tail(0); err == nil {
 		outputBytes = total
@@ -1865,7 +1862,6 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		StructuredResultValid:  structuredValid,
 		StructuredResultReason: structuredReason,
 		TerminalGen:            terminal.generation,
-		ResultInline:           resultInline,
 		Provenance:             provenance.Clone(run.rec.Provenance),
 	}
 	terminal.finished = finished
