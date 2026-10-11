@@ -684,3 +684,35 @@ func TestFileToolsMaskGitUnderTheStoredSpellingOfAHome(t *testing.T) {
 		})
 	}
 }
+
+// A granted root that does not exist yet (an Evener content directory before
+// anything is installed) is reported missing, and present once created.
+func TestFileExistsReportsAMissingGrantedRootMissing(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(skills), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{skills}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if env.FileExists(skills) {
+		t.Errorf("a granted root that does not exist must be reported missing")
+	}
+	if err := os.Mkdir(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !env.FileExists(skills) {
+		t.Errorf("a granted root must be reported present once created")
+	}
+}

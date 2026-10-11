@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -382,6 +383,20 @@ func (c *delegateTreeController) BeginTool(lease delegateLease) error {
 	return c.beginRuntimeBoundary(lease)
 }
 
+// parentMessageAttribution opens each message a delegate's parent steers into
+// its running turn, so the delegate's model knows who is speaking.
+const parentMessageAttribution = "Message from your parent agent:\n\n"
+
+// parentSteeringTurn is the steering turn a delegate_send message to a running
+// delegate appends as: from its parent, attribution first.
+func parentSteeringTurn(message, stableTurnID string, now time.Time) schema.Turn {
+	turn := schema.NewTurn(schema.TurnSteering, llm.User(parentMessageAttribution+message))
+	turn.Timestamp = now.UTC()
+	turn.SteeringSource = events.SteeringSourceParent
+	turn.StableTurnID = stableTurnID
+	return turn
+}
+
 func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
 	s.mu.Lock()
 	ready := s.transcriptReady && s.transcript != nil
@@ -389,10 +404,7 @@ func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (d
 	if !ready {
 		return delegateTranscriptEntry{}, errDelegateTranscriptUnavailable
 	}
-	turn := schema.NewTurn(schema.TurnSteering, llm.User(message))
-	turn.Timestamp = s.sclock().Now().UTC()
-	turn.SteeringSource = "user"
-	turn.StableTurnID = stableTurnID
+	turn := parentSteeringTurn(message, stableTurnID, s.sclock().Now())
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error {

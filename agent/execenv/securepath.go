@@ -338,8 +338,7 @@ func (s *sandboxFS) underMaskedForWrite(abs string) bool {
 }
 
 // isGrantedRoot reports whether abs is exactly one of the policy's granted roots
-// (file-tool read or write roots). Such a root exists by construction even when
-// its parent lies outside the policy.
+// (file-tool read or write roots), whose parent may lie outside the policy.
 func (s *sandboxFS) isGrantedRoot(abs string) bool {
 	return slices.Contains(s.policy.FileTool.ReadRoots, abs) || slices.Contains(s.policy.FileTool.WriteRoots, abs)
 }

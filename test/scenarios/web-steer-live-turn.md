@@ -175,8 +175,8 @@ rm -rf "$tmpdir"
 
 - **A human steer is NOT `[data-testid="steering-item"]`.** That element is
   the collapsible divider for *daemon*-originated steering (labelled
-  "System steered: …"); a steer the human typed is indistinguishable from a
-  prompt and renders as `user-message-item`. Selecting on `steering-item`
+  "System steered: …", or "From parent" for a parent agent's steer); a steer
+  the human typed is indistinguishable from a prompt and renders as `user-message-item`. Selecting on `steering-item`
   after a manual steer finds nothing and reads as a regression. Use
   `[data-testid="user-message-item"]:not([data-opens-exchange])`.
 - **The first turn usually races to idle before you can steer it.** The model
