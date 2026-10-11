@@ -739,17 +739,24 @@ func withAttentionTurns(history, attention []schema.Turn) (_ []schema.Turn, rest
 		if slices.ContainsFunc(history, func(held schema.Turn) bool { return held.AttentionID == turn.AttentionID }) {
 			continue
 		}
-		later := attention[i+1:]
-		at := slices.IndexFunc(history, func(held schema.Turn) bool {
-			return slices.ContainsFunc(later, func(next schema.Turn) bool { return next.AttentionID == held.AttentionID })
-		})
-		if at < 0 {
-			at = len(history)
-		}
-		history = slices.Insert(history, at, turn)
+		var at int
+		history, at = insertAttentionTurn(history, turn, attention[i+1:])
 		restoredAt = append(restoredAt, at)
 	}
 	return history, restoredAt
+}
+
+// insertAttentionTurn puts turn before the first held turn of a later-arriving
+// item (later, in arrival order), or at the end when none is held, and returns
+// the position it took.
+func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema.Turn) ([]schema.Turn, int) {
+	at := slices.IndexFunc(history, func(held schema.Turn) bool {
+		return slices.ContainsFunc(later, func(next schema.Turn) bool { return next.AttentionID == held.AttentionID })
+	})
+	if at < 0 {
+		at = len(history)
+	}
+	return slices.Insert(history, at, turn), at
 }
 
 // acceptDelegateAttention records the exact reserved generation in the child
@@ -1488,8 +1495,9 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// and idempotent — a still-resident turn is replaced in place (no
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
-	for _, durable := range fold.pendingTurns() {
-		if err := s.retainDelegateAttentionTurn(durable); err != nil {
+	pendingTurns := fold.pendingTurns()
+	for i, durable := range pendingTurns {
+		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
 			s.attentionMu.Unlock()
 			return err
 		}
@@ -1519,7 +1527,11 @@ func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry) (dele
 	return foldDelegateAttention(entries)
 }
 
-func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
+// retainDelegateAttentionTurn puts the durable turn into the history: a resident
+// copy is replaced in place, a missing one is restored. later names the items
+// that arrived after turn, so a restored turn keeps its delivery order among
+// the ones still resident.
+func (s *Session) retainDelegateAttentionTurn(turn schema.Turn, later ...schema.Turn) error {
 	if turn.Kind != schema.TurnSteering || turn.AttentionID == "" {
 		return errors.New("durable delegate attention turn is invalid")
 	}
@@ -1540,7 +1552,11 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 		s.bumpHistoryRevisionLocked()
 		return nil
 	}
-	s.history = append(s.history, turn)
+	var at int
+	s.history, at = insertAttentionTurn(s.history, turn, later)
+	if at < len(s.history)-1 {
+		s.bumpHistoryRevisionLocked()
+	}
 	return nil
 }
 

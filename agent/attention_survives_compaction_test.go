@@ -3,13 +3,19 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -224,5 +230,56 @@ func TestRootDelegateAttentionRestoredAheadOfTheInFlightTurnMovesTheBaseline(t *
 	sess.mu.Unlock()
 	if got != want {
 		t.Fatalf("turnHistoryBaseline = %d, want %d (the in-flight turn's post-fold index)", got, want)
+	}
+}
+
+// After a restart the resumed history starts at the last compaction marker, so
+// an item delivered before the marker is restored behind one delivered after
+// it unless the rearm keeps delivery order.
+func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootID := identifier.MustNewSessionID()
+	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, rootID), transcript.Header{SessionID: rootID, ProfileID: "openai", Model: "gpt-5.2"})
+	if err != nil {
+		t.Fatalf("create root transcript: %v", err)
+	}
+	const firstText = `<delegate-notification delegate_id="dlg_worker" kind="update">FIRST_ITEM</delegate-notification>`
+	const secondText = `<delegate-notification delegate_id="dlg_worker" kind="update">SECOND_ITEM</delegate-notification>`
+	appendTurn := func(turn schema.Turn) {
+		t.Helper()
+		if err := writer.AppendDurable(turn); err != nil {
+			t.Fatalf("append %q: %v", turn.Message.Text(), err)
+		}
+	}
+	attention := func(attentionID, text string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = attentionID
+		turn.StableTurnID = newQueueEntryID()
+		return turn
+	}
+	appendTurn(attention("delegate:dlg_worker/delivery/1", firstText))
+	appendTurn(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nfold after the first item\n[END SUMMARY]")))
+	appendTurn(attention("delegate:dlg_worker/delivery/2", secondText))
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close root transcript: %v", err)
+	}
+	meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("save root metadata: %v", err)
+	}
+	restored, err := RestoreSessionFromMeta(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	t.Cleanup(restored.Close)
+
+	history := currentHistory(t, restored)
+	first, second := indexOfTurnText(history, firstText), indexOfTurnText(history, secondText)
+	if first < 0 || second < 0 || first > second {
+		t.Fatalf("resumed history holds the items at %d and %d, want both with the first ahead", first, second)
 	}
 }

@@ -216,6 +216,11 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// is the authority, under the door, for which items are pending. When that
 	// read fails the pending set is unknown, so every attention turn the
 	// history held stays: a resolved one is only extra history.
+	//
+	// Pending is the whole contract here. A generation's trigger is resolved
+	// as consumed when the generation is accepted, before its first request
+	// presents it, so a fold in that one request can still drop an older
+	// trigger (#4300).
 	var keptAttention []schema.Turn
 	s.mu.Lock()
 	heldAttention := attentionTurns(s.history)
