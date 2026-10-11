@@ -1,18 +1,10 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests, type SettingsOverviewStoreState } from "../../../stores/settingsOverview";
 import { AgentsSection } from "./agents";
-
-// The repo's CSS-source pin idiom (difftable.test.tsx, select.test.tsx):
-// jsdom has no layout, so placement contracts are pinned against the
-// stylesheet's own source.
-const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "agents.module.css"), "utf8");
 
 afterEach(() => {
   // Unmount first: resetting the settingsOverview singleton then notifies
@@ -92,9 +84,19 @@ describe("AgentsSection", () => {
     expect(screen.getByText("explorer")).toBeTruthy();
   });
 
-  test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {
-    expect(css).not.toMatch(/\.row\s*\{[^}]*justify-content:\s*space-between/);
-    expect(css).toMatch(/\.trailing\s*\{[^}]*margin-left:\s*auto/);
+  test("each agent is one list row holding its name and its own open control", () => {
+    const data: SettingsOverviewResponse = {
+      agents: [{ name: "reviewer", editPath: "editor://open?path=/plugins/reviewer.md" }, { name: "evener" }],
+    };
+    render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    const [reviewer, builtin] = rows as [HTMLElement, HTMLElement];
+    expect(within(reviewer).getByText("reviewer")).toBeTruthy();
+    expect(within(reviewer).getByRole("link", { name: /open in editor/i })).toBeTruthy();
+    expect(within(builtin).getByText("evener")).toBeTruthy();
+    expect(within(builtin).getByText("built-in")).toBeTruthy();
+    expect(within(builtin).queryByRole("link")).toBeNull();
   });
 });
 
