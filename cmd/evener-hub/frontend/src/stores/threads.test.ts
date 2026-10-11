@@ -145,25 +145,6 @@ function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadR
   return { thread: testThread(ref, overrides) };
 }
 
-// Like readResponse, but stamped with the same live-history identity
-// ("1"/epoch 1/"inc-1") this file's history/updated fixtures carry, so a
-// thread/read a test pairs with a live history/updated notification hydrates
-// straight into the versioned-history path instead of getting invalidated by
-// a boot-generation mismatch (EMPTY_HISTORY's "" vs the frame's "1") the
-// instant the first live frame lands.
-function versionedReadResponse(
-  ref: string,
-  overrides: TestThreadOverrides = {},
-  snapshotLength = 0,
-): ThreadReadResponse {
-  return {
-    ...readResponse(ref, overrides),
-    bootGeneration: "1",
-    epoch: 1,
-    snapshot: { incarnation: "inc-1", length: snapshotLength },
-  };
-}
-
 // readResponse derives the wire thread id as thr_<ref>. The routing-index
 // tests need models with known and sometimes SHARED thread ids (a lean watch
 // of a ref that is also pane-owned resolves to the same thread id), so this
@@ -171,48 +152,6 @@ function versionedReadResponse(
 function readResponseWithId(ref: string, threadId: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
   const base = readResponse(ref, overrides);
   return { thread: { ...base.thread, id: threadId } };
-}
-
-// A pending hydration's notification buffer only ever matters in one window:
-// between the response cut (which discards everything buffered before it,
-// because the authoritative snapshot already represents it) and the publish
-// that replays whatever arrived after. markResponseCut/emitAtResponseCut park a
-// test exactly there.
-//
-// The mark rides olderCursor because hydrateThread reads it while building the
-// snapshot model, in the same synchronous step that applies the cut. That is a
-// probe into someone else's read order, so both guards in emitAtResponseCut are
-// load-bearing: if hydrateThread stops reading olderCursor the mark never
-// fires, and if the publish outruns it the snapshot is already in the store —
-// either way the test fails there rather than emitting into the live-model path
-// and passing for the wrong reason. The emit is a callback rather than the
-// caller's next statement for the same reason: returning from here would cost
-// microtasks of its own, and publish is the very next one.
-//
-// `published` is how the second guard recognises the snapshot: a ref gaining a
-// model at all covers an initial hydrate, but a resync into a ref that already
-// has one needs a witness from the snapshot itself, so those callers pass their
-// own.
-function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }): ThreadReadResponse {
-  return {
-    ...response,
-    get olderCursor(): string | undefined {
-      cut.reached = true;
-      return response.olderCursor;
-    },
-  };
-}
-
-async function emitAtResponseCut(
-  cut: { reached: boolean },
-  ref: string,
-  emit: () => void,
-  published: () => boolean = () => threadsStore.getState().threads.has(ref),
-): Promise<void> {
-  for (let i = 0; i < 20 && !cut.reached; i += 1) await Promise.resolve();
-  expect(cut.reached, "the response cut never ran: hydrateThread no longer reads olderCursor").toBe(true);
-  expect(published(), "the snapshot published before the cut window was reached").toBe(false);
-  emit();
 }
 
 function sameEpochReconnectFixture() {
