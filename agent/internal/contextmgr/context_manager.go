@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
@@ -1563,6 +1564,10 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 			partner = append(partner, entry)
 		}
 	}
+	// Messages left to the summary go to it as written; only the carry's are
+	// fitted. Fitting only trims partner messages, never drops one, so the two
+	// slices line up.
+	original := partner
 	partner = fitCheckpointConversation(partner, maxCheckpointChars, recoverable)
 	if ceiling > 0 {
 		// Keep the newest messages whose blocks fit the ceiling beside the
@@ -1577,12 +1582,17 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 			size += block
 			kept++
 		}
-		summarized = partner[:len(partner)-kept]
+		if size > ceiling && !recoverable {
+			// The newest alone overflows and cannot be trimmed: summarize it
+			// with the rest.
+			kept = 0
+		}
+		summarized = original[:len(original)-kept]
 		partner = slices.Clone(partner[len(partner)-kept:])
 		if len(partner) == 0 {
 			return "", summarized
 		}
-		if newest := &partner[len(partner)-1]; recoverable && size > ceiling {
+		if newest := &partner[len(partner)-1]; size > ceiling {
 			// The newest alone overflows: trim its middle to fit, note included.
 			edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
 			if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
@@ -1640,17 +1650,29 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 	return "", errors.New("partner messages did not condense to fit the summarizer")
 }
 
-// splitRunes splits text into consecutive parts of at most size bytes, cut on
-// rune boundaries.
-func splitRunes(text string, size int) []string {
+// splitMessage splits text into parts of at most size bytes, each cut at the
+// last paragraph, line or sentence break before the limit when there is one,
+// else on a rune boundary, and each repeating the last overlap bytes of the
+// part before it, so an instruction that crosses a cut is whole in one part.
+func splitMessage(text string, size, overlap int) []string {
 	var parts []string
 	for len(text) > size {
 		part := runetrim.Cut(text, size)
 		if part == "" {
 			part = text[:size] // not valid UTF-8 at the cut; keep every byte
 		}
+		for _, br := range []string{"\n\n", "\n", ". "} {
+			if i := strings.LastIndex(part, br); i > size/2 {
+				part = part[:i+len(br)]
+				break
+			}
+		}
 		parts = append(parts, part)
-		text = text[len(part):]
+		next := max(len(part)-overlap, 1)
+		for next < len(part) && !utf8.RuneStart(text[next]) {
+			next++
+		}
+		text = text[next:]
 	}
 	return append(parts, text)
 }
@@ -2252,12 +2274,18 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// half the history budget they arrive condensed in bounded batches
 	// (condensePartnerMessages).
 	if len(summarized) > 0 {
-		// Each message goes in whole; one longer than a batch is split into
-		// batch-sized parts rather than cut short.
+		// Each message goes in whole; one longer than a part is split into
+		// overlapping, numbered parts rather than cut short, small enough that
+		// two share a batch.
 		var lines []string
 		for _, entry := range summarized {
-			for _, part := range splitRunes(entry.Text, maxHistoryChars/4) {
-				lines = append(lines, "User: "+part+"\n")
+			parts := splitMessage(entry.Text, maxHistoryChars/6, 400)
+			for i, part := range parts {
+				label := "User: "
+				if len(parts) > 1 {
+					label = fmt.Sprintf("User (part %d of %d of one message): ", i+1, len(parts))
+				}
+				lines = append(lines, label+part+"\n")
 			}
 		}
 		condensed, err := cm.condensePartnerMessages(ctx, lines, maxHistoryChars/2)

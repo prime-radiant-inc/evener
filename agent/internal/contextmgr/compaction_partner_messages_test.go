@@ -866,3 +866,78 @@ func TestForceCompact_SummaryRequestStaysInBudgetWithLeftOutMessages(t *testing.
 		t.Fatalf("the summary request carries %d characters of history, over the summarizer's 80k budget", historyText)
 	}
 }
+
+// collectRequests is a model that records every request's text and answers
+// with a plain summary.
+func collectRequests(all *strings.Builder) *stubSummarizeAdapter {
+	return alwaysReplying(func(req llm.Request) string {
+		all.WriteString(req.Messages[0].Text())
+		all.WriteString("\n")
+		return "## Progress\nsummary"
+	})
+}
+
+// A left-out message reaches the summarizer as written, even when its middle
+// would be trimmed for the carry: the hold in the middle of an older long
+// message still reaches a summarizer request.
+func TestForceCompact_LeftOutMessagesReachTheSummarizerUntrimmed(t *testing.T) {
+	var all strings.Builder
+	client := llm.NewClient()
+	client.Register(collectRequests(&all))
+	cm := NewManager(testProfile("openai", "test", 20_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(30, 6000, -1)
+	history[10] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("a", 3000)+" "+partnerHold+" "+strings.Repeat("b", 3000)))
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if !strings.Contains(all.String(), partnerHold) {
+		t.Fatalf("a hold in the middle of a left-out long message never reached a summarizer")
+	}
+}
+
+// Without a transcript an oversized newest message cannot be trimmed, so it is
+// summarized like the rest rather than carried whole past the ceiling.
+func TestForceCompact_OversizedNewestMessageWithoutTranscriptIsSummarized(t *testing.T) {
+	var all strings.Builder
+	client := llm.NewClient()
+	client.Register(collectRequests(&all))
+	cm := NewManager(testProfile("openai", "test", 8192), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = CompactionMeta{}
+	log := "LOG_HEAD " + strings.Repeat("log line\n", 4500) + " LOG_TAIL"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(log)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reading")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if carry := markdownSection(history[0].Message.Text(), checkpointConversationHeading); len(carry) > partnerCarryCeiling(cm.currentProfile()) {
+		t.Fatalf("the carry is %d chars, over the ceiling", len(carry))
+	}
+	if !strings.Contains(all.String(), "LOG_TAIL") {
+		t.Fatalf("the oversized newest message never reached a summarizer")
+	}
+}
+
+// A long left-out message split into parts keeps a hold that crosses a part
+// boundary whole in some summarizer request.
+func TestForceCompact_HoldAcrossAPartBoundaryReachesTheSummarizer(t *testing.T) {
+	var all strings.Builder
+	client := llm.NewClient()
+	client.Register(collectRequests(&all))
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = CompactionMeta{}
+	history := partnerFloodHistory(30, 30_000, -1)
+	// A hold spanning byte 20,000 (and, with smaller parts, other cut points).
+	long := []byte(strings.Repeat("c", 60_000))
+	for _, at := range []int{13_310, 19_980, 26_640, 39_980} {
+		copy(long[at:], " "+partnerHold+" ")
+	}
+	history[4] = schema.NewTurn(schema.TurnUserInput, llm.User(string(long)))
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if got := strings.Count(all.String(), partnerHold); got < 4 {
+		t.Fatalf("only %d of 4 holds crossing part boundaries reached a summarizer whole", got)
+	}
+}
