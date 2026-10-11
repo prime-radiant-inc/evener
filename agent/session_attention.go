@@ -805,10 +805,11 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 		return err
 	}
 	// The latch goes up before the consumed marker can land: a fold that sees
-	// the item resolved must already find it latched.
+	// the item resolved must already find it latched. It stays up when the
+	// resolution fails, since a failed verification read can follow a marker
+	// that did land, and the retry needs the trigger's turn.
 	s.holdAcceptedTrigger(attentionID)
 	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
-		s.holdAcceptedTrigger("")
 		return err
 	}
 	pendingIDs, err := s.pendingDelegateAttentionIDs()

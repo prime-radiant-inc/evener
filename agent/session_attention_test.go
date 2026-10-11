@@ -606,6 +606,13 @@ func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing
 	if err := runtime.acceptDelegateAttention(reservation); err == nil {
 		t.Fatal("consumed attention resolution unexpectedly survived injected sync failure")
 	}
+	// The marker may have landed, so the retry still needs the trigger's turn.
+	runtime.attentionMu.Lock()
+	latched := runtime.attentionAcceptedID
+	runtime.attentionMu.Unlock()
+	if latched != attentionID {
+		t.Fatalf("trigger latched after the ambiguous failure = %q, want %q", latched, attentionID)
+	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
 	if err != nil {
 		t.Fatalf("read ambiguous attention resolution: %v", err)
