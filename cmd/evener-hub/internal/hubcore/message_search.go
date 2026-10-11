@@ -26,7 +26,7 @@ import (
 // version is dropped and rebuilt rather than migrated. Bump it when what the
 // index keeps changes too (searchableMessage), so every transcript is read
 // again.
-const messageSearchSchemaVersion = 1
+const messageSearchSchemaVersion = 2
 
 // messageSearchSchema is the index's layout. messages holds each message's
 // text once, under its session and the transcript key a thread read gives its

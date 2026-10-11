@@ -206,6 +206,47 @@ func TestMessageSearchKeepsPartnerSteersAndSkipsDaemonNudges(t *testing.T) {
 	}
 }
 
+// An index built before parent steers were searchable (schema version 1) still
+// finds them once reopened: the version bump rebuilds it, since a refresh
+// skips a transcript that has not changed.
+func TestMessageSearchRebuildsAnIndexThatPredatesParentSteers(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "sessions", "s1.transcript.jsonl")
+	parent := schema.NewTurn(schema.TurnSteering, llm.User("quokka from the parent"))
+	parent.SteeringSource = events.SteeringSourceParent
+	writeTestTranscript(t, path, "s1", parent)
+	dbPath := filepath.Join(root, "search.db")
+	index, err := OpenMessageSearch(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := []MessageSearchSession{{ID: "s1", TranscriptPath: path}}
+	if _, err := index.Refresh(context.Background(), sessions); err != nil {
+		t.Fatal(err)
+	}
+	// What the version-1 index held: the transcript read, without the steer.
+	if _, err := index.db.ExecContext(context.Background(), `DELETE FROM messages`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.db.ExecContext(context.Background(), `PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenMessageSearch(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Refresh(context.Background(), sessions); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := reopened.Match(context.Background(), "quokka", 3); err != nil || matches["s1"].Count != 1 {
+		t.Fatalf("matches = %+v (%v), want the parent steer found after the rebuild", matches, err)
+	}
+}
+
 // Every word must match, each as a prefix, letter case aside. A search whose
 // words are all one letter searches nothing, and FTS5's own syntax in a search
 // is only words.
