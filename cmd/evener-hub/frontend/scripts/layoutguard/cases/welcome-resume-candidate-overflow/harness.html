@@ -41,7 +41,8 @@
 <main class="fixtures"></main>
 
 <!-- Welcome.tsx's real structure: PaneScaffold > .body > EmptyState
-     (.emptyState > .title/.action) > welcome .actions column. The header is
+     (.emptyState > .title/.action) > welcome .actions column, the resume
+     Button with `wrap`, and the hints as a ShortcutList. The header is
      present but display:none at this mobile width, as in production.
      NOTE the raw-stylesheet collisions CSS Modules would normally hash apart:
      panescaffold's .actions/.title also match welcome's .actions and
@@ -59,12 +60,14 @@
           <p class="title">No session open</p>
           <div class="action">
             <div class="actions" data-actions>
-              <button class="button primary md" data-resume type="button"></button>
+              <button class="button primary md wrap" data-resume type="button"></button>
               <button class="button secondary md" data-new-session type="button">New session</button>
               <div class="hints" data-hints>
-                <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">K</span><span>command palette</span></div>
-                <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">I</span><span>focus the composer</span></div>
-                <div class="hintRow"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">J</span><span>next session needing you</span></div>
+                <dl class="list">
+                  <div class="item"><dt class="keys"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">K</span></dt><dd class="label">command palette</dd></div>
+                  <div class="item"><dt class="keys"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">I</span></dt><dd class="label">focus the composer</dd></div>
+                  <div class="item"><dt class="keys"><span class="kbdStandIn">Mod</span><span class="kbdStandIn">J</span></dt><dd class="label">next session needing you</dd></div>
+                </dl>
                 <p class="hintFooter"><span class="kbdStandIn">?</span><span>inside the command palette shows all shortcuts.</span></p>
               </div>
             </div>

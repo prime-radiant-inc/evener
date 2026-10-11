@@ -29,7 +29,7 @@ import {
 } from "../../../../stores/credentials";
 import { isLocalHost } from "../../../../stores/hostRouting";
 import { hostInstanceIdentity, isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
-import { Button, EmptyState, Skeleton } from "../../../../widgets";
+import { Button, EmptyState, InlineNotice, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostPicker } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
@@ -44,7 +44,6 @@ const CLASS = {
   remote: requireClass(styles.remote, "CredentialsHostScope.module.css", "remote"),
   heading: requireClass(styles.heading, "CredentialsHostScope.module.css", "heading"),
   note: requireClass(styles.note, "CredentialsHostScope.module.css", "note"),
-  error: requireClass(styles.error, "CredentialsHostScope.module.css", "error"),
   push: requireClass(styles.push, "CredentialsHostScope.module.css", "push"),
   report: requireClass(styles.report, "CredentialsHostScope.module.css", "report"),
   reportList: requireClass(styles.reportList, "CredentialsHostScope.module.css", "reportList"),
@@ -256,14 +255,17 @@ function RemoteHostInstances({
             registry, when its read is what failed - see retryHostRead), so the pane
             never sits on an error with no way out. */}
         {state.error !== null && !unverifiable && (
-          <>
-            <p className={CLASS.error}>
-              Couldn't read providers from {host}: {state.error}
-            </p>
-            <Button size="sm" onClick={() => retryHostRead(host)}>
-              Retry
-            </Button>
-          </>
+          <InlineNotice
+            tone="danger"
+            live="off"
+            action={
+              <Button size="sm" onClick={() => retryHostRead(host)}>
+                Retry
+              </Button>
+            }
+          >
+            Couldn't read providers from {host}: {state.error}
+          </InlineNotice>
         )}
         {unverifiable && (
           <EmptyState
@@ -288,11 +290,7 @@ function RemoteHostInstances({
             onHostSignIn={(name) => void beginHostSignIn(name)}
           />
         )}
-        {signInError !== null && (
-          <p className={CLASS.error} role="alert">
-            {signInError}
-          </p>
-        )}
+        {signInError !== null && <InlineNotice tone="danger">{signInError}</InlineNotice>}
         {signIn !== null && (
           <DeviceCodeDialog
             key={signIn.flowId}
@@ -517,32 +515,32 @@ function PushCredentials({
         </p>
       )}
       {shown?.phase === "failed" && (
-        <p className={CLASS.error} role="alert">
+        <InlineNotice tone="danger">
           Couldn't push credentials to {host}: {shown.message}
-        </p>
+        </InlineNotice>
       )}
       {shown?.phase === "unknown" && (
-        <p className={CLASS.error} role="alert">
+        <InlineNotice tone="danger">
           The push to {host} didn't answer before this page's deadline, so its outcome is not known here: {host} may
           have applied the keys already. Check what {host} now holds, and send them again only if you mean to - a second
           push can apply them twice or overwrite what {host} has taken since.
-        </p>
+        </InlineNotice>
       )}
       {orphaned && (
-        <p className={CLASS.error} role="alert">
+        <InlineNotice tone="danger">
           The hub connection was replaced while the push to {host} was in flight, so its outcome is not known here: this
           connection never saw the result. Push again only if you mean to send the keys again.
-        </p>
+        </InlineNotice>
       )}
       {/* The other half of the same rule: an outcome that HAD rendered is not the
           new connection's either. Withheld (the state is kept, so nothing is
           silently forgotten) and named, rather than left standing over a listing
           that has already been re-read for the connection in use now. */}
       {staleOutcome && (
-        <p className={CLASS.error} role="alert">
+        <InlineNotice tone="danger">
           The hub connection was replaced after the push to {host} settled, so the connection in use now never saw its
           outcome: it is not shown here. Push again only if you mean to send the keys again.
-        </p>
+        </InlineNotice>
       )}
       {shown?.phase === "report" && <PushReport response={shown.response} />}
     </div>

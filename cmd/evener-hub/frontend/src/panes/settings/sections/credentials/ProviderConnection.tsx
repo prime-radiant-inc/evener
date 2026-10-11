@@ -16,7 +16,17 @@ import {
   isStaleListingRefusal,
   useCredentialsStore,
 } from "../../../../stores/credentials";
-import { Button, Chevron, Dialog, Disclosure, FormRow, Input, OpenButton, Skeleton } from "../../../../widgets";
+import {
+  Button,
+  Dialog,
+  Disclosure,
+  FormRow,
+  InlineNotice,
+  Input,
+  ListRow,
+  OpenButton,
+  Skeleton,
+} from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { AddInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
@@ -110,11 +120,8 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
 }
 
 /**
- * One tappable row per provider, drawn with the app's list-of-selectable-
- * things row (panes/settings/sections/marketplacesPlugins/InstalledSection.tsx
- * and MarketplacesSection.tsx: a full-width button carrying a surface, an
- * edge and a trailing chevron) rather than a box per provider. The whole row
- * is the target and a real <button>, so it is a tab stop whose accessible
+ * One tappable ListRow per provider rather than a box per provider. The whole
+ * row is the target and a real <button>, so it is a tab stop whose accessible
  * name is exactly the provider's label - the same label the list has always
  * printed (help metadata first, then the registry's name, then the id).
  */
@@ -131,12 +138,11 @@ function ProviderChoices({
     <ul aria-label="Providers" className={styles.providers}>
       {rows.map((row) => (
         <li key={row.id}>
-          <button type="button" className={styles.provider} disabled={disabled} onClick={() => onSelect(row)}>
-            <span className={styles.providerLabel}>{HELP[row.id]?.label || row.name || row.id}</span>
-            <span className={styles.providerChevron} aria-hidden="true">
-              <Chevron direction="right" />
-            </span>
-          </button>
+          <ListRow
+            label={HELP[row.id]?.label || row.name || row.id}
+            disabled={disabled}
+            onSelect={() => onSelect(row)}
+          />
         </li>
       ))}
     </ul>
@@ -177,14 +183,20 @@ export function ProviderConnection(props: ProviderConnectionProps) {
         <p>Connect one provider to get started. Add others later.</p>
         {store.loading && <Skeleton />}
         {store.error && (
-          <div role="alert" tabIndex={-1} ref={errorRef}>
-            Providers could not be loaded.{" "}
-            {/* fetch() rejects when there is no client; the error region this
-                button lives in is already the recovery affordance. */}
-            <Button variant="secondary" onClick={() => void store.fetch().catch(() => {})}>
-              Retry
-            </Button>
-          </div>
+          <InlineNotice
+            tone="danger"
+            tabIndex={-1}
+            ref={errorRef}
+            action={
+              // fetch() rejects when there is no client; the error region this
+              // button lives in is already the recovery affordance.
+              <Button variant="secondary" onClick={() => void store.fetch().catch(() => {})}>
+                Retry
+              </Button>
+            }
+          >
+            Providers could not be loaded.
+          </InlineNotice>
         )}
         {!showAll && <ProviderChoices rows={popular} disabled={listingUnavailable} onSelect={selectProvider} />}
         {/* A disclosure, not a second mode: one focusable control opens the
@@ -839,9 +851,9 @@ function SelectedConnection({
           </>
         )}
         {error && (
-          <div className={styles.review} role="alert" tabIndex={-1} ref={errorRef}>
+          <InlineNotice tone="danger" tabIndex={-1} ref={errorRef}>
             {error}
-          </div>
+          </InlineNotice>
         )}
         {connection !== "ready" && <p role="status">Waiting for the Evener host to reconnect.</p>}
         <Disclosure open={advancedOpen} onOpenChange={setAdvancedOpen} summary="Advanced settings">

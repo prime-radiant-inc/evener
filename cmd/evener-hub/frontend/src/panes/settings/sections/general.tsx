@@ -1,15 +1,14 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, EmptyState, Skeleton } from "../../../widgets";
+import { Button, EmptyState, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./general.module.css";
-import { Code, FieldDim, SettingsField } from "./settingsField";
+import { Code, FieldDim } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "general.module.css", "root"),
   help: requireClass(styles.help, "general.module.css", "help"),
-  list: requireClass(styles.list, "general.module.css", "list"),
 };
 
 // The bearer token's value is a hard invariant (credential never-echo) -
@@ -67,66 +66,73 @@ export function GeneralSection() {
         Read-only summary of the hub's runtime configuration. Edit <Code>~/.config/evener/hub.toml</Code> to change
         these values.
       </p>
-      <dl className={CLASS.list}>
-        <SettingsField label="Hub address" value={hub?.listenAddr ?? ""} />
-        <SettingsField
-          label="Bearer token"
-          value={
-            <>
-              {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
-            </>
-          }
-          help={
-            <>
-              Long-lived; copy when authenticating the TUI or a remote browser. Persisted at <Code>auth-token</Code> in
-              the hub state dir and reused across restarts; delete that file to invalidate existing sessions.
-            </>
-          }
-        />
-        <SettingsField
-          label="Run dir"
-          value={hub?.runDir ?? ""}
-          help="Per-PID rendezvous files; the hub watches this directory to discover live daemons."
-        />
-        <SettingsField label="State dir" value={data.storage?.stateDir ?? ""} />
-        {pastIndex !== undefined && (
-          <SettingsField
-            label="Past index"
-            value={
-              <>
-                {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
-              </>
-            }
-            help={
-              <>
-                SQLite database of past session metadata. Search results in <Code>⌘K</Code> come from here.
-              </>
-            }
-          />
-        )}
-        <SettingsField
-          label="Spawn timeout"
-          value={hub?.spawnTimeout ?? ""}
-          help="How long the hub waits for a daemon to report ready after spawn before treating it as failed."
-        />
-        {pastIndex !== undefined && <SettingsField label="Past results per page" value={pastIndex.perPage ?? 0} />}
-        <SettingsField
-          label="Hub config"
-          value={
-            <>
-              <Code>~/.config/evener/hub.toml</Code> <FieldDim>edit to change</FieldDim>
-            </>
-          }
-        />
-        <SettingsField
-          label="Hub version"
-          value={
-            <>
-              {hub?.version ?? ""} {hub?.commit !== undefined && <FieldDim>({hub.commit})</FieldDim>}
-            </>
-          }
-        />
-      </dl>
+      <PropertyList
+        layout="stacked"
+        rows={
+          [
+            { label: "Hub address", value: hub?.listenAddr ?? "" },
+            {
+              label: "Bearer token",
+              value: (
+                <>
+                  {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
+                </>
+              ),
+              help: (
+                <>
+                  Long-lived; copy when authenticating the TUI or a remote browser. Persisted at <Code>auth-token</Code>{" "}
+                  in the hub state dir and reused across restarts; delete that file to invalidate existing sessions.
+                </>
+              ),
+            },
+            {
+              label: "Run dir",
+              value: hub?.runDir ?? "",
+              help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
+            },
+            { label: "State dir", value: data.storage?.stateDir ?? "" },
+            ...(pastIndex !== undefined
+              ? [
+                  {
+                    label: "Past index",
+                    value: (
+                      <>
+                        {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
+                      </>
+                    ),
+                    help: (
+                      <>
+                        SQLite database of past session metadata. Search results in <Code>⌘K</Code> come from here.
+                      </>
+                    ),
+                  },
+                ]
+              : []),
+            {
+              label: "Spawn timeout",
+              value: hub?.spawnTimeout ?? "",
+              help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
+            },
+            ...(pastIndex !== undefined ? [{ label: "Past results per page", value: pastIndex.perPage ?? 0 }] : []),
+            {
+              label: "Hub config",
+              value: (
+                <>
+                  <Code>~/.config/evener/hub.toml</Code> <FieldDim>edit to change</FieldDim>
+                </>
+              ),
+            },
+            {
+              label: "Hub version",
+              value: (
+                <>
+                  {hub?.version ?? ""} {hub?.commit !== undefined && <FieldDim>({hub.commit})</FieldDim>}
+                </>
+              ),
+            },
+          ] satisfies StackedPropertyListRow[]
+        }
+      />
     </div>
   );
 }

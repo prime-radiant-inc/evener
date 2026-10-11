@@ -43,6 +43,7 @@ import {
   ConfirmDialog,
   Dialog,
   EmptyState,
+  InlineNotice,
   Loader,
   Skeleton,
   useFocusRehome,
@@ -62,9 +63,6 @@ import { confirmListingState, refreshListingAfterMutation } from "./reconcileLis
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
   headerRow: requireClass(styles.headerRow, "CredentialsSection.module.css", "headerRow"),
-  error: requireClass(styles.error, "CredentialsSection.module.css", "error"),
-  diagnostics: requireClass(styles.diagnostics, "CredentialsSection.module.css", "diagnostics"),
-  diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
 };
 
@@ -106,15 +104,14 @@ const ENDPOINT_CHANGED_CONFIRM_ERROR =
 export function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
   if (diagnostics.length === 0) return null;
   return (
-    <div className={CLASS.diagnostics} role="status" aria-live="polite">
-      <p className={CLASS.diagnosticsHeading}>Warnings</p>
+    <InlineNotice title="Warnings">
       <ul className={CLASS.diagnosticsList}>
         {diagnostics.map((d, index) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: diagnostics are a flat, unordered warning list with no stable identity of their own
           <li key={index}>{d}</li>
         ))}
       </ul>
-    </div>
+    </InlineNotice>
   );
 }
 
@@ -580,7 +577,7 @@ export function CredentialsSection({
           same reason). A failed read keeps the listing it already had
           (readListing), so those rows stay too, with the banner above them. */}
       {loading && instances.length === 0 && <Skeleton />}
-      {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
+      {error && <InlineNotice tone="danger">Failed to load: {friendlyErrorMessage(error)}</InlineNotice>}
       {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
       {/* The provider-grouped listing is shared with the host-scoped view of a
           remote host's own listing (ProviderInstanceGroups); this surface's

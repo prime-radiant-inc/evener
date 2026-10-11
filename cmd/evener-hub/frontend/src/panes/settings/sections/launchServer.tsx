@@ -9,7 +9,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button, Loader } from "../../../widgets";
+import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
@@ -20,9 +20,6 @@ import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect"
 const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
   help: requireClass(styles.help, "launchServer.module.css", "help"),
-  error: requireClass(styles.error, "launchServer.module.css", "error"),
-  diagnostics: requireClass(styles.diagnostics, "launchServer.module.css", "diagnostics"),
-  diagnosticsHeading: requireClass(styles.diagnosticsHeading, "launchServer.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "launchServer.module.css", "diagnosticsList"),
 };
 
@@ -34,15 +31,14 @@ type LoadState =
 function Diagnostics({ diagnostics }: { diagnostics: LaunchConfigDiagnostic[] }) {
   if (diagnostics.length === 0) return null;
   return (
-    <div className={CLASS.diagnostics} role="status" aria-live="polite">
-      <p className={CLASS.diagnosticsHeading}>Warnings</p>
+    <InlineNotice title="Warnings">
       <ul className={CLASS.diagnosticsList}>
         {diagnostics.map((d, index) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: diagnostics are a flat, unordered warning list with no stable identity of their own (field+message can legitimately repeat across a resolve/save cycle)
           <li key={index}>{d.field ? `${d.field}: ${d.message}` : d.message}</li>
         ))}
       </ul>
-    </div>
+    </InlineNotice>
   );
 }
 
@@ -168,22 +164,31 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
       </p>
       {load.phase === "loading" && <Loader label="Loading launch settings" />}
       {load.phase === "error" && (
-        <p className={CLASS.error}>
-          Failed to load launch settings. {load.message}{" "}
-          <Button type="button" onClick={() => retryLoad()}>
-            Retry
-          </Button>
-        </p>
+        <InlineNotice
+          tone="danger"
+          action={
+            <Button type="button" onClick={() => retryLoad()}>
+              Retry
+            </Button>
+          }
+        >
+          Failed to load launch settings. {load.message}
+        </InlineNotice>
       )}
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <p className={CLASS.error} role="status">
-              Could not re-read this host's launch settings. {refreshError}{" "}
-              <Button type="button" onClick={() => reload()}>
-                Retry
-              </Button>
-            </p>
+            <InlineNotice
+              tone="danger"
+              live="status"
+              action={
+                <Button type="button" onClick={() => reload()}>
+                  Retry
+                </Button>
+              }
+            >
+              Could not re-read this host's launch settings. {refreshError}
+            </InlineNotice>
           )}
           <Diagnostics diagnostics={diagnostics} />
           <LaunchConfigForm

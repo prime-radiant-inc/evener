@@ -1,16 +1,15 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, EmptyState, Skeleton } from "../../../widgets";
+import { Button, EmptyState, PropertyList, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
-import { Code, SettingsField } from "./settingsField";
+import { Code } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hub.module.css", "root"),
-  list: requireClass(styles.list, "hub.module.css", "list"),
 };
 
 /**
@@ -55,28 +54,31 @@ export function HubSection() {
 
   return (
     <div className={CLASS.root}>
-      <dl className={CLASS.list}>
-        <SettingsField
-          label="Listen address"
-          value={hub?.listenAddr ?? ""}
-          help={
-            <>
-              Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
-              <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
-            </>
-          }
-        />
-        <SettingsField
-          label="Run dir"
-          value={hub?.runDir ?? ""}
-          help="Per-PID rendezvous files; the hub watches this directory to discover live daemons."
-        />
-        <SettingsField
-          label="Spawn timeout"
-          value={hub?.spawnTimeout ?? ""}
-          help="How long the hub waits for a daemon to report ready after spawn before treating it as failed."
-        />
-      </dl>
+      <PropertyList
+        layout="stacked"
+        rows={[
+          {
+            label: "Listen address",
+            value: hub?.listenAddr ?? "",
+            help: (
+              <>
+                Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
+                <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
+              </>
+            ),
+          },
+          {
+            label: "Run dir",
+            value: hub?.runDir ?? "",
+            help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
+          },
+          {
+            label: "Spawn timeout",
+            value: hub?.spawnTimeout ?? "",
+            help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
+          },
+        ]}
+      />
       <HubUpdates />
       <HubResidents />
     </div>

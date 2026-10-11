@@ -9,7 +9,8 @@ import {
   rootsFromText,
   rootsToText,
 } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useIsMobile } from "../../../shell/useIsMobile";
 import {
   clearedOutcomeLine,
   deployRefusalAction,
@@ -36,10 +37,15 @@ import {
   Dialog,
   EmptyState,
   FormRow,
+  InlineNotice,
   Input,
+  ListRow,
   Loader,
+  PropertyList,
+  Sheet,
   Skeleton,
   Textarea,
+  useFocusRehome,
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -63,21 +69,15 @@ const CLASS = {
   root: requireClass(styles.root, "hosts.module.css", "root"),
   help: requireClass(styles.help, "hosts.module.css", "help"),
   list: requireClass(styles.list, "hosts.module.css", "list"),
-  row: requireClass(styles.row, "hosts.module.css", "row"),
-  rowName: requireClass(styles.rowName, "hosts.module.css", "rowName"),
-  rowDetail: requireClass(styles.rowDetail, "hosts.module.css", "rowDetail"),
-  rowActions: requireClass(styles.rowActions, "hosts.module.css", "rowActions"),
   form: requireClass(styles.form, "hosts.module.css", "form"),
-  formError: requireClass(styles.formError, "hosts.module.css", "formError"),
   planFields: requireClass(styles.planFields, "hosts.module.css", "planFields"),
-  planField: requireClass(styles.planField, "hosts.module.css", "planField"),
-  planLabel: requireClass(styles.planLabel, "hosts.module.css", "planLabel"),
-  planValue: requireClass(styles.planValue, "hosts.module.css", "planValue"),
   planNotice: requireClass(styles.planNotice, "hosts.module.css", "planNotice"),
-  rowOperation: requireClass(styles.rowOperation, "hosts.module.css", "rowOperation"),
-  rowOperationError: requireClass(styles.rowOperationError, "hosts.module.css", "rowOperationError"),
-  rowRepair: requireClass(styles.rowRepair, "hosts.module.css", "rowRepair"),
-  rowRepairNotice: requireClass(styles.rowRepairNotice, "hosts.module.css", "rowRepairNotice"),
+  buttonRow: requireClass(styles.buttonRow, "hosts.module.css", "buttonRow"),
+  sheetBody: requireClass(styles.sheetBody, "hosts.module.css", "sheetBody"),
+  chipRow: requireClass(styles.chipRow, "hosts.module.css", "chipRow"),
+  operation: requireClass(styles.operation, "hosts.module.css", "operation"),
+  sheetActions: requireClass(styles.sheetActions, "hosts.module.css", "sheetActions"),
+  sheetDivider: requireClass(styles.sheetDivider, "hosts.module.css", "sheetDivider"),
 };
 
 export interface HostsSectionProps {
@@ -148,6 +148,10 @@ export function HostsSection(_props: HostsSectionProps) {
   // Only the name is captured: the dialog renders the LIVE row, so a
   // poll-driven escalation or a changed remnant reaches it without a reload.
   const [repairTarget, setRepairTarget] = useState<{ name: string; action: "retry" | "recover" } | null>(null);
+  // The NAME whose detail sheet is open. Only the name is held, like the
+  // repair target: the sheet renders the LIVE row, so a poll's change reaches
+  // it, and a row that disappears closes it.
+  const [selectedName, setSelectedName] = useState<string | null>(null);
 
   useConnectedEffect(() => hostsStore.getState().fetch(), []);
 
@@ -208,6 +212,21 @@ export function HostsSection(_props: HostsSectionProps) {
       load.phase === "ready" ? load.hosts.find((candidate) => candidate.name === repairTargetName) : undefined;
     if (row === undefined || (row.openRemnantId ?? "") === "") setRepairTarget(null);
   }, [repairTargetName, load]);
+
+  // A sheet is only as alive as its host (design-system §10): when the row
+  // leaves the listing, the sheet closes rather than offering actions on it.
+  useEffect(() => {
+    if (selectedName === null || load.phase !== "ready") return;
+    if (!load.hosts.some((candidate) => candidate.name === selectedName)) setSelectedName(null);
+  }, [selectedName, load]);
+
+  // The server-reported midAttach rides the local connecting state: an attach
+  // already in progress renders the same chip and keeps Connect disabled until
+  // it settles, instead of showing an enabled Connect on a row the server says
+  // is mid-attach.
+  function isConnecting(row: HostRow): boolean {
+    return connecting.has(row.name) || row.midAttach;
+  }
 
   async function handleAdd(entry: HostEntry): Promise<void> {
     await hostsStore.getState().add(entry);
@@ -280,13 +299,22 @@ export function HostsSection(_props: HostsSectionProps) {
   // whose remnant disappeared unmounts the dialog honestly.
   const repairRow =
     repairTarget === null ? undefined : load.hosts.find((candidate) => candidate.name === repairTarget.name);
+  const selectedRow =
+    selectedName === null ? undefined : load.hosts.find((candidate) => candidate.name === selectedName);
+  const selectedOperation = selectedRow === undefined ? undefined : operations[selectedRow.name];
+  const selectedOperationView =
+    selectedRow === undefined ||
+    selectedOperation === undefined ||
+    !operationShownOnHost(selectedOperation, selectedRow)
+      ? null
+      : hostOperationView(selectedOperation);
 
   return (
     <div className={CLASS.root}>
       <p className={CLASS.help}>
-        Remote hubs this controller can attach to. Add a host with its SSH address, Connect to bring it online, or
-        remove it. Hosts live in <Code>hub.toml</Code>, which the hub manages and rewrites in place — comments and
-        formatting in that file are not preserved.
+        Remote hubs this controller can attach to. Add a host with its SSH address; open a host to connect, deploy,
+        restart, edit or remove it. Hosts live in <Code>hub.toml</Code>, which the hub manages and rewrites in place —
+        comments and formatting in that file are not preserved.
       </p>
       <div>
         <Button
@@ -303,102 +331,43 @@ export function HostsSection(_props: HostsSectionProps) {
       ) : (
         <ul className={CLASS.list}>
           {load.hosts.map((row) => {
-            // The server-reported midAttach rides the local connecting state:
-            // an attach already in progress renders the same chip and keeps
-            // Connect disabled until it settles, instead of showing an enabled
-            // Connect button on a row the server says is mid-attach.
-            const isConnecting = connecting.has(row.name) || row.midAttach;
-            const detail = rowDetail(row);
             const operation = operations[row.name];
             const operationView =
               operation === undefined || !operationShownOnHost(operation, row) ? null : hostOperationView(operation);
-            // The remnant repair affordance (registry spec 08 §13): a row whose
-            // name holds an open remnant carries teardown-retry (escalating to
-            // teardown-recover past the bound).
-            const remnantId = row.openRemnantId ?? "";
+            // design-system §10: the row carries identity and status only - its
+            // state, its operation's state, one meta line - and opens the
+            // host's sheet, where every action lives.
             return (
-              <li key={row.name} className={CLASS.row}>
-                <span className={CLASS.rowName}>{row.name}</span>
-                {stateChip(row, isConnecting)}
-                {detail !== null && <span className={CLASS.rowDetail}>{detail}</span>}
-                {operationView !== null && (
-                  // The operation's own row carries its progress/terminal
-                  // state (registry spec 08 §13): the chip names the state, the
-                  // line is the record's own prose — a failure's 04b message
-                  // verbatim — and a stopped read says so instead of stalling.
-                  <span className={CLASS.rowOperation}>
-                    <Chip tone={operationView.tone}>{operationView.label}</Chip>
-                    {operationView.line !== null && <span className={CLASS.rowDetail}>{operationView.line}</span>}
-                    {operationView.replay !== null && <span className={CLASS.rowDetail}>{operationView.replay}</span>}
-                    {operationView.unavailable !== null && (
-                      <span className={CLASS.rowOperationError} role="alert">
-                        {operationView.unavailable}
-                      </span>
-                    )}
-                  </span>
-                )}
-                {remnantId !== "" && (
-                  <span className={CLASS.rowRepair}>
-                    <Button
-                      size="sm"
-                      variant="quiet"
-                      onClick={() => {
-                        setRepairTarget({ name: row.name, action: "retry" });
-                      }}
-                    >
-                      Teardown retry
-                    </Button>
-                    {row.escalationAgeSec !== undefined && (
-                      <Button
-                        size="sm"
-                        variant="quiet"
-                        onClick={() => {
-                          setRepairTarget({ name: row.name, action: "recover" });
-                        }}
-                      >
-                        Recover remnant
-                      </Button>
-                    )}
-                  </span>
-                )}
-                <span className={CLASS.rowActions}>
-                  {!row.attached && !row.removed && (
-                    <Button size="sm" variant="quiet" disabled={isConnecting} onClick={() => void handleConnect(row)}>
-                      {isConnecting ? "Connecting…" : "Connect"}
-                    </Button>
-                  )}
-                  {/* Deploy and Restart render on every row: a detached live
-                      host is a legitimate target (plan answers `unattached`
-                      with a Connect-first affordance, and restart attach-firsts
-                      under its own gate), while a tombstone row disables both
-                      and never fires (registry spec 08 §13). */}
-                  <Button size="sm" variant="quiet" disabled={row.removed} onClick={() => setDeployTarget(row)}>
-                    Deploy
-                  </Button>
-                  <Button size="sm" variant="quiet" disabled={row.removed} onClick={() => setRestartTarget(row)}>
-                    Restart
-                  </Button>
-                  {!row.removed && (
-                    <Button
-                      size="sm"
-                      variant="quiet"
-                      onClick={() => {
-                        setDialog({ mode: "edit", row });
-                      }}
-                    >
-                      Edit
-                    </Button>
-                  )}
-                  {!row.removed && (
-                    <Button size="sm" variant="quiet" onClick={() => setPendingRemove(row)}>
-                      Remove
-                    </Button>
-                  )}
-                </span>
+              <li key={row.name}>
+                <ListRow
+                  label={row.name}
+                  chips={
+                    <>
+                      {stateChip(row, isConnecting(row))}
+                      {operationView !== null && <Chip tone={operationView.tone}>{operationView.label}</Chip>}
+                    </>
+                  }
+                  meta={rowDetail(row) ?? undefined}
+                  onSelect={() => setSelectedName(row.name)}
+                />
               </li>
             );
           })}
         </ul>
+      )}
+      {selectedRow !== undefined && (
+        <HostSheet
+          row={selectedRow}
+          connecting={isConnecting(selectedRow)}
+          operationView={selectedOperationView}
+          onClose={() => setSelectedName(null)}
+          onConnect={() => void handleConnect(selectedRow)}
+          onDeploy={() => setDeployTarget(selectedRow)}
+          onRestart={() => setRestartTarget(selectedRow)}
+          onEdit={() => setDialog({ mode: "edit", row: selectedRow })}
+          onRemove={() => setPendingRemove(selectedRow)}
+          onRepair={(action) => setRepairTarget({ name: selectedRow.name, action })}
+        />
       )}
       {dialog !== null && (
         <HostEntryDialog
@@ -467,6 +436,116 @@ export function HostsSection(_props: HostsSectionProps) {
         />
       )}
     </div>
+  );
+}
+
+type HostOperationView = ReturnType<typeof hostOperationView>;
+
+interface HostSheetProps {
+  row: HostRow;
+  connecting: boolean;
+  operationView: HostOperationView | null;
+  onClose: () => void;
+  onConnect: () => void;
+  onDeploy: () => void;
+  onRestart: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
+  onRepair: (action: "retry" | "recover") => void;
+}
+
+/**
+ * HostSheet is one host's detail sheet (design-system §10): its state, its
+ * tracked operation's progress, and every per-host action - Connect, Deploy,
+ * Restart, Edit, the remnant repairs, and Remove below a divider. The actions'
+ * own dialogs open over it.
+ */
+function HostSheet({
+  row,
+  connecting,
+  operationView,
+  onClose,
+  onConnect,
+  onDeploy,
+  onRestart,
+  onEdit,
+  onRemove,
+  onRepair,
+}: HostSheetProps) {
+  const isMobile = useIsMobile();
+  // Connecting unmounts the Connect button that holds the keyboard; keep focus
+  // inside the sheet rather than dropping it to <body>.
+  const focusRoot = useRef<HTMLDivElement>(null);
+  useFocusRehome(focusRoot);
+  // The remnant repair affordance (registry spec 08 §13): a host whose name
+  // holds an open remnant carries teardown-retry (escalating to
+  // teardown-recover past the bound).
+  const remnantOpen = (row.openRemnantId ?? "") !== "";
+  return (
+    <Sheet open onClose={onClose} title={row.name} side={isMobile ? "bottom" : "right"}>
+      <div ref={focusRoot} className={CLASS.sheetBody}>
+        <div className={CLASS.chipRow}>{stateChip(row, connecting)}</div>
+        {operationView !== null && (
+          // The operation's progress/terminal state (registry spec 08 §13): the
+          // chip names the state, the line is the record's own prose - a
+          // failure's 04b message verbatim - and a stopped read says so
+          // instead of stalling.
+          <div className={CLASS.operation}>
+            <div className={CLASS.chipRow}>
+              <Chip tone={operationView.tone}>{operationView.label}</Chip>
+            </div>
+            {operationView.line !== null && <InlineNotice live="off">{operationView.line}</InlineNotice>}
+            {operationView.replay !== null && <InlineNotice live="off">{operationView.replay}</InlineNotice>}
+            {operationView.unavailable !== null && (
+              <InlineNotice tone="danger">{operationView.unavailable}</InlineNotice>
+            )}
+          </div>
+        )}
+        <div className={CLASS.sheetActions}>
+          {!row.attached && !row.removed && (
+            <Button variant="quiet" disabled={connecting} onClick={onConnect}>
+              {connecting ? "Connecting…" : "Connect"}
+            </Button>
+          )}
+          {/* Deploy and Restart render for every host: a detached live host is
+              a legitimate target (plan answers `unattached` with a
+              Connect-first affordance, and restart attach-firsts under its own
+              gate), while a tombstone disables both and never fires (registry
+              spec 08 §13). */}
+          <Button variant="quiet" disabled={row.removed} onClick={onDeploy}>
+            Deploy
+          </Button>
+          <Button variant="quiet" disabled={row.removed} onClick={onRestart}>
+            Restart
+          </Button>
+          {!row.removed && (
+            <Button variant="quiet" onClick={onEdit}>
+              Edit
+            </Button>
+          )}
+          {remnantOpen && (
+            <Button variant="quiet" onClick={() => onRepair("retry")}>
+              Teardown retry
+            </Button>
+          )}
+          {remnantOpen && row.escalationAgeSec !== undefined && (
+            <Button variant="quiet" onClick={() => onRepair("recover")}>
+              Recover remnant
+            </Button>
+          )}
+        </div>
+        {!row.removed && (
+          <>
+            <hr className={CLASS.sheetDivider} />
+            <div className={CLASS.sheetActions}>
+              <Button variant="danger" onClick={onRemove}>
+                Remove
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </Sheet>
   );
 }
 
@@ -645,11 +724,7 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
         >
           <Textarea id={`${prefix}-roots`} value={roots} onChange={(e) => setRoots(e.target.value)} rows={3} />
         </FormRow>
-        {formError !== null && (
-          <p className={CLASS.formError} role="alert">
-            {formError}
-          </p>
-        )}
+        {formError !== null && <InlineNotice tone="danger">{formError}</InlineNotice>}
       </div>
     </Dialog>
   );
@@ -667,15 +742,6 @@ const RECOVERY_LABEL: Record<Exclude<HostOpRecovery, "none">, string> = {
   retry: "Retry deploy",
   connect: "Connect and plan",
 };
-
-function PlanField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className={CLASS.planField}>
-      <span className={CLASS.planLabel}>{label}</span>
-      <span className={CLASS.planValue}>{value}</span>
-    </div>
-  );
-}
 
 /**
  * The Deploy confirmation (registry spec 08 §13): opening it calls
@@ -765,14 +831,12 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
         <Loader label={`Planning deploy for ${name}…`} />
       ) : noToken !== null ? (
         <div className={CLASS.planFields}>
-          <p className={CLASS.formError} role="alert">
-            {noToken.staleFacts.message}
-          </p>
+          <InlineNotice tone="danger">{noToken.staleFacts.message}</InlineNotice>
           {noToken.remnantId !== null && (
             <>
-              <p className={CLASS.formError}>
+              <InlineNotice tone="danger" live="off">
                 {`Blocking remnant ${noToken.remnantId}: resume it with teardown-retry before deploying.`}
-              </p>
+              </InlineNotice>
               {/* §13: remnant-open surfaces the blocking remnantId with a
                   teardown-retry affordance — never Connect, never re-plan (a
                   re-plan mints nothing while the remnant is open). */}
@@ -796,20 +860,23 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
       ) : planned !== null ? (
         <div className={CLASS.planFields}>
           {planned.notice !== null && <p className={CLASS.planNotice}>{planned.notice}</p>}
-          <PlanField label="Target host" value={planned.plan.host} />
-          <PlanField label="Controller revision" value={planned.plan.controllerRevision} />
-          <PlanField label="Remote target path" value={planned.plan.targetPath} />
-          <PlanField label="Restart follows" value={planned.plan.restartFollows ? "yes" : "no"} />
-          <PlanField label="Running build" value={planned.plan.runningVersion} />
-          <PlanField
-            label="Facts captured"
-            value={`${planned.plan.factsCapturedAt} (${planned.plan.factsAgeSec}s ago)`}
+          {/* The operator is confirming exactly these values, so each wraps in
+              full rather than truncating the part that matters. */}
+          <PropertyList
+            rows={[
+              { label: "Target host", value: planned.plan.host, wrap: true },
+              { label: "Controller revision", value: planned.plan.controllerRevision, wrap: true },
+              { label: "Remote target path", value: planned.plan.targetPath, wrap: true },
+              { label: "Restart follows", value: planned.plan.restartFollows ? "yes" : "no", wrap: true },
+              { label: "Running build", value: planned.plan.runningVersion, wrap: true },
+              {
+                label: "Facts captured",
+                value: `${planned.plan.factsCapturedAt} (${planned.plan.factsAgeSec}s ago)`,
+                wrap: true,
+              },
+            ]}
           />
-          {refusal !== null && (
-            <p className={CLASS.formError} role="alert">
-              {refusal.message}
-            </p>
-          )}
+          {refusal !== null && <InlineNotice tone="danger">{refusal.message}</InlineNotice>}
           {refusal?.kind === "remnant-open" && refusal.remnantId !== undefined && (
             <RemnantRepairControls
               key={`repair-controls:${refusal.remnantId}`}
@@ -827,9 +894,7 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
         </div>
       ) : state.phase === "error" ? (
         <div className={CLASS.planFields}>
-          <p className={CLASS.formError} role="alert">
-            {state.refusal.message}
-          </p>
+          <InlineNotice tone="danger">{state.refusal.message}</InlineNotice>
           {state.recovery !== "none" && (
             <Button size="sm" variant="quiet" disabled={busy} onClick={() => void submit(state.recovery)}>
               {RECOVERY_LABEL[state.recovery]}
@@ -942,9 +1007,7 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
       </p>
       {refusal !== null && (
         <>
-          <p className={CLASS.formError} role="alert">
-            {refusal.message}
-          </p>
+          <InlineNotice tone="danger">{refusal.message}</InlineNotice>
           {refusal.kind === "remnant-open" && refusal.remnantId !== undefined && (
             <RemnantRepairControls
               key={`repair-controls:${refusal.remnantId}`}
@@ -1090,11 +1153,7 @@ function RemnantRepairControls({
     <div className={CLASS.planFields}>
       {repair?.phase === "retrying" && <Loader label={`Retrying teardown for remnant ${remnantId}…`} />}
       {repair?.phase === "recovering" && <Loader label={`Recovering remnant ${remnantId}…`} />}
-      {refusal !== null && (
-        <p className={CLASS.formError} role="alert">
-          {refusal.message}
-        </p>
-      )}
+      {refusal !== null && <InlineNotice tone="danger">{refusal.message}</InlineNotice>}
       {repair?.phase === "retried" && (
         <>
           <p className={CLASS.planNotice}>{retryOutcomeLine(repair.result)}</p>
@@ -1154,7 +1213,7 @@ function RemnantRepairControls({
               autoComplete="off"
             />
           </FormRow>
-          <div className={CLASS.rowRepair}>
+          <div className={CLASS.buttonRow}>
             <Button size="sm" variant="quiet" disabled={busy} onClick={() => setRecovering(false)}>
               Cancel
             </Button>
@@ -1168,7 +1227,7 @@ function RemnantRepairControls({
           {escalatedNow && !resolved && (
             <p className={CLASS.planNotice}>Past the escalation bound: recovering requires the audited attestation.</p>
           )}
-          <div className={CLASS.rowRepair}>
+          <div className={CLASS.buttonRow}>
             {resumeAllowed && (
               <Button size="sm" variant="quiet" disabled={busy} onClick={() => void resumeRefusedAction()}>
                 {busy ? "Retrying…" : resumeLabel}

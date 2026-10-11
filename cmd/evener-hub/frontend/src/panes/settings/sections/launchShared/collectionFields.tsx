@@ -34,7 +34,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
-import { Button, CollectionEditor, Input, PathField, Switch, VisuallyHidden } from "../../../../widgets";
+import { Button, CollectionEditor, Input, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
 import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
@@ -372,24 +372,24 @@ function EnvAddFields({
 
   return (
     <>
-      <label className={CLASS.envField}>
-        <VisuallyHidden>Variable name</VisuallyHidden>
+      <div className={CLASS.envField}>
         <Input
+          aria-label="Variable name"
           value={name}
           onChange={(e) => onChange(`${e.target.value.replace(/=/g, "")}=${envValue}`)}
           placeholder="NAME"
           disabled={disabled}
         />
-      </label>
-      <label className={CLASS.envField}>
-        <VisuallyHidden>Variable value</VisuallyHidden>
+      </div>
+      <div className={CLASS.envField}>
         <Input
+          aria-label="Variable value"
           value={envValue}
           onChange={(e) => onChange(`${name}=${e.target.value}`)}
           placeholder="value"
           disabled={disabled}
         />
-      </label>
+      </div>
       <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
         Add
       </Button>

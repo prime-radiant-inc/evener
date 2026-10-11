@@ -36,6 +36,7 @@ import {
   CodeBlock,
   CollectionEditor,
   FormRow,
+  InlineNotice,
   Input,
   ModelCatalog,
   type ModelCatalog as ModelCatalogEnvelope,
@@ -58,7 +59,6 @@ const CLASS = {
   pickerAddField: requireClass(styles.pickerAddField, "advancedOptions.module.css", "pickerAddField"),
   toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
   panel: requireClass(styles.panel, "advancedOptions.module.css", "panel"),
-  error: requireClass(styles.error, "advancedOptions.module.css", "error"),
 };
 
 export interface AdvancedOptionsProps {
@@ -246,11 +246,7 @@ export function AdvancedOptions({
               Show resolved config
             </Button>
           </div>
-          {resolveError && (
-            <p className={CLASS.error} role="alert">
-              Couldn't resolve: {resolveError}
-            </p>
-          )}
+          {resolveError && <InlineNotice tone="danger">Couldn't resolve: {resolveError}</InlineNotice>}
           {resolved !== null && (
             // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
             <div role="group" aria-label="Resolved config">

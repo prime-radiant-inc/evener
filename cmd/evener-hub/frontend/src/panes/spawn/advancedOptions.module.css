@@ -49,12 +49,6 @@
   background: var(--surface-2);
 }
 
-.error {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
-}
-
 /* Composite and collection fields use a plain label + control + help block
  * rather than a FormRow around one labelable control. */
 .fieldBlock {
