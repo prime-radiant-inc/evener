@@ -2,23 +2,6 @@
  * takes the same bottom rhythm as one. */
 .root {
   margin: 0 0 var(--space-3);
-  /* The viewer-enabled variant renders this container as a real <button>;
-     strip the user-agent control chrome so it still reads as an inline block
-     of content. No effect on the plain <div> variant. */
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-}
-
-/* Only the viewer-enabled variant is a click target (Task 7 wires onOpen); a
- * plain inline diagram keeps the text cursor and stays inert. */
-.clickable {
-  cursor: pointer;
 }
 
 /* The svg never takes pointer events, so a click anywhere over the diagram

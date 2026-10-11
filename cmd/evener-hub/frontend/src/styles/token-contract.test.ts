@@ -426,6 +426,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
   "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
   "card", // attention tone: the "a human is needed right now" envelope (ask batch, sandbox approval)
+  "toolicon", // tone prop: a state glyph whose hue IS the state (the activity sidebar's agent and job rows)
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
@@ -478,15 +479,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // latest note, the hue is a glyph-level accent, and all panel text stays
 // on the ink scale.
 //
-// zoom-activity-surfaces PR 1: shell/activitybar/activitybar.module.css earns
-// the same exception for the same structural reason - it lives under
-// shell/activitybar/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its semantic reaches are the row glyphs' state
-// hues (.glyphAlive/.glyphAttention/.glyphDanger): the sidebar's agent and
-// job rows carry the same working/needs-you/failed glyph grammar
-// RailRow.module.css established for the rail's own activity rows - the hue
-// IS the state signal, and all text stays on the ink scale.
-//
 // focus-sentence: panes/session/composer/currentwork.module.css earns the same
 // exact-path exception because it is pane content, not a widget stylesheet.
 // Its --alive ring marks an actually in-progress task, which is precisely the
@@ -517,7 +509,6 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   // above.
   "dev/taskcardmockups/taskcardmockups.module.css",
   "panes/session/transcript/entityref.module.css",
-  "shell/activitybar/activitybar.module.css",
 ]);
 
 function reachesSemanticHue(cssText: string): boolean {
@@ -573,12 +564,6 @@ test("the RailRow.module.css semantic-var exception is scoped to its exact path,
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/RailRow.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/RailRow.module.css")).toBe(false);
-});
-
-test("the activitybar.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/activitybar/activitybar.module.css")).toBe(true);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/activitybar.module.css")).toBe(false);
-  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/activitybar.module.css")).toBe(false);
 });
 
 test("the currentwork.module.css semantic-var exception is scoped to its exact path", () => {

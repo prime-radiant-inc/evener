@@ -1,4 +1,5 @@
 import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode } from "react";
+import { Badge, type BadgeProps } from "../badge";
 import { type ButtonSize, type ButtonVariant, isAriaRefusal } from "../button";
 import buttonStyles from "../button/button.module.css";
 import { requireClass } from "../internal/requireClass";
@@ -26,6 +27,10 @@ export interface IconButtonProps
    * aria-describedby announces. Ignored while the button is enabled. */
   disabledReason?: string;
   type?: "button" | "submit" | "reset";
+  /** A count riding the icon's top-right corner (a needs-you total). It is
+   * decoration on the button: `label` stays the accessible name, so put the
+   * count in `label` too when a reader needs it. */
+  badge?: BadgeProps;
 }
 
 // Reuses button.module.css's own base/variant/icon classes directly
@@ -56,6 +61,11 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
   md: requireClass(styles.md, "iconbutton.module.css", "md"),
 };
 
+const BADGE_CLASS = {
+  badgedButton: requireClass(styles.badgedButton, "iconbutton.module.css", "badgedButton"),
+  cornerBadge: requireClass(styles.cornerBadge, "iconbutton.module.css", "cornerBadge"),
+};
+
 /**
  * An icon-only Button: same variants/sizes/states, square instead of
  * padded for a text label. label is required and becomes the button's
@@ -84,6 +94,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
     disabled = false,
     disabledReason,
     type = "button",
+    badge,
     ...rest
   },
   ref,
@@ -96,6 +107,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   // The same refusal Button makes: aria-disabled keeps the control focusable,
   // so the browser still delivers the click and the widget swallows it here.
   const refused = explained || isAriaRefusal(rest["aria-disabled"]);
+  const className = `${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`;
   const button = (
     <button
       ref={ref}
@@ -103,11 +115,16 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       type={type}
       aria-label={label}
       aria-disabled={explained || rest["aria-disabled"]}
-      className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
+      className={badge === undefined ? className : `${className} ${BADGE_CLASS.badgedButton}`}
       onClick={refused ? undefined : onClick}
       disabled={disabled && !explained}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>
+      {badge !== undefined && (
+        <span className={BADGE_CLASS.cornerBadge}>
+          <Badge {...badge} />
+        </span>
+      )}
     </button>
   );
   return explained ? <Tooltip label={reason}>{button}</Tooltip> : button;

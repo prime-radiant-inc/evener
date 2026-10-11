@@ -1,38 +1,13 @@
-/* Hidden-sidebar chip (RailHost): when the persisted sidebarHidden boolean is
- * true, the docked rail is replaced by this one top-left ☰ button that docks
- * it back. Carries the needs-you Badge so attention stays visible while the
- * tree is hidden. */
+/* Hidden-sidebar bar (RailHost): when the persisted sidebarHidden boolean is
+ * true, the docked rail is replaced by one top-left Show sidebar IconButton
+ * that docks it back. It carries the needs-you badge so attention stays
+ * visible while the tree is hidden. */
 .chipBar {
   flex: none;
   align-self: flex-start;
   /* The shell's content row has no gap at any width anymore (the docked
-   * rail sits flush against the workspace), so the floating chip carries
+   * rail sits flush against the workspace), so the floating button carries
    * its own offset from the window's corner instead of borrowing the old
    * shell gap's. */
   margin: var(--space-2);
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  min-width: var(--space-7);
-  height: var(--space-7);
-  padding: 0 var(--space-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-  color: var(--ink-mid);
-  cursor: default;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.chip:hover {
-  background: var(--hover-1);
-}
-
-.chip:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
 }

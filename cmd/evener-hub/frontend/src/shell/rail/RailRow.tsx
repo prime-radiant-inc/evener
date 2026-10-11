@@ -63,7 +63,6 @@ import {
   STATUS_LABEL,
   StatusDot,
   type TreeRowInfo,
-  VisuallyHidden,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
@@ -235,12 +234,8 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
       // so it is simply never a tab stop at all.)
       triggerTabIndex={-1}
       variant="quiet"
-      trigger={
-        <>
-          <span aria-hidden="true">{"⋯"}</span>
-          <VisuallyHidden>{`Actions for ${label}`}</VisuallyHidden>
-        </>
-      }
+      icon="⋯"
+      label={`Actions for ${label}`}
       items={items}
     />
   );

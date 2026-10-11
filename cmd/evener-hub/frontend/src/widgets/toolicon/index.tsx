@@ -27,6 +27,9 @@
 // in its own file header - this widget's test asserts it here rather than
 // trusting each caller.
 
+import { requireClass } from "../internal/requireClass";
+import styles from "./toolicon.module.css";
+
 export type ToolIconKind =
   | "terminal"
   | "file"
@@ -128,15 +131,28 @@ export interface ToolIconProps {
   kind: ToolIconKind;
   /** Box edge in px. Square by construction - see this widget's own test. */
   size?: number;
+  /** A state hue for a glyph whose colour IS the state: working, needs you,
+   * failed. Omitted, the icon inherits the surrounding ink. */
+  tone?: ToolIconTone;
 }
+
+export type ToolIconTone = "alive" | "attention" | "danger";
+
+const TONE_CLASS: Record<ToolIconTone, string> = {
+  alive: requireClass(styles.toneAlive, "toolicon.module.css", "toneAlive"),
+  attention: requireClass(styles.toneAttention, "toolicon.module.css", "toneAttention"),
+  danger: requireClass(styles.toneDanger, "toolicon.module.css", "toneDanger"),
+};
 
 // 14px: the same edge Chevron, CloseIcon and BackIcon use, so every icon in
 // the app occupies one box size unless it has a reason not to.
 const DEFAULT_SIZE = 14;
 
-export function ToolIcon({ kind, size = DEFAULT_SIZE }: ToolIconProps) {
+export function ToolIcon({ kind, size = DEFAULT_SIZE, tone }: ToolIconProps) {
   return (
     <svg
+      className={tone === undefined ? undefined : TONE_CLASS[tone]}
+      data-tone={tone}
       viewBox="0 0 16 16"
       width={size}
       height={size}

@@ -35,7 +35,7 @@
 <body data-font-size="m">
 <!-- Reproduces RailRow.tsx's SessionRow and ProjectRow anatomy against the
      REAL classes from RailRow.module.css, widgets/menu/menu.module.css
-     (Menu's trigger, quiet variant), widgets/button + widgets/iconbutton
+     (Menu's icon-only trigger, quiet variant), widgets/button + widgets/iconbutton
      (ProjectRow's "+" IconButton), and widgets/badge (the rollup Badge) -
      and the real Chevron widget's SVG markup (widgets/chevron/index.tsx,
      size=12, viewBox 0 0 16 16), not a text-glyph stand-in: this case's
@@ -68,7 +68,7 @@ function chevronHtml(id) {
 }
 
 function kebabHtml(id, label) {
-  return `<div class="root"><button type="button" class="trigger triggerQuiet" id="kebab-${id}" aria-haspopup="menu" aria-expanded="false" tabindex="-1"><span aria-hidden="true">&#8943;</span><span class="visuallyHidden">Actions for ${label}</span></button></div>`;
+  return `<div class="root"><button type="button" class="trigger triggerQuiet triggerIcon" id="kebab-${id}" aria-label="Actions for ${label}" aria-haspopup="menu" aria-expanded="false" tabindex="-1"><span class="triggerGlyph" aria-hidden="true">&#8943;</span></button></div>`;
 }
 
 // SessionRow anatomy (RailRow.tsx): textCol(titleLine(label, chevron)), then

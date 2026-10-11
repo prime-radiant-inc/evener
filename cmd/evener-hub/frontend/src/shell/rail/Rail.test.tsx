@@ -322,11 +322,11 @@ describe("resource-backed Rail", () => {
     expect(disclosure.getAttribute("aria-expanded")).not.toBe(expanded);
     expect(document.activeElement).toBe(disclosure);
 
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
-      /\/\*[\s\S]*?\*\//g,
-      "",
-    );
-    for (const shared of ["sectionTitle", "sectionDisclosure"]) {
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../../widgets/disclosureheading/disclosureheading.module.css"),
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const shared of ["headingTitle", "headingToggle"]) {
       const rule = css.match(new RegExp(`\\.${shared}\\s*\\{([^}]*)\\}`))?.[1];
       expect(rule).toBeDefined();
       expect(rule).not.toContain("text-transform: uppercase");

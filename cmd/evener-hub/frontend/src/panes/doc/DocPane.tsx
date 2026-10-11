@@ -13,7 +13,17 @@ import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Button, Chip, CodeBlock, Dialog, EmptyState, Markdown, PaneScaffold, Skeleton } from "../../widgets";
+import {
+  Button,
+  Chip,
+  CodeBlock,
+  Dialog,
+  EmptyState,
+  Markdown,
+  PaneScaffold,
+  Skeleton,
+  ZoomableMedia,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { browserDocPort } from "./browserDocPort";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
@@ -23,7 +33,6 @@ import { useDocumentRead } from "./useDocumentRead";
 
 const CLASS = {
   markdown: requireClass(styles.markdown, "docpane.module.css", "markdown"),
-  imageButton: requireClass(styles.imageButton, "docpane.module.css", "imageButton"),
   image: requireClass(styles.image, "docpane.module.css", "image"),
   lightboxImg: requireClass(styles.lightboxImg, "docpane.module.css", "lightboxImg"),
   notice: requireClass(styles.notice, "docpane.module.css", "notice"),
@@ -74,9 +83,9 @@ function DocImageView({ src, path }: { src: string; path: string }) {
   const name = filenameOf(path);
   return (
     <>
-      <button type="button" aria-label="Zoom image" className={CLASS.imageButton} onClick={() => setZoomed(true)}>
+      <ZoomableMedia label="Zoom image" onOpen={() => setZoomed(true)}>
         <img data-testid="doc-image" className={CLASS.image} src={src} alt={name} />
-      </button>
+      </ZoomableMedia>
       {zoomed && (
         <Dialog open onClose={() => setZoomed(false)} title={name} size="large">
           <img data-testid="doc-lightbox-img" className={CLASS.lightboxImg} src={src} alt={name} />
