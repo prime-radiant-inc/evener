@@ -51,6 +51,23 @@ test("data attributes and the ref reach the button", () => {
   expect(ref.current).toBe(button);
 });
 
+// The props type omits aria-label, onClick and type, but a caller spreading a
+// loosely typed object can still pass them; label and onOpen must win.
+test("a stray aria-label or onClick arriving via untyped spread cannot replace label or onOpen", async () => {
+  const user = userEvent.setup();
+  const onOpen = vi.fn();
+  const stray = vi.fn();
+  const loose = { "aria-label": "Stray name", onClick: stray } as object;
+  render(
+    <ZoomableMedia label="Zoom image" onOpen={onOpen} {...loose}>
+      <img src="data:," alt="" />
+    </ZoomableMedia>,
+  );
+  await user.click(screen.getByRole("button", { name: "Zoom image" }));
+  expect(onOpen).toHaveBeenCalledTimes(1);
+  expect(stray).not.toHaveBeenCalled();
+});
+
 test("it never submits an enclosing form", async () => {
   const user = userEvent.setup();
   const onSubmit = vi.fn((event: SubmitEvent) => event.preventDefault());
