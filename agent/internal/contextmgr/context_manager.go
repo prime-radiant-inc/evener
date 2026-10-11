@@ -1628,18 +1628,14 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 				size += len(lines[end])
 				end++
 			}
-			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply string) error {
-				if strings.TrimSpace(reply) == "" {
+			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
+				if strings.TrimSpace(reply.Text()) == "" {
 					return errors.New("summarizer returned an empty batch summary")
 				}
-				return nil
+				return checkNotCutOff(reply)
 			})
 			if err != nil {
 				return "", err
-			}
-			if resp.Finish.Reason == llm.FinishReasonLength {
-				// Cut off at the output limit, it may have dropped a hold.
-				return "", errors.New("a batch summary was cut off at the model's output limit")
 			}
 			// A long summary is split like a long message, so the next round's
 			// batches stay within budget.
@@ -1857,11 +1853,11 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 // failures than a model refusal as worth another model, and retries on the
 // session model — but only when the cheap caller has not already run it.
 //
-// accept, when non-nil, judges a reply's text; a rejected reply also falls
-// through to the session model, and is returned as an error if that reply is
-// rejected too. A rejected reply was still a successful API call, so the
-// attempt group settles on the API error alone.
-func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(string) error) (llm.Response, error) {
+// accept, when non-nil, judges a reply; a rejected reply also falls through to
+// the session model, and is returned as an error if that reply is rejected
+// too. A rejected reply was still a successful API call, so the attempt group
+// settles on the API error alone.
+func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (llm.Response, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
 		return llm.Response{}, errors.New("summarization model is empty")
@@ -1870,7 +1866,7 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		if accept == nil {
 			return nil
 		}
-		return accept(resp.Text())
+		return accept(resp)
 	}
 	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}, AdapterTimeout: cm.AdapterTimeout}
 	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
@@ -1973,6 +1969,18 @@ func promptSectionNames(prompt string) []string {
 		}
 	}
 	return names
+}
+
+// checkNotCutOff rejects a summarization reply the model cut off at its output
+// limit: it may have dropped what only it records, a hold among the partner
+// messages a carry left out, now or in an earlier summary it replaces. Like
+// any rejected reply it falls back to the session model, and if that is cut
+// off too the summary fails and the checkpoint stands.
+func checkNotCutOff(reply llm.Response) error {
+	if reply.Finish.Reason == llm.FinishReasonLength {
+		return errors.New("the summary was cut off at the model's output limit")
+	}
+	return nil
 }
 
 // checkSummaryReply rejects a summarization reply that cannot stand in for the
@@ -2393,17 +2401,14 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
-	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply string) error {
-		return checkSummaryReply(reply, instructions)
+	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply llm.Response) error {
+		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
+			return err
+		}
+		return checkNotCutOff(reply)
 	})
 	if err != nil {
 		return nil, err
-	}
-	if resp.Finish.Reason == llm.FinishReasonLength {
-		// Cut off at the output limit, the reply may have dropped what it
-		// alone records: messages left out of this carry, or of an earlier
-		// one whose summary it replaces. The checkpoint stands instead.
-		return nil, errors.New("the summary was cut off at the model's output limit")
 	}
 
 	// The turn is the model's reply, bounded by the provider's output limit,

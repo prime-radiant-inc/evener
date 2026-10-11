@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -1044,5 +1045,55 @@ func TestForceCompact_TruncatedFinalSummaryIsRejectedOnEveryFold(t *testing.T) {
 	cm.ForceCompact(context.Background(), &history, "", noopEmit)
 	if history[0].Kind != schema.TurnCheckpoint {
 		t.Fatalf("history starts with a %s, want the checkpoint to stand", history[0].Kind)
+	}
+}
+
+// cutOffCheapModel answers the cheap model with replies cut off at the output
+// limit and the session model normally, recording which models it served.
+func cutOffCheapModel(models *[]string) *stubSummarizeAdapter {
+	return &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		*models = append(*models, req.Model)
+		reply := emptySummaryReply
+		if strings.HasPrefix(req.Messages[0].Text(), partnerBatchPrompt) {
+			reply = "summary of a batch"
+		}
+		if req.Model == "gpt-5-mini" {
+			return llm.Response{Message: llm.Assistant(reply), Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}, nil
+		}
+		return llm.Response{Message: llm.Assistant(reply)}, nil
+	}}
+}
+
+// A cheap model's summary cut off at its output limit falls back to the
+// session model like any other rejected reply, so compaction still succeeds.
+func TestForceCompact_CutOffCheapSummaryFallsBackToTheSessionModel(t *testing.T) {
+	var models []string
+	client := llm.NewClient()
+	client.Register(cutOffCheapModel(&models))
+	cm := NewManager(provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := partnerHoldHistory()
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want the session model's summary (models %q)", history[0].Kind, models)
+	}
+	if strings.Join(models, " ") != "gpt-5-mini gpt-5.2" {
+		t.Fatalf("summary models = %q, want the cheap model then the session model", models)
+	}
+}
+
+// The same holds for the batches that condense left-out partner messages.
+func TestForceCompact_CutOffCheapBatchFallsBackToTheSessionModel(t *testing.T) {
+	var models []string
+	client := llm.NewClient()
+	client.Register(cutOffCheapModel(&models))
+	profile := provider.WithContextWindow(provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 100_000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(200, 1500, 80)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want the summary built from session-model batches", history[0].Kind)
 	}
 }
