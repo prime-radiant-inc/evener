@@ -632,3 +632,93 @@ func TestForceCompact_PartnerMessagesPastTheCeilingAreSummarized(t *testing.T) {
 		t.Fatalf("a summary with the reminder is not recognized as the rendered layout")
 	}
 }
+
+// partnerFloodHistory is a conversation of n partner messages of size chars
+// each, with hold as message holdAt, followed by two preserved recent turns.
+func partnerFloodHistory(n, size, holdAt int) []schema.Turn {
+	var history []schema.Turn
+	for i := range n {
+		text := fmt.Sprintf("instruction %03d %s", i, strings.Repeat("x", size))
+		if i == holdAt {
+			text = partnerHold
+		}
+		history = append(history,
+			schema.NewTurn(schema.TurnUserInput, llm.User(text)),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")))
+	}
+	return append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
+}
+
+// Every partner message the carry leaves out reaches the summarizer, even one
+// that sits past the part of the checkpoint the summarizer reads and before
+// the newest messages the carry keeps.
+func TestForceCompact_MessagesLeftOutOfTheCarryReachTheSummarizer(t *testing.T) {
+	var prompt string
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		prompt = req.Messages[0].Text()
+		return llm.Response{Message: llm.Assistant(emptySummaryReply)}
+	}}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 20_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	// 70 messages of 1.5k: the summarizer's view of the checkpoint ends near
+	// message 38 and the carry starts near 57, so message 48 sits in between.
+	history := partnerFloodHistory(70, 1500, 48)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if strings.Contains(history[0].Message.Text(), "\n"+partnerHold+"\n") {
+		t.Fatalf("fixture: the hold is in the carry, so this does not test the gap")
+	}
+	if !strings.Contains(prompt, partnerHold) {
+		t.Fatalf("a partner message left out of the carry never reached the summarizer (prompt is %d chars)", len(prompt))
+	}
+}
+
+// The newest message is held to the ceiling too: on a small-window model a
+// single oversized newest message is middle-trimmed to fit, with its pointer.
+func TestForceCompact_OversizedNewestMessageFitsTheCeiling(t *testing.T) {
+	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(emptySummaryReply)} }
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	const window = 8192
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	log := "LOG_HEAD " + strings.Repeat("log line\n", 4500) + " LOG_TAIL"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(log)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reading")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	carry := markdownSection(history[0].Message.Text(), checkpointConversationHeading)
+	if len(carry) > partnerCarryCeiling(cm.currentProfile()) {
+		t.Fatalf("the carry is %d chars, over the %d-char ceiling", len(carry), partnerCarryCeiling(cm.currentProfile()))
+	}
+	entries := extractMarkdownConversation(history[0].Message.Text())
+	if len(entries) != 1 || !isMiddleTrimOf(entries[0].Text, log) {
+		t.Fatalf("the oversized newest message was not middle-trimmed to the ceiling")
+	}
+}
+
+// checkpoint-pred's prediction never sees the partner's messages whole, so
+// its predictive checkpoint keeps every one rather than leaving any to it.
+func TestCheckpointPred_PredictionKeepsEveryPartnerMessage(t *testing.T) {
+	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("Predicted checkpoint.")} }
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 20_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(40, 1500, 3)
+	runCheckpointPred(t, cm, &history, 2)
+	if got := len(extractCheckpointConversation(history[0].Message.Text())); got != 40 {
+		t.Fatalf("the predictive checkpoint kept %d of 40 partner messages", got)
+	}
+}

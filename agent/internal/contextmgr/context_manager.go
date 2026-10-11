@@ -1547,10 +1547,12 @@ func middleTrim(text string, edge int) string {
 // (#4181).
 //
 // Past ceiling characters (partnerCarryCeiling; 0 means none) the oldest
-// messages are left out, newest kept, and summarized reports how many: the
-// model's summary covers them, quoting any permission or hold per the summary
-// prompt, and the turn reminds the model where to read them verbatim.
-func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool, ceiling int) (markdown string, summarized int) {
+// messages are left out, newest kept, and returned as summarized: the
+// summarizer is given each of them to summarize, quoting any permission or
+// hold per the summary prompt, and the turn reminds the model where to read
+// them verbatim. The newest message is held to the ceiling too: when it alone
+// exceeds it, its middle is trimmed (transcript permitting).
+func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool, ceiling int) (markdown string, summarized []checkpointConversationEntry) {
 	var partner []checkpointConversationEntry
 	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
 		if entry.Role == "user" {
@@ -1571,9 +1573,20 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 			size += block
 			kept++
 		}
-		summarized = len(partner) - kept
+		summarized = partner[:len(partner)-kept]
+		partner = slices.Clone(partner[len(partner)-kept:])
+		if len(partner) == 0 {
+			return "", summarized
+		}
+		if newest := &partner[len(partner)-1]; recoverable && size > ceiling {
+			// The newest alone overflows: trim its middle to fit, note included.
+			edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
+			if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
+				newest.Text = trimmed
+			}
+		}
 	}
-	return renderCheckpointConversation(partner[summarized:]), summarized
+	return renderCheckpointConversation(partner), summarized
 }
 
 // partnerCarryCeiling bounds the partner's messages a model-written
@@ -1590,15 +1603,16 @@ func partnerCarryCeiling(prof *provider.Profile) int {
 }
 
 // partnerCarry renders the partner's messages a model-written compaction turn
-// carries (from history[:cutoff]) and the reminder its opening adds when some
-// are summarized instead.
-func (cm *Manager) partnerCarry(ctx context.Context, history []schema.Turn, cutoff int) (reminder, carry string) {
+// carries (from history[:cutoff]), held to ceiling (0 for none), the reminder
+// its opening adds when some are left to the summary instead, and those
+// messages, which the summarizer must be given.
+func (cm *Manager) partnerCarry(ctx context.Context, history []schema.Turn, cutoff, ceiling int) (reminder, carry string, summarized []checkpointConversationEntry) {
 	meta := cm.metaFor(ctx)
-	carry, summarized := partnerMessagesMarkdown(history, cutoff, cm.resultToolName(), meta.hasTranscript(), partnerCarryCeiling(cm.currentProfile()))
-	if summarized > 0 {
-		reminder = partnerCarryReminder(summarized, meta)
+	carry, summarized = partnerMessagesMarkdown(history, cutoff, cm.resultToolName(), meta.hasTranscript(), ceiling)
+	if len(summarized) > 0 {
+		reminder = partnerCarryReminder(len(summarized), meta)
 	}
-	return reminder, carry
+	return reminder, carry, summarized
 }
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
@@ -2151,7 +2165,37 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		return s
 	}
 
+	// The checkpoint at history[0] stands for checkpointed; the summary also
+	// folds whatever follows it up to cutoff, including turns the pre-compact
+	// hook pushed out of the preserved tail.
+	partnerSource := history[:cutoff]
+	if checkpointed != nil {
+		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
+	}
+	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(cm.currentProfile()))
+
 	var b strings.Builder
+	// The partner's messages the turn will not quote come first, each capped
+	// like a user turn, so the summarizer reads them before anything else the
+	// budget cuts. They get up to half the history budget, the newest of them
+	// kept when they overflow it; any beyond that are still in the transcript
+	// the turn's reminder points to.
+	if len(summarized) > 0 {
+		var lines []string
+		size := 0
+		for _, entry := range slices.Backward(summarized) {
+			line := "User: " + truncText(entry.Text, 5000) + "\n"
+			if size+len(line) > maxHistoryChars/2 {
+				break
+			}
+			size += len(line)
+			lines = append(lines, line)
+		}
+		slices.Reverse(lines)
+		b.WriteString("Your human partner's messages that the handoff will not quote, oldest first; summarize them:\n")
+		b.WriteString(strings.Join(lines, ""))
+		b.WriteString("\nThe conversation:\n")
+	}
 	for i := range cutoff {
 		t := history[i]
 		switch t.Kind {
@@ -2248,14 +2292,6 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// recent turns sit outside it. One combined budget would mean truncating
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
-	// The checkpoint at history[0] stands for checkpointed; the summary also
-	// folds whatever follows it up to cutoff, including turns the pre-compact
-	// hook pushed out of the preserved tail.
-	partnerSource := history[:cutoff]
-	if checkpointed != nil {
-		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
-	}
-	reminder, carry := cm.partnerCarry(ctx, partnerSource, len(partnerSource))
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
 		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
