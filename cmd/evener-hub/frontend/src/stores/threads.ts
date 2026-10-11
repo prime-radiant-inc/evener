@@ -1201,6 +1201,7 @@ function createEntryTranscriptRepository(
     lifetime: fixture.lifetime,
     seedModel,
     now: () => fixture.cache.now(),
+    foldNotification: (model, notification, now) => foldCanonicalNotification(model, notification, now).model,
     admission: entryWriteAdmissionFor(fixture.cache),
     reconcile: () => {
       const client = wiredClient;
@@ -4714,6 +4715,7 @@ function applyToMap(
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
+  previousModels: ReadonlyMap<string, ThreadModel> = map,
 ): {
   next: Map<string, ThreadModel> | null;
   changedRefs: string[];
@@ -4735,7 +4737,7 @@ function applyToMap(
   if (Array.isArray(routed)) {
     for (const model of routed) {
       accept(model);
-      const folded = foldCanonicalNotification(model, n, now);
+      const folded = foldCanonicalNotification(model, n, now, previousModels.get(model.ref));
       const updated = folded.model;
       if (updated === model) continue;
       next ??= new Map(map);
@@ -4746,7 +4748,7 @@ function applyToMap(
     return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
   }
   accept(routed);
-  const folded = foldCanonicalNotification(routed, n, now);
+  const folded = foldCanonicalNotification(routed, n, now, previousModels.get(routed.ref));
   const updated = folded.model;
   if (updated !== routed) {
     next = new Map(map);
@@ -4794,9 +4796,10 @@ function foldCanonicalNotification(
   model: ThreadModel,
   notification: AnyNotification,
   now: number,
+  previous: ThreadModel = model,
 ): { model: ThreadModel; endedResumeOnly: boolean } {
   const endedRefs: string[] = [];
-  const updated = settleResumeOnlyOffShutdown(model, applyNotification(model, notification, now), endedRefs);
+  const updated = settleResumeOnlyOffShutdown(previous, applyNotification(model, notification, now), endedRefs);
   return { model: updated, endedResumeOnly: endedRefs.includes(model.ref) };
 }
 
@@ -4837,6 +4840,10 @@ function handleNotification(n: AnyNotification): void {
   const now = Date.now();
   const route = notificationRoutingKey(n);
   const entryAcceptedRefs = new Set<string>();
+  // Synchronous repository publication can replace the store model before its
+  // transition fold runs. Keep the actual pre-accept model for state-dependent
+  // settlement, while folding content from the repository's current model.
+  const previousThreads = threadsStore.getState().threads;
   if (route) {
     const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
     for (const ref of refs) {
@@ -4963,7 +4970,14 @@ function handleNotification(n: AnyNotification): void {
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
     endedResumeOnlyRefs: endedThreadsResumeOnly,
-  } = applyToMap(threads, threadsIndex, n, now, new Set([...pendingRefs, ...residencySkipped, ...fixtureRecordedRefs]));
+  } = applyToMap(
+    threads,
+    threadsIndex,
+    n,
+    now,
+    new Set([...pendingRefs, ...residencySkipped, ...fixtureRecordedRefs]),
+    previousThreads,
+  );
   const {
     next: reducedWatchedThreads,
     changedRefs: changedWatchedThreads,

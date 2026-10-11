@@ -204,6 +204,8 @@ export interface TranscriptRepositoryBinding {
     snapshotLength: number;
   };
   now?: () => number;
+  /** The owner's canonical notification fold, before synchronous publication. */
+  foldNotification?: (model: ThreadModel, notification: AnyNotification, now: number) => ThreadModel;
   /**
    * The paced-retry scheduler for this write path. When absent, a transient
    * write failure is retried on a bounded exponential timer. This route is
@@ -703,7 +705,7 @@ export class TranscriptRepository {
     const next =
       notification.method === "overlay/end"
         ? applyOverlayEndForTranscriptHandoff(this.#model, notification, now)
-        : applyNotification(this.#model, notification, now);
+        : (this.#binding.foldNotification ?? applyNotification)(this.#model, notification, now);
     if (next === this.#model) {
       if (notification.method !== "overlay/end") return false;
       this.#admitHandoffRound(next, (notification.params as { roundId?: string }).roundId ?? "");
