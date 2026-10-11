@@ -69,7 +69,7 @@ func TestDelegateUpdateGetsItsParentsAnswerLive(t *testing.T) {
 	defer cancel()
 	var modelFailures []string
 	_, err = root.ProcessInput(ctx, brief, nil)
-	modelFailures = recordRootStep(t, modelFailures, ctx, err)
+	modelFailures = recordRootStep(ctx, t, modelFailures, err)
 	report := filepath.Join(dir, "report.txt")
 	reportWritten := false
 wait:
@@ -82,7 +82,7 @@ wait:
 		case <-wakes:
 			if root.hasPendingRootDelegateAttention() {
 				_, err := root.ProcessInputKind(ctx, "", nil, EntryNotification)
-				modelFailures = recordRootStep(t, modelFailures, ctx, err)
+				modelFailures = recordRootStep(ctx, t, modelFailures, err)
 			}
 		case <-ctx.Done():
 			break wait
@@ -133,7 +133,7 @@ func delegateEntries(t *testing.T, root *Session) []transcript.Entry {
 // is the session giving up on a model that kept returning empty or bare text.
 // Any other error, a provider or runtime failure, stops the run; so does
 // nothing when the turn only ended because the run's own deadline passed.
-func recordRootStep(t *testing.T, modelFailures []string, ctx context.Context, err error) []string {
+func recordRootStep(ctx context.Context, t *testing.T, modelFailures []string, err error) []string {
 	t.Helper()
 	switch {
 	case err == nil || ctx.Err() != nil:
@@ -256,8 +256,7 @@ func TestTurnFailures(t *testing.T) {
 }
 
 func TestRecordRootStep(t *testing.T) {
-	live, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	live := t.Context()
 	expired, expire := context.WithCancel(context.Background())
 	expire()
 	for _, tc := range []struct {
@@ -271,7 +270,7 @@ func TestRecordRootStep(t *testing.T) {
 		{"empty responses exhausted", live, &emptyResponseExhaustedError{retries: maxEmptyRetries}, 1},
 		{"bare text exhausted", live, &bareTextWithoutResultToolError{toolName: "communicate", retries: maxBareTextRetries}, 1},
 	} {
-		if got := recordRootStep(t, nil, tc.ctx, tc.err); len(got) != tc.want {
+		if got := recordRootStep(tc.ctx, t, nil, tc.err); len(got) != tc.want {
 			t.Errorf("%s: recorded %d model failures, want %d", tc.name, len(got), tc.want)
 		}
 	}
