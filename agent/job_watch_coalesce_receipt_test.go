@@ -3,8 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
+	"sync"
 	"testing"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -276,4 +280,140 @@ func TestFailedAcknowledgementOfRetiredFrameKeepsNoNote(t *testing.T) {
 	if noted {
 		t.Fatal("a retired frame's failed acknowledgement was kept")
 	}
+}
+
+// A drain that delivers the replacement frame as soon as the coalesce
+// publishes it must find the frame's delivery receipt already promoted and
+// reuse it. Otherwise the drain acquires a receipt of its own and the
+// coalesce's later promotion makes a second one, which nothing releases. So
+// the frame is never visible to drains without a remembered receipt.
+func TestCoalescedFramePublishedOnlyAfterItsReceiptIsPromoted(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	visibleWithoutReceipt := false
+	jm.watchReceiptBoundary = func() {
+		for _, p := range jm.pendingWatchSendDeliveries(nil) {
+			if p.state.DeliveryID != first.DeliveryID && jm.stableWatchReceipt(p.state.DeliveryID) == nil {
+				visibleWithoutReceipt = true
+			}
+		}
+	}
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
+	jm.watchReceiptBoundary = nil
+	if visibleWithoutReceipt {
+		t.Fatal("the replacement was visible to drains before its receipt was promoted")
+	}
+	second := fixture.requireOnePending(t).state
+	if jm.stableWatchReceipt(second.DeliveryID) == nil {
+		t.Fatal("the published replacement has no remembered receipt for a drain to reuse")
+	}
+	if _, err := jm.deliverPendingWatchSend(cfg, second, false); err != nil {
+		t.Fatalf("deliver replacement: %v", err)
+	}
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); len(got) != 0 {
+		t.Fatalf("delivery receipts outlived their frames: %v", got)
+	}
+}
+
+// The receiver took the first frame but its acknowledgement failed. On the
+// redelivery a replacement coalesces over it while the receiver's repeated
+// append runs, and that append fails. The frame was still accepted the first
+// time, so it keeps its receipt and goes to the settlement retry when its
+// claim is released.
+func TestAcceptedFrameKeepsItsRetryThroughAFailedSupersededRedelivery(t *testing.T) {
+	rootFS := &writeHookFS{Fs: afero.NewOsFs()}
+	fixture := newStableWatchRuntimeBase(t, rootFS)
+	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
+		"operation": "create",
+		"source":    "dlg_source",
+		"events":    []any{"communicate"},
+	}, 4096); err != nil {
+		t.Fatalf("create watch: %v", err)
+	}
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	jm.noteUnsettledWatchSend(cfg, first)
+	if !jm.claimWatchSendDelivery(first.DeliveryID) {
+		t.Fatal("claim first frame")
+	}
+	appendFailure := errors.New("receiver append failed")
+	rootFS.setOnWrite(func() error {
+		rootFS.setOnWrite(nil)
+		onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
+		return appendFailure
+	})
+	_, err := jm.deliverStableWatchSend(cfg, first)
+	rootFS.setOnWrite(nil)
+	jm.releaseWatchSendDeliveryClaim(first.DeliveryID)
+	if !errors.Is(err, appendFailure) {
+		t.Fatalf("redelivery: err = %v, want the receiver append failure", err)
+	}
+	second := fixture.requireOnePending(t).state
+	got := stableWatchDeliveryReceiptIDs(fixture.controller)
+	if !slices.Contains(got, first.DeliveryID) || !slices.Contains(got, second.DeliveryID) {
+		t.Fatalf("delivery receipts = %v, want the accepted frame's kept beside %s", got, second.DeliveryID)
+	}
+	jm.mu.Lock()
+	_, retrying := jm.stableWatchSettlementRetries[first.DeliveryID]
+	jm.mu.Unlock()
+	if !retrying {
+		t.Fatal("the accepted frame was not handed to the settlement retry")
+	}
+}
+
+// writeHookFS runs onWrite before each write to a file it opened; an error
+// from onWrite fails that write.
+type writeHookFS struct {
+	afero.Fs
+	mu      sync.Mutex
+	onWrite func() error
+}
+
+func (fs *writeHookFS) setOnWrite(hook func() error) {
+	fs.mu.Lock()
+	fs.onWrite = hook
+	fs.mu.Unlock()
+}
+
+func (fs *writeHookFS) hook() error {
+	fs.mu.Lock()
+	hook := fs.onWrite
+	fs.mu.Unlock()
+	if hook == nil {
+		return nil
+	}
+	return hook()
+}
+
+func (fs *writeHookFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return writeHookFile{File: f, fs: fs}, nil
+}
+
+func (fs *writeHookFS) Create(name string) (afero.File, error) {
+	f, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return writeHookFile{File: f, fs: fs}, nil
+}
+
+type writeHookFile struct {
+	afero.File
+	fs *writeHookFS
+}
+
+func (f writeHookFile) Write(p []byte) (int, error) {
+	if err := f.fs.hook(); err != nil {
+		return 0, err
+	}
+	return f.File.Write(p)
 }
