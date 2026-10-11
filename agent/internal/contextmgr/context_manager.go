@@ -1647,7 +1647,7 @@ const minSummarizerHistoryChars = 400
 // batch summaries are condensed the same way until they fit, so every message
 // reaches a summarizer however many there are. If they will not shrink to fit,
 // it fails rather than cut any short.
-func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
+func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.Profile, lines []string, budget int) (string, error) {
 	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
 	for round := 0; ; round++ {
 		total := 0
@@ -1667,7 +1667,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 				size += len(lines[end])
 				end++
 			}
-			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
+			resp, err := cm.completeSummarization(ctx, prof, partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
 				if strings.TrimSpace(reply.Text()) == "" {
 					return errors.New("summarizer returned an empty batch summary")
 				}
@@ -1678,7 +1678,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 			}
 			// A long summary is split like a long message, so the next round's
 			// batches stay within budget.
-			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
+			parts := splitMessage(strings.TrimSpace(resp.Text()), max(budget/3, minPartnerPartChars), 400)
 			for i, part := range parts {
 				label := "Summary of earlier messages: "
 				if len(parts) > 1 {
@@ -1723,6 +1723,12 @@ func splitMessage(text string, size, overlap int) []string {
 	}
 	return append(parts, text)
 }
+
+// minPartnerPartChars is the least a part of a long partner message or batch
+// summary holds, however small the summarizer's budget: big enough that the
+// overlap between parts keeps an instruction whole across a cut, and small
+// enough that a part and the batch prompt fit a 2,048-token window.
+const minPartnerPartChars = 1000
 
 // partnerBatchPrompt asks the summarizer to condense a batch of the human
 // partner's messages that a compaction will not quote.
@@ -2307,7 +2313,10 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		return history, nil
 	}
 
-	maxHistoryChars := summarizerHistoryBudget(cm.currentProfile())
+	// One profile serves the whole fold: sizing and every request it sends,
+	// so a model switch mid-fold cannot pair one model's budget with another.
+	sumProfile := cm.currentProfile()
+	maxHistoryChars := summarizerHistoryBudget(sumProfile)
 
 	truncText := func(s string, limit int) string {
 		if len(s) > limit {
@@ -2323,7 +2332,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if checkpointed != nil {
 		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
-	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(cm.currentProfile()))
+	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(sumProfile))
 
 	var b strings.Builder
 	// The partner's messages the turn will not quote come first, so the
@@ -2336,7 +2345,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		// two share a batch.
 		var lines []string
 		for _, entry := range summarized {
-			parts := splitMessage(entry.Text, maxHistoryChars/6, 400)
+			parts := splitMessage(entry.Text, max(maxHistoryChars/6, minPartnerPartChars), 400)
 			for i, part := range parts {
 				label := "User: "
 				if len(parts) > 1 {
@@ -2345,7 +2354,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 				lines = append(lines, label+part+"\n")
 			}
 		}
-		condensed, err := cm.condensePartnerMessages(ctx, lines, maxHistoryChars/2)
+		condensed, err := cm.condensePartnerMessages(ctx, sumProfile, lines, maxHistoryChars/2)
 		if err != nil {
 			return nil, err
 		}
@@ -2438,7 +2447,6 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
-	sumProfile := cm.currentProfile()
 	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply llm.Response) error {
 		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
 			return err

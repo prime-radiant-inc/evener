@@ -1173,3 +1173,59 @@ func TestForceCompact_SummaryFitsATwoThousandTokenWindow(t *testing.T) {
 		t.Fatalf("history starts with a %s, want a summary that fit the 2,048-token window", history[0].Kind)
 	}
 }
+
+// On a small window, a hold crossing a part boundary in a left-out message
+// still reaches a summarizer whole: parts keep a sensible minimum size and
+// overlap however small the budget.
+func TestForceCompact_SmallWindowHoldAcrossAPartBoundaryReachesTheSummarizer(t *testing.T) {
+	const window = 2048
+	var all strings.Builder
+	client := llm.NewClient()
+	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		text := req.Messages[0].Text()
+		if len(text)/4+llm.SafetyReserveTokens(window) >= window {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
+		}
+		all.WriteString(text)
+		return llm.Response{Message: llm.Assistant("## Progress\nsummary")}, nil
+	}})
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := partnerFloodHistory(6, 1500, -1)
+	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", 40)+partnerHold+strings.Repeat("f", 1500)))
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if !strings.Contains(all.String(), partnerHold) {
+		t.Fatalf("a hold crossing a small-window part boundary never reached a summarizer whole")
+	}
+}
+
+// A model switch during a fold does not redirect its requests: sizing and
+// dispatch use the profile the fold started with.
+func TestForceCompact_ModelSwitchDuringAFoldKeepsItsProfile(t *testing.T) {
+	var cm *Manager
+	switched := false
+	client := llm.NewClient()
+	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		text := req.Messages[0].Text()
+		if req.Model == "small" && len(text)/4+llm.SafetyReserveTokens(2048) >= 2048 {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
+		}
+		if strings.HasPrefix(text, partnerBatchPrompt) && !switched {
+			switched = true
+			cm.SetProfile(testProfile("openai", "small", 2048))
+			return llm.Response{Message: llm.Assistant("summary of a batch")}, nil
+		}
+		return llm.Response{Message: llm.Assistant(emptySummaryReply)}, nil
+	}})
+	cm = NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(200, 1500, 80)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if !switched {
+		t.Fatalf("fixture: no batch ran, so the switch never happened")
+	}
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want the fold to finish on the profile it started with", history[0].Kind)
+	}
+}
