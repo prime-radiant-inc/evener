@@ -202,11 +202,11 @@ test.each(TONE_GLYPH_PROBES)(
   "a $tone head leads with the tone's glyph, before any chip or title text",
   ({ tone, probe }) => {
     render(<NotificationCard notification={notif({ tone })} />);
-    const head = screen.getByTestId("notification-card");
-    const statusIcon = head.querySelector('[data-testid="notification-status-icon"]');
+    const summary = screen.getByTestId("notification-card").querySelector("summary");
+    const statusIcon = summary?.querySelector('[data-testid="notification-status-icon"]') ?? null;
     expect(statusIcon, `tone ${tone} rendered no status icon`).toBeTruthy();
-    // First child of the head: the rail slot precedes the chip and title.
-    expect(head.firstElementChild).toBe(statusIcon);
+    // First child of the summary: the glyph precedes the chip and title.
+    expect(summary?.firstElementChild).toBe(statusIcon);
     // The glyph is the tone's own shape - the shared line-art widget for the
     // quiet tones, the FailureGlyph cross for error.
     const kindProbe = render(probe);
@@ -556,10 +556,11 @@ test("collapses to a single row by default; card chrome appears on expand", () =
   const row = screen.getByTestId("notification-card");
   expect(row.textContent).toContain("explorer finished");
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
-  fireEvent.click(row);
+  const summary = row.querySelector("summary")!;
+  fireEvent.click(summary);
   expect(screen.getByTestId("notification-card-root")).not.toBeNull();
   expect(screen.getByTestId("notification-raw-disclosure")).not.toBeNull();
-  fireEvent.click(row);
+  fireEvent.click(summary);
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
 });
 
@@ -568,12 +569,12 @@ test("an expanded notification card stays open across a remount through the scop
   // At activity level the card auto-expands; use tools level to test that a
   // manually expanded card stays open across a remount.
   const { unmount } = renderTools(<NotificationCard notification={notification} sessionRef="session_a" />);
-  fireEvent.click(screen.getByTestId("notification-card"));
-  expect((screen.getByTestId("notification-card").closest("details") as HTMLDetailsElement).open).toBe(true);
+  fireEvent.click(screen.getByTestId("notification-card").querySelector("summary")!);
+  expect((screen.getByTestId("notification-card").querySelector("details") as HTMLDetailsElement).open).toBe(true);
 
   unmount();
   renderTools(<NotificationCard notification={notification} sessionRef="session_a" />);
-  expect((screen.getByTestId("notification-card").closest("details") as HTMLDetailsElement).open).toBe(true);
+  expect((screen.getByTestId("notification-card").querySelector("details") as HTMLDetailsElement).open).toBe(true);
 });
 
 test("warning tone chip is visible even when collapsed", () => {
@@ -619,11 +620,12 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
   );
 
   const row = screen.getByTestId("notification-card");
+  const head = row.querySelector("summary");
   expect(row.getAttribute("data-tone")).toBe("neutral");
-  expect(row.textContent).toContain("Job cancelled");
-  expect(row.textContent).toContain("Run repository lint, vet, and test gates");
-  expect(row.textContent).not.toContain("exit -1");
-  expect(row.textContent).not.toContain("stopped_by_parent");
+  expect(head?.textContent).toContain("Job cancelled");
+  expect(head?.textContent).toContain("Run repository lint, vet, and test gates");
+  expect(head?.textContent).not.toContain("exit -1");
+  expect(head?.textContent).not.toContain("stopped_by_parent");
   expect(screen.queryByText("error")).toBeNull();
   expect(screen.queryByText("warning")).toBeNull();
 
@@ -729,7 +731,7 @@ test("a delegate frame whose delegate id the entity map cannot answer shows no d
   expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
 });
 
-test("binds Open to the final notification text fragment instead of permitting a lone control line", () => {
+test("the Open control sits beside the summary, never inside it", () => {
   render(
     <NotificationCard
       notification={notif({
@@ -741,87 +743,33 @@ test("binds Open to the final notification text fragment instead of permitting a
       })}
     />,
   );
+  const card = screen.getByTestId("notification-card");
+  const summary = card.querySelector("summary");
   const button = screen.getByRole("button", { name: "Open subagent" });
-  const openTrailing = button.parentElement?.parentElement;
-  const secondaryTail = openTrailing?.parentElement;
-  const headingText = secondaryTail?.parentElement?.parentElement;
-  expect(secondaryTail?.textContent).toContain("reporting");
-  expect(secondaryTail?.contains(button)).toBe(true);
-  expect(headingText?.contains(screen.getByText("Job completed"))).toBe(true);
-  expect(headingText?.contains(screen.getByText(/Inspect the complete delegated/))).toBe(true);
-  // Real line geometry is pinned by layoutguard/notification-open-last-line.
+  expect(card.contains(button)).toBe(true);
+  expect(summary?.contains(button)).toBe(false);
+  expect(card.querySelector("details")?.contains(button)).toBe(false);
+  expect(summary?.textContent).toContain("before reporting");
 });
 
-// A collapsed card gives no other expand affordance (the native details marker
-// is suppressed), so the summary owes the reader the same trailing chevron
-// every other disclosure row in the transcript shows (ThinkBlock, ToolRow).
-test("the summary shows a trailing disclosure chevron that turns when the card opens", () => {
-  renderTools(<NotificationCard notification={notif({ tone: "neutral", title: "explorer finished" })} />);
-  const chevron = screen.getByTestId("notification-chevron");
-  expect(chevron.getAttribute("aria-hidden")).toBe("true");
-  expect(chevron.getAttribute("data-open")).toBe("false");
-  fireEvent.click(screen.getByTestId("notification-card"));
-  expect(screen.getByTestId("notification-chevron").getAttribute("data-open")).toBe("true");
-});
-
-// The app's row grammar (ToolRow's): the chevron rides INLINE at the end of the
-// words it opens, after the Open control and inside the same atomic tail unit —
-// never a flex sibling that could strand alone on a wrapped line.
-test("with a transcript ref the chevron rides inside the atomic tail unit after the Open control", () => {
-  render(
+// A <summary> is one control (implicit role button); nothing inside it may be
+// a focus stop or a control of its own.
+test("the summary holds no focusable control, even with a resolved delegate name and an Open ref", () => {
+  renderWithEntities(
     <NotificationCard
       notification={notif({
         type: "delegate",
-        secondary: "Inspect the workspace",
+        title: "Delegate completed",
+        name: "task1-review",
+        secondary: "task1-review",
+        delegateId: ENTITY_DELEGATE,
         transcriptRef: "local:child",
-        message: "Report complete.",
+        message: "Done.",
       })}
     />,
   );
-  const chevron = screen.getByTestId("notification-chevron");
-  const button = screen.getByRole("button", { name: "Open subagent" });
-  const openTrailing = button.parentElement?.parentElement;
-  const secondaryTail = openTrailing?.parentElement;
-  expect(chevron.parentElement).toBe(secondaryTail);
-  const tailChildren = [...(secondaryTail?.children ?? [])];
-  expect(tailChildren.indexOf(openTrailing!)).toBeLessThan(tailChildren.indexOf(chevron));
-});
-
-// The chevron never strands: it rides inside the atomic tail unit with the
-// words it opens, so when the line runs out the WHOLE unit wraps - never the
-// glyph alone (the same guarantee the Open control has; roborev #1143).
-test("with a title-only card the chevron rides the title's atomic tail unit", () => {
-  renderTools(<NotificationCard notification={notif({ secondary: undefined, transcriptRef: undefined })} />);
-  const chevron = screen.getByTestId("notification-chevron");
-  const tail = chevron.parentElement;
-  // The title splits like the secondary does: leading words as their own span,
-  // the FINAL word and the chevron as one atomic unit, so a line that runs out
-  // moves the word and the glyph together - never the glyph alone.
-  expect(tail?.previousElementSibling?.textContent).toBe("Job ");
-  expect(tail?.textContent).toContain("completed");
-  expect(tail?.parentElement?.textContent).toContain("Job completed");
-  expect(chevron.previousElementSibling?.textContent).toBe("completed");
-  const tailChildren = [...(tail?.children ?? [])];
-  expect(tailChildren.indexOf(chevron)).toBe(tailChildren.length - 1);
-});
-
-test("with a secondary and no transcript ref the chevron rides the secondary's atomic tail unit", () => {
-  renderTools(
-    <NotificationCard
-      notification={notif({ secondary: "Inspect the workspace and report back", transcriptRef: undefined })}
-    />,
-  );
-  const chevron = screen.getByTestId("notification-chevron");
-  const tail = chevron.parentElement;
-  // The unit carries the secondary's FINAL word with the chevron: the two can
-  // move to the next line together, never the chevron alone.
-  expect(tail?.textContent).toContain("back");
-  expect(tail?.parentElement?.textContent).toContain("Inspect the workspace and report");
-  const tailChildren = [...(tail?.children ?? [])];
-  expect(tailChildren.indexOf(chevron)).toBe(tailChildren.length - 1);
-  // Same discriminator as the title-only case: the secondary's one element
-  // child is the trailing-word unit, not a loose chevron after the text.
-  expect(tail?.parentElement?.children.length).toBe(1);
+  const summary = screen.getByTestId("notification-card").querySelector("summary");
+  expect(summary?.querySelectorAll("button, a[href], input, select, textarea, [tabindex]")).toHaveLength(0);
 });
 
 test("opening a child restores the notification owner as main when an unrelated session is focused", async () => {
@@ -1112,9 +1060,9 @@ test("the head's delegate name opens the delegate hover card on focus", () => {
   }
 });
 
-// The trigger rides inside the clickable head, so a click on the name must
-// open the delegate's card, never toggle the notification's own disclosure.
-test("clicking the head's delegate trigger does not toggle the disclosure", () => {
+// The name is part of the summary's one control: a click on it toggles the
+// card like any other head text.
+test("clicking the head's delegate name toggles the disclosure like the rest of the summary", () => {
   render(
     <TranscriptRenderProvider
       config={toolsConfig}
@@ -1137,10 +1085,8 @@ test("clicking the head's delegate trigger does not toggle the disclosure", () =
     </TranscriptRenderProvider>,
   );
 
-  fireEvent.click(within(screen.getByTestId("notification-card")).getByTestId("entity-trigger"));
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
-
-  fireEvent.click(screen.getByTestId("notification-card"));
+  fireEvent.click(within(screen.getByTestId("notification-card")).getByTestId("entity-trigger"));
   expect(screen.getByTestId("notification-card-root")).not.toBeNull();
 });
 
@@ -1361,7 +1307,7 @@ test("two watch cards on the same job expand independently (combined review: dis
   const rows = screen.getAllByTestId("notification-card");
   expect(rows).toHaveLength(2);
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
-  fireEvent.click(rows[0]!);
+  fireEvent.click(rows[0]!.querySelector("summary")!);
   const roots = screen.getAllByTestId("notification-card-root");
   expect(roots).toHaveLength(1);
   expect(roots[0]!.textContent).toContain("ready");
@@ -1381,7 +1327,7 @@ test("a legacy watch card without a watch id still expands by job id", () => {
     />,
   );
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
-  fireEvent.click(screen.getByTestId("notification-card"));
+  fireEvent.click(screen.getByTestId("notification-card").querySelector("summary")!);
   expect(screen.getByTestId("notification-card-root").textContent).toContain("ready");
 });
 
@@ -1413,7 +1359,7 @@ test("repeat firings of one watch expand independently (combined review: disclos
   );
   const rows = screen.getAllByTestId("notification-card");
   expect(rows).toHaveLength(2);
-  fireEvent.click(rows[0]!);
+  fireEvent.click(rows[0]!.querySelector("summary")!);
   expect(screen.getAllByTestId("notification-card-root")).toHaveLength(1);
 });
 
@@ -1440,6 +1386,6 @@ test("byte-identical repeat frames expand independently via disclosure id (L2)",
   );
   const rows = screen.getAllByTestId("notification-card");
   expect(rows).toHaveLength(2);
-  fireEvent.click(rows[0]!);
+  fireEvent.click(rows[0]!.querySelector("summary")!);
   expect(screen.getAllByTestId("notification-card-root")).toHaveLength(1);
 });

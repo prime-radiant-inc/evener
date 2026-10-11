@@ -1862,7 +1862,7 @@ const settled = new Promise<true>((resolve) => {
         // overflow fixture) only when expanded. Expand it the way a user would
         // - through React's synthetic click - so the guard's two disclosure
         // fixtures exist by the time measure() runs.
-        document.querySelector<HTMLElement>('[data-testid="notification-card"]')?.click();
+        document.querySelector<HTMLElement>('[data-testid="notification-card"] summary')?.click();
         requestAnimationFrame(() =>
           setTimeout(() => {
             // Boot-time expansions start CSS transitions, and a square chevron
