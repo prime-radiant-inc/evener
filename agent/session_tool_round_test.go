@@ -386,6 +386,12 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 	root.attachTranscript(writer)
 
 	fs.blockSync = true
+	// A fatal assertion below must not leave the append blocked in Sync while
+	// it holds the writer mutex, or writer.Close in the cleanup above hangs.
+	// Cleanups run last-in first-out, so this release runs before that Close.
+	var releaseSync sync.Once
+	release := func() { releaseSync.Do(func() { close(fs.allowSync) }) }
+	t.Cleanup(release)
 	done := make(chan error, 1)
 	go func() {
 		msg := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "root-call", Name: "delegate", Content: `{"status":"running"}`}}}}
@@ -419,7 +425,7 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 	}
 	root.mu.Unlock()
 
-	close(fs.allowSync)
+	release()
 	if err := <-done; err != nil {
 		t.Fatalf("finish tool-result append: %v", err)
 	}
