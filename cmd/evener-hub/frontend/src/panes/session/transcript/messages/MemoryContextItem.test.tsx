@@ -212,7 +212,8 @@ test("an empty current index reads as an empty index, not an error", () => {
   const config = preset("tools");
   renderProjected(project([wireItem({ raw: memoryRaw({ content: "" }) })], config), config);
   openSummary();
-  expect(screen.getByTestId("memory-context-empty").textContent).toBe("Empty index");
+  expect(screen.getByTestId("empty-state")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByTestId("memory-context-content")).toBeNull();
 });
 

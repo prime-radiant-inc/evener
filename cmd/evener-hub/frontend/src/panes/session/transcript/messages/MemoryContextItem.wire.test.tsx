@@ -114,7 +114,8 @@ test("the project scope names itself truthfully", () => {
 test("an empty current index opens to the empty-index marker, not an error", () => {
   renderItem(memoryContextWireItem("empty-project"), preset("tools"));
   open();
-  expect(screen.getByTestId("memory-context-empty").textContent).toBe("Empty index");
+  expect(screen.getByTestId("empty-state")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByTestId("memory-context-content")).toBeNull();
 });
 

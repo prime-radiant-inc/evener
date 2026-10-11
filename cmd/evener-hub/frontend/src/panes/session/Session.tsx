@@ -37,7 +37,15 @@ import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle, VisuallyHidden } from "../../widgets";
+import {
+  Button,
+  Cadence,
+  EmptyState,
+  InlineNotice,
+  PaneScaffold,
+  type VirtualListHandle,
+  VisuallyHidden,
+} from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
@@ -206,7 +214,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
         Force shutdown…
       </Button>
       <ForceStopDialog open={open} onClose={() => setOpen(false)} onConfirm={stop} />
-      {error && <span role="alert">{error}</span>}
+      {error && <InlineNotice tone="danger">{error}</InlineNotice>}
     </>
   );
 }
@@ -708,7 +716,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               !restartPending &&
               !controlsFor(model).send && <SessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />}
             {reconciliationFailed && (
-              <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
+              <InlineNotice live="alert">
+                Message recovery has not completed. Sending will resume after recovery succeeds.
+              </InlineNotice>
             )}
             <PendingChips sessionRef={ref} />
             {composerSource && <Composer ref={ref} paneId={paneId} source={composerSource} focused={paneFocused} />}

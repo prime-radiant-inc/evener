@@ -38,11 +38,6 @@
   overflow-wrap: break-word;
 }
 
-.empty {
-  margin: var(--space-1) 0 0;
-  color: var(--ink-low);
-}
-
 /* The decode-failure fallback is the complete original Text, verbatim. */
 .fallback {
   margin: 0;
