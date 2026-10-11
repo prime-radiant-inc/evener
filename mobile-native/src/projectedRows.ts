@@ -257,6 +257,9 @@ export type MobileTimelineItem =
 				id: string;
 				origin: NoticeOrigin;
 				steeringKind?: string;
+				// A steering notice from the session's parent agent: a message in
+				// the conversation, not daemon steering.
+				fromParent?: true;
 				eventKind?: string;
 				exitCode?: number;
 				family: NoticeFamily;
@@ -809,6 +812,7 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 		id: it.id,
 		origin: "steering" as const,
 		steeringKind: it.steeringKind,
+		...(it.source === "parent" ? { fromParent: true as const } : {}),
 		family: "informational" as const,
 		tone: "info" as const,
 	};

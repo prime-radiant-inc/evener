@@ -464,6 +464,11 @@ describe("the daemon's steers (G8)", () => {
 		expect(renderedText(tree)).toBe(`${label} ${stripSystemReminder(systemEventWireItem(name).text ?? "")}`);
 	});
 
+	it.each(LEVELS)("keeps a parent's steer, which is conversation, and drops a daemon steer at chat (%s)", (level) => {
+		expect(rowFor("steer-from-parent", level)).toBeDefined();
+		expect(rowFor("steer-hook-context", level) === undefined).toBe(level === "chat");
+	});
+
 	it.each(["steer-loop-detected", "steer-provider-failure"] as const)(
 		"reads %s as a quiet labelled event, since the failure itself is the turn's error",
 		(name) => {
