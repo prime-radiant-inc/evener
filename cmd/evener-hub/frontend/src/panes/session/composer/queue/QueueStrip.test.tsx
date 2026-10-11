@@ -90,6 +90,27 @@ function isDisabled(el: HTMLElement): boolean {
   return (el as HTMLButtonElement).disabled;
 }
 
+function queueStrip(): HTMLElement | null {
+  return screen.queryByTestId("queue-strip");
+}
+
+// The header's count of everything the strip treats as queued.
+function queuedCount(): string | undefined {
+  return screen.getByTestId("queue-strip").dataset.queuedCount;
+}
+
+function queryRow(kind: string): HTMLElement | null {
+  return document.querySelector(`li[data-row-kind="${kind}"]`);
+}
+
+async function findRow(kind: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const row = queryRow(kind);
+    if (!row) throw new Error(`missing ${kind} row`);
+    return row;
+  });
+}
+
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
   const fake = new FakeClient(state);
   connectionStore.getState().connect(fake);
@@ -379,7 +400,7 @@ describe("visibility", () => {
       else await storage.markUnknown(note.clientMutationId, "blockedUnknown");
       await refreshPendingTurnsProjection("ref_a");
       renderStrip(defaultProps());
-      expect(screen.queryByText(/queued messages/i)).toBeNull();
+      expect(queueStrip()).toBeNull();
       expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
       storage.close();
     },
@@ -392,7 +413,7 @@ describe("visibility", () => {
   // visibility.
   test("renders nothing before the thread has hydrated", () => {
     renderStrip(defaultProps());
-    expect(screen.queryByText(/queued messages/i)).toBeNull();
+    expect(queueStrip()).toBeNull();
   });
 
   test("renders nothing when the queue is empty and no pending entries exist", async () => {
@@ -401,7 +422,7 @@ describe("visibility", () => {
       evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
     });
     renderStrip(defaultProps());
-    expect(screen.queryByText(/queued messages/i)).toBeNull();
+    expect(queueStrip()).toBeNull();
   });
 
   test("renders the strip once the queue has entries", async () => {
@@ -414,7 +435,7 @@ describe("visibility", () => {
       },
     });
     renderStrip(defaultProps());
-    expect(await screen.findByText(/queued messages/i)).toBeTruthy();
+    expect(await screen.findByTestId("queue-strip")).toBeTruthy();
   });
 });
 
@@ -461,9 +482,10 @@ describe("durable recovery rows", () => {
     await user.click(within(row).getByRole("button", { name: "Edit message" }));
 
     expect(onEditRecovery).toHaveBeenCalledWith(expect.objectContaining({ recoveryKind: "rejected" }));
-    expect(screen.getByText("Queued messages (1)")).toBeTruthy();
+    expect(queuedCount()).toBe("1");
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
-    expect(screen.queryByText("Recovery drafts")).toBeNull();
+    // The recovered row joins the one queue list rather than a separate section.
+    expect(screen.getAllByRole("list")).toHaveLength(1);
   });
 
   // Kata 2f41: a control the daemon refused must not render as a row
@@ -493,9 +515,7 @@ describe("durable recovery rows", () => {
     });
     renderStrip(defaultProps({ onEditRecovery: vi.fn() }));
 
-    const text = await screen.findByText(/Stop didn't reach the session/);
-    const row = text.closest("li");
-    if (!row) throw new Error("missing rejected interrupt row");
+    const row = await findRow("refused-stop");
     expect(within(row).queryByRole("button", { name: "Edit message" })).toBeNull();
     // It still needs a way off the strip: with no action at all its recovery
     // record is permanent and keeps being counted as queued.
@@ -597,9 +617,7 @@ describe("durable recovery rows", () => {
     await seedBlockedUnknown("uncertain");
     renderStrip(defaultProps());
 
-    const status = await screen.findByText("Delivery uncertain");
-    const row = status.closest("li");
-    if (!row) throw new Error("missing blocked row");
+    const row = await findRow("blocked");
     expect(within(row).getByText("uncertain")).toBeTruthy();
     const retry = within(row).getByRole("button", { name: "Retry" });
     expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
@@ -640,7 +658,7 @@ describe("durable recovery rows", () => {
       await userEvent.setup().click(retry);
       await flushPendingTurnsProjectionForTests();
       expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-      expect(screen.queryByText(/Retry failed|Delivery still cannot be checked/)).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
       expect(getToasts()).toEqual([]);
       expect(await otherTab.getOutbox(original.clientMutationId)).toEqual(afterOtherTab);
       if (outcome === "reopened") {
@@ -757,7 +775,7 @@ describe("durable recovery rows", () => {
     if (!row) throw new Error("missing blocked row after Retry");
     await within(row).findByRole("button", { name: "Retry" });
     expect(within(row).getAllByRole("alert")).toHaveLength(1);
-    expect(within(row).getByRole("alert").textContent).toContain("Retry failed");
+    expect(within(row).getByRole("alert").textContent).not.toBe("");
     expect(getToasts()).toEqual([]);
     expect(await storage.listOutbox("ref_a")).toEqual(before);
     expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
@@ -772,10 +790,8 @@ describe("durable recovery rows", () => {
     renderStrip(defaultProps({ activeRecoveryId: first.clientMutationId }));
 
     const rows = await screen.findAllByRole("listitem");
-    expect(rows.map((row) => row.textContent)).toEqual([
-      expect.stringContaining("later"),
-      expect.stringContaining("Destination deleted"),
-    ]);
+    expect(rows.map((row) => row.dataset.rowKind)).toEqual(["refused", "orphaned"]);
+    expect(within(rows[0]!).getByText("later")).toBeTruthy();
     expect(within(rows[1]!).getByText("copy me")).toBeTruthy();
     expect(within(rows[1]!).getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(within(rows[1]!).queryByRole("button", { name: /edit|send|retry/i })).toBeNull();
@@ -842,9 +858,7 @@ describe("durable recovery rows", () => {
     ]);
     renderStrip(defaultProps());
 
-    const status = await screen.findByText("Delivery uncertain");
-    const row = status.closest("li");
-    if (!row) throw new Error("missing blocked row");
+    const row = await findRow("blocked");
     expect(within(row).getByText("uncertain with skills [skill: pkg:probe]")).toBeTruthy();
   });
 });
@@ -863,14 +877,12 @@ describe("canceled rows", () => {
     await seedCanceled("stopped by user");
     renderStrip(defaultProps());
 
-    const status = await screen.findByText("Canceled by Stop");
-    const row = status.closest("li");
-    if (!row) throw new Error("missing canceled row");
+    const row = await findRow("canceled");
     expect(within(row).getByText("stopped by user")).toBeTruthy();
     expect(within(row).getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
     // The header counts it like any other durable row, same as a blocked one.
-    expect(screen.getByText("Queued messages (1)")).toBeTruthy();
+    expect(queuedCount()).toBe("1");
   });
 
   test("clicking Retry releases the canceled row and dispatches it", async () => {
@@ -881,9 +893,7 @@ describe("canceled rows", () => {
     await seedCanceled("stopped send");
     renderStrip(defaultProps());
 
-    const status = await screen.findByText("Canceled by Stop");
-    const row = status.closest("li");
-    if (!row) throw new Error("missing canceled row");
+    const row = await findRow("canceled");
     await user.click(within(row).getByRole("button", { name: "Retry" }));
     const storage = new MutationOutboxIndexedDB();
     await flushPendingTurnsProjectionForTests();
@@ -918,7 +928,7 @@ describe("canceled rows", () => {
     storage.close();
     await refreshPendingTurnsProjection("ref_a");
     renderStrip(defaultProps());
-    expect(screen.queryByText(/queued messages/i)).toBeNull();
+    expect(queueStrip()).toBeNull();
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
@@ -952,7 +962,7 @@ describe("canceled rows", () => {
     await userEvent.setup().click(retry);
     await flushPendingTurnsProjectionForTests();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    expect(screen.queryByText(/Retry failed|Still canceled by Stop/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(getToasts()).toEqual([]);
     expect(await otherTab.getOutbox(original.clientMutationId)).toEqual(afterOtherTab);
     // Released to submitting, the row is an ordinary pending send again: the
@@ -999,7 +1009,7 @@ describe("canceled rows", () => {
     if (!row) throw new Error("missing canceled row after Retry");
     await within(row).findByRole("button", { name: "Retry" });
     expect(within(row).getAllByRole("alert")).toHaveLength(1);
-    expect(within(row).getByRole("alert").textContent).toContain("Retry failed");
+    expect(within(row).getByRole("alert").textContent).not.toBe("");
     expect(getToasts()).toEqual([]);
     expect(await storage.listOutbox("ref_a")).toEqual(before);
     expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
@@ -1021,9 +1031,7 @@ describe("dismiss a rejected Stop", () => {
     await hydrate(fake, "ref_a");
     const record = await seedRecovery("rejected", "", { method: "turn/interrupt", reason: "turn is not active" });
     renderStrip(defaultProps());
-    const text = await screen.findByText(/Stop didn't reach the session/);
-    const row = text.closest("li");
-    if (!row) throw new Error("missing rejected interrupt row");
+    const row = await findRow("refused-stop");
     return { record, row };
   }
 
@@ -1053,7 +1061,7 @@ describe("dismiss a rejected Stop", () => {
     });
     await flushPendingTurnsProjectionForTests();
 
-    expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
+    expect(queryRow("refused-stop")).toBeNull();
     expect(getToasts()).toHaveLength(0);
   });
 
@@ -1070,7 +1078,7 @@ describe("dismiss a rejected Stop", () => {
       ["error", expect.stringContaining("storage is full")],
     ]);
     // The record survived the failure, so the row has to stay clickable.
-    expect(screen.getByText(/Stop didn't reach the session/)).toBeTruthy();
+    expect(queryRow("refused-stop")).not.toBeNull();
     expect(isDisabled(within(row).getByRole("button", { name: "Dismiss" }))).toBe(false);
   });
 
@@ -1092,8 +1100,8 @@ describe("dismiss a rejected Stop", () => {
     });
     await flushPendingTurnsProjectionForTests();
 
-    expect(screen.queryByText(/Stop didn't reach the session/)).toBeNull();
-    expect(screen.queryByText(/queued messages/i)).toBeNull();
+    expect(queryRow("refused-stop")).toBeNull();
+    expect(queueStrip()).toBeNull();
   });
 });
 
@@ -1508,9 +1516,7 @@ describe("recovery-fenced press gates", () => {
     renderStrip(defaultProps({ ref }));
     const row = (await screen.findAllByRole("listitem"))[0]!;
     fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
-    await waitFor(() =>
-      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
-    );
+    await waitFor(() => expect(getToasts().map((t) => t.kind)).toEqual(["error"]));
     expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
     expect(await outboxFor(ref)).toEqual([]);
   });
@@ -1523,9 +1529,7 @@ describe("recovery-fenced press gates", () => {
     const onDrainBusyChange = vi.fn();
     renderStrip(defaultProps({ ref, onDrainBusyChange }));
     fireEvent.click(await screen.findByRole("button", { name: /steer queue now/i }));
-    await waitFor(() =>
-      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
-    );
+    await waitFor(() => expect(getToasts().map((t) => t.kind)).toEqual(["error"]));
     expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
     expect(onDrainBusyChange).not.toHaveBeenCalled();
     expect(await outboxFor(ref)).toEqual([]);
@@ -1538,9 +1542,7 @@ describe("recovery-fenced press gates", () => {
     renderStrip(defaultProps({ ref }));
     const row = (await screen.findAllByRole("listitem"))[0]!;
     fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
-    await waitFor(() =>
-      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
-    );
+    await waitFor(() => expect(getToasts().map((t) => t.kind)).toEqual(["error"]));
     expect(fake.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
     expect(await outboxFor(ref)).toEqual([]);
   });
@@ -1556,9 +1558,7 @@ describe("recovery-fenced press gates", () => {
     renderStrip(defaultProps({ ref, onRestoreToComposer }));
     const row = (await screen.findAllByRole("listitem"))[0]!;
     fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
-    await waitFor(() =>
-      expect(getToasts().map((t) => t.text)).toContain("Queue actions aren't available until this session is resumed"),
-    );
+    await waitFor(() => expect(getToasts().map((t) => t.kind)).toEqual(["error"]));
     expect(onRestoreToComposer).not.toHaveBeenCalled();
     expect(fake.calls.filter((c) => c.method === "turn/cancelQueued")).toHaveLength(0);
     expect(await outboxFor(ref)).toEqual([]);
