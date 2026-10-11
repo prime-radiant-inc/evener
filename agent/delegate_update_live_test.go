@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
 )
@@ -87,19 +88,21 @@ wait:
 	}
 
 	sawUpdate := slices.ContainsFunc(rootAttentionFold(t, root).order, func(id string) bool { return strings.Contains(id, "/update/") })
-	answer := classifyParentAnswer(rootToolCalls(t, root), codename)
+	answer := classifyParentAnswer(toolCallsAfterQuestion(rootEntries(t, root)), codename)
 	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v", *delegateUpdateEvalModel, sawUpdate, answer, childReceived)
 }
 
-// rootToolCalls lists the root's tool calls in transcript order.
-func rootToolCalls(t *testing.T, root *Session) []llm.ToolCallData {
-	t.Helper()
-	data, err := readTranscriptFull(root.TranscriptPath(), "")
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
+// toolCallsAfterQuestion lists the tool calls from the entry that delivered
+// the delegate's question onward, in transcript order. Calls before it, such
+// as narration while starting the delegate, cannot answer it.
+func toolCallsAfterQuestion(entries []transcript.Entry) []llm.ToolCallData {
 	var calls []llm.ToolCallData
-	for _, e := range data.Entries {
+	asked := false
+	for _, e := range entries {
+		asked = asked || strings.Contains(e.Turn.AttentionID, "/update/")
+		if !asked {
+			continue
+		}
 		for _, part := range e.Turn.Message.Content {
 			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
 				calls = append(calls, *part.ToolCall)
@@ -130,6 +133,36 @@ func classifyParentAnswer(calls []llm.ToolCallData, codename string) string {
 		}
 	}
 	return answer
+}
+
+func rootEntries(t *testing.T, root *Session) []transcript.Entry {
+	t.Helper()
+	data, err := readTranscriptFull(root.TranscriptPath(), "")
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	return data.Entries
+}
+
+// Narration that repeats the codename before the question arrives is not an
+// answer, whether or not the question is answered afterwards.
+func TestToolCallsAfterQuestionIgnoresEarlierNarration(t *testing.T) {
+	entry := func(attentionID, tool, args string) transcript.Entry {
+		var e transcript.Entry
+		e.Turn.AttentionID = attentionID
+		e.Turn.Message.Content = []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{Name: tool, Arguments: json.RawMessage(args)}}}
+		return e
+	}
+	narration := entry("", "communicate", `{"message":"Starting a delegate to write HALCYON-42","end_turn":false}`)
+	question := entry("dlg_1/update/7", "communicate", `{"message":"ok","end_turn":false}`)
+	answer := entry("", "delegate_send", `{"message":"HALCYON-42"}`)
+
+	if got := classifyParentAnswer(toolCallsAfterQuestion([]transcript.Entry{narration, question}), "HALCYON-42"); got != "none" {
+		t.Errorf("unanswered question: got %s, want none", got)
+	}
+	if got := classifyParentAnswer(toolCallsAfterQuestion([]transcript.Entry{narration, question, answer}), "HALCYON-42"); got != "delegate_send" {
+		t.Errorf("answered question: got %s, want delegate_send", got)
+	}
 }
 
 func TestClassifyParentAnswer(t *testing.T) {
