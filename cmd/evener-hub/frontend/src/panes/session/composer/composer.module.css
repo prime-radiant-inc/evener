@@ -174,15 +174,6 @@
   border-color: var(--accent);
 }
 
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-}
-
 /* Button intentionally owns no caller className API, so select the one
  * composer button that directly contains the Send-specific label class. The
  * shared phone Button rule already supplies this target's block-size floor;

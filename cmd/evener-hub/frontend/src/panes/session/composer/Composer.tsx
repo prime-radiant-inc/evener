@@ -93,6 +93,7 @@ import {
   SendIcon,
   Tooltip,
   useToasts,
+  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
@@ -148,7 +149,6 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
@@ -1470,9 +1470,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           the textarea itself is visibly back, there is nothing left for a
           permanent "ready" line to usefully say (honest-liveness: only
           announce a real transition, never a static claim). */}
-      <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
-        {readyAnnouncement}
-      </div>
+      <VisuallyHidden>
+        <span role="status" aria-live="polite">
+          {readyAnnouncement}
+        </span>
+      </VisuallyHidden>
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc

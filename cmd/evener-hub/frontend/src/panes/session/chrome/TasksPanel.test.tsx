@@ -12,7 +12,9 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../../widgets/internal/requireClass";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
 import { TasksPanel, TasksPanelBody } from "./TasksPanel";
 
@@ -341,6 +343,10 @@ test("every row leads with the shared TaskCheck glyph matching its task's status
   await expectTouch("Prepare release notes", "pending");
 });
 
+// The VisuallyHidden widget's sr-only class, through requireClass so a
+// renamed class fails loudly.
+const VISUALLY_HIDDEN_CLASS = requireClass(visuallyHiddenStyles.root, "visuallyhidden.module.css", "root");
+
 test("every row carries a visually hidden status word beside its aria-hidden glyph", async () => {
   // TaskCheck is a picture of state, deliberately aria-hidden; the row's
   // status rides along visually hidden instead (the same word the card's
@@ -355,7 +361,7 @@ test("every row carries a visually hidden status word beside its aria-hidden gly
 
   const expectWord = async (description: string, word: string) => {
     const row = (await screen.findByText(description)).closest("[data-testid='task-row']");
-    const srWord = row?.querySelector("span[class*='srOnly']");
+    const srWord = row?.querySelector(`.${VISUALLY_HIDDEN_CLASS}`);
     expect(srWord?.textContent).toBe(word);
   };
   await expectWord("Implement artifact store", "done");

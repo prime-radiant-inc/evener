@@ -25,6 +25,7 @@
 
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { useEffect, useId, useRef } from "react";
+import { VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
@@ -44,7 +45,6 @@ const CLASS = {
   alternativeRow: requireClass(styles.alternativeRow, "askquestioncard.module.css", "alternativeRow"),
   textInput: requireClass(styles.textInput, "askquestioncard.module.css", "textInput"),
   noteRow: requireClass(styles.noteRow, "askquestioncard.module.css", "noteRow"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "askquestioncard.module.css", "visuallyHidden"),
 };
 
 export interface AskQuestionCardProps {
@@ -229,9 +229,9 @@ export function AskQuestionCard({
           Always mounted, so activating/deactivating the alternative never
           remounts the element mid-edit. */}
       <div className={CLASS.noteRow}>
-        <span className={CLASS.visuallyHidden} id={noteLabelId}>
-          note
-        </span>
+        <VisuallyHidden>
+          <span id={noteLabelId}>note</span>
+        </VisuallyHidden>
         <input
           ref={noteInputRef}
           type="text"

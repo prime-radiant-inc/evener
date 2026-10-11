@@ -81,7 +81,7 @@ import {
 } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
-import { Button, Disclosure, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
+import { Button, Disclosure, EmptyState, Markdown, Sheet, useToasts, VisuallyHidden } from "../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "../transcript/tools/taskCheck";
@@ -141,7 +141,6 @@ const CLASS = {
   noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
   notesRail: requireClass(styles.notesRail, "taskspanel.module.css", "notesRail"),
   note: requireClass(styles.note, "taskspanel.module.css", "note"),
-  srOnly: requireClass(styles.srOnly, "taskspanel.module.css", "srOnly"),
 };
 
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
@@ -293,7 +292,7 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
           {/* The glyph is aria-hidden by design; its status word rides
               visually-hidden beside the label, the same word the card's
               rows carry. */}
-          <span className={CLASS.srOnly}>{TOUCH_WORD[STATUS_TOUCH[task.status]]}</span>
+          <VisuallyHidden>{TOUCH_WORD[STATUS_TOUCH[task.status]]}</VisuallyHidden>
           <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
             {task.description}
           </span>
