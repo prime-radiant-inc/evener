@@ -12,7 +12,12 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStore } from "./threads";
+import {
+  productionEntryTranscriptForTests,
+  resetThreadsStoreForTests,
+  setProductionEntryCacheForTests,
+  threadsStore,
+} from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
@@ -502,6 +507,47 @@ describe("notification routing index (ref / threadId fast path)", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "idle" });
 
     // And live routing still lands on the newest model.
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("index survives release and re-ensure of the same ref (no stale model left behind)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref, {}, params.requestGeneration));
+    await threadsStore.getState().ensureThread("ref_a");
+    const repository = productionEntryTranscriptForTests("ref_a").repository;
+    expect(repository).toBeDefined();
+    if (!repository) throw new Error("ordinary acquisition published no repository");
+    const retire = vi.spyOn(repository, "retire");
+    threadsStore.getState().releaseThread("ref_a");
+    // R36: the finite final owner retains the indexed model at this same boundary.
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    expect(retire).toHaveBeenCalledTimes(1);
+
+    // R36: routing remains live until retirement settles, not just until pane release.
+    const before = threadsStore.getState().threads;
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads).not.toBe(before);
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    // Actual terminal retirement removes and de-indexes the released model.
+    expect(await retire.mock.results[0]?.value).toEqual({ kind: "saved" });
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    const afterRetirement = threadsStore.getState().threads;
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads).toBe(afterRetirement);
+
+    // Re-ensure republishes and the index must pick the ref up again.
+    await threadsStore.getState().ensureThread("ref_a");
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },

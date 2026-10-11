@@ -2425,33 +2425,6 @@ describe("wire subscription tracking", () => {
   });
 });
 
-describe("notification routing index (ref / threadId fast path)", () => {
-  test("index survives release and re-ensure of the same ref (no stale model left behind)", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
-    await threadsStore.getState().ensureThread("ref_a");
-    threadsStore.getState().releaseThread("ref_a");
-    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
-
-    // A frame for the released ref must find no model through the index —
-    // the released model must have been de-indexed, not just unmapped.
-    const before = threadsStore.getState().threads;
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    });
-    expect(threadsStore.getState().threads).toBe(before);
-
-    // Re-ensure republishes and the index must pick the ref up again.
-    await threadsStore.getState().ensureThread("ref_a");
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    });
-    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
-  });
-});
-
 describe("notification routing differential (randomized: index vs scan reference)", () => {
   // A scan-based reference implementation of the pre-index applyToMap: for
   // every tracked model, select via notificationTargetsThread exactly as the
