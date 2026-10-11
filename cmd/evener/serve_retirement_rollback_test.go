@@ -167,3 +167,57 @@ func TestServeRetirementCommitFailureRollsBack(t *testing.T) {
 		}
 	})
 }
+
+// TestServeRetirementAutomaticFailureReachesStatus pins that a failed
+// automatic retirement leaves its reason where an operator can read it:
+// evener/daemon/status carries the consumer's error as the last attempt, and
+// the daemon stays resident.
+func TestServeRetirementAutomaticFailureReachesStatus(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	deps.retirementCommit = func(*agent.RetirementController, *agent.RetirementClaim) error {
+		return errors.New("injected retirement commit failure")
+	}
+	args = append(args, "--daemon-idle-timeout", "1h")
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	clk.awaitArm(t)
+	awaitRendezvousEntry(t, serveArgValue(args, "--run-dir"))
+	awaitRetirementSettled(t, state.srv)
+
+	clk.Advance(time.Hour)
+	attemptAt := clk.Now()
+	clk.fire(t)
+	rec.await(t, "prepared")
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonStatus, appwire.DaemonStatusParams{})
+		if err != nil {
+			t.Fatalf("status: %v", err)
+		}
+		lifecycle := out.(appwire.DaemonStatusResponse).Lifecycle
+		if attempt := lifecycle.LastAttempt; attempt != nil {
+			if attempt.At != attemptAt.UTC().Format(time.RFC3339Nano) ||
+				attempt.Error != "retirement commit: injected retirement commit failure" {
+				t.Fatalf("last attempt = %+v, want the commit failure at %v", attempt, attemptAt)
+			}
+			if lifecycle.Phase != "resident" || lifecycle.Failure != "prepare_failed" {
+				t.Fatalf("lifecycle = %+v, want resident with prepare_failed", lifecycle)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("status never reported the failed automatic attempt: %+v", lifecycle)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	state.srv.shutdown()
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit: %v", err)
+	}
+}
