@@ -7,8 +7,7 @@
 //   - resting stays hidden (if it doesn't, the premise is gone and the other
 //     two prove nothing - a permanently visible button trivially "reveals")
 //   - hover still reveals, so a focus fix that broke the hover rule is caught
-//   - focus reveals AND draws the accent ring, matching chip.module.css's own
-//     .remove:focus-visible
+//   - focus reveals AND draws IconButton's accent focus ring
 export default function assert(m) {
   if (m.resting.opacity !== 0) {
     return {
@@ -38,7 +37,7 @@ export default function assert(m) {
   if (m.focused.outlineColor !== m.accent) {
     return {
       pass: false,
-      reason: `the focus ring is ${m.focused.outlineColor}, not the accent ${m.accent} that chip.module.css's own .remove:focus-visible uses`,
+      reason: `the focus ring is ${m.focused.outlineColor}, not the accent ${m.accent} that IconButton's --focus-ring draws`,
     };
   }
   return {
