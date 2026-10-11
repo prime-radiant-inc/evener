@@ -2,14 +2,14 @@
  * token-contract semantic allowlist). The path strokes currentColor, so the
  * hue only has to set color. */
 
-.alive {
+.toneAlive {
   color: var(--alive);
 }
 
-.attention {
+.toneAttention {
   color: var(--attention);
 }
 
-.danger {
+.toneDanger {
   color: var(--danger);
 }

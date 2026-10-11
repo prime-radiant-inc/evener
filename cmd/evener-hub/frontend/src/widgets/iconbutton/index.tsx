@@ -56,8 +56,8 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
 };
 
 const BADGE_CLASS = {
-  badged: requireClass(styles.badged, "iconbutton.module.css", "badged"),
-  badge: requireClass(styles.badge, "iconbutton.module.css", "badge"),
+  badgedButton: requireClass(styles.badgedButton, "iconbutton.module.css", "badgedButton"),
+  cornerBadge: requireClass(styles.cornerBadge, "iconbutton.module.css", "cornerBadge"),
 };
 
 /**
@@ -92,13 +92,13 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       {...rest}
       type={type}
       aria-label={label}
-      className={badge === undefined ? className : `${className} ${BADGE_CLASS.badged}`}
+      className={badge === undefined ? className : `${className} ${BADGE_CLASS.badgedButton}`}
       onClick={refused ? undefined : onClick}
       disabled={disabled}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>
       {badge !== undefined && (
-        <span className={BADGE_CLASS.badge}>
+        <span className={BADGE_CLASS.cornerBadge}>
           <Badge {...badge} />
         </span>
       )}

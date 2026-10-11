@@ -30,11 +30,11 @@
 /* badge: the count overhangs the button's top-right corner, so it reads as
  * attached to the icon without widening the square. pointer-events: none
  * keeps the overhang from catching clicks outside the button's own box. */
-.badged {
+.badgedButton {
   position: relative;
 }
 
-.badge {
+.cornerBadge {
   position: absolute;
   top: calc(-1 * var(--space-1));
   right: calc(-1 * var(--space-1));

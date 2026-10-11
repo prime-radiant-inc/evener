@@ -139,9 +139,9 @@ export interface ToolIconProps {
 export type ToolIconTone = "alive" | "attention" | "danger";
 
 const TONE_CLASS: Record<ToolIconTone, string> = {
-  alive: requireClass(styles.alive, "toolicon.module.css", "alive"),
-  attention: requireClass(styles.attention, "toolicon.module.css", "attention"),
-  danger: requireClass(styles.danger, "toolicon.module.css", "danger"),
+  alive: requireClass(styles.toneAlive, "toolicon.module.css", "toneAlive"),
+  attention: requireClass(styles.toneAttention, "toolicon.module.css", "toneAttention"),
+  danger: requireClass(styles.toneDanger, "toolicon.module.css", "toneDanger"),
 };
 
 // 14px: the same edge Chevron, CloseIcon and BackIcon use, so every icon in
