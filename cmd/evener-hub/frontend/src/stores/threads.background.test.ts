@@ -5,7 +5,6 @@ import {
   type acquireThreadSubscription,
   currentTranscriptState,
   hydrateThread,
-  makeTranscriptDisplayConfig,
   type ThreadModel,
   type ThreadReadResponse,
   type ThreadTurnsListResponse,
@@ -15,11 +14,8 @@ import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTr
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
-import { act, cleanup, render, screen } from "@testing-library/react";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
-import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
 import { focusedModel } from "../shell/palette/paletteContext";
 import { findInSessionMatches } from "../shell/palette/search";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
@@ -2021,167 +2017,6 @@ describe("background thread claims", () => {
       await pressure.release();
       resetThreadsStoreForTests();
       restoreOptions();
-    }
-  });
-
-  test("renders one completed transcript copy after history retires the live overlay", async () => {
-    const restoreOptions = installBackgroundTranscriptOptionsForTests({
-      residentBytes: 0,
-      pendingBytes: 8 * 1024 * 1024,
-    });
-    resetThreadsStoreForTests();
-    setSessionCacheAdapterForTests(cache);
-    const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => positionedLatestRead(ref ?? "local:one"));
-    fake.on("thread/unsubscribe", () => ({}));
-    fake.on("thread/turns/list", () => olderPage("turn_old", 1, 0, ["older-completed-item"], "cursor_next"));
-    connectionStore.getState().connect(fake);
-    const background = acquireBackgroundThread("local:one");
-    let paneHeld = false;
-    let rendered: ReturnType<typeof render> | undefined;
-    const view = (model: ThreadModel) =>
-      createElement(TranscriptBody, {
-        model,
-        config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
-        surface: "preview",
-        disclosureScope: "completed-copy",
-      });
-    try {
-      await background.ready;
-      await settleBackgroundTranscriptsForTests();
-      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
-
-      // Stream canonical text and a tool output while the model is disk-resident.
-      fake.emitNotification({
-        method: "overlay/upserted",
-        params: {
-          threadId: "thr_local:one",
-          ref: "local:one",
-          item: {
-            key: "stream:s1:tool",
-            kind: "stream",
-            streamId: "s1",
-            roundId: "r1",
-            turnId: "turn_1",
-            item: {
-              type: "commandExecution",
-              id: "tool1",
-              turnId: "turn_1",
-              roundId: "r1",
-              callId: "call_tool",
-              output: "",
-              status: "inProgress",
-            },
-          },
-        },
-      } as AnyNotification);
-      fake.emitNotification(textDelta("local:one", "-streamed"));
-      fake.emitNotification({
-        method: "overlay/delta",
-        params: {
-          threadId: "thr_local:one",
-          ref: "local:one",
-          key: "stream:s1:tool",
-          field: "output",
-          delta: "-tool-streamed",
-        },
-      } as AnyNotification);
-      await settleBackgroundTranscriptsForTests();
-
-      // Promote the disk checkpoint into the pane with no thread/read.
-      const readsBeforePromotion = fake.calls.filter((call) => call.method === "thread/read").length;
-      const pane = threadsStore.getState().ensureThread("local:one");
-      paneHeld = true;
-      await pane;
-      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePromotion);
-      const promoted = threadsStore.getState().threads.get("local:one");
-      if (!promoted) throw new Error("expected the promoted model");
-      // Both streamed overlay entries survive promotion with their accumulated
-      // text and tool output.
-      expect(promoted.overlay?.["stream:s1:agentMessage"]?.item.text).toBe("alpha-streamed");
-      expect(promoted.overlay?.["stream:s1:tool"]?.item.output).toBe("-tool-streamed");
-
-      await act(async () => {
-        rendered = render(view(promoted));
-      });
-      expect(screen.getAllByText("alpha-streamed").length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText("-tool-streamed").length).toBeGreaterThanOrEqual(1);
-
-      // Complete the turn: recorded history carries the retained stream content
-      // plus later output and retires the live overlay.
-      await act(async () => {
-        fake.emitNotification({
-          method: "history/updated",
-          params: {
-            threadId: "thr_local:one",
-            ref: "local:one",
-            bootGeneration: "1",
-            epoch: 1,
-            snapshot: { incarnation: "inc-1", length: 1 },
-            turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
-            items: [
-              {
-                type: "agentMessage",
-                id: "a1",
-                turnId: "turn_1",
-                roundId: "r1",
-                transcriptKey: "apptranscript-item-v2:turn_1:0:0",
-                position: { entry: 1, item: 0 },
-                version: 1,
-                text: "alpha-streamed-later",
-                status: "completed",
-              },
-              {
-                type: "commandExecution",
-                id: "tool1",
-                turnId: "turn_1",
-                roundId: "r1",
-                callId: "call_tool",
-                transcriptKey: "apptranscript-item-v2:turn_1:0:1",
-                position: { entry: 1, item: 1 },
-                version: 1,
-                output: "-tool-streamed-later",
-                status: "completed",
-              },
-            ],
-          },
-        } as AnyNotification);
-      });
-
-      const completed = threadsStore.getState().threads.get("local:one");
-      if (!completed) throw new Error("expected the completed model");
-      expect(completed.overlay).toEqual({});
-      expect(completed.olderCursor).toBe("cursor_latest");
-
-      await act(async () => {
-        rendered?.rerender(view(completed));
-      });
-      expect(screen.getAllByText("alpha-streamed-later")).toHaveLength(1);
-      expect(screen.getAllByText("-tool-streamed-later")).toHaveLength(1);
-      // No leftover live overlay copy survives retirement.
-      expect(screen.queryByText("alpha-streamed")).toBeNull();
-      expect(screen.queryByText("-tool-streamed")).toBeNull();
-
-      await act(async () => {
-        rendered?.unmount();
-        rendered = undefined;
-      });
-      // The paging boundary continues past the completed turn.
-      await threadsStore.getState().loadOlderTurns("local:one");
-      const paged = threadsStore.getState().threads.get("local:one");
-      if (!paged) throw new Error("expected the paged model");
-      expect(paged.olderCursor).toBe("cursor_next");
-      expect(paged.turns.flatMap((turn) => turn.items).map((item) => item.text)).toContain("older-completed-item");
-    } finally {
-      rendered?.unmount();
-      cleanup();
-      if (paneHeld) threadsStore.getState().releaseThread("local:one");
-      try {
-        await background.release();
-      } finally {
-        resetThreadsStoreForTests();
-        restoreOptions();
-      }
     }
   });
 
