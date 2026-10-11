@@ -749,3 +749,33 @@ func TestSeatbeltLeavesGitReadableWithoutTheConfigMask(t *testing.T) {
 		t.Errorf("no .git target denial may remain once the config mask is removed:\n%s", text)
 	}
 }
+
+// A .git component above a carve-out (the config kept inside a dotfiles
+// repository's .git) must not deny the whole carve-out: the path-free regex
+// would match every path below it, so such a root gets its .git entries
+// denied one by one from the walk instead.
+func TestSeatbeltDeniesOnlyTheGitBelowACarveOutUnderAGitDirectory(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := writeGitAncestryEvenerContentFixture(t, home)
+	host := seatbeltHost()
+	host.Home = home
+	host.EvenerContentRoots = fx.contentRoots()
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, host, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canon := func(p string) string { return canonicalizeLongestPrefix(p, filepath.EvalSymlinks) }
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", canon)
+	if strings.Contains(text, `(regex #"/\.[Gg][Ii][Tt](/|$)")`) {
+		t.Errorf("a carve-out under a .git directory must not be denied by the .git regex:\n%s", text)
+	}
+	gitDir := canon(filepath.Dir(fx.gitConfig))
+	key := paramKeyForPath(params, gitDir)
+	if key == "" || !strings.Contains(text, "(deny file-read* file-write* "+literalAndSubpath(key)+")") {
+		t.Errorf("the plugin's own .git %q must still be denied:\n%s", gitDir, text)
+	}
+}

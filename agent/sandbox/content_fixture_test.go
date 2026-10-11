@@ -53,7 +53,21 @@ func writeEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
 // skill discovery advertises.
 func writeSymlinkedEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
 	t.Helper()
-	realConfig := filepath.Join(home, "dotfiles", "evener")
+	return writeEvenerContentFixtureLinkedTo(t, home, filepath.Join(home, "dotfiles", "evener"))
+}
+
+// writeGitAncestryEvenerContentFixture is writeSymlinkedEvenerContentFixture
+// with the real config dir inside a dotfiles repository's .git directory, so
+// a .git component sits above the carve-outs, not inside them.
+func writeGitAncestryEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
+	t.Helper()
+	return writeEvenerContentFixtureLinkedTo(t, home, filepath.Join(home, "dotfiles", ".git", "evener"))
+}
+
+// writeEvenerContentFixtureLinkedTo writes the fixture with ~/.config/evener
+// a symlink to realConfig.
+func writeEvenerContentFixtureLinkedTo(t *testing.T, home, realConfig string) evenerContentFixture {
+	t.Helper()
 	if err := os.MkdirAll(realConfig, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +108,7 @@ var evenerContentLayouts = map[string]func(*testing.T, string) evenerContentFixt
 	"plain":            writeEvenerContentFixture,
 	"symlinked-config": writeSymlinkedEvenerContentFixture,
 	"linked-git":       writeLinkedGitEvenerContentFixture,
+	"git-ancestry":     writeGitAncestryEvenerContentFixture,
 }
 
 // evenerContentScript reads both skills, runs the hook, tries to write into the
