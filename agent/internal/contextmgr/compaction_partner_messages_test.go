@@ -577,3 +577,58 @@ func TestFormatCheckpoint_KeepsMessagesWholeWithoutATranscript(t *testing.T) {
 		}
 	}
 }
+
+// Past the carry ceiling (a quarter of the model's context window) the oldest
+// partner messages are left to the model's summary instead of quoted, so the
+// compacted context stays well under the model's limit. The newest messages
+// stay verbatim, a reminder points at the transcript for the rest, and a hold
+// from an older message survives as the summary's quote (#4309).
+func TestForceCompact_PartnerMessagesPastTheCeilingAreSummarized(t *testing.T) {
+	const window = 20_000 // tokens; the ceiling is window*4/4 chars
+	reply := "## Permissions and Holds\n\"" + partnerHold + "\" (message 0)\n\n## Progress\nDone"
+	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(reply)} }
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(partnerHold))}
+	for i := range 40 {
+		history = append(history,
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")),
+			schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("instruction %02d %s", i, strings.Repeat("x", 1500)))))
+	}
+	newest := history[len(history)-1].Message.Text()
+	history = append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
+
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+
+	summary := history[0].Message.Text()
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history does not start with a summary")
+	}
+	if tokens := cm.estimateTokensFor(cm.currentProfile(), history); tokens > window/2 {
+		t.Fatalf("compacted history is %d tokens, want well under the %d-token window", tokens, window)
+	}
+	entries := extractMarkdownConversation(summary)
+	if len(entries) == 0 || entries[len(entries)-1].Text != newest {
+		t.Fatalf("the newest partner message is not carried verbatim")
+	}
+	if len(entries) >= 41 {
+		t.Fatalf("all %d partner messages were carried verbatim past the ceiling", len(entries))
+	}
+	if !strings.Contains(summary, partnerCarryReminder(41-len(entries), persistentMeta)) {
+		t.Fatalf("the summary does not remind the model where the summarized messages are:\n%.600s", summary)
+	}
+	if !strings.Contains(summary, partnerHold) {
+		t.Fatalf("the older hold is gone: neither carried nor quoted by the summary")
+	}
+	// A later fold still reads this turn's carry back.
+	if !carriesPartnerMessages(summary) {
+		t.Fatalf("a summary with the reminder is not recognized as the rendered layout")
+	}
+}

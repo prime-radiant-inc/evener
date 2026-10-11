@@ -3076,7 +3076,14 @@ func TestCheckpoint_ShedOrder_MiddleTrimsAnOversizedPartnerMessage(t *testing.T)
 // isMiddleTrimOf reports whether got is original with its middle replaced by
 // the trimmed-message note for the characters removed.
 func isMiddleTrimOf(got, original string) bool {
-	for keep := 1; keep < len(original)/2; keep++ {
+	// The note's length depends only on how many digits the trimmed count has,
+	// which fixes how much of each end was kept.
+	for digits := 1; digits <= 9; digits++ {
+		noteLen := len(trimmedMessageNote(0)) - 1 + digits
+		keep := (len(got) - noteLen) / 2
+		if keep <= 0 || 2*keep >= len(original) {
+			continue
+		}
 		if got == original[:keep]+trimmedMessageNote(len(original)-2*keep)+original[len(original)-keep:] {
 			return true
 		}

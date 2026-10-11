@@ -1545,14 +1545,52 @@ func middleTrim(text string, edge int) string {
 // every compaction. Checkpoints written by the opt-in session-log strategy
 // keep no conversation section, so nothing is recovered from them here
 // (#4181).
-func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool) string {
+//
+// Past ceiling characters (partnerCarryCeiling; 0 means none) the oldest
+// messages are left out, newest kept, and summarized reports how many: the
+// model's summary covers them, quoting any permission or hold per the summary
+// prompt, and the turn reminds the model where to read them verbatim.
+func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool, ceiling int) (markdown string, summarized int) {
 	var partner []checkpointConversationEntry
 	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
 		if entry.Role == "user" {
 			partner = append(partner, entry)
 		}
 	}
-	return renderCheckpointConversation(fitCheckpointConversation(partner, maxCheckpointChars, recoverable))
+	partner = fitCheckpointConversation(partner, maxCheckpointChars, recoverable)
+	markdown = renderCheckpointConversation(partner)
+	for ceiling > 0 && len(markdown) > ceiling && summarized < len(partner)-1 {
+		summarized++
+		markdown = renderCheckpointConversation(partner[summarized:])
+	}
+	return markdown, summarized
+}
+
+// partnerCarryWindowShare bounds the partner's messages a model-written
+// compaction turn carries verbatim to a quarter of the model's context window.
+// Compaction starts at 80% of the window; a carry of at most a quarter leaves
+// the rest for the system prompt and tools, the model's own summary, the
+// preserved recent turns and the work until the next compaction, so the carry
+// alone can never push a compacted context back over the threshold.
+const partnerCarryWindowShare = 4
+
+// partnerCarryCeiling is the verbatim carry's ceiling in characters, at the
+// char/4 token estimate the context manager uses elsewhere, or 0 when the
+// model's window is unknown (and compaction never runs).
+func partnerCarryCeiling(prof *provider.Profile) int {
+	return contextWindowOf(prof) * 4 / partnerCarryWindowShare
+}
+
+// partnerCarry renders the partner's messages a model-written compaction turn
+// carries (from history[:cutoff]) and the reminder its opening adds when some
+// are summarized instead.
+func (cm *Manager) partnerCarry(ctx context.Context, history []schema.Turn, cutoff int) (reminder, carry string) {
+	meta := cm.metaFor(ctx)
+	carry, summarized := partnerMessagesMarkdown(history, cutoff, cm.resultToolName(), meta.hasTranscript(), partnerCarryCeiling(cm.currentProfile()))
+	if summarized > 0 {
+		reminder = partnerCarryReminder(summarized, meta)
+	}
+	return reminder, carry
 }
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
@@ -2209,9 +2247,9 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if checkpointed != nil {
 		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
-	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") +
-		renderCompactionModelText(summaryModelTextHeading, resp.Text()) +
-		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName(), cm.metaFor(ctx).hasTranscript()) + summaryTurnEnd
+	reminder, carry := cm.partnerCarry(ctx, partnerSource, len(partnerSource))
+	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
