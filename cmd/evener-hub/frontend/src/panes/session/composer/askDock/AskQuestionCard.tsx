@@ -15,13 +15,13 @@
 // a pure controlled view over it, same convention as every other controlled
 // widget in this codebase (Input, Switch).
 //
-// No RadioGroup/Checkbox widget exists in widgets/** for this wave to
-// build on (verified: src/widgets/index.ts's barrel has no such export),
-// and Input's fixed prop list has no aria-labelledby passthrough - both are
-// hard requirements here (recommended-first radiogroup, aria-labelledby
-// wiring), so this file uses plain semantic <input> elements with its own
-// CSS module throughout rather than forcing a widget that cannot express
-// them.
+// The barrel's RadioGroup has no per-option detail line, no recommended
+// marker, no checkbox (multi_select) mode, no deselectable trailing option,
+// and requires a visible legend where this card labels by aria-labelledby;
+// there is no Checkbox widget; and Input's fixed prop list has no
+// aria-labelledby passthrough. All of those are hard requirements here, so
+// this file uses plain semantic <input> elements with its own CSS module
+// throughout rather than forcing a widget that cannot express them.
 
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { useEffect, useId, useRef } from "react";
