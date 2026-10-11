@@ -1308,6 +1308,109 @@ test("submit resolves at the durable enqueue boundary", async () => {
 	await runtime.stop();
 });
 
+// A real SQLITE_READONLY from the engine: every outbox write is refused, as on
+// a phone whose storage went read-only under the app.
+function refuseWrites(db: SqliteDoubleDatabase): void {
+	db.exec("PRAGMA query_only = ON");
+}
+
+async function readyRuntimeWithClient(createMutationId?: () => string) {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId });
+	const client = new FakeClient("ready");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	return { runtime, client };
+}
+
+test.each(["send", "queue", "steer"] as const)(
+	"a %s whose outbox write is refused by storage goes out as a plain request",
+	async (kind) => {
+		const { runtime, client } = await readyRuntimeWithClient();
+		const method = { send: "turn/start", queue: "turn/queue", steer: "turn/steer" }[kind];
+		client.on(method as never, (params) => appliedReceipt(params));
+		refuseWrites(database!);
+
+		await runtime.submit({ ...request(kind) });
+
+		expect(client.calls).toHaveLength(1);
+		expect(client.calls[0]).toMatchObject({ method, params: { ref: "ref-1", expectedInstanceId: "instance-1" } });
+		expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toEqual(expect.any(String));
+		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		await runtime.stop();
+	},
+);
+
+test("a drain-as-steer whose outbox write is refused by storage goes out as a plain request", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/drainAsSteer", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
+
+	expect(client.calls[0]).toMatchObject({ method: "turn/drainAsSteer", params: { expectedQueueRevision: 7 } });
+	await runtime.stop();
+});
+
+// SQLITE_FULL rolls the transaction back itself, so the savepoint's own
+// rollback fails too; the send must still see the full-disk error.
+test("a send on a full disk goes out as a plain request", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	const { page_count: pages } = database!.prepare("PRAGMA page_count").get() as { page_count: number };
+	database!.exec(`PRAGMA max_page_count = ${pages}`);
+
+	await runtime.submit({ ...request("send"), input: [{ type: "text", text: "x".repeat(200_000) }] });
+
+	expect(client.calls).toHaveLength(1);
+	await runtime.stop();
+});
+
+test("a direct send the daemon refuses rejects, so the draft stays", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	const refusal = new WireError("refused", -32000);
+	client.on("turn/start", () => {
+		throw refusal;
+	});
+	refuseWrites(database!);
+
+	await expect(runtime.submit(request("send"))).rejects.toBe(refusal);
+	await runtime.stop();
+});
+
+test("a refused write with no ready connection still fails the send with the storage error", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase());
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	refuseWrites(database!);
+
+	await expect(runtime.submit(request("send"))).rejects.toThrow(/readonly database/);
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("a Stop whose outbox write is refused by storage stays fail-closed", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/interrupt", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	await expect(runtime.submit({ ...request("send"), kind: "interrupt" })).rejects.toThrow(/readonly database/);
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("an outbox bug stays a visible send failure with no request", async () => {
+	const { runtime, client } = await readyRuntimeWithClient(() => "mutation-1");
+	client.on("turn/start", (params) => appliedReceipt(params));
+	await runtime.submit(request("send"));
+	client.calls.length = 0;
+
+	// The same id twice is the outbox's own validation refusing the record.
+	await expect(runtime.submit(request("send"))).rejects.toThrow(/already active/);
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
 test("each enqueue gets a fresh mutation id", async () => {
 	let nextId = 0;
 	const runtime = new NativeMutationRuntime(openDatabase(), {

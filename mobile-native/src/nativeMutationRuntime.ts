@@ -4,6 +4,7 @@ import type { AppwireClientLike, MutationReceipt, ThreadReadResponse } from "@ev
 import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
 	createClientIdentity,
+	createSecureUUID,
 	MutationDispatcher,
 	MutationOutbox,
 	type MutationAttachmentRef,
@@ -23,7 +24,7 @@ import type {
 	ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
-import type { SqliteSync } from "./sqliteSync";
+import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
 
 export interface NativeMutationRuntimeOptions {
 	createMutationId?: () => string;
@@ -71,6 +72,16 @@ function methodFor(kind: ConversationMutationKind, expectedQueueRevision: number
 	return expectedQueueRevision === undefined ? "turn/steer" : "turn/drainAsSteer";
 }
 
+// The composer's four send verbs: the only mutations that go out as a plain
+// request when storage refuses their durable write. Stop and promote keep
+// their durable contract and fail instead.
+const DIRECT_FALLBACK_METHODS: ReadonlySet<string> = new Set([
+	"turn/start",
+	"turn/queue",
+	"turn/steer",
+	"turn/drainAsSteer",
+]);
+
 function intentFor(request: NativeMutationRequest): MutationIntent {
 	const method = methodFor(request.kind, request.expectedQueueRevision);
 	const payload: Record<string, unknown> = {
@@ -114,6 +125,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	readonly storage: NativeStorage;
 	readonly #outbox: MutationOutbox;
 	readonly #dispatcher: MutationDispatcher;
+	readonly #createMutationId: () => string;
 	readonly #targets = new Map<
 		string,
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
@@ -153,8 +165,9 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 
 	constructor(database: SqliteSync, options: NativeMutationRuntimeOptions = {}) {
 		const identity = createClientIdentity(undefined, nativeRandomSource());
+		this.#createMutationId = options.createMutationId ?? (() => createSecureUUID(nativeRandomSource()));
 		this.storage = new MutationOutboxSQLite(database, {
-			createMutationId: options.createMutationId,
+			createMutationId: this.#createMutationId,
 			now: options.now,
 			getOwnClientId: options.getOwnClientId ?? identity.ownClientId,
 		});
@@ -453,17 +466,40 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			this.#notifyStorageChange([record.targetRef]);
 			return undefined;
 		}
-		// The click-time half of the stop barrier, captured before the
-		// startup await like the web runtime's enqueue funnel: a Stop whose
-		// cancel transaction commits while this submission is in flight makes
-		// the row commit born-canceled, never dispatched.
-		const barrier: MutationStopBarrier = {
-			stopEpoch: await this.storage.readStopEpoch(intent.targetRef),
-		};
-		await this.start();
-		const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
-		this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
-		this.#notifyStorageChange([record.targetRef]);
+		try {
+			// The click-time half of the stop barrier, captured before the
+			// startup await like the web runtime's enqueue funnel: a Stop whose
+			// cancel transaction commits while this submission is in flight makes
+			// the row commit born-canceled, never dispatched.
+			const barrier: MutationStopBarrier = {
+				stopEpoch: await this.storage.readStopEpoch(intent.targetRef),
+			};
+			await this.start();
+			const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
+			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
+			this.#notifyStorageChange([record.targetRef]);
+			return undefined;
+		} catch (error) {
+			if (!DIRECT_FALLBACK_METHODS.has(intent.method) || !isSqliteStorageFailure(error)) throw error;
+			return this.#sendDirectly(intent, error);
+		}
+	}
+
+	// Storage refused a composer send's durable write, so the send goes out as
+	// a plain request the way the web's does (friction C13): nothing is
+	// durable, so a failed request rejects and the draft stays. It needs the
+	// target's ready client, otherwise the storage error is the send's
+	// failure. The dispatch gate (#blockedTargets) does not apply: it exists
+	// to order durable rows against an authoritative read. Like the web's, the
+	// send carries none of the row's guarantees: no per-ref ordering against
+	// earlier undelivered rows, no Stop fence, and a human retry after a lost
+	// reply is a new mutation.
+	async #sendDirectly(intent: MutationIntent, storageError: unknown): Promise<undefined> {
+		const targetKey = intent.targetRef;
+		const client = this.#targets.get(targetKey)?.client;
+		if (!client || client.state !== "ready") throw storageError;
+		const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
+		await request.call(client, intent.method, { ...intent.payload, clientMutationId: this.#createMutationId() });
 		return undefined;
 	}
 

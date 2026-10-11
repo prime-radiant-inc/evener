@@ -4,7 +4,7 @@
 // write/clear and MutationOutboxSQLite.transaction all rely on, so it is
 // asserted once against the shared implementation instead of per adapter.
 import { afterEach, expect, test } from "vitest";
-import { type SqliteSync, withSavepoint } from "./sqliteSync";
+import { isSqliteStorageFailure, type SqliteSync, withSavepoint } from "./sqliteSync";
 import { openSqliteSyncDouble, sqliteSyncDouble, withoutSqliteExperimentalWarning } from "./sqliteSync.testkit";
 
 const close: (() => void)[] = [];
@@ -101,4 +101,43 @@ test("puts the warning hook back even when loading the module throws", () => {
 		}),
 	).toThrow("no sqlite here");
 	expect(process.emitWarning).toBe(emit);
+});
+
+test("the savepoint helper reports the body's failure when the engine already ended the transaction", () => {
+	const { port } = fixture();
+	expect(() =>
+		withSavepoint(port, "shared_savepoint", () => {
+			port.execSync("ROLLBACK TO shared_savepoint; RELEASE shared_savepoint");
+			throw new Error("database or disk is full");
+		}),
+	).toThrow("database or disk is full");
+});
+
+test.each([
+	"database or disk is full",
+	"Error code 13: database or disk is full",
+	"disk I/O error",
+	"unable to open database file",
+	"attempt to write a readonly database",
+	"database is locked",
+	"database disk image is malformed",
+	"file is not a database",
+	"out of memory",
+])("%s is a storage failure", (message) => {
+	expect(isSqliteStorageFailure(new Error(message))).toBe(true);
+});
+
+test.each([
+	"UNIQUE constraint failed: t.a",
+	"no such table: nope",
+	"no such savepoint: s",
+	'near "inserts": syntax error',
+	"clientMutationId is already active in the mutation outbox: m-1",
+])("%s is a bug, not a storage failure", (message) => {
+	expect(isSqliteStorageFailure(new Error(message))).toBe(false);
+});
+
+test("a value that is not an Error is not a storage failure", () => {
+	expect(isSqliteStorageFailure("database or disk is full")).toBe(false);
+	expect(isSqliteStorageFailure(undefined)).toBe(false);
 });
