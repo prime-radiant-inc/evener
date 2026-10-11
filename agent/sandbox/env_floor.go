@@ -156,6 +156,12 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 // It is judged by real location only, so a spelling through another path to
 // the same storage is served, and a link from a served root into the worktree
 // is not.
+//
+// A spawn that spells its own cache through a host link bwrap's private /tmp
+// hides (GOPATH=/tmp/gopath linked to a served root) keeps that spelling and
+// writes into the private /tmp instead. Only that spawn's own cache output is
+// lost; nothing leaves its grants, so the threat model leaves it to the spawn
+// (docs/sandboxing.md#threat-model).
 func overlayServes(policy ResolvedPolicy, dir string) bool {
 	// Only a root bwrap overlays at this spawn serves (liveCacheRoots).
 	roots := liveCacheRoots(policy)
