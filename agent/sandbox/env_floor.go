@@ -365,7 +365,9 @@ var beforeGoEnvFileOpen = func(string) {}
 // goEnvFileHidden reports whether the spawn cannot see the go env file at
 // path: under a mask at any step of resolving it (every link and directory
 // walkPhysical visits), or, outside Seatbelt, spelled in or linked through
-// bwrap's private /tmp or /dev.
+// bwrap's private /tmp or /dev. A file in a /tmp worktree bwrap rebinds is
+// counted hidden too; that spawn's GOPATH-mode builds lose the file's GOPATH
+// (friction only, nothing leaves its grants).
 func goEnvFileHidden(policy ResolvedPolicy, path string) bool {
 	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
 		return true
