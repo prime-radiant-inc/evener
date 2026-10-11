@@ -176,11 +176,11 @@ reader. Parent and leaf transcript scrollers remain independent, each column's
 activity controls sit below its transcript content, and the pane body hosting
 the spines and columns never scrolls as a unit.
 
-Only ancestor spines use the session list's shared
-[SessionStatusIndicator](../../cmd/evener-hub/frontend/src/shell/SessionStatusIndicator.tsx):
-a gray spinning ring for active work, an amber dot for attention and a red diamond
-for failure. Idle and ended states have no glyph. The ring remains static under
-reduced motion. Each spine maps its own raw runtime status through
+Only ancestor spines use the session list's
+[StatusDot](../../cmd/evener-hub/frontend/src/widgets/statusdot/index.tsx):
+a turning alive ring for active work, an amber dot for attention and a red dot
+for failure. Idle and ended states have no glyph. Under reduced motion the ring
+is the static working dot. Each spine maps its own raw runtime status through
 `cadenceStateForStatus`: `systemError` means failure and `closed` means ended;
 unknown values remain quiet. Hover and visually hidden text preserve the runtime
 label, including unknown states, rather than replacing it with the indicator's
@@ -263,10 +263,10 @@ danger = failure/destruction; accent = links, focus and selection. No decorative
 hues, invented activity, speculative progress bars or color-only distinctions.
 
 **Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
-behavior. The shared rail and ancestor-spine running ring is the state-driven
-compact-status exception; it spins only while the owning status authority reports
-active work and becomes static under reduced motion. See §5 for the exact budgets
-and exceptions.
+behavior. The one continuous motion allowed for agent liveness is `StatusDot`'s
+working spinner: it turns only while the owning status authority reports active
+work and becomes the static working dot under reduced motion. See §5 for the exact
+budgets and exceptions.
 
 **Signature — the cadence instrument (`<Cadence>` widget):** the full activity treatment used where
 a surface has room and frame evidence: a state dot plus a 64×10px activity
@@ -281,10 +281,11 @@ Props: `{state: "idle"|"working"|"needs-you"|"failed"|"ended", frameTimes: numbe
 number}`.
 
 The browser rail uses a deliberately smaller status grammar instead of `<Cadence>` because its
-navigation summaries carry no frame trace and every session row must stay one line. Yellow solid
-dot = needs you, red diamond = broken, grey spinning ring = running; the shape difference keeps
-needs-you and broken distinct without hue. Precedence is broken, needs-you, running. Idle and ended
-rows reserve no indicator. The visible face is indicator, title, and age/actions only. Project,
+navigation summaries carry no frame trace and every session row must stay one line. Its indicator
+is `StatusDot`, with StatusDot's labels: amber dot = Needs you, red dot = Failed, turning alive ring
+= Working. The accessible name carries the state for assistive tech; sighted users read hue plus
+the working state's motion. Precedence is failed, needs-you, working. Idle and ended rows reserve
+no indicator. The visible face is indicator, title, and age/actions only. Project,
 host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
@@ -731,8 +732,8 @@ widget stay aligned.
 
 ## 5. Motion budget
 
-The law widened 2026-08-13 from "default none" to **"no idle motion"**: idle animation stays
-banned exactly as before, but input-response transitions on interactive chrome are now
+The law widened 2026-08-13 from "default none" to **"no idle motion"**: decorative idle
+animation stays banned, but input-response transitions on interactive chrome are now
 budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
 
 - **Attention onset** (`--motion-duration-attention`, 200ms) — a state crossing into
@@ -745,24 +746,31 @@ budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
   triggered by hover, focus, or press. Transitions name their properties explicitly; a blanket
   `transition: all` is never used.
 
-Forbidden: idle pulses, shimmer loops on live data, and animation that invents progress. Every
+Forbidden: decorative idle pulses, shimmer loops on live data, and animation that invents
+progress. The two sanctioned continuous animations below are the only exceptions. Every
 widget with motion of its own respects
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
 SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
-One compact-status exception: the shared grey running ring rotates in the browser
-rail while its authoritative navigation summary reports active work, including
-running jobs or descendants, and in ancestor spines while their own runtime status
-is active. It communicates state, not frame throughput or percent complete. Broken
-and needs-you remain static, shape-distinct indicators: a diamond and a solid dot.
-Under `prefers-reduced-motion: reduce`, the ring remains visible but does not rotate.
+**Agent liveness (Jesse, 2026-10-11):** session and agent status is always `StatusDot`, and its
+`working` state is an activity indicator: the dot becomes an open alive ring that turns
+continuously. This is the one continuous motion allowed for agent liveness, and only on
+StatusDot. It plays wherever a StatusDot shows `working` (rail rows, while the navigation summary
+reports active work including running jobs or descendants; pane tabs; ancestor spines; the command
+palette; delegate rows), and stops the moment the status authority stops reporting work. It
+communicates state, not frame throughput or percent complete. Needs-you and failed stay static
+dots. Under `prefers-reduced-motion: reduce` the ring does not render; working is the static alive
+dot. Its period (800ms, linear) is literal because the motion tokens are one-shot transition
+budgets and none describes a continuous rotation.
 
 One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
 shown for a live reasoning item while the Reasoning content flag is off, uses the catalog
 `Loader`'s pulsing pixel grid (Jesse's call). It renders no reasoning text, disappears once the
 thought is no longer the turn's current activity, and is the only animation the transcript itself
 adds. Unlike Cadence it is not activity-gated, so it keeps pulsing if the stream stalls; Cadence's
-decaying trace remains the honest liveness signal. Every other idle pulse or shimmer stays banned.
+decaying trace remains the honest liveness signal. It is a user-facing wait placeholder, not an
+agent-status indicator; agent status is StatusDot's job. Every other idle pulse or shimmer stays
+banned.
 
 ### Spatial motion (2026-09-29, zoom activity surfaces)
 

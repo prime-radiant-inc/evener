@@ -213,8 +213,10 @@
    * chrome (color/background/border/shadow only — transitions name their
    * properties, never `all`), and the 240ms spatial budget for
    * user-initiated geometry changes (the activity sidebar sliding in, a
-   * zoom column opening). Data arriving never animates geometry. No idle
-   * pulses, no shimmer.
+   * zoom column opening). Data arriving never animates geometry. No
+   * decorative idle pulses, no shimmer. The one continuous motion for agent
+   * liveness is StatusDot's working spinner, gated by reduced motion
+   * (design-system.md §5).
    */
   --motion-duration-attention: 200ms;
   --motion-duration-overlay: 120ms;
