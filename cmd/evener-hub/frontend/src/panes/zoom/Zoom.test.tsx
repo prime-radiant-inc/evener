@@ -808,6 +808,33 @@ test("a rebound live origin retires its stale descendants even though it never r
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
 });
 
+test("a live origin replaced before its first summary resolves still retires stale descendants", async () => {
+  const { fake, identities, context } = fixture();
+  inspectedCascade();
+  const held = deferred<ReturnType<typeof activitySummary>>();
+  // The origin's own activity summary stays pending while the child's
+  // ancestry — which already carries the origin's identity — is known.
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => {
+    const summary = () => ({ ...activitySummary(ref, scope), context: context(ref) });
+    if (ref === "root" && scope !== "subtree") return held.promise.then(summary);
+    return summary();
+  });
+  mount(fake);
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  identities.set("root", "new-root");
+  act(() =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "root", threadId: "wire-new-root" } }),
+  );
+  await act(async () => held.resolve(activitySummary("root", "session")));
+  await waitFor(() => expect(currentParams().ref).toBe("root"));
+  expect(currentParams().edges).toEqual([]);
+  expect(childView.alive).toBe(false);
+  expect(columnRefs()).toEqual([]);
+  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+});
+
 test("a new cursor epoch for the same root preserves child branch and retained readers", async () => {
   const { fake, setEpoch } = fixture();
   mount(fake);

@@ -137,10 +137,22 @@ function scrollToEnd(element: HTMLElement): number {
 // reconcileCascadeBinding retires the cascade's stale descendant edges and
 // readers — the reconciliation the rendered origin column performed before
 // the redesign. The observer renders nothing; it only holds the origin's
-// activity subscription on the cascade's lifetime.
-function CascadeOriginBindingObserver({ pane, originRef }: { pane: OpenPaneRecord; originRef: string }) {
+// activity subscription on the cascade's lifetime. `ancestrySessionId` is
+// the identity the child's ancestry already knows, standing in until the
+// origin's own summary resolves — the same fallback a rendered scope uses —
+// so an origin replaced before that first summary still retires the stale
+// descendants instead of registering the replacement as the first identity.
+function CascadeOriginBindingObserver({
+  pane,
+  originRef,
+  ancestrySessionId,
+}: {
+  pane: OpenPaneRecord;
+  originRef: string;
+  ancestrySessionId: string | undefined;
+}) {
   const { snapshot } = useSessionActivity(originRef);
-  const sessionId = snapshot?.context?.sessionId;
+  const sessionId = snapshot?.context?.sessionId ?? ancestrySessionId;
   useLayoutEffect(() => {
     if (sessionId !== undefined) reconcileCascadeBinding(pane, originRef, sessionId);
   }, [pane, originRef, sessionId]);
@@ -244,7 +256,13 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
         />
       }
     >
-      {originRef !== null && <CascadeOriginBindingObserver pane={pane} originRef={originRef} />}
+      {originRef !== null && (
+        <CascadeOriginBindingObserver
+          pane={pane}
+          originRef={originRef}
+          ancestrySessionId={path.scopes.find((scope) => scope.requestedRef === originRef)?.sessionId}
+        />
+      )}
       <div className={CLASS.body}>
         {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
         {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
