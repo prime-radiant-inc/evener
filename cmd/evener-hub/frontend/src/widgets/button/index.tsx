@@ -28,11 +28,17 @@ export interface ButtonProps
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   type?: "button" | "submit" | "reset";
+  /** Let a long label break across lines instead of holding one line: for a
+   * label that can be the widest thing in its column (the welcome pane's
+   * "Jump back in: <session title>"). The size's height becomes a floor.
+   * Ignored by variant="link", which already wraps with its prose. */
+  wrap?: boolean;
 }
 
 const BASE_CLASS = {
   button: requireClass(styles.button, "button.module.css", "button"),
   icon: requireClass(styles.icon, "button.module.css", "icon"),
+  wrap: requireClass(styles.wrap, "button.module.css", "wrap"),
 };
 
 const VARIANT_CLASS: Record<ButtonVariant, string> = {
@@ -80,7 +86,17 @@ export function isAriaRefusal(ariaDisabled: ButtonHTMLAttributes<HTMLButtonEleme
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = "primary", size = "md", icon, children, onClick, disabled = false, type = "button", ...rest },
+  {
+    variant = "primary",
+    size = "md",
+    icon,
+    children,
+    onClick,
+    disabled = false,
+    type = "button",
+    wrap = false,
+    ...rest
+  },
   ref,
 ) {
   // aria-disabled is a refusal, not a rendering hint: the control stays
@@ -98,7 +114,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       className={
         variant === "link"
           ? `${BASE_CLASS.button} ${VARIANT_CLASS.link}`
-          : `${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`
+          : [BASE_CLASS.button, VARIANT_CLASS[variant], SIZE_CLASS[size], wrap && BASE_CLASS.wrap]
+              .filter(Boolean)
+              .join(" ")
       }
       onClick={refused ? undefined : onClick}
       disabled={disabled}

@@ -29,6 +29,15 @@
   font-size: var(--font-size-caption);
 }
 
+/* A narrow column for a state that only shows when space runs out (Button's
+ * wrap): the label has to be wider than this to break. */
+.narrowColumn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 220px;
+}
+
 /* Fixture-data caption under a surface section's heading: reminds the
  * reader the surface below renders canned data, not a live hub. */
 .note {

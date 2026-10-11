@@ -148,6 +148,52 @@ test("the size ladder declares 24/28/32px heights, xs being the densest", () => 
   expect(/\.md\s*\{([^}]*)\}/.exec(css)?.[1] ?? "").toMatch(/height:\s*32px/);
 });
 
+// wrap is for a label that can be the widest thing in its column (the welcome
+// pane's "Jump back in: <session title>"): it adds a class on top of the
+// variant and size, and an inline link already wraps with its prose.
+test("wrap adds a modifier on top of the variant and size, and leaves a link alone", () => {
+  const { rerender } = render(<Button size="sm">Jump back in</Button>);
+  const plain = screen.getByRole("button").className.split(" ");
+  rerender(
+    <Button size="sm" wrap>
+      Jump back in
+    </Button>,
+  );
+  const wrapped = screen.getByRole("button").className.split(" ");
+  expect(wrapped).toEqual(expect.arrayContaining(plain));
+  expect(wrapped.length).toBe(plain.length + 1);
+
+  rerender(<Button variant="link">Retry</Button>);
+  const link = screen.getByRole("button").className;
+  rerender(
+    <Button variant="link" wrap>
+      Retry
+    </Button>,
+  );
+  expect(screen.getByRole("button").className).toBe(link);
+});
+
+// jsdom has no layout, so the declarations are the checkable truth: a wrapped
+// label lets the box grow past the size's fixed height, keeps that height as
+// its floor, and keeps the 44px tap floor on the phone.
+test("wrap lets the label break across lines while keeping each size's height and the tap floor as floors", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const wrap = /\n\.wrap\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(wrap).toContain("white-space: normal");
+  expect(wrap).toContain("height: auto");
+  expect(css).toMatch(/\.wrap:where\(\.xs\)\s*\{[^}]*min-height: 24px/);
+  expect(css).toMatch(/\.wrap:where\(\.sm\)\s*\{[^}]*min-height: 28px/);
+  expect(css).toMatch(/\.wrap:where\(\.md\)\s*\{[^}]*min-height: 32px/);
+  // The floors above are one class of specificity, like the phone block's
+  // .xs/.sm/.md, and come before it, so the tap floor still wins on a phone.
+  expect(css.indexOf(".wrap:where(.md)")).toBeLessThan(css.indexOf("@media (max-width: 899px)"));
+  // .wrap has to come after the size rules it relaxes.
+  expect(css.indexOf("\n.wrap {")).toBeGreaterThan(css.indexOf("\n.md {"));
+});
+
 test("renders the icon before the label when provided", () => {
   render(<Button icon={<span data-testid="my-icon" />}>Go</Button>);
   const button = screen.getByRole("button");

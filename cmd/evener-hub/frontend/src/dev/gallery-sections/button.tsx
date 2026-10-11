@@ -51,6 +51,20 @@ function LinkRow() {
   );
 }
 
+function WrapRow() {
+  return (
+    <div className={styles.row}>
+      <p className={styles.rowLabel}>wrap</p>
+      <div className={styles.narrowColumn}>
+        <Button wrap>Jump back in: Move the settings host picker onto the shared Select</Button>
+        <Button variant="secondary" size="sm" wrap>
+          New session in a much longer project directory name
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function ButtonGallerySection() {
   return (
     <section>
@@ -59,6 +73,7 @@ export default function ButtonGallerySection() {
         {VARIANTS.map((variant) => (
           <VariantRow key={variant} variant={variant} />
         ))}
+        <WrapRow />
         <LinkRow />
       </ThemeFlip>
     </section>
