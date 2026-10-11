@@ -149,6 +149,7 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 	if err != nil {
 		return "", err
 	}
+	a.ResultTool = s.resultToolName()
 	if a.Operation == "create" && watchArgsIsTimer(a) && s.cfg.TurnEndsProcess {
 		return "", errors.New("invalid_request: timers need a session that outlives the turn")
 	}
