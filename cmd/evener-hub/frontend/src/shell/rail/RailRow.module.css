@@ -316,14 +316,6 @@
   gap: var(--space-2);
 }
 
-.contextKind {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-}
-
 .contextStatus {
   color: var(--ink-mid);
 }
@@ -339,33 +331,6 @@
 .contextSummary {
   color: var(--ink-hi);
   overflow-wrap: anywhere;
-}
-
-.contextRows {
-  display: flex;
-  margin: 0;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.contextRow {
-  display: grid;
-  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
-  gap: var(--space-2);
-}
-
-.contextKey {
-  color: var(--ink-mid);
-}
-
-.contextValue {
-  margin: 0;
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
-}
-
-.contextMono {
-  font-family: var(--font-mono);
 }
 
 /* The drawn host glyph a host group row leads with (RailRow's HostGlyph):

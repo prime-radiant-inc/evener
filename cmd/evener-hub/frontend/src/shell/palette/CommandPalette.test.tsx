@@ -456,9 +456,10 @@ test("/help pairs each chord with its action as a term and its definition", asyn
   act(() => openPalette("/help"));
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 
-  const actions = screen.getAllByRole("definition").map((el) => el.textContent);
-  expect(actions).toContain("open the command palette");
-  expect(screen.getAllByRole("term")).toHaveLength(actions.length);
+  const terms = screen.getAllByRole("term");
+  expect(terms.length).toBeGreaterThan(0);
+  expect(screen.getAllByRole("definition")).toHaveLength(terms.length);
+  for (const term of terms) expect(term.querySelector("kbd")).not.toBeNull();
 });
 
 test("/help lists the UX-fix chords the old table never had", async () => {
