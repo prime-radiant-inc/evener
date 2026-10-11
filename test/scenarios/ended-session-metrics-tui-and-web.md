@@ -13,8 +13,8 @@ and "Driving the web UI" — the selector map there is the single
 place these hooks are maintained. The web half used to `GET
 /_partials/s/<id>/details` and read a `<dl class="details-list">`; the whole
 `/_partials` URL space and `renderDetailsPanel` / `tokensAndCostRows` went
-with the vanilla frontend (`660376f78`) — `web_workspace.go:17-22` says so
-in a comment, and neither function exists anywhere now. What
+with the vanilla frontend (`660376f78`) — `handleSession` in `web_workspace.go`
+serves only the SPA shell, and neither function exists anywhere now. What
 replaces them is one AppWire thread object and one React panel — see steps 3 and 4.
 
 ## Pre-state

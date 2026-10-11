@@ -1148,19 +1148,6 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 	return sources
 }
 
-func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionCapabilities {
-	return hubapi.SessionCapabilities{
-		Send:        caps.Send,
-		Steer:       caps.Steer,
-		Interrupt:   caps.Interrupt,
-		Compact:     caps.Compact,
-		Clear:       caps.Clear,
-		Shutdown:    caps.Shutdown,
-		ChangeModel: caps.ChangeModel,
-		Queue:       caps.Queue,
-	}
-}
-
 func (s *WebServer) isLive(sessionID string) bool {
 	if !isLocalRouteID(sessionID) {
 		// A tree projection has no request context of its own; bound the
@@ -1538,23 +1525,4 @@ func (s *WebServer) liveEntry(sessionID string) (hubcore.LiveEntry, bool) {
 		return hubcore.LiveEntry{}, false
 	}
 	return s.cfg.Roster.Find(sessionID)
-}
-
-func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionCapabilities {
-	pastExists := false
-	if s.cfg.Past != nil {
-		_, pastExists = s.cfg.Past.Find(id)
-	}
-	var caps hubapi.SessionCapabilities
-	if !live && s.cfg.Spawner != nil && pastExists {
-		caps.Send = true
-	}
-	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Shutdown && !caps.ChangeModel {
-		if live {
-			caps.ReadOnlyReason = "live session source is unavailable"
-		} else {
-			caps.ReadOnlyReason = "session is not live and cannot be resumed"
-		}
-	}
-	return caps
 }

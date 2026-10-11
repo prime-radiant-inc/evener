@@ -315,6 +315,13 @@ export class AppwireClient {
     return this.terminalReasonValue;
   }
 
+  // The most recent successful handshake, cached before ready subscribers
+  // run. Reading it never dials; callers use state to decide whether that
+  // negotiated generation is currently ready.
+  get initializeResult(): InitializeResponse | null {
+    return this.latestInitialize;
+  }
+
   // connect is idempotent: concurrent/repeated calls share the single
   // initialize+initialized handshake and its result.
   connect(): Promise<InitializeResponse> {
