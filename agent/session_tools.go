@@ -440,10 +440,16 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 // bytes natively: a text-only or image-stripping fallback inherits the same
 // history and would otherwise lose the image twice over.
 //
+// One registry per session is the invariant every production wiring holds:
+// the profile resolves on the client's registry, the cross-provider resolver
+// is built from that same client, and delegates and restores inherit both.
+// When a session is handed a profile from another registry, its facts say
+// nothing about what this client dispatches or how the runner classifies a
+// fallback — nothing in the chain can vouch, so descriptions keep flowing.
+//
 // Fallback capability facts resolve at facts depth
-// (Profile.ResolveModelFactsForRefOn) against the client's registry — the one
-// serving dispatches on, so the chain check answers from the same catalog the
-// session serves with: the answer is metadata about a model that
+// (Profile.ResolveModelFactsForRef, the runner's own classification against
+// the profile's registry): the answer is metadata about a model that
 // may never serve, while the full resolution the round runner uses to serve
 // an entry materializes credentials — including command-bearing keys that
 // would spend a mint and prompt the user's password manager just to read an
@@ -454,11 +460,14 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 // later — and an image-stripping fallback that recovers must find the
 // description still flowing.
 func (s *Session) sessionChainSeesToolResultMedia(profile *provider.Profile, fallbacks []string, mt string) bool {
+	if profile.Registry() != s.client.Registry() {
+		return false
+	}
 	if !profile.SeesToolResultMedia(mt) {
 		return false
 	}
 	for _, ref := range fallbacks {
-		res, err := profile.ResolveModelFactsForRefOn(s.client.Registry(), ref)
+		res, err := profile.ResolveModelFactsForRef(ref)
 		if err != nil || !llm.RowSeesToolResultMedia(res, mt) {
 			return false
 		}

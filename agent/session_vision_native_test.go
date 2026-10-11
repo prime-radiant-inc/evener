@@ -35,7 +35,11 @@ func visionRouteRefusal(provider string) error {
 func TestDescribeImage_SkipsCallWhenSessionModelSeesImagesNatively(t *testing.T) {
 	t.Parallel()
 	openai := &fakeErrAdapter{name: "openai"}
-	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")))
+	// The one-registry production shape: the client answers from the same
+	// (embedded) registry the profile resolves on.
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
 	if result.outcome != visionSideChannelSuccess || result.description != "" {
@@ -670,11 +674,11 @@ func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
 	}
 }
 
-// The chain check answers from the registry the session's client dispatches
-// on, not the profile's own: a session whose profile was resolved on a
-// different registry must not take the client's fallback rows as
-// vision-capable just because the profile's registry says so.
-func TestDescribeImage_FactsFollowTheServingClientsRegistry(t *testing.T) {
+// A session whose profile was resolved on a different registry than its
+// client's cannot vouch for native vision at all: the profile's facts say
+// nothing about what this client dispatches or how the runner classifies a
+// fallback. The chain check keeps descriptions flowing for such a session.
+func TestDescribeImage_MismatchedRegistriesKeepTheSideChannel(t *testing.T) {
 	t.Parallel()
 	gwAdapter := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
 		func(req llm.Request) (llm.Response, error) {
@@ -720,12 +724,70 @@ func TestDescribeImage_FactsFollowTheServingClientsRegistry(t *testing.T) {
 	}
 	client := llm.NewClient(llm.WithRegistry(clientRegistry))
 	client.Register(gwAdapter)
+	// A fallback whose row the profile's registry vouches for, and the same
+	// registry mismatch, so the guard must break the chain before the
+	// fallback's facts are even read.
 	sess := newSession(t, withClient(client), withProfile(sessionProfile),
 		withConfig(SessionConfig{ModelFallbacks: []string{"fb-1"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
 	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
 		t.Fatalf("client-registry result = %+v, want the side-channel description", result)
+	}
+	if len(gwAdapter.Requests()) != 1 {
+		t.Fatalf("side-channel calls = %d, want 1", len(gwAdapter.Requests()))
+	}
+}
+
+// The primary alone cannot vouch across a registry mismatch either: a
+// Responses-protocol profile from another registry must not skip when this
+// client's registry knows the same provider/model as chat completions, which
+// strips tool-result images.
+func TestDescribeImage_MismatchedRegistryProfileDoesNotSkipForThePrimaryAlone(t *testing.T) {
+	t.Parallel()
+	gwAdapter := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("a png")}, nil
+		},
+	}}
+	registryFor := func(protocol string) *registry.Registry {
+		r, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"gw": {
+					Surface:       registry.SurfaceOpenAI,
+					Protocol:      protocol,
+					APIKey:        "k",
+					DefaultModel:  "vis-1",
+					Transport:     registry.Transport{BaseURL: "http://gw.test.invalid/v1"},
+					InheritModels: new(false),
+					Models: map[string]registry.Model{
+						"vis-1": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+					},
+				},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("fixture registry: %v", err)
+		}
+		return r
+	}
+	// The profile's registry says Responses — the primary sees tool-result
+	// images natively; the client's registry says chat completions, which
+	// strip them.
+	sessionProfile, err := provider.Resolve(registryFor(registry.ProtocolOpenAIResponses), "gw/vis-1")
+	if err != nil {
+		t.Fatalf("resolve session profile: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(registryFor(registry.ProtocolOpenAIChat)))
+	client.Register(gwAdapter)
+	sess := newSession(t, withClient(client), withProfile(sessionProfile))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
+		t.Fatalf("primary-mismatch result = %+v, want the side-channel description", result)
 	}
 	if len(gwAdapter.Requests()) != 1 {
 		t.Fatalf("side-channel calls = %d, want 1", len(gwAdapter.Requests()))
@@ -867,7 +929,11 @@ func TestDescribeImage_OwnedTimeoutDoesNotRetryOnTheSessionModel(t *testing.T) {
 func TestPersistImage_NoSteeringWhenSessionModelSeesImagesNatively(t *testing.T) {
 	t.Parallel()
 	openai := &fakeErrAdapter{name: "openai"}
-	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")))
+	// The one-registry production shape: the client answers from the same
+	// (embedded) registry the profile resolves on.
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")))
 
 	var kinds []events.EventKind
 	done := make(chan struct{})

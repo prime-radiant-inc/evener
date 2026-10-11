@@ -369,12 +369,18 @@ func (p *Profile) SeesToolResultMedia(mediaType string) bool {
 	return !p.rowFactsInherited && llm.RowSeesToolResultMedia(p.res, mediaType)
 }
 
-// ResolveModelFactsForRefOn resolves a model ref's advertised facts at facts
+// Registry is the registry this profile resolved on — the catalog the round
+// runner's fallback resolution reads and the same one a session's client
+// dispatches on in every production wiring. Sessions compare it against the
+// client's to know whether the profile's facts can speak for what the client
+// would serve.
+func (p *Profile) Registry() *registry.Registry { return p.registry }
+
+// ResolveModelFactsForRef resolves a model ref's advertised facts at facts
 // depth — every fact, no credential materialized, no credential command
 // executed — the depth a capability question about configuration needs when
-// no decision to serve has been made, resolved against r — for the chain
-// check, the registry the session's client dispatches on, which is the one
-// serving answers from. The ref classification matches WithModel:
+// no decision to serve has been made. The ref classification matches WithModel,
+// the runner's own rule, against this profile's registry:
 // a bare model, or a ref prefixed with this profile's own instance, names
 // this instance's row; a slashed ref may name another instance, or a
 // namespaced model id this instance serves under (gateways namespace rows
@@ -385,7 +391,8 @@ func (p *Profile) SeesToolResultMedia(mediaType string) bool {
 // and the current-instance lookup runs at facts depth (which does not judge
 // the flag, by design for alias seeding), so the chain check applies the
 // gate itself.
-func (p *Profile) ResolveModelFactsForRefOn(r *registry.Registry, ref string) (registry.Resolved, error) {
+func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error) {
+	r := p.registry
 	ref = strings.TrimSpace(ref)
 	prefix, rest, ok := strings.Cut(ref, "/")
 	if !ok || prefix == "" || strings.EqualFold(prefix, p.ID()) {
@@ -399,12 +406,6 @@ func (p *Profile) ResolveModelFactsForRefOn(r *registry.Registry, ref string) (r
 		return res, nil
 	}
 	return r.ResolveInstanceModelFacts(prefix, rest)
-}
-
-// ResolveModelFactsForRef is ResolveModelFactsForRefOn against the profile's
-// own registry.
-func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error) {
-	return p.ResolveModelFactsForRefOn(p.registry, ref)
 }
 
 // Warnings are the registry's notices for this reference (an uncatalogued
