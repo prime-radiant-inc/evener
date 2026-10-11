@@ -151,10 +151,16 @@ func delegateRuns(ctx context.Context, t *testing.T, root *Session) []delegateRu
 			sub.mu.Lock()
 			done := sub.done
 			sub.mu.Unlock()
+			// An already-settled run counts as settled even when the shared
+			// deadline has passed, so look at done before waiting on either.
 			select {
 			case <-done:
-			case <-ctx.Done():
-				run.unsettled = true
+			default:
+				select {
+				case <-done:
+				case <-ctx.Done():
+					run.unsettled = true
+				}
 			}
 			sub.mu.Lock()
 			run.runErr = sub.err
@@ -444,6 +450,13 @@ func TestDelegateRunsReadsEveryDelegate(t *testing.T) {
 	runs := delegateRuns(ctx, t, root)
 	if len(runs) != 2 {
 		t.Fatalf("delegateRuns found %d delegates, want 2", len(runs))
+	}
+	expired, expire := context.WithCancel(t.Context())
+	expire()
+	for i, run := range delegateRuns(expired, t, root) {
+		if run.unsettled {
+			t.Errorf("delegate %d finished but counts as unsettled under an expired context", i)
+		}
 	}
 	for i, run := range runs {
 		if run.unsettled {
