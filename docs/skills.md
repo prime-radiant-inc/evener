@@ -165,7 +165,9 @@ a structured, data-safe context. The context includes `base_directory`, the
 skill directory against which relative references to scripts, references, or
 other collateral are resolved. Referenced resources are loaded lazily with the
 ordinary permission-checked tools only when the task needs them; they are not
-eagerly included with the skill body.
+eagerly included with the skill body. A sandboxed session can read that directory
+in every mode, including for plugin skills and your own skills inside the masked
+`~/.config/evener` ([sandboxing](sandboxing.md#the-denylist-secrets-and-pseudo-filesystems)).
 
 Skill bodies are inert instructions, not executable templates. Evener performs
 no expansion on them: no shell execution, no file inclusion, no argument

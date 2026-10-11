@@ -366,13 +366,19 @@ type Session struct {
 	// <lanePath>/.git routes through it, so a test can inject a non-ENOENT stat
 	// failure (EIO/EACCES) and prove a transient error takes the conservative
 	// KEEP path rather than being misread as a gone lane. Nil in production.
-	worktreeRestoreEnv          *execenv.LocalExecutionEnvironment
-	worktreeCurrentPath         string
-	worktreeCurrentManaged      bool
-	worktreeGitVersionOK        bool
-	worktreeLiveWorkStub        func(path string) []string
-	worktreeDisposeBeforeRemove func(lanePath string)
-	worktreeLaneStat            func(path string) (os.FileInfo, error)
+	//
+	// worktreeBeforeStrandedMarkerRelease is a test-only seam called with the lane
+	// path immediately before prune releases a stranded own marker, so a test can
+	// change who holds the lane at the one moment between deciding to release
+	// and releasing. Nil in production.
+	worktreeRestoreEnv                  *execenv.LocalExecutionEnvironment
+	worktreeCurrentPath                 string
+	worktreeCurrentManaged              bool
+	worktreeGitVersionOK                bool
+	worktreeLiveWorkStub                func(path string) []string
+	worktreeDisposeBeforeRemove         func(lanePath string)
+	worktreeLaneStat                    func(path string) (os.FileInfo, error)
+	worktreeBeforeStrandedMarkerRelease func(lanePath string)
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.

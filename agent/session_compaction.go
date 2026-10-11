@@ -182,7 +182,7 @@ func (s *Session) bumpHistoryRevisionLocked() {
 // reports the loss must not call it a race the operator can win.
 // The returned published slice is a defensive copy taken under s.mu, never
 // s.history's own backing array — callers may read it without locks.
-func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool, refusal error) {
+func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn, restoredAt []int)) (published []schema.Turn, ok bool, refusal error) {
 	s.attentionMu.Lock()
 	// Fail closed on a transcript that has stopped accepting records, before
 	// anything is published rather than after the markers fail to land. This
@@ -209,6 +209,28 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		s.attentionMu.Unlock()
 		return nil, false, refusal
 	}
+	// A fold may summarize away the turn behind a pending attention item.
+	// Attention turns are not folded content: the item stays pending until a
+	// turn presents it, and a turn that cannot see it would never consume it.
+	// Only a fold that dropped an attention turn reads the transcript, which
+	// is the authority, under the door, for which items are pending. When that
+	// read fails the pending set is unknown, so every attention turn the
+	// history held stays: a resolved one is only extra history.
+	//
+	// Pending is the whole contract here. A generation's trigger is resolved
+	// as consumed when the generation is accepted, before its first request
+	// presents it, so a fold in that one request can still drop an older
+	// trigger (#4300).
+	var keptAttention []schema.Turn
+	s.mu.Lock()
+	heldAttention := attentionTurns(s.history)
+	s.mu.Unlock()
+	if len(attentionTurns(folded)) < len(heldAttention) {
+		var err error
+		if keptAttention, err = s.pendingAttentionTurnsLocked(); err != nil {
+			keptAttention = heldAttention
+		}
+	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
@@ -217,6 +239,9 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		s.attentionMu.Unlock()
 		return nil, false, nil
 	}
+	// The appended turns may reallocate, so the history takes the new slice.
+	published, restoredAt := withAttentionTurns(published, keptAttention)
+	s.history = published
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from
 	// the pair log — never the live history turns, whose tool results
@@ -256,7 +281,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	s.persistedAppendLogBase += len(s.persistedAppendLog)
 	s.persistedAppendLog = nil
 	if onPublishLocked != nil {
-		onPublishLocked(published)
+		onPublishLocked(published, restoredAt)
 	}
 	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
 	commit.claimNoteLocked()
@@ -367,8 +392,9 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
 
-		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func([]schema.Turn) {
+		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func(_ []schema.Turn, restoredAt []int) {
 			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
+			s.growTurnHistoryBaseline(restoredAt)
 		})
 		if published {
 			return true, nil

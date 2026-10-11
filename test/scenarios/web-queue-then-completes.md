@@ -74,8 +74,8 @@ HUB=http://127.0.0.1:$PORT
   queue seam and the thread is not closed (`server/appwire_runtime.go`'s
   `appCapabilitiesLocked`).
   Falsify: `queue:false` while active — either the harness wired no queue or
-  `Capabilities.Queue` stopped being threaded through
-  `hubCapabilitiesFromAppwire` (`cmd/evener-hub/web_api_tree.go#hubCapabilitiesFromAppwire`), and
+  `Capabilities.Queue` stopped being threaded through the
+  appwire thread capabilities, and
   every browser assertion below is moot.
 - **Step 4 (queue submit)**: the strip appears with heading
   `Queued messages (1)` (`composer/queue/QueueStrip.tsx:302`) and one row

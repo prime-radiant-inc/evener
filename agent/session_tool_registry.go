@@ -35,6 +35,10 @@ type toolDeps struct {
 	// then announces it, or reports why it did not (Session.deliverCommunicate).
 	deliverCommunicate func(data events.CommunicateData) error
 
+	// postDelegateUpdate hands a delegate's end_turn=false message to its
+	// parent (Session.postDelegateUpdate); it returns nil for a root.
+	postDelegateUpdate func(ctx context.Context, message string) *delegateUpdateDelivery
+
 	// steering queue access for the communicate handler.
 	steer               func(msg, kind string) error
 	steerTaskCompletion func(msg string, blockingDelegateIDs []string) error
@@ -284,6 +288,7 @@ func newToolDeps(s *Session) *toolDeps {
 		registerTool:        s.cfg.testOnly.registerTool,
 		emit:                s.emit,
 		deliverCommunicate:  s.deliverCommunicate,
+		postDelegateUpdate:  s.postDelegateUpdate,
 		steer:               s.SteerKind,
 		steerTaskCompletion: s.SteerTaskCompletion,
 		drainSteering:       s.drainSteeringForCommunicate,

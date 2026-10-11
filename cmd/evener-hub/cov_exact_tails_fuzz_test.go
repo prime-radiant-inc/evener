@@ -145,13 +145,8 @@ func FuzzExactTails(f *testing.F) {
 		_ = stampThreadImageURLs(appwire.Thread{ID: "s", Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{OutputImages: []appwire.OutputImage{{SHA: "abc"}}}}}}})
 
 		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Evener: appwire.EvenerThread{Ref: "local:id"}}
-		_ = workspaceDataFromAppThread(thread)
 		web := NewWebServer(hubcore.WebConfig{})
 		web.sources = appsource.NewRegistry()
-		_ = web.workspaceData("remote:id")
-		data := WorkspaceData{}
-		web.fillForkLineage(&data, schema.SessionMeta{ID: "id", ForkLabel: "fork"})
-
 		// List truncation and empty transcript references.
 		reg := appsource.NewRegistry()
 		src := &exactListSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: thread}}
@@ -177,11 +172,7 @@ func FuzzExactTails(f *testing.F) {
 			projectSessionLive = oldProjectLive
 		}
 
-		lineagePast := hubcore.NewPastIndex("")
-		lineagePast.SeedForTest([]schema.SessionMeta{{ID: "", ParentSessionID: "parent"}})
-		lineageWeb := NewWebServer(hubcore.WebConfig{Past: lineagePast})
-		lineageWeb.fillForkLineage(&data, schema.SessionMeta{ID: "parent", ForkLabel: "fork"})
-		lineageWeb.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/s/missing/fork", nil))
+		web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/s/missing/fork", nil))
 
 		oldTranscriptRoot := hubTranscriptRootForList
 		hubTranscriptRootForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, string) (appwire.Thread, error) {

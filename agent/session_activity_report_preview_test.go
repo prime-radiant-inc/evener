@@ -9,9 +9,68 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/activitybound"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
 )
+
+// The delegates-list preview, the shared bound helper and the pushed
+// delegate/updated frame must agree for the same settled generation, so a client
+// that merges the frame sees exactly what a collection read would have served.
+func TestSessionActivityReportPreviewMatchesProjectedFrame(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+	at := time.Unix(300, 0).UTC()
+	id := "dlg_preview_parity"
+	message := json.RawMessage(`"` + strings.Repeat("界", activityMaxDelegateProseRunes*2) + `"`)
+	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: message}
+	seedStableReadonlyFinish(t, s, id, stableToolDescriptor(s, id, ""), at, delegateFinish{outcome: delegatestore.OutcomeCompleted, disposition: delegatestore.DispositionReported, endedAt: at.Add(time.Second), packet: &packet}, true)
+
+	page, err := s.ListActivityDelegates(t.Context(), appwire.SessionActivityListParams{Ref: encodeRef("", s.ID()), Scope: appwire.SessionActivityScopeSubtree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Delegates) != 1 {
+		t.Fatalf("rows = %d, want 1", len(page.Delegates))
+	}
+	row := page.Delegates[0]
+	if row.ProjectionRevision == 0 {
+		t.Fatal("read row did not seed ProjectionRevision")
+	}
+
+	helperPreview, helperTruncated := activitybound.ReportPreview(message)
+	if row.ReportPreview != helperPreview || row.ReportPreviewTruncated != helperTruncated {
+		t.Fatalf("read preview %q/%v, helper %q/%v", row.ReportPreview, row.ReportPreviewTruncated, helperPreview, helperTruncated)
+	}
+
+	var snapshotRow delegateSnapshot
+	for _, candidate := range s.delegateController.Snapshot().rows {
+		if candidate.id == id {
+			snapshotRow = candidate
+		}
+	}
+	data := delegateUpdatedDataFromStatus(delegateStatusInfoFromSnapshot(at, s.ID(), snapshotRow))
+	if data.PacketKind != string(delegatestore.PacketReported) || !data.Terminal {
+		t.Fatalf("fixture is not a settled reported packet: kind=%q terminal=%v", data.PacketKind, data.Terminal)
+	}
+	projector := appprojector.NewAppEventProjector(s.ID(), encodeRef("", s.ID()))
+	out := projector.Project(events.SessionEvent{Kind: events.EventDelegateUpdated, SessionID: s.ID(), Data: data})
+	if len(out) != 1 {
+		t.Fatalf("projector notifications = %+v, want 1", out)
+	}
+	params, ok := out[0].Params.(appwire.EvenerDelegateParams)
+	if !ok {
+		t.Fatalf("frame params = %T", out[0].Params)
+	}
+	if params.Delegate.ReportPreview != row.ReportPreview || params.Delegate.ReportPreviewTruncated != row.ReportPreviewTruncated {
+		t.Fatalf("frame preview %q/%v, read %q/%v", params.Delegate.ReportPreview, params.Delegate.ReportPreviewTruncated, row.ReportPreview, row.ReportPreviewTruncated)
+	}
+	if params.Delegate.ProjectionRevision != row.ProjectionRevision {
+		t.Fatalf("frame revision %d, read revision %d", params.Delegate.ProjectionRevision, row.ProjectionRevision)
+	}
+}
 
 func TestSessionActivityReportPreviewReadsBoundedPrefix(t *testing.T) {
 	// A surrogate pair occupies twelve encoded bytes but one Unicode code point.
