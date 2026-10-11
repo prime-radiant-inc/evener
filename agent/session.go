@@ -941,6 +941,9 @@ type Session struct {
 
 	// Session-level cancel: Close() cancels in-flight LLM calls.
 	sessionCtx context.Context
+
+	// librarian is the root's memory librarian bookkeeping (memory_librarian.go).
+	librarian  librarianState
 	cancelFunc context.CancelFunc
 
 	// task list (lazy-init)

@@ -2,9 +2,19 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/llm"
 )
 
@@ -114,7 +124,7 @@ func TestLibrarianModeRootReadsButDoesNotSave(t *testing.T) {
 // An unknown arm name is off; so is any delegate, whatever the switch says.
 func TestLibrarianModeParsing(t *testing.T) {
 	t.Parallel()
-	for value, want := range map[string]memoryLibrarianMode{"": librarianOff, "bogus": librarianOff, "TURN": librarianTurn, " sidecar ": librarianSidecar} {
+	for value, want := range map[string]memoryLibrarianMode{"": librarianOff, "bogus": librarianOff, "TURN": librarianTurn, "Sidecar": librarianSidecar} {
 		s := &Session{cfg: SessionConfig{MemoryStateRoot: "/m", MemoryLibrarian: value}}
 		if value == "" {
 			s.cfg.MemoryLibrarian = "off"
@@ -127,5 +137,254 @@ func TestLibrarianModeParsing(t *testing.T) {
 	child.cfg.spawn.parentSessionID = "root"
 	if child.librarianMode() != librarianOff {
 		t.Error("a delegate runs a librarian arm")
+	}
+}
+
+// librarianScript answers the root with a plain final message and plays the
+// librarian: it reads its range and saves a page on its first request, then
+// reports. It records each librarian brief's range.
+type librarianScript struct {
+	mu     sync.Mutex
+	ranges []string
+	writes atomic.Int32
+}
+
+var librarianRangeRE = regexp.MustCompile(`Read turns (\d+-\d+)`)
+
+func (ls *librarianScript) step(req llm.Request) llm.Response {
+	librarian := false
+	for _, def := range req.Tools {
+		if def.Name == "memory_write" {
+			librarian = true
+		}
+	}
+	if !librarian {
+		return finalResponse("done")
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role == llm.RoleTool {
+		return finalResponse("saved project/cents.md")
+	}
+	var brief string
+	for _, msg := range req.Messages {
+		if m := librarianRangeRE.FindStringSubmatch(msg.Text()); m != nil {
+			brief = m[1]
+		}
+	}
+	ls.mu.Lock()
+	ls.ranges = append(ls.ranges, brief)
+	n := len(ls.ranges)
+	ls.mu.Unlock()
+	ls.writes.Add(1)
+	args, _ := json.Marshal(map[string]any{"scope": "personal", "file_path": fmt.Sprintf("fact-%d.md", n), "content": "---\ndescription: a fact\n---\nA fact.\n"})
+	return toolCallResponse(llm.ToolCallData{ID: fmt.Sprintf("lib-write-%d", n), Name: "memory_write", Arguments: args})
+}
+
+func (ls *librarianScript) steps() []func(llm.Request) llm.Response {
+	out := make([]func(llm.Request) llm.Response, 200)
+	for i := range out {
+		out[i] = ls.step
+	}
+	return out
+}
+
+func waitLibrarianIdle(t *testing.T, s *Session, wantThrough int) librarianCursor {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		s.librarian.mu.Lock()
+		busy := s.librarian.inFlight != nil || s.librarian.launching
+		s.librarian.mu.Unlock()
+		cursor := s.loadLibrarianCursor()
+		if !busy && cursor.ProcessedThrough >= wantThrough {
+			return cursor
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("librarian did not settle through turn %d: cursor %+v", wantThrough, s.loadLibrarianCursor())
+	return librarianCursor{}
+}
+
+// Under the turn arm, each human turn's settle starts a fresh librarian over
+// the turns no finished pass covered: the second pass starts where the first
+// ended, the librarian's writes land, and its report never reaches the root's
+// conversation.
+func TestLibrarianTurnPassCoversEachTurnOnce(t *testing.T) {
+	t.Parallel()
+	workspace, project := memoryGitFixture(t)
+	memRoot := t.TempDir()
+	script := &librarianScript{}
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: memRoot, MemoryProjectID: project.ID, Project: project, MemoryLibrarian: "turn", MaxSubagentDepth: 1, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(script.steps()...))
+
+	if _, err := s.ProcessInput(context.Background(), "remember: prices are integer cents", nil); err != nil {
+		t.Fatal(err)
+	}
+	first := waitLibrarianIdle(t, s, 1)
+	if _, err := s.ProcessInput(context.Background(), "now add a total", nil); err != nil {
+		t.Fatal(err)
+	}
+	second := waitLibrarianIdle(t, s, first.ProcessedThrough+1)
+
+	script.mu.Lock()
+	ranges := append([]string(nil), script.ranges...)
+	script.mu.Unlock()
+	want := []string{fmt.Sprintf("1-%d", first.ProcessedThrough), fmt.Sprintf("%d-%d", first.ProcessedThrough+1, second.ProcessedThrough)}
+	if !slices.Equal(ranges, want) {
+		t.Fatalf("librarian ranges = %v, want %v", ranges, want)
+	}
+	for _, name := range []string{"fact-1.md", "fact-2.md"} {
+		if _, err := os.Stat(filepath.Join(memRoot, "memory", name)); err != nil {
+			t.Errorf("librarian page %s: %v", name, err)
+		}
+	}
+	if len(second.Reports) != 2 || !strings.Contains(second.Reports[0], "saved project/cents.md") {
+		t.Errorf("cursor reports = %q", second.Reports)
+	}
+	path := transcriptPath(s.stateDir, s.id)
+	data, err := readTranscriptFull(path, filepath.Dir(filepath.Dir(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range data.Entries {
+		if raw, _ := json.Marshal(entry); strings.Contains(string(raw), "saved project/cents.md") {
+			t.Fatalf("librarian report reached the root transcript: %s", raw)
+		}
+	}
+}
+
+// A pass that reports a failure leaves the cursor in place, so the next pass
+// covers the same turns; a report from a delegate that is not the pass in
+// flight changes nothing.
+func TestLibrarianFailedPassLeavesRangeForNextPass(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{id: "root", stateDir: stateDir, cfg: SessionConfig{MemoryStateRoot: "/m", MemoryLibrarian: "turn"}}
+	s.saveLibrarianCursor(librarianCursor{ProcessedThrough: 4})
+	failed := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"provider error"`)}
+	reported := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"saved a.md"`)}
+
+	s.librarian.inFlight = &librarianPass{delegateID: "dlg_a", from: 5, to: 9}
+	s.librarianReported("dlg_a", failed)
+	if got := s.loadLibrarianCursor().ProcessedThrough; got != 4 {
+		t.Fatalf("failed pass moved the cursor to %d", got)
+	}
+	if s.librarian.inFlight != nil {
+		t.Fatal("failed pass still in flight")
+	}
+
+	s.librarian.inFlight = &librarianPass{delegateID: "dlg_b", from: 5, to: 11}
+	s.librarianReported("dlg_stranger", reported)
+	if got := s.loadLibrarianCursor().ProcessedThrough; got != 4 {
+		t.Fatalf("a stranger's report moved the cursor to %d", got)
+	}
+	s.librarianReported("dlg_b", reported)
+	if got := s.loadLibrarianCursor().ProcessedThrough; got != 11 {
+		t.Fatalf("cursor after the retried pass = %d, want 11", got)
+	}
+	if got := librarianTurnBrief("root", 12, 15, s.loadLibrarianCursor().Reports); !strings.Contains(got, "range=\"12-15\"") || !strings.Contains(got, "saved a.md") {
+		t.Fatalf("next brief: %s", got)
+	}
+}
+
+// sidecarScript plays the sidecar librarian: its first generation creates the
+// parent watch and reports; every later generation reports at once. It
+// records whether a later generation saw a turn.end frame.
+type sidecarScript struct {
+	mu          sync.Mutex
+	generations int
+	sawTurnEnd  bool
+}
+
+func (ss *sidecarScript) step(req llm.Request) llm.Response {
+	librarian := false
+	for _, def := range req.Tools {
+		if def.Name == "memory_write" {
+			librarian = true
+		}
+	}
+	if !librarian {
+		return finalResponse("done")
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for _, msg := range req.Messages {
+		if strings.Contains(msg.Text(), "kind: turn.end") {
+			ss.sawTurnEnd = true
+		}
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if ss.generations == 0 && last.Role != llm.RoleTool {
+		args, _ := json.Marshal(map[string]any{"operation": "create", "source": "parent", "events": []string{"user.message", "turn.end"}})
+		return toolCallResponse(llm.ToolCallData{ID: "sidecar-watch", Name: "job_watch", Arguments: args})
+	}
+	ss.generations++
+	return finalResponse("no changes")
+}
+
+// Under the sidecar arm the root starts one long-lived librarian with
+// watch_parent on its first human message; the sidecar's parent watch wakes it
+// at the root's turn end, and a later human message starts no second one.
+func TestLibrarianSidecarStartsOnceAndWakesOnTurnEnd(t *testing.T) {
+	t.Parallel()
+	workspace, project := memoryGitFixture(t)
+	script := &sidecarScript{}
+	steps := make([]func(llm.Request) llm.Response, 200)
+	for i := range steps {
+		steps[i] = script.step
+	}
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: project.ID, Project: project, MemoryLibrarian: "sidecar", MaxSubagentDepth: 1, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(steps...))
+
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			if _, err := s.DrainJobTree(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			script.mu.Lock()
+			done := cond()
+			script.mu.Unlock()
+			if done {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: %+v", what, script)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if _, err := s.ProcessInput(context.Background(), "remember: prices are integer cents", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The first turn can end before the sidecar has armed its watch; its
+	// first pass reads that turn from the transcript.
+	waitFor("sidecar never finished its first pass", func() bool { return script.generations >= 1 })
+	sidecar := s.loadLibrarianCursor().SidecarDelegateID
+	if sidecar == "" {
+		t.Fatal("no sidecar recorded")
+	}
+	if _, err := s.ProcessInput(context.Background(), "now add a total", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("sidecar never woke on turn.end", func() bool { return script.sawTurnEnd && script.generations >= 2 })
+	if got := s.loadLibrarianCursor().SidecarDelegateID; got != sidecar {
+		t.Fatalf("sidecar changed from %s to %s", sidecar, got)
+	}
+	s.delegateController.mu.Lock()
+	librarians := 0
+	for _, aggregate := range s.delegateController.durable {
+		if aggregate.Descriptor.RuntimeRole == memoryLibrarianRole {
+			librarians++
+			if !aggregate.Descriptor.ParentWatchGranted {
+				t.Error("sidecar lacks watch_parent")
+			}
+		}
+	}
+	s.delegateController.mu.Unlock()
+	if librarians != 1 {
+		t.Fatalf("librarian delegates = %d, want 1", librarians)
 	}
 }

@@ -280,6 +280,9 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 // background shell, so without this split the announcement would name a false
 // reason to the model.
 func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
+	if s.librarianLaunchPending() {
+		return true, nil
+	}
 	if s.jobManager != nil && s.jobManager.hasPendingWatchSends() {
 		return true, nil
 	}

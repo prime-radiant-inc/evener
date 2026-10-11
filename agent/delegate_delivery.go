@@ -710,6 +710,9 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	if head.OwnerDelegateID != "" && receiver == nil {
 		return nil
 	}
+	if aggregate.Descriptor.RuntimeRole != "" && head.OwnerDelegateID == "" {
+		receiver = runtimeRoleDeliveryReceiver{owner: c.rootRuntime, delegateID: delegateID, packet: cloneDelegateTerminalPacket(head.Packet)}
+	}
 	_, cold := receiver.(coldDelegateDeliveryReceiver)
 	if cold && c.hasColdDeliveryWorkForOwnerLocked(head.OwnerDelegateID) {
 		return nil
