@@ -3,7 +3,7 @@ import { canReadSharedNotes } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
-import { Chevron, ToolIcon } from "../../../widgets";
+import { Chevron, Eyebrow, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { hasNoteText, NotesPanelBody } from "./NotesPanel";
 import styles from "./topnotespanel.module.css";
@@ -17,7 +17,6 @@ const CLASS = {
   clampedText: requireClass(styles.clampedText, "topnotespanel.module.css", "clampedText"),
   placeholder: requireClass(styles.placeholder, "topnotespanel.module.css", "placeholder"),
   expandedHeader: requireClass(styles.expandedHeader, "topnotespanel.module.css", "expandedHeader"),
-  expandedTitle: requireClass(styles.expandedTitle, "topnotespanel.module.css", "expandedTitle"),
   expandedBody: requireClass(styles.expandedBody, "topnotespanel.module.css", "expandedBody"),
 };
 
@@ -145,7 +144,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
             <Chevron size={16} />
           </span>
           {expanded ? (
-            <span className={CLASS.expandedTitle}>Session Notes</span>
+            <Eyebrow as="span">Session notes</Eyebrow>
           ) : (
             <>
               {sourceIconKind && (
