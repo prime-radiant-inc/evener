@@ -688,6 +688,25 @@ describe("McpServerListField", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  test("removing one server keeps another whose args differ only in how they split", async () => {
+    const quoted = { name: "fs", command: "mcp-fs", args: ["a b"] };
+    const split = { name: "fs", command: "mcp-fs", args: ["a", "b"] };
+    const onChange = vi.fn();
+    render(
+      <McpServerListField
+        option={mcpOption}
+        items={[quoted, split]}
+        onChange={onChange}
+        validateCommand={async () => ({ path: "mcp-fs", valid: true })}
+      />,
+    );
+    const list = screen.getByRole("list", { name: "MCP servers" });
+    const [removeQuoted] = within(list).getAllByRole("button");
+    if (removeQuoted === undefined) throw new Error("no rows rendered");
+    await userEvent.setup().click(removeQuoted);
+    expect(onChange).toHaveBeenCalledWith([split]);
+  });
+
   test("missing a command token is rejected without calling validateCommand at all", async () => {
     const user = userEvent.setup();
     const validateCommand = vi.fn();

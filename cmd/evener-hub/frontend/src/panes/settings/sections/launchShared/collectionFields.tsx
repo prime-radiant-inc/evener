@@ -454,7 +454,7 @@ export interface McpServerListFieldProps {
 }
 
 export function mcpServerKey(spec: MCPServerSpec): string {
-  return `${spec.name}|${spec.command}|${(spec.args ?? []).join(" ")}`;
+  return JSON.stringify([spec.name, spec.command, spec.args ?? []]);
 }
 
 export function mcpServerLabel(spec: MCPServerSpec): string {
@@ -517,7 +517,7 @@ export function McpServerListField({
         getKey={mcpServerKey}
         renderItem={mcpServerLabel}
         removeLabel={(spec) => `Remove ${mcpServerLabel(spec)}`}
-        onRemove={(spec) => onChange(items.filter((i) => mcpServerKey(i) !== mcpServerKey(spec)))}
+        onRemove={(spec) => onChange(items.filter((i) => i !== spec))}
         emptyMessage="No MCP servers configured."
         addPlaceholder="name command args..."
         onAdd={handleAdd}
