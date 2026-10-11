@@ -122,7 +122,13 @@ func delegateEntries(t *testing.T, root *Session) []transcript.Entry {
 	if len(paths) != 1 {
 		t.Fatalf("want one delegate transcript, got %v", paths)
 	}
-	data, err := readTranscriptFull(paths[0], "")
+	return readEntries(t, paths[0])
+}
+
+// readEntries reads a transcript's entries.
+func readEntries(t *testing.T, path string) []transcript.Entry {
+	t.Helper()
+	data, err := readTranscriptFull(path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -131,8 +137,8 @@ func delegateEntries(t *testing.T, root *Session) []transcript.Entry {
 
 // recordRootStep adds the failure of one root turn to modelFailures when it
 // is the session giving up on a model that kept returning empty or bare text.
-// Any other error, a provider or runtime failure, stops the run; so does
-// nothing when the turn only ended because the run's own deadline passed.
+// Any other error, a provider or runtime failure, stops the run. A turn that
+// only ended because the run's own deadline passed records nothing.
 func recordRootStep(ctx context.Context, t *testing.T, modelFailures []string, err error) []string {
 	t.Helper()
 	switch {
@@ -325,12 +331,7 @@ func classifyParentAnswer(calls []llm.ToolCallData, codename string) string {
 }
 
 func rootEntries(t *testing.T, root *Session) []transcript.Entry {
-	t.Helper()
-	data, err := readTranscriptFull(root.TranscriptPath(), "")
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	return data.Entries
+	return readEntries(t, root.TranscriptPath())
 }
 
 // Narration that repeats the codename before the question arrives is not an
