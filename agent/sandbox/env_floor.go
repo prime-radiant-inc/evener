@@ -258,7 +258,10 @@ func overlayGoCacheDirs(env []string, policy ResolvedPolicy) (map[string]string,
 		// from the spawn just the same. A mask over a link in the middle of
 		// the file's chain is not traced: at worst that spawn's default cache
 		// lands where its own environment points, inside its grants
-		// (docs/sandboxing.md#threat-model).
+		// (docs/sandboxing.md#threat-model). So does a file the session can
+		// write (one kept in the worktree) changed by `go env -w` mid-command:
+		// later go runs in that command put their caches where the session
+		// said, inside its own writable storage.
 		judged := spawnFile == host.GoEnvFile && filepath.IsAbs(spawnFile) && !inPrivateMount(spawnFile) && !linksThroughPrivateMount(spawnFile) &&
 			!policy.MasksWrite(spawnFile) && !policy.MasksWrite(resolveExistingPrefix(spawnFile))
 		if judged {
