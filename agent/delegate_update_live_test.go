@@ -227,8 +227,7 @@ func isModelBehaviorError(err error) bool {
 		return false
 	}
 	// A provider error that wraps a cancellation is still a provider error.
-	var providerErr llm.Error
-	if errors.As(err, &providerErr) {
+	if _, ok := errors.AsType[llm.Error](err); ok {
 		return false
 	}
 	var joined interface{ Unwrap() []error }
