@@ -91,7 +91,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Definition: tool.DefJobList(), ReadOnly: true,
+		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -112,7 +112,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Definition: tool.DefJobWatch(availableEventKindNames()),
+		Definition: tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName()),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
