@@ -28,8 +28,8 @@ import {
   CollectionEditor,
   ConfirmDialog,
   type DirectoryActions,
-  EmptyState,
   FormRow,
+  InlineNotice,
   PathField,
   type PathFieldKind,
   Skeleton,
@@ -244,7 +244,7 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
       </header>
       <p className={CLASS.help}>{copy}</p>
       {error !== null ? (
-        <EmptyState title="Failed to load" hint={error} />
+        <InlineNotice tone="danger">Failed to load: {error}</InlineNotice>
       ) : loading && layer === null ? (
         <Skeleton />
       ) : (
