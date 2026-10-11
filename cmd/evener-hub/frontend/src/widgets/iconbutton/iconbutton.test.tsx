@@ -72,6 +72,25 @@ test("disabled blocks onClick", async () => {
   expect(onClick).not.toHaveBeenCalled();
 });
 
+test("an aria-disabled refusal swallows the click but keeps focus, exactly as Button does", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  const { rerender } = render(<IconButton label="Go" icon={<DotIcon />} aria-disabled={true} onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" });
+  await user.click(button);
+  expect(onClick).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(button);
+
+  // The other spelling of the attribute is the same refusal.
+  rerender(<IconButton label="Go" icon={<DotIcon />} aria-disabled="true" onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).not.toHaveBeenCalled();
+
+  rerender(<IconButton label="Go" icon={<DotIcon />} onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).toHaveBeenCalledOnce();
+});
+
 test("disabled marks the native button inert (not focusable)", () => {
   render(<IconButton label="Go" icon={<DotIcon />} disabled />);
   const button = screen.getByRole("button") as HTMLButtonElement;

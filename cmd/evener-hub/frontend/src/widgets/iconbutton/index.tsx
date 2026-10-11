@@ -1,5 +1,5 @@
 import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode } from "react";
-import type { ButtonSize, ButtonVariant } from "../button";
+import { type ButtonSize, type ButtonVariant, isAriaRefusal } from "../button";
 import buttonStyles from "../button/button.module.css";
 import { requireClass } from "../internal/requireClass";
 import styles from "./iconbutton.module.css";
@@ -72,6 +72,9 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   { label, icon, variant = "primary", size = "md", onClick, disabled = false, type = "button", ...rest },
   ref,
 ) {
+  // The same refusal Button makes: aria-disabled keeps the control focusable,
+  // so the browser still delivers the click and the widget swallows it here.
+  const refused = isAriaRefusal(rest["aria-disabled"]);
   return (
     <button
       ref={ref}
@@ -79,7 +82,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       type={type}
       aria-label={label}
       className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
-      onClick={onClick}
+      onClick={refused ? undefined : onClick}
       disabled={disabled}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>

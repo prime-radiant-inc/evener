@@ -72,6 +72,13 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
  * silently replace Button's variant/size/focus-ring classes - see the
  * "arriving via untyped spread" test in button.test.tsx.
  */
+/** Whether an aria-disabled value is a refusal. JSX accepts both spellings of
+ * the attribute, so both count. Shared with IconButton, which refuses the same
+ * way. */
+export function isAriaRefusal(ariaDisabled: ButtonHTMLAttributes<HTMLButtonElement>["aria-disabled"]): boolean {
+  return ariaDisabled === true || ariaDisabled === "true";
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = "primary", size = "md", icon, children, onClick, disabled = false, type = "button", ...rest },
   ref,
@@ -81,9 +88,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   // docs above and button.module.css), so the browser still hands it the click.
   // Refusing that click HERE is what makes a caller's guarded handler
   // defense-in-depth rather than the only thing standing between a refused
-  // control and the action it refuses. JSX accepts both spellings of the
-  // attribute, so both are treated as the refusal.
-  const refused = rest["aria-disabled"] === true || rest["aria-disabled"] === "true";
+  // control and the action it refuses.
+  const refused = isAriaRefusal(rest["aria-disabled"]);
   return (
     <button
       ref={ref}
