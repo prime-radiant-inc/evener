@@ -391,26 +391,16 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	// string "null" for the ones they mean to leave out. That is the same
 	// absent-field intent as a JSON null, on every ref kind.
 	for _, field := range []string{"format", "range", "expand_turn", "offset_bytes", "output_match", "context_lines"} {
-		text, isString := normalized[field].(string)
-		if isString && strings.EqualFold(strings.TrimSpace(text), "null") && (!artifactRef || field != "format") {
+		if value, present := normalized[field]; present && isNullPlaceholder(value) && (!artifactRef || field != "format") {
 			remove(field)
 		}
 	}
 	if !jobRef && !artifactRef {
-		// On a session ref an optional field sent as null means the model left
-		// it out. Generic repair's dropEmptyOptionals drops only a null the
-		// schema refuses, and these fields are schema-nullable, so this
-		// applies the same null-as-absent rule to them here. A session ref has
-		// no search, so an empty output_match and a zero context_lines are
-		// materialized defaults too, and offset_bytes 0 is the start of an
-		// expansion, the same as no offset. A nonzero offset_bytes or
-		// context_lines, or a non-empty output_match, stays for the handler to
-		// refuse. expand_turn 0 stays: Turn 0 is a real turn.
-		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
-			if value, present := normalized[field]; present && value == nil {
-				remove(field)
-			}
-		}
+		// A session ref has no search, so an empty output_match and a zero
+		// context_lines are materialized defaults, and offset_bytes 0 is the
+		// start of an expansion, the same as no offset. A nonzero offset_bytes
+		// or context_lines, or a non-empty output_match, stays for the handler
+		// to refuse. expand_turn 0 stays: Turn 0 is a real turn.
 		if value, present := normalized["output_match"]; present && value == "" {
 			remove("output_match")
 		}
@@ -495,6 +485,16 @@ func normalizeRetainedReadArgsForValidation(args map[string]any) (map[string]any
 		}
 	}
 	return normalized, nil
+}
+
+// isNullPlaceholder reports a JSON null or the string "null", which models
+// with strict schemas write for a field they mean to leave out.
+func isNullPlaceholder(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, ok := value.(string)
+	return ok && strings.EqualFold(strings.TrimSpace(text), "null")
 }
 
 func isNeutralRetainedStringInteger(value any) bool {
