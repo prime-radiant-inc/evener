@@ -1183,7 +1183,10 @@ func TestNotDeliveredUpdateExplainsARetiringController(t *testing.T) {
 // finalization drain, where drainTurns script its replies. It returns the
 // report frame and the reportPreview the root received, and the coordinator's
 // transcript text.
-func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm.Response) (frame, preview, transcript string) {
+//
+// With undisposedJob the coordinator starts a background shell job instead of
+// a worker and never disposes of it, so its drain announces the job to it.
+func drainingCoordinatorReport(t *testing.T, undisposedJob bool, drainTurns ...func(llm.Request) llm.Response) (frame, preview, transcript string) {
 	t.Helper()
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
 	coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
@@ -1195,10 +1198,17 @@ func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm
 		},
 		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
 	)
+	startWork := func(llm.Request) llm.Response {
+		return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
+	}
+	if undisposedJob {
+		startWork = func(llm.Request) llm.Response {
+			args, _ := json.Marshal(map[string]any{"command": "sleep 600", "mode": "background"})
+			return toolCallResponse(llm.ToolCallData{ID: "job", Name: "shell", Arguments: args, Type: "function"})
+		}
+	}
 	coordinatorSteps := []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
-		},
+		startWork,
 		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_A: waiting on the worker") },
 	}
 	for _, drainTurn := range drainTurns {
@@ -1225,6 +1235,7 @@ func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm
 	release := sync.OnceFunc(func() { close(releaseGeneration) })
 	defer release()
 	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+		cfg.TurnEndsProcess = undisposedJob
 		cfg.testOnly.subagentBeforeGenerationReleased = func(a *subagent, lease delegateLease) {
 			a.mu.Lock()
 			isCoordinator := a.stableDescriptor != nil && strings.HasPrefix(a.stableDescriptor.Task, "COORD-BRIEF")
@@ -1282,7 +1293,7 @@ func bareTextDrainTurn(llm.Request) llm.Response {
 // and the earlier one stays in the coordinator's transcript.
 func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
 	t.Parallel()
-	frame, preview, transcript := drainingCoordinatorReport(t, func(llm.Request) llm.Response {
+	frame, preview, transcript := drainingCoordinatorReport(t, false, func(llm.Request) llm.Response {
 		return communicateResponse(true, "REPORT_B: told the worker to use the v2 schema")
 	})
 	if !strings.Contains(frame, "REPORT_B") || strings.Contains(frame, "REPORT_A") {
@@ -1301,11 +1312,28 @@ func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
 func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
 	t.Parallel()
 	// Bare text is retried within the turn before the turn gives up.
-	frame, preview, _ := drainingCoordinatorReport(t, slices.Repeat([]func(llm.Request) llm.Response{bareTextDrainTurn}, 5)...)
+	frame, preview, _ := drainingCoordinatorReport(t, false, slices.Repeat([]func(llm.Request) llm.Response{bareTextDrainTurn}, 5)...)
 	if !strings.Contains(frame, "REPORT_A") || !strings.Contains(frame, `"kind":"reported"`) || !strings.Contains(frame, `"outcome":"completed"`) {
 		t.Fatalf("the root's report frame = %q, want the earlier completed report A", frame)
 	}
 	if preview != "REPORT_A: waiting on the worker" {
 		t.Fatalf("reportPreview = %q, want report A", preview)
+	}
+}
+
+// A drain that announces an undisposed background job to the coordinator
+// discards the announcement turns' text. The report still comes whole from the
+// latest accepted report, never from the text the drain returned.
+func TestDelegateDrainAnnouncementReportReplacesTheEarlierReport(t *testing.T) {
+	t.Parallel()
+	frame, preview, _ := drainingCoordinatorReport(t, true,
+		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_B: left the job running") },
+		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_C: detached the job") },
+	)
+	if !strings.Contains(frame, "REPORT_C") || strings.Contains(frame, "REPORT_A") {
+		t.Fatalf("the root's report frame = %q, want the latest announcement turn's report C alone", frame)
+	}
+	if preview != "REPORT_C: detached the job" {
+		t.Fatalf("reportPreview = %q, want report C", preview)
 	}
 }

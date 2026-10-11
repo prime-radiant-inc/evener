@@ -2090,6 +2090,12 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
+	// The report is the latest one the session accepted, taken whole: its
+	// text and its structured output come from the same source, whatever
+	// text the drain's turns returned.
+	if reply, reported := a.sess.communicatedReply(); reported {
+		return reply, parentDriveNotify, nil
+	}
 	if drained != "" {
 		result = drained
 	}

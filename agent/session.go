@@ -1929,6 +1929,14 @@ func (s *Session) CommunicateStructured() any {
 	return s.comm.structured
 }
 
+// communicatedReply returns the reply of the terminal communicate the current
+// input accepted, and whether it accepted one.
+func (s *Session) communicatedReply() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.reply, s.comm.called
+}
+
 func (s *Session) communicateStructuredResult() (any, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

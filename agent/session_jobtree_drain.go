@@ -968,7 +968,7 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 // communicate result, so a turn that ends without a terminal communicate would
 // erase the report the delegate already gave. That turn restores the latest
 // report the session accepted, which may have come from an earlier input of
-// the same call, and returns its text. Its bare-text or empty-response
+// the same call. Its bare-text or empty-response
 // failure is the reply of a housekeeping turn, not a failure of the run that
 // already reported; any other error still propagates.
 func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
@@ -978,8 +978,6 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 		if !reported {
 			return res, err
 		}
-		// One call can run several inputs and returns their accumulated
-		// output; the delegate's report is the latest accepted one alone.
 		s.mu.Lock()
 		if !s.comm.called {
 			s.comm = s.latestReport
@@ -987,9 +985,8 @@ func (s *Session) keepingReport(process func(context.Context, string, []ImageAtt
 				err = nil
 			}
 		}
-		latest := s.latestReport.reply
 		s.mu.Unlock()
-		return latest, err
+		return res, err
 	}
 }
 
