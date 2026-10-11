@@ -21,7 +21,7 @@
 set -euo pipefail
 
 if [[ $# -lt 4 || "$3" != "--" ]]; then
-  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"
   exit 2
 fi
 file=$1 subst=$2

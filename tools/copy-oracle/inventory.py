@@ -38,7 +38,7 @@ strings are missed, and a match is a candidate to read, not a verdict. It does
 not count accessible names used as a state oracle (`getByRole("button", { name:
 "Agents, 3 of 4 active" })`); those are found while converting each area.
 """
-import argparse, collections, os, re, subprocess, sys
+import argparse, collections, functools, os, re, subprocess, sys
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
                       text=True, check=True).stdout.strip()
@@ -52,7 +52,7 @@ REGEX = r"/((?:[^/\\\n]|\\.)+)/[a-z]*"
 TS_BYTEXT = re.compile(r"\b(?:get|find|query)(?:All)?By(?:Text|Title)\(\s*(?:" + STR + "|" + REGEX + r"|([A-Za-z_$][\w$.]*)\s*[,)])")
 TS_MATCHER = re.compile(r"\.(?:toContain|toBe|toEqual|toMatch|toHaveTextContent|toStrictEqual)\(\s*(?:" + STR + "|" + REGEX + r"|([A-Za-z_$][\w$.]*)\s*\))")
 TS_CLICK = re.compile(r"\b(?:fireEvent\.\w+|user(?:Event)?\.\w+|press|click|act)\s*\(")
-TS_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]", re.S)
+TS_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]")
 
 GO_STR = r"""(?:"((?:[^"\\]|\\.)*)"|`([^`]*)`)"""
 GO_CHECKS = [
@@ -92,7 +92,7 @@ def regex_core(rx):
     """Longest run of literal text in a regex, so it can be looked up as copy."""
     runs = re.split(r"\\[dDsSwWbB]|[\^$.*+?()\[\]{}|]", rx.replace("\\/", "/"))
     runs = [re.sub(r"\\(.)", r"\1", r) for r in runs]
-    return max(runs, key=len) if runs else ""
+    return max(runs, key=len)
 
 
 def contract_shaped(lit):
@@ -101,11 +101,10 @@ def contract_shaped(lit):
     return bool(TOKEN.match(lit)) and not LABEL_WORD.match(lit)
 
 
-def is_copy(lit, corpus):
-    lit = lit.strip()
-    if contract_shaped(lit):
-        return False
-    return lit in corpus
+def substring_lookup(corpus):
+    """`lit in corpus`, memoized: a miss scans the whole corpus, and the same
+    literal recurs across many tests."""
+    return functools.lru_cache(maxsize=None)(corpus.__contains__)
 
 
 def package_of(path):
@@ -115,7 +114,7 @@ def package_of(path):
 def scan_ts(paths_filter):
     files = [f for t in TS_TREES for f in git_files(t)
              if re.search(r"\.(ts|tsx|mts)$", f) and not f.endswith(".d.ts")]
-    prod = "\n".join(read(f) for f in files if not TS_TEST.search(f))
+    in_prod = substring_lookup("\n".join(read(f) for f in files if not TS_TEST.search(f)))
     hits, fixtures = [], collections.Counter()
     for f in files:
         if not re.search(r"\.(test|spec)\.", f) or not f.startswith(paths_filter):
@@ -137,12 +136,11 @@ def scan_ts(paths_filter):
                         if ident in imported and COPY_IDENT.search(ident):
                             hits.append((f, ln, "ts-constant", ident))
                         continue
-                    probe = lit if lit is not None else regex_core(regex or "")
-                    if probe is None:
+                    probe = (lit if lit is not None else regex_core(regex or "")).strip()
+                    if contract_shaped(probe):
                         continue
-                    if not is_copy(probe, prod):
-                        if not contract_shaped(probe.strip()):
-                            fixtures[package_of(f)] += 1
+                    if not in_prod(probe):
+                        fixtures[package_of(f)] += 1
                         continue
                     if kind == "bytext" and TS_CLICK.search(line[:m.start()]):
                         cat = "ts-locator"
@@ -163,9 +161,9 @@ def go_unquote(dq, raw):
 
 def scan_go(paths_filter):
     go = git_files("*.go")
-    prod = "\n".join(read(f) for f in go if not f.endswith("_test.go"))
-    assets = "\n".join(read(f) for f in git_files(*["*" + e for e in ASSET_EXT])
-                       if not f.startswith("docs/") and "/testdata/" not in f)
+    in_prod = substring_lookup("\n".join(read(f) for f in go if not f.endswith("_test.go")))
+    in_assets = substring_lookup("\n".join(read(f) for f in git_files(*["*" + e for e in ASSET_EXT])
+                                           if not f.startswith("docs/") and "/testdata/" not in f))
     hits, fixtures = [], collections.Counter()
     for f in go:
         if not f.endswith("_test.go") or not f.startswith(paths_filter):
@@ -176,18 +174,17 @@ def scan_go(paths_filter):
             for i, rx in enumerate(GO_CHECKS):
                 for m in rx.finditer(line):
                     g = m.groups()
+                    # GO_CHECKS[2] (regexp) puts the literal before the subject.
                     if i == 2:
-                        lit, subject = regex_core(go_unquote(g[0], g[1]) if (g[0] or g[1]) is not None else ""), g[2]
+                        lit, subject = regex_core(go_unquote(g[0], g[1])), g[2]
                     else:
-                        subject, lit = g[0], go_unquote(g[1], g[2]) if g[1] is not None else g[2]
-                    if lit is None:
-                        continue
+                        subject, lit = g[0], go_unquote(g[1], g[2])
                     lit = lit.strip()
                     if contract_shaped(lit):
                         continue
-                    if lit in prod:
+                    if in_prod(lit):
                         cat = "go-errstring" if GO_ERRISH.search(subject or "") else "go-copy"
-                    elif lit in assets and len(lit) >= 8 and " " in lit:
+                    elif len(lit) >= 8 and " " in lit and in_assets(lit):
                         cat = "go-asset"
                     else:
                         fixtures[package_of(f)] += 1

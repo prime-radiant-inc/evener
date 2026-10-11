@@ -18,11 +18,12 @@ export interface EmptyStateProps {
   /** "display" sets the title at --font-size-display: for the one pane
    * whose empty state IS the page (Welcome). Default keeps pane-title. */
   size?: "default" | "display";
-  /** Why the surface is empty (`"loading"`, `"deleted"`, ...), rendered as
-   * `data-reason` so callers and tests can tell one empty state from another
-   * without reading its copy. */
-  reason?: string;
+  /** Why the surface is empty, rendered as `data-reason` so callers and
+   * tests can tell one empty state from another without reading its copy. */
+  reason?: EmptyStateReason;
 }
+
+export type EmptyStateReason = "loading" | "deleted" | "unavailable" | "no-turns";
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),
@@ -48,7 +49,11 @@ export function EmptyState({ title, hint, action, size = "default", reason }: Em
       <p className={size === "display" ? `${BASE_CLASS.title} ${BASE_CLASS.titleDisplay}` : BASE_CLASS.title}>
         {title}
       </p>
-      {hint !== undefined && <p className={BASE_CLASS.hint}>{hint}</p>}
+      {hint !== undefined && (
+        <p className={BASE_CLASS.hint} data-slot="hint">
+          {hint}
+        </p>
+      )}
       {action !== undefined && <div className={BASE_CLASS.action}>{action}</div>}
     </div>
   );

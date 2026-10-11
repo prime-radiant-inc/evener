@@ -1,4 +1,5 @@
 import type { SessionActivityContext, ThreadReadResponse } from "@evener/appwire-client";
+import { screen } from "@testing-library/react";
 import {
   activityClient,
   activityContext,
@@ -91,4 +92,15 @@ export function cascadeThread(
         : [],
     },
   };
+}
+
+/** The rendered cascade scope for `ref`: a readable column or a collapsed
+ * spine, or only the one `kind` when the test cares which. */
+export function cascadeScope(ref: string, kind?: "cascade-column" | "cascade-spine"): HTMLElement {
+  const kinds = kind ? [kind] : (["cascade-column", "cascade-spine"] as const);
+  const element = kinds
+    .flatMap((testId) => screen.queryAllByTestId(testId))
+    .find((item) => item.getAttribute("data-scope-ref") === ref);
+  if (!element) throw new Error(`Missing ${kind ?? "cascade scope"} ${ref}`);
+  return element;
 }

@@ -107,22 +107,18 @@ test('clicking "New session" navigates to /new', async () => {
   expect(window.location.pathname).toBe("/new");
 });
 
-// EmptyState renders its title and hint as its own paragraphs; the action
-// slot's paragraphs (the chord-hint footer) sit one level deeper.
-function emptyStateParagraphs(): string[] {
-  return [...screen.getByTestId("empty-state").querySelectorAll(":scope > p")].map((p) => p.textContent ?? "");
+function emptyStateHint(): Element | null {
+  return screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
 }
 
 test("shows params.note as a hint when provided", () => {
   render(<Welcome params={{ note: "note-from-params" }} paneId="welcome" focused={true} />);
-  const paragraphs = emptyStateParagraphs();
-  expect(paragraphs).toHaveLength(2);
-  expect(paragraphs[1]).toBe("note-from-params");
+  expect(emptyStateHint()?.textContent).toBe("note-from-params");
 });
 
 test("shows no hint when params.note is absent", () => {
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
-  expect(emptyStateParagraphs()).toHaveLength(1);
+  expect(emptyStateHint()).toBeNull();
 });
 
 test("WelcomeContent does not render example prompts", () => {
