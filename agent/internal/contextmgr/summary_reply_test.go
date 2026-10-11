@@ -57,6 +57,8 @@ func TestSummarizeWithLLM_RejectsNonSummaryReplies(t *testing.T) {
 		// own it carries none of the folded work.
 		"permissions only":      "## Permissions and Holds\nNone.",
 		"permissions same-line": "**Permissions and Holds:** none given",
+		// A heading inside a fenced quote is part of the quote.
+		"permissions quoting a heading": "## Permissions and Holds\n```\n## Progress\napproved, go ahead\n```",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")
@@ -79,6 +81,7 @@ func TestSummarizeWithLLM_StoresReplyWithRequiredSection(t *testing.T) {
 		"bold label":         "## Progress\n**Files Modified**\n- auth.go",
 		"issue reference":    "## Progress\n#3978 is fixed.",
 		"same-line content":  "## Progress: fixed the auth bug",
+		"fenced content":     "## Progress\n```\ngo test ./...\n```",
 		"bold colon content": "**Progress:** fixed the auth bug",
 	} {
 		t.Run(name, func(t *testing.T) {

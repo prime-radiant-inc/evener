@@ -977,19 +977,18 @@ func TestFoldPublication_StaleFoldFlushDoesNotOverrideNewerFoldNaming(t *testing
 	}
 	s.Close() // joins the namer goroutines
 
-	// Substring matching: the summarizer wraps the scripted response in its
-	// own envelope, so the summary-turn text embeds the marker rather than
-	// equaling it. B's own checkpoint digest does not embed A's summary
-	// text (verified empirically -- it digests user turns), so "fold A
-	// summary" appearing in ANY named text means A's stale launch ran.
+	// The summarizer wraps the scripted response in its own envelope, so the
+	// summary-turn text embeds the marker rather than equaling it. B's
+	// checkpoint carries A's summary forward too, so only a summary turn's
+	// own text identifies its fold (isFoldSummaryText).
 	nameMu.Lock()
 	defer nameMu.Unlock()
 	sawB := false
 	for _, text := range namedTexts {
-		if strings.Contains(text, "fold A summary") {
+		if isFoldSummaryText(text, "fold A summary") {
 			t.Fatalf("fold A's stale flush launched the compaction namer for A's older summary after fold B had already flushed -- last-write-wins naming lets A overwrite B (named texts: %q)", namedTexts)
 		}
-		if strings.Contains(text, "fold B summary") {
+		if isFoldSummaryText(text, "fold B summary") {
 			sawB = true
 		}
 	}
@@ -1034,6 +1033,10 @@ func TestFoldPublication_NamerCompletingAfterNewerFoldFlushDoesNotOverride(t *te
 			reqText.WriteString(m.Text())
 		}
 		switch {
+		// B's checkpoint carries A's summary forward; checkpoint naming
+		// still answers empty, whatever summaries it carries.
+		case strings.Contains(reqText.String(), "[CONTEXT CHECKPOINT]"):
+			return llm.Response{Message: llm.Assistant(`{"name":""}`)}
 		case strings.Contains(reqText.String(), "fold A summary"):
 			aParked.Do(func() {
 				close(aNamerIn)
@@ -1241,10 +1244,10 @@ func TestFoldPublication_OlderFoldFlushSuppressedByNewerPublication(t *testing.T
 	defer nameMu.Unlock()
 	sawB := false
 	for _, text := range namedTexts {
-		if strings.Contains(text, "fold A summary") {
+		if isFoldSummaryText(text, "fold A summary") {
 			t.Fatalf("fold A's flush, running after fold B had already PUBLISHED, launched the compaction namer for A's older summary -- last-write-wins suppression must bind to publication order, not flush order (named texts: %q)", namedTexts)
 		}
-		if strings.Contains(text, "fold B summary") {
+		if isFoldSummaryText(text, "fold B summary") {
 			sawB = true
 		}
 	}
@@ -1962,4 +1965,11 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
 		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite after the compaction marker was not durable, and the pre-marker durable entry is the one ResumeHistory discards")
 	}
+}
+
+// isFoldSummaryText reports whether text is a fold's own summary turn carrying
+// marker. A later fold's checkpoint carries earlier summaries forward, so a
+// marker anywhere in a checkpoint does not identify the fold that wrote it.
+func isFoldSummaryText(text, marker string) bool {
+	return strings.HasPrefix(text, "[CONTEXT SUMMARY]") && strings.Contains(text, marker)
 }

@@ -176,6 +176,10 @@ func TestDelegateAttention_StopRetryRenewsDurabilityOfAnUnsyncedDiscard(t *testi
 		delegateID     = "dlg_target"
 		childSessionID = "child-dlg_target"
 		attentionID    = "attention-discard-unsynced"
+		// ambiguousSyncFailures is how many fsyncs the first discard fails.
+		ambiguousSyncFailures = 3
+		// maxRetryPasses bounds the reconcile passes the stop needs to finish.
+		maxRetryPasses = 4
 	)
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, delegateID, "")
@@ -204,13 +208,13 @@ func TestDelegateAttention_StopRetryRenewsDurabilityOfAnUnsyncedDiscard(t *testi
 	if len(plans.attention) != 1 {
 		t.Fatalf("stop attention cleanup plans = %#v, want one discard", plans.attention)
 	}
-	fs.failNextAmbiguousDurability(3)
+	fs.failNextAmbiguousDurability(ambiguousSyncFailures)
 	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err == nil {
 		t.Fatal("discard with a failed fsync unexpectedly succeeded")
 	}
 
 	// Retry passes run until the stop completes.
-	for range 4 {
+	for range maxRetryPasses {
 		plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
 		if err != nil {
 			t.Fatalf("Reconcile: %v", err)
