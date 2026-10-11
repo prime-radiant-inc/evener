@@ -79,9 +79,10 @@ export function parseJobOutputPage(data: unknown): DecodedJobOutputPage | null {
 
 // Replacement characters retain the source spans they consumed. A later
 // contiguous page can therefore repair an incomplete scalar without losing bytes.
+// An emit that returns false stops the walk after that scalar.
 export function forEachJobOutputScalar(
   bytes: Uint8Array,
-  emit: (value: string, start: number, end: number) => void,
+  emit: (value: string, start: number, end: number) => unknown,
 ): void {
   let offset = 0;
   while (offset < bytes.length) {
@@ -89,7 +90,7 @@ export function forEachJobOutputScalar(
     const lead = bytes[offset++];
     if (lead === undefined) break;
     if (lead < 0x80) {
-      emit(String.fromCharCode(lead), start, offset);
+      if (emit(String.fromCharCode(lead), start, offset) === false) return;
       continue;
     }
     const width =
@@ -109,7 +110,8 @@ export function forEachJobOutputScalar(
       point = (point << 6) | (next & 0x3f);
       offset++;
     }
-    emit(width > 0 && offset - start === width ? String.fromCodePoint(point) : "\ufffd", start, offset);
+    if (emit(width > 0 && offset - start === width ? String.fromCodePoint(point) : "\ufffd", start, offset) === false)
+      return;
   }
 }
 

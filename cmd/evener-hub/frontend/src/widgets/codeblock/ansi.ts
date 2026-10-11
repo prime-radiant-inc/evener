@@ -455,16 +455,91 @@ export function parseAnsiLines(text: string): AnsiLine[] {
 
 export const ANSI_BYTE_FRAGMENT_BYTES = 4096;
 
+function sgrStatesEqual(left: SgrState, right: SgrState): boolean {
+  return (
+    left.decorations.size === right.decorations.size &&
+    [...left.decorations].every((code) => right.decorations.has(code)) &&
+    left.foreground?.join(";") === right.foreground?.join(";") &&
+    left.background?.join(";") === right.background?.join(";")
+  );
+}
+
+function terminalStatesEqual(left: TerminalState, right: TerminalState): boolean {
+  const a = left.control;
+  const b = right.control;
+  if (a.kind !== b.kind || !sgrStatesEqual(left.sgr, right.sgr)) return false;
+  switch (a.kind) {
+    case "text":
+      return true;
+    case "escape":
+      return b.kind === "escape" && a.intermediate === b.intermediate;
+    case "csi":
+      return b.kind === "csi" && a.sequence === b.sequence && a.overflow === b.overflow;
+    case "osc":
+    case "string":
+      return (b.kind === "osc" || b.kind === "string") && a.escape === b.escape;
+  }
+}
+
+// The index of the boundary at offsetBytes, or -1. Boundaries strictly increase.
+function boundaryIndexAt(boundaries: AnsiByteRows["boundaries"], offsetBytes: number): number {
+  let low = 0;
+  let high = boundaries.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const found = boundaries[middle]?.offsetBytes ?? 0;
+    if (found === offsetBytes) return middle;
+    if (found < offsetBytes) low = middle + 1;
+    else high = middle - 1;
+  }
+  return -1;
+}
+
 // Display fragments and eviction checkpoints keep the original byte spans,
 // including malformed UTF8 and control strings that emit no visible text.
-export function parseAnsiByteRows(bytes: Uint8Array, offsetBytes: number, initialState?: AnsiByteState): AnsiByteRows {
-  const state = initialState === undefined ? defaultTerminalState() : cloneTerminalState(initialState);
+//
+// `earlier` holds parses of byte ranges that overlap or adjoin this one with
+// identical bytes where they overlap, so a window that gains a page parses
+// only what changed. Parsing resumed from a boundary with that boundary's
+// state reproduces everything after it, so whenever this parse reaches an
+// earlier parse's boundary in an equal state, it copies that parse's rows up
+// to its last settled boundary inside this range and scans on from there. An
+// earlier parse's final boundary is not settled: bytes past it can complete a
+// trailing scalar or extend its last fragment.
+export function parseAnsiByteRows(
+  bytes: Uint8Array,
+  offsetBytes: number,
+  initialState?: AnsiByteState,
+  earlier: ReadonlyArray<Pick<AnsiByteRows, "rows" | "boundaries">> = [],
+): AnsiByteRows {
+  let state = initialState === undefined ? defaultTerminalState() : cloneTerminalState(initialState);
+  const endOffset = offsetBytes + bytes.length;
   const rows: AnsiByteRow[] = [];
   const boundaries: AnsiByteRows["boundaries"] = [{ offsetBytes, state: cloneTerminalState(state) }];
   let fragmentStart = offsetBytes;
   let prefix = sgrSequence(state.sgr);
   let presentation = "";
   let textByteOffsets: number[] = [];
+  // Copies an earlier parse's settled rows from the boundary just reached and
+  // returns the offset scanning resumes at, or undefined when none applies.
+  const reuse = (): number | undefined => {
+    for (const parse of earlier) {
+      const from = boundaryIndexAt(parse.boundaries, fragmentStart);
+      if (from === -1 || !terminalStatesEqual(parse.boundaries[from]?.state ?? state, state)) continue;
+      let to = parse.boundaries.length - 2;
+      while (to > from && (parse.boundaries[to]?.offsetBytes ?? endOffset) > endOffset) to--;
+      const resume = parse.boundaries[to];
+      if (to <= from || resume === undefined) continue;
+      for (const row of parse.rows)
+        if (row.offsetBytes >= fragmentStart && row.endBytes <= resume.offsetBytes) rows.push(row);
+      boundaries.push(...parse.boundaries.slice(from + 1, to + 1));
+      state = cloneTerminalState(resume.state);
+      fragmentStart = resume.offsetBytes;
+      prefix = sgrSequence(state.sgr);
+      return resume.offsetBytes;
+    }
+    return undefined;
+  };
   const flush = (endBytes: number, newline: boolean) => {
     const line = parseAnsiLines(prefix + (newline ? presentation.slice(0, -1) : presentation))[0] ?? [];
     if (newline || line.some((run) => run.text.length !== 0))
@@ -475,21 +550,34 @@ export function parseAnsiByteRows(bytes: Uint8Array, offsetBytes: number, initia
     textByteOffsets = [];
     boundaries.push({ offsetBytes: endBytes, state: cloneTerminalState(state) });
   };
-  forEachJobOutputScalar(bytes, (value, start, end) => {
-    const absoluteStart = offsetBytes + start;
-    const absoluteEnd = offsetBytes + end;
-    if (absoluteEnd - fragmentStart > ANSI_BYTE_FRAGMENT_BYTES && absoluteStart > fragmentStart) {
-      flush(absoluteStart, false);
-    }
-    let newline = false;
-    scanTerminalText(value, state, (part) => {
-      presentation += part;
-      if (part.endsWith("\n")) newline = true;
-      else if (!part.startsWith("\u001b["))
-        for (let index = 0; index < part.length; index++) textByteOffsets.push(absoluteStart - fragmentStart);
+  // Each pass scans until a flush lands on reusable rows, then the next pass
+  // resumes after them.
+  let scanFrom: number | undefined = reuse() ?? offsetBytes;
+  while (scanFrom !== undefined) {
+    const base = scanFrom;
+    scanFrom = undefined;
+    forEachJobOutputScalar(bytes.subarray(base - offsetBytes), (value, start, end) => {
+      const absoluteStart = base + start;
+      const absoluteEnd = base + end;
+      if (absoluteEnd - fragmentStart > ANSI_BYTE_FRAGMENT_BYTES && absoluteStart > fragmentStart) {
+        flush(absoluteStart, false);
+        scanFrom = reuse();
+        if (scanFrom !== undefined) return false;
+      }
+      let newline = false;
+      scanTerminalText(value, state, (part) => {
+        presentation += part;
+        if (part.endsWith("\n")) newline = true;
+        else if (!part.startsWith("\u001b["))
+          for (let index = 0; index < part.length; index++) textByteOffsets.push(absoluteStart - fragmentStart);
+      });
+      if (newline) {
+        flush(absoluteEnd, true);
+        scanFrom = reuse();
+        if (scanFrom !== undefined) return false;
+      }
     });
-    if (newline) flush(absoluteEnd, true);
-  });
-  if (fragmentStart < offsetBytes + bytes.length) flush(offsetBytes + bytes.length, false);
+  }
+  if (fragmentStart < endOffset) flush(endOffset, false);
   return { rows, endState: cloneTerminalState(state), boundaries };
 }
