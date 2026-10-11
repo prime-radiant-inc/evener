@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
-import { nextRealTask } from "./testing/stalledIndexedDB";
+import { holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   installHydrationRetrySchedulerForTests,
@@ -502,5 +502,160 @@ describe("background thread claims", () => {
     expect(threadsStore.getState().deletedRefs.has("local:one")).toBe(true);
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
     await background.release();
+  });
+
+  test("a mutation pin keeps a background-owned model until the foreground send settles", async () => {
+    const storage = mutationStorage();
+    const fake = connectCurrentClient();
+    const entered = deferred<{ clientMutationId: string }>();
+    const response = deferred<{
+      turn: { id: string; status: "inProgress"; itemsView: string };
+      receipt: {
+        clientMutationId: string;
+        disposition: "applied";
+        threadId: string;
+        projectionState: "reflected";
+      };
+    }>();
+    fake.on("turn/start", (params) => {
+      entered.resolve(params);
+      return response.promise;
+    });
+    await threadsStore.getState().ensureThread("local:one");
+    const sending = threadsStore.getState().send("local:one", "pinned send", [], [], [], []);
+    const { clientMutationId } = await entered.promise;
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    threadsStore.getState().releaseThread("local:one");
+    await background.release();
+    expect(threadsStore.getState().threads.has("local:one")).toBe(true);
+    response.resolve({
+      turn: { id: "turn_pinned", status: "inProgress", itemsView: "" },
+      receipt: {
+        clientMutationId,
+        disposition: "applied",
+        threadId: "thr_local:one",
+        projectionState: "reflected",
+      },
+    });
+    await sending;
+    expect(await storage.getOutbox(clientMutationId)).toBeDefined();
+    const retired = deferred<void>();
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if (!state.threads.has("local:one")) retired.resolve();
+    });
+    try {
+      await storage.settleReceipt(clientMutationId, "reflected");
+      await retired.promise;
+    } finally {
+      unsubscribe();
+    }
+    await expect(storage.getOutbox(clientMutationId)).resolves.toBeUndefined();
+    expect(threadsStore.getState().threads.has("local:one")).toBe(false);
+  });
+
+  test("a new canonical claim during held final persistence keeps the model resident", async () => {
+    const fake = connectCurrentClient();
+    await cache.getClearEpoch();
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    fake.emitNotification(textDelta("local:one", "-persist-me"));
+    expect(threadsStore.getState().threads.get("local:one")?.overlay?.["stream:s1:agentMessage"]?.item.text).toBe(
+      "alpha-persist-me",
+    );
+    // A genuine fresh final read must report the text this source already emitted.
+    fake.on("thread/read", (params) => {
+      const source = currentRead(params.ref ?? "local:one");
+      return {
+        ...source,
+        requestGeneration: params.requestGeneration,
+        overlay: source.overlay?.map((slot) => ({ ...slot, item: { ...slot.item, text: "alpha-persist-me" } })),
+      };
+    });
+    await settleEntryTranscriptForTests("local:one");
+    const transaction = holdNextWriteTransaction([
+      "transcriptItems",
+      "transcriptTurns",
+      "transcriptCoverage",
+      "transcriptMeta",
+      "records",
+      "meta",
+      "current",
+      "currentMeta",
+    ]);
+    try {
+      const release = background.release();
+      await transaction.reached;
+      expect(
+        fake.calls.filter(
+          (call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === false,
+        ),
+      ).toHaveLength(1);
+      const replacement = acquireBackgroundThread("local:one");
+      await replacement.ready;
+      expect(unsubscriptions(fake)).toBe(0);
+      transaction.release();
+      await release;
+      expect(threadsStore.getState().threads.has("local:one")).toBe(true);
+      fake.emitNotification(textDelta("local:one", "-after-held-save"));
+      expect(
+        threadsStore
+          .getState()
+          .threads.get("local:one")
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.text)
+          .join(""),
+      ).toContain("persist-me-after-held-save");
+      fake.on("thread/read", (params) => {
+        const source = currentRead(params.ref ?? "local:one");
+        return {
+          ...source,
+          requestGeneration: params.requestGeneration,
+          overlay: source.overlay?.map((slot) => ({
+            ...slot,
+            item: { ...slot.item, text: "alpha-persist-me-after-held-save" },
+          })),
+        };
+      });
+      await replacement.release();
+    } finally {
+      transaction.release();
+    }
+  });
+
+  test("a pane claim during held final persistence keeps actual wire membership", async () => {
+    const fake = connectCurrentClient();
+    await cache.getClearEpoch();
+    const background = acquireBackgroundThread("local:one");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:one");
+    const transaction = holdNextWriteTransaction([
+      "transcriptItems",
+      "transcriptTurns",
+      "transcriptCoverage",
+      "transcriptMeta",
+      "records",
+      "meta",
+      "current",
+      "currentMeta",
+    ]);
+    try {
+      const release = background.release();
+      await transaction.reached;
+      expect(
+        fake.calls.filter(
+          (call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === false,
+        ),
+      ).toHaveLength(1);
+      await threadsStore.getState().ensureThread("local:one");
+      expect(unsubscriptions(fake)).toBe(0);
+      transaction.release();
+      await release;
+      expect(unsubscriptions(fake)).toBe(0);
+    } finally {
+      transaction.release();
+      await background.release();
+      threadsStore.getState().releaseThread("local:one");
+    }
   });
 });
