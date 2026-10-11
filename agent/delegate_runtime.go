@@ -118,8 +118,71 @@ type delegateQuietAttentionClaim struct {
 // children's token rate.
 const delegateActivityPublishInterval = time.Second
 
+// delegateIntentPublishFloor bounds how often an intent change alone may
+// publish a delegate's snapshot. An intent change publishes immediately only
+// once at least this long has passed since the last publication of any kind —
+// a quiescent gap, which is exactly the multi-minute-tool-call case immediacy
+// exists for. A change inside the window is journaled and held pending, and
+// rides the next publication of any kind; it is never dropped.
+const delegateIntentPublishFloor = 5 * time.Second
+
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
 	return c.ReportActivityPhase(lease, at, "")
+}
+
+// ReportIntent states the open generation's newest tool-call intent. An
+// unchanged folded intent is a no-op — no append, no publication — mirroring
+// ReportActivityPhase's own short-circuit. A changed one does three things
+// and only those, in order, stopping at the first failure: it appends the
+// delegate_intent_stated journal event (a failed append leaves the live line,
+// the fold and the frames untouched), sets the live intent, and publishes a
+// snapshot under the five-second floor. It is display-only state: it advances
+// no activity clock — not the quiet baseline, not the drain-grace clock — and
+// rearms nothing, and it admits only a running lease, so a settling-window
+// report is rejected and the row keeps its pre-report intent.
+func (c *delegateTreeController) ReportIntent(lease delegateLease, at time.Time, intent string) error {
+	if c == nil {
+		return errDelegateStaleLease
+	}
+	if at.IsZero() {
+		at = c.now()
+	}
+	bounded := appwire.Excerpt(intent, appwire.MaxIntentRunes)
+	c.mu.Lock()
+	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	if bounded == aggregate.LatestIntent {
+		c.mu.Unlock()
+		return nil
+	}
+	if _, err := c.appendLocked(delegatestore.Event{
+		Kind:         delegatestore.EventDelegateIntentStated,
+		TS:           c.now(),
+		DelegateID:   lease.delegateID,
+		IntentStated: &delegatestore.IntentStated{Generation: lease.generation, Intent: bounded},
+	}); err != nil {
+		c.evidenceVersion++
+		c.mu.Unlock()
+		return err
+	}
+	c.evidenceVersion++
+	live.intent = bounded
+	// An intent change inside the floor journals and stands pending: it rides
+	// the next publication of any kind, which re-captures this snapshot, so it
+	// is never dropped. Only a quiescent gap of at least the floor publishes
+	// immediately.
+	if at.Sub(live.activityPublishedAt) < delegateIntentPublishFloor {
+		c.mu.Unlock()
+		return nil
+	}
+	live.activityPublishedAt = at
+	plan := c.capturedPlanLocked(aggregate.DelegateID)
+	c.mu.Unlock()
+	c.emitDelegateUpdate(plan)
+	return nil
 }
 
 // ReportActivityPhase records parent-visible activity and separately advances

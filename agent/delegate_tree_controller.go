@@ -186,11 +186,15 @@ func (delegateFinalizingError) Error() string        { return errDelegateTargetB
 func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
 
 type delegateLiveState struct {
-	runtime          *Session
-	binding          *delegateRuntimeBinding
-	pendingSteers    []delegateSteeringAdmission
-	attentionIDs     []string
-	waiters          map[uint64]*delegateInlineWaiter
+	runtime       *Session
+	binding       *delegateRuntimeBinding
+	pendingSteers []delegateSteeringAdmission
+	attentionIDs  []string
+	waiters       map[uint64]*delegateInlineWaiter
+	// intent is the open generation's newest stated tool-call intent,
+	// Excerpt-bounded at the report site. Display-only state: it never moves
+	// any supervision clock, and it clears at both generation boundaries.
+	intent           string
 	recoveryRequired bool
 	// finalizationRecoveryRequired prevents a failed runner finalizer from
 	// retrying around the stop-only external-state recovery path.
@@ -201,7 +205,11 @@ type delegateLiveState struct {
 	activityAt            time.Time
 	productiveActivityAt  time.Time
 	// activityPublishedAt is the activity time ReportActivityPhase last
-	// published a snapshot for; see delegateActivityPublishInterval.
+	// published a snapshot for. The intent channel's five-second floor
+	// (delegateIntentPublishFloor) measures from the same instant and every
+	// publication of either kind moves it, so an intent change never publishes
+	// twice inside one window and always rides the next publication of any
+	// kind.
 	activityPublishedAt time.Time
 	quietSequence       uint64
 	quietNotified       bool
@@ -254,6 +262,10 @@ type delegateSnapshot struct {
 	pendingStopAt time.Time
 	lastOutcome   *delegatestore.Outcome
 	latestPacket  *delegatestore.TerminalPacket
+	// latestIntent is the row's display line: the live value when non-empty,
+	// else the folded journal value — the read's join, applied here so a frame
+	// and a read agree for every row state.
+	latestIntent string
 }
 
 // stableDelegateWorktreeSnapshot is the process-local read model used by
@@ -1115,6 +1127,13 @@ func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delega
 		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
 			snapshot.latestProductiveActivityAt = live.productiveActivityAt
 		}
+		// The read's join: the controller's live value when non-empty, else the
+		// folded value — so a frame published during the restored window (live
+		// state fresh, journal standing) carries the standing intent and the
+		// frame field and the read field agree for every row state.
+		if live.intent != "" {
+			snapshot.latestIntent = live.intent
+		}
 	}
 	return snapshot
 }
@@ -1153,6 +1172,7 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		pendingStopAt:              aggregate.PendingStopAt,
 		lastOutcome:                outcome,
 		latestPacket:               cloneStableTerminalPacket(aggregate.LatestPacket),
+		latestIntent:               aggregate.LatestIntent,
 	}
 }
 
