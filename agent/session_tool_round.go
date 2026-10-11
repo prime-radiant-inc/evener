@@ -351,8 +351,20 @@ func terminalJobResult(call llm.ToolCallData, result tool.ExecResult) (string, b
 // consumePersistedTerminalJobNotifications settles the notification of every
 // job a just-persisted tool reply told the caller had ended. Settling only
 // after the reply is durable keeps the crash case right: a reply that never
-// reached the transcript leaves the job for restore to re-arm.
+// reached the transcript leaves the job for restore to re-arm. The durable
+// append reports success for a line it wrote but could not sync (fsync and
+// rollback both failed), so durability is established here before anything
+// settles; if it cannot be, nothing does, and a restore re-arms the jobs. (A
+// session with no transcript attached has no durability to establish.) A
+// crash after the reply is durable but before a settlement is written re-arms
+// too: a repeated notification, never a lost one.
 func (s *Session) consumePersistedTerminalJobNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
+	if !hasTerminalJobResult(calls, results) {
+		return
+	}
+	if tw := s.attachedTranscript(); tw != nil && tw.EstablishDurability() != nil {
+		return
+	}
 	for i, call := range calls {
 		if i >= len(results) {
 			continue

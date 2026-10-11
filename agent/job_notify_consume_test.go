@@ -484,3 +484,32 @@ func TestKeptForegroundShellTranscriptFailureLeavesNotificationUnsettled(t *test
 		t.Fatalf("terminal_notification_state = %q after a failed reply write, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
 	}
 }
+
+// TestKeptForegroundShellUnsyncedReplyLeavesNotificationUnsettled pins that a
+// reply whose line reached the file but could not be synced (fsync and the
+// rollback both failed, so the durable append retains it and reports success)
+// does not settle the job: a crash could still lose that line, and restore
+// must then be free to arm the notification.
+func TestKeptForegroundShellUnsyncedReplyLeavesNotificationUnsettled(t *testing.T) {
+	t.Parallel()
+	s := newQueuePersistTestSession(t, t.TempDir())
+	t.Cleanup(func() { s.Close() })
+	call, result, jobID := keptForegroundShellCall(t, s)
+
+	fs := attachEnvironmentFailureFS(t, s)
+	syncFailure := errors.New("kept shell reply sync failure")
+	fs.mu.Lock()
+	fs.failure = syncFailure
+	fs.rollbackFailure = errors.New("kept shell reply rollback failure")
+	fs.onFailure = func() {
+		fs.mu.Lock()
+		fs.failure = syncFailure
+		fs.mu.Unlock()
+	}
+	fs.mu.Unlock()
+
+	_ = s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result})
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("terminal_notification_state = %q after an unsynced reply, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
+	}
+}
