@@ -513,3 +513,42 @@ func TestKeptForegroundShellUnsyncedReplyLeavesNotificationUnsettled(t *testing.
 		t.Fatalf("terminal_notification_state = %q after an unsynced reply, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
 	}
 }
+
+// TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending pins
+// that only a foreground completion settles a job's notification. A
+// foreground command whose runtime timeout could not be finalized replies
+// status failed / finalize_failed in background mode, which tells the caller
+// the job carries on and will notify; if the retried finalization lands before
+// that reply is persisted, its completion notification must stay pending.
+func TestBackgroundShellReplyWithTerminalStatusLeavesNotificationPending(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	watcher := newJobNotifyWatcher(s, nil)
+	jobID := startBackgroundShellJob(t, s, "printf 'finishes later\\n'")
+	watcher.await(t, "terminal notification queued", func() bool {
+		return s.peekNotifications() > 0
+	})
+
+	reply, err := marshalShellToolResult(shellResult{
+		JobID:               jobID,
+		Type:                string(jobstore.JobShell),
+		Status:              string(jobstore.StatusFailed),
+		Reason:              "finalize_failed",
+		RunningInBackground: true,
+	}, 100000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := json.Marshal(reply.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := llm.ToolCallData{ID: "fg-timeout", Name: "shell", Arguments: json.RawMessage(`{"command":"sleep 999"}`)}
+	result := tooldefs.ExecResult{ToolName: "shell", CallID: call.ID, Output: reply.Output, ToolState: state}
+	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("terminal_notification_state = %q after a background reply, want %q", rec.NotifyState, jobstore.NotifyPending)
+	}
+}

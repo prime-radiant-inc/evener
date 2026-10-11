@@ -333,7 +333,10 @@ func hasTerminalJobResult(calls []llm.ToolCallData, results []tool.ExecResult) b
 // terminalJobResult returns the job a tool reply told the caller had ended: a
 // terminal job_status read, or a foreground shell kept as a job because its
 // output was too big to ride inline (its reply carries the job_id and the
-// terminal status). Both replies spell those two fields the same way.
+// terminal status). Both replies spell those two fields the same way. A shell
+// reply in background mode never counts, whatever its status: it tells the
+// caller the job carries on and will notify (a foreground runtime timeout
+// whose finalization failed replies failed/finalize_failed that way).
 func terminalJobResult(call llm.ToolCallData, result tool.ExecResult) (string, bool) {
 	if result.IsError || (call.Name != "job_status" && call.Name != "shell") {
 		return "", false
@@ -341,8 +344,12 @@ func terminalJobResult(call llm.ToolCallData, result tool.ExecResult) (string, b
 	var reply struct {
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
+		Mode   string `json:"mode"`
 	}
 	if err := json.Unmarshal(result.ToolState, &reply); err != nil || reply.JobID == "" || !jobstore.Status(reply.Status).IsTerminal() {
+		return "", false
+	}
+	if call.Name == "shell" && reply.Mode != string(shellModeForeground) {
 		return "", false
 	}
 	return reply.JobID, true
