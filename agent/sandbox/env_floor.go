@@ -356,6 +356,10 @@ func currentGoEnvSettings(policy ResolvedPolicy, path string) (map[string]string
 		return nil, false
 	}
 	defer func() { _ = f.Close() }()
+	// Only masks are checked on the descriptor: they guard what the floor
+	// reads. A swap into bwrap's private /tmp or /dev at worst leaves the
+	// spawn's caches where its own defaults put them, inside its grants
+	// (docs/sandboxing.md#threat-model).
 	opened, err := FdPath(int(f.Fd()))
 	if err != nil || underAMask(policy, StripDataVolumeAlias(opened)) {
 		return nil, false
@@ -385,7 +389,10 @@ func goEnvFileHidden(policy ResolvedPolicy, path string) bool {
 }
 
 // goEnvFileMasked reports whether the go env file at path is under a mask at
-// any step of resolving it: every link and directory walkPhysical visits.
+// any step of resolving it: every link and directory walkPhysical visits. A
+// carve-out inside a mask (the plugin store, the skills directory) counts as
+// masked too: no one keeps a go env file there, and treating one as hidden
+// costs only its GOPATH.
 func goEnvFileMasked(policy ResolvedPolicy, path string) bool {
 	masked := underAMask(policy, path)
 	walkPhysical(path, func(p string, _, _ bool) bool {
