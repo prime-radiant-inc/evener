@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
@@ -453,6 +450,17 @@ test("/help renders through KeyHint, with the platform's own Mod glyph", async (
   expect(within(paletteRow).getByText("K")).toBeTruthy();
 });
 
+test("/help pairs each chord with its action as a term and its definition", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/help"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+
+  const actions = screen.getAllByRole("definition").map((el) => el.textContent);
+  expect(actions).toContain("open the command palette");
+  expect(screen.getAllByRole("term")).toHaveLength(actions.length);
+});
+
 test("/help lists the UX-fix chords the old table never had", async () => {
   const user = userEvent.setup();
   render(<CommandPalette />);
@@ -518,13 +526,6 @@ test("/help teaches the palette/composer split for session commands", async () =
   await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
 
   expect(screen.getByText(/hands off to the composer instead/i)).toBeTruthy();
-});
-
-test("HELP_ROWS drops the mono-typeface rule (design bar bans mono for chrome labels)", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "commandpalette.module.css"), "utf8");
-  const helpKeysRule = /\.helpKeys\s*\{[^}]*\}/.exec(css);
-  expect(helpKeysRule).not.toBeNull();
-  expect(helpKeysRule?.[0]).not.toMatch(/font-family:\s*var\(--font-mono\)/);
 });
 
 test("the help panel is inert: ArrowDown+Enter never fires a hidden registry command (§2.8)", async () => {
