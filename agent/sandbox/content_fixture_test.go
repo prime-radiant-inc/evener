@@ -14,6 +14,9 @@ type evenerContentFixture struct {
 	config, store, skills, plugin     string
 	template, hook, userSkill, secret string
 	metadata, gitConfig               string
+	// linkedGitConfig, when set, is the config of a directory inside the
+	// store that another plugin's .git links to, read by its own path.
+	linkedGitConfig string
 }
 
 // contentRoots are the roots the probe would report for this home.
@@ -63,16 +66,41 @@ func writeSymlinkedEvenerContentFixture(t *testing.T, home string) evenerContent
 	return writeEvenerContentFixture(t, home)
 }
 
+// writeLinkedGitEvenerContentFixture is writeEvenerContentFixture plus a
+// second plugin whose .git is a symlink to real.git elsewhere in the store,
+// whose config holds a credential too.
+func writeLinkedGitEvenerContentFixture(t *testing.T, home string) evenerContentFixture {
+	t.Helper()
+	f := writeEvenerContentFixture(t, home)
+	realGit := filepath.Join(f.store, "cache", "mkt", "linked", "real.git")
+	f.linkedGitConfig = filepath.Join(realGit, "config")
+	linked := filepath.Join(f.store, "cache", "mkt", "linked", "plugin")
+	for _, d := range []string{realGit, linked} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(f.linkedGitConfig, []byte("[remote \"origin\"]\n\turl = https://user:token@example.com/l.git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realGit, filepath.Join(linked, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
 // evenerContentLayouts are the config layouts the backend content tests run.
 var evenerContentLayouts = map[string]func(*testing.T, string) evenerContentFixture{
 	"plain":            writeEvenerContentFixture,
 	"symlinked-config": writeSymlinkedEvenerContentFixture,
+	"linked-git":       writeLinkedGitEvenerContentFixture,
 }
 
 // evenerContentScript reads both skills, runs the hook, tries to write into the
 // store and to read the credential file, the store's marketplace metadata and
 // the installed copy's .git/config (a bwrap mask over a file reads as empty,
-// hence the -s), printing a marker for each outcome.
+// hence the -s), and, when the layout has one, the config a symlinked .git
+// leads to read by its own path, printing a marker for each outcome.
 const evenerContentScript = `set -u
 test "$(cat "$1")" = template && echo SKILL-READ
 test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
@@ -80,11 +108,12 @@ test "$(cat "$2")" = "user skill" && echo USER-SKILL-READ
 if (printf x > "$(dirname "$1")/planted") 2>/dev/null; then echo STORE-WRITABLE; fi
 if cat "$4" >/dev/null 2>&1 && test -s "$4"; then echo SECRET-VISIBLE; fi
 if cat "$5" >/dev/null 2>&1 && test -s "$5"; then echo METADATA-VISIBLE; fi
-if cat "$6" >/dev/null 2>&1 && test -s "$6"; then echo PLUGIN-GIT-VISIBLE; fi`
+if cat "$6" >/dev/null 2>&1 && test -s "$6"; then echo PLUGIN-GIT-VISIBLE; fi
+if test -n "$7" && cat "$7" >/dev/null 2>&1 && test -s "$7"; then echo LINKED-GIT-VISIBLE; fi`
 
 // scriptCommand is the confined command running evenerContentScript.
 func (f evenerContentFixture) scriptCommand(shell string) []string {
-	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret, f.metadata, f.gitConfig}
+	return []string{shell, "-c", evenerContentScript, "content-test", f.template, f.userSkill, f.hook, f.secret, f.metadata, f.gitConfig, f.linkedGitConfig}
 }
 
 func assertEvenerContentOutput(t *testing.T, out string) {
@@ -94,7 +123,7 @@ func assertEvenerContentOutput(t *testing.T, out string) {
 			t.Errorf("missing %s: the sandbox must read and run Evener content:\n%s", want, out)
 		}
 	}
-	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE", "METADATA-VISIBLE", "PLUGIN-GIT-VISIBLE"} {
+	for _, bad := range []string{"STORE-WRITABLE", "SECRET-VISIBLE", "METADATA-VISIBLE", "PLUGIN-GIT-VISIBLE", "LINKED-GIT-VISIBLE"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("%s: the store must stay read-only and the rest of ~/.config/evener masked:\n%s", bad, out)
 		}
