@@ -441,7 +441,9 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 // history and would otherwise lose the image twice over.
 //
 // Fallback capability facts resolve at facts depth
-// (Profile.ResolveModelFactsForRef): the answer is metadata about a model that
+// (Profile.ResolveModelFactsForRefOn) against the client's registry — the one
+// serving dispatches on, so the chain check answers from the same catalog the
+// session serves with: the answer is metadata about a model that
 // may never serve, while the full resolution the round runner uses to serve
 // an entry materializes credentials — including command-bearing keys that
 // would spend a mint and prompt the user's password manager just to read an
@@ -456,7 +458,7 @@ func (s *Session) sessionChainSeesToolResultMedia(profile *provider.Profile, fal
 		return false
 	}
 	for _, ref := range fallbacks {
-		res, err := profile.ResolveModelFactsForRef(ref)
+		res, err := profile.ResolveModelFactsForRefOn(s.client.Registry(), ref)
 		if err != nil || !llm.RowSeesToolResultMedia(res, mt) {
 			return false
 		}

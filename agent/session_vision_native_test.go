@@ -84,7 +84,11 @@ func TestDescribeImage_FallbackThatCannotSeeImagesKeepsDescriptions(t *testing.T
 			return llm.Response{Message: llm.Assistant("session-described")}, nil
 		},
 	}}
-	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")),
+	// The session's client must answer from the same (embedded) registry the
+	// profile resolves on, the one-registry shape production wires.
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-codex"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
@@ -100,7 +104,9 @@ func TestDescribeImage_FallbackThatCannotSeeImagesKeepsDescriptions(t *testing.T
 func TestDescribeImage_FallbacksThatSeeImagesKeepTheNativeSkip(t *testing.T) {
 	t.Parallel()
 	openai := &fakeErrAdapter{name: "openai"}
-	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")),
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{ModelFallbacks: []string{"openai/o4-mini", "openai/gpt-5.2"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
@@ -383,7 +389,9 @@ func TestDescribeImage_UncataloguedFallbackBreaksTheNativeSkip(t *testing.T) {
 			return llm.Response{Message: llm.Assistant("a png")}, nil
 		},
 	}}
-	sess := newSession(t, withAdapter(openai), withProfile(NewOpenAIProfile("gpt-5.2")),
+	client := llm.NewClient()
+	client.Register(openai)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
 		withConfig(SessionConfig{ModelFallbacks: []string{"openai/gpt-5.2-not-in-catalog"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
@@ -483,8 +491,10 @@ func TestDescribeImage_NativeVisionCheckRunsNoCommandCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve session profile: %v", err)
 	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	client.Register(&fakeErrAdapter{name: "openai"})
 	var resolves atomic.Int32
-	sess := newSession(t, withAdapter(&fakeErrAdapter{name: "openai"}), withProfile(sessionProfile),
+	sess := newSession(t, withClient(client), withProfile(sessionProfile),
 		withConfig(SessionConfig{
 			ModelFallbacks: []string{"cmdprov/cmd-1"},
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
@@ -547,7 +557,9 @@ func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testin
 	if err != nil {
 		t.Fatalf("resolve session profile: %v", err)
 	}
-	sess := newSession(t, withAdapter(gw), withProfile(sessionProfile),
+	client := llm.NewClient(llm.WithRegistry(r))
+	client.Register(gw)
+	sess := newSession(t, withClient(client), withProfile(sessionProfile),
 		withConfig(SessionConfig{ModelFallbacks: []string{"anthropic/claude-opus-4-5"}}))
 
 	result := sess.describeImageCall(context.Background(), visionImageResult())
@@ -637,7 +649,9 @@ func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve session profile: %v", err)
 	}
-	sess := newSession(t, withAdapter(gw), withProfile(sessionProfile),
+	client := llm.NewClient(llm.WithRegistry(r))
+	client.Register(gw)
+	sess := newSession(t, withClient(client), withProfile(sessionProfile),
 		withConfig(SessionConfig{
 			ModelFallbacks: []string{"anthropic/claude-opus-4-5"},
 			ResolveProfile: func(ref string) (*provider.Profile, error) {
@@ -653,6 +667,68 @@ func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
 	}
 	if len(gw.Requests()) != 1 {
 		t.Fatalf("side-channel calls = %d, want 1", len(gw.Requests()))
+	}
+}
+
+// The chain check answers from the registry the session's client dispatches
+// on, not the profile's own: a session whose profile was resolved on a
+// different registry must not take the client's fallback rows as
+// vision-capable just because the profile's registry says so.
+func TestDescribeImage_FactsFollowTheServingClientsRegistry(t *testing.T) {
+	t.Parallel()
+	gwAdapter := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("a png")}, nil
+		},
+	}}
+	registryFor := func(imageFallback bool) *registry.Registry {
+		mods := []string{"text", "image"}
+		if !imageFallback {
+			mods = []string{"text"}
+		}
+		r, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"gw": {
+					Surface:       registry.SurfaceOpenAI,
+					Protocol:      registry.ProtocolOpenAIResponses,
+					APIKey:        "k",
+					DefaultModel:  "vis-1",
+					Transport:     registry.Transport{BaseURL: "http://gw.test.invalid/v1"},
+					InheritModels: new(false),
+					Models: map[string]registry.Model{
+						"vis-1": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+						"fb-1":  {Caps: registry.Caps{InputModalities: mods}},
+					},
+				},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("fixture registry: %v", err)
+		}
+		return r
+	}
+	// The profile's registry vouches for the fallback; the client's registry,
+	// the one serving answers from, does not.
+	profileRegistry := registryFor(true)
+	clientRegistry := registryFor(false)
+	sessionProfile, err := provider.Resolve(profileRegistry, "gw/vis-1")
+	if err != nil {
+		t.Fatalf("resolve session profile: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(clientRegistry))
+	client.Register(gwAdapter)
+	sess := newSession(t, withClient(client), withProfile(sessionProfile),
+		withConfig(SessionConfig{ModelFallbacks: []string{"fb-1"}}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
+		t.Fatalf("client-registry result = %+v, want the side-channel description", result)
+	}
+	if len(gwAdapter.Requests()) != 1 {
+		t.Fatalf("side-channel calls = %d, want 1", len(gwAdapter.Requests()))
 	}
 }
 
