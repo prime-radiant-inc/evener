@@ -171,8 +171,8 @@ func TestRegistryPreservesSessionRetainedOptionRejections(t *testing.T) {
 		args map[string]any
 		want string
 	}{
-		{name: "empty output match", args: map[string]any{"transcript_ref": "current", "output_match": ""}, want: "output_match applies only"},
-		{name: "context without output match", args: map[string]any{"transcript_ref": "current", "context_lines": float64(0)}, want: "context_lines requires output_match"},
+		{name: "output match", args: map[string]any{"transcript_ref": "current", "output_match": "ready"}, want: "output_match applies only"},
+		{name: "context without output match", args: map[string]any{"transcript_ref": "current", "context_lines": float64(3)}, want: "context_lines requires output_match"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result := executeReadTranscriptFromRegistry(t, reg, "session-"+tc.name, tc.args)
@@ -647,7 +647,8 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 	}{
 		{name: "session absent", ref: "current", args: map[string]any{}},
 		{name: "session null", ref: "current", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}},
-		{name: "session empty and defaults", ref: "current", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: fields},
+		{name: "session empty and defaults", ref: "current", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: []string{"range", "expand_turn", "format"}},
+		{name: "session null strings", ref: "current", args: map[string]any{"range": "null", "expand_turn": "null", "format": "null", "output_match": "null", "context_lines": "null"}},
 		{name: "session meaningful", ref: "current", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "job absent", ref: "job:abc", args: map[string]any{}},
 		{name: "job null", ref: "job:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}},

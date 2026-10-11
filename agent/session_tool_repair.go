@@ -387,14 +387,35 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 		delete(normalized, field)
 		changes = append(changes, repair.Change{Kind: repair.ChangeNormalizeDefault, Field: field, Detail: "removed neutral default"})
 	}
+	// Models with strict tool schemas must emit every key, and some write the
+	// string "null" for the ones they mean to leave out. That is the same
+	// absent-field intent as a JSON null, on every ref kind.
+	for _, field := range []string{"format", "range", "expand_turn", "offset_bytes", "output_match", "context_lines"} {
+		text, isString := normalized[field].(string)
+		if isString && strings.EqualFold(strings.TrimSpace(text), "null") && !(artifactRef && field == "format") {
+			remove(field)
+		}
+	}
 	if !jobRef && !artifactRef {
 		// On a session ref an optional field sent as null means the model left
 		// it out. Generic repair's dropEmptyOptionals drops only a null the
 		// schema refuses, and these fields are schema-nullable, so this
-		// applies the same null-as-absent rule to them here. Empty strings
-		// and zeros stay for the handler to judge.
+		// applies the same null-as-absent rule to them here. A session ref has
+		// no search, so an empty output_match and a zero context_lines are
+		// materialized defaults too, and offset_bytes 0 is the start of an
+		// expansion, the same as no offset. A nonzero offset_bytes or
+		// context_lines, or a non-empty output_match, stays for the handler to
+		// refuse. expand_turn 0 stays: Turn 0 is a real turn.
 		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
 			if value, present := normalized[field]; present && value == nil {
+				remove(field)
+			}
+		}
+		if value, present := normalized["output_match"]; present && value == "" {
+			remove("output_match")
+		}
+		for _, field := range []string{"offset_bytes", "context_lines"} {
+			if value, present := normalized[field]; present && isNeutralRetainedInteger(value) {
 				remove(field)
 			}
 		}
