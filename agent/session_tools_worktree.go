@@ -3175,7 +3175,8 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 // owner-checked unlock, so the lock file itself is claimed with a rename, which
 // moves exactly the file that was there at that instant. The claimed content
 // is then read: our own marker is deleted (the lane is unlocked), anything else
-// is put back without displacing a lock taken since.
+// is put back without displacing a lock taken since. A foreign lock is absent
+// only for the instant between the claim and that restore.
 func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err error) {
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
@@ -3217,11 +3218,10 @@ func laneLockFile(lanePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir:")
+	gitdir, ok := identifier.ParseGitdirPointer(string(pointer))
 	if !ok {
 		return "", fmt.Errorf("%s/.git is not a worktree pointer", lanePath)
 	}
-	gitdir = strings.TrimSpace(gitdir)
 	if !filepath.IsAbs(gitdir) {
 		gitdir = filepath.Join(lanePath, gitdir)
 	}
