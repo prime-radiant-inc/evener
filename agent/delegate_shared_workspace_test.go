@@ -20,12 +20,16 @@ type sharedWorkspaceBarrier struct {
 	entered chan string
 	release chan struct{}
 	once    sync.Once
+
+	mu     sync.Mutex
+	parked map[string]int // calls each session has parked right now
 }
 
 func newSharedWorkspaceBarrier() *sharedWorkspaceBarrier {
 	return &sharedWorkspaceBarrier{
 		entered: make(chan string, 8),
 		release: make(chan struct{}),
+		parked:  map[string]int{},
 	}
 }
 
@@ -37,6 +41,14 @@ func (a *sharedWorkspaceBarrier) adapter() *sessionScriptAdapter {
 }
 
 func (a *sharedWorkspaceBarrier) park(ctx context.Context, request llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	a.parked[request.SessionID]++
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.parked[request.SessionID]--
+		a.mu.Unlock()
+	}()
 	select {
 	case a.entered <- request.SessionID:
 	default:
@@ -51,15 +63,26 @@ func (a *sharedWorkspaceBarrier) park(ctx context.Context, request llm.Request) 
 
 func (a *sharedWorkspaceBarrier) releaseRuns() { a.once.Do(func() { close(a.release) }) }
 
-func (a *sharedWorkspaceBarrier) awaitRun(t *testing.T) {
+// isParked reports whether sessionID has a model call parked right now.
+func (a *sharedWorkspaceBarrier) isParked(sessionID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.parked[sessionID] > 0
+}
+
+// awaitRun waits for a delegate's first model request and returns the
+// session that made it.
+func (a *sharedWorkspaceBarrier) awaitRun(t *testing.T) string {
 	t.Helper()
+	var sessionID string
 	// TRIPWIRE: this is a scripted in-process adapter with no real I/O; the
 	// delegate normally reaches its first model request in well under a
 	// second. 30s only fires on a genuine hang, not scheduler contention
 	// under a loaded suite.
 	awaitWithin(t, 30*time.Second, "delegate's first model request", func() {
-		<-a.entered
+		sessionID = <-a.entered
 	})
+	return sessionID
 }
 
 // TestSharedWorkspaceDelegateWarning covers the advisory's trigger table: it
@@ -153,11 +176,16 @@ func TestCreateDelegateSharedWorkspaceAdvisory(t *testing.T) {
 	if len(first.Warnings) != 0 {
 		t.Fatalf("first shared delegate warned: %q", first.Warnings)
 	}
-	barrier.awaitRun(t)
+	firstSession := barrier.awaitRun(t)
 
 	second := root.createDelegate(context.Background(), delegateArgs{Task: "join the shared workspace"})
 	if second.Err != nil || second.DelegateID == "" {
 		t.Fatalf("advisory blocked delegate launch: %+v", second)
+	}
+	// Nothing releases the barrier before cleanup, so a first delegate still
+	// parked now was parked, and so running, while the second launched.
+	if !barrier.isParked(firstSession) {
+		t.Fatal("the first delegate's model call was not parked while the second launched")
 	}
 	if len(second.Warnings) != 1 {
 		t.Fatalf("second delegate warnings = %q, want exactly one advisory", second.Warnings)
