@@ -209,6 +209,11 @@ preview as a compact message from the delegate's name, with the name resolving
 through the standard delegate entity card and transcript-open control. Opening
 the child transcript remains the path to the full conversation.
 
+A delegate that reports and then runs more turns in its finalization drain
+settles on its latest report, so `reportPreview` shows the newer one while the
+earlier report stays in the delegate's transcript. A drain turn that ends
+without a terminal `communicate` leaves the earlier report as the preview.
+
 A delegate's mid-work updates (`communicate(end_turn=false)`) never contribute
 to `reportPreview`. Each reaches its owner's transcript as its own
 `<delegate-notification kind="update">` row, which the browser renders as a

@@ -1409,6 +1409,13 @@ ordered queue and receiver-transcript attention as the terminal packet.
   the owner ahead of its report. Delivery never fails the call: the message is
   already in the delegate's transcript.
 - Updates never feed Activity's `reportPreview`.
+- A delegate parked in its finalization drain can run further turns: an
+  update from a delegate it owns wakes it. A turn that ends with a terminal
+  `communicate` gives a newer report, and the newer report is the one the
+  parent receives and Activity previews; the earlier report stays in the
+  delegate's transcript. A turn that ends without a terminal `communicate`,
+  including one whose model returns bare text, leaves the earlier report
+  standing as the delegate's completed report.
 - A root's `communicate(end_turn=false)` is unchanged: a checkpoint for its
   human partner.
 

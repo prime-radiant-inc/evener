@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -944,12 +945,45 @@ func drainStallGiveUpMessage(stuckJobs, undisposableDelegates []string) string {
 // carry their own round/time caps, so a well-formed tree always quiesces on its
 // own. Every owned managed job holds the drain open.
 func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
+	return s.drainJobTreeUsing(ctx, s.ProcessInputKind)
+}
+
+// DrainJobTreeKeepingReport is DrainJobTree for a delegate that has already
+// reported: a drain turn that ends with a terminal communicate replaces the
+// report, and a drain turn that ends without one leaves the report standing.
+func (s *Session) DrainJobTreeKeepingReport(ctx context.Context) (string, error) {
+	return s.drainJobTreeUsing(ctx, s.processKeepingReport)
+}
+
+func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {
 	if s.jobManager == nil {
 		return "", nil
 	}
 	ticker := s.clock.NewTicker(drainRecheckInterval)
 	defer ticker.Stop()
-	return s.drainJobTree(ctx, ticker.C())
+	return s.drainJobTreeWith(ctx, ticker.C(), s.kickDriveTree, process)
+}
+
+// processKeepingReport runs one drain turn. Every input starts with a fresh
+// communicate result, so a turn that ends without a terminal communicate would
+// erase the report the delegate already gave. That turn restores the report
+// and returns no text; its bare-text or empty-response failure is the reply
+// of a housekeeping turn, not a failure of the run that already reported.
+func (s *Session) processKeepingReport(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+	s.mu.Lock()
+	report := s.comm
+	s.mu.Unlock()
+	res, err := s.ProcessInputKind(ctx, input, images, kind)
+	if !report.called || s.Communicated() {
+		return res, err
+	}
+	s.mu.Lock()
+	s.comm = report
+	s.mu.Unlock()
+	if errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
+		err = nil
+	}
+	return "", err
 }
 
 // drainJobTree contains the drain loop behind an injectable recheck channel.

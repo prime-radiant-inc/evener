@@ -2086,7 +2086,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.mu.Lock()
 	a.finalizing = true
 	a.mu.Unlock()
-	drained, err := a.sess.DrainJobTree(ctx)
+	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}

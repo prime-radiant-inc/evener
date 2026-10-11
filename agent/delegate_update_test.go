@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1173,5 +1175,122 @@ func TestNotDeliveredUpdateExplainsARetiringController(t *testing.T) {
 	}
 	if got.Status != delegateUpdateNotDelivered || strings.Contains(got.Reason, "could not be recorded") {
 		t.Fatalf("retiring controller delivery = %#v, want the stopping or finishing reason", got)
+	}
+}
+
+// drainingCoordinatorReport runs a coordinator that ends its turn with report
+// A while a worker is still running, then lets the worker's update wake its
+// finalization drain, where drainTurns script its replies. It returns the
+// report frame and the reportPreview the root received, and the coordinator's
+// transcript text.
+func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm.Response) (frame, preview, transcript string) {
+	t.Helper()
+	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-BRIEF")
+	coordinatorIdle, reportGate := make(chan struct{}), make(chan struct{})
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	defer releaseReport()
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("coord", "COORD-BRIEF: start one worker delegate, then report and wait for it.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting on the coordinator") },
+	)
+	coordinatorSteps := []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("worker", "WORKER-BRIEF: ask your parent which table holds the drain cursor.")
+		},
+		func(llm.Request) llm.Response { return communicateResponse(true, "REPORT_A: waiting on the worker") },
+	}
+	for _, drainTurn := range drainTurns {
+		coordinatorSteps = append(coordinatorSteps, func(req llm.Request) llm.Response {
+			releaseReport()
+			return drainTurn(req)
+		})
+	}
+	adapter.script("COORD-BRIEF", coordinatorSteps...)
+	adapter.script("WORKER-BRIEF",
+		func(llm.Request) llm.Response {
+			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+			return updateResponse("upd", "DRAIN_UPDATE: which table holds the drain cursor?")
+		},
+		func(llm.Request) llm.Response {
+			awaitSignal(t, reportGate, "the coordinator's drain turn")
+			return finalResponse("worker done")
+		},
+	)
+	root := newMessagingRoot(t, adapter, nil)
+	serveSupervisionRootWakes(t, root)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "COORD-BRIEF", 2)
+	coordinator := waitForSoleChildIdle(t, root)
+	close(coordinatorIdle)
+	awaitRootReport(t, root)
+	fold := rootAttentionFold(t, root)
+	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
+	frame = fold.content[fold.order[reportAt]].Text()
+	page, err := root.ListActivityDelegates(ctx, appwire.SessionActivityListParams{Ref: encodeRef("", root.ID())})
+	if err != nil || len(page.Delegates) != 1 {
+		t.Fatalf("list the root's delegates: %d rows, err=%v", len(page.Delegates), err)
+	}
+	raw, err := json.Marshal(page.Delegates[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row struct {
+		ReportPreview string `json:"reportPreview"` //nolint:tagliatelle // AppWire fixture asserts the public camelCase wire contract.
+	}
+	if err := json.Unmarshal(raw, &row); err != nil {
+		t.Fatal(err)
+	}
+	coordinator.mu.Lock()
+	path := transcriptPath(coordinator.stateDir, coordinator.id)
+	coordinator.mu.Unlock()
+	transcriptRaw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the coordinator's transcript: %v", err)
+	}
+	return frame, row.ReportPreview, string(transcriptRaw)
+}
+
+// bareTextDrainTurn is a drain turn whose model never calls communicate.
+func bareTextDrainTurn(llm.Request) llm.Response {
+	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "told the worker"}}}}
+}
+
+// A coordinator's later turn in its drain replaces its report: the root
+// receives the newer report, in its frame and in the delegate's reportPreview,
+// and the earlier one stays in the coordinator's transcript.
+func TestDelegateDrainTurnReportReplacesTheEarlierReport(t *testing.T) {
+	t.Parallel()
+	frame, preview, transcript := drainingCoordinatorReport(t, func(llm.Request) llm.Response {
+		return communicateResponse(true, "REPORT_B: told the worker to use the v2 schema")
+	})
+	if !strings.Contains(frame, "REPORT_B") || strings.Contains(frame, "REPORT_A") {
+		t.Fatalf("the root's report frame = %q, want the drain turn's report B and not A", frame)
+	}
+	if preview != "REPORT_B: told the worker to use the v2 schema" {
+		t.Fatalf("reportPreview = %q, want report B", preview)
+	}
+	if !strings.Contains(transcript, "REPORT_A") {
+		t.Fatal("the coordinator's transcript lost its earlier report A")
+	}
+}
+
+// A drain turn that ends without a terminal communicate reports nothing new:
+// the earlier report stands as a completed report, not as a failure.
+func TestDelegateDrainTurnWithoutAReportKeepsTheEarlierReport(t *testing.T) {
+	t.Parallel()
+	// Bare text is retried within the turn before the turn gives up.
+	frame, preview, _ := drainingCoordinatorReport(t, slices.Repeat([]func(llm.Request) llm.Response{bareTextDrainTurn}, 5)...)
+	if !strings.Contains(frame, "REPORT_A") || !strings.Contains(frame, `"kind":"reported"`) || !strings.Contains(frame, `"outcome":"completed"`) {
+		t.Fatalf("the root's report frame = %q, want the earlier completed report A", frame)
+	}
+	if preview != "REPORT_A: waiting on the worker" {
+		t.Fatalf("reportPreview = %q, want report A", preview)
 	}
 }
