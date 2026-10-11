@@ -612,7 +612,7 @@ func TestSeatbeltRegrantsEvenerContentAfterTheMask(t *testing.T) {
 				}
 				// Any .git inside the carve-out is denied again after the re-grant.
 				for _, key := range keys {
-					gitDeny := "(deny file-read* file-write* (require-all (subpath (param " + quoteParam(key) + ")) (regex #\"/\\.[Gg][Ii][Tt](/|$)\")))"
+					gitDeny := "(deny file-read* file-write* (require-all (subpath (param " + quoteParam(key) + ")) (regex #\"" + gitBelowRootRegex(path) + "\")))"
 					if i := strings.Index(text, gitDeny); i < strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(key)+")") {
 						t.Errorf("%q must deny .git after its re-grant (want %s):\n%s", path, gitDeny, text)
 					}
@@ -742,7 +742,7 @@ func TestSeatbeltLeavesGitReadableWithoutTheConfigMask(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
-	if strings.Contains(text, `(regex #"/\.[Gg][Ii][Tt](/|$)")`) {
+	if strings.Contains(text, gitBelowRootRegex("/")) {
 		t.Errorf("no .git denial may remain once the config mask is removed:\n%s", text)
 	}
 	if key := paramKeyForPath(params, realGit); key != "" {
@@ -751,9 +751,8 @@ func TestSeatbeltLeavesGitReadableWithoutTheConfigMask(t *testing.T) {
 }
 
 // A .git component above a carve-out (the config kept inside a dotfiles
-// repository's .git) must not deny the whole carve-out: the path-free regex
-// would match every path below it, so such a root gets its .git entries
-// denied one by one from the walk instead.
+// repository's .git) must not deny the whole carve-out: its .git regex counts
+// that component, matching only a further .git below the root.
 func TestSeatbeltDeniesOnlyTheGitBelowACarveOutUnderAGitDirectory(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -769,13 +768,11 @@ func TestSeatbeltDeniesOnlyTheGitBelowACarveOutUnderAGitDirectory(t *testing.T) 
 		t.Fatal(err)
 	}
 	canon := func(p string) string { return canonicalizeLongestPrefix(p, filepath.EvalSymlinks) }
-	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", canon)
+	text, _ := SeatbeltPolicy(rp, "/evener-session-tmp", canon)
 	if strings.Contains(text, `(regex #"/\.[Gg][Ii][Tt](/|$)")`) {
-		t.Errorf("a carve-out under a .git directory must not be denied by the .git regex:\n%s", text)
+		t.Errorf("a carve-out under a .git directory must not be denied by the plain .git regex:\n%s", text)
 	}
-	gitDir := canon(filepath.Dir(fx.gitConfig))
-	key := paramKeyForPath(params, gitDir)
-	if key == "" || !strings.Contains(text, "(deny file-read* file-write* "+literalAndSubpath(key)+")") {
-		t.Errorf("the plugin's own .git %q must still be denied:\n%s", gitDir, text)
+	if want := `(regex #"/\.[Gg][Ii][Tt](/.*)?/\.[Gg][Ii][Tt](/|$)")`; !strings.Contains(text, want) {
+		t.Errorf("a carve-out under one .git directory must deny a second .git component (want %s):\n%s", want, text)
 	}
 }

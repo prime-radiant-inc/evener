@@ -267,10 +267,7 @@ func denySection(rp ResolvedPolicy, ps *paramSet) string {
 // the root's subpath so no path text enters the policy. Seatbelt matches a file
 // by its resolved path, so a .git symlinked to another directory in the root
 // is denied at that target as well, found by the same walk bwrap uses; a tree
-// that walk cannot vouch for gets no grant. A root under a .git directory
-// gets the walk's entries denied by path instead of the regex, which would
-// match its every path; a .git created there mid-command is denied from the
-// next spawn on, as under bwrap. With the user's own removal of
+// that walk cannot vouch for gets no grant. With the user's own removal of
 // Evener's config mask nothing masks the root, so no .git is denied.
 func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 	var grants, gitDenials []string
@@ -283,11 +280,7 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 			continue
 		}
 		masked := rp.MasksWrite(r) || rp.MasksWrite(canonical)
-		// The regex matches the whole path, so under a .git directory (a
-		// config kept in a dotfiles repository's .git) it would deny the
-		// entire root; there each .git the walk finds is denied by path.
-		underGitDir := slices.ContainsFunc(strings.Split(filepath.Dir(canonical), "/"), isGitName)
-		var walkedGitDirs []string
+		var linkedGitDirs []string
 		// A root missing on the host has nothing to walk.
 		if _, err := os.Lstat(canonical); masked && err == nil {
 			found, complete := gitDirsUnder(canonical, gitWalkBudget)
@@ -295,18 +288,19 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 				continue
 			}
 			for _, g := range found {
-				if underGitDir || !isGitName(filepath.Base(g)) {
-					walkedGitDirs = append(walkedGitDirs, g)
+				if !isGitName(filepath.Base(g)) {
+					linkedGitDirs = append(linkedGitDirs, g)
 				}
 			}
 		}
+		gitBelow := gitBelowRootRegex(canonical)
 		for _, k := range ps.defineCanonicalBothSpellings(fmt.Sprintf("UNMASKED_%d", i), canonical) {
 			grants = append(grants, "(allow file-read* "+literalAndSubpath(k)+")")
-			if masked && !underGitDir {
-				gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.[Gg][Ii][Tt](/|$)")))`)
+			if masked {
+				gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+" (regex #\""+gitBelow+"\")))")
 			}
 		}
-		for j, g := range walkedGitDirs {
+		for j, g := range linkedGitDirs {
 			for _, k := range ps.defineCanonicalBothSpellings(fmt.Sprintf("UNMASKED_%d_GIT_%d", i, j), g) {
 				gitDenials = append(gitDenials, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
 			}
@@ -324,6 +318,21 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 		}
 	}
 	return strings.Join(append(grants, gitDenials...), "\n")
+}
+
+// gitBelowRootRegex returns the path-free regex matching a .git component
+// below root: one more .git component than root's own path has. Seatbelt
+// matches it against the whole path, so a root under a .git directory (a
+// config kept in a dotfiles repository's .git) must not count that one; both
+// firmlink spellings of a root have the same count.
+func gitBelowRootRegex(root string) string {
+	n := 0
+	for c := range strings.SplitSeq(root, string(filepath.Separator)) {
+		if isGitName(c) {
+			n++
+		}
+	}
+	return strings.Repeat(`/\.[Gg][Ii][Tt](/.*)?`, n) + `/\.[Gg][Ii][Tt](/|$)`
 }
 
 // symlinksOnSpelling returns the directories on path's literal spelling, path
