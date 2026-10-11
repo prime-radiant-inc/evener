@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -84,39 +83,6 @@ func (c *delegateTreeController) Steer(ctx context.Context, actor delegateActor,
 	return c.CompleteSteerPersistence(claim, entry)
 }
 
-// SteerCaller routes one delegate's explicit caller message through its
-// controlling runtime. A nested caller uses the stable parent's controller
-// admission; a top-level caller uses the root Session's turn-boundary queue.
-func (c *delegateTreeController) SteerCaller(ctx context.Context, actor delegateActor, message string, p *provenance.Causal) (delegateMutationPlans, error) {
-	release, err := c.beginRetirementMutation()
-	if err != nil {
-		return delegateMutationPlans{}, err
-	}
-	defer release()
-	if err := ctx.Err(); err != nil {
-		return delegateMutationPlans{}, err
-	}
-	if strings.TrimSpace(message) == "" {
-		return delegateMutationPlans{}, errors.New("invalid_request: message is required")
-	}
-	claim, root, err := c.beginCallerSteerPersistence(actor, p)
-	if err != nil {
-		return delegateMutationPlans{}, err
-	}
-	if root != nil {
-		if err := root.enqueueDelegateCallerSteeringDurably(message, p); err != nil {
-			return delegateMutationPlans{}, err
-		}
-		return delegateMutationPlans{}, nil
-	}
-	entry, err := claim.runtime.appendDelegateCallerSteeringDurably(message, claim.entryID)
-	if err != nil {
-		_ = c.AbortSteerPersistence(claim)
-		return delegateMutationPlans{}, err
-	}
-	return c.CompleteSteerPersistence(claim, entry)
-}
-
 func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, delegateID string) (*delegateSteeringClaim, error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
@@ -129,35 +95,6 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 		return nil, err
 	}
 	return c.beginSteerPersistenceLocked(delegateID, nil)
-}
-
-func (c *delegateTreeController) beginCallerSteerPersistence(actor delegateActor, p *provenance.Causal) (*delegateSteeringClaim, *Session, error) {
-	release, err := c.beginRetirementMutation()
-	if err != nil {
-		return nil, nil, err
-	}
-	defer release()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if actor.lease == nil {
-		return nil, nil, errors.New("invalid_request: caller is only available from a delegate")
-	}
-	actorAggregate, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning)
-	if err != nil {
-		return nil, nil, err
-	}
-	if c.hasSettlementClaimLocked(*actor.lease) {
-		return nil, nil, errDelegateTargetBusy
-	}
-	parentID := actorAggregate.Descriptor.ParentDelegateID
-	if parentID == "" {
-		if actorAggregate.Descriptor.OwnerSessionID != c.rootSessionID || c.rootRuntime == nil {
-			return nil, nil, errDelegateNotControllable
-		}
-		return nil, c.rootRuntime, nil
-	}
-	claim, err := c.beginSteerPersistenceLocked(parentID, p)
-	return claim, nil, err
 }
 
 func (c *delegateTreeController) beginSteerPersistenceLocked(delegateID string, p *provenance.Causal) (*delegateSteeringClaim, error) {
@@ -492,10 +429,6 @@ func (c *delegateTreeController) BeginTool(lease delegateLease) error {
 
 func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
 	return s.appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, "user", "")
-}
-
-func (s *Session) appendDelegateCallerSteeringDurably(message, stableTurnID string) (delegateTranscriptEntry, error) {
-	return s.appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, "", events.SteeringKindAgentMessage)
 }
 
 func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnID, source, kind string) (delegateTranscriptEntry, error) {

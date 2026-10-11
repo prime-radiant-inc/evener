@@ -121,18 +121,12 @@ terminal `communicate(end_turn:true)` callbacks.
 - The observer's filtered-frame turn is a single terminal
   `communicate(end_turn=true)` carrying `PASSIVE_READ_OK
   delivery=<delivery_id>`, which the parent receives as an `<delegate-notification>` block. It should not emit visible assistant text in that
-  turn. `delegate_send(to="caller")` is NOT the callback path — it is a
-  live steering route that returns `action: "delivered"` and injects a
-  NON-terminal update into the parent without ending the observer's turn
-  (`agent/session_tools.go#stableDelegateSendTool` routes the `caller`
-  alias through
-  `agent/delegate_tree_steer.go#delegateTreeController.SteerCaller`;
-  `docs/job-control.md` "From inside a delegate, the contextual `caller`
-  target sends a non-terminal update to that delegate's controlling
-  caller"). An observer that substitutes it for the terminal
-  `communicate` never delivers the callback packet; score that as
-  prompt noncompliance, not a watch-delivery failure — and never expect
-  an `invalid_request` rejection, which is pre-`78342bbd3` rot.
+  turn. `delegate_send(to="caller")` is NOT the callback path: it is rejected
+  with an `invalid_request` error that points at `communicate`
+  (`agent/session_tools.go#stableDelegateSendTool`) and delivers nothing.
+  An observer that never calls the terminal `communicate` never delivers
+  the callback packet; score that as prompt noncompliance, not a
+  watch-delivery failure.
 - The parent may stop after consuming the `PASSIVE_READ_OK` callback
   instead of emitting `PASSIVE_PARENT_DONE`. Do not use that final
   marker as pass/fail evidence; use the durable `jobs.jsonl` and
