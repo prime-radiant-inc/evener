@@ -4652,7 +4652,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		// replacement coalesces over it, it won't be, and the note sends it
 		// to the settlement retry instead (storeWatchSendPendingRecord,
 		// releaseWatchSendDeliveryClaim).
-		jm.noteUnsettledWatchSend(cfg, state)
+		jm.noteUnsettledWatchSend(cfg, state, false)
 		return false, err
 	}
 	return true, nil
@@ -4665,7 +4665,7 @@ func (jm *jobManager) hasUnsettledWatchSend(deliveryID string) bool {
 	return accepted
 }
 
-func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.WatchSendState) {
+func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.WatchSendState, unarmed bool) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	// A frame whose receipt is gone was retired meanwhile (its watch cleared
@@ -4676,7 +4676,7 @@ func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.Wa
 	if jm.unsettledWatchSends == nil {
 		jm.unsettledWatchSends = make(map[string]pendingWatchSendDelivery)
 	}
-	jm.unsettledWatchSends[state.DeliveryID] = pendingWatchSendDelivery{cfg: cfg, state: state}
+	jm.unsettledWatchSends[state.DeliveryID] = pendingWatchSendDelivery{cfg: cfg, state: state, unarmed: unarmed}
 }
 
 // armAcceptedStableWatchFrame arms the attention of a frame the receiver has
@@ -4684,14 +4684,22 @@ func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.Wa
 // while it stays pending a redelivery re-arms it, and once a replacement
 // coalesces over it the settlement retry arms and acknowledges it.
 func (jm *jobManager) armAcceptedStableWatchFrame(controller *delegateTreeController, receiver delegateDeliveryReceiver, cfg *watchConfig, state jobstore.WatchSendState, attentionID string) error {
-	err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID)
-	if err == nil && jm.stableWatchArmFailure != nil {
-		err = jm.stableWatchArmFailure(attentionID)
-	}
+	err := jm.armStableWatchFrame(controller, receiver, state.ReceiverDelegateID, attentionID)
 	if err != nil {
-		jm.noteUnsettledWatchSend(cfg, state)
+		jm.noteUnsettledWatchSend(cfg, state, true)
 	}
 	return err
+}
+
+// armStableWatchFrame arms a stable watch frame's attention on its receiver,
+// failing as stableWatchArmFailure says when a test sets it.
+func (jm *jobManager) armStableWatchFrame(controller *delegateTreeController, receiver delegateDeliveryReceiver, receiverDelegateID, attentionID string) error {
+	if jm.stableWatchArmFailure != nil {
+		if err := jm.stableWatchArmFailure(attentionID); err != nil {
+			return err
+		}
+	}
+	return armStableWatchAttention(controller, receiver, receiverDelegateID, attentionID)
 }
 
 func armStableWatchAttention(controller *delegateTreeController, receiver delegateDeliveryReceiver, receiverDelegateID, attentionID string) error {
@@ -5096,11 +5104,23 @@ func (jm *jobManager) retryStableWatchSettlements() (bool, error) {
 			if err != nil {
 				return true, err
 			}
+			attentionID := stableWatchAttentionID(retry.state)
+			// A frame whose arm failed is armed before it is acknowledged:
+			// acknowledging releases its receipt and its retry, after which
+			// nothing would arm it.
+			if retry.unarmed {
+				if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
+					return true, err
+				}
+			}
 			if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
 				return true, err
 			}
 			jm.forgetStableWatchSettlementRetry(retry.state)
-			if err := armStableWatchAttention(controller, receiver, retry.state.ReceiverDelegateID, stableWatchAttentionID(retry.state)); err != nil {
+			if retry.unarmed {
+				continue
+			}
+			if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
 				return true, err
 			}
 		}
@@ -5685,6 +5705,9 @@ func (jm *jobManager) appendWatchSendPendingState(cfg *watchConfig, state jobsto
 type pendingWatchSendDelivery struct {
 	cfg   *watchConfig
 	state jobstore.WatchSendState
+	// unarmed marks a settlement retry for a frame the receiver took whose
+	// attention arm failed: the retry arms it before acknowledging it.
+	unarmed bool
 }
 
 // drainPendingWatchSends is the ONLY executor of watch-send delivery. Call it
