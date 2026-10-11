@@ -311,16 +311,15 @@ func envVars(env []string) map[string]string {
 
 // spawnGoEnvFileRefused reports whether the go env file a spawn's go would read
 // exists now but cannot be read as a small regular file (a FIFO, a device, an
-// oversized file), the way the probe reads it, or is named by a relative path.
+// oversized file), the way the probe reads it.
 func spawnGoEnvFileRefused(env []string, policy ResolvedPolicy) bool {
 	file := goEnvFileFor(envVars(env), policy.resolveHost.OS)
-	if file == "" {
-		return false
-	}
 	// A relative file resolves against the spawn's own directory, which the
-	// floor does not know, so it cannot be checked and is refused.
-	if !filepath.IsAbs(file) {
-		return true
+	// floor does not know, so it is left to the spawn: its caches are already
+	// unknown (overlayGoCacheDirs), and turning it off would drop its other
+	// settings (GOPROXY, GOPRIVATE). A FIFO there is the session's own doing.
+	if file == "" || !filepath.IsAbs(file) {
+		return false
 	}
 	// One under a mask is never read: the spawn sees the mask, not the file.
 	// One merely under /tmp or /dev is still probed, since bwrap may rebind

@@ -488,12 +488,12 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   env file can't be judged: named by a relative path, or not the file read at
   session start, or hidden from the spawn (under a mask, or behind a link in
   bwrap's private /tmp or /dev, at any step of its link chain; the file is
-  judged on the descriptor actually opened). When the spawn's go env file
-  exists but cannot be read at
-  that spawn (a FIFO, a device, an oversized file), or is named by a relative
-  path the floor cannot check against the spawn's directory, the Go settings
-  go to the scratch and that spawn gets `GOENV=off`, since reading it would
-  block it too; once the file is readable again, spawns read it as usual.
+  judged on the descriptor actually opened). A relative one is still left to
+  the spawn, so its other settings (`GOPROXY`, `GOPRIVATE`) keep applying.
+  When the spawn's go env file exists but cannot be read at that spawn (a
+  FIFO, a device, an oversized file), the Go settings go to the scratch and
+  that spawn gets `GOENV=off`, since reading it would block it too; once the
+  file is readable again, spawns read it as usual.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session

@@ -644,12 +644,18 @@ func TestEnvFloorServesACacheSpelledThroughAnAlias(t *testing.T) {
 }
 
 // A relative GOENV resolves against the spawn's own directory, which the floor
-// does not know, so it is turned off for the spawn rather than read blind (it
-// could be a FIFO there).
-func TestEnvFloorTurnsARelativeGoEnvOff(t *testing.T) {
+// does not know, so its settings are unknown and the Go caches go to the
+// scratch, but the spawn keeps reading it: turning it off would drop its
+// other settings (GOPROXY, GOPRIVATE) and could send private module paths to
+// public services. A FIFO there would be the session's own doing.
+func TestEnvFloorKeepsARelativeGoEnvForTheSpawn(t *testing.T) {
 	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{"/home/u/.cache"}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/home/u"}}
-	if v, _ := envValue(ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=go.env"}, policy, "/tmp/s"), "GOENV"); v != "off" {
-		t.Errorf("a relative GOENV must be turned off, got %q", v)
+	out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=go.env"}, policy, "/tmp/s")
+	if v, _ := envValue(out, "GOENV"); v != "go.env" {
+		t.Errorf("a relative GOENV must be left for the spawn, got %q", v)
+	}
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, "/tmp/s/") {
+		t.Errorf("a relative GOENV leaves the caches unknown, so GOCACHE must go to the scratch, got %q", v)
 	}
 }
 
