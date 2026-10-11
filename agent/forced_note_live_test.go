@@ -28,38 +28,15 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/liveeval"
 	"primeradiant.com/evener/agent/provider"
-	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
-	"primeradiant.com/evener/llm/registry"
 )
 
 func TestForcedNoteLive(t *testing.T) {
-	if !liveeval.Enabled(os.Getenv(liveeval.OptInEnv)) {
-		t.Skipf("live eval disabled: set %s=1 to run provider-backed evals", liveeval.OptInEnv)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("live eval requires a resolvable user home: %v", err)
-	}
-	stateHome, providersConfig, noUserLayer := liveeval.Paths(envvars.XDGStateHome.Trimmed(), home)
-	if noUserLayer {
-		t.Skipf("%s is empty: no user provider layer to run a live eval against", envvars.EVENERProvidersConfig.Name)
-	}
+	r, stateHome := liveEvalRegistry(t)
 	if _, err := os.Stat(filepath.Join(stateHome, "evener", "auth", "openai.json")); err != nil {
 		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", stateHome, err)
-	}
-	t.Setenv(envvars.XDGStateHome.Name, stateHome)
-
-	if _, err := os.Stat(providersConfig); err != nil {
-		t.Skipf("providers.toml at %s: %v", providersConfig, err)
-	}
-	t.Setenv(envvars.EVENERProvidersConfig.Name, providersConfig)
-	r, err := registry.Load()
-	if err != nil {
-		t.Fatalf("registry.Load: %v", err)
 	}
 	client := llm.NewClient(llm.WithRegistry(r))
 	prof, err := provider.Resolve(client.Registry(), "openai/gpt-5.5")
