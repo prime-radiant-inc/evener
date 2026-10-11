@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Task, TaskListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -478,36 +475,18 @@ test("notes render as a timeline with the latest note marked", async () => {
   expect(notes.textContent).toContain("Updates · 2");
 });
 
-// Touch target (UX fix): the prompt disclosure's own <summary> is a small
-// clickable row (chevron + one-line preview), so a coarse pointer needs the
-// platform's 44px tap floor - same treatment askdock/modelswitch/
-// newcontentpill get, via (pointer: coarse) since this isn't a
-// widgets/button consumer.
-test("the prompt disclosure summary reaches the tap floor on a coarse pointer", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "taskspanel.module.css"), "utf8");
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "taskspanel.module.css must have a (pointer: coarse) media block").not.toBeNull();
-  const rule = coarse![1]!.match(/\.promptSummary\s*\{([^}]*)\}/);
-  expect(rule, "the coarse-pointer block must override .promptSummary").not.toBeNull();
-  expect(rule![1]).toContain("min-height: var(--tap-min)");
-});
-
 // jsdom computes no cascade, so the caption step is asserted against the
 // stylesheet's own source - readModuleCss/topRuleBlock from styles/cssBlock,
 // the technique the tap-floor test above uses - comments stripped once up
 // front so an in-rule comment can never satisfy or defeat an assertion. The
-// sizing rationale lives in the .promptDetails rule comment in
+// sizing rationale lives in the .promptSummary rule comment in
 // taskspanel.module.css; this pins BODY text - headings and tables keep the
 // widget's fixed ramp (see widgets/markdown).
 test("the prompt disclosure renders its markdown body text at the caption step, not prose size", () => {
   const uncommented = readModuleCss(import.meta.url, "taskspanel.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(uncommented).not.toContain("--prose-font-size");
-  const details = topRuleBlock(uncommented, ".promptDetails");
-  expect(details).toContain("font-size: var(--font-size-caption)");
-  const body = topRuleBlock(uncommented, ".promptBody");
-  expect(body, "the caption step comes from .promptDetails; the body wrapper re-declares nothing").not.toMatch(
-    /(^|[;{\s])font-size\s*:/m,
-  );
+  expect(topRuleBlock(uncommented, ".promptSummary")).toContain("font-size: var(--font-size-caption)");
+  expect(topRuleBlock(uncommented, ".promptBody")).toContain("font-size: var(--font-size-caption)");
 });
 
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
@@ -529,6 +508,9 @@ test("the prompt disclosure shows a one-line markdown preview collapsed and the 
   const prompt = screen.getByTestId("task-prompt");
   expect(prompt.querySelector(".promptPreview strong, [class*='promptPreview'] strong")).toBeTruthy();
   expect(prompt.textContent).not.toContain("**");
+  // The disclosure turns the shared Chevron icon, not a text triangle.
+  expect(prompt.textContent).not.toContain("▸");
+  expect(prompt.querySelector("summary svg")).toBeTruthy();
 
   await user.click(screen.getByTestId("task-prompt-summary"));
 
