@@ -9084,8 +9084,8 @@ test("reload after a failed restart write reconciles persisted uncertainty with 
   setMutationStorageForTests(reloadedStorage);
   const reloaded = connectFakeClient("connecting");
   let resumed = false;
-  reloaded.on("thread/read", () =>
-    readResponse("ref_a", {
+  reloaded.on("thread/read", (params) => ({
+    ...readResponse("ref_a", {
       status: { type: resumed ? "idle" : "notLoaded" },
       evener: {
         ref: "ref_a",
@@ -9093,7 +9093,12 @@ test("reload after a failed restart write reconciles persisted uncertainty with 
         queue: { revision: 1, clientMutationIds: resumed ? [record.clientMutationId] : [] },
       },
     }),
-  );
+    // The mid-case reset clears the legacy override, so this reload is ordinary.
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+    requestGeneration: params.requestGeneration ?? 1,
+  }));
   reloaded.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
   reloaded.emitReady();
   await threadsStore.getState().ensureThread("ref_a");
@@ -9103,6 +9108,11 @@ test("reload after a failed restart write reconciles persisted uncertainty with 
   await threadsStore.getState().refreshThread("ref_a");
   expect(await reloadedStorage.getOutbox(record.clientMutationId)).toBeUndefined();
   expect(reloaded.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+  expect(
+    reloaded.calls
+      .filter((call) => call.method === "thread/read")
+      .map((call) => (call.params as { requestGeneration?: number }).requestGeneration),
+  ).toContain(2);
 });
 
 test("saved snapshots retain restart protection for subsequently discovered outbox records", async () => {
