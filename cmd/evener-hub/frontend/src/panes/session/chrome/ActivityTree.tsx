@@ -11,6 +11,7 @@ import {
   buildActivityRows,
   buildWatchRows,
   delegateTiming,
+  delegateWorkText,
   jobIsFailed,
   watchMeta,
   watchName,
@@ -189,10 +190,14 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   // quietForMs while an anchor parses), the duration from the terminal run
   // window, else the snapshot.
   const timing = delegateTiming(delegate, now);
-  if (row.live) return liveMetaSegments(tokens ?? undefined, rowStatusText(row), timing.quietForMs);
+  // The visible meta is the one place the intent stands in for the status
+  // word: the row's aria-description and the glyph tone below keep reading
+  // the word itself, so the status stays reachable and the hue stays true.
+  const work = delegateWorkText(delegate, rowStatusText(row));
+  if (row.live) return liveMetaSegments(tokens ?? undefined, work, timing.quietForMs);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
-  segments.push(terminalSegment(timing.durationMs, rowStatusText(row)));
+  segments.push(terminalSegment(timing.durationMs, work));
   return segments;
 }
 

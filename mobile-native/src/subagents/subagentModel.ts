@@ -12,6 +12,7 @@ import {
 	delegateHasActiveWork,
 	delegateModel,
 	delegateTiming,
+	delegateWorkText,
 	firstLine,
 	formatTokenCount,
 	isActivityFailure,
@@ -344,6 +345,12 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
 		return { text: report || "Finished" };
 	}
+	// The shared display rule: a running row's non-empty stated intent stands
+	// in for the whole line. The empty status word is the point — this line
+	// has no word of its own to keep, so the helper's answer is the intent,
+	// and today's chain stays the fallback.
+	const stated = delegateWorkText(delegate, "");
+	if (stated !== "") return { text: stated };
 	const command = runningCommand(delegate.child);
 	if (command) return { text: `Running ${command}` };
 	const waiting = runningSubagentCount(

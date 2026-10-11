@@ -547,6 +547,93 @@ describe("ActivityTree", () => {
     expect(kindGlyph.getAttribute("aria-label")).toBe("Failed");
   });
 
+  test("a live delegate row shows its intent while aria and glyph keep the status", () => {
+    const tree: ActivityTreeData = {
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root session",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: false },
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_intent",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_child",
+              childRef: "ref_child",
+              transcriptRef: "ref_child",
+              type: "delegate",
+              lifecycle: "active",
+              phase: "running",
+              status: "running",
+              projectionRevision: 1,
+              terminal: false,
+              resumable: true,
+              name: "inspect",
+              mandate: "Inspect the repo",
+              runStartedAt: "2026-08-05T15:00:00Z",
+              latestIntent: "Reading the board.",
+              branch: {},
+            },
+          },
+        ],
+        branch: {},
+      },
+    };
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(metaText(row)).toBe("Reading the board.");
+    expect(row.getAttribute("aria-description")).toBe("running");
+    const kindGlyph = within(row).getByText("⌘");
+    expect(kindGlyph.getAttribute("aria-label")).toBe("Working");
+  });
+
+  test("a terminal delegate row keeps its status word over a stale intent", () => {
+    const tree: ActivityTreeData = {
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root session",
+        aggregate: "running",
+        counts: { active: 0, failed: 0, completed: 1, complete: true },
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_done",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_child",
+              childRef: "ref_child",
+              transcriptRef: "ref_child",
+              type: "delegate",
+              lifecycle: "idle",
+              phase: "done",
+              status: "completed",
+              terminal: true,
+              resumable: true,
+              name: "inspect",
+              latestIntent: "Stale line.",
+              branch: {},
+            },
+          },
+        ],
+        branch: {},
+      },
+    };
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(metaText(row)).toBe("completed");
+    expect(row.textContent).not.toContain("Stale line.");
+  });
+
   test("a legacy terminal failed row states the display word by its reason", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
