@@ -3182,6 +3182,14 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 // is put back without displacing a lock taken since. The lock file is read
 // first, so a foreign lock is taken away only when it replaced ours between that
 // read and the claim, and then only until the restore.
+//
+// That instant is the floor, not an oversight: a filesystem has no
+// compare-and-delete, so no protocol can keep git's lock effective across
+// inspecting a file it is about to remove. Reaching it takes our marker being
+// removed and another session's lock appearing between the read and the rename,
+// and costs a foreign lane its lock only if a third process then collects it in
+// those microseconds (or this process dies before the restore). Every other
+// ordering leaves the foreign lock in place.
 func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err error) {
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
@@ -3220,7 +3228,11 @@ func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err 
 	}
 	claimedReason, claimedErr := os.ReadFile(claimedPath)
 	if claimedErr == nil && s.isOwnMarker(claimedReason) {
-		return true, os.Remove(claimedPath)
+		// The lane is already unlocked; a leftover claim file is harmless to git.
+		if rmErr := os.Remove(claimedPath); rmErr != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("removing the released lock claim %s failed: %v", claimedPath, rmErr)})
+		}
+		return true, nil
 	}
 	// Not ours, or unreadable: restore it. Link fails when a lock was taken in
 	// the meantime, and that newer lock stays.
