@@ -1064,7 +1064,9 @@ func (s *Session) admitOwedDelegateAttentionStart(owed delegateOwedAttentionStar
 	if restoreErr != nil {
 		return nil, fmt.Errorf("restore owed runtime: %w", errors.Join(restoreErr, s.failOwedDelegateAttentionStart(started, nil, restoreErr)))
 	}
-	sub.sess.holdAcceptedTrigger(owed.attentionID)
+	if err := sub.sess.restoreAcceptedTrigger(owed.attentionID); err != nil {
+		return nil, fmt.Errorf("restore owed trigger: %w", err)
+	}
 	return &deferredOwedDelegateAttentionStart{owner: owner, sub: sub, started: started}, nil
 }
 func (s *Session) abortOwedDelegateBootstrap(gate *owedBootstrapRestore, cause error) error {
