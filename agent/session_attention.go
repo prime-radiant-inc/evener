@@ -815,10 +815,7 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if len(covered) == 0 {
 		return nil
 	}
-	// The delegate's noted wakes stay: they are the retry obligation until a
-	// clear reconciles them against the transcript (the finalize tail, or the
-	// root's attention drive if that fails), and a stop discards only what the
-	// transcript still owes.
+	// The delegate's noted wakes stay; see clearResolvedDelegateAttention.
 	return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
 }
 
