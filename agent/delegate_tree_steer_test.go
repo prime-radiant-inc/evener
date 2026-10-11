@@ -204,7 +204,7 @@ func TestDelegateControllerBoundSteeringRequiresReport(t *testing.T) {
 
 func TestDelegateControllerBoundSteeringLegacyBindingWithoutEvidenceDoesNotPanic(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	seedDelegateControllerRunningWithoutEvidence(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), lease.delegateID, "legacy steering"); err != nil {
