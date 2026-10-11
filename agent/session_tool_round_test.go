@@ -8,6 +8,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 
@@ -394,6 +395,8 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 	case <-fs.syncEntered:
 	case err := <-done:
 		t.Fatalf("tool-result append returned before fsync barrier: %v", err)
+	case <-time.After(30 * time.Second): // TRIPWIRE: scripted in-process fsync barrier; only fires on a genuine hang.
+		t.Fatal("tool-result append never reached the fsync barrier")
 	}
 
 	if err := root.SteerKind("arrived during tool round", events.SteeringKindAgentMessage); err != nil {
