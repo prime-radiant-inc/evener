@@ -638,7 +638,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 			// bwrap mounts a private /tmp and /dev before the overlays, so a
 			// root whose resolution follows a link in or into those would be
 			// overlaid where the sandbox cannot see that link, not at the
-			// storage it names.
+			// storage it names. Spellings are compared exactly; a worktree
+			// matched only by letter case on a case-insensitive Linux volume
+			// is the known Low tracked in #4306.
 			return pathUnder(r, worktree) || pathUnder(rr, worktree) || linksThroughPrivateMount(r)
 		})
 		return dedupeRoots(roots)
@@ -653,6 +655,11 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // user granted for good, as it would inside the worktree (which cacheRootsFor
 // already drops). A write root inside a cache root keeps the overlay and is
 // bound writable again on top of it (buildBwrapArgv).
+//
+// Containment compares resolved spellings exactly. Two spellings that differ
+// only by letter case on a case-insensitive Linux volume are not matched:
+// that friction case is tracked as a known Low in #4306, alongside the same
+// limit for carve-outs, rather than handled by identity checks here.
 func dropCacheRootsInWriteRoots(cacheRoots, writeRoots []string) []string {
 	within := func(c, w string) bool { return c == w || pathUnder(c, w) }
 	return slices.DeleteFunc(cacheRoots, func(c string) bool {

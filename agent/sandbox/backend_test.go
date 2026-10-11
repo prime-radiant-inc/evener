@@ -192,3 +192,24 @@ func TestWrapperCreatesAMissingWriteRootThatResolvesInsideACache(t *testing.T) {
 		t.Errorf("a missing write root resolving inside a cache must be created (err=%v)", err)
 	}
 }
+
+// When a missing write root inside a cache cannot be created (here the cache
+// is not writable), bwrap cannot bind it over the overlay, so that cache is
+// not overlaid for the spawn: writes there would otherwise land in the
+// discarded layer and vanish. Without the overlay they fail where they happen.
+func TestPrepareCacheRootsDropsAnOverlayWhoseWriteRootCannotBeCreated(t *testing.T) {
+	cache := t.TempDir()
+	library := filepath.Join(cache, "library")
+	if err := os.Chmod(cache, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o755) })
+	if err := os.Mkdir(library, 0o755); err == nil {
+		t.Skip("running with privileges that ignore directory permissions")
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Spawned.WriteRoots = []string{library}
+	if got := prepareCacheRoots(rp); slices.Contains(got.CacheRoots, cache) {
+		t.Errorf("a cache holding a write root that could not be created must not be overlaid: %v", got.CacheRoots)
+	}
+}
