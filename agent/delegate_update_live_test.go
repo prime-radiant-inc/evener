@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -66,9 +67,9 @@ func TestDelegateUpdateGetsItsParentsAnswerLive(t *testing.T) {
 	// live call reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	if _, err := root.ProcessInput(ctx, brief, nil); err != nil && ctx.Err() == nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
+	var modelFailures []string
+	_, err = root.ProcessInput(ctx, brief, nil)
+	modelFailures = recordRootStep(t, modelFailures, ctx, err)
 	report := filepath.Join(dir, "report.txt")
 	reportWritten := false
 wait:
@@ -80,9 +81,8 @@ wait:
 		select {
 		case <-wakes:
 			if root.hasPendingRootDelegateAttention() {
-				if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil && ctx.Err() == nil {
-					t.Fatalf("root notification turn: %v", err)
-				}
+				_, err := root.ProcessInputKind(ctx, "", nil, EntryNotification)
+				modelFailures = recordRootStep(t, modelFailures, ctx, err)
 			}
 		case <-ctx.Done():
 			break wait
@@ -96,12 +96,14 @@ wait:
 	// it stops the run instead of being tallied as an unanswered question. A
 	// model that answers with empty or bare text is model behavior: it is
 	// tallied and named in the RESULT line.
-	failure := firstTurnFailure(childEntries)
-	if failure != "" && !isModelResponseFailure(failure) {
-		t.Fatalf("the delegate's turn failed, so this run says nothing about the model: %s", failure)
+	for _, failure := range turnFailures(childEntries) {
+		if !isModelResponseFailure(failure) {
+			t.Fatalf("the delegate's turn failed, so this run says nothing about the model: %s", failure)
+		}
+		modelFailures = append(modelFailures, failure)
 	}
 	received, briefLeaked := childReceivedCodename(childEntries, codename)
-	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v brief_leaked=%v report_written=%v model_failure=%q", *delegateUpdateEvalModel, sawUpdate, answer, received, briefLeaked, reportWritten, failure)
+	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, received, briefLeaked, reportWritten, modelFailures)
 }
 
 // delegateEntries reads the transcript of the root's one delegate: the only
@@ -127,14 +129,31 @@ func delegateEntries(t *testing.T, root *Session) []transcript.Entry {
 	return data.Entries
 }
 
-// firstTurnFailure is the message of the first failed turn, or "".
-func firstTurnFailure(entries []transcript.Entry) string {
+// recordRootStep adds the failure of one root turn to modelFailures when it
+// is the session giving up on a model that kept returning empty or bare text.
+// Any other error, a provider or runtime failure, stops the run; so does
+// nothing when the turn only ended because the run's own deadline passed.
+func recordRootStep(t *testing.T, modelFailures []string, ctx context.Context, err error) []string {
+	t.Helper()
+	switch {
+	case err == nil || ctx.Err() != nil:
+		return modelFailures
+	case errors.Is(err, errEmptyResponseExhausted) || errors.Is(err, errBareTextWithoutResultTool):
+		return append(modelFailures, err.Error())
+	}
+	t.Fatalf("the root's turn failed, so this run says nothing about the model: %v", err)
+	return modelFailures
+}
+
+// turnFailures lists the message of every failed turn, in order.
+func turnFailures(entries []transcript.Entry) []string {
+	var failures []string
 	for _, e := range entries {
 		if e.Turn.Kind == schema.TurnFailure && e.Turn.Error != nil {
-			return e.Turn.Error.Message
+			failures = append(failures, e.Turn.Error.Message)
 		}
 	}
-	return ""
+	return failures
 }
 
 // isModelResponseFailure reports whether a failed turn's message is the
@@ -219,15 +238,42 @@ func TestIsModelResponseFailure(t *testing.T) {
 	}
 }
 
-func TestFirstTurnFailure(t *testing.T) {
-	var ok, failed transcript.Entry
-	failed.Turn.Kind = schema.TurnFailure
-	failed.Turn.Error = &schema.TurnFailureInfo{Message: "provider 429"}
-	if got := firstTurnFailure([]transcript.Entry{ok, failed}); got != "provider 429" {
-		t.Errorf("got %q, want the failure message", got)
+func TestTurnFailures(t *testing.T) {
+	failure := func(message string) transcript.Entry {
+		var e transcript.Entry
+		e.Turn.Kind = schema.TurnFailure
+		e.Turn.Error = &schema.TurnFailureInfo{Message: message}
+		return e
 	}
-	if got := firstTurnFailure([]transcript.Entry{ok}); got != "" {
+	model := (&emptyResponseExhaustedError{retries: maxEmptyRetries}).Error()
+	got := turnFailures([]transcript.Entry{{}, failure(model), failure("provider 429")})
+	if len(got) != 2 || !isModelResponseFailure(got[0]) || isModelResponseFailure(got[1]) {
+		t.Errorf("a model failure followed by a provider failure: got %q, want both, in order", got)
+	}
+	if got := turnFailures([]transcript.Entry{{}}); len(got) != 0 {
 		t.Errorf("got %q, want none", got)
+	}
+}
+
+func TestRecordRootStep(t *testing.T) {
+	live, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	expired, expire := context.WithCancel(context.Background())
+	expire()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want int
+	}{
+		{"success", live, nil, 0},
+		{"deadline passed", expired, errors.New("context canceled"), 0},
+		{"empty responses exhausted", live, &emptyResponseExhaustedError{retries: maxEmptyRetries}, 1},
+		{"bare text exhausted", live, &bareTextWithoutResultToolError{toolName: "communicate", retries: maxBareTextRetries}, 1},
+	} {
+		if got := recordRootStep(t, nil, tc.ctx, tc.err); len(got) != tc.want {
+			t.Errorf("%s: recorded %d model failures, want %d", tc.name, len(got), tc.want)
+		}
 	}
 }
 
