@@ -105,24 +105,30 @@ export function ReadOnlyThreadContent({
     initialViewCapture,
   });
 
-  if (deletedRef) return <EmptyState title="This session was deleted" hint="Its transcript is gone." />;
+  if (deletedRef)
+    return <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />;
   if (!model) {
     if (availability?.permanent && availability.unavailable) {
       return (
         <EmptyState
           title="Transcript unavailable"
+          reason="unavailable"
           hint={sessionActionError("Couldn't load transcript", availability.error)}
         />
       );
     }
-    return <EmptyState title="Loading transcript…" />;
+    return <EmptyState title="Loading transcript…" reason="loading" />;
   }
   return (
     <SessionNowContext.Provider value={now}>
       <div className={CLASS.body}>
         <div className={CLASS.list}>
           {model.turns.length === 0 ? (
-            <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
+            <EmptyState
+              title="No turns yet"
+              hint="This thread hasn't sent or received anything yet."
+              reason="no-turns"
+            />
           ) : (
             <TranscriptBody
               model={model}

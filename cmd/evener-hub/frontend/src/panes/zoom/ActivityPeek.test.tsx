@@ -94,12 +94,15 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
     },
   };
 }
-function scope(ref: string) {
+function scopeElement(ref: string) {
   const element = [...screen.queryAllByTestId("cascade-column"), ...screen.queryAllByTestId("cascade-spine")].find(
     (item) => item.getAttribute("data-scope-ref") === ref,
   );
   if (!element) throw new Error(`Missing scope ${ref}`);
-  return within(element);
+  return element;
+}
+function scope(ref: string) {
+  return within(scopeElement(ref));
 }
 async function openPeek(ref: string, tab = "Agents") {
   const trigger = await scope(ref).findByRole("button", { name: new RegExp(`^${tab},.* - peek at ${ref}$`) });
@@ -190,7 +193,7 @@ test("a closed spine keeps unknown runtime explicit without fetching its history
   });
   mount();
   try {
-    expect(await scope("root").findByText("State unknown")).toBeTruthy();
+    await waitFor(() => expect(scopeElement("root").querySelector('[data-runtime-state="unknown"]')).not.toBeNull());
     expect(scope("root").getByRole("button", { name: "Agents, counts unknown - peek at root" })).toBeTruthy();
     expect(
       client.calls.filter(
