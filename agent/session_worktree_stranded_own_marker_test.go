@@ -332,3 +332,77 @@ func TestWorktreePrune_AbandonsTheReleaseWhenTheMarkerChanged(t *testing.T) {
 		t.Errorf("lane lock = locked=%v reason=%q, want the other session's marker untouched (%q)", locked, reason, foreign)
 	}
 }
+
+// TestWorktreePrune_NeverReleasesAMarkerThatChangedAfterItWasConfirmed: the fresh
+// listing that confirms the marker is this session's and the release that follows
+// are separate steps, so another process can release the marker and a second
+// session lock the lane in between. The release must act on the marker it
+// actually removes, never unlocking the second session's lock and handing its
+// lane to removal.
+func TestWorktreePrune_NeverReleasesAMarkerThatChangedAfterItWasConfirmed(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	first, err := r.create(t, map[string]any{"name": "stranded"})
+	if err != nil {
+		t.Fatalf("create stranded lane: %v", err)
+	}
+	strandedPath := first["path"].(string)
+	if _, err := r.create(t, map[string]any{"name": "current"}); err != nil {
+		t.Fatalf("create current lane: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(r.s.id), strandedPath)
+	foreign := worktree.FormatSessionMarker("another_session")
+
+	r.s.worktreeBeforeStrandedMarkerRelease = func(lanePath string) {
+		wtGit(t, r.mainRoot, "worktree", "unlock", lanePath)
+		wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreign, lanePath)
+	}
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "removed"), "stranded"); e != nil {
+		t.Fatalf("prune collected a lane another session had taken: %+v", e)
+	}
+	if _, statErr := os.Stat(strandedPath); statErr != nil {
+		t.Fatalf("the lane was removed despite the foreign marker: %v", statErr)
+	}
+	_, locked, reason := r.laneLocked(t, strandedPath)
+	if !locked || reason != foreign {
+		t.Errorf("lane lock = locked=%v reason=%q, want the other session's marker untouched (%q)", locked, reason, foreign)
+	}
+}
+
+// TestWorktreePrune_KeepsTheLaneTheSessionIsRootedInEvenWithoutARecordedPath: a
+// session launched directly inside a managed lane is rooted there without
+// create/switch having recorded the lane as current. The lane's own marker is
+// then occupancy, not residue, so prune must neither release it nor remove the
+// lane under the session.
+func TestWorktreePrune_KeepsTheLaneTheSessionIsRootedInEvenWithoutARecordedPath(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	made, err := r.create(t, map[string]any{"name": "rooted"})
+	if err != nil {
+		t.Fatalf("create rooted lane: %v", err)
+	}
+	rootedPath := made["path"].(string)
+	r.s.mu.Lock()
+	r.s.worktreeCurrentPath = ""
+	r.s.mu.Unlock()
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "removed"), "rooted"); e != nil {
+		t.Fatalf("prune removed the lane the session is rooted in: %+v", e)
+	}
+	if _, statErr := os.Stat(rootedPath); statErr != nil {
+		t.Fatalf("the occupied lane is gone: %v", statErr)
+	}
+	_, locked, reason := r.laneLocked(t, rootedPath)
+	if want := worktree.FormatSessionMarker(r.s.id); !locked || reason != want {
+		t.Errorf("lane lock = locked=%v reason=%q, want the session's marker kept (%q)", locked, reason, want)
+	}
+}

@@ -727,10 +727,11 @@ sweeps, all through the control env:
      The release happens only on the path that actually collects the lane
      (immediately before the remove), never during evaluation, so a lane this
      pass skips — dirty, unmerged, in-grace, under live work, or not a delegate
-     lane — keeps its lock and stays exactly as protected as it was. It is also
-     re-confirmed against a fresh lock listing immediately before it is touched
-     (the pass's own listing is stale by then, and the marker may have been
-     released and the lane taken by another session), and re-taken if the
+     lane — keeps its lock and stays exactly as protected as it was. The
+     release claims the lane's lock file with one atomic rename and reads the
+     claimed marker, so a marker that was released and replaced by another
+     session since the pass's listing is never unlocked (a foreign lock is put
+     back), and the lock is re-taken if the
      removal then fails with the lane still present. Only the session's own
      marker is released; another session's or a live delegate's marker stays the
      skip it was;
