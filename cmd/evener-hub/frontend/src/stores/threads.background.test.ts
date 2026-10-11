@@ -27,7 +27,6 @@ import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
-  observePendingHydrationRetirementsForTests,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
   resetThreadsStoreForTests,
@@ -217,51 +216,6 @@ function sharesTranscriptBody(base: ThreadModel, canonical: ThreadModel): boolea
 }
 
 describe("background thread claims", () => {
-  test("last pane release detaches its pending frames and base model", async () => {
-    const { client, socket } = await connectRealClientWithSocket();
-    const ref = "local:retired-pane-buffer";
-    const retirements: Array<{
-      ref: string;
-      retainedNotificationCount: number;
-      hadBaseModel: boolean;
-      notificationCount: number;
-      hasBaseModel: boolean;
-    }> = [];
-    let restoreObserver: (() => void) | undefined;
-    try {
-      const initial = threadsStore.getState().ensureThread(ref);
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
-      const first = threadReadRequests(socket)[0]!;
-      socket.receive({ id: first.id, result: currentRead(ref) });
-      await initial;
-
-      restoreObserver = observePendingHydrationRetirementsForTests((retirement) => retirements.push(retirement));
-      socket.receive({
-        method: "evener/thread/resync",
-        params: { ref, threadId: `thr_${ref}` },
-      });
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(2));
-      const retired = threadReadRequests(socket)[1]!;
-      const update = textDelta(ref, "buffered while pane snapshot waits");
-      socket.receive({ method: update.method, params: update.params });
-
-      threadsStore.getState().releaseThread(ref);
-      expect(retirements).toEqual([
-        { ref, retainedNotificationCount: 1, hadBaseModel: true, notificationCount: 0, hasBaseModel: false },
-      ]);
-      socket.receive({ id: retired.id, result: currentRead(ref) });
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
-      expect(threadsStore.getState().threads.has(ref)).toBe(false);
-    } finally {
-      restoreObserver?.();
-      for (const request of threadReadRequests(socket)) {
-        socket.receive({ id: request.id, result: currentRead(request.ref) });
-      }
-      threadsStore.getState().releaseThread(ref);
-      client.close();
-    }
-  });
-
   test.each(["overflow recovery"])("%s does not issue fallback during a held final write", async (path) => {
     const restoreOptions = installBackgroundTranscriptOptionsForTests({ pendingBytes: 1 });
     const { client, socket } = await connectRealClientWithSocket();

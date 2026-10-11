@@ -24,6 +24,8 @@ import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   observePendingHydrationRetirementsForTests,
+  pendingThreadHydrationBaseModelsForTests,
+  pendingThreadHydrationUpdatesForTests,
   productionEntryTranscriptForTests,
   putThreadModel,
   resetThreadsStoreForTests,
@@ -695,6 +697,69 @@ describe("background thread claims", () => {
         resetThreadsStoreForTests();
         restoreOptions();
       }
+    }
+  });
+});
+
+describe("background thread claims", () => {
+  test("last pane release detaches its pending frames and base model", async () => {
+    const { client, socket } = await connectRealClientWithSocket();
+    const ref = "local:retired-pane-buffer";
+    const retirements: Array<{
+      ref: string;
+      retainedNotificationCount: number;
+      hadBaseModel: boolean;
+      notificationCount: number;
+      hasBaseModel: boolean;
+    }> = [];
+    let restoreObserver: (() => void) | undefined;
+    try {
+      const initial = threadsStore.getState().ensureThread(ref);
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
+      const first = threadReadRequests(socket)[0]!;
+      socket.receive({ id: first.id, result: currentRead(ref) });
+      await initial;
+
+      restoreObserver = observePendingHydrationRetirementsForTests((retirement) => retirements.push(retirement));
+      socket.receive({
+        method: "evener/thread/resync",
+        params: { ref, threadId: `thr_${ref}` },
+      });
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(2));
+      const retired = threadReadRequests(socket)[1]!;
+      const update = textDelta(ref, "buffered while pane snapshot waits");
+      socket.receive({ method: update.method, params: update.params });
+
+      expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(1);
+      expect(pendingThreadHydrationBaseModelsForTests()).toHaveLength(1);
+      const repository = productionEntryTranscriptForTests(ref)?.repository;
+      if (!repository) throw new Error("expected the ordinary pane repository");
+      const retire = vi.spyOn(repository, "retire");
+      threadsStore.getState().releaseThread(ref);
+      expect(retirements).toEqual([]);
+      expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(1);
+      expect(pendingThreadHydrationBaseModelsForTests()).toHaveLength(1);
+      expect(retire).toHaveBeenCalledTimes(1);
+      socket.receive({ id: retired.id, result: currentRead(ref) });
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(3));
+      const fresh = threadReadRequests(socket)[2]!;
+      const freshWire = socket.sent.map((frame) => JSON.parse(frame)).find((frame) => frame.id === fresh.id);
+      socket.receive({
+        id: fresh.id,
+        result: { ...currentRead(ref), requestGeneration: freshWire.params.requestGeneration },
+      });
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
+      await retire.mock.results[0]!.value;
+      expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(0);
+      expect(pendingThreadHydrationBaseModelsForTests()).toHaveLength(0);
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+    } finally {
+      restoreObserver?.();
+      for (const request of threadReadRequests(socket)) {
+        socket.receive({ id: request.id, result: currentRead(request.ref) });
+      }
+      threadsStore.getState().releaseThread(ref);
+      client.close();
     }
   });
 });
