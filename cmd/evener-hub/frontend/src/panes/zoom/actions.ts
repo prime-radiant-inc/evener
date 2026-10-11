@@ -5,7 +5,6 @@ import { cancelPaneFocus, type OpenPaneRecord, requestPaneFocus, workspaceStore 
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
-import type { TranscriptParams } from "../transcript/Transcript";
 import { associatedCascade, cascadeOrigin, cascadeOriginRef, recordCascadeOrigin } from "./inspectionOrigin";
 import {
   type CascadePath,
@@ -79,11 +78,7 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
       }
     }
     const ref = refParam(source.params);
-    if (
-      ref &&
-      (source.type === "session" || (source.type === "transcript" && !ref.startsWith("job:"))) &&
-      requestedOwner(ref, sub.ownerRef)
-    ) {
+    if (ref && source.type === "session" && requestedOwner(ref, sub.ownerRef)) {
       const existing = associatedCascade(source);
       if (existing) {
         const intent = intentFor(existing);
@@ -92,20 +87,11 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
         workspaceStore.getState().focusPane(existing.id);
         return existing.id;
       }
-      const sourceParams = source.params as TranscriptParams;
       const params: SessionZoomParams = {
         ref: sub.childRef,
-        source: {
-          type: "transcript",
-          params: {
-            ref,
-            ...(source.type === "transcript" && sourceParams.parentRef !== undefined
-              ? { parentRef: sourceParams.parentRef }
-              : {}),
-          },
-        },
+        source: { type: "session", params: { ref } },
         edges: [{ ...edge, ownerRef: ref }],
-        inspection: { origin: { paneId: source.id, type: source.type, ref } },
+        inspection: { origin: { paneId: source.id, type: "session", ref } },
       };
       userTransitions.add(params);
       const id = workspace.openPane("sessionZoom", params, { slot: "secondary" });
@@ -117,7 +103,7 @@ export function enterAgentCascade(sub: SessionDelegate, sourcePaneId?: string): 
   }
   const params: SessionZoomParams = {
     ref: sub.childRef,
-    source: { type: "transcript", params: { ref: sub.ownerRef } },
+    source: { type: "session", params: { ref: sub.ownerRef } },
     edges: [edge],
     inspection: { origin: null },
   };
@@ -159,29 +145,6 @@ export function returnFromAgentCascade(paneId: string): void {
   retainedTranscriptReadView(lifetime, lifetime.sourceRef, lifetime.sourceType).setReadable(true);
   workspace.retypePane(pane, params.source.type, params.source.params);
 }
-export function openCascadeConversation(paneId: string, ref: string): void {
-  const workspace = workspaceStore.getState();
-  const pane = workspace.panes.find((record) => record.id === paneId);
-  if (!pane) return;
-  const params = intentFor(pane);
-  if (!params) return;
-  const origin = params.inspection ? cascadeOrigin(pane) : null;
-  if (origin?.type === "session" && refParam(origin.params) === ref) {
-    returnFromAgentCascade(paneId);
-    return;
-  }
-  if (params.source.type === "session" && params.source.params.ref === ref) {
-    returnFromAgentCascade(paneId);
-    workspace.focusPane(paneId);
-    requestPaneFocus(paneId);
-    return;
-  }
-  const existing = workspace.panes.find((record) => record.type === "session" && refParam(record.params) === ref);
-  const id = existing?.id ?? workspace.openPane("session", { ref }, { slot: "secondary" });
-  workspace.focusPane(id);
-  requestPaneFocus(id);
-}
-
 /** Only a committed scope can fence identity. An abandoned result holds an old
  * record and cannot publish intent, even if its pane ID has been reused. */
 export function reconcileCascadeBinding(expected: OpenPaneRecord, ref: string, sessionId: string): void {

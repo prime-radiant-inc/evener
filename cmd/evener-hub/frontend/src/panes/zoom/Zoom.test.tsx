@@ -195,7 +195,7 @@ function inspectedCascade() {
     slot: "secondary",
     params: {
       ref: "child",
-      source: { type: "transcript", params: { ref: "root" } },
+      source: { type: "session", params: { ref: "root" } },
       edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
       inspection: { origin: { paneId: source.id, type: "session", ref: "root" } },
     } satisfies SessionZoomParams,
@@ -377,7 +377,7 @@ test("a cascade with no live origin keeps the readable parent column", async () 
     slot: "secondary",
     params: {
       ref: "child",
-      source: { type: "transcript", params: { ref: "root" } },
+      source: { type: "session", params: { ref: "root" } },
       edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
       inspection: { origin: null },
     } satisfies SessionZoomParams,
@@ -869,7 +869,7 @@ test("a replaced nested origin never renders a non-leaf column on the phone", as
     slot: "secondary",
     params: {
       ref: "grandchild",
-      source: { type: "transcript", params: { ref: "child" } },
+      source: { type: "session", params: { ref: "child" } },
       edges: [{ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }],
       inspection: { origin: { paneId: origin.id, type: "session", ref: "child" } },
     } satisfies SessionZoomParams,
