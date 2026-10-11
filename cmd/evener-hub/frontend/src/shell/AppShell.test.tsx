@@ -5585,13 +5585,19 @@ test.each([
       expect(conversationPaneLifetime(original)).toBe(lifetime);
       expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
       expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
-      // The nested source's own pane (local:child) is the immediate parent of
-      // the drilled leaf, so it collapses to a spine beside its owner spine.
-      const spines = screen.getAllByTestId("cascade-spine");
+      // The origin conversation never renders in the pane. The nested source
+      // (local:child) is the drilled leaf's immediate parent, so removing it
+      // leaves the owner as the only spine and the leaf the only column. A
+      // main or transcript origin (local:owner) is the path's root, so the
+      // child stays the readable parent and no spine renders at all.
+      const spines = screen.queryAllByTestId("cascade-spine");
       expect(spines.map((spine) => spine.getAttribute("data-scope-ref"))).toEqual(
-        source === "nested" ? ["local:owner", "local:child"] : ["local:owner"],
+        source === "nested" ? ["local:owner"] : [],
       );
       for (const spine of spines) expect(within(spine).queryByText("report-local:owner")).toBeNull();
+      expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual(
+        source === "nested" ? ["local:grandchild"] : ["local:child", "local:grandchild"],
+      );
       expect(workspaceStore.getState().panes.some((p) => p.id === historyPane)).toBe(true);
       expect(
         workspaceStore
@@ -5613,19 +5619,26 @@ test.each([
         expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:grandchild");
       });
       act(() => workspaceStore.getState().focusPane(inspectorId));
-      await act(async () => fireEvent.click(sidebar.getByRole("button", { name: "local:owner" })));
+      // The origin conversation never renders, so its crumb is not offered
+      // and the cascade cannot pop to it; the nearest rendered ancestor
+      // crumb still pops. Nested: the origin is local:child, so local:owner
+      // is the working pop target above it.
+      if (source !== "nested") expect(sidebar.queryByRole("button", { name: "local:owner" })).toBeNull();
+      const target = source === "nested" ? "local:owner" : "local:child";
+      await act(async () => fireEvent.click(sidebar.getByRole("button", { name: target })));
       expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
       expect(sourcePane()).toBe(original);
       expect(inspectorPane()?.type).toBe("sessionZoom");
-      expect((inspectorPane()?.params as { ref?: string })?.ref).toBe("local:owner");
-      const rootColumn = screen.getByTestId("cascade-column");
-      expect(await within(rootColumn).findByText("report-local:owner")).toBeTruthy();
+      expect((inspectorPane()?.params as { ref?: string })?.ref).toBe(target);
+      const poppedColumn = screen.getByTestId("cascade-column");
+      expect(await within(poppedColumn).findByText(`report-${target}`)).toBeTruthy();
       act(() => activitySidebarStore.getState().openWith("agents"));
       // Disclosure persistence belongs to the retention suite; this journey
       // verifies navigation and focus with the core sidebar's local disclosure.
-      if (!sidebar.queryByRole("button", { name: /observer/ }))
+      const disclosed = source === "nested" ? /observer/ : /grandchild/;
+      if (!sidebar.queryByRole("button", { name: disclosed }))
         await user.click(await sidebar.findByRole("button", { name: "Inactive subagents (1)" }));
-      expect(await sidebar.findByRole("button", { name: /observer/ })).toBeTruthy();
+      expect(await sidebar.findByRole("button", { name: disclosed })).toBeTruthy();
       act(() => navigate("/s/local%3As1"));
       await waitFor(() => {
         expect(workspaceStore.getState().mainPane()?.type).toBe("session");

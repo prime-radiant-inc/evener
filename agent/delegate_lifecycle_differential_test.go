@@ -102,7 +102,7 @@ type delegateLifecycleHarness struct {
 //   - production start: evidence attached via the attention-evidence
 //     CommitStart path (startDelegateAttentionEvidenceGeneration precedent),
 //     requirement attention-only.
-//   - legacy/manual binding: nil evidence (seedDelegateControllerRunning
+//   - legacy/manual binding: nil evidence (seedDelegateControllerRunningWithoutEvidence
 //     precedent — the tolerance path in escalateCompletionRequirementLocked).
 func newDelegateLifecycleHarness(t *testing.T, legacyBinding bool) *delegateLifecycleHarness {
 	t.Helper()
@@ -124,7 +124,7 @@ func newDelegateLifecycleHarness(t *testing.T, legacyBinding bool) *delegateLife
 	c.rootRuntime = h.root
 	c.mu.Unlock()
 	if legacyBinding {
-		seedDelegateControllerRunning(t, c, h.delegateID, "")
+		seedDelegateControllerRunningWithoutEvidence(t, c, h.delegateID, "")
 		attachDelegateSteerRuntime(t, c, h.delegateID, afero.NewMemMapFs())
 		h.runtime = c.live[h.delegateID].runtime
 		h.model = newDelegateLifecycleModel(false, false)

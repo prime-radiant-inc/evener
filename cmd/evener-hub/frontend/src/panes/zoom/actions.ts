@@ -6,7 +6,7 @@ import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import type { TranscriptParams } from "../transcript/Transcript";
-import { associatedCascade, cascadeOrigin, recordCascadeOrigin } from "./inspectionOrigin";
+import { associatedCascade, cascadeOrigin, cascadeOriginRef, recordCascadeOrigin } from "./inspectionOrigin";
 import {
   type CascadePath,
   deriveCascadePath,
@@ -130,6 +130,9 @@ export function popAgentCascade(paneId: string, ref: string): void {
   if (!pane) return;
   const params = intentFor(pane);
   if (!params) return;
+  // The origin conversation never renders in the pane, so no surface can pop
+  // the cascade to it: selecting it would leave an empty track.
+  if (cascadeOriginRef(pane) === ref) return;
   const next = popZoomIntent(params, ref, pathFor(params));
   if (next !== params) updateIntent(pane, next, true);
 }

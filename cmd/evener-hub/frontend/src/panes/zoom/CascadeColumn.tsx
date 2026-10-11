@@ -33,8 +33,10 @@ export function CascadeColumn({
           Open conversation
         </Button>
       </header>
+      <div className={CLASS.content} data-testid="cascade-column-content">
+        {children}
+      </div>
       <ScopeActivityControls paneId={paneId} scope={scope} />
-      <div className={CLASS.content}>{children}</div>
     </>
   );
 }

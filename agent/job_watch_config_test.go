@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1249,5 +1250,37 @@ func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
 	}
 	if hist[0].Deliveries < 1 {
 		t.Fatalf("recent_watches deliveries = %d, want >=1 (terminal-flush match counted)", hist[0].Deliveries)
+	}
+}
+
+// The repair errors for a parent observer name the watcher's result tool, so a
+// session that renamed it is not sent to a tool it does not have.
+func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
+	t.Parallel()
+	const repair = `; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, send updates with %[1]s(end_turn=false), and report findings with %[1]s(end_turn=true)`
+	for _, tc := range []struct {
+		name       string
+		resultTool string
+		wantTool   string
+	}{
+		{"default", "", "communicate"},
+		{"renamed", "respond", "respond"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			jm := newTestJM(t)
+
+			_, outputMatchErr := jm.configureWatch(watchArgs{Target: "caller", OutputMatch: "APPROVAL_REQUEST", Events: []string{"communicate"}, ResultTool: tc.resultTool})
+			eventFilterErr := validateWatchEventArgs(watchArgs{Events: []string{"communicate"}, EventFilter: &watchEventFilter{}, ResultTool: tc.resultTool})
+
+			wantOutputMatch := "invalid_request: output_match watches concrete job output" + fmt.Sprintf(repair, tc.wantTool)
+			if outputMatchErr == nil || outputMatchErr.Error() != wantOutputMatch {
+				t.Fatalf("output_match error = %v, want %q", outputMatchErr, wantOutputMatch)
+			}
+			wantEventFilter := "invalid_request: event_filter matches assistant.tool events" + fmt.Sprintf(repair, tc.wantTool)
+			if eventFilterErr == nil || eventFilterErr.Error() != wantEventFilter {
+				t.Fatalf("event_filter error = %v, want %q", eventFilterErr, wantEventFilter)
+			}
+		})
 	}
 }

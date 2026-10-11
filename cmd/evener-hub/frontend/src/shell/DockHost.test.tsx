@@ -1348,7 +1348,9 @@ function inspectionRecord(id: string): OpenPaneRecord {
 }
 
 async function mountedSecondaryInspector() {
-  const client = cascadeClient((ref) => cascadeContext(ref, ref === "child" ? ["root"] : []));
+  const client = cascadeClient((ref) =>
+    cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []),
+  );
   connectionStore.getState().connect(client);
   window.history.replaceState({}, "", "/s/root");
   const mainId = workspaceStore.getState().openPane("session", { ref: "root" });
@@ -1398,15 +1400,24 @@ test("cascade tabs keep the selected leaf title across pop, drill and native rea
   try {
     const { api, mainId, neighborId, inspectorId } = fixture;
     expect(api.getPanel(inspectorId)?.title).toBe("child");
-    await act(async () => popAgentCascade(inspectorId, "root"));
-    expect(api.getPanel(inspectorId)?.title).toBe("root");
+    // The origin conversation never renders in the pane, so the cascade
+    // cannot pop to it; a deeper drill leaves a real ancestor to pop to.
     await act(async () =>
       enterAgentCascade(
-        activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }),
+        activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
         inspectorId,
       ),
     );
+    expect(api.getPanel(inspectorId)?.title).toBe("grandchild");
+    await act(async () => popAgentCascade(inspectorId, "child"));
     expect(api.getPanel(inspectorId)?.title).toBe("child");
+    await act(async () =>
+      enterAgentCascade(
+        activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
+        inspectorId,
+      ),
+    );
+    expect(api.getPanel(inspectorId)?.title).toBe("grandchild");
     const intent = inspectionRecord(inspectorId).params;
     const savedTitle = api.getPanel(inspectorId)?.title;
     await userEvent.click(screen.getByRole("tab", { name: "Doc neighbor" }));
@@ -1416,10 +1427,13 @@ test("cascade tabs keep the selected leaf title across pop, drill and native rea
     expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
     expect(inspectionRecord(inspectorId).params).toBe(intent);
     expect(cascadeOrigin(inspectionRecord(inspectorId))).toBe(inspectionRecord(mainId));
-    // The origin conversation's own pane is live in the main group, so the
-    // cascade collapses it to a spine and keeps only the leaf readable.
-    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual(["child"]);
-    expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.dataset.scopeRef)).toEqual(["root"]);
+    // The origin conversation never renders in the pane: the drilled branch
+    // keeps the readable pair above the removed origin, with no origin spine.
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual([
+      "child",
+      "grandchild",
+    ]);
+    expect(screen.queryAllByTestId("cascade-spine")).toEqual([]);
     expect(api.getPanel(inspectorId)?.title).toBe(savedTitle);
   } finally {
     fixture.dispose();
@@ -1553,9 +1567,7 @@ test.each([false, true])(
       expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
         "child",
       ]);
-      expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"))).toEqual([
-        "root",
-      ]);
+      expect(screen.queryAllByTestId("cascade-spine")).toEqual([]);
       await act(async () => returnFromAgentCascade(inspectorId));
       expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
       expect(inspectionRecord(mainId)).toBe(main);

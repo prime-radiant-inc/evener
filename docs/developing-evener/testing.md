@@ -35,19 +35,25 @@ a scripted `llm.ProviderAdapter` response and assert the Evener side effects.
 
 ### Prompt Prose Is Not a Test Oracle
 
-Do not test the presence, absence, equality, order, regex match, token count, or
-snapshot of words or clauses in assembled/system prompts, prompt sections,
-model-facing tool or agent descriptions, or natural-language steering,
-reminder, warning, or tool-result prose. These assertions pin copy, not
-behavior. If a test's only claim is that the prose contains a sentence, delete
-it rather than replacing it with another textual disguise.
+Pin assembled/system prompts, prompt sections, model-facing tool and agent
+descriptions, and natural-language steering, reminder, warning, or tool-result
+prose only with a whole-output golden snapshot. `agenttest.CheckGolden` compares
+the complete rendered text with a file under `testdata/`, and a wording change
+regenerates the file with an `-update-prompt` flag so the diff is read in
+review. `agent/testdata/memoryprompt` and `agent/testdata/messagingprompt` are
+the pattern: one golden per session kind, rendered from the requests a real
+session sends.
 
-Replace prompt-prose assertions with structural or behavioral ones: typed
-template inputs, section identity and order, schema properties and enums,
-capability metadata, route or branch selection, structured event or data
-fields, provider request shape, or downstream side effects. An opaque sentinel
-may prove that user or task data crosses a plumbing boundary, but it must not
-encode or pin natural-language copy.
+Never test prose by presence, absence, substring, regex match, token count, or
+order of words or clauses. Those assertions pin fragments of copy, not behavior,
+and they pass while the surrounding text drifts. If a test's only claim is that
+the prose contains a sentence, delete it and let the golden cover the text.
+
+Assert behavior structurally: typed template inputs, section identity and order,
+schema properties and enums, capability metadata, route or branch selection,
+structured event or data fields, provider request shape, or downstream side
+effects. An opaque sentinel may prove that user or task data crosses a plumbing
+boundary, but it must not encode or pin natural-language copy.
 
 Exact text assertions are allowed only when the text is itself a machine or API
 contract value, such as a JSON field name, enum token, error code, or CLI flag.

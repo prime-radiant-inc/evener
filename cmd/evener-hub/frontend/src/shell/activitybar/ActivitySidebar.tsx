@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialTransition } from "../../motion";
 import { popAgentCascade } from "../../panes/zoom/actions";
+import { cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
@@ -99,9 +100,14 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     const params = parseZoomParams(focusedPane.params);
     if (!params) return derived;
     const { scopes } = deriveCascadePath(params, snapshot?.context ?? null);
+    // The origin conversation never renders in the cascade, so the breadcrumb
+    // cannot offer it: the rendered scopes are the clickable path.
+    const originRef = cascadeOriginRef(focusedPane);
     return {
       ...derived,
-      path: derived.path.map((crumb, index) => ({ ...crumb, ref: scopes[index]?.requestedRef ?? crumb.ref })),
+      path: derived.path
+        .map((crumb, index) => ({ ...crumb, ref: scopes[index]?.requestedRef ?? crumb.ref }))
+        .filter((crumb) => crumb.ref !== originRef),
     };
   }, [open, resources, ref, snapshot, subagents, focusedPane]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
