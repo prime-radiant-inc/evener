@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
-import { type ConnectionState, WireError } from "@evener/appwire-client";
+import { type ConnectionState, type ModelListResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
@@ -33,6 +34,8 @@ function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
+
+const settleCallerContinuations = nextMacrotask;
 
 describe("useThreadsStore.listTasks", () => {
   // Fixtures use the task row's persisted snake_case wire fields.
@@ -320,5 +323,368 @@ describe("useThreadsStore.listJobs / jobOutput", () => {
     await expect(pending).resolves.toEqual(JOBS_DATA);
     expect(fresh.calls.filter((c) => c.method === "evener/jobs/list")).toHaveLength(1);
     expect(stale.calls).toHaveLength(0); // the stale client never saw this call
+  });
+});
+
+// listModels/listTasks (T1 addendum, sanctioned NEEDS_CONTEXT gap for the
+// chrome stream): both are plain read-only wire calls with no turn-CAS
+// concept - verified against every server-side handler
+// (cmd/evener-hub/app_rpc.go's registerMiscHandlers, cmd/evener-hub/
+// app source ListTasks implementations, and server/appwire_runtime.go's
+// handleAppTasksList/handleAppModelList): none
+// of them ever construct appwire.Conflict(). Neither action maps errors -
+// a WireError (even one shaped like a Conflict, which cannot actually occur
+// here) passes through unchanged, same as resolveEscalation above.
+describe("useThreadsStore.listModels", () => {
+  function modelListResponse(): ModelListResponse {
+    return {
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5" },
+        { provider: "openai", model: "gpt-5.5" },
+      ],
+      diagnostics: [{ provider: "ollama", message: "ollama: connection refused" }],
+      recent: [{ provider: "anthropic", model: "claude-sonnet-4-5" }],
+    };
+  }
+
+  test("sends model/list with no params and returns the response verbatim", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    const result = await threadsStore.getState().listModels();
+
+    const call = fake.calls.find((c) => c.method === "model/list");
+    expect(call?.params).toEqual({});
+    expect(result).toEqual(modelListResponse());
+  });
+
+  test("caches across calls within the session - a second call does not re-request", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    await threadsStore.getState().listModels();
+    await threadsStore.getState().listModels();
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+  });
+
+  test("concurrent calls before the first resolves share one request", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    const [a, b] = await Promise.all([threadsStore.getState().listModels(), threadsStore.getState().listModels()]);
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+    expect(a).toEqual(modelListResponse());
+    expect(b).toEqual(modelListResponse());
+  });
+
+  test("evener/auth/updated clears the cache so the next call re-requests", async () => {
+    const fake = connectFakeClient();
+    let call = 0;
+    fake.on("model/list", () => {
+      call += 1;
+      return { data: [{ provider: "google-vertex", model: `model-${call}` }] };
+    });
+
+    const before = await threadsStore.getState().listModels();
+    // A stored credential can make new models discoverable (a Vertex
+    // credential JSON enables the publisher-model listing), so the listing
+    // cached before it is stale.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const after = await threadsStore.getState().listModels();
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+    expect(before.data[0]?.model).toBe("model-1");
+    expect(after.data[0]?.model).toBe("model-2");
+  });
+
+  // deferredModelList scripts model/list to hang until the test resolves it,
+  // one resolver per request in arrival order, so a test can interleave the
+  // auth-updated notification with listings still in flight.
+  function deferredModelList(fake: FakeClient): Array<(resp: ModelListResponse) => void> {
+    const pending: Array<(resp: ModelListResponse) => void> = [];
+    fake.on(
+      "model/list",
+      () =>
+        new Promise<ModelListResponse>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    return pending;
+  }
+  const stale: ModelListResponse = { data: [{ provider: "google-vertex", model: "stale" }] };
+  const fresh: ModelListResponse = { data: [{ provider: "google-vertex", model: "fresh" }] };
+
+  test("a listing in flight when evener/auth/updated arrives still answers its caller but does not become the cache", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    pending[0]?.(stale);
+    expect((await first).data[0]?.model).toBe("stale");
+
+    const after = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    pending[1]?.(fresh);
+    expect((await after).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("a caller arriving after evener/auth/updated does not de-dupe onto a pre-credential listing still in flight", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const second = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    expect(pending).toHaveLength(2);
+
+    pending[0]?.(stale);
+    pending[1]?.(fresh);
+    expect((await first).data[0]?.model).toBe("stale");
+    expect((await second).data[0]?.model).toBe("fresh");
+  });
+
+  test("a pre-credential listing settling does not evict the newer in-flight listing from the dedupe slot", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const second = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    pending[0]?.(stale);
+    await first;
+
+    // The third caller must share the second request, not start a third: a
+    // task yield (not a turn count) lets any request it would have issued
+    // reach the fake before the negative assertion.
+    const third = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2);
+
+    pending[1]?.(fresh);
+    expect((await second).data[0]?.model).toBe("fresh");
+    expect((await third).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("refresh:true bypasses the cache and issues a fresh request", async () => {
+    const fake = connectFakeClient();
+    let call = 0;
+    fake.on("model/list", () => {
+      call += 1;
+      return { data: [{ provider: "anthropic", model: `model-${call}` }] };
+    });
+
+    const first = await threadsStore.getState().listModels();
+    const second = await threadsStore.getState().listModels(true);
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+    expect(first.data[0]?.model).toBe("model-1");
+    expect(second.data[0]?.model).toBe("model-2");
+  });
+
+  test("a refresh landing before an older in-flight request keeps the cache fresh - the stale late answer never overwrites it", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preConnection = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // A keyless/no-credential-change connection emits no evener/auth/updated
+    // between the pre-connection listing and the post-connection refresh, so
+    // the epoch guard alone cannot protect the cache here.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    pending[0]?.(stale);
+    // The older request still answers its own caller; it must not become the cache.
+    expect((await preConnection).data[0]?.model).toBe("stale");
+
+    expect((await threadsStore.getState().listModels()).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("a refresh supersedes the shared in-flight list so a concurrent caller awaits the newest request", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preRefresh = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // A refresh with no intervening evener/auth/updated (a keyless connection,
+    // a config-only save) leaves the dedupe slot in place, so the slot must be
+    // superseded here or the next caller joins the pre-refresh request.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    const concurrent = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2);
+
+    pending[1]?.(fresh);
+    pending[0]?.(stale);
+    // The older request still answers its own caller.
+    expect((await preRefresh).data[0]?.model).toBe("stale");
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    // The concurrent caller joined the refresh, not the pre-refresh listing.
+    expect((await concurrent).data[0]?.model).toBe("fresh");
+  });
+
+  test("a request in flight across a test reset cannot repopulate the fresh cache", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const inFlight = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // The reset clears the cache and the in-flight slot; a request already in
+    // flight must lose the cache write to the reset the way it loses it to a
+    // newer request, or its late answer becomes the post-reset cache.
+    resetThreadsStoreForTests();
+    pending[0]?.(fresh);
+    await inFlight;
+
+    const listSpy = vi.fn(() => ({ data: [{ provider: "google-vertex", model: "after" }] }));
+    fake.on("model/list", listSpy);
+    const after = await threadsStore.getState().listModels();
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(after.data[0]?.model).toBe("after");
+  });
+
+  test("a warm cache does not answer a non-refresh caller while a refresh is in flight", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+    // Warm the cache with the pre-refresh listing.
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    pending[0]?.(stale);
+    expect((await first).data[0]?.model).toBe("stale");
+
+    // A refresh is now in flight. A non-refresh caller arriving alongside it
+    // must not be handed the warm cache: the refresh was issued precisely to
+    // replace that listing, and two concurrent model pickers would otherwise
+    // receive different (one stale, one fresh) results.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+    const concurrent = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2); // joined the refresh, issued no third request
+
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    expect((await concurrent).data[0]?.model).toBe("fresh");
+  });
+
+  test("an older in-flight request landing first still loses the cache to a later refresh", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preConnection = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    pending[0]?.(stale);
+    expect((await preConnection).data[0]?.model).toBe("stale");
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+
+    expect((await threadsStore.getState().listModels()).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("a failed call does not cache a rejected promise - the next call retries rather than repeating the same rejection", async () => {
+    const fake = connectFakeClient();
+    let shouldFail = true;
+    fake.on("model/list", () => {
+      if (shouldFail) throw new Error("boom");
+      return modelListResponse();
+    });
+
+    await expect(threadsStore.getState().listModels()).rejects.toThrow("boom");
+
+    shouldFail = false;
+    const result = await threadsStore.getState().listModels();
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+    expect(result).toEqual(modelListResponse());
+  });
+
+  test("propagates a rejection unchanged - not mapped to ConflictError even when it is Conflict-shaped (model/list can never actually return one)", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => {
+      throw new WireError("shouldn't happen", -32013, { evenerErrorInfo: "conflict" });
+    });
+
+    const rejection = threadsStore.getState().listModels();
+    await expect(rejection).rejects.toBeInstanceOf(WireError);
+    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
+  });
+
+  test("throws when no client has been connected yet", async () => {
+    await expect(threadsStore.getState().listModels()).rejects.toThrow(/no client connected/i);
+  });
+
+  test("resetThreadsStoreForTests clears the models cache, same as every other module-private cache", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+    await threadsStore.getState().listModels();
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+
+    resetThreadsStoreForTests();
+
+    const fake2 = connectFakeClient();
+    fake2.on("model/list", () => modelListResponse());
+    await threadsStore.getState().listModels();
+    expect(fake2.calls.filter((c) => c.method === "model/list")).toHaveLength(1); // fresh fetch, not a stale cache hit
+  });
+
+  // Issue #195's RCA: read-only, so it waits out a reconnect (via
+  // requireReadyClient, stores/threads.ts) instead of failing with
+  // AppwireClient's synchronous "cannot call ... while reconnecting"
+  // rejection - contrast with the mutation re-pin tests (setModel, send),
+  // which must keep rejecting synchronously.
+  test("waits out a reconnect instead of rejecting synchronously, then resolves once ready", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    fake.emitStateChange("reconnecting");
+    const pending = threadsStore.getState().listModels();
+    let settled = false;
+    pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await flushUntil(() => false, 5);
+    expect(settled).toBe(false); // still waiting, not rejected synchronously
+    expect(fake.calls).toHaveLength(0); // never sent while reconnecting
+
+    fake.emitReady();
+    await expect(pending).resolves.toEqual(modelListResponse());
+  });
+
+  // The ready-wait is skipped entirely for a warm cache/inflight hit (see
+  // listModels's own comment): a call that needs no wire round-trip must
+  // not block on a reconnect it has no reason to care about.
+  test("a cached response resolves immediately even while reconnecting, without waiting", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+    await threadsStore.getState().listModels(); // warms the cache
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+
+    fake.emitStateChange("reconnecting");
+    await expect(threadsStore.getState().listModels()).resolves.toEqual(modelListResponse());
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1); // no second wire call
   });
 });
