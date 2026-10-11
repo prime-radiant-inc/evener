@@ -28,18 +28,6 @@
   color: var(--ink-hi);
 }
 
-.preview {
-  margin: 0;
-  padding: var(--space-3);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-  color: var(--ink-hi);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  white-space: pre-wrap;
-  overflow-x: auto;
-}
-
 .error {
   margin: 0;
   color: var(--ink-hi);

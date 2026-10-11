@@ -592,7 +592,7 @@ test("a session panel pane's top-bar Back returns to the parent session, not the
   act(() => {
     workspaceStore.getState().openPane("sessionDetails", { ref: "local:ref_panel" });
   });
-  expect(await screen.findByText("Loading session panel…")).toBeTruthy();
+  expect(await screen.findByRole("status", { name: "Loading session panel" })).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Back" }));
 

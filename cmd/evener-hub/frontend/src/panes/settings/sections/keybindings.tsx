@@ -40,7 +40,7 @@ import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { KeyHint, Switch } from "../../../widgets";
+import { Button, Chip, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./keybindings.module.css";
 
@@ -55,14 +55,11 @@ const CLASS = {
   list: requireClass(styles.list, "keybindings.module.css", "list"),
   row: requireClass(styles.row, "keybindings.module.css", "row"),
   label: requireClass(styles.label, "keybindings.module.css", "label"),
-  marker: requireClass(styles.marker, "keybindings.module.css", "marker"),
   unbound: requireClass(styles.unbound, "keybindings.module.css", "unbound"),
   chord: requireClass(styles.chord, "keybindings.module.css", "chord"),
-  chordButton: requireClass(styles.chordButton, "keybindings.module.css", "chordButton"),
   controls: requireClass(styles.controls, "keybindings.module.css", "controls"),
   rowError: requireClass(styles.rowError, "keybindings.module.css", "rowError"),
   note: requireClass(styles.note, "keybindings.module.css", "note"),
-  actionButton: requireClass(styles.actionButton, "keybindings.module.css", "actionButton"),
   captureWrap: requireClass(styles.captureWrap, "keybindings.module.css", "captureWrap"),
   capture: requireClass(styles.capture, "keybindings.module.css", "capture"),
   capturePrompt: requireClass(styles.capturePrompt, "keybindings.module.css", "capturePrompt"),
@@ -405,16 +402,16 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     <li className={CLASS.row}>
       <span className={CLASS.label}>
         {title}
-        {customized && <span className={CLASS.marker}>Customized</span>}
+        {customized && <Chip>Customized</Chip>}
       </span>
       {capturing ? (
         <CaptureBox title={title} onSave={saveCapture} onCancel={cancelCapture} />
       ) : editable ? (
         <span className={CLASS.controls}>
-          <button
+          <Button
             ref={chordButtonRef}
-            type="button"
-            className={CLASS.chordButton}
+            variant="quiet"
+            size="sm"
             aria-label={binding === undefined ? `Set a shortcut for ${title}` : `Change the shortcut for ${title}`}
             onClick={() => {
               captureGenerationRef.current += 1;
@@ -423,24 +420,20 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
             }}
           >
             {binding === undefined ? <span className={CLASS.unbound}>Unbound</span> : chordCell}
-          </button>
+          </Button>
           {binding !== undefined && (
-            <button
-              type="button"
-              className={CLASS.actionButton}
-              onClick={() => void applyRules(() => replacementRules(actionId, null))}
-            >
+            <Button variant="quiet" size="xs" onClick={() => void applyRules(() => replacementRules(actionId, null))}>
               Unbind
-            </button>
+            </Button>
           )}
           {hasOverride && (
-            <button
-              type="button"
-              className={CLASS.actionButton}
+            <Button
+              variant="quiet"
+              size="xs"
               onClick={() => void applyRules(() => replacementRules(actionId, undefined))}
             >
               Reset
-            </button>
+            </Button>
           )}
         </span>
       ) : (
@@ -541,14 +534,14 @@ export function KeybindingsSection() {
             // rollback message's own retry is connection-change-driven.
             // Disabled while hubLoading so a double-click cannot double-fire
             // the refresh.
-            <button
-              type="button"
-              className={CLASS.actionButton}
+            <Button
+              variant="quiet"
+              size="xs"
               disabled={hubLoading}
               onClick={() => void keybindingsStore.getState().refreshOverrides()}
             >
               Retry
-            </button>
+            </Button>
           )}
         </p>
       )}

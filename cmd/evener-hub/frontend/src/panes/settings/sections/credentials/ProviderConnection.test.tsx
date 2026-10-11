@@ -9,6 +9,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { NEW_TAB_POLICY } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
@@ -138,6 +139,7 @@ test("an apiKey provider still renders its key link and its billing line", async
   expect(screen.getByRole("link", { name: "Get an API key" }).getAttribute("href")).toBe(
     "https://console.anthropic.com/settings/keys",
   );
+  expect(screen.getByRole("link", { name: "Get an API key" }).getAttribute("rel")).toBe(NEW_TAB_POLICY);
   expect(
     screen.getByText("Claude subscriptions do not include API billing. API usage is billed separately."),
   ).toBeTruthy();

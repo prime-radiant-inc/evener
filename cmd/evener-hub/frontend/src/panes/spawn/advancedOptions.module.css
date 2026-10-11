@@ -49,16 +49,6 @@
   background: var(--surface-2);
 }
 
-.resolved {
-  margin: 0;
-  padding: var(--space-2);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-  color: var(--ink-hi);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-}
-
 .error {
   margin: 0;
   color: var(--ink-mid);

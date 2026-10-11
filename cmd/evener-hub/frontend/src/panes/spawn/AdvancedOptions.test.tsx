@@ -444,6 +444,7 @@ test("show resolved config previews the effective launch config", async () => {
   const pre = await screen.findByLabelText("Resolved config");
   expect(pre.textContent).toContain('"sandbox": "off"');
   expect(pre.textContent).toContain('"maxRounds": 5');
+  expect(within(pre).getByRole("button", { name: "Copy" })).toBeTruthy();
 });
 
 test("renders children inside the expanded panel, before any schema control (9ct0)", async () => {

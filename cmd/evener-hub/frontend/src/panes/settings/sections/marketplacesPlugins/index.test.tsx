@@ -388,7 +388,7 @@ test("a rename carries the Browse expansion to the new name", async () => {
   await screen.findByText("linter");
 
   await user.click(screen.getByRole("radio", { name: "Browse" }));
-  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(await screen.findByText(/acme-plugins/, { selector: "summary" }));
   await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
 
   // Rename it through its sheet, which re-browses the new name.
@@ -419,7 +419,7 @@ test("Browse tree expansion survives a segment round trip (Installed → Browse 
 
   // Switch to Browse and expand the marketplace tree
   await user.click(screen.getByRole("radio", { name: "Browse" }));
-  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(await screen.findByText(/acme-plugins/, { selector: "summary" }));
   await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
 
   // Switch to Installed and back to Browse

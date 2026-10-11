@@ -46,7 +46,7 @@
 
 /* The summary column stretches its children; the error state's Retry stays a
  * small inline action instead of growing into a full-width band. */
-.summary button {
+.summaryAction {
   align-self: flex-start;
 }
 
@@ -117,11 +117,6 @@
   font-size: var(--font-size-caption);
 }
 
-.diagnostics summary {
-  cursor: pointer;
-  color: var(--ink-mid);
-}
-
 .diagnostics ul,
 .errors ul {
   margin: var(--space-1) 0 0;
@@ -158,36 +153,5 @@
 
   .metadata {
     padding-left: calc(44px + var(--space-2));
-  }
-
-  /* The shared Switch keeps its compact desktop geometry. On a phone this
-   * surface owns a larger hit target without changing the primitive used by
-   * the other desktop controls. The switch's pseudo track preserves the
-   * compact visual while the actual role=switch button is 44px square. */
-  .panel .row [role="switch"] {
-    width: 44px;
-    height: 44px;
-    padding: 13px 6px;
-    background: transparent;
-  }
-
-  .panel .row [role="switch"]::before {
-    position: absolute;
-    top: 13px;
-    left: 6px;
-    width: 32px;
-    height: 18px;
-    border-radius: var(--radius-pill);
-    background: var(--field);
-    content: "";
-  }
-
-  .panel .row [role="switch"][aria-checked="true"]::before {
-    background: var(--accent);
-  }
-
-  .panel .row [role="switch"] > span {
-    position: relative;
-    z-index: var(--z-raised);
   }
 }
