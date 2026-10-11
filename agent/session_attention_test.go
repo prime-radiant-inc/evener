@@ -4177,6 +4177,17 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	if fold.resumeGenerations[owedID] != 1 || fold.resumeGenerations[historicalID] != 0 || fold.resolutions[historicalID] != delegateAttentionConsumed {
 		t.Fatalf("restart resolution generations = %#v resolutions=%#v", fold.resumeGenerations, fold.resolutions)
 	}
+	// The recovered generation's first request is in flight and nothing has
+	// presented the trigger yet, so a fold now must still keep its turn.
+	root.delegateController.mu.Lock()
+	recovered := root.delegateController.live[fixture.delegateID].binding.runtime
+	root.delegateController.mu.Unlock()
+	recovered.attentionMu.Lock()
+	heldTrigger := recovered.attentionAcceptedID
+	recovered.attentionMu.Unlock()
+	if heldTrigger != owedID {
+		t.Fatalf("recovered generation holds trigger %q before its first request settles, want %q", heldTrigger, owedID)
+	}
 	releaseOnce.Do(func() { close(releaseAttention) })
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
