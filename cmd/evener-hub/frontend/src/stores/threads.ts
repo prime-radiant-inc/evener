@@ -4164,7 +4164,7 @@ function collectPendingRefs(
   const ref = notificationRef(n);
   for (const [pendingRef, pending] of pendingHydrations) {
     if (targetsPendingHydration(n, pending)) {
-      bufferPendingNotification(pendingRef, pending, n);
+      bufferPendingNotification(pendingRef, pending, n, pendingHydrations);
       refs.add(pendingRef);
       targetedRefs?.add(pendingRef);
     } else if (ref === pendingRef) {
@@ -4351,11 +4351,23 @@ function beginWatchedHydration(
   return pending;
 }
 
-function bufferPendingNotification(ref: string, pending: PendingThreadHydration, notification: AnyNotification): void {
+function bufferPendingNotification(
+  ref: string,
+  pending: PendingThreadHydration,
+  notification: AnyNotification,
+  pendingHydrations: Map<string, PendingThreadHydration>,
+): void {
   const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
   const update = { sequence, now: Date.now(), notification, bytes: encodedPayloadBytes(notification) };
-  if (!usesEntryTranscripts(ref) && (backgroundRefCounts.get(ref) ?? 0) > 0) {
+  if ((backgroundRefCounts.get(ref) ?? 0) > 0) {
     if (!transcriptResidency().reservePending(ref, update.bytes)) {
+      if (usesEntryTranscripts(ref)) {
+        // Entry input already reached its repository. Retire this read's
+        // replay copy so its incomplete tail cannot overwrite that owner.
+        // The scheduler retains the request slot until its actual settlement.
+        retirePendingHydration(ref, pending, pendingHydrations);
+        return;
+      }
       pending.backgroundInvalidated = true;
       transcriptResidency().revoke(ref, "gap");
       return;
