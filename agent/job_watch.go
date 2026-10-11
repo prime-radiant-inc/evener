@@ -26,7 +26,7 @@ import (
 // JobManager gates on them via modelEventKinds. Exported so the provider-side
 // capabilityJobControl block (which cannot import agent/events) passes the same
 // literal into DefJobWatch (Task 8).
-var WatchEventKindNames = []string{"assistant.tool", "communicate", "job.notification"}
+var WatchEventKindNames = []string{"assistant.tool", "communicate", "job.notification", "turn.end", "user.message"}
 
 func availableEventKindNames() []string { return append([]string(nil), WatchEventKindNames...) }
 
@@ -38,6 +38,18 @@ var modelEventKinds = map[string]events.EventKind{
 	"assistant.tool":   events.EventToolCallEnd,
 	"communicate":      events.EventCommunicate,
 	"job.notification": events.EventJobFinished,
+	"turn.end":         events.EventTurnEnded,
+	"user.message":     events.EventUserInput,
+}
+
+// optInWatchEventKinds are watchable only when a watch names them, and only on
+// another session (source parent or a stable delegate). A wildcard or
+// trigger-less watch keeps its earlier vocabulary, so existing observers get no
+// new wakes. A session watching its own turn ends would wake itself at every
+// turn's end, so a self watch may not name them.
+var optInWatchEventKinds = map[events.EventKind]bool{
+	events.EventTurnEnded: true,
+	events.EventUserInput: true,
 }
 
 const (
@@ -1000,8 +1012,12 @@ func validateWatchEventArgs(a watchArgs) error {
 		if name == "assistant.message" {
 			return errors.New("invalid_request: assistant.message is not watchable; use communicate for result messages, assistant.tool for tool calls, or job.notification for job lifecycle events")
 		}
-		if _, ok := modelEventKinds[name]; !ok {
+		kind, ok := modelEventKinds[name]
+		if !ok {
 			return fmt.Errorf("invalid_request: unknown event kind %q", name)
+		}
+		if optInWatchEventKinds[kind] && !a.StableReceiver {
+			return fmt.Errorf("invalid_request: %s is watchable only on another session (source parent or a delegate id), not on yourself", name)
 		}
 	}
 	if a.Every > 0 {
@@ -1087,7 +1103,10 @@ func validateWatchTriggerShape(a watchArgs) error {
 	return nil
 }
 
-func isSupportedWatchEventKind(kind events.EventKind) bool {
+func isWildcardWatchEventKind(kind events.EventKind) bool {
+	if optInWatchEventKinds[kind] {
+		return false
+	}
 	for _, supported := range modelEventKinds {
 		if supported == kind {
 			return true
@@ -3375,7 +3394,7 @@ func evaluateWatchEvent(snap watchEventSnapshot, ev events.SessionEvent) watchEv
 		return miss
 	}
 	if snap.wildcardEvents {
-		if !isSupportedWatchEventKind(kind) {
+		if !isWildcardWatchEventKind(kind) {
 			return miss
 		}
 	} else if !snap.eventKinds[kind] {
@@ -6227,7 +6246,40 @@ func writeWatchFrameEvent(b *strings.Builder, ev events.SessionEvent) {
 		if data != nil {
 			writeJobNotificationWatchEvent(b, *data)
 		}
+	case events.UserInputData:
+		writeUserMessageWatchEvent(b, data)
+	case *events.UserInputData:
+		if data != nil {
+			writeUserMessageWatchEvent(b, *data)
+		}
+	case events.TurnEndedData:
+		writeTurnEndWatchEvent(b, data)
+	case *events.TurnEndedData:
+		if data != nil {
+			writeTurnEndWatchEvent(b, *data)
+		}
 	}
+}
+
+// writeUserMessageWatchEvent renders the watched session's human message,
+// bounded like a communicate excerpt; the full text stays in its transcript.
+func writeUserMessageWatchEvent(b *strings.Builder, data events.UserInputData) {
+	text, truncated := limitedWatchEventText(data.Text)
+	b.WriteString("event:\n")
+	b.WriteString("  kind: user.message\n")
+	writeWatchFrameTextField(b, "text", text)
+	if data.Turn > 0 {
+		b.WriteString("  turn: " + strconv.Itoa(data.Turn) + "\n")
+	}
+	writeWatchFrameBoolField(b, "truncated", truncated)
+}
+
+// writeTurnEndWatchEvent marks the watched session settling at the end of a
+// turn. It carries no answer text: the turn's outcome is in its transcript.
+func writeTurnEndWatchEvent(b *strings.Builder, data events.TurnEndedData) {
+	b.WriteString("event:\n")
+	b.WriteString("  kind: turn.end\n")
+	b.WriteString("  turn_duration_ms: " + strconv.FormatInt(data.TurnDurationMS, 10) + "\n")
 }
 
 func writeCommunicateWatchEvent(b *strings.Builder, data events.CommunicateData) {

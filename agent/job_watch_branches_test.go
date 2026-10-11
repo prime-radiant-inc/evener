@@ -478,17 +478,17 @@ func TestValidateWatchTriggerShape(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isSupportedWatchEventKind
+// isWildcardWatchEventKind
 // ---------------------------------------------------------------------------
 
-func TestIsSupportedWatchEventKind(t *testing.T) {
+func TestIsWildcardWatchEventKind(t *testing.T) {
 	t.Parallel()
 	for _, kind := range modelEventKinds {
-		if !isSupportedWatchEventKind(kind) {
-			t.Errorf("expected %q to be supported", kind)
+		if got, want := isWildcardWatchEventKind(kind), !optInWatchEventKinds[kind]; got != want {
+			t.Errorf("isWildcardWatchEventKind(%q) = %v, want %v", kind, got, want)
 		}
 	}
-	if isSupportedWatchEventKind(events.EventKind("nonexistent.event")) {
+	if isWildcardWatchEventKind(events.EventKind("nonexistent.event")) {
 		t.Fatalf("expected false for non-existent kind")
 	}
 }

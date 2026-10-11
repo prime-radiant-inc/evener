@@ -186,7 +186,7 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		t.Fatalf("concrete trigger shape: %v", err)
 	}
 
-	if !isSupportedWatchEventKind(events.EventToolCallEnd) || isSupportedWatchEventKind(events.EventError) {
+	if !isWildcardWatchEventKind(events.EventToolCallEnd) || isWildcardWatchEventKind(events.EventError) {
 		t.Fatal("supported event-kind boundary is inconsistent")
 	}
 	resolved, wildcard := resolveEventKinds([]string{"assistant.tool", "not-real", "*", "communicate"})
