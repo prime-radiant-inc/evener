@@ -68,6 +68,12 @@
   border-bottom: 1px solid var(--edge);
 }
 
+.columnFooterBar {
+  composes: header;
+  border-bottom: 0;
+  border-top: 1px solid var(--edge);
+}
+
 .title {
   overflow: hidden;
   margin: 0;

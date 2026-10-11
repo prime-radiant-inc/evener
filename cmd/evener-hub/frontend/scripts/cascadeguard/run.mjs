@@ -1269,6 +1269,16 @@ async function reloadAndMobileJourney() {
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only selected readonly leaf");
   await wait(cascadeUntitledExpr, "the phone cascade has no path nav and no pane title");
   await assertPaneBodyFlush("phone");
+  await wait(`(() => {
+    const col = document.querySelector(${q(column(fixture.refs[6]))});
+    if (!col) return null;
+    const footer = col.querySelector('[data-testid="cascade-column-footer"]');
+    return col.querySelector("h3") === null
+      && (footer?.querySelector("button")?.textContent.trim() === "Open conversation")
+      && col.querySelector('[data-testid="cascade-column-content"]').compareDocumentPosition(footer)
+        & Node.DOCUMENT_POSITION_FOLLOWING
+      && document.querySelector(${q(inspectorFooter)}) === null;
+  })()`, "the phone column carries no duplicate title, keeps status and Open conversation at its bottom, and renders no pane footer status bar");
   assert.equal(await read('document.querySelectorAll("[role=textbox]").length'), 0, "saved phone cascade has no composer");
   await wait(`document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`, "real selected phone transcript");
   driver.milestone("mobile-saved-cascade");
