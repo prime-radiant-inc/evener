@@ -1,5 +1,11 @@
 import "fake-indexeddb/auto";
-import type { QueueState, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import {
+  hydrateThread,
+  type QueueState,
+  type Thread,
+  type ThreadCapabilities,
+  type ThreadReadResponse,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -7,6 +13,7 @@ import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   productionEntryTranscriptForTests,
+  putThreadModel,
   resetThreadsStoreForTests,
   setProductionEntryCacheForTests,
   threadsStore,
@@ -185,5 +192,38 @@ describe("useThreadsStore.releaseThread", () => {
     expect(await retire.mock.results[1]?.value).toEqual({ kind: "saved" });
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
     expect(fake.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(1);
+  });
+});
+
+describe("putThreadModel ref invariant (map key === model.ref)", () => {
+  // Round-2 fix, second finding: the replace path already threw when a
+  // model's ref disagreed with the slot it was filed under; the pure-add
+  // path now throws for the same disagreement. Both guards exist for the
+  // routing index (see the routing-index describe block above): a model
+  // filed under a key its own ref contradicts would mis-route every
+  // ref-routed frame for that key, so it fails loudly at the membership
+  // boundary instead.
+  test("adding a model whose ref disagrees with the map key throws", () => {
+    const model = hydrateThread(readResponse("ref_other"), "ref_other", Date.now());
+    expect(() => putThreadModel("ref_a", model)).toThrow(/map key and model\.ref must agree/);
+    // Nothing was filed: the store keeps whatever it had at that key.
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("replacing a model whose ref disagrees with the map key still throws (pre-existing guard)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const moved = hydrateThread(readResponse("ref_moved"), "ref_moved", Date.now());
+    expect(() => putThreadModel("ref_a", moved)).toThrow(/map key and model\.ref must agree/);
+    // The tracked model is untouched by the rejected put.
+    expect(threadsStore.getState().threads.get("ref_a")?.ref).toBe("ref_a");
+  });
+
+  test("an agreeing add still lands (guard does not reject the legitimate path)", () => {
+    const model = hydrateThread(readResponse("ref_a"), "ref_a", Date.now());
+    putThreadModel("ref_a", model);
+    expect(threadsStore.getState().threads.get("ref_a")?.ref).toBe("ref_a");
   });
 });
