@@ -412,19 +412,6 @@ describe("createConnectionStore", () => {
     expect(store.getState().serverInfo).toBeUndefined();
   });
 
-  test("a structural adapter without cached metadata retains manual seeding on ready", () => {
-    const store = createConnectionStore();
-    const client = new FakeClient("connecting");
-    Object.defineProperty(client, "initializeResult", { value: undefined });
-    store.connect(client);
-    const seeded = { serverInfo: FAKE_INITIALIZE_RESULT.serverInfo, features: FAKE_INITIALIZE_RESULT.features };
-    store.setState(seeded);
-
-    client.emitReady();
-
-    expect(store.getState()).toEqual({ client, state: "ready", ...seeded });
-  });
-
   test("a client swapped in through setState directly (bypassing connect()) still gets its own listener", () => {
     const store = createConnectionStore();
     const first = new FakeClient("ready");

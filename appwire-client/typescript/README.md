@@ -359,9 +359,8 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `AppwireClient.initializeResult` exposes the most recent successfully
   negotiated response, cached before ready dispatch and null before the first
   handshake. Attaching an already-ready client adopts its cached metadata;
-  attaching an idle client never dials. The property is optional on
-  `AppwireClientLike` for existing structural adapters, which may continue
-  manually seeding the settable metadata fields when they provide no cache.
+  attaching an idle client never dials. Every `AppwireClientLike` adapter provides
+  `initializeResult`, null before its first handshake.
   Unknown additive feature flags are retained. `connect(client)` swaps the
   wired client with a reentrancy
   guard and a detach of the outgoing client's connection-state listener, so a

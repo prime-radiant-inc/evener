@@ -32,10 +32,9 @@ export interface AppwireClientLike {
   onReady: AppwireClient["onReady"];
   onStateChange: AppwireClient["onStateChange"];
   retryNow: AppwireClient["retryNow"];
-  // Optional for existing structural adapters that seed connection-store
-  // metadata themselves. The real client exposes its cached handshake so
-  // attaching a store never needs to call connect().
-  readonly initializeResult?: AppwireClient["initializeResult"];
+  // The cached handshake, so attaching a connection store never needs to call
+  // connect().
+  readonly initializeResult: AppwireClient["initializeResult"];
   get state(): ConnectionState;
   get terminalReason(): TerminalReason;
 }

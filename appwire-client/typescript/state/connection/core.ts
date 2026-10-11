@@ -41,7 +41,6 @@ export interface ConnectionStore extends FrameworkFreeStore<ConnectionStoreState
 
 function readyMetadata(client: AppwireClientLike): Pick<ConnectionStoreState, "serverInfo" | "features"> {
   const initialize = client.initializeResult;
-  // Legacy structural adapters without a cache retain manual seeding.
   return initialize ? { serverInfo: initialize.serverInfo, features: initialize.features } : {};
 }
 
