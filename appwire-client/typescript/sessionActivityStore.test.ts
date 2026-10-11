@@ -3867,6 +3867,68 @@ test("a delegates-and-jobs store without a summary still reads on its invalidati
   expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
 });
 
+test("a late sibling response from a retired epoch cannot reactivate the ordering", async () => {
+  const client = pushClient();
+  const late = deferred<SessionJobsResponse>();
+  client.on("evener/thread/jobs/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    jobs: [jobFixture()],
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  store.observe("jobs");
+  await activityState(
+    store,
+    () =>
+      store.getSnapshot().summary !== null &&
+      store.getSnapshot().delegates.complete &&
+      store.getSnapshot().jobs.complete,
+  );
+  // A jobs read is served under the old epoch and held while the delegates
+  // reconcile the replacement.
+  client.on("evener/thread/jobs/list", () => late.promise);
+  activityChanged(client, ["jobs"]);
+  await vi.advanceTimersByTimeAsync(0);
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ epoch: "epoch-2" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ projectionRevision: 2, status: "completed" })],
+  }));
+  await store.refresh("delegates");
+  expect(store.getSnapshot().delegates.context?.epoch).toBe("epoch-2");
+  const settledReads = callsTo(client, "evener/thread/delegates/list");
+  const arrived = new Promise<void>((resolve) => {
+    const stop = store.subscribe(() => {
+      stop();
+      resolve();
+    });
+  });
+  late.resolve({
+    context: pushContext({ epoch: "epoch-1" }),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    jobs: [jobFixture()],
+  });
+  await arrived;
+  await vi.advanceTimersByTimeAsync(0);
+  // The ordering still belongs to the epoch the delegates read served, so its
+  // higher revision rejects the stale frame instead of the late announcement
+  // judging every record retired.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 1, status: "failed", reportPreview: "stale" })));
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    projectionRevision: 2,
+    status: "completed",
+  });
+  expect(store.getSnapshot().delegates.rows[0]?.reportPreview).not.toBe("stale");
+  // And the late response forces no read of its own: its epoch is behind the
+  // ordering, so there is nothing to reconcile.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(settledReads);
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({

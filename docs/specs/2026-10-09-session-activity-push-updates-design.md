@@ -215,6 +215,11 @@ under-invalidating a count. Revisit only against a measured win.
    would reject the replacement's row for the same id even after the refresh
    completes, keeping the retired status and report on display. An unrecorded row
    is first sight for the new epoch, exactly as a replacement's own row is.
+   An epoch the ordering has left is retired: a response that still names it is
+   late, not late news, so it neither announces nor retires the current ordering
+   and forces no read, and a delegates read that settles while an announcement
+   names a retired epoch clears that announcement rather than judging the read's
+   own records retired.
 7. When an accepted response changes the gate from eligible to ineligible — a
    `live` context that becomes `retained`, or a lost capability — reconcile the
    observed delegates with one read. Eligibility is cached: an ancestor can
@@ -347,6 +352,10 @@ on `availability`. A negative-path test must pin the fallback.
 - **Raced settlement.** A delegate settlement that arrives while the read first
   revealing the replacement epoch is pending shows the completed status and
   report once that read's reconciliation read settles.
+- **Late sibling response.** A summary or jobs response that still names an epoch
+  the delegate ordering has left neither forces a delegates read nor lets a stale
+  frame overwrite the newer row, and a delegates read settling while such an
+  announcement stands clears it.
 - **Eligibility loss.** A store that was push-eligible, then whose ancestor
   releases its runtime and receives post-release invalidations before the
   retained summary reply, reconciles the observed delegates (no stale rows).
@@ -419,6 +428,7 @@ on `availability`. A negative-path test must pin the fallback.
 | Frame overwritten by the read that replaces its epoch | merge and record frames under the announced epoch, not the loaded one. |
 | Retained old-epoch row rejects its replacement | record only rows the response served; a row it did not serve is first sight for the new epoch. |
 | Settlement lost when a read first reveals its replacement | queue one reconciliation read after an unannounced epoch crossing, since the clear retires the frames merged under the retired epoch. |
+| Late sibling response names a retired epoch | keep the epochs the ordering has left: such a response neither announces nor retires, and a settling read clears an announcement naming one. |
 | Delegate settles across a resync | turn the push gate off and clear the merge state on resync; the invalidation's read carries the settle into the refreshed row set. |
 | Provisional page takes a frame for another child | patch a loaded row only while the row set is final; otherwise buffer the frame and read. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |

@@ -167,6 +167,10 @@ export class SessionActivityStore {
    * a read can hold two rows under one delegate id. Cleared on a source epoch
    * change, a session replacement and dispose. */
   private readonly appliedDelegates = new Map<string, { epoch: string | undefined; revision: number }>();
+  /** Epochs the delegate ordering has moved past. A response from a retired
+   * epoch can still arrive late, and its context names that epoch: announcing it
+   * again would point the merge ordering at records this store already cleared. */
+  private readonly retiredDelegateEpochs = new Set<string>();
   /** Delegate ids that triggered a root read for membership; at most once per
    * id. Cleared with the applied map. */
   private readonly seenUnknownDelegates = new Set<string>();
@@ -465,6 +469,10 @@ export class SessionActivityStore {
         const replacedSession = read.sessionId !== session;
         const previous = read.epoch;
         const crossing = previous !== undefined && previous !== epoch;
+        // The delegate ordering never returns to an epoch it has left, so keep
+        // the epoch itself: a late sibling response still names it, and that
+        // announcement must not reactivate records this store has cleared.
+        if (crossing && resource === "delegates" && previous !== undefined) this.retiredDelegateEpochs.add(previous);
         // The delegate merge ordering is epoch-scoped, so the delegates
         // collection's own replacement retires it here.
         // A summary-triggered retire already cleared this epoch's state and
@@ -477,6 +485,16 @@ export class SessionActivityStore {
           // its way, and the clear just retired every frame merged under the
           // retired epoch. Only a fresh read can recount them.
           read.rootQueued = true;
+        }
+        // A fresh delegates read is the authority on the epoch: an announcement
+        // naming an epoch the ordering has already left would judge this read's
+        // own records retired, so retire the announcement instead.
+        if (
+          resource === "delegates" &&
+          read.announcedEpoch !== undefined &&
+          this.retiredDelegateEpochs.has(read.announcedEpoch)
+        ) {
+          read.announcedEpoch = undefined;
         }
         read.epoch = epoch;
         // A page cannot cross epochs: its rows extend a retired walk. A root read
@@ -719,6 +737,9 @@ export class SessionActivityStore {
       (wasEligible || next) &&
       delegates.epoch !== undefined &&
       delegates.epoch !== context.epoch &&
+      // A response from an epoch the ordering has left is late, not late news:
+      // announcing it would retire the current ordering for an older one.
+      !this.retiredDelegateEpochs.has(context.epoch) &&
       delegates.announcedEpoch !== context.epoch
     ) {
       // Announced before the retire: a frame that arrives while the forced read

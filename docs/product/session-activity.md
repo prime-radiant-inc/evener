@@ -310,7 +310,10 @@ that arrives while a sibling announces the replacement merges
 under the announced epoch, and only a row a response served seeds the new epoch's
 ordering. A response that first reveals a replacement nobody announced queues one
 fresh read, because the clear retires the frames it had merged and that response
-alone cannot recount them. A frame the loaded rows cannot be proved to own waits
+alone cannot recount them. An epoch the ordering has left is retired, so a
+response that still names it is late rather than news: it does not re-retire the
+ordering or force a read, and a delegates read settling while such an
+announcement stands clears it. A frame the loaded rows cannot be proved to own waits
 for the read whose row set is final, which places it on the row the id names,
 drops it when
 the id turns out to name two, and leaves it waiting while that read does not
