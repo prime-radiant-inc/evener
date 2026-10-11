@@ -976,10 +976,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
-	// drivenUpdates holds the delegate updates this drain already ran a turn
-	// for, so an update that stays pending after that turn does not run
-	// another.
+	// drivenUpdates holds the delegate updates the model has already seen, so
+	// an update that stays pending does not run another turn. It starts with
+	// what the turn before the drain showed: a delta turn credits nothing and
+	// clears that coverage, which would leave an update whose marker failed
+	// to repeat turns forever.
 	drivenUpdates := make(map[string]struct{})
+	s.settlePresentedDelegateUpdates(drivenUpdates)
 	// drainStartedAt is the instant the root declared the work over: in a
 	// one-shot run this loop starts the moment the coordinator's terminal
 	// communicate ended its turn. It is the reference delegateAbandonedByDrain
@@ -1136,19 +1139,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if res != "" {
 				lastResult = res
 			}
-			// A failed consumed-marker write leaves an update the model
-			// already saw pending. The turn's coverage survives until the
-			// next turn starts, so retry only the marker; if that fails too,
-			// the update stays pending for the generation's end and this
-			// drain runs no more turns for it.
-			if s.hasPendingDelegateUpdateAttention() {
-				if err := s.finishAttentionTurn(nil, nil); err != nil {
-					s.emit(events.EventWarning, warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
-				}
-			}
-			for _, id := range s.presentedDelegateUpdateAttentionIDs() {
-				drivenUpdates[id] = struct{}{}
-			}
+			s.settlePresentedDelegateUpdates(drivenUpdates)
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
 			// A delivered notification is real drain progress: reset the stall
 			// clock so the watchdog measures only continuous stall, never a stall
@@ -1666,4 +1657,21 @@ func (s *Session) hasUndrivenDelegateUpdate(driven map[string]struct{}) bool {
 		_, done := driven[id]
 		return !done
 	})
+}
+
+// settlePresentedDelegateUpdates records the updates the last turn showed the
+// model in driven and retries the consumed marker of any still pending. A
+// failed marker write leaves an update the model already saw pending. The
+// turn's coverage survives until the next turn starts, so only the marker is
+// retried; if that fails too, the update stays pending for the generation's
+// end and this drain runs no more turns for it.
+func (s *Session) settlePresentedDelegateUpdates(driven map[string]struct{}) {
+	for _, id := range s.presentedDelegateUpdateAttentionIDs() {
+		driven[id] = struct{}{}
+	}
+	if s.hasPendingDelegateUpdateAttention() {
+		if err := s.finishAttentionTurn(nil, nil); err != nil {
+			s.emit(events.EventWarning, warningDataFromError("delegate update consumption failed; left pending for its next generation", err))
+		}
+	}
 }
