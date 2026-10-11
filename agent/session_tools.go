@@ -1595,6 +1595,7 @@ func (s *Session) rebuildToolDefsCache() {
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}
+	offersDelegateSend := slices.ContainsFunc(defs, func(td llm.ToolDefinition) bool { return td.Name == "delegate_send" })
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
@@ -1603,6 +1604,9 @@ func (s *Session) rebuildToolDefsCache() {
 			}
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
+			}
+			if offersDelegateSend {
+				defs[i] = tool.WithCommunicateDelegatePointer(defs[i])
 			}
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
