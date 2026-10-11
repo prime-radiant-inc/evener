@@ -46,12 +46,12 @@ Start a NEW delegate conversation to do independent agentic work; returns one du
 
 ## delegate_send
 
-Sends a message to a child delegate you created or, from a delegate, to its controlling caller. Use the contextual `caller` route to steer your controlling caller. Send a non-terminal update with `communicate(end_turn=false)`, and your final result or observer completion with communicate. Send child follow-ups by durable delegate_id. `to` accepts a `dlg_...` delegate_id or contextual `caller`; it rejects job/turn handles and unrelated runtime aliases. If the delegate is running or being driven, the message is steered and returns on delivery. Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.
+Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. To reach your own parent, use communicate instead: end_turn=false for an update, end_turn=true for your final report. `to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. If the delegate is running or being driven, the message is steered and returns on delivery. Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.
 
 - `intent`: What you hope to learn or accomplish from this tool call, using a verb-first gerund. Make your hypothesis and the desired outcome clear; e.g. "Reading config to identify the active profile, so I can log in." or "Searching handlers for request routing, so I can trace the hang."
-- `max_wait_ms`: 0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate or caller returns once delivered.
-- `message`: The message to deliver to the addressed delegate or caller.
-- `to`: A child delegate_id (`dlg_...`) owned by this session, or `caller` from within a delegate to steer its controlling caller.
+- `max_wait_ms`: 0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate returns once delivered.
+- `message`: The message to deliver to that delegate.
+- `to`: The delegate_id (`dlg_...`) of a delegate this session created.
 
 ## job_list
 

@@ -384,15 +384,6 @@ func TestDefDelegateSendShape(t *testing.T) {
 	}
 }
 
-func TestDefDelegateSendDescriptionDistinguishesCallerFromFinalReport(t *testing.T) {
-	def := DefDelegateSend()
-	for _, want := range []string{"controlling caller", "non-terminal", "communicate"} {
-		if !strings.Contains(def.Description, want) {
-			t.Fatalf("DefDelegateSend description = %q, want %q", def.Description, want)
-		}
-	}
-}
-
 func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 	def := DefTaskList(nil)
 	want := "Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array."
@@ -474,15 +465,6 @@ func TestDefJobListAdvertisesCommandOutcomeStatuses(t *testing.T) {
 	}
 	if !strings.Contains(def.Description, "command_exited_nonzero") || !strings.Contains(def.Description, "command_killed") {
 		t.Fatalf("job_list description must name the command-outcome statuses: %q", def.Description)
-	}
-}
-
-func TestDefDelegateSendDescribesContextualCallerRoute(t *testing.T) {
-	def := DefDelegateSend()
-	props := def.Parameters["properties"].(map[string]any)
-	to := props["to"].(map[string]any)["description"].(string)
-	if !strings.Contains(def.Description, "caller") || !strings.Contains(to, "caller") {
-		t.Fatalf("DefDelegateSend caller route missing: description=%q to=%q", def.Description, to)
 	}
 }
 

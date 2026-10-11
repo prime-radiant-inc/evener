@@ -307,45 +307,6 @@ func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Caus
 	return true
 }
 
-// enqueueDelegateCallerSteeringDurably admits a delegate's root-caller update
-// only after the existing root steering-queue snapshot contains it. Holding
-// the queue persistence lock and Session lock across that one write keeps the
-// entry invisible to the running root until a crash can recover it.
-func (s *Session) enqueueDelegateCallerSteeringDurably(msg string, p *provenance.Causal) error {
-	release, err := s.beginRetirementMutation("input")
-	if err != nil {
-		return err
-	}
-	defer release()
-	if strings.TrimSpace(msg) == "" {
-		return errors.New("invalid_request: message is required")
-	}
-	entry := steeringMessage{
-		Text:       msg,
-		Provenance: provenance.Clone(p),
-		Kind:       events.SteeringKindAgentMessage,
-	}
-	s.queuePersistMu.Lock()
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		s.queuePersistMu.Unlock()
-		return errors.New("caller unavailable")
-	}
-	prospective := append(append([]steeringMessage(nil), s.steeringQueue...), entry)
-	if err := saveQueues(s.stateDir, s.id, daemonSourcedSteering(prospective), nil); err != nil {
-		s.mu.Unlock()
-		s.queuePersistMu.Unlock()
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
-		return fmt.Errorf("persist caller steering: %w", err)
-	}
-	s.steeringQueue = append(s.steeringQueue, entry)
-	s.mu.Unlock()
-	s.queuePersistMu.Unlock()
-	s.notify()
-	return nil
-}
-
 func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal, kind string) (bool, error) {
 	return s.trySteerEnqueue(msg, images, p, "", kind)
 }

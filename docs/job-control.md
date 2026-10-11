@@ -71,10 +71,11 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.
 - Use `delegate_send(to=<delegate_id>)` for follow-up on a durable child
-  conversation. A delegate's non-terminal update to its parent is
-  `communicate(end_turn=false)`; observer completion and final results use
-  `communicate(end_turn=true)`. `delegate_send` rejects `job_id`,
-  `transcript_ref`, and unsupported runtime aliases.
+  conversation; it reaches only your own delegates. A delegate reaches its
+  parent only through `communicate`: `end_turn=false` for an update,
+  `end_turn=true` for observer completion and its final report.
+  `delegate_send` rejects `caller`, `job_id`, `transcript_ref`, and
+  unsupported runtime aliases.
 - A delegate's `communicate(end_turn=false)` is an update its parent receives
   and may be woken by: delegates send one only when the parent needs to know
   something or act, never as narration, and finish with
@@ -487,7 +488,7 @@ creates a fallback activation JobRecord.
 
 ### `delegate_send`
 
-`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. A delegate's non-terminal update to its parent is `communicate(end_turn=false)`, and final results and observer completion use `communicate(end_turn=true)`. From inside a delegate, the contextual `caller` target steers the delegate's controlling caller; it is not the update channel.
+`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. It reaches only your own delegates: a delegate reaches its parent with `communicate` (`end_turn=false` for an update, `end_turn=true` for its report), and `to="caller"` is rejected with an error that says so, at the root as well as in a delegate.
 
 Target shape:
 
@@ -504,9 +505,8 @@ Core target resolution:
 | Target | Meaning |
 | --- | --- |
 | `dlg_...` | A durable delegate conversation owned by this session. |
-| `caller` | The current delegate's controlling caller, steered rather than sent an update. This contextual target is unavailable at the root. |
 
-`delegate_send` rejects `job_id` handles because they identify shell work, not
+`delegate_send` rejects `caller` with an error that points at `communicate`. It rejects `job_id` handles because they identify shell work, not
 delegates. It also rejects `transcript_ref` handles and unsupported runtime or
 legacy aliases such as `main` or `watched`.
 
@@ -516,11 +516,6 @@ Semantics:
   message into that exact generation. The return `action` is `steered`.
 - If `to` identifies an idle/resumable delegate, Evener starts its next private
   generation in the same child conversation. The return `action` is `started`.
-- If `to` is `caller`, a nested delegate steers its stable parent through the
-  parent's controller lifecycle admission; a top-level delegate uses the root
-  session's durable turn-boundary steering queue. The call returns
-  `action=delivered`, does not end the delegate's turn, and never writes into an
-  unfinished root tool round.
 - If `to` is a `job_id`, `transcript_ref`, unknown/unauthorized delegate,
   non-resumable delegate, or unsupported legacy alias, the call fails
   synchronously without minting another identity or JobRecord.
