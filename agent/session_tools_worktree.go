@@ -3190,6 +3190,14 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 // and costs a foreign lane its lock only if a third process then collects it in
 // those microseconds (or this process dies before the restore). Every other
 // ordering leaves the foreign lock in place.
+//
+// The lock file is written and removed in-process, not through a sandboxed git
+// child. That is the authority this op already has: the control policy it runs
+// under grants the worktree registry write access, worktreeControlRun refuses
+// the whole op (before any lane is judged) when the host cannot satisfy that
+// policy, and the same pass deletes sidecars and branches with its own file and
+// git writes. A session whose policy withholds registry writes never reaches
+// this code.
 func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err error) {
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
