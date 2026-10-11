@@ -105,9 +105,9 @@ func TestEnvFloorJudgesGoEnvFileReadabilityAtEachSpawn(t *testing.T) {
 	healthy("after repair")
 }
 
-// A go env file hidden from the spawn is not probed for readability either:
-// the spawn never sees it, so an unreadable one there (a FIFO) must not turn
-// the spawn's GOENV off.
+// A go env file under a mask is not probed for readability: the spawn sees the
+// mask, never the file, so an unreadable one there (a FIFO) must not turn the
+// spawn's GOENV off.
 func TestEnvFloorKeepsGoEnvOnForAnUnreadableHiddenFile(t *testing.T) {
 	_, _, envFile, policyFor := goEnvLeakFixture(t)
 	if err := syscall.Mkfifo(envFile, 0o600); err != nil {
@@ -116,5 +116,24 @@ func TestEnvFloorKeepsGoEnvOnForAnUnreadableHiddenFile(t *testing.T) {
 	out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=" + envFile}, policyFor(filepath.Dir(envFile)), "/tmp/evener-session-xyz")
 	if v, _ := envValue(out, "GOENV"); v == "off" {
 		t.Errorf("a hidden go env file must not turn GOENV off")
+	}
+}
+
+// A FIFO go env file under /tmp is still probed: bwrap rebinds a /tmp worktree
+// holding it, where the spawn's go would block on it, so GOENV goes off.
+func TestEnvFloorTurnsGoEnvOffForAFIFOInATmpWorktree(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "evener-goenv-fifo-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	envFile := filepath.Join(dir, "go.env")
+	if err := syscall.Mkfifo(envFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, Backend: BackendBwrap, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: envFile}}
+	out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=" + envFile}, policy, "/tmp/evener-session-xyz")
+	if v, _ := envValue(out, "GOENV"); v != "off" {
+		t.Errorf("a FIFO go env file in a /tmp worktree must turn GOENV off, got %q", v)
 	}
 }

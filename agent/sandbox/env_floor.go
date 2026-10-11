@@ -322,8 +322,11 @@ func spawnGoEnvFileRefused(env []string, policy ResolvedPolicy) bool {
 	if !filepath.IsAbs(file) {
 		return true
 	}
-	// One hidden from the spawn is never read: the spawn's go does not see it.
-	if goEnvFileHidden(policy, file) {
+	// One under a mask is never read: the spawn sees the mask, not the file.
+	// One merely under /tmp or /dev is still probed, since bwrap may rebind
+	// the worktree holding it; a host file the private /tmp hides then turns
+	// GOENV off needlessly, which costs that spawn only `go env -w`.
+	if goEnvFileMasked(policy, file) {
 		return false
 	}
 	_, err := readGoEnvFileSettings(hostProbeSystem{}, file)
@@ -378,12 +381,18 @@ func goEnvFileHidden(policy ResolvedPolicy, path string) bool {
 	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
 		return true
 	}
-	hidden := underAMask(policy, path)
+	return goEnvFileMasked(policy, path)
+}
+
+// goEnvFileMasked reports whether the go env file at path is under a mask at
+// any step of resolving it: every link and directory walkPhysical visits.
+func goEnvFileMasked(policy ResolvedPolicy, path string) bool {
+	masked := underAMask(policy, path)
 	walkPhysical(path, func(p string, _, _ bool) bool {
-		hidden = hidden || underAMask(policy, p)
-		return hidden
+		masked = masked || underAMask(policy, p)
+		return masked
 	})
-	return hidden
+	return masked
 }
 
 // underAMask reports whether p lies at or under a masked path, by its spelling
