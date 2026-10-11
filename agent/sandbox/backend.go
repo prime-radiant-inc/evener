@@ -81,20 +81,22 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 	return createWriteRootsInsideCaches(rp)
 }
 
-// createWriteRootsInsideCaches creates each missing persistent write root
-// that lies inside a cache root, by spelling or resolved location. bwrap binds
-// only existing roots, and one missing inside an overlaid cache would be
-// created by the spawn in the overlay's discarded upper layer, so writes
-// there would vanish. Creating it empty first lets it be bound writable over
-// the overlay; it is a directory the user granted for writing. When it cannot
-// be created (a full or read-only disk, or it is a dangling link), the caches
-// holding it are not overlaid for this spawn, so writes there fail where they
-// happen instead of vanishing. Git's own entries (some of them files, such as packed-refs) are
-// never created here.
+// createWriteRootsInsideCaches creates each unbindable (missing, or failing
+// to stat) persistent write root that lies inside a cache root, by spelling or
+// resolved location. bwrap binds only roots that stat cleanly, and one created
+// by the spawn inside an overlaid cache would land in the overlay's discarded
+// upper layer, so writes there would vanish. Creating it empty first lets it
+// be bound writable over the overlay; it is a directory the user granted for
+// writing. When it cannot be created (a full or read-only disk, a dangling or
+// looping link), the caches holding it are not overlaid for this spawn, so
+// writes there fail where they happen instead of vanishing. Git's own entries
+// (some of them files, such as packed-refs) are never created here.
 func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 	gitRoots := appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir)
 	for _, w := range bwrapWriteRoots(rp) {
-		if _, err := os.Stat(w); !errors.Is(err, fs.ErrNotExist) || isUnderAnyRoot(w, gitRoots) {
+		// bwrap binds only a write root that stats cleanly; any other (missing,
+		// a dangling or looping link, an unreadable parent) is unbindable.
+		if _, err := os.Stat(w); err == nil || isUnderAnyRoot(w, gitRoots) {
 			continue
 		}
 		// Every place a write to w touches on the host, links on the way and

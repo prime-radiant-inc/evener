@@ -320,3 +320,19 @@ func TestPrepareCacheRootsDropsTheOverlayHoldingADanglingLinkReachedByAlias(t *t
 		t.Errorf("both the cache holding the link and the one its target names must drop their overlay: %v", got.CacheRoots)
 	}
 }
+
+// A write root bwrap cannot bind for any reason, not only a missing one (here
+// a symlink loop, which stats as ELOOP), drops the overlay of the cache
+// holding it: a spawn could replace the link with a directory and write there.
+func TestPrepareCacheRootsDropsAnOverlayHoldingALoopingWriteRoot(t *testing.T) {
+	cache := t.TempDir()
+	library := filepath.Join(cache, "library")
+	if err := os.Symlink(library, library); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Spawned.WriteRoots = []string{library}
+	if got := prepareCacheRoots(rp); slices.Contains(got.CacheRoots, cache) {
+		t.Errorf("a cache holding a looping write root must not be overlaid: %v", got.CacheRoots)
+	}
+}
