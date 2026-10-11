@@ -1601,6 +1601,34 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 	return renderCheckpointConversation(partner), summarized
 }
 
+// maxSummarizerHistoryChars caps the history text a summarizer request
+// carries: ~80k chars ≈ 20k tokens, room for the instruction prefix and the
+// reply in any model's window this size or larger.
+const maxSummarizerHistoryChars = 80_000
+
+// summarizerHistoryBudget sizes the history text of a summarizer request so it
+// fits every model the request may go to (the configured cheap model and the
+// session model it falls back to): half the smallest known window, at the
+// char/4 estimate, leaving the other half for the instruction prefix and the
+// reply, and never more than maxSummarizerHistoryChars nor less than
+// minSummarizerHistoryChars, below which no summary is useful. An unknown
+// window imposes nothing (#4321).
+func summarizerHistoryBudget(prof *provider.Profile) int {
+	budget := maxSummarizerHistoryChars
+	if prof == nil {
+		return budget
+	}
+	for _, window := range []int{prof.ContextWindowSize(), prof.CheapContextWindowSize()} {
+		if window > 0 {
+			budget = min(budget, window*4/2)
+		}
+	}
+	return max(budget, minSummarizerHistoryChars)
+}
+
+// minSummarizerHistoryChars floors summarizerHistoryBudget: about 1k tokens.
+const minSummarizerHistoryChars = 4000
+
 // condensePartnerMessages fits the partner's messages a summary will not quote
 // (each a line of text) into budget characters for the summarizer's input.
 // When they overflow it, they are summarized in batches of at most budget
@@ -1662,6 +1690,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 // else on a rune boundary, and each repeating the last overlap bytes of the
 // part before it, so an instruction that crosses a cut is whole in one part.
 func splitMessage(text string, size, overlap int) []string {
+	overlap = min(overlap, size/4) // each part must still advance through text
 	var parts []string
 	for len(text) > size {
 		part := runetrim.Cut(text, size)
@@ -2267,9 +2296,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		return history, nil
 	}
 
-	// Cap the history text to avoid exceeding the cheap model's context window.
-	// ~80k chars ≈ 20k tokens, leaving room for the instruction prefix and response.
-	const maxHistoryChars = 80_000
+	maxHistoryChars := summarizerHistoryBudget(cm.currentProfile())
 
 	truncText := func(s string, limit int) string {
 		if len(s) > limit {

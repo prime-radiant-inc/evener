@@ -333,6 +333,9 @@ func cmgpCheckPureManagerHelpers(t *testing.T, token string, history []schema.Tu
 
 func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string, profile *provider.Profile, client *llm.Client, cheap *cmgpAdapter) {
 	t.Helper()
+	// The summarizer sizes its history budget from the model's window (#4321);
+	// a window this large leaves the full 80k budget these renderings assume.
+	profile = provider.WithContextWindow(profile, 1_000_000)
 	input := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("u", 5_100)+token)),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant evidence "+token)),

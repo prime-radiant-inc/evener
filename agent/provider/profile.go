@@ -272,6 +272,20 @@ func (p *Profile) ContextWindowSize() int {
 	return 0
 }
 
+// CheapContextWindowSize is the configured cheap model's window, or 0 when no
+// cheap model is configured or its row names no window.
+func (p *Profile) CheapContextWindowSize() int {
+	model := p.ConfiguredCheapModel()
+	if model == "" || p.registry == nil {
+		return 0
+	}
+	res, err := p.registry.ResolveInstanceModelFacts(p.CheapProvider(), model)
+	if err != nil || res.Caps.ContextWindow == nil {
+		return 0
+	}
+	return *res.Caps.ContextWindow
+}
+
 // MaxInputTokens is the row's input cap, or 0 when the row has none.
 func (p *Profile) MaxInputTokens() int {
 	if p.res.Caps.MaxInputTokens != nil {

@@ -1097,3 +1097,32 @@ func TestForceCompact_CutOffCheapBatchFallsBackToTheSessionModel(t *testing.T) {
 		t.Fatalf("history starts with a %s, want the summary built from session-model batches", history[0].Kind)
 	}
 }
+
+// On a small-window model with no separate cheap model, every summarizer
+// request fits that model's window: compaction succeeds and every left-out
+// partner message still reaches a summarizer (#4321).
+func TestForceCompact_SummarizerRequestsFitASmallWindow(t *testing.T) {
+	const window = 8192 // tokens
+	var all strings.Builder
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		text := req.Messages[0].Text()
+		if len(text) > window*4 {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
+		}
+		all.WriteString(text)
+		return llm.Response{Message: llm.Assistant("## Progress\nsummary")}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(60, 1500, 20)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want a summary that fit the window", history[0].Kind)
+	}
+	if !strings.Contains(all.String(), partnerHold) {
+		t.Fatalf("the left-out hold never reached a summarizer request that fit")
+	}
+}
