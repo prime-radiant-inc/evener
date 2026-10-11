@@ -4,6 +4,10 @@
 
 Always create an isolated worktree for feature, bug-fix, and PR work. You have permission.
 Keep unrelated changes in the current checkout out of the worktree and PR.
+The git stash list is shared repo-wide across every worktree and the main
+checkout, so another session's stashes sit in the same list: inspect
+`git stash list` before creating or popping one, and prefer file-scoped
+`git restore` over stash for mutation checks inside worktrees.
 
 ## Product behavior and evergreen documentation
 
