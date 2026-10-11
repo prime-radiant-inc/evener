@@ -33,8 +33,9 @@ import { Button, EmptyState, InlineNotice, Skeleton } from "../../../../widgets"
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostPicker } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
+import { Diagnostics } from "../diagnostics";
 import styles from "./CredentialsHostScope.module.css";
-import { CredentialsSection, Diagnostics } from "./CredentialsSection";
+import { CredentialsSection } from "./CredentialsSection";
 import { DeviceCodeDialog } from "./oauthDialogs";
 import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 import { useEditorLifetime } from "./useEditorLifetime";

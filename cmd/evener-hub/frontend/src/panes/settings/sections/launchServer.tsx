@@ -11,6 +11,7 @@ import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { Diagnostics } from "./diagnostics";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
 import type { LaunchFormPaths } from "./launchShared/fields";
@@ -20,27 +21,12 @@ import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect"
 const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
   help: requireClass(styles.help, "launchServer.module.css", "help"),
-  diagnosticsList: requireClass(styles.diagnosticsList, "launchServer.module.css", "diagnosticsList"),
 };
 
 type LoadState =
   | { phase: "loading" }
   | { phase: "error"; message: string }
   | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer };
-
-function Diagnostics({ diagnostics }: { diagnostics: LaunchConfigDiagnostic[] }) {
-  if (diagnostics.length === 0) return null;
-  return (
-    <InlineNotice title="Warnings">
-      <ul className={CLASS.diagnosticsList}>
-        {diagnostics.map((d, index) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: diagnostics are a flat, unordered warning list with no stable identity of their own (field+message can legitimately repeat across a resolve/save cycle)
-          <li key={index}>{d.field ? `${d.field}: ${d.message}` : d.message}</li>
-        ))}
-      </ul>
-    </InlineNotice>
-  );
-}
 
 export interface LaunchServerSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -190,7 +176,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
               Could not re-read this host's launch settings. {refreshError}
             </InlineNotice>
           )}
-          <Diagnostics diagnostics={diagnostics} />
+          <Diagnostics diagnostics={diagnostics.map((d) => (d.field ? `${d.field}: ${d.message}` : d.message))} />
           <LaunchConfigForm
             options={load.options}
             layer="global"

@@ -165,12 +165,6 @@
   padding-top: var(--space-1);
 }
 
-.passiveMore {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  padding: 2px var(--space-1);
-}
-
 .scope {
   flex: 1;
   min-width: 0;

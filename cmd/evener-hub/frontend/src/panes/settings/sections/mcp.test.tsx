@@ -93,8 +93,8 @@ test("a top-level probe failure replaces the discovered-servers list with one me
   connectFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { error: "probe timed out" } } })} />);
-  expect(screen.getByText("Failed to load")).toBeTruthy();
-  expect(screen.getByText("probe timed out")).toBeTruthy();
+  expect(screen.queryByRole("list", { name: "Discovered MCP servers" })).toBeNull();
+  expect(screen.getByRole("alert").textContent).toContain("probe timed out");
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
@@ -412,4 +412,25 @@ test("the local hub still renders the discovered-servers block", async () => {
   expect(screen.getByText(/local-tool/)).toBeTruthy();
   // The mount's launch-layer read lands before the test ends, not in the next.
   await screen.findByText("No inline MCP servers. Add one below.");
+});
+
+test("an unsaved inline-server entry survives a failed refresh and the recovery after it", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let failRefresh = false;
+  fake.on("evener/launch/getLayer", () => {
+    if (failRefresh) throw new WireError("refresh failed", -1);
+    return { mcpConfigs: [], mcps: [] };
+  });
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  const field = await screen.findByRole("textbox", { name: "Inline MCP servers" });
+  await user.type(field, "fs /usr/bin/fs-mcp");
+
+  failRefresh = true;
+  await act(() => extensionsStore.getState().fetchLaunchLayer());
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  failRefresh = false;
+  await act(() => extensionsStore.getState().fetchLaunchLayer());
+
+  expect(screen.getByRole("textbox", { name: "Inline MCP servers" })).toHaveProperty("value", "fs /usr/bin/fs-mcp");
 });

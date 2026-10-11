@@ -420,7 +420,6 @@ const SEMANTIC_USE_ALLOWLIST = [
   "statusdot", // state color
   "meter", // danger/attention fill tone
   "toast", // tone prop
-  "dialog", // danger footer
   "formrow", // error-state left border + message text (wave 7)
   "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
@@ -507,23 +506,10 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // right now" moment after askDock's ask batch (kata crcf, above), same
 // structural reason, so it earns the same --attention-bg/--attention-edge
 // container tint askDock's .batch uses instead of a neutral Card.
-// shell/rail/railDialog.module.css earns the same exception for the same
-// structural reason - it lives under shell/rail/, not widgets/<name>/, so it
-// can never match WIDGET_STYLESHEET_RE. Its one semantic reach is --danger
-// on .pickerError, the rail dialogs' inline failure text - error text is the
-// danger hue's canonical, ungateable job.
 // focus-sentence: panes/session/composer/currentwork.module.css earns the same
 // exact-path exception because it is pane content, not a widget stylesheet.
 // Its --alive ring marks an actually in-progress task, which is precisely the
 // semantic "agent working" meaning the token contract reserves for that hue.
-//
-// delegate-status: panes/session/transcript/tools/delegateStatus.module.css
-// earns the same exception for the same structural reason - it lives under
-// panes/session/transcript/tools/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
-// .dangerText — failure text for a delegate's not-resumable reason and last
-// failed outcome reason. Error text is the danger hue's canonical, ungateable
-// job, the same as railDialog.module.css's .pickerError above.
 //
 // hover-card-glow-up: panes/session/transcript/entityref.module.css earns the
 // same exception for the same structural reason - it lives under
@@ -535,42 +521,8 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // the same meaning-per-hue split RailRow.module.css's signal-row family and
 // the subagent row's attribute-keyed state colors already established; every
 // terminal or neutral state stays on the ink ramp.
-//
-// webui-keybindings-p4 task 6: panes/settings/sections/keybindings.module.css
-// earns the same exception for the same structural reason - it lives under
-// panes/settings/sections/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
-// .rowError and .captureError, the keybindings editor's inline validation and
-// hub-error text. Error text is the danger hue's canonical, ungateable job,
-// the same as railDialog.module.css's .pickerError and
-// delegateStatus.module.css's .dangerText above.
-// marketplace-sheet-editor task 4: panes/settings/sections/marketplacesPlugins/
-// marketplacesPlugins.module.css earns the same exception for the same
-// structural reason - it lives under panes/settings/sections/, not
-// widgets/<name>/, so it can never match WIDGET_STYLESHEET_RE either. Its one
-// semantic reach is --danger-ink on .sheetError, the MarketplaceSheet's inline
-// failed-save text. Error text is the danger hue's canonical, ungateable job,
-// the same as keybindings.module.css's .rowError above.
-// shared-notes panel: panes/session/chrome/notespanel.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/session/chrome/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger on
-// .statusError, the blur-save failure text under the human textarea. Error
-// text is the danger hue's canonical, ungateable job, the same as
-// railDialog.module.css's .pickerError and delegateStatus.module.css's
-// .dangerText above.
-// host-registry slice 1: panes/settings/sections/hosts.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/settings/sections/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its semantic reaches are --danger on .error
-// and .formError, the hosts pane's inline load-failure and add-form failure
-// text. Error text is the danger hue's canonical, ungateable job, the same as
-// keybindings.module.css's .rowError and marketplacesPlugins.module.css's
-// .sheetError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
-  "shell/rail/railDialog.module.css",
-  "panes/session/chrome/notespanel.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/askDock/askdock.module.css",
   "panes/session/composer/currentwork.module.css",
@@ -585,17 +537,50 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   // above.
   "dev/taskcardmockups/taskcardmockups.module.css",
   "panes/session/transcript/tools/sandboxescalation.module.css",
-  "panes/session/transcript/tools/delegateStatus.module.css",
-  "panes/settings/sections/keybindings.module.css",
-  "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
-  "panes/settings/sections/hosts.module.css",
   "panes/session/transcript/entityref.module.css",
   "shell/activitybar/activitybar.module.css",
 ]);
 
+function reachesSemanticHue(cssText: string): boolean {
+  return SEMANTIC_VAR_RE.test(cssText.replace(COMMENT_RE, " "));
+}
+
+// A grant whose stylesheet is gone, or no longer reaches for a semantic hue
+// outside comments, is a stale permission: it lets the next edit to that file
+// add a hue without anyone deciding it should.
+function unusedSemanticGrants(paths: Iterable<string>, stylesheets: Record<string, string>): string[] {
+  return [...paths].filter((path) => {
+    const text = stylesheets[path];
+    return text === undefined || !reachesSemanticHue(text);
+  });
+}
+
+test("every semantic-hue exception and allowlisted widget stylesheet still reaches for a semantic hue", () => {
+  const widgetPaths = SEMANTIC_USE_ALLOWLIST.map((name) => `widgets/${name}/${name}.module.css`);
+  expect(unusedSemanticGrants([...SEMANTIC_PATH_EXCEPTIONS, ...widgetPaths], STYLESHEETS)).toEqual([]);
+});
+
+test("unusedSemanticGrants reports a missing stylesheet and one naming a hue only in a comment", () => {
+  const stylesheets = {
+    "panes/live.module.css": ".error { color: var(--danger-ink); }",
+    "panes/commentOnly.module.css": "/* was var(--danger) */ .error { color: var(--ink-hi); }",
+  };
+  expect(
+    unusedSemanticGrants(
+      ["panes/live.module.css", "panes/commentOnly.module.css", "panes/gone.module.css"],
+      stylesheets,
+    ),
+  ).toEqual(["panes/commentOnly.module.css", "panes/gone.module.css"]);
+});
+
+test("a semantic hue named only in a comment does not count as reaching for it", () => {
+  expect(reachesSemanticHue("/* var(--alive) */ .row { color: var(--ink-mid); }")).toBe(false);
+  expect(reachesSemanticHue(".row { color: var(--alive-ink); }")).toBe(true);
+});
+
 for (const [path, text] of OTHER_STYLESHEETS) {
   test(`${path} only reaches for --attention/--alive/--danger if allowlisted`, () => {
-    if (!SEMANTIC_VAR_RE.test(text)) return;
+    if (!reachesSemanticHue(text)) return;
     if (SEMANTIC_PATH_EXCEPTIONS.has(path)) return;
     const widgetMatch = WIDGET_STYLESHEET_RE.exec(path);
     expect(widgetMatch).not.toBeNull();
