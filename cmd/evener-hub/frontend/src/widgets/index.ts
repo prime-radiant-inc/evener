@@ -38,6 +38,8 @@ export type { DirectoryPickerProps } from "./directorypicker";
 export { DirectoryIcon, DirectoryPicker } from "./directorypicker";
 export type { DisclosureProps } from "./disclosure";
 export { Disclosure } from "./disclosure";
+export type { DisclosureHeadingProps } from "./disclosureheading";
+export { DisclosureHeading } from "./disclosureheading";
 export type { DropzoneProps } from "./dropzone";
 export { Dropzone } from "./dropzone";
 export type { EmptyStateProps } from "./emptystate";

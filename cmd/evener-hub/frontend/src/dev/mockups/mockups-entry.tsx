@@ -42,6 +42,7 @@ import {
   Badge,
   Button,
   Chevron,
+  DisclosureHeading,
   Eyebrow,
   IconButton,
   Popover,
@@ -888,8 +889,8 @@ function OrganizeControl({
   );
 }
 
-// Section markup mirrors Rail.tsx's own SectionHeading + RailSection, using
-// the same Rail.module.css classes.
+// Section markup mirrors Rail.tsx's own RailSection: a DisclosureHeading over
+// the section's Tree, using the same Rail.module.css section class.
 function MockSection(props: {
   title: string;
   nodes: MockRailNode[];
@@ -902,14 +903,7 @@ function MockSection(props: {
   if (nodes.length === 0) return <span className="mock-section-empty" hidden />;
   return (
     <section className={railStyles.section}>
-      <div className={railStyles.sectionHeadingRow}>
-        <h3 className={railStyles.sectionTitle}>
-          <button type="button" className={railStyles.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-            <Eyebrow as="span">{title}</Eyebrow>
-            <Chevron direction={open ? "down" : "right"} />
-          </button>
-        </h3>
-      </div>
+      <DisclosureHeading level={3} label={title} eyebrow open={open} onOpenChange={onToggleOpen} />
       {open && (
         <Tree nodes={nodes} onToggle={(node) => onToggle(node.id)} onActivate={() => {}} renderRow={renderRow} />
       )}
