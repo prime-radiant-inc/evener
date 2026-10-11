@@ -3,6 +3,7 @@ package sandbox
 import (
 	_ "embed"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -94,8 +95,9 @@ func canonicalizeLongestPrefix(p string, eval func(string) (string, error)) stri
 // cannot dyld-load system frameworks without them; read-only and workspace-write
 // read the whole disk minus the denylist and never include them.
 //
-// It is a pure function (no host or environment access beyond the injected
-// canonicalizer) so its golden output and the M1 contract suite run on any host.
+// Its only host access is the injected canonicalizer and the .git walk of
+// carve-outs that exist (unmaskedSection), so its golden output and the M1
+// contract suite run on any host.
 func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (string, []DirParam) {
 	if canon == nil {
 		canon = identityCanon
@@ -259,10 +261,14 @@ func denySection(rp ResolvedPolicy, ps *paramSet) string {
 }
 
 // unmaskedSection re-grants each of rp.UnmaskedRoots for reading, under both
-// firmlink spellings, since the mask it overrides was denied under both. It
-// then denies any .git inside them again (see ResolvedPolicy.Masks), matching
-// the component with a path-free regex inside the root's subpath so no path
-// text enters the policy.
+// firmlink spellings, since the mask it overrides was denied under both. For a
+// root still under a mask it then denies any .git inside again (see
+// ResolvedPolicy.Masks), matching the component with a path-free regex inside
+// the root's subpath so no path text enters the policy. Seatbelt matches a file
+// by its resolved path, so a .git symlinked to another directory in the root
+// is denied at that target as well, found by the same walk bwrap uses; a tree
+// that walk cannot vouch for gets no grant. With the user's own removal of
+// Evener's config mask nothing masks the root, so no .git is denied.
 func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 	var grants, gitDenials []string
 	for i, r := range rp.UnmaskedRoots {
@@ -273,9 +279,30 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 		if !rp.CarveOutResolvesTo(r, canonical) {
 			continue
 		}
+		masked := rp.MasksWrite(r) || rp.MasksWrite(canonical)
+		var linkedGitDirs []string
+		// A root missing on the host has nothing to walk.
+		if _, err := os.Lstat(canonical); masked && err == nil {
+			found, complete := gitDirsUnder(canonical, gitWalkBudget)
+			if !complete {
+				continue
+			}
+			for _, g := range found {
+				if !isGitName(filepath.Base(g)) {
+					linkedGitDirs = append(linkedGitDirs, g)
+				}
+			}
+		}
 		for _, k := range ps.defineCanonicalBothSpellings(fmt.Sprintf("UNMASKED_%d", i), canonical) {
 			grants = append(grants, "(allow file-read* "+literalAndSubpath(k)+")")
-			gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.[Gg][Ii][Tt](/|$)")))`)
+			if masked {
+				gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.[Gg][Ii][Tt](/|$)")))`)
+			}
+		}
+		for j, g := range linkedGitDirs {
+			for _, k := range ps.defineCanonicalBothSpellings(fmt.Sprintf("UNMASKED_%d_GIT_%d", i, j), g) {
+				gitDenials = append(gitDenials, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
+			}
 		}
 		// Seatbelt checks a symlink on the way by the path the process names,
 		// so reaching the root by its literal spelling (the base_directory a

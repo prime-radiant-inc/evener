@@ -681,3 +681,71 @@ func TestSeatbeltGrantsTheValidatedCarveOutPath(t *testing.T) {
 		}
 	}
 }
+
+// seatbeltContentFixture builds a real ~/.config/evener/plugins tree under a
+// canonical temp home: plugin "linked" has a .git symlinked to store/real.git
+// inside the carve-out, whose config a direct read must not reach.
+func seatbeltContentFixture(t *testing.T) (host HostFacts, store, realGit string) {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store = filepath.Join(home, ".config", "evener", "plugins")
+	realGit = filepath.Join(store, "store", "real.git")
+	if err := os.MkdirAll(realGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realGit, "config"), []byte("[remote]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(store, "linked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realGit, filepath.Join(store, "linked", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	host = seatbeltHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{store}
+	return host, store, realGit
+}
+
+// A .git symlinked to another directory inside the carve-out is denied at its
+// target too: the target's own path has no .git component for the regex to
+// match, so its config would otherwise be readable directly.
+func TestSeatbeltDeniesTheTargetOfASymlinkedGitInsideTheCarveOut(t *testing.T) {
+	host, store, realGit := seatbeltContentFixture(t)
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, host, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+	grant := strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(paramKeyForPath(params, store))+")")
+	if grant < 0 {
+		t.Fatalf("the carve-out must be granted:\n%s", text)
+	}
+	key := paramKeyForPath(params, realGit)
+	if key == "" || strings.LastIndex(text, "(deny file-read* file-write* "+literalAndSubpath(key)+")") < grant {
+		t.Errorf("the symlinked .git's target %q must be denied after the grant:\n%s", realGit, text)
+	}
+}
+
+// With Evener's config mask removed by the user, nothing masks a carve-out's
+// .git, so Seatbelt denies none (as ResolvedPolicy.Masks and bwrap agree).
+func TestSeatbeltLeavesGitReadableWithoutTheConfigMask(t *testing.T) {
+	host, _, realGit := seatbeltContentFixture(t)
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, host, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+	if strings.Contains(text, `(regex #"/\.[Gg][Ii][Tt](/|$)")`) {
+		t.Errorf("no .git denial may remain once the config mask is removed:\n%s", text)
+	}
+	if key := paramKeyForPath(params, realGit); key != "" {
+		t.Errorf("no .git target denial may remain once the config mask is removed:\n%s", text)
+	}
+}
