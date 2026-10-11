@@ -364,7 +364,11 @@ func terminalJobResult(call llm.ToolCallData, result tool.ExecResult) (string, b
 // settles; if it cannot be, nothing does, and a restore re-arms the jobs. (A
 // session with no transcript attached has no durability to establish.) A
 // crash after the reply is durable but before a settlement is written re-arms
-// too: a repeated notification, never a lost one.
+// too: a repeated notification, never a lost one. So does a kept shell whose
+// job_finished write failed and is still being retried when its reply
+// persists: the record is not yet terminal, nothing settles, and the later
+// finalization leaves it not_armed. Both are rare fault paths, and both err
+// toward telling the caller twice rather than not at all.
 func (s *Session) consumePersistedTerminalJobNotifications(calls []llm.ToolCallData, results []tool.ExecResult) {
 	if !hasTerminalJobResult(calls, results) {
 		return

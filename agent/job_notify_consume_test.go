@@ -424,18 +424,34 @@ func keptForegroundShellCall(t *testing.T, s *Session) (llm.ToolCallData, toolde
 // turn nobody asked for.
 func TestPersistedKeptForegroundShellIsNotRenotifiedOnRestore(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	s := newQueuePersistTestSession(t, t.TempDir())
 	call, result, jobID := keptForegroundShellCall(t, s)
 	if err := s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result}); err != nil {
 		t.Fatalf("persistToolResults: %v", err)
 	}
-	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyConsumed {
-		t.Fatalf("terminal_notification_state = %q after the reply persisted, want %q", rec.NotifyState, jobstore.NotifyConsumed)
+	s.Close()
+
+	meta, err := schema.LoadSessionMeta(s.stateDir, s.id)
+	if err != nil {
+		t.Fatalf("load meta: %v", err)
 	}
-	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
-		t.Fatalf("arm pending: %v", err)
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: s.stateDir})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
 	}
-	if got := s.peekNotifications(); got != 0 {
+	t.Cleanup(func() { restored.Close() })
+	restored.mu.Lock()
+	_, replied := findToolResultInHistory(restored.history, call.ID)
+	restored.mu.Unlock()
+	if !replied {
+		t.Fatal("the kept shell's reply did not survive the restore")
+	}
+	if rec := loadShellRecord(t, restored.jobManager, jobID); rec.NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("restored terminal_notification_state = %q, want %q", rec.NotifyState, jobstore.NotifyConsumed)
+	}
+	if got := restored.peekNotifications(); got != 0 {
 		t.Fatalf("restore queued %d notification(s) for a result the caller already read", got)
 	}
 }
