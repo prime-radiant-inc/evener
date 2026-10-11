@@ -19,7 +19,7 @@ import { Fragment, useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, IconButton, Timestamp, VisuallyHidden } from "../../../../widgets";
+import { Chevron, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
@@ -280,19 +280,20 @@ function SubagentCard({
         ))}
         <span className={CLASS.statsSpring} />
         {clockMs !== undefined && <span className={CLASS.clock}>{formatElapsed(clockMs)}</span>}
-        <IconButton
-          label={open ? "Hide recent activity" : "Show recent activity"}
-          title={open ? "Hide recent activity" : "Show recent activity"}
-          icon={<Chevron direction={open ? "down" : "right"} />}
-          variant="quiet"
-          size="xs"
-          aria-expanded={open}
-          aria-controls={disclosureId}
-          onClick={(event) => {
-            event.stopPropagation();
-            toggleDisclosure(disclosureId, false);
-          }}
-        />
+        <Tooltip label={open ? "Hide recent activity" : "Show recent activity"}>
+          <IconButton
+            label={open ? "Hide recent activity" : "Show recent activity"}
+            icon={<Chevron direction={open ? "down" : "right"} />}
+            variant="quiet"
+            size="xs"
+            aria-expanded={open}
+            aria-controls={disclosureId}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleDisclosure(disclosureId, false);
+            }}
+          />
+        </Tooltip>
       </div>
       {quoteText ? (
         <em className={CLASS.quote} data-testid="subagent-quote">

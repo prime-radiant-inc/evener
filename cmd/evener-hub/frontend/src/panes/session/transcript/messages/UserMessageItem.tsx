@@ -17,7 +17,7 @@ import { sessionActionError } from "@evener/appwire-client";
 import { memo, type ReactNode, useState } from "react";
 import { workspaceStore } from "../../../../shell/workspace";
 import { threadsStore } from "../../../../stores/threads";
-import { IconButton, SpeakerAvatar, type SpeakerAvatarSpeaker, useToasts } from "../../../../widgets";
+import { IconButton, SpeakerAvatar, type SpeakerAvatarSpeaker, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { writeDraft } from "../../composer/draft";
 import { EntityText } from "../EntityText";
@@ -85,15 +85,16 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
   }
 
   return (
-    <IconButton
-      label="Fork from here"
-      title="Fork from here"
-      icon={<ForkGlyph />}
-      variant="quiet"
-      size="sm"
-      disabled={busy}
-      onClick={() => void handleFork()}
-    />
+    <Tooltip label="Fork from here">
+      <IconButton
+        label="Fork from here"
+        icon={<ForkGlyph />}
+        variant="quiet"
+        size="sm"
+        disabled={busy}
+        onClick={() => void handleFork()}
+      />
+    </Tooltip>
   );
 }
 

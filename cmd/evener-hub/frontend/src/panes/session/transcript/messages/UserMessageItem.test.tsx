@@ -349,6 +349,22 @@ describe("per-message fork affordance", () => {
     expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
   });
 
+  test("the fork button's hover label is the shared Tooltip, not a native title", async () => {
+    const user = userEvent.setup();
+    render(
+      <UserMessageItem
+        item={item({ text: "fix the bug", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+      />,
+    );
+    const button = screen.getByRole("button", { name: /fork from here/i });
+    expect(button.hasAttribute("title")).toBe(false);
+    await user.hover(button);
+    expect((await screen.findByRole("tooltip")).textContent).toBe("Fork from here");
+  });
+
   // thread/fork's sourceItemKey names an item key (transcriptindex.ItemKey),
   // not a turn id: cmd/evener-hub/app_threadlifecycle.go's parseSourceItemKey
   // resolves it to a 1-based index into the parent's entry list and hands
