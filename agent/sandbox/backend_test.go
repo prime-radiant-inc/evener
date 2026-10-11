@@ -271,3 +271,28 @@ func TestPrepareCacheRootsDropsTheOverlayOverADanglingWriteRootsTarget(t *testin
 		t.Errorf("neither the link's cache nor its target's may stay overlaid: %v", got.CacheRoots)
 	}
 }
+
+// A write root reached through a link whose own target passes a dangling
+// link lands where that dangling link points, possibly in another cache root;
+// that cache is not overlaid either.
+func TestPrepareCacheRootsDropsTheOverlayBehindADanglingIntermediateLink(t *testing.T) {
+	home := t.TempDir()
+	cache, npm := filepath.Join(home, ".cache"), filepath.Join(home, ".npm")
+	for _, d := range []string{cache, npm} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(npm, "data"), filepath.Join(home, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	library := filepath.Join(cache, "library")
+	if err := os.Symlink(filepath.Join(home, "alias", "pkg"), library); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache, npm}}
+	rp.Spawned.WriteRoots = []string{library}
+	if got := prepareCacheRoots(rp); slices.Contains(got.CacheRoots, npm) {
+		t.Errorf("the cache a dangling intermediate link leads into must not stay overlaid: %v", got.CacheRoots)
+	}
+}

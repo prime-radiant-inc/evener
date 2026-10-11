@@ -679,12 +679,35 @@ func inPrivateMount(p string) bool {
 
 // linksThroughPrivateMount reports whether resolving p follows a symlink that
 // lies in a private mount (inPrivateMount), or after following any symlink
-// reaches into one, at any step of the chain. Links are followed physically
-// (a ".." in a target climbs from where the link resolved, not lexically), as
-// the kernel does. Inside the sandbox such a link is hidden or leads
-// elsewhere, so an overlay at p would not sit over the storage p names on the
-// host.
+// reaches into one, at any step of the chain. Inside the sandbox such a link
+// is hidden or leads elsewhere, so an overlay at p would not sit over the
+// storage p names on the host.
 func linksThroughPrivateMount(p string) bool {
+	found := false
+	walkPhysical(p, func(path string, link, followed bool) bool {
+		found = (link || followed) && inPrivateMount(path)
+		return found
+	})
+	return found
+}
+
+// physicalLanding returns where p lands once every symlink on its way is
+// followed, dangling ones included: for a path that does not exist yet, where
+// creating it would put it.
+func physicalLanding(p string) string {
+	landing, _ := walkPhysical(p, nil)
+	return StripDataVolumeAlias(landing)
+}
+
+// walkPhysical resolves p one component at a time as the kernel does: each
+// symlink is followed (a ".." in a target climbs from where the link
+// resolved, not lexically), and missing components are kept as spelled. When
+// visit is non-nil it sees each symlink before it is followed (link true) and
+// each path the walk then settles on (link false), with followed saying
+// whether any link was followed before; returning true stops the walk. It
+// returns the path reached, and false when a link cannot be read or the chain
+// passes 40 links.
+func walkPhysical(p string, visit func(path string, link, followed bool) bool) (string, bool) {
 	pending := strings.Split(p, "/")
 	cur, followed := "/", false
 	for hops := 0; len(pending) > 0; {
@@ -699,12 +722,12 @@ func linksThroughPrivateMount(p string) bool {
 			next := filepath.Join(cur, comp)
 			fi, err := os.Lstat(next)
 			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
-				if inPrivateMount(next) {
-					return true
+				if visit != nil && visit(next, true, followed) {
+					return next, true
 				}
 				target, err := os.Readlink(next)
 				if hops++; err != nil || hops > 40 {
-					return false
+					return next, false
 				}
 				if filepath.IsAbs(target) {
 					cur = "/"
@@ -715,11 +738,11 @@ func linksThroughPrivateMount(p string) bool {
 			}
 			cur = next
 		}
-		if followed && inPrivateMount(cur) {
-			return true
+		if visit != nil && visit(cur, false, followed) {
+			return cur, true
 		}
 	}
-	return false
+	return cur, true
 }
 
 // goCacheRoots are the directories the go command writes caches to: pkg under
