@@ -336,7 +336,7 @@ func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
-			"To reach your own parent, use communicate instead: end_turn=false for an update, end_turn=true for your final report. " +
+			"To reach your own parent, use `communicate` instead: end_turn=false for an update, end_turn=true for your final report. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -651,8 +651,11 @@ func DefWebSearch() llm.ToolDefinition {
 	}
 }
 
+// DefaultResultToolName is the result tool's name unless a session renames it.
+const DefaultResultToolName = "communicate"
+
 func DefCommunicate() llm.ToolDefinition {
-	return DefCommunicateNamed("communicate")
+	return DefCommunicateNamed(DefaultResultToolName)
 }
 
 func DefCommunicateNamed(name string) llm.ToolDefinition {
@@ -1296,4 +1299,16 @@ func DefNotesRead() llm.ToolDefinition {
 			"properties":           map[string]any{},
 		},
 	}
+}
+
+// WithResultToolName returns a copy of def whose description names a renamed
+// result tool. Descriptions teach the result tool as `communicate`; a session
+// that configures another name (SessionConfig.ResultToolName) must be taught
+// that name instead.
+func WithResultToolName(def llm.ToolDefinition, name string) llm.ToolDefinition {
+	if name == "" || name == DefaultResultToolName {
+		return def
+	}
+	def.Description = strings.ReplaceAll(def.Description, "`"+DefaultResultToolName, "`"+name)
+	return def
 }
