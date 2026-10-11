@@ -10,8 +10,3 @@
   color: var(--ink-mid);
   font-size: var(--font-size-ui);
 }
-
-.diagnosticsList {
-  margin: 0;
-  padding-left: var(--space-4);
-}
