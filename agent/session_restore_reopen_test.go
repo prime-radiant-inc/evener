@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -125,4 +126,24 @@ func restoreReopenSession(t *testing.T, dir, id string, adapter *sessionScriptAd
 	}
 	t.Cleanup(restored.Close)
 	return restored
+}
+
+// A reopen recorded before the compaction anchor resume starts from puts the
+// whole retained window in the latest attempt: its start clamps to the
+// window's first turn rather than an index before it.
+func TestLatestAttemptStartsClampsAReopenBeforeTheRetainedWindow(t *testing.T) {
+	t.Parallel()
+	entry := func(kind schema.TurnKind) transcript.Entry {
+		return transcript.Entry{Turn: schema.Turn{Kind: kind, TurnID: "t1"}}
+	}
+	entries := []transcript.Entry{
+		entry(schema.TurnUserInput),
+		entry(schema.TurnReopen),
+		entry(schema.TurnAssistant),
+		entry(schema.TurnSummary),
+		entry(schema.TurnToolResults),
+	}
+	if got := latestAttemptStarts(entries, nil)["t1"]; got != 0 {
+		t.Fatalf("latest attempt start = %d, want 0, the retained window's first turn", got)
+	}
 }

@@ -437,7 +437,9 @@ func latestAttemptStarts(entries []transcript.Entry, insertions []int) map[strin
 		if starts == nil {
 			starts = map[string]int{}
 		}
-		starts[e.Turn.TurnID] = resumedDivergence(entries, i, insertions)
+		// A reopen before the compaction anchor maps below zero: the whole
+		// retained window then belongs to the latest attempt.
+		starts[e.Turn.TurnID] = max(0, resumedDivergence(entries, i, insertions))
 	}
 	return starts
 }
