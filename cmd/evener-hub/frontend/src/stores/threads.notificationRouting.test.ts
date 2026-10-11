@@ -5,6 +5,7 @@ import type {
   Thread,
   ThreadCapabilities,
   ThreadReadResponse,
+  ThreadStatus,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -83,13 +84,13 @@ function testThread(ref: string, overrides: TestThreadOverrides = {}): Thread {
   };
 }
 
-function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadReadResponse {
+function readResponse(ref: string, overrides: TestThreadOverrides = {}, requestGeneration = 1): ThreadReadResponse {
   return {
     thread: testThread(ref, overrides),
     bootGeneration: "1",
     epoch: 1,
     snapshot: { incarnation: "inc-1", length: 0 },
-    requestGeneration: 1,
+    requestGeneration,
   };
 }
 
@@ -104,6 +105,32 @@ function versionedReadResponse(
     epoch: 1,
     snapshot: { incarnation: "inc-1", length: snapshotLength },
   };
+}
+
+async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
+  for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
+}
+
+function markResponseCut(response: ThreadReadResponse, cut: { reached: boolean }): ThreadReadResponse {
+  return {
+    ...response,
+    get olderCursor(): string | undefined {
+      cut.reached = true;
+      return response.olderCursor;
+    },
+  };
+}
+
+async function emitAtResponseCut(
+  cut: { reached: boolean },
+  ref: string,
+  emit: () => void,
+  published: () => boolean = () => threadsStore.getState().threads.has(ref),
+): Promise<void> {
+  for (let i = 0; i < 20 && !cut.reached; i += 1) await Promise.resolve();
+  expect(cut.reached, "the response cut never ran: hydrateThread no longer reads olderCursor").toBe(true);
+  expect(published(), "the snapshot published before the cut window was reached").toBe(false);
+  emit();
 }
 
 describe("notification routing", () => {
@@ -420,5 +447,65 @@ describe("notification routing index (ref / threadId fast path)", () => {
       params: { threadId: "thr_ref_w", ref: "ref_w", status: { type: "active" } },
     });
     expect(threadsStore.getState().watchedThreads.get("ref_w")?.status).toEqual({ type: "active" });
+  });
+
+  test("a notification arriving mid-hydration for a pending ref is withheld from the stale model but buffered for replay", async () => {
+    const fake = connectFakeClient();
+    const cut = { reached: false };
+    let resolveRead: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => resolveRead !== null);
+    await vi.waitFor(() => expect(resolveRead).not.toBeNull());
+    const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
+    finishRead(markResponseCut(readResponse("ref_a"), cut));
+    // The pending hydration still owns ref_a: a live frame for it must be
+    // buffered, and the (absent) stale model must not be resurrected.
+    await emitAtResponseCut(cut, "ref_a", () =>
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+      }),
+    );
+    await ensuring;
+
+    // The buffered frame replayed onto the published snapshot.
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("index follows model replacement on rehydration (resync publishes a fresh model under the same ref)", async () => {
+    const fake = connectFakeClient();
+    let status: ThreadStatus = { type: "idle" };
+    fake.on("thread/read", (params) => readResponse("ref_a", { status }, params.requestGeneration));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // A targeted resync republishes a whole new model; routing must follow it.
+    status = { type: "active" };
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    // hydrations counts the initial ensureThread publish too, so the resync
+    // lands on 2 (and the second resync below on 3).
+    await flushUntil(() => threadsStore.getState().hydrations.get("ref_a") === 2);
+    await vi.waitFor(() => expect(threadsStore.getState().hydrations.get("ref_a")).toBe(2));
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    status = { type: "idle" };
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushUntil(() => threadsStore.getState().hydrations.get("ref_a") === 3);
+    await vi.waitFor(() => expect(threadsStore.getState().hydrations.get("ref_a")).toBe(3));
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "idle" });
+
+    // And live routing still lands on the newest model.
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
   });
 });
