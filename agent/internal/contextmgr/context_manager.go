@@ -1615,26 +1615,67 @@ const maxSummarizerHistoryChars = 80_000
 // the char/4 estimate; it never exceeds maxSummarizerHistoryChars. An unknown
 // window imposes nothing (#4321).
 //
-// It never drops below minSummarizerHistoryChars, a floor small enough that a
-// 2,048-token window still holds the prefix, the reserve and that much
-// history; the reply allowance is what gives way on windows that small.
+// It never drops below minSummarizerHistoryChars, which matters only when
+// caller instructions crowd out the history on a window near
+// minSummarizingWindow.
 func summarizerHistoryBudget(prof *provider.Profile, promptChars int) int {
 	budget := maxSummarizerHistoryChars
 	if prof == nil {
 		return budget
 	}
 	prefixTokens := promptChars/4 + summarizerFramingTokens
-	routes := [][2]int{
-		{prof.ContextWindowSize(), prof.MaxInputTokens()},
-		{prof.CheapContextWindowSize(), prof.CheapMaxInputTokens()},
-	}
-	for _, route := range routes {
-		if input := summarizerInputLimit(route[0], route[1]); input > 0 {
-			available := input - prefixTokens
-			budget = min(budget, available*4)
-		}
+	for _, input := range summarizerInputLimits(prof) {
+		available := input - prefixTokens
+		budget = min(budget, available*4)
 	}
 	return max(budget, minSummarizerHistoryChars)
+}
+
+// summarizerInputLimits is summarizerInputLimit for each route a summary may
+// take whose window or input cap is known: the configured cheap model and the
+// session model it falls back to.
+func summarizerInputLimits(prof *provider.Profile) []int {
+	var limits []int
+	for _, route := range [][2]int{
+		{prof.ContextWindowSize(), prof.MaxInputTokens()},
+		{prof.CheapContextWindowSize(), prof.CheapMaxInputTokens()},
+	} {
+		if input := summarizerInputLimit(route[0], route[1]); input > 0 {
+			limits = append(limits, input)
+		}
+	}
+	return limits
+}
+
+// minSummarizingWindow is the smallest context window compaction summarizes
+// on. An 8,192-token window leaves a summarizer request 5,120 tokens of input
+// (a quarter of the window for the reply, then the 1,024-token safety
+// reserve); the summary instructions and framing take about 870, so about
+// 17,000 characters of history remain. That holds batches of the partner's
+// left-out messages, each part of a long message (a sixth of the history,
+// about 2,800 characters) and an earlier summary with their quoted
+// permissions and holds, and the 2,048-token reply holds a summary that
+// quotes them. At 4,096 tokens the history shrinks to about 4,700 characters
+// and a quote can straddle or fall out of what the request carries, so a
+// summary could lose a hold the checkpoint keeps (#4321).
+const minSummarizingWindow = 8192
+
+// summarizingWindowUsable reports whether every route a summary may take
+// accepts at least the input a minSummarizingWindow-token window allows. Below
+// that the deterministic checkpoint, which keeps the partner's messages and
+// an earlier summary, stands instead of a summary. Unknown windows impose
+// nothing.
+func summarizingWindowUsable(prof *provider.Profile) bool {
+	if prof == nil {
+		return true
+	}
+	least := summarizerInputLimit(minSummarizingWindow, 0)
+	for _, input := range summarizerInputLimits(prof) {
+		if input < least {
+			return false
+		}
+	}
+	return true
 }
 
 // summarizerInputLimit is how many tokens of input a summarizer request may
@@ -2344,6 +2385,10 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// One profile serves the whole fold: sizing and every request it sends,
 	// so a model switch mid-fold cannot pair one model's budget with another.
 	sumProfile := cm.currentProfile()
+	if !summarizingWindowUsable(sumProfile) {
+		// The checkpoint already at history[0] stands in place of a summary.
+		return history, nil
+	}
 	maxHistoryChars := summarizerHistoryBudget(sumProfile, len(buildSummaryPrompt("", instructions)))
 
 	truncText := func(s string, limit int) string {

@@ -1146,11 +1146,11 @@ func TestSummarizerHistoryBudget(t *testing.T) {
 	}
 }
 
-// On a 2,048-token window the request still fits beside the client's safety
-// reserve: compaction succeeds rather than sending a request the client
-// refuses.
-func TestForceCompact_SummaryFitsATwoThousandTokenWindow(t *testing.T) {
-	const window = 2048
+// On the smallest window compaction summarizes on, a request whose history
+// fills its budget still fits beside the client's safety reserve: compaction
+// succeeds rather than sending a request the client refuses.
+func TestForceCompact_SummaryFitsTheMinimumWindow(t *testing.T) {
+	const window = minSummarizingWindow
 	client := llm.NewClient()
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
 		if len(req.Messages[0].Text())/4+llm.SafetyReserveTokens(window) >= window {
@@ -1163,7 +1163,7 @@ func TestForceCompact_SummaryFitsATwoThousandTokenWindow(t *testing.T) {
 	// Short partner messages (all carried) and long agent replies, enough to
 	// fill the summarizer's full history budget.
 	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("refactor the parser"))}
-	for i := range 6 {
+	for i := range 80 {
 		history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("progress %d %s", i, strings.Repeat("detail ", 500)))))
 	}
 	history = append(history,
@@ -1171,15 +1171,20 @@ func TestForceCompact_SummaryFitsATwoThousandTokenWindow(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
 	cm.ForceCompact(context.Background(), &history, "", noopEmit)
 	if history[0].Kind != schema.TurnSummary {
-		t.Fatalf("history starts with a %s, want a summary that fit the 2,048-token window", history[0].Kind)
+		t.Fatalf("history starts with a %s, want a summary that fit the %d-token window", history[0].Kind, window)
 	}
 }
 
-// On a small window, a hold crossing a part boundary in a left-out message
-// still reaches a summarizer whole: parts keep a sensible minimum size and
-// overlap however small the budget.
-func TestForceCompact_SmallWindowHoldAcrossAPartBoundaryReachesTheSummarizer(t *testing.T) {
-	const window = 2048
+// When caller instructions crowd the history budget below the minimum part
+// size, a long hold crossing a part boundary in a left-out message still
+// reaches a summarizer whole.
+func TestForceCompact_CrowdedBudgetHoldAcrossAPartBoundaryReachesTheSummarizer(t *testing.T) {
+	const window = minSummarizingWindow
+	instructions := "Keep the plan. " + strings.Repeat("Also keep every file path. ", 520)
+	prof := testProfile("openai", "test", window)
+	if part := summarizerHistoryBudget(prof, len(buildSummaryPrompt("", instructions))) / 6; part >= minPartnerPartChars {
+		t.Fatalf("fixture: parts of %d chars do not reach the %d-char minimum", part, minPartnerPartChars)
+	}
 	var all strings.Builder
 	client := llm.NewClient()
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
@@ -1191,19 +1196,18 @@ func TestForceCompact_SmallWindowHoldAcrossAPartBoundaryReachesTheSummarizer(t *
 		all.WriteString("\x00") // requests stay apart: a hold must be whole in one
 		return llm.Response{Message: llm.Assistant("## Progress\nsummary")}, nil
 	}})
-	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm := NewManager(prof, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	history := partnerFloodHistory(6, 1500, -1)
+	hold := "LONG_HOLD " + strings.Repeat("do not publish anything until I review it, ", 8) + "END_HOLD"
 	// The hold straddles the first 1000-character part boundary.
-	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", minPartnerPartChars-12)+partnerHold+strings.Repeat("f", 1500)))
-	cm.ForceCompact(context.Background(), &history, "", noopEmit)
-	if !strings.Contains(all.String(), partnerHold) {
-		t.Fatalf("a hold crossing a small-window part boundary never reached a summarizer whole")
+	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", minPartnerPartChars-200)+hold+strings.Repeat("f", 1500)))
+	cm.ForceCompact(context.Background(), &history, instructions, noopEmit)
+	if !strings.Contains(all.String(), hold) {
+		t.Fatalf("a hold crossing a minimum-size part boundary never reached a summarizer whole")
 	}
 }
 
-// A model switch during a fold does not redirect its requests: sizing and
-// dispatch use the profile the fold started with.
 func TestForceCompact_ModelSwitchDuringAFoldKeepsItsProfile(t *testing.T) {
 	var cm *Manager
 	switched := false
@@ -1236,7 +1240,7 @@ func TestForceCompact_ModelSwitchDuringAFoldKeepsItsProfile(t *testing.T) {
 // Steered compaction's caller instructions count against the window too: a
 // long instruction shrinks the history so the request still fits.
 func TestForceCompact_SteeredSummaryFitsASmallWindow(t *testing.T) {
-	const window = 4096
+	const window = minSummarizingWindow
 	client := llm.NewClient()
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
 		if len(req.Messages[0].Text())/4+llm.SafetyReserveTokens(window) >= window {
@@ -1247,23 +1251,23 @@ func TestForceCompact_SteeredSummaryFitsASmallWindow(t *testing.T) {
 	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("refactor the parser"))}
-	for i := range 8 {
+	for i := range 40 {
 		history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("progress %d %s", i, strings.Repeat("detail ", 500)))))
 	}
 	history = append(history,
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
-	instructions := "Keep the migration plan verbatim. " + strings.Repeat("Also keep every file path. ", 300)
+	instructions := "Keep the migration plan verbatim. " + strings.Repeat("Also keep every file path. ", 400)
 	cm.ForceCompact(context.Background(), &history, instructions, noopEmit)
 	if history[0].Kind != schema.TurnSummary {
 		t.Fatalf("history starts with a %s, want a steered summary that fit the window", history[0].Kind)
 	}
 }
 
-// A model's input cap counts as well as its window: on an 8,192-token window
-// with a 4,096-token input cap, the summary request stays under the cap.
+// A model's input cap counts as well as its window: on a 32,768-token window
+// with an 8,192-token input cap, the summary request stays under the cap.
 func TestForceCompact_SummaryFitsAnInputCap(t *testing.T) {
-	window, maxInput := 8192, 4096
+	window, maxInput := 32_768, 8192
 	prof := provider.FromResolved(registry.Resolved{Instance: "openai", ModelID: "capped", WireID: "capped",
 		Caps: registry.Caps{ContextWindow: &window, MaxInputTokens: &maxInput}}, nil)
 	client := llm.NewClient()
@@ -1275,7 +1279,7 @@ func TestForceCompact_SummaryFitsAnInputCap(t *testing.T) {
 	}})
 	cm := NewManager(prof, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
-	history := partnerFloodHistory(20, 1500, -1) // enough to fill the full budget
+	history := partnerFloodHistory(40, 1500, -1) // enough to fill the full budget
 	cm.ForceCompact(context.Background(), &history, "", noopEmit)
 	if history[0].Kind != schema.TurnSummary {
 		t.Fatalf("history starts with a %s, want a summary under the input cap", history[0].Kind)
@@ -1285,7 +1289,9 @@ func TestForceCompact_SummaryFitsAnInputCap(t *testing.T) {
 // An instruction longer than the old 250-byte overlap but within the 400-byte
 // one still reaches a summarizer whole across a part boundary.
 func TestForceCompact_LongHoldAcrossAPartBoundaryReachesTheSummarizer(t *testing.T) {
-	const window = 2048
+	const window = minSummarizingWindow
+	prof := testProfile("openai", "test", window)
+	part := max(summarizerHistoryBudget(prof, len(defaultSummaryPrefix))/6, minPartnerPartChars)
 	var all strings.Builder
 	client := llm.NewClient()
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
@@ -1297,13 +1303,47 @@ func TestForceCompact_LongHoldAcrossAPartBoundaryReachesTheSummarizer(t *testing
 		all.WriteString("\x00")
 		return llm.Response{Message: llm.Assistant("## Progress\nsummary")}, nil
 	}})
-	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm := NewManager(prof, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	history := partnerFloodHistory(6, 1500, -1)
 	hold := "LONG_HOLD " + strings.Repeat("do not publish anything until I review it, ", 8) + "END_HOLD"
-	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", 700)+hold+strings.Repeat("f", 1500)))
+	// The hold straddles the first part boundary.
+	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", part-300)+hold+strings.Repeat("f", 3000)))
 	cm.ForceCompact(context.Background(), &history, "", noopEmit)
 	if !strings.Contains(all.String(), hold) {
 		t.Fatalf("a %d-byte hold across a part boundary never reached a summarizer whole", len(hold))
+	}
+}
+
+// Below the minimum summarizing window no summary is attempted: the
+// deterministic checkpoint, which keeps the partner's messages and an earlier
+// summary, stands instead. Every route a summary may take counts: the session
+// model it falls back to as well as a configured cheap model, and an input
+// cap as well as a window.
+func TestForceCompact_NoSummaryBelowTheMinimumWindow(t *testing.T) {
+	window, maxInput := 32_768, 4096
+	profiles := map[string]*provider.Profile{
+		"small window": testProfile("openai", "test", 4096),
+		"small session window behind a large cheap model": provider.WithContextWindow(
+			provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 4096),
+		"small input cap": provider.FromResolved(registry.Resolved{Instance: "openai", ModelID: "capped", WireID: "capped",
+			Caps: registry.Caps{ContextWindow: &window, MaxInputTokens: &maxInput}}, nil),
+	}
+	for name, prof := range profiles {
+		t.Run(name, func(t *testing.T) {
+			var calls int
+			client := llm.NewClient()
+			client.Register(alwaysReplying(func(llm.Request) string { calls++; return emptySummaryReply }))
+			cm := NewManager(prof, client, cheapmodel.New(client))
+			cm.PreserveRecentTurns = 2
+			history := partnerHoldHistory()
+			cm.ForceCompact(context.Background(), &history, "", noopEmit)
+			if history[0].Kind != schema.TurnCheckpoint || calls != 0 {
+				t.Fatalf("history starts with a %s after %d summarizer calls; want the checkpoint and none", history[0].Kind, calls)
+			}
+			if !strings.Contains(history[0].Message.Text(), partnerHold) {
+				t.Fatalf("the standing checkpoint lost the hold")
+			}
+		})
 	}
 }

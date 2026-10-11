@@ -2435,24 +2435,32 @@ func TestCheckpoint_OriginalPromptNotOverriddenByFollowup(t *testing.T) {
 
 // TestMaybeCompact_SummarizeThreshold verifies summarize fires through the orchestrator.
 func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
-	// The 50-token window also shrinks the summarizer's budgets, so the
-	// partner's message is condensed in batches first: answer every call.
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: tests were run and passed")}
+			},
+		},
+	}
 	client := llm.NewClient()
-	client.Register(alwaysReplying(func(llm.Request) string { return "## Progress\nSummary: tests were run and passed" }))
+	client.Register(adapter)
 
-	// Small window. Checkpoint replaces old history with a checkpoint
-	// message, but the preserved recent turns are large enough to keep
-	// pressure above 90% after checkpoint, forcing summarize.
-	profile := testProfile("openai", "test", 50)
+	// The smallest window compaction summarizes on. Checkpoint replaces old
+	// history with a checkpoint message, but the preserved recent turns are
+	// large enough to keep pressure above 90% after checkpoint, forcing
+	// summarize.
+	profile := testProfile("openai", "test", minSummarizingWindow)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 1
 
 	// After checkpoint, result = [checkpoint_msg, recent_turn].
-	// The recent turn alone needs to be ~90% of 50 tokens = 45 tokens = ~180 chars.
+	// The recent turn alone needs to be ~90% of 8,192 tokens = ~7,400 tokens
+	// = ~29,500 chars.
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User(strings.Repeat("task ", 50))},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("work ", 30))},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 15))},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 2100))},
 	}
 
 	var layers []string
