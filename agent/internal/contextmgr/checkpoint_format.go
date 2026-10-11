@@ -94,43 +94,42 @@ const summaryModelTextHeading = "## Summary"
 // summary written before that layout is the model's text throughout, whatever
 // headings it used, and is carried whole.
 func carriesPartnerMessages(text string) bool {
-	_, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
+	start, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
 	if !ok {
 		return false
 	}
-	// The renderer writes exactly one fenced block under the heading, with
-	// the carried conversation section right after it.
-	if !isSingleFencedBlock(text[body:end]) {
+	modelText, ok := soleFencedText(text[body:end])
+	if !ok {
 		return false
 	}
-	carry, _, _, ok := markdownSectionSpan(text, checkpointConversationHeading)
-	if !ok || carry != end {
-		return false
-	}
-	// ...and the carried section is exactly what the renderer writes for the
-	// entries it holds, closing the turn.
-	return text[carry:] == renderCheckpointConversation(extractMarkdownConversation(text))+summaryTurnEnd
-}
-
-// isSingleFencedBlock reports whether text, blank lines aside, is one fenced
-// code block and nothing else.
-func isSingleFencedBlock(text string) bool {
-	var fence fenceTracker
-	opened, closed := false, false
-	for line := range strings.SplitSeq(strings.TrimSpace(text), "\n") {
-		switch {
-		case closed:
-			return false
-		case fence.step(line):
-			if opened {
-				closed = true
-			}
-			opened = true
-		case !opened:
+	entries := extractMarkdownConversation(text)
+	for _, entry := range entries {
+		if entry.Role != "user" {
 			return false
 		}
 	}
-	return closed
+	// Everything from the heading on must be exactly what the renderer writes
+	// for that model text and those entries.
+	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText)+renderCheckpointConversation(entries)+summaryTurnEnd
+}
+
+// soleFencedText returns the content of the one fenced block section holds,
+// blank lines aside, or false when it holds anything else.
+func soleFencedText(section string) (string, bool) {
+	lines := strings.Split(strings.TrimSpace(section), "\n")
+	var fence fenceTracker
+	if len(lines) < 2 || !fence.step(lines[0]) {
+		return "", false
+	}
+	for i := 1; i < len(lines); i++ {
+		if fence.step(lines[i]) {
+			if i != len(lines)-1 {
+				return "", false
+			}
+			return strings.Join(lines[1:i], "\n"), true
+		}
+	}
+	return "", false
 }
 
 // renderCompactionModelText renders a model-written compaction turn's own text
@@ -141,7 +140,9 @@ func isSingleFencedBlock(text string) bool {
 func renderCompactionModelText(heading, text string) string {
 	var b strings.Builder
 	b.WriteString(heading + "\n\n")
-	writeMarkdownFence(&b, text)
+	// Trailing newlines are dropped so the block reads back to the same text
+	// (carriesPartnerMessages round-trips it).
+	writeMarkdownFence(&b, strings.TrimRight(text, "\n"))
 	return b.String()
 }
 
@@ -371,7 +372,7 @@ func (f *fenceTracker) inside() bool { return f.length > 0 }
 
 // step advances over line and reports whether it opened or closed a block.
 func (f *fenceTracker) step(line string) bool {
-	char, n := fenceRun(line)
+	char, n, after := fenceRun(line)
 	if n == 0 {
 		return false
 	}
@@ -379,28 +380,29 @@ func (f *fenceTracker) step(line string) bool {
 		f.char, f.length = char, n
 		return true
 	}
-	if char == f.char && n >= f.length && strings.TrimSpace(line[n:]) == "" {
+	if char == f.char && n >= f.length && strings.TrimSpace(after) == "" {
 		f.length = 0
 		return true
 	}
 	return false
 }
 
-// fenceRun returns the fence character a line starts with and how many of it
-// lead the line, or 0, 0 when the line does not start with a fence: three or
-// more backticks or tildes.
-func fenceRun(line string) (byte, int) {
-	if line == "" || (line[0] != '`' && line[0] != '~') {
-		return 0, 0
+// fenceRun returns the fence a line starts with, after up to three spaces of
+// indentation: its character, its length and the rest of the line. The length
+// is 0 when the line does not start with a fence (three or more backticks or
+// tildes).
+func fenceRun(line string) (char byte, n int, after string) {
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	if indent > 3 || indent == len(line) || (line[indent] != '`' && line[indent] != '~') {
+		return 0, 0, ""
 	}
-	n := 0
-	for n < len(line) && line[n] == line[0] {
-		n++
-	}
+	char = line[indent]
+	rest := strings.TrimLeft(line[indent:], string(char))
+	n = len(line) - indent - len(rest)
 	if n < 3 {
-		return 0, 0
+		return 0, 0, ""
 	}
-	return line[0], n
+	return char, n, rest
 }
 
 func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkpointConversationEntry {

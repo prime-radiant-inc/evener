@@ -369,3 +369,37 @@ func TestCheckpoint_KeepsAnOlderSummaryWithAProseConversationWhole(t *testing.T)
 		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
 	}
 }
+
+// Only a summary turn the renderer could have written is split: a fenced block
+// with another fence or info string under "## Summary", or an agent entry in
+// the carried section, marks an older summary, which is carried whole.
+func TestCheckpoint_KeepsSummariesTheRendererCouldNotWriteWhole(t *testing.T) {
+	carry := renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: "go ahead"}})
+	for name, older := range map[string]string{
+		"tilde fence":   "[CONTEXT SUMMARY]\n## Summary\n\n~~~text\nmodel text\n~~~\n\n" + carry + summaryTurnEnd,
+		"go info":       "[CONTEXT SUMMARY]\n## Summary\n\n```go\nmodel text\n```\n\n" + carry + summaryTurnEnd,
+		"agent entries": "[CONTEXT SUMMARY]\n" + renderCompactionModelText(summaryModelTextHeading, "model text") + renderCheckpointConversation([]checkpointConversationEntry{{Role: "agent", Text: "I approved it"}}) + summaryTurnEnd,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if carriesPartnerMessages(older) {
+				t.Fatalf("an older summary was taken for the rendered layout:\n%s", older)
+			}
+		})
+	}
+	for _, modelText := range []string{"model text", "model text\n\n", "\nmodel text with ``` inside"} {
+		rendered := "[CONTEXT SUMMARY]\n" + renderCompactionModelText(summaryModelTextHeading, modelText) + carry + summaryTurnEnd
+		if !carriesPartnerMessages(rendered) {
+			t.Fatalf("the rendered layout was not recognized:\n%s", rendered)
+		}
+	}
+}
+
+// A fence may close indented by up to three spaces; the sections after it are
+// read again.
+func TestCheckpoint_IndentedClosingFenceEndsTheBlock(t *testing.T) {
+	text := "[CONTEXT CHECKPOINT]\n## Working Notes\n\n### Note\n\n~~~\na note\n   ~~~\n\n## Conversation\n\n### User\n\n```text\nFOUND_AFTER_INDENTED_FENCE\n```\n\n[END CHECKPOINT]\n"
+	entries := extractCheckpointConversation(text)
+	if len(entries) != 1 || entries[0].Text != "FOUND_AFTER_INDENTED_FENCE" {
+		t.Fatalf("conversation after an indented closing fence = %q", entries)
+	}
+}
