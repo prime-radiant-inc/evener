@@ -60,15 +60,18 @@ import {
   FormRow,
   IconButton,
   Input,
+  Menu,
   Popover,
   RadioGroup,
   Skeleton,
   Tooltip,
+  Tree,
+  type TreeProps,
+  type TreeRowInfo,
   useToasts,
+  VisuallyHidden,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Menu } from "../../widgets/menu";
-import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
@@ -139,7 +142,6 @@ const CLASS = {
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
   organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
   organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
-  srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 
 // Section-fold keys. Archived is the only one that starts collapsed; every
@@ -418,7 +420,7 @@ function PinnedRailSection({
             trigger={
               <>
                 <span aria-hidden="true">⋯</span>
-                <span className={CLASS.srOnly}>{`Actions for ${section.name}`}</span>
+                <VisuallyHidden>{`Actions for ${section.name}`}</VisuallyHidden>
               </>
             }
             items={[

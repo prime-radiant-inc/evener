@@ -899,13 +899,31 @@ describe("watchGloss", () => {
 describe("loading row", () => {
   test("renders a non-interactive loading indicator", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
-    expect(screen.getByText(/loading/i)).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  test("announces itself via role=status, like the top-level Skeleton", () => {
+  test("announces itself once as Loading, like the top-level Skeleton", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
-    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+  });
+});
+
+describe("project row retry", () => {
+  test("retries without activating the row and stays off the Tab order", async () => {
+    const retry = vi.fn();
+    const rowInfo = info();
+    render(
+      <RailRow
+        node={{ ...projectRailNode(apiProject()), resourceError: "load failed", retry }}
+        info={rowInfo}
+        actions={actions()}
+      />,
+    );
+    const button = screen.getByRole("button", { name: "Retry" });
+    expect(button.tabIndex).toBe(-1);
+    await userEvent.setup().click(button);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(rowInfo.activate).not.toHaveBeenCalled();
   });
 });
 
