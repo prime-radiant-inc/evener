@@ -87,6 +87,8 @@ export type { PopoverProps } from "./popover";
 export { Popover } from "./popover";
 export type { PromptCardProps } from "./promptcard";
 export { PromptCard } from "./promptcard";
+export type { PropertyListProps, PropertyListRow } from "./propertylist";
+export { PropertyList } from "./propertylist";
 export type { RadioGroupOption, RadioGroupProps } from "./radiogroup";
 export { RadioGroup } from "./radiogroup";
 export type { RecommendationCardAlternative, RecommendationCardProps } from "./recommendationcard";
