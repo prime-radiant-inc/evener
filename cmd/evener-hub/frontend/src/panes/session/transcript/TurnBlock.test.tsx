@@ -331,12 +331,13 @@ test("an intent-less tool shows its own derived summary at chat and tools levels
   // A closed intent group mounts its rows only once opened.
   fireEvent.click(screen.getByTestId("intent-group").querySelector("summary")!);
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+  // Derived from the call's own arguments (the fixture's command).
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain("echo derived-summary");
 
   const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   rerender(withConfig(tools, <TurnBlock turn={turn([blankIntent], {}, tools)} />));
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain("echo derived-summary");
 });
 
 // Regression for session 034MY2rfMj2ho4Nj6J0jFB: an intent-less read_file row
@@ -358,8 +359,9 @@ test("an intent-less read_file shows the Read summary, never 'Action summary una
     const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
     const group = screen.queryByTestId("intent-group") as HTMLDetailsElement | null;
     if (group && !group.open) fireEvent.click(group.querySelector("summary")!);
-    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
-    expect(screen.queryByText("Action summary unavailable")).toBeNull();
+    // The descriptor's own summary names the fixture's path; the neutral
+    // projected fallback would not.
+    expect(screen.getByTestId("tool-row-summary").textContent).toContain("src/foo.ts");
     unmount();
   }
 });

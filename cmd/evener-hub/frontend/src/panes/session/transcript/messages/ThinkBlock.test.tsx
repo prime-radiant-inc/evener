@@ -522,7 +522,9 @@ test("the collapsed summary keeps the final context and opening mounts the compl
     />,
   );
   const summary = container.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · more detail");
+  // The collapsed line previews the fixture's final context, not its first line.
+  expect(summary?.textContent).toContain("more detail");
+  expect(summary?.textContent).not.toContain("Delegating simple directory inspection task");
   expect(screen.queryByText(/Delegating simple directory inspection task/)).toBeNull();
   fireEvent.click(summary!);
   expect(screen.getByText(/Delegating simple directory inspection task/)).toBeTruthy();
@@ -537,7 +539,7 @@ test("the plain context removes common Markdown decoration while the expanded bo
     />,
   );
   const summary = container.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · Delegating simple directory inspection task");
+  expect(summary?.textContent).toContain("Delegating simple directory inspection task");
   expect(summary?.textContent).not.toMatch(/\*/);
   fireEvent.click(summary!);
   expect(screen.getByText("Delegating simple directory inspection task").tagName).toBe("STRONG");

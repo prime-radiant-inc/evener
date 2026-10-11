@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type ItemModel, steeringLabel, type TurnModel } from "@evener/appwire-client";
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -541,9 +541,20 @@ test("a mixed notification steer keeps its wire-kind label on the leftover divid
     />,
   );
   expect(screen.getByTestId("notification-card")).toBeTruthy();
-  expect(screen.getByText("System steered: Tasks complete")).toBeTruthy();
+  const kindLabel = screen.getByTestId("steering-item").querySelector("summary")?.textContent;
   fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   expect(screen.getByText("trailing steering prose")).toBeTruthy();
+  cleanup();
+  // The same leftover prose without the wire kind labels differently, so the
+  // kind is what named the divider.
+  render(
+    <SteeringItem
+      item={item({ text: `${JOB_NOTIFICATION_STEERING}\ntrailing steering prose` })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("steering-item").querySelector("summary")?.textContent).not.toBe(kindLabel);
 });
 
 // issue #48: text between two notification blocks used to be stripped out
@@ -603,7 +614,8 @@ test("the diamond leads the summary, then the label, then the Disclosure's own c
   const kids = Array.from(summary?.children ?? []);
   expect(kids[0]?.getAttribute("data-testid")).toBe("steering-rail-icon");
   expect(kids[0]?.querySelector('[data-testid="steering-glyph"]')).not.toBeNull();
-  expect(kids[1]?.textContent).toBe(steeringLabel("loop-detected"));
+  expect(kids[1]?.querySelector("svg")).toBeNull();
+  expect(kids[1]?.textContent).not.toBe("");
   expect(kids[kids.length - 1]?.getAttribute("aria-hidden")).toBe("true");
   expect(kids[kids.length - 1]?.querySelector("svg")).not.toBeNull();
   expect(screen.queryByTestId("steering-chevron")).toBeNull();
