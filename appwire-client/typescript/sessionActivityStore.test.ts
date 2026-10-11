@@ -4111,6 +4111,60 @@ test("frames arriving during a multi-page refresh do not restart it", async () =
   expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 7, status: "running" });
 });
 
+test("an evicted frame during a walk is recovered by one read", async () => {
+  const client = pushClient();
+  let revision = 1;
+  const rows = (count: number, first: number) =>
+    Array.from({ length: count }, (_, index) => {
+      const id = first + index;
+      return delegateRow({
+        delegateId: `delegate-${id}`,
+        childRef: `remote:${id}`,
+        projectionRevision: id === 1 ? revision : 1,
+        status: id === 1 && revision > 1 ? "completed" : "running",
+        ...(id === 1 && revision > 1 ? { reportPreview: "settled" } : {}),
+      });
+    });
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: cursor ? { complete: true, issues: [] } : { complete: false, issues: [], nextCursor: "second" },
+    delegates: cursor ? rows(2, 200) : rows(129, 1),
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 129);
+  await store.loadMore("delegates");
+  expect(store.getSnapshot().delegates.rows).toHaveLength(131);
+  // A refresh walks the collection, and the first loaded row settles before more
+  // ids than the buffer holds update, so its frame is evicted unplaced.
+  const refreshed = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 4, status: "completed", reportPreview: "settled" })),
+  );
+  for (let id = 2; id <= 129; id += 1) {
+    client.emitNotification(
+      pushedFrame(frameInfo({ delegateId: `delegate-${id}`, projectionRevision: 2, status: "running" })),
+    );
+  }
+  revision = 5;
+  await vi.advanceTimersByTimeAsync(100);
+  // The recovery read walks the collection too, so its own page steps on the
+  // paced timer.
+  await vi.advanceTimersByTimeAsync(100);
+  await refreshed;
+  // The walk could not place the evicted frame, so it is recovered by a read once
+  // the walk is over.
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    delegateId: "delegate-1",
+    projectionRevision: 5,
+    status: "completed",
+  });
+  // The reads stay the walk's own plus that one recovery.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBeLessThanOrEqual(8);
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({

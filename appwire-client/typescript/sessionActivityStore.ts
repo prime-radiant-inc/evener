@@ -185,6 +185,10 @@ export class SessionActivityStore {
    * read rather than staying silent for the id's whole life. Cleared with the
    * applied map. */
   private readonly unattributableDelegateRevisions = new Map<string, number>();
+  /** Whether a buffered frame was evicted before a read could place it. A walk
+   * in flight keeps the frames for the rows it will settle, so the recovery read
+   * waits for that walk to finish rather than restarting it. */
+  private evictedDelegateFrame = false;
   /** Whether the loaded delegate row set proves each id unique: only a read
    * carried to its collection's end, or to its displayed boundary, does. Until
    * then a frame matching one loaded row may still belong to a row a later page
@@ -600,6 +604,12 @@ export class SessionActivityStore {
           if (reachedBoundary) {
             read.refresh = null;
             if (reconciled) read.boundary = undefined;
+            // A frame evicted while this walk held it was never placed: recover
+            // it with one read now that the walk is over.
+            if (this.evictedDelegateFrame) {
+              this.evictedDelegateFrame = false;
+              read.rootQueued = true;
+            }
           }
           read.cursor = page.page.nextCursor;
           read.incomplete = !page.page.complete || issues.length > 0 || read.refresh !== null;
@@ -887,6 +897,11 @@ export class SessionActivityStore {
         // would let a delegate whose read never admitted it stay undiscovered
         // forever, with later frames updating a buffer that no read will use.
         this.seenUnknownDelegates.delete(oldest.value);
+        // The frame never reached a row, so the id must be able to ask again: its
+        // revision guard would otherwise keep a later frame silent, and a walk in
+        // flight holds the recovery read until it finishes.
+        this.unattributableDelegateRevisions.delete(oldest.value);
+        this.evictedDelegateFrame = true;
       }
     }
   }

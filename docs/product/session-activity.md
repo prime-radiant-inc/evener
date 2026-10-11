@@ -309,7 +309,8 @@ for a delegate it has not loaded, for a delegate id that names more than one
 loaded row, and for one no final row set has yet proved unique, since a page the
 collection continues past can still serve that id for another child. It reads
 none of that while a fresh walk is in flight: that walk settles the frames
-it carries at its displayed boundary, so they do not restart it. It also
+it carries at its displayed boundary, so they do not restart it. A frame the
+buffer evicts before that is recovered by one read when the walk ends. It also
 reads on observe/paging/resync/reconnect, and when an epoch change retires its
 push state; a resync and a reconnect both turn the merge off until a refreshed
 live context confirms the source again, so a frame racing their re-reads is
