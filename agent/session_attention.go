@@ -774,16 +774,11 @@ func (s *Session) holdAcceptedTrigger(attentionID string) {
 }
 
 // restoreAcceptedTrigger latches the trigger of a restarted owed generation
-// and puts the turns behind it and the pending items back into the resumed
-// history, which a compaction marker after them would have cut.
-func (s *Session) restoreAcceptedTrigger(attentionID string) error {
+// and puts its turn and the pending items' turns (turns, in arrival order)
+// back into the resumed history, which a compaction marker after them would
+// have cut.
+func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn) error {
 	s.holdAcceptedTrigger(attentionID)
-	s.attentionMu.Lock()
-	turns, err := s.pendingAttentionTurnsLocked()
-	s.attentionMu.Unlock()
-	if err != nil {
-		return err
-	}
 	for i, turn := range turns {
 		if err := s.retainDelegateAttentionTurn(turn, turns[i+1:]...); err != nil {
 			return err

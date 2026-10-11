@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
 
@@ -79,6 +80,10 @@ type delegateOwedAttentionStart struct {
 	attentionID string
 	generation  uint64
 	pendingIDs  []string
+	// turns are the durable turns behind the trigger and the pending items,
+	// read by the same scan that found the generation, so recovery needs no
+	// transcript read after the start commits.
+	turns []schema.Turn
 }
 
 func (c *delegateTreeController) takeOwedAttentionAdmission() bool {
@@ -171,6 +176,7 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 				attentionID: resume.attentionID,
 				generation:  resume.generation,
 				pendingIDs:  fold.pendingIDs(),
+				turns:       fold.pendingTurns(resume.attentionID),
 			})
 		}
 	}
