@@ -796,6 +796,15 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	return def
 }
 
+// WithCommunicateDelegatePointer returns a copy of a communicate definition
+// that also points to delegate_send, for a session that can message its own
+// delegates. communicate only reaches a human partner or a parent, so without
+// the pointer a model answering its delegate's question reaches for it.
+func WithCommunicateDelegatePointer(def llm.ToolDefinition) llm.ToolDefinition {
+	def.Description += " To message one of your delegates, use `delegate_send`."
+	return def
+}
+
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
 	reasoningSchema := map[string]any{

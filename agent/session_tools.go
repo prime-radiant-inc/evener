@@ -1595,6 +1595,8 @@ func (s *Session) rebuildToolDefsCache() {
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}
+	// The registry holds what this session can call, by canonical name.
+	canMessageDelegates := s.reg.Get("delegate_send") != nil
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
@@ -1603,6 +1605,9 @@ func (s *Session) rebuildToolDefsCache() {
 			}
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
+			}
+			if canMessageDelegates {
+				defs[i] = tool.WithCommunicateDelegatePointer(defs[i])
 			}
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
