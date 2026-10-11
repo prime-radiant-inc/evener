@@ -86,6 +86,7 @@ func TestRestoreReadsTheEndReasonOfTheLatestAttemptOnly(t *testing.T) {
 		return llm.Response{}, errors.New("provider unavailable")
 	}
 	rerun := restoreReopenSession(t, crashDir, crashed.ID(), failing)
+	// TRIPWIRE: the rerun fails at its first model call; only a genuine hang waits this long.
 	runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer runCancel()
 	if _, ran, _ := rerun.ProcessClientMutationStart(runCtx, nil); !ran {
