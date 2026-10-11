@@ -40,19 +40,7 @@
   color: var(--ink-hi);
 }
 
-.group {
-  padding: var(--space-1) 0;
-}
-
-.summary {
-  cursor: pointer;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-}
-
 .groupBody {
-  margin-top: var(--space-1);
   padding-left: var(--space-3);
   border-left: 2px solid var(--edge);
 }

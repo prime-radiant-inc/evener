@@ -41,13 +41,8 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { FailureGlyph, Markdown } from "../../../../widgets";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  setDisclosureOpen,
-  toggleDisclosure,
-} from "../../../../widgets/disclosure/disclosureStore";
+import { Disclosure, FailureGlyph, Markdown } from "../../../../widgets";
+import { disclosureDefault, isDisclosureOpen, setDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
@@ -63,8 +58,6 @@ const CLASS = {
   line: requireClass(styles.line, "systemnoticeitem.module.css", "line"),
   failure: requireClass(styles.failure, "systemnoticeitem.module.css", "failure"),
   failureText: requireClass(styles.failureText, "systemnoticeitem.module.css", "failureText"),
-  group: requireClass(styles.group, "systemnoticeitem.module.css", "group"),
-  summary: requireClass(styles.summary, "systemnoticeitem.module.css", "summary"),
   groupBody: requireClass(styles.groupBody, "systemnoticeitem.module.css", "groupBody"),
   scaffold: requireClass(styles.scaffold, "systemnoticeitem.module.css", "scaffold"),
   scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
@@ -350,25 +343,19 @@ function SystemGroup({
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const disclosureKey = scopedDisclosureId(disclosureScope, firstItem.id);
   const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, firstItem.id, false);
-  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   return (
-    <details className={CLASS.group} data-testid="system-notice-group" open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
-      <summary
-        className={CLASS.summary}
-        onClick={(e) => {
-          e.preventDefault();
-          toggleDisclosure(disclosureKey, disclosureFallback);
-        }}
-      >
-        {count} system events · {first}
-      </summary>
+    <Disclosure
+      id={disclosureKey}
+      defaultOpen={disclosureFallback}
+      data-testid="system-notice-group"
+      summary={`${count} system events · ${first}`}
+    >
       <div className={CLASS.groupBody}>
         {run.items.map((it) => (
           <SystemLine key={it.id} item={it} turn={turn} sessionRef={sessionRef} metadata={metadata} />
         ))}
       </div>
-    </details>
+    </Disclosure>
   );
 }
 

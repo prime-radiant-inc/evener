@@ -127,6 +127,14 @@ test("the same scaffold item id has independent disclosure state in different se
   expect(scaffolds[1]?.open).toBe(false);
 });
 
+test("a collapsed group keeps its lines out of the document until a click opens it", () => {
+  const items = [item("a"), item("b"), item("c")];
+  renderTurnTools(turnWith(items));
+  expect(screen.queryByText("notice b")).toBeNull();
+  fireEvent.click(screen.getByText(/^3 system events/));
+  expect(screen.getByText("notice b")).toBeTruthy();
+});
+
 test("the group's summary names the count and the first event", () => {
   const items = [item("a", { text: "first thing happened" }), item("b"), item("c")];
   render(<TurnBlock turn={turnWith(items)} />);
