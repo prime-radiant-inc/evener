@@ -111,7 +111,7 @@ export { Skeleton } from "./skeleton";
 export type { SpeakerAvatarProps, SpeakerAvatarSpeaker } from "./speakeravatar";
 export { SpeakerAvatar } from "./speakeravatar";
 export type { StatusDotProps } from "./statusdot";
-export { StatusDot } from "./statusdot";
+export { STATUS_LABEL, StatusDot } from "./statusdot";
 export { SteeringGlyph } from "./steeringglyph";
 export type { SwitchProps } from "./switch";
 export { Switch } from "./switch";

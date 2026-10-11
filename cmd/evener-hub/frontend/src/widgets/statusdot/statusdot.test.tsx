@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import { mediaBlock, readModuleCss } from "../../styles/cssBlock";
 import type { CadenceState } from "../cadence";
 import { requireClass } from "../internal/requireClass";
 import { StatusDot } from "./index";
@@ -38,4 +39,27 @@ for (const [state, familyClass, label] of STATE_FAMILIES) {
 test("is not in the tab order - it's a status indicator, not a control", () => {
   render(<StatusDot state="working" />);
   expect(screen.getByRole("img").getAttribute("tabindex")).toBeNull();
+});
+
+// vitest leaves CSS Modules unprocessed, so the motion contract is read off
+// disk: the working spinner turns only inside the no-preference gate, and
+// under reduced motion the working state is the plain static alive dot.
+const CSS = readModuleCss(import.meta.url, "statusdot.module.css").replace(/\/\*[\s\S]*?\*\//g, " ");
+
+test("working plays its activity spinner only when motion is allowed", () => {
+  render(<StatusDot state="working" />);
+  const working = requireClass(rawStyles.working, "statusdot.module.css", "working");
+  expect(screen.getByRole("img", { name: "Working" }).classList.contains(working)).toBe(true);
+  const motionRules = mediaBlock(CSS, "prefers-reduced-motion: no-preference");
+  expect(motionRules).toMatch(/\.working\s*\{[^}]*animation:[^}]*infinite/);
+  expect(CSS.replace(motionRules, "")).not.toMatch(/animation:/);
+});
+
+test("only the working state carries the activity spinner", () => {
+  const working = requireClass(rawStyles.working, "statusdot.module.css", "working");
+  for (const state of ["idle", "needs-you", "failed", "ended"] as const) {
+    const { unmount } = render(<StatusDot state={state} />);
+    expect(screen.getByRole("img").classList.contains(working)).toBe(false);
+    unmount();
+  }
 });
