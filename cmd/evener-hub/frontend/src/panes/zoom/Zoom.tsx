@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { m, spatialTransition, useReducedMotion } from "../../motion";
@@ -14,8 +14,9 @@ import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActiv
 import { useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
+import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
-import { ReadOnlyThreadContent } from "../transcript/ReadOnlyThreadContent";
 import {
   clearCascadeUserTransition,
   hasCascadeUserTransition,
@@ -96,6 +97,25 @@ function ScopeConversation({
 
   const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot, subagents);
   activity.leaf.title = (imageMatches && model?.name) || scope.title;
+  const composer = (admitted ? retainedConversationComposer(lifetime, scope.requestedRef) : null) ?? null;
+  const seat = useMemo<ConversationSeat>(
+    () => ({
+      readView: view,
+      composerSource: composer,
+      // The retained view's readable flag tracks this column's admission
+      // and readability; a collapsed or retired scope stops remounting.
+      keepViewRemount: () => view.readable,
+      viewFallbackId: pane.id,
+      // The host pane owns focus: a mounting column conversation never
+      // autofocuses its composer — the user taps in, or the pane's own
+      // focus plumbing acts.
+      focused: false,
+      // The cascade reconciles a resumed conversation in place; no route
+      // to replace. The session menu belongs to the conversation pane.
+      sessionMenu: false,
+    }),
+    [view, composer, pane.id],
+  );
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;
   // A lone column fills the pane so the first drill reads as the subagent's
@@ -113,13 +133,41 @@ function ScopeConversation({
       transition={userTransition ? spatialTransition() : { duration: 0 }}
     >
       {readable ? (
-        <CascadeColumn paneId={pane.id} scope={activity}>
-          {admitted ? (
-            <ReadOnlyThreadContent ref={scope.requestedRef} view={view} availability={snapshot?.summaryState} />
-          ) : (
-            <EmptyState title="Loading transcript…" />
-          )}
-        </CascadeColumn>
+        admitted ? (
+          <ConversationBody
+            ref={scope.requestedRef}
+            seat={seat}
+            render={({ state, content, footer }) => (
+              <CascadeColumn
+                paneId={pane.id}
+                scope={activity}
+                content={
+                  state === "deleted" ? (
+                    <EmptyState title="This session was deleted" hint="Its transcript is gone." />
+                  ) : state === "loading" ? (
+                    <EmptyState
+                      title={
+                        snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable
+                          ? "Transcript unavailable"
+                          : "Loading transcript…"
+                      }
+                    />
+                  ) : (
+                    content
+                  )
+                }
+                conversationFooter={state === "live" ? footer : null}
+              />
+            )}
+          />
+        ) : (
+          <CascadeColumn
+            paneId={pane.id}
+            scope={activity}
+            content={<EmptyState title="Loading transcript…" />}
+            conversationFooter={null}
+          />
+        )
       ) : (
         <CascadeSpine paneId={pane.id} scope={activity} />
       )}

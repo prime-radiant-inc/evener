@@ -274,7 +274,7 @@ test("genuine cascade column movement supersedes reflow without Return or neighb
   }
 });
 
-test("root and child render through real read-only readers inside one scaffold", async () => {
+test("root and child render through real conversation readers inside one scaffold", async () => {
   const { fake } = fixture();
   const mounted = mount(fake);
   await screen.findByText("root content old-root");
@@ -288,12 +288,14 @@ test("root and child render through real read-only readers inside one scaffold",
     const controls = within(column).getByTestId("cascade-activity-controls");
     expect(content.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   }
-  expect(screen.queryByRole("textbox")).toBeNull();
+  // Every readable column renders its conversation: one composer each, no
+  // more than the columns on screen.
+  expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
-test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
+test("separated Zoom Return closes inspection and focuses its surviving source", async () => {
   const { fake } = fixture();
   const { source, inspector } = inspectedCascade();
   const sourceLifetime = conversationPaneLifetime(source);
@@ -304,8 +306,10 @@ test("separated read-only Zoom Return closes inspection and focuses its survivin
   // never renders it: the first drill shows only the subagent's conversation.
   expect(columnRefs()).toEqual(["child"]);
   expect(spineRefs()).toEqual([]);
-  expect(screen.queryByRole("textbox")).toBeNull();
-  expect(inspectorLifetime.composer).toBeNull();
+  expect(within(screen.getByTestId("cascade-column")).getByRole("textbox")).toBeTruthy();
+  // The cascade fabricates no composer for the origin ref: the origin
+  // conversation never renders in the pane.
+  expect(inspectorLifetime.composers.get("root")).toBeUndefined();
   requestPaneFocus(inspector.id);
   act(() => fireEvent.click(screen.getByRole("button", { name: "Return to previous view" })));
   expect(workspaceStore.getState().panes).toEqual([source]);
@@ -386,7 +390,7 @@ test("a cascade with no live origin keeps the readable parent column", async () 
 });
 
 test.each(["deleted", "missing"] as const)(
-  "a $0 child has a scoped terminal explanation while parent, Open conversation and Return stay usable",
+  "a $0 child has a scoped terminal explanation while parent and Return stay usable",
   async (failure) => {
     const { fake, response, context } = fixture();
     const error =
@@ -421,12 +425,6 @@ test.each(["deleted", "missing"] as const)(
     expect(within(child).queryByText("Loading transcript…")).toBeNull();
     expect(screen.getByText("root content old-root")).toBeTruthy();
     if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
-    act(() => fireEvent.click(within(child).getByRole("button", { name: "Open conversation" })));
-    expect(
-      workspaceStore
-        .getState()
-        .panes.some((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === "child"),
-    ).toBe(true);
     act(() => popAgentCascade("cascade", "root"));
     expect(currentParams().ref).toBe("root");
     expect(columnRefs()).toEqual(["root"]);
@@ -653,6 +651,10 @@ test.each([
 ] as const)(
   "a %s ancestor uses the session-list signal and keeps its exact runtime text available",
   async (state, runtimeText, signalLabel, signalState) => {
+    // The active fixture thread carries no stop capability, so its column's
+    // composer reports the stopless state through its diagnostic canary —
+    // expected output for this fixture, asserted rather than silenced.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { fake, statuses } = fixture();
     statuses.set("root", state);
     mount(fake);
@@ -677,6 +679,12 @@ test.each([
     const column = screen.getByTestId("cascade-column");
     expect(within(column).getByText(runtimeText).getAttribute("data-runtime-state")).toBe(state);
     expect(screen.queryByTestId("cascade-spine")).toBeNull();
+    if (state === "active") {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("no Stop"), expect.objectContaining({ ref: "root" }));
+    } else {
+      expect(warn).not.toHaveBeenCalled();
+    }
+    warn.mockRestore();
   },
 );
 
@@ -885,7 +893,7 @@ test("a replaced nested origin never renders a non-leaf column on the phone", as
   expect(chromeStore.getState().paneTitle).toBe("child");
 });
 
-test("the phone cascade keeps one title, with status and Open conversation at the column bottom", async () => {
+test("the phone cascade keeps one title, with the conversation's composer at the column bottom", async () => {
   const { fake } = fixture();
   installMobileViewport();
   mount(fake);
@@ -899,10 +907,15 @@ test("the phone cascade keeps one title, with status and Open conversation at th
   // second chips row piles under the transcript.
   expect(screen.queryByTestId("statusbar")).toBeNull();
   expect(screen.getByTestId("cascade-activity-controls")).toBeTruthy();
-  // The column's runtime state and Open-conversation action sit below the
-  // transcript content, in the column's own footer bar.
+  // The column's runtime state and the conversation's own composer sit
+  // below the transcript content, in the column's own footer bar — the bar
+  // the home-indicator clearance pads.
   const footerBar = screen.getByTestId("cascade-column-footer");
-  expect(within(footerBar).getByRole("button", { name: "Open conversation" })).toBeTruthy();
+  expect(
+    screen.getByTestId("cascade-column-content").compareDocumentPosition(footerBar) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(footerBar.querySelector("[data-composer]")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Open conversation" })).toBeNull();
   expect(
     screen.getByTestId("cascade-column-content").compareDocumentPosition(footerBar) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
@@ -917,10 +930,20 @@ test("the desktop cascade column keeps its own title and the pane footer status 
   expect(screen.queryByTestId("cascade-column-footer")).toBeNull();
   expect(screen.getByTestId("statusbar")).toBeTruthy();
   const inColumn = within(childColumn);
-  const headerButton = inColumn.getByRole("button", { name: "Open conversation" });
+  // The conversation's composer rides below the transcript content inside
+  // the column; the header keeps the title and runtime state only.
+  const composer = childColumn.querySelector("[data-composer]");
+  expect(composer).toBeTruthy();
   expect(
-    inColumn.getByTestId("cascade-column-content").compareDocumentPosition(headerButton) &
-      Node.DOCUMENT_POSITION_PRECEDING,
+    inColumn.getByTestId("cascade-column-content").compareDocumentPosition(composer as Node) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(inColumn.queryByRole("button", { name: "Open conversation" })).toBeNull();
+  const header = childColumn.querySelector("header");
+  if (!header) throw new Error("Missing column header");
+  expect(
+    header.compareDocumentPosition(inColumn.getByTestId("cascade-column-content") as Node) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
 });
 
@@ -979,8 +1002,11 @@ test("a held abandoned grandchild read cannot replace a later sibling or move fo
     .getAllByTestId("cascade-column")
     .find((column) => column.getAttribute("data-scope-ref") === "sibling");
   if (!siblingColumn) throw new Error("Missing sibling column");
-  const open = within(siblingColumn).getByRole("button", { name: "Open conversation" });
-  open.focus();
+  const open = siblingColumn.querySelector<HTMLElement>('[data-composer] [role="textbox"]');
+  if (!open) throw new Error("Missing sibling composer");
+  act(() => {
+    open.focus();
+  });
   await act(async () => held.resolve(response("grandchild")));
   expect(currentParams().ref).toBe("sibling");
   expect(columnRefs()).toEqual(["root", "sibling"]);
