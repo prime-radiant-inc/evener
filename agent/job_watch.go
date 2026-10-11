@@ -4586,10 +4586,12 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			return false, nil
 		}
 		// A newer frame for the same key coalesced over this one while it was
-		// being delivered, and carries its content forward (it may even have
-		// been delivered already): stand down. Releasing the claim releases
-		// this frame's receipt.
-		if jm.watchSendSuperseded(state.DeliveryID) {
+		// being delivered, and carries its content forward: stand down. The
+		// mark covers a replacement that has since settled (no pending frame
+		// left); the newer durable frame covers the window before the
+		// replacement's runtime commit sets the mark. Either way the claim or
+		// the coalesce, whichever finishes last, releases this frame's receipt.
+		if jm.watchSendSuperseded(state.DeliveryID) || (pending != nil && pending.UpdateSeq > state.UpdateSeq) {
 			return false, nil
 		}
 		return false, errors.New("stable watch delivery is not the durable pending head")

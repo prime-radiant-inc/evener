@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // stableWatchDeliveryReceiptIDs lists the delivery ids the controller still
@@ -126,5 +128,51 @@ func TestSupersededStableWatchDelivererAfterReplacementDelivered(t *testing.T) {
 	}
 	if got := stableWatchDeliveryReceiptIDs(fixture.controller); len(got) != 0 {
 		t.Fatalf("delivery receipts outlived their frames: %v", got)
+	}
+}
+
+// The replacement frame is durable before its runtime commit marks the
+// claimed first frame superseded. A deliverer of the first frame that reaches
+// its durable check in that window finds a newer pending frame for its key,
+// stands down without a staleness error, and its receipt still goes once the
+// coalesce and its claim have both finished.
+func TestSupersededStableWatchDelivererBeforeRuntimeCommit(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	if !jm.claimWatchSendDelivery(first.DeliveryID) {
+		t.Fatal("claim first frame")
+	}
+	var standDown error
+	ranInWindow := false
+	originalAppend := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		if err := originalAppend(event); err != nil {
+			return err
+		}
+		if !ranInWindow && event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil && event.WatchSend.DeliveryID != first.DeliveryID {
+			ranInWindow = true
+			var delivered bool
+			delivered, standDown = jm.deliverStableWatchSend(cfg, first)
+			if delivered {
+				standDown = errors.New("superseded frame was delivered")
+			}
+		}
+		return nil
+	}
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
+	jm.appendEvent = originalAppend
+	jm.releaseWatchSendDeliveryClaim(first.DeliveryID)
+	if !ranInWindow {
+		t.Fatal("the replacement's pending append never ran")
+	}
+	if standDown != nil {
+		t.Fatalf("deliverer in the commit window: %v, want a quiet stand-down", standDown)
+	}
+	second := fixture.requireOnePending(t).state
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
+		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
 	}
 }
