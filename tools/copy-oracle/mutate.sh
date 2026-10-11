@@ -17,7 +17,8 @@
 #
 # Output: KILLED (tests failed, good; the failing tests are listed under it),
 # SURVIVED (tests passed: the conversion lost coverage), or NO-OP (the
-# substitution matched nothing). The full test log is kept at $TMPDIR/copy-oracle-mutate.log.
+# substitution matched nothing). The full test log path is printed on SURVIVED
+# and kept for every run under $TMPDIR/copy-oracle-mutate.*.
 set -euo pipefail
 
 if [[ $# -lt 4 || "$3" != "--" ]]; then
@@ -32,7 +33,8 @@ if ! git diff --quiet -- "$file"; then
   echo "refusing: $file has uncommitted edits; mutate.sh restores it with git restore" >&2
   exit 2
 fi
-log="${TMPDIR:-/tmp}/copy-oracle-mutate.log"
+# One log per run: parallel checks must not overwrite each other's output.
+log=$(mktemp "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
 trap 'git restore -- "$file"' EXIT
 perl -0pi -e "$subst" "$file"
 if git diff --quiet -- "$file"; then
