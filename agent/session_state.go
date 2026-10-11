@@ -520,7 +520,7 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		release(transitioned, turnMS)
 		return
 	}
-	state := deriveRestoredState(restoredHistory, divergence, origins)
+	state := deriveRestoredState(restoredHistory, divergence, origins, latestAttemptStarts(restoredEntries, restoredRepairInsertions))
 	pending, isAskRound := deriveRestoredAskPending(restoredHistory, divergence, origins)
 	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
 	if transitioned {
@@ -652,10 +652,10 @@ func settleTerminalState(hadOutput, goalKicked, queuePending, autonomyPending bo
 // escapeHistoryWithSessionProvenance, in the same units as s.history at
 // this point: a forked child's inherited prefix must not be decided by this
 // session's own journal (steeringOriginBoundary).
-func (s *Session) recomputeRestoredState(divergenceTurn int) {
+func (s *Session) recomputeRestoredState(divergenceTurn int, attemptStarts map[string]int) {
 	s.mu.Lock()
 	origins := s.clientMutations.steeringOrigins()
-	target := deriveRestoredState(s.history, divergenceTurn, origins)
+	target := deriveRestoredState(s.history, divergenceTurn, origins, attemptStarts)
 	_, askRound := deriveRestoredAskPending(s.history, divergenceTurn, origins)
 	s.mu.Unlock()
 	if target != SessionAwaiting {

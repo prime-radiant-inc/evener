@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -44,5 +45,26 @@ func TestCompact_SummaryCarriesPartnerMessagesTheHookPushedIntoTheFold(t *testin
 	}
 	if !strings.Contains(history[0].Message.Text(), hold) {
 		t.Fatalf("the hold is gone from the model's context after compaction:\n%s", history[0].Message.Text())
+	}
+}
+
+// Compaction may point at the transcript, and trim a long partner message
+// because the transcript keeps it in full, only when the transcript really is
+// being written: a persistent session whose transcript could not be created
+// keeps none.
+func TestBuildCompactionMeta_KeptTranscriptFollowsTheWriter(t *testing.T) {
+	t.Parallel()
+	failed, _ := newFailClosedSession(t, func(point string) error {
+		if point == "new_transcript" {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	if meta := failed.buildCompactionMeta(); meta.TranscriptKept {
+		t.Fatal("a session whose transcript could not be created reports a kept transcript")
+	}
+	kept, _ := newFailClosedSession(t, func(string) error { return nil })
+	if meta := kept.buildCompactionMeta(); !meta.TranscriptKept {
+		t.Fatal("a persistent session writing its transcript reports none kept")
 	}
 }

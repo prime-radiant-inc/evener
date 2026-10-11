@@ -60,7 +60,7 @@ func TestRestoredNeedsResponseHeldByWorkInFlightStillOwesItsRest(t *testing.T) {
 	child := newTestSessionForState(t)
 	working := &subagent{id: child.ID(), sess: child, running: true}
 	sess.subagents.track(working)
-	sess.recomputeRestoredState(0)
+	sess.recomputeRestoredState(0, nil)
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("restored state while the child works = %q, want idle", got)
 	}

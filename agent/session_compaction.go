@@ -982,6 +982,7 @@ func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
 	if s.stateDir != "" {
 		meta.SessionID = s.id
 	}
+	meta.TranscriptKept = s.hasTranscriptWriter()
 
 	// A persistent session is not automatically a session that can READ its
 	// transcript: a typed agent's tools: allowlist can drop either transcript

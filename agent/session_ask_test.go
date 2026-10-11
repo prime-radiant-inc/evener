@@ -2755,7 +2755,7 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	if !isAskRound || len(pending) != 1 {
 		t.Fatalf("deriveRestoredAskPending with journal provenance = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, 0, origins); state != SessionAwaiting {
+	if state := deriveRestoredState(history, 0, origins, nil); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState with journal provenance = %q, want %q", state, SessionAwaiting)
 	}
 
@@ -2770,7 +2770,7 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	if isAskRound || len(pending) != 0 {
 		t.Fatalf("deriveRestoredAskPending without journal provenance = pending=%#v isAskRound=%v, want the kindless turn to resolve the ask as an ordinary answering steer", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, 0, nil); state != SessionIdle {
+	if state := deriveRestoredState(history, 0, nil, nil); state != SessionIdle {
 		t.Fatalf("deriveRestoredState without journal provenance = %q, want %q", state, SessionIdle)
 	}
 }
@@ -2831,7 +2831,7 @@ func TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
 	if !isAskRound || len(pending) != 1 {
 		t.Fatalf("deriveRestoredAskPending for an inherited kindless note = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, divergenceTurn, origins); state != SessionAwaiting {
+	if state := deriveRestoredState(history, divergenceTurn, origins, nil); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState for an inherited kindless note = %q, want %q", state, SessionAwaiting)
 	}
 }
