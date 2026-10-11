@@ -987,6 +987,33 @@ export class TranscriptRepository {
             window = { ...window, rows: [] };
             window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit);
           }
+          // A committed page boundary is not a latest-window certificate. The
+          // fallback above selects only the latest read, so join certified
+          // older rows from this baseline to restore the window already loaded
+          // at the opening cut, without treating arbitrary disk rows as current.
+          const loadedStart = cut.model && this.#oldestPosition(cut.model);
+          const latestStart = window.rows[0]?.position;
+          if (
+            cut.authorityValid &&
+            window.complete &&
+            loadedStart &&
+            latestStart &&
+            comparePosition(loadedStart, latestStart) < 0 &&
+            window.rows.length < limit
+          ) {
+            const older = await this.#cache.getOlderWindow(
+              this.#binding.historyKey,
+              latestStart,
+              limit - window.rows.length,
+              this.#baselineIdentity,
+            );
+            if (!older.stale) {
+              window = {
+                ...window,
+                rows: [...older.rows.filter((row) => comparePosition(row.position, loadedStart) >= 0), ...window.rows],
+              };
+            }
+          }
           if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
