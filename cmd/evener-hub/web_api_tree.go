@@ -1148,19 +1148,6 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 	return sources
 }
 
-func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionCapabilities {
-	return hubapi.SessionCapabilities{
-		Send:        caps.Send,
-		Steer:       caps.Steer,
-		Interrupt:   caps.Interrupt,
-		Compact:     caps.Compact,
-		Clear:       caps.Clear,
-		Shutdown:    caps.Shutdown,
-		ChangeModel: caps.ChangeModel,
-		Queue:       caps.Queue,
-	}
-}
-
 func (s *WebServer) isLive(sessionID string) bool {
 	if !isLocalRouteID(sessionID) {
 		// A tree projection has no request context of its own; bound the

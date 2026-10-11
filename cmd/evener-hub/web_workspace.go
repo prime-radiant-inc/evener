@@ -7,8 +7,8 @@ import (
 
 // handleSession routes the public /s/<id>[/<sub>] paths. The bare page route
 // serves the SPA shell (client routing owns the path); /s/<id>/images/<sha> is
-// the sha-addressed image fetch the SPA consumes directly. Every legacy sub-
-// route (the /_partials fragments and the /s/<id>/<action> form-POSTs) is gone.
+// the sha-addressed image fetch the SPA consumes directly; every other
+// sub-path is a 404.
 func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/s/")
 	parts := strings.SplitN(path, "/", 2)

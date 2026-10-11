@@ -53,7 +53,6 @@ func FuzzSessionTreePass3(f *testing.F) {
 				_ = appThreadTreeLive(thread)
 			}
 		case 7:
-			_ = hubCapabilitiesFromAppwire(thread.Evener.Capabilities)
 			_ = hubRefFromTreeNodeID("bad")
 		case 8:
 			web := NewWebServer(hubcore.WebConfig{})
