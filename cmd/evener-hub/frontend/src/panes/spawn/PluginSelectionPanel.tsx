@@ -9,7 +9,7 @@ import {
   setPluginSelected,
 } from "@evener/appwire-client";
 import { type ReactElement, useState } from "react";
-import { Button, Disclosure, Switch } from "../../widgets";
+import { Button, Disclosure, EmptyState, InlineNotice, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginSelection.module.css";
 
@@ -33,8 +33,7 @@ const CLASS = {
   description: requireClass(styles.description, "pluginSelection.module.css", "description"),
   resultCount: requireClass(styles.resultCount, "pluginSelection.module.css", "resultCount"),
   diagnostics: requireClass(styles.diagnostics, "pluginSelection.module.css", "diagnostics"),
-  errors: requireClass(styles.errors, "pluginSelection.module.css", "errors"),
-  empty: requireClass(styles.empty, "pluginSelection.module.css", "empty"),
+  issueList: requireClass(styles.issueList, "pluginSelection.module.css", "issueList"),
 };
 
 function sourceLabel(plugin: PluginLaunchCandidate): string {
@@ -143,22 +142,34 @@ export function PluginSelectionPanel({
           );
         })}
       </div>
-      {preview.plugins.length === 0 && <p className={CLASS.empty}>No plugins are available for this session.</p>}
+      {preview.plugins.length === 0 && <EmptyState size="compact" title="No plugins are available for this session." />}
 
       {removeOnly && (
-        <div className={CLASS.errors} role="status">
-          <strong>Couldn't inspect plugins</strong>
-          <span>Only removing plugins is available until the preview succeeds.</span>
-          <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
-            Retry
-          </Button>
-        </div>
+        <InlineNotice
+          tone="danger"
+          live="status"
+          title="Couldn't inspect plugins"
+          action={
+            <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
+              Retry
+            </Button>
+          }
+        >
+          Only removing plugins is available until the preview succeeds.
+        </InlineNotice>
       )}
 
       {selectionIssues.length > 0 && (
-        <div className={CLASS.errors} role="alert">
-          <strong>Selected plugins need attention</strong>
-          <ul>
+        <InlineNotice
+          tone="danger"
+          title="Selected plugins need attention"
+          action={
+            <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
+              Retry
+            </Button>
+          }
+        >
+          <ul className={CLASS.issueList}>
             {selectionIssues.map((error) => (
               <li key={`${error.name}:${error.reason}`}>
                 <span>
@@ -176,10 +187,7 @@ export function PluginSelectionPanel({
               </li>
             ))}
           </ul>
-          <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
-            Retry
-          </Button>
-        </div>
+        </InlineNotice>
       )}
     </section>
   );
