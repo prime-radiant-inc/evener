@@ -85,7 +85,7 @@ test("parent status recovers through navigation updates without losing failed-ch
       const rendered = within(row());
       if (label === null) expect(rendered.queryByTestId("rail-row-signal")).toBeNull();
       else expect(rendered.getByRole("img", { name: label })).toBeTruthy();
-      expect(rendered.queryByRole("img", { name: "Broken" })).toBeNull();
+      expect(rendered.queryByRole("img", { name: "Failed" })).toBeNull();
     });
   };
   const settled = async () => {
@@ -121,11 +121,11 @@ test("parent status recovers through navigation updates without losing failed-ch
   };
 
   await settled();
-  await status("Running");
+  await status("Working");
   await update({ state: "awaiting", ask_pending: true });
   await status("Needs you");
   await update({ state: "idle", ask_pending: false });
-  await status("Running");
+  await status("Working");
   await update({ subagents: { running: 0, failed: 1, done: 1 } });
   await status(null);
 

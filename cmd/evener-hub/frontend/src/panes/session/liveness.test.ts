@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import { cadenceStateForStatus } from "./liveness";
 
 // cadenceStateForStatus consumes raw ThreadStatus.type values. The mapper in
-// shell/SessionStatusIndicator.tsx consumes normalized navigation summaries;
+// shell/sessionStatus.ts consumes normalized navigation summaries;
 // see liveness.ts for why those vocabularies need separate functions.
 
 test("cadenceStateForStatus: active is working", () => {

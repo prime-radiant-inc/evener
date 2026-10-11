@@ -914,7 +914,7 @@ function totalItemCount(model: ThreadModel | undefined): number {
 }
 
 // Attention follows liveness.ts's raw-status mapping to needs-you.
-// shell/SessionStatusIndicator.tsx maps normalized navigation summaries.
+// shell/sessionStatus.ts maps normalized navigation summaries.
 // askPending is independent because it need not coincide with status.type.
 function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   if (!model) return false;

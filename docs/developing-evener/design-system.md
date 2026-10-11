@@ -49,6 +49,11 @@ working procedure.
 5. **Use the right widget for the state.** Loading is `Skeleton` or
    `Loader`, not an `EmptyState` titled "Loading…". Destructive
    confirmation is `ConfirmDialog`, not a hand-built dialog.
+6. **Session and agent status is always `StatusDot`.** Its labels (Idle,
+   Working, Needs you, Failed, Ended) are the one status vocabulary; text
+   naming a session's state uses `STATUS_LABEL`. Do not hand-roll a status
+   dot or spinner: StatusDot's `working` state already carries the activity
+   motion, gated by reduced motion.
 
 ## When no widget fits
 

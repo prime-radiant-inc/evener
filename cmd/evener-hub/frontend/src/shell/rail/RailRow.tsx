@@ -56,6 +56,8 @@ import {
   Menu,
   type MenuItem,
   Skeleton,
+  STATUS_LABEL,
+  StatusDot,
   type TreeRowInfo,
   VisuallyHidden,
 } from "../../widgets";
@@ -63,8 +65,8 @@ import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
-import { CADENCE_LABEL, cadenceStateFor, SessionStatusIndicator, SIGNAL_STATES } from "../SessionStatusIndicator";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
+import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import styles from "./RailRow.module.css";
 import {
   activeWatchCount,
@@ -139,7 +141,7 @@ function Signal({ wireState }: { wireState: string }) {
   if (!SIGNAL_STATES.has(state)) return null;
   return (
     <RowGutter className={CLASS.signal} testId="rail-row-signal">
-      <SessionStatusIndicator state={state} testIdPrefix="rail" />
+      <StatusDot state={state} />
     </RowGutter>
   );
 }
@@ -462,8 +464,8 @@ function effectiveSessionState(session: RailSession): string {
 function sessionStatusLabel(session: RailSession, effectiveState: string, notStarted: boolean): string {
   const state = cadenceStateFor(effectiveState);
   if (notStarted) return "Not started";
-  if (state === "failed") return CADENCE_LABEL.failed;
-  if (state === "working") return CADENCE_LABEL.working;
+  if (state === "failed") return STATUS_LABEL.failed;
+  if (state === "working") return STATUS_LABEL.working;
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
