@@ -115,11 +115,17 @@ func TestDelegateMessagingGuidanceGoldenRenamedResultTool(t *testing.T) {
 	rootRequest := adapter.waitForRequests(t, "root", 1)[0]
 	// The live delegate tool's sandbox wording depends on the host, so the
 	// golden renders it from fixed inputs.
-	extra := []llm.ToolDefinition{toolpkg.WithResultToolName(toolpkg.DefDelegate(nil), "respond")}
+	extra := []llm.ToolDefinition{toolpkg.DefDelegateWithResultTool(nil, toolpkg.DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, "respond")}
 	for _, def := range rootRequest.Tools {
-		if def.Name == "job_list" || def.Name == "job_watch" {
+		if slices.Contains([]string{"ask_user", "job_list", "job_watch"}, def.Name) {
 			extra = append(extra, def)
 		}
+	}
+	if len(extra) != 4 {
+		t.Fatalf("root request offers %d of ask_user, job_list and job_watch, want all three", len(extra)-1)
 	}
 	agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", "root-renamed-result-tool.md"), messagingGuidanceGolden(t, rootRequest, extra, "respond"), *updatePromptGoldens,
 		"Regenerate with `go test ./agent -run 'TestDelegateMessagingGuidanceGolden' -count=1 -update-prompt` and read the diff.")

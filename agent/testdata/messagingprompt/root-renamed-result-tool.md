@@ -18,6 +18,19 @@ If the task needs a tool listed as unavailable in this session, or an Evener cap
 
 # Messaging tool descriptions
 
+## ask_user
+
+Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `respond` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, "you decide" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.
+
+- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.
+- Do not add an "Other" or free-text option; the UI always offers one, plus "you decide".
+- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).
+
+First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.
+
+- `intent`: What you hope to learn or accomplish from this tool call, using a verb-first gerund. Make your hypothesis and the desired outcome clear; e.g. "Reading config to identify the active profile, so I can log in." or "Searching handlers for request routing, so I can trace the hang."
+- `questions`: 1-4 questions to ask this round.
+
 ## delegate
 
 Start a NEW delegate conversation to do independent agentic work; returns one durable `delegate_id` and stable conversation metadata, never an activation job identity. `delegate` never resumes an existing delegate: follow up on one with `delegate_send(to=<delegate_id>)`. Optional: `agent_type` picks a role from the enum (described in your agents section); `model` and `reasoning_effort` override the defaults; `result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. A delegate may itself delegate: by default it gets an allowance one below yours; pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source="parent"). Observers send updates with `respond(end_turn=false)` and report findings with `respond(end_turn=true)`. For delegate readiness, status, findings, and final reports, ask the delegate to call `respond` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.

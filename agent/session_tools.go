@@ -1371,7 +1371,7 @@ func (s *Session) delegateCapabilityRoster() string {
 func (s *Session) delegateToolDefinition() llm.ToolDefinition {
 	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 	sandboxSchema.ModelDescription = s.delegateModelDescription
-	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+	definition := tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
 	roster := s.delegateCapabilityRoster()
 	if roster == "" {
 		return definition
@@ -1399,6 +1399,22 @@ func (s *Session) delegateAgentTypeNames() []string {
 	return names
 }
 
+// withResultToolGuidance rewrites the description of a built-in tool that
+// teaches the result tool so it names this session's result tool. Only the
+// description changes: the tool's schema is whatever the caller built.
+func (s *Session) withResultToolGuidance(td llm.ToolDefinition) llm.ToolDefinition {
+	name := s.resultToolName()
+	switch td.Name {
+	case "delegate_send":
+		td.Description = tool.DefDelegateSendNamed(name).Description
+	case "job_list":
+		td.Description = tool.DefJobListNamed(name).Description
+	case "ask_user":
+		td.Description = tool.DefAskUserNamed(name).Description
+	}
+	return td
+}
+
 // wireToolDef renders a canonical tool definition in its provider-visible wire
 // form: it renames the tool to the provider-specific name (nameMap is
 // canonical→provider) and adds the shared "intent" parameter to work tools.
@@ -1412,7 +1428,6 @@ func wireToolDef(td llm.ToolDefinition, nameMap map[string]string, resultToolNam
 	if isResultToolDefinition(canonicalName, td.Name, resultToolName) {
 		return tool.WithoutIntentParameter(td)
 	}
-	td = tool.WithResultToolName(td, resultToolName)
 	// Work tools advertise intent as REQUIRED: the wire schema carries the
 	// mandate. The registry's own validation schema keeps the property-only
 	// form (WithIntentParameter at Register), so a call that omits the
@@ -1436,7 +1451,7 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 		if defs[i].Name == "delegate" {
 			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 			sandboxSchema.ModelDescription = s.delegateModelDescription
-			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+			defs[i] = tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
 		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
@@ -1470,8 +1485,9 @@ func (s *Session) rebuildToolDefsCache() {
 				}
 			}
 			if td.Name == "job_watch" {
-				td = tool.DefJobWatch(availableEventKindNames())
+				td = tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName())
 			}
+			td = s.withResultToolGuidance(td)
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
 				wire.Name = mapped
@@ -1496,7 +1512,7 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
-		defs = append(defs, normalizeRegistryToolDefinition(td))
+		defs = append(defs, s.withResultToolGuidance(normalizeRegistryToolDefinition(td)))
 	}
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
@@ -1510,7 +1526,7 @@ func (s *Session) rebuildToolDefsCache() {
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
 			// advertised schema, optional in the registry's validation schema.
-			defs[i] = tool.WithIntentParameterRequired(tool.WithResultToolName(defs[i], s.resultToolName()))
+			defs[i] = tool.WithIntentParameterRequired(defs[i])
 		}
 	}
 
