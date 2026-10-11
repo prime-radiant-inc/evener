@@ -121,13 +121,17 @@ func liveCacheRoots(rp ResolvedPolicy) []string {
 	for i, c := range servable {
 		nested := false
 		for j := range servable {
-			// An outer root spelled under /tmp is mounted inside bwrap's
-			// private /tmp, where its host symlink is hidden, so it cannot
-			// cover a root that only resolves inside it.
-			if j == i || pathUnder(servable[j], "/tmp") {
+			if j == i {
 				continue
 			}
-			if resolved[i] != resolved[j] && pathUnder(resolved[i], resolved[j]) || resolved[i] == resolved[j] && j < i {
+			// A root whose real location lies inside another's is covered by
+			// that overlay, provided the sandbox reaches it there: spelled
+			// inside the outer root, or the outer root not spelled under /tmp
+			// (bwrap's private /tmp hides its host symlinks, so its overlay
+			// sits elsewhere in the sandbox).
+			inside := resolved[i] != resolved[j] && pathUnder(resolved[i], resolved[j]) || resolved[i] == resolved[j] && j < i
+			reached := pathUnder(servable[i], servable[j]) || !pathUnder(servable[j], "/tmp")
+			if inside && reached {
 				nested = true
 			}
 		}
