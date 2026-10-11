@@ -61,6 +61,27 @@ test("selecting an option updates the controlled value", async () => {
   expect(screen.getByRole("combobox")).toHaveProperty("value", "eu-central");
 });
 
+test("a disabled option is listed but cannot be picked", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(
+    <Select
+      value="local"
+      options={[
+        { value: "local", label: "This hub" },
+        { value: "build-box", label: "build-box (offline)", disabled: true },
+      ]}
+      onChange={onChange}
+    />,
+  );
+  const offline = screen.getByRole("option", { name: "build-box (offline)" }) as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+  expect((screen.getByRole("option", { name: "This hub" }) as HTMLOptionElement).disabled).toBe(false);
+  await user.selectOptions(screen.getByRole("combobox"), "build-box");
+  expect(onChange).not.toHaveBeenCalled();
+  expect(screen.getByRole("combobox")).toHaveProperty("value", "local");
+});
+
 test("disabled marks the native select inert (not focusable)", () => {
   render(<Select value="us-east" options={OPTIONS} onChange={() => {}} disabled />);
   const select = screen.getByRole("combobox") as HTMLSelectElement;
