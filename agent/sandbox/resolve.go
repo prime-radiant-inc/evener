@@ -556,27 +556,7 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 			}
 			return pathUnder(r, worktree) || pathUnder(resolveExistingPrefix(r), worktree)
 		})
-		roots = dedupeRoots(roots)
-		// A root inside another is served by the outer overlay; a nested one
-		// would make it a mountpoint (go clean -modcache could not remove it).
-		// Of two spellings of one directory, the first is kept.
-		resolved := make([]string, len(roots))
-		for i, r := range roots {
-			resolved[i] = resolveExistingPrefix(r)
-		}
-		var served []string
-		for i, c := range roots {
-			nested := slices.ContainsFunc(roots, func(r string) bool { return r != c && pathUnder(c, r) })
-			for j := range roots {
-				if j != i && (resolved[i] != resolved[j] && pathUnder(resolved[i], resolved[j]) || resolved[i] == resolved[j] && j < i) {
-					nested = true
-				}
-			}
-			if !nested {
-				served = append(served, c)
-			}
-		}
-		return served
+		return dedupeRoots(roots)
 	default:
 		return nil
 	}

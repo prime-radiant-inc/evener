@@ -174,14 +174,12 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// failed.
 	if rp.CacheStrategy == CacheOverlay {
 		var overlaid []string
-		for _, c := range rp.CacheRoots {
-			// Only a directory can be an overlay lower (overlayfs rejects
-			// anything else and bwrap would abort the whole sandbox over it),
-			// and only one still outside the persistent roots is served.
-			if servableCacheRoot(rp, c) {
-				add("--overlay-src", c, "--tmp-overlay", c)
-				overlaid = append(overlaid, c)
-			}
+		// Only a directory can be an overlay lower (overlayfs rejects anything
+		// else and bwrap would abort the whole sandbox over it), and only one
+		// still safe to overlay is served (liveCacheRoots).
+		for _, c := range liveCacheRoots(rp) {
+			add("--overlay-src", c, "--tmp-overlay", c)
+			overlaid = append(overlaid, c)
 		}
 		// A persistent writable location inside an overlaid root (an extra
 		// writable root, a linked worktree's git metadata, the session scratch)
