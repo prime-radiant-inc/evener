@@ -89,9 +89,10 @@ Callers that pass `fold={false}` (`ShellCommandBlock`, `MCPToolArguments`,
 | `tools/jobWatch.test.tsx` | Clamp test uses a 101-line note; add a stylesheet-text pin that `.noteClamped` carries `-webkit-line-clamp: 100`. The full-render test needs no change — its `TIMER_NOTE` is a one-line note, and lengthening it would break the summary pins that share `TIMER_RAW`. |
 | `panes/session/transcript/ToolCallItem.test.tsx` | The real recorded memory fixture (24/21-line outputs) now renders in full: drop the fold-click, assert both markers directly. Add an integration test with a synthetic 101-line output through the generic body so the expand → fold → reveal journey stays covered at the tool-row level. The recorded fixture itself is not modified. |
 | `dev/gallery-sections/codeblock.tsx` | The 21-line pytest sample no longer folds; lengthen it past 100 lines so the gallery still demos the folded state; update the comment and row label. |
-| `dev/editorial-preview/data.ts` | The 120-line "long native source evidence" sample folds so shallowly that the documented click-to-reveal scenario no longer hides the long line; lengthen to 160 lines so the long line (31) stays in the hidden head ("Show 60 earlier lines"). |
-| `dev/editorial-preview/boundary.test.ts` | Update the fixture-shape pins (160 lines; last-line text). |
+| `dev/editorial-preview/data.ts` | Lengthen the "long native source evidence" sample from 120 to 160 lines so the long line (31) stays in the hidden head ("Show 60 earlier lines"), with short per-line payloads so the whole sample stays under read_file's 8,000-char retention budget — an over-budget sample elides its head (most of the long line) before the fold ever runs. |
+| `dev/editorial-preview/boundary.test.ts` | Update the fixture-shape pins (160 lines; last-line text) and pin the sample at or under the 8,000-char retention budget so the scenario cannot silently rot. |
 | `docs/web-ui/editorial-preview.md` | Update the manual scenario's fold count to match the fixture ("Show 60 earlier lines"). |
+| `scripts/editorial-preview-browser.mjs` | The hand-run scenario script keeps asserting the complete long line renders after reveal (made true again by the budget pin); its native-evidence assertion moves to the revealed head line. |
 
 No product guide changes: no evergreen doc pins the fold threshold; the design
 law ("never offer expansion over bytes that are gone") is untouched.
@@ -145,6 +146,24 @@ their own budgets (web_fetch, web_search); the `fold={false}` list includes
 exercising the folded state; the jobWatch test row no longer claims the
 one-line-note full-render test changes; the test plan names the taller-row
 geometry risk and its browser-gate coverage.
+
+## Implementation review round (2026-10-11)
+
+Two competing reviewers examined the committed diff
+(b3ed1ea78e..27b0113a69). The significant finding (reviewer B, reproduced
+with a char-budget simulation): a 160-line editorial fixture with full
+payloads runs ~10.5k chars, so read_file's 8,000-char tailFold elides the
+head — most of the long line included — before the fold runs; the rendered
+button would read "Show 31 earlier lines", not the documented 60, and the
+click cannot expose the long line whole. Resolution: the fixture's per-line
+payloads shrink so the whole sample fits the budget (7,444 chars),
+boundary.test.ts pins that budget, and the scenario script's native-evidence
+assertion moves to the revealed head line. Also resolved: the stale "~20
+lines" phrase in jobWatch.tsx's header comment (found by both reviewers) and
+the jobWatch CSS pin regex gained a value terminator so it cannot match
+"100px". Everything else both reviewers checked verified clean: spec
+conformance, non-goals, flip correctness, test quality, leftovers, and
+fixture math.
 
 ## Approval
 

@@ -112,7 +112,7 @@ test("the clamped view's CSS window matches the note policy's 100 lines", () => 
   // asserting nothing.
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "jobWatch.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.noteClamped\s*\{[^}]*-webkit-line-clamp:\s*100/);
+  expect(css).toMatch(/\.noteClamped\s*\{[^}]*-webkit-line-clamp:\s*100\s*;/);
 });
 
 test("the single-watch body never shows the watch id", () => {
