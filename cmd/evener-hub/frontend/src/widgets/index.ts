@@ -130,7 +130,7 @@ export type { TimestampProps } from "./timestamp";
 export { Timestamp } from "./timestamp";
 export type { ToastKind } from "./toast";
 export { Toast, useToasts } from "./toast";
-export type { ToolIconKind, ToolIconProps } from "./toolicon";
+export type { ToolIconKind, ToolIconProps, ToolIconTone } from "./toolicon";
 export { ToolIcon } from "./toolicon";
 export type { TooltipProps } from "./tooltip";
 export { Tooltip } from "./tooltip";

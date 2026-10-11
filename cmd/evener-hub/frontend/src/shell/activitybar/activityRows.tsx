@@ -1,14 +1,15 @@
 // The row grammar of the activity surfaces, on wire data: one agent row, one
 // job row, one watch row, shared by the sidebar's tabs. Glyph tones carry the
-// state hues (alive/attention/danger/quiet); the wording comes from the
-// app's own formatters (jobStatusDisplay, watchMeta, watchName) so the
-// sidebar can never drift from the rail or the activity panel.
+// state hues (alive/attention/danger; a settled row stays in the quiet
+// glyph ink); the wording comes from the app's own formatters
+// (jobStatusDisplay, watchMeta, watchName) so the sidebar can never drift
+// from the rail or the activity panel.
 
 import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
 import { activityDelegateState, activityNodeID, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
-import { Disclosure, ListRow } from "../../widgets";
+import { Disclosure, ListRow, ToolIcon, type ToolIconTone } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 
@@ -17,10 +18,6 @@ import styles from "./activitybar.module.css";
 const CLASS = {
   rowContent: requireClass(styles.rowContent, "activitybar.module.css", "rowContent"),
   rowGlyph: requireClass(styles.rowGlyph, "activitybar.module.css", "rowGlyph"),
-  glyphAlive: requireClass(styles.glyphAlive, "activitybar.module.css", "glyphAlive"),
-  glyphAttention: requireClass(styles.glyphAttention, "activitybar.module.css", "glyphAttention"),
-  glyphDanger: requireClass(styles.glyphDanger, "activitybar.module.css", "glyphDanger"),
-  glyphQuiet: requireClass(styles.glyphQuiet, "activitybar.module.css", "glyphQuiet"),
   rowBody: requireClass(styles.rowBody, "activitybar.module.css", "rowBody"),
   rowName: requireClass(styles.rowName, "activitybar.module.css", "rowName"),
   rowMeta: requireClass(styles.rowMeta, "activitybar.module.css", "rowMeta"),
@@ -28,17 +25,8 @@ const CLASS = {
   watchGlyph: requireClass(styles.watchGlyph, "activitybar.module.css", "watchGlyph"),
 };
 
-type Tone = "alive" | "attention" | "danger" | "quiet";
-
-const TONE_CLASS: Record<Tone, string> = {
-  alive: CLASS.glyphAlive,
-  attention: CLASS.glyphAttention,
-  danger: CLASS.glyphDanger,
-  quiet: CLASS.glyphQuiet,
-};
-
-function jobTone(job: JobActivityJob): Tone {
-  if (job.terminal) return "quiet";
+function jobTone(job: JobActivityJob): ToolIconTone | undefined {
+  if (job.terminal) return undefined;
   switch (jobStatusDotState(job.status, job.terminal)) {
     case "working":
       return "alive";
@@ -47,12 +35,12 @@ function jobTone(job: JobActivityJob): Tone {
     case "failed":
       return "danger";
     default:
-      return "quiet";
+      return undefined;
   }
 }
 
-function agentTone(sub: SessionDelegate): Tone {
-  if (sub.terminal) return "quiet";
+function agentTone(sub: SessionDelegate): ToolIconTone | undefined {
+  if (sub.terminal) return undefined;
   if (["awaiting_approval", "awaiting_input", "needs-you"].includes(sub.phase)) return "attention";
   return "alive";
 }
@@ -66,8 +54,8 @@ export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () 
     <ListRow
       variant="plain"
       leading={
-        <span className={`${CLASS.rowGlyph} ${TONE_CLASS[agentTone(sub)]}`} aria-hidden="true">
-          ⌘
+        <span className={CLASS.rowGlyph}>
+          <ToolIcon kind="delegate" tone={agentTone(sub)} />
         </span>
       }
       label={sub.name?.trim() || sub.description || sub.task || sub.delegateId}
@@ -84,8 +72,8 @@ export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => vo
     <ListRow
       variant="plain"
       leading={
-        <span className={`${CLASS.rowGlyph} ${TONE_CLASS[jobTone(job)]}`} aria-hidden="true">
-          $
+        <span className={CLASS.rowGlyph}>
+          <ToolIcon kind="job" tone={jobTone(job)} />
         </span>
       }
       label={
@@ -108,7 +96,7 @@ export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
         id={`sidebar-${row.id}`}
         summary={
           <span className={CLASS.rowContent}>
-            <span className={`${CLASS.rowGlyph} ${CLASS.glyphQuiet}`}>
+            <span className={CLASS.rowGlyph}>
               <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
             </span>
             <span className={CLASS.rowBody}>
