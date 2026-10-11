@@ -59,13 +59,21 @@
 
 .highlightBand {
   position: absolute;
-  pointer-events: auto;
+  /* Non-hit-testable decoration: a hit-testable band would become the native
+   * Selection's anchor/endpoint when a drag crosses the saved passage, so the
+   * selection would run past it. Reveal access is resolved by pointer
+   * coordinates on the scroll owner; keyboard focus still reaches the band. */
+  pointer-events: none;
   appearance: none;
   margin: 0;
   padding: 0;
   cursor: pointer;
   border-radius: var(--radius-chip);
-  background: var(--accent-bg);
+  /* A translucent wash, not the opaque --accent-bg fill: the band must mark the
+   * saved passage's extent without covering the selected glyphs. Transparency
+   * leaves the prose readable underneath while the tint stays distinguishable
+   * from unannotated text. */
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
   border: 1px solid var(--accent-edge);
 }
 
@@ -82,7 +90,12 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  pointer-events: auto;
+  /* The revealed note surface is also non-hit-testable, so an already revealed
+   * note can never intercept a selection press or release over the prose. A real
+   * wheel is forwarded to this stack by the component (its scrollbar is not
+   * hit-testable); the pending reference re-enables pointer events for itself
+   * below so it stays selectable and copyable. */
+  pointer-events: none;
   /* The stack is bounded (inline maxWidth/maxHeight, measured against the
    * visible scroll clip) and owns its own vertical scrolling, so long or
    * multiple revealed notes stay readable at the reading position instead of
@@ -115,6 +128,9 @@
   font-size: var(--font-size-caption);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* Re-enabled on the child so the complete reference stays selectable and
+   * copyable even though its non-hit-testable container ignores the pointer. */
+  pointer-events: auto;
   user-select: text;
   max-height: 12lh;
   overflow-y: auto;
