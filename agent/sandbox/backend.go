@@ -67,13 +67,12 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 // in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
 // still point at it; the go command would create the same empty directory on its
 // first unsandboxed run. An empty directory cannot poison a cache. A root that
-// cannot be served (servableCacheRoot) is dropped from the policy's cache roots.
+// cannot be served yet stays in the policy: each spawn judges it again
+// (liveCacheRoots), so one that becomes available is served.
 func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
-	if rp.CacheStrategy != CacheOverlay {
-		return rp
+	if rp.CacheStrategy == CacheOverlay {
+		recreateMissingCacheRoots(rp)
 	}
-	recreateMissingCacheRoots(rp)
-	rp.CacheRoots = slices.DeleteFunc(slices.Clone(rp.CacheRoots), func(c string) bool { return !servableCacheRoot(rp, c) })
 	return rp
 }
 
@@ -96,7 +95,41 @@ func recreateMissingCacheRoots(rp ResolvedPolicy) {
 // discarded upper layer, into the workspace.
 func servableCacheRoot(rp ResolvedPolicy, c string) bool {
 	fi, err := os.Stat(c)
-	return err == nil && fi.IsDir() && !landsInPersistentRoot(rp, c)
+	if err != nil || !fi.IsDir() || landsInPersistentRoot(rp, c) {
+		return false
+	}
+	// The shared-tree guard Resolve applied, applied again to where the root
+	// resolves now: a retargeted parent must not make it a temp root or /.
+	return len(guardedHostRoots([]string{resolveExistingPrefix(c)}, rp.resolveHost.Home, rp.Git.WorktreeRoot)) == 1
+}
+
+// liveCacheRoots returns the cache roots bwrap overlays at this spawn: the
+// servable ones (servableCacheRoot), minus any whose real location lies inside
+// another's, which that outer overlay serves (a nested overlay would be a
+// mountpoint go clean -modcache cannot remove). A root merely spelled under
+// another but linked elsewhere keeps its own overlay. Of two spellings of one
+// directory, the first is kept.
+func liveCacheRoots(rp ResolvedPolicy) []string {
+	var servable, resolved []string
+	for _, c := range rp.CacheRoots {
+		if servableCacheRoot(rp, c) {
+			servable = append(servable, c)
+			resolved = append(resolved, resolveExistingPrefix(c))
+		}
+	}
+	var live []string
+	for i, c := range servable {
+		nested := false
+		for j := range servable {
+			if j != i && (resolved[i] != resolved[j] && pathUnder(resolved[i], resolved[j]) || resolved[i] == resolved[j] && j < i) {
+				nested = true
+			}
+		}
+		if !nested {
+			live = append(live, c)
+		}
+	}
+	return live
 }
 
 // landsInPersistentRoot reports whether c's real location (or, not created
