@@ -686,6 +686,35 @@ class TrialJobsTest(unittest.TestCase):
         jobs = bookkeeping.lab.trial_jobs([both, on_only], {"base": "/b"}, 1, "off")
         self.assertEqual([(scen, arm) for _, _, arm, scen, _ in jobs], [(both, "off")])
 
+    def test_librarian_modes_expand_the_on_arm_only(self):
+        both = self.scenario(["on", "off"])
+        jobs = bookkeeping.lab.trial_jobs([both], {"base": "/b"}, 1, None, ["off", "turn", "sidecar"])
+        self.assertEqual([arm for _, _, arm, _, _ in jobs], ["on", "turn", "sidecar", "off"])
+
+    def test_librarian_arm_sets_the_switch_and_others_turn_it_off(self):
+        os.environ["EVENER_MEMORY_LIBRARIAN"] = "sidecar"
+        self.addCleanup(os.environ.pop, "EVENER_MEMORY_LIBRARIAN")
+        for arm, want in [("turn", "turn"), ("sidecar", "sidecar"), ("on", "off"), ("off", "off"), (None, "off")]:
+            env = bookkeeping.lab.fixture_env("/w/work", "/w/xdg", arm)
+            self.assertEqual(env["EVENER_MEMORY_LIBRARIAN"], want, arm)
+
+
+class LibrarianMemoryTotalsTest(unittest.TestCase):
+    """A librarian arm counts the librarian delegate's memory changes, not other sessions'."""
+
+    def test_counts_only_delegate_transcripts(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        sessions = os.path.join(tmp.name, "sessions")
+        os.makedirs(sessions)
+        call = lambda name: json.dumps({"kind": "tool_call", "tool_call": {"name": name, "arguments": "{}"}})
+        for sid, sub, calls in [("root", False, ["memory_write"]), ("lib", True, ["memory_write", "memory_edit", "memory_read"])]:
+            with open(os.path.join(sessions, sid + ".transcript.jsonl"), "w") as f:
+                f.write("\n".join(call(c) for c in calls) + "\n")
+            with open(os.path.join(sessions, sid + ".meta.json"), "w") as f:
+                json.dump({"is_subagent": sub}, f)
+        self.assertEqual(bookkeeping.lab.librarian_memory_totals(tmp.name), {"memory_write": 1, "memory_edit": 1})
+
 
 if __name__ == "__main__":
     unittest.main()
