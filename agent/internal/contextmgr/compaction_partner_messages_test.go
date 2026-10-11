@@ -990,3 +990,41 @@ func TestForceCompact_OversizedBatchSummariesStayInBatchBounds(t *testing.T) {
 		t.Fatalf("a condensing request carried %d characters, over the 40k batch limit", largest)
 	}
 }
+
+// A final summary the model cut off at its output limit may have dropped what
+// the left-out messages said, so it is rejected and the checkpoint stands.
+func TestForceCompact_TruncatedFinalSummaryKeepsTheCheckpoint(t *testing.T) {
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		if strings.HasPrefix(req.Messages[0].Text(), partnerBatchPrompt) {
+			return llm.Response{Message: llm.Assistant("summary of a batch")}, nil
+		}
+		return llm.Response{Message: llm.Assistant(emptySummaryReply), Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(200, 1500, 80)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnCheckpoint || !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("history starts with a %s; want the checkpoint, with the hold, to stand", history[0].Kind)
+	}
+}
+
+// The carry is chosen from the messages as written: a long newest message
+// that fits under the ceiling is carried whole, not trimmed to its edges.
+func TestForceCompact_CarryKeepsAFittingLongMessageWhole(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(alwaysReplying(func(llm.Request) string { return emptySummaryReply }))
+	cm := NewManager(testProfile("openai", "test", 20_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(30, 6000, -1)
+	newest := history[len(history)-4].Message.Text() // the last partner message
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	entries := extractMarkdownConversation(history[0].Message.Text())
+	if len(entries) == 0 || entries[len(entries)-1].Text != newest {
+		t.Fatalf("the newest message, which fits the ceiling, was not carried whole")
+	}
+}

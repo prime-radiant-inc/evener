@@ -1564,40 +1564,38 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 			partner = append(partner, entry)
 		}
 	}
-	// Messages left to the summary go to it as written; only the carry's are
-	// fitted. Fitting only trims partner messages, never drops one, so the two
-	// slices line up.
-	original := partner
-	partner = fitCheckpointConversation(partner, maxCheckpointChars, recoverable)
+	// The carry is chosen from the messages as written, newest first, and
+	// only then fitted; the messages left to the summary go to it as written.
+	kept := partner
 	if ceiling > 0 {
-		// Keep the newest messages whose blocks fit the ceiling beside the
-		// section heading, and always the newest one.
 		heading := len(checkpointConversationHeading + "\n\n")
-		size, kept := heading, 0
+		size, n := heading, 0
 		for _, entry := range slices.Backward(partner) {
 			block := len(renderCheckpointConversation([]checkpointConversationEntry{entry})) - heading
-			if kept > 0 && size+block > ceiling {
+			if n > 0 && size+block > ceiling {
 				break
 			}
 			size += block
-			kept++
+			n++
 		}
 		if size > ceiling && !recoverable {
 			// The newest alone overflows and cannot be trimmed: summarize it
 			// with the rest.
-			kept = 0
+			n = 0
 		}
-		summarized = original[:len(original)-kept]
-		partner = slices.Clone(partner[len(partner)-kept:])
-		if len(partner) == 0 {
-			return "", summarized
-		}
-		if newest := &partner[len(partner)-1]; size > ceiling {
-			// The newest alone overflows: trim its middle to fit, note included.
-			edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
-			if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
-				newest.Text = trimmed
-			}
+		summarized = partner[:len(partner)-n]
+		kept = partner[len(partner)-n:]
+	}
+	partner = fitCheckpointConversation(kept, maxCheckpointChars, recoverable)
+	if len(partner) == 0 {
+		return "", summarized
+	}
+	if size := len(renderCheckpointConversation(partner)); ceiling > 0 && size > ceiling {
+		// Only the newest can overflow: trim its middle to fit, note included.
+		newest := &partner[len(partner)-1]
+		edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
+		if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
+			newest.Text = trimmed
 		}
 	}
 	return renderCheckpointConversation(partner), summarized
@@ -2400,6 +2398,11 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	})
 	if err != nil {
 		return nil, err
+	}
+	if resp.Finish.Reason == llm.FinishReasonLength && len(summarized) > 0 {
+		// Cut off at the output limit, the reply may have dropped what the
+		// messages left out of the carry said, their only trace here.
+		return nil, errors.New("the summary was cut off at the model's output limit")
 	}
 
 	// The turn is the model's reply, bounded by the provider's output limit,
