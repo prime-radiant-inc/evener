@@ -392,7 +392,7 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	// absent-field intent as a JSON null, on every ref kind.
 	for _, field := range []string{"format", "range", "expand_turn", "offset_bytes", "output_match", "context_lines"} {
 		text, isString := normalized[field].(string)
-		if isString && strings.EqualFold(strings.TrimSpace(text), "null") && !(artifactRef && field == "format") {
+		if isString && strings.EqualFold(strings.TrimSpace(text), "null") && (!artifactRef || field != "format") {
 			remove(field)
 		}
 	}
