@@ -1417,9 +1417,12 @@ ordered queue and receiver-transcript attention as the terminal packet.
   including one whose model returns bare text, leaves the earlier report
   standing as the delegate's completed report.
 - The same holds for one-shot `evener run`: while it drains background work,
-  its answer is the root's latest terminal `communicate`. A drain turn that
-  reports again replaces the answer. A drain turn that ends in bare text or an
-  empty response leaves the earlier answer standing and the run succeeds.
+  its answer is the root's latest terminal `communicate`. A drain turn driven
+  by a completion that reports again replaces the answer. A drain turn that
+  ends in bare text or an empty response leaves the earlier answer standing
+  and the run succeeds. Background-job announcement turns keep their own rule:
+  a report made on one does not replace the answer unless a completion
+  arrives during that turn.
 - A root's `communicate(end_turn=false)` is unchanged: a checkpoint for its
   human partner.
 
