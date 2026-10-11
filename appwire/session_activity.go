@@ -57,6 +57,14 @@ type SessionActivityContext struct {
 	AncestryKnown bool   `json:"ancestryKnown"`
 	Epoch         string `json:"epoch"`
 	Availability  string `json:"availability"` // live | retained
+	// ReportPreview is a per-response capability, authored by the producer that
+	// built the rows: true when this source pushes the bounded report preview on
+	// evener/delegate/updated, so a client may merge a settled report without
+	// re-reading the collection. An older producer omits it, and the client keeps
+	// the read. It is deliberately not on appwire.FeatureSet, which is the
+	// client-facing connection's own hardcoded constant and says nothing about a
+	// remote or local source's capabilities.
+	ReportPreview bool `json:"reportPreview,omitempty"`
 }
 
 // SessionActivityCounts describes all retained data in the declared scope,
@@ -108,6 +116,10 @@ type SessionDelegate struct {
 	Name string `json:"name,omitempty"`
 	// RunGeneration identifies the current activation; zero means no run has started.
 	RunGeneration uint64 `json:"runGeneration"`
+	// ProjectionRevision is the same aggregate projection revision the
+	// evener/delegate/updated frame carries. It is an ordering key (a read row
+	// seeds the client's merge order), not display data.
+	ProjectionRevision uint64 `json:"projectionRevision"`
 	// ReportPreview is the settled current run's reported text, capped at 4096
 	// Unicode code points including an ellipsis when truncated.
 	ReportPreview          string               `json:"reportPreview,omitempty"`

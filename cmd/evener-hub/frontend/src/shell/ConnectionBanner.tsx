@@ -164,16 +164,14 @@ export function ConnectionBanner({
       // page's own origin for real (same hazard AppShell.tsx's own bootstrap
       // guards against). Only a REAL AppwireClient needs this - an injected
       // FakeClient (tests) has no socket to open, so running its connect()
-      // even under MODE==="test" is safe, and necessary to exercise the
-      // serverInfo-population duty below.
-      // Wire first so replacement clears the old handshake metadata before
-      // this client's response is published.
+      // even under MODE==="test" is safe.
+      // Wire first so the shared binding publishes this client's ready
+      // state and negotiated metadata together.
       connectionStore.getState().connect(fresh);
       if (!(fresh instanceof AppwireClient && import.meta.env.MODE === "test")) {
         try {
-          const info = await fresh.connect();
+          await fresh.connect();
           if (connectionStore.getState().client !== fresh || fresh.state === "closed") return;
-          connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
           onClientReplaced?.(fresh);
         } catch {
           // Reflected via the client's own state, mirrored into

@@ -772,6 +772,7 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 			delegates: [
 				{
 					runGeneration: 1,
+					projectionRevision: 1,
 					delegateId: id,
 					ownerRef: "local:coord",
 					rootRef: "local:coord",
