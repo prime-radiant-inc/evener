@@ -24,6 +24,21 @@ func shardedTestCount(t *testing.T, out string) int {
 	return total
 }
 
+// surveyCacheFile stats the run's single survey cache file. The cache is
+// replaced atomically by rename, so a fresh survey shows up as a new inode.
+func surveyCacheFile(t *testing.T, cacheDir string) os.FileInfo {
+	t.Helper()
+	cached, err := filepath.Glob(filepath.Join(cacheDir, "survey-*.log"))
+	if err != nil || len(cached) != 1 {
+		t.Fatalf("survey cache not written: %v %v", cached, err)
+	}
+	info, err := os.Stat(cached[0])
+	if err != nil {
+		t.Fatalf("stat survey cache: %v", err)
+	}
+	return info
+}
+
 // TestAgentShardsRejectsPartialSurveyCache pins the concurrent gate-run
 // hazard from #1192: the survey cache is shared across runs, and a reader
 // that accepts a nonempty but partial cache packs shards over only the
@@ -62,8 +77,8 @@ func TestAgentShardsRejectsPartialSurveyCache(t *testing.T) {
 	if rc := runShards(cfg2); rc != 0 {
 		t.Fatalf("partial-cache rerun rc = %d\nstdout:\n%s\nstderr:\n%s", rc, &stdout2, &stderr2)
 	}
-	if !strings.Contains(stdout2.String(), "surveying test costs") {
-		t.Fatalf("a cache covering only a subset of the test set was accepted; the run did not re-survey:\n%s", &stdout2)
+	if data, err := os.ReadFile(cached[0]); err != nil || string(data) == partial {
+		t.Fatalf("a cache covering only a subset of the test set was accepted; the run did not re-survey (err %v)", err)
 	}
 	if got := shardedTestCount(t, stdout2.String()); got != total {
 		t.Fatalf("partial-cache rerun sharded %d tests, want %d; the remaining tests ran in no shard:\n%s", got, total, &stdout2)
