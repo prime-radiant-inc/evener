@@ -29,6 +29,7 @@
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 
 import {
+  isParentSteer,
   isSuppressedSteeringKind,
   steeringLabel,
   steeringNotificationFragments,
@@ -42,7 +43,12 @@ import { UserMessageView } from "./UserMessageItem";
 
 export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: ItemRenderProps) {
   // Parsed once per text: a live turn re-renders this row on every publish.
-  const fragments = useMemo(() => steeringNotificationFragments(item.text ?? ""), [item.text]);
+  // A parent's message is conversation, so quoted notification tags in it are
+  // text, never cards.
+  const fragments = useMemo(
+    () => (isParentSteer(item.source) ? null : steeringNotificationFragments(item.text ?? "")),
+    [item.source, item.text],
+  );
   // The human-note steer rides the user-sourced steering rail (it interrupts
   // via the client-mutation steer path) but carries the human-note kind, and
   // the kind selects the divider: it labels the human's whiteboard update
@@ -113,7 +119,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
     );
   }
 
-  return <SteeringDivider id={item.id} label={label} text={stripSystemReminder(item.text)} sessionRef={sessionRef} />;
+  const text = isParentSteer(item.source) ? item.text : stripSystemReminder(item.text);
+  return <SteeringDivider id={item.id} label={label} text={text} sessionRef={sessionRef} />;
 }, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);

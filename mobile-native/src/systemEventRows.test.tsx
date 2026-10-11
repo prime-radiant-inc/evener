@@ -469,6 +469,24 @@ describe("the daemon's steers (G8)", () => {
 		expect(rowFor("steer-hook-context", level) === undefined).toBe(level === "chat");
 	});
 
+	// A parent's message is conversation, not the daemon's markup: it shows
+	// whole under "From parent" even when it quotes notification tags.
+	it.each([
+		"Inspect how <job-notification> is rendered",
+		`See <delegate-notification delegate_id="dlg_42" event="completed" status="completed" reason="" transcript_ref="local:sess_child">
+Delegate dlg_42 completed.
+</delegate-notification> for the format`,
+	])("shows a parent's message that quotes notification markup whole: %s", (text) => {
+		const item = { ...systemEventWireItem("steer-from-parent"), text };
+		const row = rowsAt("intent", [completedTurn([item])]).rows.find((r) => r.id === item.id);
+		if (!row) throw new Error("no row for the parent's message");
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="system-parent-markup" />);
+		// A short message opens folded and a longer one starts open; either
+		// way pressing opens it, and it reads whole.
+		if (!renderedText(tree).includes(text)) press(tree);
+		expect(renderedText(tree)).toBe(`From parent ${text}`);
+	});
+
 	it.each(["steer-loop-detected", "steer-provider-failure"] as const)(
 		"reads %s as a quiet labelled event, since the failure itself is the turn's error",
 		(name) => {

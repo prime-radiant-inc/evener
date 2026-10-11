@@ -807,13 +807,27 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 // out, as the web leaves them: the tasks surfaces own them.
 function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
 	if (isSuppressedSteeringKind(it.steeringKind)) return null;
+	// A parent's message is conversation: quoted notification tags in it are
+	// text, never cards, and it shows whole.
+	if (isParentSteer(it.source)) {
+		return {
+			kind: "notice",
+			id: it.id,
+			origin: "steering",
+			steeringKind: it.steeringKind,
+			fromParent: true,
+			family: "informational",
+			tone: "info",
+			text: it.text,
+			label: steeringLabel(it.steeringKind, it.source),
+		};
+	}
 	const notifications = steeringNotificationFragments(it.text);
 	const common = {
 		kind: "notice" as const,
 		id: it.id,
 		origin: "steering" as const,
 		steeringKind: it.steeringKind,
-		...(isParentSteer(it.source) ? { fromParent: true as const } : {}),
 		family: "informational" as const,
 		tone: "info" as const,
 	};
