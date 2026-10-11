@@ -75,6 +75,10 @@ const LIMIT_PENDING_BYTES = 32 * 1024;
 const LIMIT_WORKER_BYTES = 32 * 1024 * 1024;
 // The spec's concurrent background network-hydration bound.
 const MAX_NETWORK_HYDRATIONS = 2;
+// The legacy residency's production default for the resident budget, which the
+// injected 64 KiB replaces on this guard. The produced payload must stay below
+// it, so a default would have kept what the injected limit refuses.
+const DEFAULT_RESIDENT_BYTES = 16 * 1024 * 1024;
 // The ordinary entry route's production default for the shared write-admission
 // pending budget, which the injected 32 KiB replaces on this guard.
 const DEFAULT_PENDING_BYTES = 4 * 1024 * 1024;
@@ -370,28 +374,37 @@ async function waitForRenderedOutput(driver, ref, marker, timeoutMs = 30000) {
 async function readShellOutputRegion(driver, ref, marker, timeoutMs = 30000) {
   const pane = `[data-pane-scaffold='session:${ref}']`;
   const toggleSelector = `${pane} [data-testid='tool-call-item'] button[aria-controls]`;
-  // The row can re-render between the existence wait and the click's own box
-  // lookup, so retry the pair rather than fail on one lost frame.
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    await driver.waitPage(
+  // A bounded wait for a genuinely asynchronous UI state: the transcript
+  // virtualizer mounts and re-renders rows while the live turn streams, so the
+  // control can be absent for a frame even right after a successful existence
+  // wait (the observed failure was driver.click finding no element at its own
+  // box lookup, not a wrong selector). Wait until the control is present AND
+  // has a non-zero box before clicking; never click into the void.
+  const deadline = Date.now() + timeoutMs;
+  let clicked = false;
+  while (Date.now() < deadline && !clicked) {
+    const ready = await evaluate(
+      driver.send,
       `(() => {
          const row = document.querySelector(${JSON.stringify(`${pane} [data-testid='tool-call-item']`)});
-         if (!row) return null;
-         const btn = row.querySelector("button[aria-controls]");
-         if (!btn) return null;
+         const btn = row ? row.querySelector("button[aria-controls]") : null;
+         if (!btn) return false;
          const rect = btn.getBoundingClientRect();
-         return rect.width > 0 && rect.height > 0 ? true : null;
+         return rect.width > 0 && rect.height > 0;
        })()`,
-      { timeoutMs, label: `the shell disclosure control for ${ref}` },
-    );
-    try {
-      await driver.click(toggleSelector);
-      break;
-    } catch (error) {
-      if (attempt === 3) throw error;
-      await delay(150);
+    ).catch(() => false);
+    if (ready) {
+      try {
+        await driver.click(toggleSelector);
+        clicked = true;
+      } catch {
+        await delay(100);
+      }
+    } else {
+      await delay(100);
     }
   }
+  if (!clicked) throw new Error(`the shell disclosure control for ${ref} never became clickable`);
   return waitForRenderedOutput(driver, ref, marker, timeoutMs);
 }
 
@@ -1317,6 +1330,9 @@ function entryEvidenceExpr(refs) {
       producedBytes[ref] = bytes;
     }
     return {
+      residentBytes: snapshot.residentBytes,
+      pendingBytes: snapshot.pendingBytes,
+      workerBytes: snapshot.workerBytes,
       networkHydrations: snapshot.networkHydrations,
       refs: refs.map((ref) => ({ ref, route: evidence.entryRoute(ref), admission: evidence.entryAdmission(ref) })),
       producedBytes,
@@ -1337,6 +1353,9 @@ async function sampleEntryPeaksOnce(driver) {
   }
   return {
     retainedBytes,
+    residentBytes: validMeasurement(evidence.residentBytes, "residentBytes"),
+    pendingBytes: validMeasurement(evidence.pendingBytes, "pendingBytes"),
+    workerBytes: validMeasurement(evidence.workerBytes, "workerBytes"),
     networkHydrations: validMeasurement(evidence.networkHydrations, "networkHydrations"),
     producedBytes: reduceProducedPeak(evidence.producedBytes),
   };
@@ -1554,9 +1573,17 @@ async function runJourney(driver, entryProduction = false) {
   // The legacy pre-open current-record checkpoint is superseded.
   await waitForTargetRunning(driver, SESSION_B);
   driver.milestone("target-background-after", {
-    observedAfter: true,
+    // runningAdvanced is a real observation: waitForTargetRunning above throws
+    // unless the target's own turn shows a running state after the release.
     runningAdvanced: true,
-    supersededLegacyCheckpoint: true,
+    // The literal after text is NOT observable before completion on the entry
+    // route (the background model is a pruned projection and the accepted
+    // contract persists live output only on completion), so the legacy pre-open
+    // observed-after observation and the legacy current-record checkpoint are
+    // retired by name, not asserted as constants. Their guarantee is carried by
+    // pane-rendered and exact-once after the pane opens (assertion 3).
+    afterObservation: "superseded:pane-rendered+exact-once",
+    legacyCheckpointDisposition: "superseded:no entry-route equivalent",
   });
 
   // ---- assertion 3: open through the rail; assert rendered content + tool OUTPUT ----
@@ -1996,28 +2023,40 @@ async function runJourney(driver, entryProduction = false) {
   // (productionPeak), sampled maxima — not an exhaustive bound.
   driver.milestone("sustained-workload", {
     peakRetainedBytes: productionPeak.retainedBytes,
+    peakResidentBytes: productionPeak.residentBytes,
+    peakPendingBytes: productionPeak.pendingBytes,
+    peakWorkerBytes: productionPeak.workerBytes,
     peakNetworkHydrations: productionPeak.networkHydrations,
     // Produced payload is the DURABLE entry rows' bytes (Ruling 82), not the
     // pruned live store model; the live-model figure is recorded beside it.
     peakProducedBytes: producedDurable,
     peakProducedBytesLiveModel: producedLiveModel,
     producedBasis: "durable-entry-rows",
+    // The legacy residency counters no longer carry entry bodies (the shared
+    // admission does, `peakRetainedBytes`); they are kept and bounded here as
+    // the live residency's own limits rather than dropped silently.
+    residencyBasis: "legacy-residency-counters-bounded; entry bodies bounded by the shared admission",
+    limitBytes: LIMIT_RESIDENT_BYTES,
     pendingLimitBytes: LIMIT_PENDING_BYTES,
+    workerLimitBytes: LIMIT_WORKER_BYTES,
+    defaultLimitBytes: DEFAULT_RESIDENT_BYTES,
     defaultPendingLimitBytes: DEFAULT_PENDING_BYTES,
     hydrationLimit: MAX_NETWORK_HYDRATIONS,
     sampled: true,
   });
   console.log(
-    `backgroundtranscriptguard: sustained retained peak ${productionPeak.retainedBytes} (injected ${LIMIT_PENDING_BYTES}); produced peak ${producedDurable} durable-entry-rows (live-model ${producedLiveModel}); hydrations peak ${productionPeak.networkHydrations}`,
+    `backgroundtranscriptguard: sustained resident peak ${productionPeak.residentBytes} (injected ${LIMIT_RESIDENT_BYTES}), pending ${productionPeak.pendingBytes} (injected ${LIMIT_PENDING_BYTES}), worker ${productionPeak.workerBytes} (bound ${LIMIT_WORKER_BYTES}); admission retained peak ${productionPeak.retainedBytes} (injected ${LIMIT_PENDING_BYTES}); produced peak ${producedDurable} durable-entry-rows (live-model ${producedLiveModel}); hydrations peak ${productionPeak.networkHydrations}`,
   );
-  if (producedDurable <= LIMIT_PENDING_BYTES) {
+  // The stronger legacy lower bound (64 KiB) still passes for the measured
+  // payload, so keep it; the admission tier (32 KiB) is stated separately.
+  if (producedDurable <= LIMIT_RESIDENT_BYTES) {
     failures.push(
-      `sustained produced payload ${producedDurable} (durable entry rows) does not exceed the injected ${LIMIT_PENDING_BYTES}-byte shared budget, so pressure under it is not proven`,
+      `sustained produced payload ${producedDurable} (durable entry rows) does not exceed the injected ${LIMIT_RESIDENT_BYTES}-byte limit, so pressure under it is not proven`,
     );
   }
-  if (producedDurable >= DEFAULT_PENDING_BYTES) {
+  if (producedDurable >= DEFAULT_RESIDENT_BYTES) {
     failures.push(
-      `sustained produced payload ${producedDurable} (durable entry rows) is not below the ${DEFAULT_PENDING_BYTES}-byte default`,
+      `sustained produced payload ${producedDurable} (durable entry rows) is not below the ${DEFAULT_RESIDENT_BYTES}-byte default`,
     );
   }
   if (productionPeak.retainedBytes > LIMIT_PENDING_BYTES) {
@@ -2030,6 +2069,9 @@ async function runJourney(driver, entryProduction = false) {
       `sustained hydration peak ${productionPeak.networkHydrations} exceeds the spec's ${MAX_NETWORK_HYDRATIONS} concurrent background hydrations`,
     );
   }
+  // The residency's own sub-bounds, restored rather than dropped: resident,
+  // pending and the one cache-sized worker record each stay within their limit.
+  for (const failure of budgetFailures(productionPeak)) failures.push(failure);
 
   // Deterministic batching: hold the target at the after-eviction phase and show
   // its produced work is held in the shared admission before the acknowledged

@@ -728,19 +728,29 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	// superseded; the applied after text is asserted through the pane (pane-rendered
 	// and exact-once) once the pane opens.
 	var backgroundAfter struct {
-		ObservedAfter    bool `json:"observedAfter"`
-		RunningAdvanced  bool `json:"runningAdvanced"`
-		SupersededLegacy bool `json:"supersededLegacyCheckpoint"`
+		RunningAdvanced             bool   `json:"runningAdvanced"`
+		AfterObservation            string `json:"afterObservation"`
+		LegacyCheckpointDisposition string `json:"legacyCheckpointDisposition"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "target-background-after", &backgroundAfter) {
 		t.Fatal("no target-background-after milestone")
 	}
-	if !backgroundAfter.ObservedAfter || !backgroundAfter.RunningAdvanced {
+	// runningAdvanced is a real observation (the driver throws unless the target
+	// shows a running state). The pre-open observed-after observation and the
+	// legacy current-record checkpoint are retired by name, not asserted as
+	// constants; their guarantee is carried by pane-rendered and exact-once.
+	if !backgroundAfter.RunningAdvanced {
 		t.Error("the target's background read did not advance to the after-eviction phase")
 	}
-	if !backgroundAfter.SupersededLegacy {
-		t.Error("the target-background-after milestone did not name the superseded legacy current-record checkpoint")
+	if backgroundAfter.AfterObservation == "" || backgroundAfter.LegacyCheckpointDisposition == "" {
+		t.Errorf(
+			"the target-background-after milestone did not name its retired observations: after=%q checkpoint=%q",
+			backgroundAfter.AfterObservation,
+			backgroundAfter.LegacyCheckpointDisposition,
+		)
 	}
+	t.Logf("target-background-after: runningAdvanced=%v after=%q legacyCheckpoint=%q",
+		backgroundAfter.RunningAdvanced, backgroundAfter.AfterObservation, backgroundAfter.LegacyCheckpointDisposition)
 
 	// The ordinary entry route has no per-ref resident map, so the legacy
 	// absence/charge observation is superseded. Its bounded resource is the
@@ -927,19 +937,26 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	}
 
 	// The configured limits are the ones in effect. The ordinary entry route
-	// bounds retained bodies in the shared write admission; a bare
-	// `retainedBytes <= 32 KiB` alone passes when nothing is retained, so this
-	// also requires a produced payload sized ABOVE the injected 32 KiB budget and
-	// BELOW the 4 MiB default: only the injected limit can explain refusing work
-	// a default would have kept. The hydration limit is the live residency
-	// counter that the ordinary route's background reads still pass through.
+	// bounds entry BODIES in the shared write admission (retained <= 32 KiB);
+	// the legacy residency's resident/pending/worker counters are retained and
+	// bounded here as the live residency's own limits. The produced payload must
+	// exceed the injected resident limit (64 KiB, the stronger bound the legacy
+	// proof used) and stay BELOW the 16 MiB default: only the injected limit can
+	// explain refusing work a default would have kept.
 	var sustained struct {
 		PeakRetainedBytes          int64  `json:"peakRetainedBytes"`
+		PeakResidentBytes          int64  `json:"peakResidentBytes"`
+		PeakPendingBytes           int64  `json:"peakPendingBytes"`
+		PeakWorkerBytes            int64  `json:"peakWorkerBytes"`
 		PeakNetworkHydrations      int64  `json:"peakNetworkHydrations"`
 		PeakProducedBytes          int64  `json:"peakProducedBytes"`
 		PeakProducedBytesLiveModel int64  `json:"peakProducedBytesLiveModel"`
 		ProducedBasis              string `json:"producedBasis"`
+		ResidencyBasis             string `json:"residencyBasis"`
+		LimitBytes                 int64  `json:"limitBytes"`
 		PendingLimitBytes          int64  `json:"pendingLimitBytes"`
+		WorkerLimitBytes           int64  `json:"workerLimitBytes"`
+		DefaultLimitBytes          int64  `json:"defaultLimitBytes"`
 		DefaultPendingLimitBytes   int64  `json:"defaultPendingLimitBytes"`
 		HydrationLimit             int64  `json:"hydrationLimit"`
 	}
@@ -953,8 +970,20 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if sustained.ProducedBasis != "durable-entry-rows" {
 		t.Errorf("sustained produced basis = %q, want durable-entry-rows (Ruling 82)", sustained.ProducedBasis)
 	}
+	if sustained.ResidencyBasis == "" {
+		t.Error("sustained residency basis is empty; the residency counters' disposition must be named, not dropped silently")
+	}
+	if sustained.LimitBytes != 64*1024 {
+		t.Errorf("sustained resident limit = %d, want the injected 65536", sustained.LimitBytes)
+	}
 	if sustained.PendingLimitBytes != 32*1024 {
 		t.Errorf("sustained pending limit = %d, want the injected 32768 (the dev entry's install)", sustained.PendingLimitBytes)
+	}
+	if sustained.WorkerLimitBytes != 32*1024*1024 {
+		t.Errorf("sustained worker limit = %d, want the one-record 33554432", sustained.WorkerLimitBytes)
+	}
+	if sustained.DefaultLimitBytes != 16*1024*1024 {
+		t.Errorf("sustained default resident limit = %d, want 16777216", sustained.DefaultLimitBytes)
 	}
 	if sustained.DefaultPendingLimitBytes != 4*1024*1024 {
 		t.Errorf("sustained default pending limit = %d, want 4194304", sustained.DefaultPendingLimitBytes)
@@ -968,17 +997,28 @@ func backgroundAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 			sustained.PeakRetainedBytes, sustained.PendingLimitBytes,
 		)
 	}
+	if sustained.PeakResidentBytes > sustained.LimitBytes {
+		t.Errorf("sustained resident peak %d exceeds the injected %d-byte resident limit", sustained.PeakResidentBytes, sustained.LimitBytes)
+	}
+	if sustained.PeakPendingBytes > sustained.PendingLimitBytes {
+		t.Errorf("sustained pending peak %d exceeds the injected %d-byte pending limit", sustained.PeakPendingBytes, sustained.PendingLimitBytes)
+	}
+	if sustained.PeakWorkerBytes > sustained.WorkerLimitBytes {
+		t.Errorf("sustained worker peak %d exceeds the one-record %d-byte bound", sustained.PeakWorkerBytes, sustained.WorkerLimitBytes)
+	}
 	if sustained.PeakNetworkHydrations > sustained.HydrationLimit {
 		t.Errorf("sustained hydration peak %d exceeds the spec's %d concurrent background hydrations", sustained.PeakNetworkHydrations, sustained.HydrationLimit)
 	}
-	if sustained.PeakProducedBytes <= sustained.PendingLimitBytes {
-		t.Errorf("sustained produced payload peak %d does not exceed the injected %d-byte shared budget, so pressure under it is not proven", sustained.PeakProducedBytes, sustained.PendingLimitBytes)
+	if sustained.PeakProducedBytes <= sustained.LimitBytes {
+		t.Errorf("sustained produced payload peak %d does not exceed the injected %d-byte resident limit, so pressure under it is not proven", sustained.PeakProducedBytes, sustained.LimitBytes)
 	}
-	if sustained.PeakProducedBytes >= sustained.DefaultPendingLimitBytes {
-		t.Errorf("sustained produced payload peak %d is not below the %d-byte default", sustained.PeakProducedBytes, sustained.DefaultPendingLimitBytes)
+	if sustained.PeakProducedBytes >= sustained.DefaultLimitBytes {
+		t.Errorf("sustained produced payload peak %d is not below the %d-byte default", sustained.PeakProducedBytes, sustained.DefaultLimitBytes)
 	}
-	t.Logf("sustained retained peak %d bytes (injected %d), produced %d durable-entry-rows (live-model %d)",
-		sustained.PeakRetainedBytes, sustained.PendingLimitBytes, sustained.PeakProducedBytes, sustained.PeakProducedBytesLiveModel)
+	t.Logf("sustained resident peak %d (limit %d), pending %d (limit %d), worker %d (bound %d), admission retained %d (limit %d), produced %d durable-entry-rows (live-model %d, produced > %d and < %d)",
+		sustained.PeakResidentBytes, sustained.LimitBytes, sustained.PeakPendingBytes, sustained.PendingLimitBytes,
+		sustained.PeakWorkerBytes, sustained.WorkerLimitBytes, sustained.PeakRetainedBytes, sustained.PendingLimitBytes,
+		sustained.PeakProducedBytes, sustained.PeakProducedBytesLiveModel, sustained.LimitBytes, sustained.DefaultLimitBytes)
 
 	// Deterministic batching: the held-work phase was acknowledged, and the
 	// committed writes advanced only after that acknowledgment.
