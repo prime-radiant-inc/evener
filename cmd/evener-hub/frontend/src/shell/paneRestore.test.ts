@@ -145,7 +145,11 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
           contentComponent: "default",
           params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } },
         },
-        p6: { id: "p6", contentComponent: "default", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
+        p6: {
+          id: "p6",
+          contentComponent: "default",
+          params: { paneType: "transcript", paneParams: { ref: "job:job-1", parentRef: "ref_a" } },
+        },
       },
       activeGroup: "group-2",
     };
@@ -157,7 +161,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         { id: "p3", params: { paneType: "sessionActivity", paneParams: { ref: "ref_a" } } },
         { id: "p4", params: { paneType: "sessionDetails", paneParams: { ref: "ref_a" } } },
         { id: "p5", params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } } },
-        { id: "p6", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
+        { id: "p6", params: { paneType: "transcript", paneParams: { ref: "job:job-1", parentRef: "ref_a" } } },
       ];
       fake.activePanel = { id: "p4" };
     };
@@ -175,7 +179,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
       { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p5", type: "doc", params: { session: "ref_a", path: "notes.md", kind: "file" }, slot: "secondary" },
-      { id: "p6", type: "transcript", params: { ref: "ref_b" }, slot: "secondary" },
+      { id: "p6", type: "transcript", params: { ref: "job:job-1", parentRef: "ref_a" }, slot: "secondary" },
     ]);
     expect(fake.panels.map((pane) => pane.id)).not.toContain("p3");
     expect(workspaceStore.getState().focusedPaneId).toBe("p4");
@@ -186,4 +190,47 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         .map((pane) => paneFor(pane.type).title(pane.params, {})),
     ).toEqual(["Tasks · ref_a", "Details · ref_a"]);
   });
+});
+
+test("a saved session-ref transcript pane restores as the live conversation pane", () => {
+  const fake = new FakeDockviewApi();
+  registerDockviewApi(asDockviewApi(fake));
+  const saved = {
+    grid: {
+      root: { type: "branch", data: [{ type: "leaf", data: { views: ["p1", "p6", "p7"] } }] },
+      activeGroup: "group-1",
+    },
+    panels: {
+      p1: { id: "p1", contentComponent: "default", params: { paneType: "session", paneParams: { ref: "ref_a" } } },
+      p6: {
+        id: "p6",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "ref_b", parentRef: "ref_a" } },
+      },
+      p7: {
+        id: "p7",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "job:job-2", parentRef: "ref_a" } },
+      },
+    },
+    activeGroup: "group-1",
+  };
+  fake.serialized = saved;
+  fake.fromJSONBehavior = () => {
+    fake.panels = [
+      { id: "p1", params: { paneType: "session", paneParams: { ref: "ref_a" } } },
+      { id: "p6", params: { paneType: "transcript", paneParams: { ref: "ref_b", parentRef: "ref_a" } } },
+      { id: "p7", params: { paneType: "transcript", paneParams: { ref: "job:job-2", parentRef: "ref_a" } } },
+    ];
+    fake.activePanel = { id: "p1" };
+  };
+
+  const ok = workspaceStore.getState().restoreLayout(saved);
+
+  expect(ok).toBe(true);
+  expect(workspaceStore.getState().panes).toEqual([
+    { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+    { id: "p6", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
+    { id: "p7", type: "transcript", params: { ref: "job:job-2", parentRef: "ref_a" }, slot: "secondary" },
+  ]);
 });

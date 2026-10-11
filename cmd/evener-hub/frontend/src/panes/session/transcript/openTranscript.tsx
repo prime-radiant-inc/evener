@@ -35,10 +35,10 @@ export function transcriptContextIncludes(ref: string, ancestorRef: string): boo
 }
 
 // Workspace deduplication deliberately compares the entire params bag. That
-// is correct for most pane types, but a transcript's identity is its child
-// ref: adding parentRef later should update the navigation context rather than
-// leave two panes showing the same child. Keep one exact canonical pane when
-// possible and close only same-child variants before the normal opener runs.
+// is correct for most pane types, but a job log's identity is its job ref:
+// adding parentRef later should update the navigation context rather than
+// leave two panes showing the same job. Keep one exact canonical pane when
+// possible and close only same-job variants before the normal opener runs.
 function canonicalTranscriptPane(ref: string, params: { ref: string; parentRef?: string }): string | undefined {
   const workspace = workspaceStore.getState();
   const sameChild = workspace.panes.filter(
@@ -51,16 +51,17 @@ function canonicalTranscriptPane(ref: string, params: { ref: string; parentRef?:
   return exact?.id;
 }
 
-// Opens the read-only transcript surface through the workspace action so its
-// desktop beside-placement, mobile fallback, and pane deduplication stay one
-// behavior for every transcript link.
+// Opens the conversation a row points at. A session ref opens the live
+// conversation pane (the read-only transcript surface no longer exists); a
+// "job:" ref keeps the job-log transcript pane. Both go through the
+// workspace action so desktop beside-placement, mobile fallback, and pane
+// deduplication stay one behavior for every link.
 export function openTranscript(ref: string, parentRef?: string): void {
-  // Capture before canonicalization or owner placement changes selection. The
-  // workspace validates this against parentRef and the surviving pane lifetime.
+  // Capture before owner placement changes selection. The workspace validates
+  // this against parentRef and the surviving pane lifetime.
   const workspace = workspaceStore.getState();
   const origin = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
   const params = parentRef === undefined ? { ref } : { ref, parentRef };
-  const exactPaneId = canonicalTranscriptPane(ref, params);
   if (parentRef !== undefined) {
     const main = workspaceStore.getState().mainPane();
     const mainRef = main?.type === "session" ? transcriptRefOf(main.params) : undefined;
@@ -100,28 +101,53 @@ export function openTranscript(ref: string, parentRef?: string): void {
       }
     }
   }
-  if (exactPaneId !== undefined) {
-    const retained = workspaceStore.getState().panes.find((pane) => pane.id === exactPaneId);
-    if (retained) {
-      recordTranscriptOpenOrigin(retained, origin);
-      workspaceStore.getState().focusPane(retained.id);
-      return;
+
+  // A job ref is a shell job's output log, not a thread: it keeps the
+  // job-log transcript pane and its owner-context origin recording.
+  if (ref.startsWith("job:")) {
+    const exactPaneId = canonicalTranscriptPane(ref, params);
+    if (exactPaneId !== undefined) {
+      const retained = workspaceStore.getState().panes.find((pane) => pane.id === exactPaneId);
+      if (retained) {
+        recordTranscriptOpenOrigin(retained, origin);
+        workspaceStore.getState().focusPane(retained.id);
+        return;
+      }
     }
+    paneActions.openBeside({
+      type: "transcript",
+      params,
+    });
+    const opened = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "transcript" && sameParams(pane.params, params));
+    if (opened) recordTranscriptOpenOrigin(opened, origin);
+    return;
+  }
+
+  // A session ref opens its live conversation pane: reuse the open one for
+  // this ref, else open it beside the current selection. The conversation
+  // pane's identity is its ref, so no parent-context variants exist to
+  // canonicalize.
+  const existing = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref);
+  if (existing) {
+    workspaceStore.getState().focusPane(existing.id);
+    return;
   }
   paneActions.openBeside({
-    type: "transcript",
-    params,
+    type: "session",
+    params: { ref },
   });
-  const opened = workspaceStore
-    .getState()
-    .panes.find((pane) => pane.type === "transcript" && sameParams(pane.params, params));
-  if (opened) recordTranscriptOpenOrigin(opened, origin);
 }
 
+// The row control names the view it opens: the conversation for a session,
+// the transcript for a job log.
 export function OpenTranscriptButton({
   transcriptRef,
   parentRef,
-  label = "Open transcript",
+  label,
   tabIndex,
 }: {
   transcriptRef: string;
@@ -129,5 +155,11 @@ export function OpenTranscriptButton({
   label?: string;
   tabIndex?: number;
 }) {
-  return <OpenButton label={label} tabIndex={tabIndex} onClick={() => openTranscript(transcriptRef, parentRef)} />;
+  return (
+    <OpenButton
+      label={label ?? (transcriptRef.startsWith("job:") ? "Open transcript" : "Open conversation")}
+      tabIndex={tabIndex}
+      onClick={() => openTranscript(transcriptRef, parentRef)}
+    />
+  );
 }

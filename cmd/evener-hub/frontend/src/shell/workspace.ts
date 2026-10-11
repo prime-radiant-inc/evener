@@ -330,7 +330,45 @@ function readPanelParams(panel: IDockviewPanel): PanePanelParams | null {
   const parse = paneFor(raw.paneType).parseParams;
   const params = parse ? parse(raw.paneParams) : raw.paneParams;
   if (parse && params === null) return null;
+  // Layouts saved before the conversation-view ruling carry session refs on
+  // transcript panes; those reopen as their live conversation pane. Job
+  // logs keep the transcript pane.
+  if (raw.paneType === "transcript") {
+    const ref = (params as { ref?: unknown } | null)?.ref;
+    if (typeof ref === "string" && ref !== "" && !ref.startsWith(JOB_REF_PREFIX)) {
+      return { paneType: "session", paneParams: { ref } };
+    }
+  }
   return { paneType: raw.paneType, paneParams: params };
+}
+
+// The same migration applied to the incoming layout JSON before dockview
+// rebuilds its panels: a migrated panel must be CREATED as a session panel,
+// or the dockview panel would still render the removed transcript surface
+// while the workspace record beside it says session.
+function migrateLegacyLayout(json: unknown): unknown {
+  const layout = json as { panels?: Record<string, { params?: { paneType?: unknown; paneParams?: unknown } }> } | null;
+  if (!layout || typeof layout !== "object" || layout.panels === null || typeof layout.panels !== "object") return json;
+  let changed = false;
+  const panels: Record<string, unknown> = {};
+  for (const [id, panel] of Object.entries(layout.panels)) {
+    const params = panel?.params as { paneType?: unknown; paneParams?: { ref?: unknown } } | undefined;
+    const ref = params?.paneParams?.ref;
+    if (
+      params &&
+      params.paneType === "transcript" &&
+      typeof ref === "string" &&
+      ref !== "" &&
+      !ref.startsWith(JOB_REF_PREFIX)
+    ) {
+      changed = true;
+      panels[id] = { ...panel, params: { paneType: "session", paneParams: { ref } } };
+    } else {
+      panels[id] = panel;
+    }
+  }
+  if (!changed) return json;
+  return { ...layout, panels };
 }
 
 // Restored panel ids came from a PREVIOUS page load's own independently-
@@ -511,7 +549,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   restoreLayout(json, opts) {
     if (!dockviewApi) return false;
     try {
-      dockviewApi.fromJSON(json as SerializedDockview);
+      dockviewApi.fromJSON(migrateLegacyLayout(json) as SerializedDockview);
       // Slots come back from dockview's OWN restored geometry, not from the
       // saved JSON: api.panels is in grid order, so the FIRST panel is the one
       // in the top-left group - the main pane. Read only `panels` (plus each

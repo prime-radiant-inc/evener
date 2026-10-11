@@ -107,38 +107,38 @@ test("an unhydrated public alias keeps its own fallback instead of borrowing ano
   expect(screen.queryByText("Remote title")).toBeNull();
 });
 
-test("ancestor buttons retain exact transcript context beside the live owner", async () => {
+test("ancestor buttons route to the live conversation pane, not a read-only leftover", async () => {
   const user = userEvent.setup();
   window.history.replaceState({}, "", "/s/local%3Aroot");
   const panes = [
     { id: "root", type: "session" as const, params: { ref: "local:root" }, slot: "main" as const },
     {
       id: "child",
+      type: "session" as const,
+      params: { ref: "local:child" },
+      slot: "secondary" as const,
+    },
+    {
+      id: "child-readonly",
       type: "transcript" as const,
       params: { ref: "local:child", parentRef: "local:root" },
       slot: "secondary" as const,
     },
-    {
-      id: "grandchild",
-      type: "transcript" as const,
-      params: { ref: "local:grandchild", parentRef: "local:child" },
-      slot: "secondary" as const,
-    },
   ];
-  workspaceStore.setState({ panes, focusedPaneId: "grandchild" });
+  workspaceStore.setState({ panes, focusedPaneId: "child-readonly" });
   render(
     <ScopeCrumbs
       path={[
         { ref: "local:root", title: "Live owner" },
-        { ref: "local:child", title: "Read-only parent" },
-        { ref: "local:grandchild", title: "Current child" },
+        { ref: "local:child", title: "Nested child" },
+        { ref: "local:grandchild", title: "Current grandchild" },
       ]}
     />,
   );
-  await user.click(screen.getByRole("button", { name: "Read-only parent" }));
+  await user.click(screen.getByRole("button", { name: "Nested child" }));
   expect(workspaceStore.getState().focusedPaneId).toBe("child");
   expect(workspaceStore.getState().panes).toEqual(panes);
-  expect(window.location.pathname).toBe("/s/local%3Aroot");
+  expect(window.location.pathname).toBe("/s/local%3Achild");
   await user.click(screen.getByRole("button", { name: "Live owner" }));
   expect(workspaceStore.getState().focusedPaneId).toBe("root");
   expect(workspaceStore.getState().panes).toEqual(panes);

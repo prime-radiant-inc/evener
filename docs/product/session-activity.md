@@ -206,8 +206,8 @@ up to 4,096 Unicode code points, including the ellipsis when truncated;
 reports have no preview. Terminal errors retain their separate reason and error
 fields. The browser's expanded delegate activity detail presents a non-empty
 preview as a compact message from the delegate's name, with the name resolving
-through the standard delegate entity card and transcript-open control. Opening
-the child transcript remains the path to the full conversation.
+through the standard delegate entity card and its open-conversation control.
+Opening the row loads the child's conversation pane directly.
 
 A delegate that reports and then runs more turns in its finalization drain
 settles on its latest report, so `reportPreview` shows the newer one while the
@@ -864,14 +864,14 @@ direct links and restored panes obtain the same context without requiring a Back
 target. The Back target alone is not ancestry evidence, and no parent transcript
 is read to obtain a name. Root sessions omit redundant ancestry.
 
-Activity delegate rows use the shared transcript opener, which retains the
-enclosing conversation and canonicalizes restored variants of the same child
-pane before focusing it. Nested drills keep the child’s parent context so an
-unchanged root URL does not steal focus. Ancestor buttons reuse an already open
-read-only transcript with its exact pane identity and parent context; an existing
-live owner regains focus even when its URL is unchanged. The session rail and
-Open session actions request the live session route and composer, including when
-a read-only transcript of that session is already open.
+Activity delegate rows use the shared opener, which requests the child's
+conversation pane — reusing an already open one for that session — and keeps
+the child's parent context so an unchanged root URL does not steal focus.
+Ancestor buttons reuse an already open conversation pane for the scope. The
+opener names the view it opens: the conversation for a session ref, the
+transcript for a job log. Saved layouts restore a legacy session-ref
+transcript pane as its conversation pane; job-log transcript panes keep
+their pane.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection
