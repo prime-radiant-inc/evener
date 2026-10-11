@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 )
 
 // Wrapper turns a spawned command's argv into a kernel-wrapped argv that
@@ -66,24 +67,46 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 // in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
 // still point at it; the go command would create the same empty directory on its
 // first unsandboxed run. An empty directory cannot poison a cache. A root that
-// cannot be created, or is not a directory, is dropped from the policy's cache
-// roots, since it cannot be overlaid.
+// cannot be served (servableCacheRoot) is dropped from the policy's cache roots.
 func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 	if rp.CacheStrategy != CacheOverlay {
 		return rp
 	}
-	var served []string
-	for _, root := range rp.CacheRoots {
-		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
-			_ = os.MkdirAll(root, 0o755)
-		}
-		// A root that still is not a directory cannot be overlaid.
-		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
-			served = append(served, root)
+	recreateMissingCacheRoots(rp)
+	rp.CacheRoots = slices.DeleteFunc(slices.Clone(rp.CacheRoots), func(c string) bool { return !servableCacheRoot(rp, c) })
+	return rp
+}
+
+// recreateMissingCacheRoots creates, empty, each cache root that has gone
+// missing, at wrapper creation and again at every spawn (go clean -modcache on
+// the host removes one), unless creating it would land inside a persistent
+// write root or the worktree.
+func recreateMissingCacheRoots(rp ResolvedPolicy) {
+	for _, c := range rp.CacheRoots {
+		if _, err := os.Lstat(c); errors.Is(err, fs.ErrNotExist) && !landsInPersistentRoot(rp, c) {
+			_ = os.MkdirAll(c, 0o755)
 		}
 	}
-	rp.CacheRoots = served
-	return rp
+}
+
+// servableCacheRoot reports whether the overlay can serve cache root c now: it
+// is a directory, and its real location lies outside every persistent write
+// root and the worktree. It is judged at each spawn, since a symlinked parent
+// retargeted after resolution would otherwise move the overlay, and its
+// discarded upper layer, into the workspace.
+func servableCacheRoot(rp ResolvedPolicy, c string) bool {
+	fi, err := os.Stat(c)
+	return err == nil && fi.IsDir() && !landsInPersistentRoot(rp, c)
+}
+
+// landsInPersistentRoot reports whether c's real location (or, not created
+// yet, where creating it would land) is at or inside a persistent write root
+// or the worktree.
+func landsInPersistentRoot(rp ResolvedPolicy, c string) bool {
+	rc := resolveExistingPrefix(c)
+	return slices.ContainsFunc(appendNonEmpty(slices.Clone(bwrapWriteRoots(rp)), rp.Git.WorktreeRoot), func(w string) bool {
+		return pathUnder(rc, resolveExistingPrefix(w))
+	})
 }
 
 // Policy returns the resolved policy this wrapper enforces.
@@ -163,6 +186,9 @@ func (w *Wrapper) Wrap(argv []string, cwd string) []string {
 			panic(fmt.Sprintf("sandbox: seatbelt backend selected on a host that cannot enforce it: %v", err))
 		}
 		return wrapped
+	}
+	if w.policy.CacheStrategy == CacheOverlay {
+		recreateMissingCacheRoots(w.policy)
 	}
 	flags := buildBwrapArgv(w.policy, w.sessionTmp, cwd)
 	out := make([]string, 0, 1+len(flags)+3+len(argv))

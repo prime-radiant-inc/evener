@@ -1115,7 +1115,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		title: "Session",
 	});
 
-	act(() => chip("Tasks, 1 of 2 done").props.onPress());
+	act(() => chip("Tasks, 1 of 2 settled").props.onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 		hubId: "hub-1",
 		ref,
@@ -1161,7 +1161,7 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 		});
 		act(() => tree.update(screen()));
 		expect(label("Subagents, 1")).toEqual([]);
-		expect(label("Tasks, 1 of 2 done")).toEqual([]);
+		expect(label("Tasks, 1 of 2 settled")).toEqual([]);
 		// Goal and Queue need no connection, so they still show.
 		expect(label("Goal, blocked")).toHaveLength(1);
 		expect(label("2 queued messages")).toHaveLength(1);

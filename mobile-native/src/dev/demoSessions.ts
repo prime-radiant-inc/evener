@@ -234,7 +234,13 @@ const CONTENT: Record<string, SessionContent> = {
 			},
 		],
 		queued: ["When CI is green, post a summary on the PR."],
-		tasks: { total: 7, done: 3, remaining: 4, current: { id: 4, description: "Fix the settle/drain race" } },
+		tasks: {
+			total: 7,
+			done: 3,
+			cancelled: 1,
+			remaining: 3,
+			current: { id: 4, description: "Fix the settle/drain race" },
+		},
 		goal: { objective: "PR 2138 green on CI without skipped tests", status: "active", iterations: 3 },
 		usage: {
 			inputTokens: 46_100_000,

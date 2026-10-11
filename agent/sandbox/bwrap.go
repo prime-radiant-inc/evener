@@ -175,9 +175,10 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	if rp.CacheStrategy == CacheOverlay {
 		var overlaid []string
 		for _, c := range rp.CacheRoots {
-			// Only a directory can be an overlay lower; overlayfs rejects anything
-			// else and bwrap would abort the whole sandbox over it.
-			if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+			// Only a directory can be an overlay lower (overlayfs rejects
+			// anything else and bwrap would abort the whole sandbox over it),
+			// and only one still outside the persistent roots is served.
+			if servableCacheRoot(rp, c) {
 				add("--overlay-src", c, "--tmp-overlay", c)
 				overlaid = append(overlaid, c)
 			}

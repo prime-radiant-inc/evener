@@ -316,15 +316,15 @@ func denialReasonKind(reason string) sandbox.DenialReason {
 	}
 }
 
-// underMasked reports whether abs is at or beneath any masked (secrets/pseudo-fs)
-// path from the resolved policy.
+// underMasked reports whether the resolved policy masks abs (a secrets/pseudo-fs
+// path; see ResolvedPolicy.Masks).
 func (s *sandboxFS) underMasked(abs string) bool {
-	for _, m := range s.policy.MaskedPaths {
-		if abs == m || pathUnder(abs, m) {
-			return true
-		}
-	}
-	return false
+	return s.policy.Masks(abs)
+}
+
+// underMaskedForWrite is underMasked for a write (ResolvedPolicy.MasksWrite).
+func (s *sandboxFS) underMaskedForWrite(abs string) bool {
+	return s.policy.MasksWrite(abs)
 }
 
 // isGrantedRoot reports whether abs is exactly one of the policy's granted roots

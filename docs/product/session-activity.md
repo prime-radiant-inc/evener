@@ -168,7 +168,10 @@ have no visual or spoken count there; shared navigation selectors and web rail
 presentation retain their existing contract. The native session header's neutral
 Subagents chip uses the authoritative activity total without a failure suffix.
 Unknown counts with an existing delegate roster keep access and announce
-“count unknown”; disconnected headers omit the chip. A session's own errors,
+“count unknown”; disconnected headers omit the chip. The native header's Tasks
+chip, the Session sheet's Tasks row and the shared activity projection all
+count settled tasks (done plus cancelled), the same count the web's Tasks chips
+read. A session's own errors,
 current questions and approvals retain their attention and priority, including
 the existing offline and stale-input rules.
 
@@ -205,6 +208,12 @@ fields. The browser's expanded delegate activity detail presents a non-empty
 preview as a compact message from the delegate's name, with the name resolving
 through the standard delegate entity card and transcript-open control. Opening
 the child transcript remains the path to the full conversation.
+
+A delegate's mid-work updates (`communicate(end_turn=false)`) never contribute
+to `reportPreview`. Each reaches its owner's transcript as its own
+`<delegate-notification kind="update">` row, which the browser renders as a
+"Delegate update" card and the phone as "<name> sent an update", with the
+delegate's message beneath.
 
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and

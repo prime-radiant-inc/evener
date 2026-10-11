@@ -448,6 +448,11 @@ type testConfig struct {
 	// pause it there so another drive is refused on that guard. Nil in
 	// production.
 	delegateAttentionBeforeGuardRelease func(*subagent)
+	// afterModelHistorySnapshot runs on every request build, just after the
+	// round snapshots its history and before a leased delegate turn takes the
+	// controller's own snapshot, so a test can land a turn between the two.
+	// Nil in production.
+	afterModelHistorySnapshot func()
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)

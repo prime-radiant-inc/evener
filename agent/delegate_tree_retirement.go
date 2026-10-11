@@ -75,6 +75,12 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 			continue
 		}
+		// Resident or cold, a delegate's transcript decides whether attention is
+		// still owed: a closed delegate's wakes no longer say so.
+		fold, err := readExistingDelegateAttentionFold(path, sessionID)
+		if err != nil || len(fold.pendingIDs()) != 0 {
+			blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
+		}
 		if exact[id] == nil {
 			meta, err := schema.LoadSessionMeta(c.stateDir, d.ChildSessionID)
 			info, statErr := os.Stat(path)
@@ -84,10 +90,6 @@ func (c *delegateTreeController) retirementEvidence() ([]RetirementBlocker, []*S
 			}
 			if meta.Goal != nil && meta.Goal.Status == "active" {
 				blockers = append(blockers, RetirementBlocker{Category: "autonomous", SessionID: d.ChildSessionID, DelegateID: id})
-			}
-			fold, err := readExistingDelegateAttentionFold(path, sessionID)
-			if err != nil || len(fold.pendingIDs()) != 0 {
-				blockers = append(blockers, RetirementBlocker{Category: "delegate", SessionID: c.rootSessionID, DelegateID: id})
 			}
 			local, err := retirementColdEvidence(c.stateDir, d.ChildSessionID, id)
 			blockers = append(blockers, local...)
@@ -195,7 +197,9 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 		if a.CurrentRunOpen || a.Phase != delegatestore.PhaseIdle && a.Phase != delegatestore.PhaseClosed || len(a.PendingDeliveries) != 0 || a.PendingStopSeq != 0 || a.NeedsAttention || a.PreparedTerminal != nil {
 			block(id)
 		}
-		if state := c.attention[id]; state != nil && len(state.wakeIDs) != 0 {
+		// A delegate that can no longer resume never acts on a noted wake, and
+		// the transcript evidence below still blocks on what is pending.
+		if state := c.attention[id]; state != nil && len(state.wakeIDs) != 0 && a.Resumable && a.Phase != delegatestore.PhaseClosed {
 			block(id)
 		}
 		if live := c.live[id]; live != nil {

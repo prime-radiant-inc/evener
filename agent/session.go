@@ -1037,21 +1037,23 @@ type Session struct {
 	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
 	// the episode. Guarded by attentionMu.
 	rootAttentionPaused bool
-	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
+	// attentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
-	// lives on stageRootDelegateAttentionCoverage and
-	// unionCoveredRootDelegateAttention. Reset at each turn start.
-	rootAttentionCoveredIDs map[string]struct{}
-	// rootAttentionStagedIDs is one round's candidate coverage: the attention
+	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
+	// Reset at each turn start.
+	attentionCoveredIDs map[string]struct{}
+	// attentionStagedIDs is one round's candidate coverage: the attention
 	// the round's built request presents. The round loop promotes it into
-	// rootAttentionCoveredIDs only when the round's call settles, so a failed
+	// attentionCoveredIDs only when the round's call settles, so a failed
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
-	rootAttentionStagedIDs map[string]struct{}
-	// rootAttentionPreTurnArmIDs snapshots rootAttentionWakeIDs at turn start
-	// (resetRootDelegateAttentionCoverage). Marking consults it to separate
-	// deliveries armed mid-turn from attention already owed a dedicated wake.
-	rootAttentionPreTurnArmIDs map[string]struct{}
+	attentionStagedIDs map[string]struct{}
+	// attentionPreTurnIDs snapshots rootAttentionWakeIDs at turn start
+	// (resetAttentionCoverage). Marking consults it to separate the root's
+	// deliveries armed mid-turn from attention already owed a dedicated
+	// notification turn. A delegate session arms no root wakes, so for it
+	// the snapshot is empty.
+	attentionPreTurnIDs map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
