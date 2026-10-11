@@ -82,6 +82,24 @@ func extractCheckpointEarlierSummaries(text string) []string {
 	return summaries
 }
 
+// summaryModelTextHeading heads the model's own text in a summary turn.
+const summaryModelTextHeading = "## Summary"
+
+// carriesPartnerMessages reports whether a summary turn has the layout
+// summarizeFold writes: the model's text fenced under summaryModelTextHeading,
+// with the partner's messages after it in their own conversation section. A
+// summary written before that layout is the model's text throughout, whatever
+// headings it used, and is carried whole.
+func carriesPartnerMessages(text string) bool {
+	_, body, _, ok := markdownSectionSpan(text, summaryModelTextHeading)
+	if !ok {
+		return false
+	}
+	first, _, _ := strings.Cut(strings.TrimLeft(text[body:], "\n"), "\n")
+	_, n := fenceRun(first)
+	return n >= 3
+}
+
 // renderCompactionModelText renders a model-written compaction turn's own text
 // under heading, fenced. It comes first in the turn: a summarizer reads a
 // previous compaction from its head, so the model's text must not sit behind
@@ -222,8 +240,7 @@ func withoutMarkdownSection(text, heading string) string {
 // checkpoint on a render/extract round-trip. This mirrors the fence tracking
 // parseMarkdownBlocks applies to the section body.
 func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
-	inFence := false
-	fenceMarker := ""
+	var fence fenceTracker
 	start = -1
 	offset := 0
 	for _, line := range strings.SplitAfter(text, "\n") {
@@ -231,15 +248,9 @@ func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 			break
 		}
 		content := strings.TrimSuffix(line, "\n")
-		marker := markdownFenceMarker(content)
 		switch {
-		case marker != "":
-			if !inFence {
-				inFence, fenceMarker = true, marker
-			} else if strings.TrimSpace(content) == fenceMarker {
-				inFence, fenceMarker = false, ""
-			}
-		case inFence:
+		case fence.step(content):
+		case fence.inside():
 		case start < 0:
 			if line == heading+"\n" {
 				start, body = offset, offset+len(line)
@@ -260,21 +271,9 @@ func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 // included, removed. The legacy checkpoint formats are read from what is left.
 func withoutFencedBlocks(text string) string {
 	var b strings.Builder
-	inFence := false
-	fenceMarker := ""
+	var fence fenceTracker
 	for _, line := range strings.SplitAfter(text, "\n") {
-		content := strings.TrimSuffix(line, "\n")
-		if marker := markdownFenceMarker(content); marker != "" {
-			if !inFence {
-				inFence, fenceMarker = true, marker
-				continue
-			}
-			if strings.TrimSpace(content) == fenceMarker {
-				inFence, fenceMarker = false, ""
-				continue
-			}
-		}
-		if !inFence {
+		if !fence.step(strings.TrimSuffix(line, "\n")) && !fence.inside() {
 			b.WriteString(line)
 		}
 	}
@@ -285,8 +284,7 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 	var blocks []checkpointMarkdownBlock
 	var heading string
 	var lines []string
-	inFence := false
-	fenceMarker := ""
+	var fence fenceTracker
 	sawFence := false
 
 	flush := func() {
@@ -300,7 +298,7 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 	}
 
 	for line := range strings.SplitSeq(section, "\n") {
-		if !inFence && strings.HasPrefix(line, "### ") {
+		if !fence.inside() && strings.HasPrefix(line, "### ") {
 			flush()
 			heading = strings.TrimSpace(strings.TrimPrefix(line, "### "))
 			lines = nil
@@ -310,20 +308,11 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 		if heading == "" {
 			continue
 		}
-		if marker := markdownFenceMarker(line); marker != "" {
-			if !inFence {
-				inFence = true
-				fenceMarker = marker
-				sawFence = true
-				continue
-			}
-			if strings.TrimSpace(line) == fenceMarker {
-				inFence = false
-				fenceMarker = ""
-				continue
-			}
+		if fence.step(line) {
+			sawFence = true
+			continue
 		}
-		if inFence {
+		if fence.inside() {
 			lines = append(lines, line)
 			continue
 		}
@@ -335,18 +324,45 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 	return blocks
 }
 
-func markdownFenceMarker(line string) string {
-	count := 0
-	for _, r := range line {
-		if r != '`' {
-			break
-		}
-		count++
+// fenceTracker follows Markdown fenced code blocks line by line. A block opens
+// on a line starting with three or more backticks or tildes, and closes on a
+// line of the same character, at least as long, with nothing after it.
+type fenceTracker struct {
+	char   byte
+	length int
+}
+
+// inside reports whether the lines stepped so far leave a block open.
+func (f *fenceTracker) inside() bool { return f.length > 0 }
+
+// step advances over line and reports whether it opened or closed a block.
+func (f *fenceTracker) step(line string) bool {
+	char, n := fenceRun(line)
+	if n < 3 {
+		return false
 	}
-	if count < 3 {
-		return ""
+	if f.length == 0 {
+		f.char, f.length = char, n
+		return true
 	}
-	return strings.Repeat("`", count)
+	if char == f.char && n >= f.length && strings.TrimSpace(line[n:]) == "" {
+		f.length = 0
+		return true
+	}
+	return false
+}
+
+// fenceRun returns the fence character a line starts with and how many of it
+// lead the line, or 0, 0 when it starts with neither a backtick nor a tilde.
+func fenceRun(line string) (byte, int) {
+	if line == "" || (line[0] != '`' && line[0] != '~') {
+		return 0, 0
+	}
+	n := 0
+	for n < len(line) && line[n] == line[0] {
+		n++
+	}
+	return line[0], n
 }
 
 func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkpointConversationEntry {

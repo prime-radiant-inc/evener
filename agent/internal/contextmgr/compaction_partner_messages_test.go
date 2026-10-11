@@ -311,3 +311,26 @@ func TestCheckpointPred_FallbackSummaryReadsTheHistoryTheCheckpointFolded(t *tes
 	}
 	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 }
+
+// A summary written before summaries carried the partner's messages is the
+// model's text throughout, even where it uses a "## Conversation" heading of
+// its own: a later checkpoint carries it whole, and reads no partner messages
+// from it.
+func TestCheckpoint_KeepsAnOlderSummaryWhole(t *testing.T) {
+	older := "[CONTEXT SUMMARY]\n## Progress\nshipped the parser\n\n## Conversation\n### User\nOLDER_MODEL_TEXT_SENTINEL decided to keep the v2 format\n[END SUMMARY]"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User(older)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cp := checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	if got := extractCheckpointEarlierSummaries(cp); len(got) != 1 || got[0] != older {
+		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
+	}
+	for _, entry := range extractMarkdownConversation(cp) {
+		if strings.Contains(entry.Text, "OLDER_MODEL_TEXT_SENTINEL") {
+			t.Fatalf("the older summary's own text became a partner message: %q", entry.Text)
+		}
+	}
+}
