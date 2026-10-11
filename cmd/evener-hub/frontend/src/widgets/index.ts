@@ -63,6 +63,8 @@ export type { InspectorCardProperty, InspectorCardProps } from "./inspectorcard"
 export { InspectorCard } from "./inspectorcard";
 export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
+export type { ListRowProps, ListRowVariant } from "./listrow";
+export { ListRow } from "./listrow";
 export type { LoaderProps } from "./loader";
 export { Loader } from "./loader";
 export type { MarkdownProps } from "./markdown";

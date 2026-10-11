@@ -34,3 +34,36 @@
 .action {
   margin-top: var(--space-2);
 }
+
+/* size="compact": the empty message inside a list or section rather than a
+ * whole pane - a settings collection with nothing in it, the activity
+ * sidebar's "No jobs at this level.", the command palette's "No matches". It
+ * reads as one quiet line where the list's rows would start: left-aligned,
+ * the row's own padding, the UI face and step instead of the serif pane
+ * title. */
+.compact {
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  text-align: start;
+}
+
+.compact .title {
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: normal;
+  line-height: var(--line-height-ui);
+}
+
+.compact .hint {
+  max-width: none;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
+}
+
+.compact .action {
+  margin-top: 0;
+}

@@ -9,8 +9,11 @@ import styles from "./button.module.css";
  * for chromeless text-level actions.
  * dangerQuiet is a destructive action that is not the primary one on its row
  * (the composer's Stop beside Send): danger on the glyph/label, no filled
- * background. */
-export type ButtonVariant = "primary" | "secondary" | "quiet" | "danger" | "dangerQuiet";
+ * background.
+ * link is an inline text action - a task title in the composer's current-work
+ * line, a Retry beside an error - in accent ink with an underline. It takes
+ * its font from the text around it, so the size ladder does not apply. */
+export type ButtonVariant = "primary" | "secondary" | "quiet" | "danger" | "dangerQuiet" | "link";
 /** xs is the density step for a control row INSIDE another control - the
  * prompt card's verb cluster, where the buttons annotate a text field rather
  * than standing alone as a form's action. */
@@ -38,6 +41,7 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
   quiet: requireClass(styles.quiet, "button.module.css", "quiet"),
   danger: requireClass(styles.danger, "button.module.css", "danger"),
   dangerQuiet: requireClass(styles.dangerQuiet, "button.module.css", "dangerQuiet"),
+  link: requireClass(styles.link, "button.module.css", "link"),
 };
 
 const SIZE_CLASS: Record<ButtonSize, string> = {
@@ -85,7 +89,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       {...rest}
       type={type}
-      className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
+      className={
+        variant === "link"
+          ? `${BASE_CLASS.button} ${VARIANT_CLASS.link}`
+          : `${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`
+      }
       onClick={refused ? undefined : onClick}
       disabled={disabled}
     >

@@ -35,6 +35,22 @@ function VariantRow({ variant }: { variant: ButtonVariant }) {
   );
 }
 
+function LinkRow() {
+  return (
+    <div className={styles.row}>
+      <p className={styles.rowLabel}>link</p>
+      <p>
+        Couldn't load older turns. <Button variant="link">Retry</Button>
+      </p>
+      <p>
+        <Button variant="link" disabled>
+          Retry
+        </Button>
+      </p>
+    </div>
+  );
+}
+
 export default function ButtonGallerySection() {
   return (
     <section>
@@ -43,6 +59,7 @@ export default function ButtonGallerySection() {
         {VARIANTS.map((variant) => (
           <VariantRow key={variant} variant={variant} />
         ))}
+        <LinkRow />
       </ThemeFlip>
     </section>
   );

@@ -265,3 +265,51 @@ test("mobile: all button sizes meet the 44px tap floor", () => {
     expect(rule![1]).toContain("min-height: var(--tap-min)");
   }
 });
+
+// variant="link" is the inline text action (a task title in the composer's
+// current-work line, a Retry beside an error): still a real <button>, but it
+// sits in running text, so it takes its font from the text around it and no
+// size step's height or padding applies.
+test("variant=link is a real button that runs its action", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(
+    <Button variant="link" onClick={onClick}>
+      Retry
+    </Button>,
+  );
+  const button = screen.getByRole("button", { name: "Retry" });
+  expect(button.getAttribute("type")).toBe("button");
+  await user.click(button);
+  expect(onClick).toHaveBeenCalledOnce();
+});
+
+test("variant=link ignores the size ladder", () => {
+  const { rerender } = render(
+    <Button variant="link" size="xs">
+      Retry
+    </Button>,
+  );
+  const xsClass = screen.getByRole("button").className;
+  rerender(
+    <Button variant="link" size="md">
+      Retry
+    </Button>,
+  );
+  expect(screen.getByRole("button").className).toBe(xsClass);
+});
+
+test("variant=link declares accent-ink underlined text that inherits its font and keeps the focus ring", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const rule = /\.link\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("color: var(--accent-ink)");
+  expect(rule).toContain("text-decoration: underline");
+  expect(rule).toContain("font: inherit");
+  expect(rule).toContain("padding: 0");
+  expect(rule).toContain("height: auto");
+  expect(rule).toContain("background: transparent");
+  expect(rule).not.toMatch(/outline/);
+});
