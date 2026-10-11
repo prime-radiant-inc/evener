@@ -244,7 +244,7 @@ func (s *Session) resultToolName() string {
 	if s.cfg.ResultToolName != "" {
 		return s.cfg.ResultToolName
 	}
-	return "communicate"
+	return tool.DefaultResultToolName
 }
 
 // RegisterTool registers a custom tool at runtime.
@@ -1468,14 +1468,9 @@ func (s *Session) rebuildToolDefsCache() {
 					}
 				}
 			}
-			if td.Name == "job_watch" {
-				td = tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName())
-			}
-			if td.Name == "job_list" || td.Name == "delegate_send" {
-				// The registration built this description from the session's
-				// result tool name; the profile's copy names the default.
-				td.Description = s.reg.Get(td.Name).Definition.Description
-			}
+			// Registration builds descriptions that name the session's result
+			// tool; the profile's copy names the default.
+			td.Description = s.reg.Get(td.Name).Definition.Description
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
 				wire.Name = mapped
