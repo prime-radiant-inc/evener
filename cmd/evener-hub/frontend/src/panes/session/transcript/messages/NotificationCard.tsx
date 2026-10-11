@@ -520,6 +520,7 @@ export function NotificationCard({
     <div className={CLASS.collapsible} data-testid="notification-card" data-tone={notification.tone}>
       <div className={CLASS.disclosure}>
         <Disclosure
+          variant="quiet"
           id={disclosureKey}
           defaultOpen={disclosureFallback}
           summary={

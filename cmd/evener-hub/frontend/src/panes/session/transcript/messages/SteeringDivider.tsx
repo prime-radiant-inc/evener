@@ -55,6 +55,7 @@ export function SteeringDivider({
   const disclosureKey = useMemo(() => itemScopeKey(sessionRef, id), [sessionRef, id]);
   return (
     <Disclosure
+      variant="quiet"
       id={disclosureKey}
       ignoreBaseline={ignoreBaseline}
       data-testid={testId}

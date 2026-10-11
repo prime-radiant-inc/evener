@@ -275,6 +275,7 @@ export const ThinkBlock = memo(function ThinkBlock({
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="false">
       <Disclosure
+        variant="quiet"
         id={disclosureKey}
         defaultOpen={disclosureFallback}
         summary={

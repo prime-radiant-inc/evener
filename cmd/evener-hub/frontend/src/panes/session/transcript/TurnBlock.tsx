@@ -169,6 +169,7 @@ export function ProjectedIntentGroup({
         {...(open ? undefined : closedIntentGroupAnchorFor(entries, viewAnchorIndex))}
       >
         <Disclosure
+          variant="quiet"
           id={disclosureKey}
           defaultOpen={fallback}
           data-testid="intent-group"

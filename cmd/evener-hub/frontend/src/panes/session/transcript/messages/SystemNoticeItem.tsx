@@ -131,6 +131,7 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
     !isNotesSnapshot && (expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false));
   return (
     <Disclosure
+      variant="quiet"
       id={disclosureKey}
       defaultOpen={disclosureFallback}
       ignoreBaseline={isNotesSnapshot}
@@ -334,6 +335,7 @@ function SystemGroup({
   const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, firstItem.id, false);
   return (
     <Disclosure
+      variant="quiet"
       id={disclosureKey}
       defaultOpen={disclosureFallback}
       data-testid="system-notice-group"
