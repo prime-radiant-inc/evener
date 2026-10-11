@@ -1490,7 +1490,10 @@ async function inspectIntentColumn(): Promise<IntentColumnMeasurement> {
       "turn block",
     );
     await twoPaintedFrames();
-    const groupRect = group.getBoundingClientRect();
+    // The row box is the Disclosure's wrapper (it carries the virtual row's
+    // data-transcript-row-id); the Disclosure inside it is inset by the gutter.
+    const row = group.closest<HTMLElement>("[data-transcript-row-id]") ?? group;
+    const groupRect = row.getBoundingClientRect();
     const turnRect = turn.getBoundingClientRect();
     return {
       groupFound: true,
