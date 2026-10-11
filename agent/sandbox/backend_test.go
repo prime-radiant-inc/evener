@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -145,5 +147,24 @@ func TestConfineTrustedInfraNilIsIdentity(t *testing.T) {
 	w.ConfineTrustedInfra(cmd, "/somewhere")
 	if !slices.Equal(cmd.Args, want) || cmd.Dir != "" {
 		t.Errorf("nil wrapper must be identity, got args=%v dir=%q", cmd.Args, cmd.Dir)
+	}
+}
+
+// The session scratch is allocated after Resolve, so the wrapper drops any
+// cache root sharing storage with it (scratch kept under ~/.cache): an overlay
+// there would discard the scratch files between commands.
+func TestNewWrapperDropsACacheRootHoldingTheSessionScratch(t *testing.T) {
+	cache := t.TempDir()
+	scratch := filepath.Join(cache, "evener", "scratch")
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{Backend: BackendBwrap, CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(w.Policy().CacheRoots, cache) {
+		t.Errorf("a cache root holding the session scratch must not be overlaid: %v", w.Policy().CacheRoots)
 	}
 }

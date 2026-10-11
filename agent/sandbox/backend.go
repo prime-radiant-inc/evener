@@ -57,6 +57,10 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 		if err := prepareGitSurfaces(policy); err != nil {
 			return nil, err
 		}
+		// The session scratch is allocated after Resolve, so a cache root
+		// sharing storage with it (scratch kept under ~/.cache) is dropped
+		// here, by the same rule Resolve applies to persistent write roots.
+		policy.CacheRoots = dropCacheRootsSharingWriteRoots(slices.Clone(policy.CacheRoots), appendNonEmpty(nil, sessionTmp))
 		policy = prepareCacheRoots(policy)
 	}
 	return &Wrapper{policy: policy, binaryPath: binaryPath, sessionTmp: sessionTmp}, nil
