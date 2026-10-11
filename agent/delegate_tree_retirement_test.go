@@ -1160,24 +1160,26 @@ func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
 	c.Abort(claim, "")
 }
 
-// A closed delegate can never act on a noted wake, so a wake whose item the
-// transcript already resolved (and whose clear failed before the closure)
-// must not hold the tree's retirement.
-func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T) {
-	t.Parallel()
+// closedRetirementDelegateWithAttention appends and opens one attention item
+// on an idle delegate, resolves it first when resolve is set, and closes the
+// delegate's resumability. It returns the tree, the retirement controller and
+// the delegate; the root closes with the test.
+func closedRetirementDelegateWithAttention(t *testing.T, attentionID string, resolve bool) (*delegateTreeController, *RetirementController, delegateResult) {
+	t.Helper()
 	root, tree, c := newRetirementDelegateController(t)
-	defer root.Close()
+	t.Cleanup(func() { root.Close() })
 	d := retirementIdleDelegate(t, root)
 	sub := root.subagents.get(d.ChildSessionID)
-	const attentionID = "attention-resolved-before-closure"
-	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-resolved-content"); err != nil {
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, attentionID+"-content"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
 		t.Fatal(err)
 	}
-	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
-		t.Fatal(err)
+	if resolve {
+		if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
+			t.Fatal(err)
+		}
 	}
 	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
 	if err != nil {
@@ -1186,6 +1188,16 @@ func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T
 	if err := root.executeDelegateMutationPlans(plans); err != nil {
 		t.Fatal(err)
 	}
+	return tree, c, d
+}
+
+// A closed delegate can never act on a noted wake, so a wake whose item the
+// transcript already resolved (and whose clear failed before the closure)
+// must not hold the tree's retirement.
+func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	const attentionID = "attention-resolved-before-closure"
+	tree, c, d := closedRetirementDelegateWithAttention(t, attentionID, true)
 	tree.mu.Lock()
 	_, wakeKept := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
 	tree.mu.Unlock()
@@ -1204,24 +1216,7 @@ func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T
 // whether its runtime is resident or not.
 func TestRetirementDelegateUnresolvedAttentionOfClosedDelegateBlocks(t *testing.T) {
 	t.Parallel()
-	root, tree, c := newRetirementDelegateController(t)
-	defer root.Close()
-	d := retirementIdleDelegate(t, root)
-	sub := root.subagents.get(d.ChildSessionID)
-	const attentionID = "attention-unresolved-at-closure"
-	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-unresolved-content"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
-		t.Fatal(err)
-	}
-	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := root.executeDelegateMutationPlans(plans); err != nil {
-		t.Fatal(err)
-	}
+	_, c, _ := closedRetirementDelegateWithAttention(t, "attention-unresolved-at-closure", false)
 	claim, state, err := c.TryClaim(true)
 	if claim != nil {
 		c.Abort(claim, "")

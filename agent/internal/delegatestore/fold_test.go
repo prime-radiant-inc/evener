@@ -1092,3 +1092,24 @@ func TestApplyUpdatePostedRefusesOutsideTheRunningGeneration(t *testing.T) {
 		}
 	})
 }
+
+// IsUpdateDeliveryID recognizes exactly the ids UpdateDeliveryID builds, so a
+// receiver can tell an update's attention from a report's.
+func TestIsUpdateDeliveryIDRecognizesOnlyUpdateIDs(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{UpdateDeliveryID("dlg_alpha", 7), true},
+		{"dlg_alpha/delivery/1", false},
+		{"dlg_alpha/update/", false},
+		{"dlg_alpha/update/x", false},
+		{"/update/7", false},
+		{"", false},
+	} {
+		if got := IsUpdateDeliveryID(tc.id); got != tc.want {
+			t.Errorf("IsUpdateDeliveryID(%q) = %t, want %t", tc.id, got, tc.want)
+		}
+	}
+}

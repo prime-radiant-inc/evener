@@ -296,13 +296,18 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 
 // clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
 // projection, and drops its noted wakes, once its transcript holds no
-// unresolved attention. While a stop is pending the stop's cleanup owns the
-// wakes (it renews their markers' durability first), so the clear leaves them.
-// A resolution can outrun the committed attention run that would otherwise emit the clearing
-// event (acceptDelegateAttention makes the marker durable first, and a
-// later-declined CommitStart leaves the journal's last event at true), and the
-// transcript-driven drive is the only witness of that state, so it reconciles
-// the projection itself rather than waiting for the next bootstrap. An empty
+// unresolved attention. A generation that consumes attention keeps the noted
+// wakes: they are the retry obligation until a clear reconciles them against
+// the transcript (the finalize tail's clear, or, if that fails, the root's
+// attention drive), and a stop discards only what the transcript still owes.
+// While a stop is pending the stop's cleanup owns the wakes (it renews their
+// markers' durability first), so the clear leaves them.
+// A resolution can outrun the committed attention run that would otherwise
+// emit the clearing event (acceptDelegateAttention makes the marker durable
+// first, and a later-declined CommitStart leaves the journal's last event at
+// true), and the transcript-driven drive is the only witness of that state, so
+// it reconciles the projection itself rather than waiting for the next
+// bootstrap. An empty
 // fold is authoritative: a wake ID is only ever noted beside a durable
 // transcript entry, so no entry means the attention resolved. A missing
 // transcript is not an empty one: the fold is read strictly (as the bootstrap
@@ -334,11 +339,12 @@ func (c *delegateTreeController) tryClearResolvedDelegateAttention(delegateID st
 	c.mu.Lock()
 	aggregate := c.durable[delegateID]
 	stateDir := c.stateDir
-	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
-	if aggregate == nil || aggregate.PendingStopSeq != 0 || !aggregate.NeedsAttention && len(wakeIDs) == 0 {
+	noWakes := c.attention[delegateID] == nil || len(c.attention[delegateID].wakeIDs) == 0
+	if aggregate == nil || aggregate.PendingStopSeq != 0 || (!aggregate.NeedsAttention && noWakes) {
 		c.mu.Unlock()
 		return false, nil
 	}
+	wakeIDs := c.delegateAttentionWakeIDsLocked(delegateID)
 	transcriptRef := aggregate.Descriptor.TranscriptRef
 	evidenceVersion := c.evidenceVersion
 	c.mu.Unlock()

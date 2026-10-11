@@ -66,14 +66,11 @@ func FuzzSessionTreePass6(f *testing.F) {
 			_ = NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite})
 
 		case 8:
-			// No-roster/no-source helpers and fetchStatus transport failures.
+			// No-roster/no-source helpers.
 			empty := NewWebServer(hubcore.WebConfig{})
 			_, _, _ = empty.navigationTreeInputs(context.Background())
 			_ = empty.apiTreeSources()
 			_, _ = empty.liveEntry("missing")
-			_ = empty.fetchStatus(hubcore.LiveEntry{})
-			_ = empty.apiSessionCapabilities("missing", false)
-			_ = empty.apiSessionCapabilities("missing", true)
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}})
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}})
 			_ = appThreadTreeLive(thread)

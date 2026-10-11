@@ -491,7 +491,7 @@ the response's `skipped` array.
 
 **The old `/s/<id>/<action>` form-POST shim is gone** — commit
 `660376f78` deleted it along with the vanilla-JS frontend, and
-`web_workspace.go:16-22` says so in a comment: `/s/<id>` now serves only
+`handleSession` (`web_workspace.go`) routes it: `/s/<id>` now serves only
 the SPA shell and `/s/<id>/images/<sha>`, and every other sub-path
 returns 404.
 
@@ -710,7 +710,7 @@ else and `AppShell` renders `NotFound` — the words "Page not found" and
 That is deliberate (commit `8cea30ca6`, "no back-compat"): the rail
 opens sessions as `local:<id>`, so a bare-id deep link used to open the
 same session a second time in a second pane. The Go side is not the
-gate — `/s/` serves the SPA shell for any id (`web_workspace.go:38-39`) —
+gate — `/s/` serves the SPA shell for any id (`handleSession` in `web_workspace.go`) —
 so the 404 you see is client-side, and `curl`ing `/s/<bare-id>` still
 returns 200 with the shell. Assert the rendered text, not the status code.
 

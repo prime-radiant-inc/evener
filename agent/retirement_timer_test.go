@@ -146,7 +146,7 @@ func startRetirementRun(t *testing.T, ctrl *RetirementController, consume func(c
 		h.done <- ctrl.Run(ctx, func(runCtx context.Context, claim *RetirementClaim) error {
 			h.calls <- claim
 			return consume(runCtx, claim)
-		})
+		}, nil)
 	}()
 	return h
 }
@@ -504,7 +504,7 @@ func TestRetirementTimerRunStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- ctrl.Run(ctx, commitClaim(ctrl))
+		done <- ctrl.Run(ctx, commitClaim(ctrl), nil)
 	}()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	if err := ctrl.AttachRoot(root); err != nil {
