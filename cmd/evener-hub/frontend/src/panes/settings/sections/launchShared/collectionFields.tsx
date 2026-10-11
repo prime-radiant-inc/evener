@@ -32,9 +32,9 @@ import {
   type PathValidateResponse,
   validatePathListAdd,
 } from "@evener/appwire-client";
-import { type ReactNode, useId } from "react";
+import type { ReactNode } from "react";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
-import { Button, CollectionEditor, Input, PathField, Switch } from "../../../../widgets";
+import { Button, CollectionEditor, Input, PathField, Switch, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
 import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
@@ -51,7 +51,6 @@ const CLASS = {
   modelAddField: requireClass(styles.modelAddField, "collectionFields.module.css", "modelAddField"),
   pathAddRow: requireClass(styles.pathAddRow, "collectionFields.module.css", "pathAddRow"),
   pathAddField: requireClass(styles.pathAddField, "collectionFields.module.css", "pathAddField"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "collectionFields.module.css", "visuallyHidden"),
 };
 
 function SectionHeader({ label, help }: { label: string; help?: string }) {
@@ -367,38 +366,30 @@ function EnvAddFields({
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
-  const nameId = useId();
-  const valueId = useId();
   const eq = value.indexOf("=");
   const name = eq === -1 ? value : value.slice(0, eq);
   const envValue = eq === -1 ? "" : value.slice(eq + 1);
 
   return (
     <>
-      <span className={CLASS.envField}>
-        <label className={CLASS.visuallyHidden} htmlFor={nameId}>
-          Variable name
-        </label>
+      <label className={CLASS.envField}>
+        <VisuallyHidden>Variable name</VisuallyHidden>
         <Input
-          id={nameId}
           value={name}
           onChange={(e) => onChange(`${e.target.value.replace(/=/g, "")}=${envValue}`)}
           placeholder="NAME"
           disabled={disabled}
         />
-      </span>
-      <span className={CLASS.envField}>
-        <label className={CLASS.visuallyHidden} htmlFor={valueId}>
-          Variable value
-        </label>
+      </label>
+      <label className={CLASS.envField}>
+        <VisuallyHidden>Variable value</VisuallyHidden>
         <Input
-          id={valueId}
           value={envValue}
           onChange={(e) => onChange(`${name}=${e.target.value}`)}
           placeholder="value"
           disabled={disabled}
         />
-      </span>
+      </label>
       <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
         Add
       </Button>

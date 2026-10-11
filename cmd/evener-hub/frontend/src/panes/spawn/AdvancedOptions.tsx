@@ -31,12 +31,19 @@ import {
   validatePathListAdd,
 } from "@evener/appwire-client";
 import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
-import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
+import {
+  Button,
+  CollectionEditor,
+  FormRow,
+  Input,
+  ModelCatalog,
+  type ModelCatalog as ModelCatalogEnvelope,
+  PathField,
+  type PathFieldKind,
+  RadioGroup,
+  Select,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets/modelCatalog";
-import { ModelCatalog } from "../../widgets/modelCatalog";
-import type { PathFieldKind } from "../../widgets/pathfield";
-import { PathField } from "../../widgets/pathfield";
 import styles from "./advancedOptions.module.css";
 
 const BOOLEAN_DEFAULT = "(default)";

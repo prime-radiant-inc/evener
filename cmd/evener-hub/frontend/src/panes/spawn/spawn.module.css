@@ -194,21 +194,12 @@
   cursor: pointer;
 }
 
-/* Standard visually-hidden recipe (see statusrow.module.css's own copy of
- * this comment) - keeps a real, focus-order-preserving <label> in the
- * accessibility tree without taking up any visual footprint in this compact
- * row. The effort readout beside it is aria-hidden (the select already speaks
- * its own value), so this association is the control's only accessible name. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+/* The select's <label> holds only VisuallyHidden text, so it takes no box of
+ * its own: as a flex item it would add a gap to this compact row. The effort
+ * readout beside it is aria-hidden (the select already speaks its own value),
+ * so this association is the control's only accessible name. */
+.effortLabel {
+  display: contents;
 }
 
 .mobileConfig {
