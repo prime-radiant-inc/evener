@@ -21,7 +21,8 @@ contract values and are skipped.
 
 Categories:
   ts-assert     frontend/native text assertion against app copy
-                (ByText outside a click, toContain/toBe/toMatch/toHaveTextContent)
+                (*ByText/*ByTitle outside a click, toContain/toBe/toMatch/
+                toHaveTextContent)
   ts-locator    ByText used only to find a control to click; cheap to move to
                 getByRole, not itself an assertion
   ts-constant   ByText/toBe/toContain against an identifier named like copy
@@ -33,7 +34,9 @@ Categories:
                 (embedded prompts, templates); review against the golden rule
 
 The scan is line-based and heuristic: multi-line expectations and computed
-strings are missed, and a match is a candidate to read, not a verdict.
+strings are missed, and a match is a candidate to read, not a verdict. It does
+not count accessible names used as a state oracle (`getByRole("button", { name:
+"Agents, 3 of 4 active" })`); those are found while converting each area.
 """
 import argparse, collections, os, re, subprocess, sys
 
@@ -46,7 +49,7 @@ ASSET_EXT = (".md", ".tmpl", ".txt", ".gotmpl", ".prompt")
 
 STR = r"""(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\$]|\\.)*)`)"""
 REGEX = r"/((?:[^/\\\n]|\\.)+)/[a-z]*"
-TS_BYTEXT = re.compile(r"\b(?:get|find|query)(?:All)?ByText\(\s*(?:" + STR + "|" + REGEX + r"|([A-Za-z_$][\w$.]*)\s*[,)])")
+TS_BYTEXT = re.compile(r"\b(?:get|find|query)(?:All)?By(?:Text|Title)\(\s*(?:" + STR + "|" + REGEX + r"|([A-Za-z_$][\w$.]*)\s*[,)])")
 TS_MATCHER = re.compile(r"\.(?:toContain|toBe|toEqual|toMatch|toHaveTextContent|toStrictEqual)\(\s*(?:" + STR + "|" + REGEX + r"|([A-Za-z_$][\w$.]*)\s*\))")
 TS_CLICK = re.compile(r"\b(?:fireEvent\.\w+|user(?:Event)?\.\w+|press|click|act)\s*\(")
 TS_IMPORT = re.compile(r"import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]", re.S)
@@ -59,6 +62,8 @@ GO_CHECKS = [
 ]
 GO_ERRISH = re.compile(r"(\.Error\(\)|\berr\w*\b|\bErr\w*\b|stderr|errOut|errMsg|message|msg)", re.I)
 TOKEN = re.compile(r"^[-\w.:/@#=%+]*$")
+# A capitalized word ("Welcome", "Retry") is a label, not an identifier.
+LABEL_WORD = re.compile(r"^[A-Z][a-z]+[.!?…]?$")
 # Literals shaped like code, shell commands, markup, or wire syntax are format
 # contracts even when they contain spaces.
 CODE_LIKE = re.compile(r"""[{};=<>"`$\\]|^(?:cat|wc|uname|id|mkdir|rm|ls|sh|bash|git|go|npm|npx|test|printf|echo|chmod|mv|cp|tar|export|func|type|package|import|const|var|set|exec|cd|env|sudo|kill|pgrep|ps|tmux|ssh|curl|make)\b""")
@@ -91,7 +96,9 @@ def regex_core(rx):
 
 
 def contract_shaped(lit):
-    return len(lit) < 3 or not re.search(r"[A-Za-z]", lit) or bool(TOKEN.match(lit)) or bool(CODE_LIKE.search(lit))
+    if len(lit) < 3 or not re.search(r"[A-Za-z]", lit) or CODE_LIKE.search(lit):
+        return True
+    return bool(TOKEN.match(lit)) and not LABEL_WORD.match(lit)
 
 
 def is_copy(lit, corpus):
