@@ -71,7 +71,7 @@ describe("3-state loaded contract", () => {
       return params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER;
     });
     render(<ProjectSection sectionId="project" />);
-    expect(screen.getByText(/Loading project launch settings/i)).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Loading project launch settings" })).toBeTruthy();
     await screen.findByLabelText("Agent");
     expect(calls).toEqual(["schema", "getLayer:project", "getLayer:global"]);
     // The global layer is read-only context for the "default: X" hint, never itself editable here.
