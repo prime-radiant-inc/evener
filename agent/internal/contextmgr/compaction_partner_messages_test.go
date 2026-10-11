@@ -1028,3 +1028,21 @@ func TestForceCompact_CarryKeepsAFittingLongMessageWhole(t *testing.T) {
 		t.Fatalf("the newest message, which fits the ceiling, was not carried whole")
 	}
 }
+
+// A final summary cut off at the output limit is rejected even when this fold
+// left nothing out of the carry: an earlier summary it replaces may hold the
+// only trace of messages an earlier fold left out.
+func TestForceCompact_TruncatedFinalSummaryIsRejectedOnEveryFold(t *testing.T) {
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant(emptySummaryReply), Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := partnerHoldHistory()
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history starts with a %s, want the checkpoint to stand", history[0].Kind)
+	}
+}

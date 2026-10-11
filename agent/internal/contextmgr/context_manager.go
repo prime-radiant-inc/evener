@@ -2399,9 +2399,10 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if err != nil {
 		return nil, err
 	}
-	if resp.Finish.Reason == llm.FinishReasonLength && len(summarized) > 0 {
-		// Cut off at the output limit, the reply may have dropped what the
-		// messages left out of the carry said, their only trace here.
+	if resp.Finish.Reason == llm.FinishReasonLength {
+		// Cut off at the output limit, the reply may have dropped what it
+		// alone records: messages left out of this carry, or of an earlier
+		// one whose summary it replaces. The checkpoint stands instead.
 		return nil, errors.New("the summary was cut off at the model's output limit")
 	}
 
