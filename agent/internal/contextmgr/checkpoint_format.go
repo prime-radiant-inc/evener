@@ -82,6 +82,9 @@ func extractCheckpointEarlierSummaries(text string) []string {
 	return summaries
 }
 
+// summaryTurnEnd closes a summary turn.
+const summaryTurnEnd = "[END SUMMARY]"
+
 // summaryModelTextHeading heads the model's own text in a summary turn.
 const summaryModelTextHeading = "## Summary"
 
@@ -101,7 +104,12 @@ func carriesPartnerMessages(text string) bool {
 		return false
 	}
 	carry, _, _, ok := markdownSectionSpan(text, checkpointConversationHeading)
-	return ok && carry == end
+	if !ok || carry != end {
+		return false
+	}
+	// ...and the carried section is exactly what the renderer writes for the
+	// entries it holds, closing the turn.
+	return text[carry:] == renderCheckpointConversation(extractMarkdownConversation(text))+summaryTurnEnd
 }
 
 // isSingleFencedBlock reports whether text, blank lines aside, is one fenced

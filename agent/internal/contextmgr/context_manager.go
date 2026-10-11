@@ -2157,7 +2157,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	}
 	summaryText := "[CONTEXT SUMMARY]\n" + cm.metaFor(ctx).compactionPointer("summary") +
 		renderCompactionModelText(summaryModelTextHeading, resp.Text()) +
-		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + "[END SUMMARY]"
+		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

@@ -352,3 +352,20 @@ func TestCheckpoint_KeepsAnOlderSummaryWithASummarySectionWhole(t *testing.T) {
 		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
 	}
 }
+
+// An older summary that matches the new layout's headings, a fenced block
+// under "## Summary" and then "## Conversation", but holds prose in that
+// conversation section is not a carry the renderer wrote: it is carried whole.
+func TestCheckpoint_KeepsAnOlderSummaryWithAProseConversationWhole(t *testing.T) {
+	older := "[CONTEXT SUMMARY]\n## Summary\n\n```\nexample output\n```\n\n## Conversation\nThe partner said HOLD_IN_PROSE_SENTINEL until review.\n[END SUMMARY]"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User(older)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cp := checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	if got := extractCheckpointEarlierSummaries(cp); len(got) != 1 || got[0] != older {
+		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
+	}
+}
