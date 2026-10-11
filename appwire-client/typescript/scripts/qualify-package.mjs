@@ -483,6 +483,7 @@ const fakeClient: AppwireClientLike = {
   onReady: () => () => undefined,
   onStateChange: () => () => undefined,
   retryNow: () => undefined,
+  initializeResult: null,
   state: "idle",
   terminalReason: null,
 };
@@ -766,6 +767,7 @@ const readyClient: NonNullable<ReturnType<MutationClientLookup>> = {
   onReady: () => () => undefined,
   onStateChange: () => () => undefined,
   retryNow: () => undefined,
+  initializeResult: null,
   state: "ready",
   terminalReason: null,
 };
@@ -878,6 +880,7 @@ const readyClient = {
   onReady: () => () => undefined,
   onStateChange: () => () => undefined,
   retryNow: () => undefined,
+  initializeResult: null,
   state: "ready",
   terminalReason: null,
 };
