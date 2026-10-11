@@ -126,5 +126,7 @@ test("keeps the native select at 32px on desktop and the mobile touch floor", ()
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "select.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css).toMatch(/\.select\s*\{[^}]*height:\s*32px/);
-  expect(css).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.select\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
+  expect(css).toMatch(
+    /@media \(max-width: 899px\), \(pointer: coarse\) \{[\s\S]*?\.select\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+  );
 });

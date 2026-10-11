@@ -325,7 +325,7 @@ test("the footer is a chrome band on the inset surface", () => {
 test("the close button reaches the 44px tap floor on a coarse (touch) pointer", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  const coarseBlock = /@media \(pointer: coarse\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  const coarseBlock = /@media \(max-width: 899px\), \(pointer: coarse\)\s*\{([\s\S]*?)\n\}/.exec(css);
   expect(coarseBlock).toBeTruthy();
   const closeButtonRule = /\.closeButton\s*\{([^}]*)\}/.exec(coarseBlock?.[1] ?? "")?.[1] ?? "";
   expect(closeButtonRule).toContain("min-width: var(--tap-min)");

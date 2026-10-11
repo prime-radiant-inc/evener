@@ -49,12 +49,9 @@
   padding-right: var(--space-3);
 }
 
-/* Touch target: min-height, so only coarse pointers grow the heading. The
- * fallback matters: --tap-min is declared inside tokens.css's max-width:
- * 899px block, so on a wider coarse-pointer viewport it is undefined and the
- * declaration would otherwise be dropped. */
-@media (pointer: coarse) {
+/* Touch target: min-height, so the tap floor only ever grows the heading. */
+@media (max-width: 899px), (pointer: coarse) {
   .headingToggle {
-    min-height: var(--tap-min, 44px);
+    min-height: var(--tap-min);
   }
 }

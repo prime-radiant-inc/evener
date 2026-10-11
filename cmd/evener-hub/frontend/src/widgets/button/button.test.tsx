@@ -303,7 +303,7 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
 // CSS source, same as the focus-ring tests above.
 test("mobile: all button sizes meet the 44px tap floor", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8");
-  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  const mobile = css.match(/@media \(max-width: 899px\), \(pointer: coarse\) \{([\s\S]*?)\n\}/);
   expect(mobile, "button.module.css must have a max-width:899px media block").not.toBeNull();
   for (const size of ["xs", "sm", "md"]) {
     const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));

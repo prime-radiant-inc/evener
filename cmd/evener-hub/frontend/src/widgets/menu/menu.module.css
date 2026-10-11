@@ -48,7 +48,7 @@
 
 /* Icon-only trigger: IconButton's sm square (widgets/iconbutton), glyph
  * centred. Declared after .trigger so its size wins at equal specificity;
- * the phone block below adds IconButton's tap floor on both axes. */
+ * the tap-floor block below adds IconButton's tap floor on both axes. */
 .triggerIcon {
   justify-content: center;
   width: 28px;
@@ -142,7 +142,9 @@
   .popup {
     animation-name: menuFade;
   }
+}
 
+@media (max-width: 899px), (pointer: coarse) {
   .trigger {
     min-height: var(--tap-min);
   }
