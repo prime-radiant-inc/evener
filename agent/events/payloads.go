@@ -345,6 +345,11 @@ type SandboxEscalationResolvedData struct {
 // message rather than a system steering divider (issue #24).
 const SteeringSourceUser = "user"
 
+// SteeringSourceParent marks steering a delegate's parent agent sent into its
+// running turn with delegate_send. UIs label it "From parent" rather than
+// rendering it as the human's words or as a daemon nudge.
+const SteeringSourceParent = "parent"
+
 // Steering kinds name what the daemon injected, set at the injection site and
 // carried to the UI so a label is ground truth rather than a guess at the
 // message's prose. Absent kind means "unknown" and the UI claims nothing.

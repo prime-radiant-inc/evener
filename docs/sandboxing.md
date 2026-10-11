@@ -381,7 +381,11 @@ read-only), or when it resolves anywhere but its own place under Evener's config
 mask (a symlink into, or above, a masked directory). The file tools check that
 resolution again when they open the directory, against the directory actually
 opened, so one swapped for a symlink mid-session is refused, and one not
-installed yet is held to where installing it would land. With
+installed yet is held to where installing it would land. They also refuse a
+carve-out that a mask has since been pointed into or above (say `~/.ssh` made a
+link to the skills directory, or `~/.docker` to a directory inside it), on
+every read, and read it again once the link is gone or the directory is
+recreated in place. With
 `EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
 masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
 
