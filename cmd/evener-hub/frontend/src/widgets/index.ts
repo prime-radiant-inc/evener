@@ -102,6 +102,8 @@ export type { SheetProps, SheetSide } from "./sheet";
 export { Sheet } from "./sheet";
 export type { ShellCommandBlockProps } from "./shellcommand";
 export { ShellCommandBlock } from "./shellcommand";
+export type { ShortcutListItem, ShortcutListProps } from "./shortcutlist";
+export { ShortcutList } from "./shortcutlist";
 export type { SkeletonProps } from "./skeleton";
 export { Skeleton } from "./skeleton";
 export type { SpeakerAvatarProps, SpeakerAvatarSpeaker } from "./speakeravatar";
