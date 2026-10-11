@@ -9,8 +9,8 @@
 }
 
 /* A collapsible card: the Disclosure, with the Open control (when the card
- * has one) seated beside it rather than inside its summary - a summary is one
- * control and must not nest another. */
+ * has one) right after it on the summary's line rather than inside the
+ * summary - a summary is one control and must not nest another. */
 .collapsible {
   display: flex;
   align-items: flex-start;
@@ -21,8 +21,11 @@
   color: var(--ink-mid);
 }
 
+/* Content-sized, so the Open control after it follows the head text instead
+ * of parking at the row's far edge. A closed <details> renders nothing but its
+ * summary, so a control outside it can only follow the text this way. */
 .disclosure {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -32,6 +35,14 @@
   flex: none;
   display: inline-flex;
   padding-block: var(--space-1);
+}
+
+/* The delegate's name at the top of the expanded card: the keyboard path to
+ * the entity card the head's hover-only name shows a pointer. */
+.delegateRef {
+  margin-bottom: var(--space-1);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
 }
 
 /* A delegate row whose head carries everything (a machinery stop, a failure

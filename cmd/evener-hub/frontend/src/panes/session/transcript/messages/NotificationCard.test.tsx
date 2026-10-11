@@ -624,10 +624,11 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
   expect(row.getAttribute("data-tone")).toBe("neutral");
   expect(head?.textContent).toContain("Job cancelled");
   expect(head?.textContent).toContain("Run repository lint, vet, and test gates");
-  expect(head?.textContent).not.toContain("exit -1");
+  // The fixture's exit code and reason stay out of the head, and no tone
+  // chip joins it: the glyph, the heading, and the Disclosure's chevron.
+  expect(head?.textContent).not.toContain("-1");
   expect(head?.textContent).not.toContain("stopped_by_parent");
-  expect(screen.queryByText("error")).toBeNull();
-  expect(screen.queryByText("warning")).toBeNull();
+  expect(head?.children).toHaveLength(3);
 
   expect(screen.getByTestId("notification-field-status").textContent).toContain("cancelled");
   expect(screen.getByTestId("notification-field-reason").textContent).toContain("stopped_by_parent");
@@ -731,6 +732,17 @@ test("a delegate frame whose delegate id the entity map cannot answer shows no d
   expect(screen.queryByRole("button", { name: "Open subagent" })).toBeNull();
 });
 
+// Declaration-level (jsdom lays nothing out): the Disclosure takes only its
+// content's width, so the Open control after it follows the head text rather
+// than parking at the row's far edge.
+test("the Open control follows the head text: the disclosure does not grow to fill the row", () => {
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "notificationcard.module.css"),
+    "utf8",
+  ).replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css.match(/\.disclosure\s*\{([^}]*)\}/)?.[1]).toMatch(/flex:\s*0 1 auto/);
+});
+
 test("the Open control sits beside the summary, never inside it", () => {
   render(
     <NotificationCard
@@ -745,7 +757,7 @@ test("the Open control sits beside the summary, never inside it", () => {
   );
   const card = screen.getByTestId("notification-card");
   const summary = card.querySelector("summary");
-  const button = screen.getByRole("button", { name: "Open subagent" });
+  const button = within(card).getByRole("button");
   expect(card.contains(button)).toBe(true);
   expect(summary?.contains(button)).toBe(false);
   expect(card.querySelector("details")?.contains(button)).toBe(false);
@@ -1030,10 +1042,18 @@ test("a delegate card's head name is the entity card trigger, and its body rende
   expect(screen.queryByTestId("notification-field-job-id")).toBeNull();
 });
 
-test("the head's delegate name opens the delegate hover card on focus", () => {
-  vi.useFakeTimers();
-  try {
-    renderWithEntities(
+// The head's name is hover-only (the summary is one control), so the keyboard
+// path to the same card runs through the expanded body: Tab to the head, Enter
+// to open it, Tab to the delegate's name.
+test("a keyboard user reaches the delegate's hover card through the expanded card", () => {
+  render(
+    <TranscriptRenderProvider
+      config={toolsConfig}
+      surface="readOnly"
+      disclosureScope="nc:keyboard"
+      sessionRef="local:s"
+      entities={notificationEntities()}
+    >
       <NotificationCard
         notification={notif({
           type: "delegate",
@@ -1044,24 +1064,41 @@ test("the head's delegate name opens the delegate hover card on focus", () => {
           delegateId: ENTITY_DELEGATE,
           message: "Done.",
         })}
-      />,
-    );
-
-    fireEvent.focus(within(screen.getByTestId("notification-card")).getByTestId("entity-trigger"));
+      />
+    </TranscriptRenderProvider>,
+  );
+  const summary = screen.getByTestId("notification-card").querySelector("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("delegate card has no summary");
+  // Enter on a focused <summary> fires its native click; jsdom implements
+  // neither, so the click is dispatched directly (as the Disclosure widget's
+  // own Enter test does), and tab stops are checked in document order.
+  summary.focus();
+  fireEvent.click(summary);
+  expect(screen.getByTestId("notification-card-root")).toBeTruthy();
+  // The next tab stop after the summary is the delegate's name in the body.
+  const trigger = within(screen.getByTestId("notification-delegate")).getByTestId("entity-trigger");
+  expect(trigger.tabIndex).toBe(0);
+  expect(trigger.textContent).toBe("task1-review");
+  expect(summary.contains(trigger)).toBe(false);
+  expect(summary.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  const tabStops = [...document.querySelectorAll<HTMLElement>("summary, button, [tabindex]")].filter(
+    (element) => element.tabIndex >= 0,
+  );
+  expect(tabStops[tabStops.indexOf(summary) + 1]).toBe(trigger);
+  vi.useFakeTimers();
+  try {
     act(() => {
+      trigger.focus();
       vi.advanceTimersByTime(300);
     });
-
-    const card = screen.getByRole("tooltip");
-    expect(card.textContent).toContain("Delegate");
-    expect(card.textContent).toContain("Review the first line");
+    // The entity card the pointer path shows, carrying the fixture
+    // delegate's own description.
+    expect(screen.getByRole("tooltip").textContent).toContain("Review the first line");
   } finally {
     vi.useRealTimers();
   }
 });
 
-// The name is part of the summary's one control: a click on it toggles the
-// card like any other head text.
 test("clicking the head's delegate name toggles the disclosure like the rest of the summary", () => {
   render(
     <TranscriptRenderProvider

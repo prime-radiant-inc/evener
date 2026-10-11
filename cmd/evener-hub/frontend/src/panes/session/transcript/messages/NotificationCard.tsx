@@ -55,6 +55,7 @@ const CLASS = {
   collapsible: requireClass(styles.collapsible, "notificationcard.module.css", "collapsible"),
   disclosure: requireClass(styles.disclosure, "notificationcard.module.css", "disclosure"),
   besideOpen: requireClass(styles.besideOpen, "notificationcard.module.css", "besideOpen"),
+  delegateRef: requireClass(styles.delegateRef, "notificationcard.module.css", "delegateRef"),
   root: requireClass(styles.root, "notificationcard.module.css", "root"),
   headingText: requireClass(styles.headingText, "notificationcard.module.css", "headingText"),
   title: requireClass(styles.title, "notificationcard.module.css", "title"),
@@ -455,7 +456,8 @@ export function NotificationCard({
       delegateLabel
     );
   // The Open control. It is interactive, so it never rides inside a
-  // disclosure summary: the collapsible card seats it beside the Disclosure.
+  // disclosure summary: the collapsible card seats it right after the
+  // Disclosure, on the summary's line.
   const openControl = transcriptRef ? (
     <span className={CLASS.openTrailing}>
       <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
@@ -536,6 +538,14 @@ export function NotificationCard({
         >
           <Card>
             <div className={CLASS.root} data-testid="notification-card-root">
+              {/* The head's name is hover-only; here it is the same entity card
+                  as a keyboard focus stop, so a keyboard reader reaches what a
+                  pointer reader gets. */}
+              {delegateView && delegateLabel !== undefined && (
+                <div className={CLASS.delegateRef} data-testid="notification-delegate">
+                  {delegateTrigger(false)}
+                </div>
+              )}
               <NotificationMetadata notification={notification} />
               {notification.prose && (
                 <pre className={CLASS.prose} data-testid="notification-prose">
