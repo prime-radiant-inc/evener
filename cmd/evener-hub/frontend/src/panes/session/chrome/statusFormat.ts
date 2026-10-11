@@ -20,8 +20,7 @@ export function contextTone(pressure: number): MeterTone {
   return "neutral";
 }
 
-// formatWorkDuration mirrors the daemon's own compactDuration/formatWorkMillis
-// convention verbatim (cmd/evener-hub/web_format.go:79-102): under a minute
+// formatWorkDuration formats accumulated session work time: under a minute
 // shows whole seconds (floored, clamped up to a minimum of 1 so a real but
 // sub-second duration never reads "0s"); under an hour shows whole minutes
 // (floored); an hour or more shows "Nh Nm" (minutes modulo 60). This is a

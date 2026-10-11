@@ -78,20 +78,14 @@ hand it back as an observer callback. Driving mechanism:
 - The parent does not use `job_list` or `job_status` as a waiting
   mechanism before the callback.
 - The watch has no dropped deliveries or self-loop verdict.
-- Wrong-mechanism check: `delegate_send(to="caller")` is a LIVE route,
-  not an error — from inside a delegate it returns `action: "delivered"`
-  and injects a NON-terminal steering update into the parent
-  (`agent/session_tools.go#stableDelegateSendTool` routes the `caller`
-  alias through
-  `agent/delegate_tree_steer.go#delegateTreeController.SteerCaller`;
-  `docs/job-control.md` "From inside a delegate, the contextual `caller`
-  target sends a non-terminal update to that delegate's controlling
-  caller"). It does not end the observer's turn and it is NOT the
-  callback: an observer that "replies" that way never delivers the
-  terminal packet, so the parent gets a steering message instead of a
+- Wrong-mechanism check: `delegate_send(to="caller")` is rejected with an
+  `invalid_request` error that points at `communicate`
+  (`agent/session_tools.go#stableDelegateSendTool`), and nothing reaches the
+  parent. An observer that tries it and then calls
+  `communicate(end_turn=true)` recovered; one that never calls `communicate`
+  never delivers the terminal packet, so the parent gets no
   `<delegate-notification>` block. Score that as observer noncompliance
-  with the callback contract — never as a tool error; expecting an
-  `invalid_request` rejection here is pre-`78342bbd3` rot. If the parent
+  with the callback contract. If the parent
   tries to install
   the watch itself with `target`/`send`, the schema rejects it with
   `additionalProperties 'target' not allowed` /

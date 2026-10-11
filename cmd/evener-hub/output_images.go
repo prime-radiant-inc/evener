@@ -192,7 +192,7 @@ func enrichOutputImageItem(sessionID, cwd string, argsByCallID map[string]string
 }
 
 // stampOutputImageURLs fills in the route this hub serves sha-addressed image
-// bytes on (handleSessionImage, web_workspace.go) for every descriptor that
+// bytes on (handleSessionImage, image_serve.go) for every descriptor that
 // names its content by sha but carries no route to fetch it from. It reports
 // whether it changed anything.
 //

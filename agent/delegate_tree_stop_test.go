@@ -1278,8 +1278,8 @@ func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, del
 // TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance pins the half of
 // the fsynced-pre-stop acceptance that 554221673 did not carry over.
 //
-// A caller-originated steer (SteerCaller) carries causal watch provenance. On the
-// ordinary path CompleteSteerPersistence records it as a pendingSteers admission,
+// A steer carrying causal watch provenance is recorded on the ordinary path:
+// CompleteSteerPersistence records it as a pendingSteers admission,
 // BeginModelRequest lifts it into the model claim, and CompleteModelRequest unions
 // it into the successor runtime -- so every event that turn emits still names the
 // watch that drove it.
