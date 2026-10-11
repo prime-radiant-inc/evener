@@ -354,10 +354,14 @@ func (f delegateAttentionFold) pendingIDs() []string {
 }
 
 // pendingTurns returns the durable model-visible turn behind every pending
-// attention item, in arrival order.
-func (f delegateAttentionFold) pendingTurns() []schema.Turn {
+// attention item, and behind the resolved item keep names, in arrival order.
+func (f delegateAttentionFold) pendingTurns(keep string) []schema.Turn {
 	var turns []schema.Turn
-	for _, attentionID := range f.pendingIDs() {
+	for _, attentionID := range f.order {
+		_, resolved := f.resolutions[attentionID]
+		if resolved && attentionID != keep {
+			continue
+		}
 		if turn, ok := f.turns[attentionID]; ok {
 			turns = append(turns, turn)
 		}
@@ -707,13 +711,14 @@ func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 }
 
 // pendingAttentionTurnsLocked returns the turns behind the pending attention
-// items. The caller holds attentionMu.
+// items and the accepted trigger no settled request has presented. The caller
+// holds attentionMu.
 func (s *Session) pendingAttentionTurnsLocked() ([]schema.Turn, error) {
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return nil, err
 	}
-	return fold.pendingTurns(), nil
+	return fold.pendingTurns(s.attentionAcceptedID), nil
 }
 
 // attentionTurns returns the turns of history that carry an attention identity.
@@ -774,6 +779,9 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
 		return err
 	}
+	s.attentionMu.Lock()
+	s.attentionAcceptedID = attentionID
+	s.attentionMu.Unlock()
 	pendingIDs, err := s.pendingDelegateAttentionIDs()
 	if err != nil {
 		return err
@@ -1106,6 +1114,9 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionStagedIDs = nil
 	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
 		return
+	}
+	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
+		s.attentionAcceptedID = ""
 	}
 	covered := s.attentionCoveredIDs
 	if covered == nil {
@@ -1488,7 +1499,7 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// and idempotent — a still-resident turn is replaced in place (no
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
-	pendingTurns := fold.pendingTurns()
+	pendingTurns := fold.pendingTurns("")
 	for i, durable := range pendingTurns {
 		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
 			s.attentionMu.Unlock()

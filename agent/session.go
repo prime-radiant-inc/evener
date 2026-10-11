@@ -1058,6 +1058,11 @@ type Session struct {
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
 	attentionStagedIDs map[string]struct{}
+	// attentionAcceptedID is the trigger of an accepted attention generation
+	// that no settled request has presented yet. The accept resolves the
+	// trigger as consumed first, so only this latch tells a fold to keep its
+	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
+	attentionAcceptedID string
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
