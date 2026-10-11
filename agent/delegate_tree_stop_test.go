@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,6 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/provenance"
 )
 
 type delegateStopWaitBarrierContext struct {
@@ -1275,51 +1275,67 @@ func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, del
 	}
 }
 
-// TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance pins the half of
-// the fsynced-pre-stop acceptance that 554221673 did not carry over.
-//
-// A steer carrying causal watch provenance is recorded on the ordinary path:
-// CompleteSteerPersistence records it as a pendingSteers admission,
-// BeginModelRequest lifts it into the model claim, and CompleteModelRequest unions
-// it into the successor runtime -- so every event that turn emits still names the
-// watch that drove it.
-//
-// The stop-fenced path returns before the admission is recorded. The steer's TEXT
-// survives (the transcript is the replay authority) but its causal origin does
-// not, and the loss is silent: the steer looks delivered.
-func TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance(t *testing.T) {
+// A steer whose transcript fsync landed under a covering stop is recorded as an
+// admission that carries across the generation being released. The successor's
+// first model claim binds it, clears it from pendingSteers, and returns its
+// text exactly once. The two orderings are the two legal interleavings of the
+// steer's completion and the stop's FinishGeneration.
+func TestDelegateControllerStopFencedSteerReachesSuccessorWhenCompletedAfterFinish(t *testing.T) {
+	assertStopFencedSteerReachesSuccessor(t, false)
+}
+
+// completedBeforeFinish: releaseGenerationLocked drops the generation's own
+// admissions, and only the carry marking keeps this one.
+func TestDelegateControllerStopFencedSteerReachesSuccessorWhenCompletedBeforeFinish(t *testing.T) {
+	assertStopFencedSteerReachesSuccessor(t, true)
+}
+
+func assertStopFencedSteerReachesSuccessor(t *testing.T, completedBeforeFinish bool) {
+	t.Helper()
+	const text = "stop-fenced steer"
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 
-	origin := &provenance.Causal{
-		WatchKeys: []provenance.WatchKey{{WatchID: "wch_origin", WatchGeneration: "1"}},
-		Chain:     []provenance.Entry{{Kind: "watch_delivery", WatchID: "wch_origin", DeliveryID: "dlv_origin"}},
-	}
-	c.mu.Lock()
-	steeringClaim, err := c.beginSteerPersistenceLocked(lease.delegateID, origin)
-	c.mu.Unlock()
+	steeringClaim, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
 	if err != nil {
-		t.Fatalf("beginSteerPersistence with provenance: %v", err)
+		t.Fatalf("BeginSteerPersistence: %v", err)
 	}
-	steeringEntry, err := steeringClaim.runtime.appendDelegateSteeringDurably("provenance-carrying steer", steeringClaim.entryID)
+	steeringEntry, err := steeringClaim.runtime.appendDelegateSteeringDurably(text, steeringClaim.entryID)
 	if err != nil {
 		t.Fatalf("append steering: %v", err)
 	}
 
-	// The covering stop releases the binding while the steer's transcript fsync
-	// has already landed, which is the accepted-under-a-stop case.
 	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
 	if err != nil {
 		t.Fatalf("StopSubtree: %v", err)
 	}
-	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
-		t.Fatalf("FinishGeneration: %v", err)
+	complete := func() {
+		t.Helper()
+		if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
+			t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
+		}
 	}
-	reportFinalizeTailDone(t, c, lease, steeringClaim.runtime)
-	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
-		t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
+	finish := func() {
+		t.Helper()
+		if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
+			t.Fatalf("FinishGeneration: %v", err)
+		}
+		reportFinalizeTailDone(t, c, lease, steeringClaim.runtime)
+	}
+	if completedBeforeFinish {
+		complete()
+		finish()
+	} else {
+		finish()
+		complete()
+	}
+	c.mu.Lock()
+	carried := append([]delegateSteeringAdmission(nil), c.live[lease.delegateID].pendingSteers...)
+	c.mu.Unlock()
+	if len(carried) != 1 || carried[0].entryID != steeringClaim.entryID || !carried[0].carriesAcrossGeneration {
+		t.Fatalf("pending admissions after the stop released the generation = %#v, want the carried steer %s", carried, steeringClaim.entryID)
 	}
 	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
@@ -1327,16 +1343,24 @@ func TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance(t *testing.T)
 	<-result.done
 
 	successor := startDelegateSuccessorGeneration(t, c, lease.delegateID, steeringClaim.runtime)
-	if _, err := completeDelegateModelRequest(c, successor); err != nil {
+	history, err := completeDelegateModelRequest(c, successor)
+	if err != nil {
 		t.Fatalf("successor model request: %v", err)
 	}
-
-	got := steeringClaim.runtime.activeCausalProvenance()
-	if got == nil || len(got.WatchKeys) == 0 {
-		t.Fatalf("successor active provenance = %#v, want the steer's originating watch key", got)
+	seen := 0
+	for _, message := range history {
+		if strings.Contains(message.Text(), text) {
+			seen++
+		}
 	}
-	if got.WatchKeys[0].WatchID != "wch_origin" {
-		t.Fatalf("successor active provenance watch = %q, want wch_origin", got.WatchKeys[0].WatchID)
+	if seen != 1 {
+		t.Fatalf("successor history carries the stop-fenced steer %d times, want once", seen)
+	}
+	c.mu.Lock()
+	remaining := c.live[lease.delegateID].pendingSteers
+	c.mu.Unlock()
+	if len(remaining) != 0 {
+		t.Fatalf("pending admissions after the successor bound the steer = %#v", remaining)
 	}
 }
 
@@ -1363,59 +1387,4 @@ func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, d
 		t.Fatalf("CompleteStartInput successor: %v", err)
 	}
 	return started.lease
-}
-
-// The sibling of the test above, for the other legal ordering. A steer's
-// transcript fsync and the covering stop's FinishGeneration are separate
-// operations on separate goroutines, so CompleteSteerPersistence can land
-// either after the generation is released or before it, and provenance must
-// survive both. This is the before case: releaseGenerationLocked drops the
-// generation's own admissions, and only the carry marking keeps this one.
-func TestDelegateControllerStopFencedSteerKeepsProvenanceWhenItLandsBeforeFinish(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
-	lease := delegateLease{delegateID: "dlg_target", generation: 1}
-
-	origin := &provenance.Causal{
-		WatchKeys: []provenance.WatchKey{{WatchID: "wch_early", WatchGeneration: "1"}},
-		Chain:     []provenance.Entry{{Kind: "watch_delivery", WatchID: "wch_early", DeliveryID: "dlv_early"}},
-	}
-	c.mu.Lock()
-	steeringClaim, err := c.beginSteerPersistenceLocked(lease.delegateID, origin)
-	c.mu.Unlock()
-	if err != nil {
-		t.Fatalf("beginSteerPersistence with provenance: %v", err)
-	}
-	steeringEntry, err := steeringClaim.runtime.appendDelegateSteeringDurably("early-landing steer", steeringClaim.entryID)
-	if err != nil {
-		t.Fatalf("append steering: %v", err)
-	}
-
-	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
-	if err != nil {
-		t.Fatalf("StopSubtree: %v", err)
-	}
-	// Completion lands BEFORE the generation is released, unlike its sibling.
-	if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
-		t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
-	}
-	if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
-		t.Fatalf("FinishGeneration: %v", err)
-	}
-	reportFinalizeTailDone(t, c, lease, steeringClaim.runtime)
-	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	<-result.done
-
-	successor := startDelegateSuccessorGeneration(t, c, lease.delegateID, steeringClaim.runtime)
-	if _, err := completeDelegateModelRequest(c, successor); err != nil {
-		t.Fatalf("successor model request: %v", err)
-	}
-
-	got := steeringClaim.runtime.activeCausalProvenance()
-	if got == nil || len(got.WatchKeys) == 0 || got.WatchKeys[0].WatchID != "wch_early" {
-		t.Fatalf("successor active provenance = %#v, want the steer's originating watch key", got)
-	}
 }

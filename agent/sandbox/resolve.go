@@ -139,6 +139,17 @@ type ResolvedPolicy struct {
 	// /proc masks /proc/<pid>/environ; masking ~/.ssh masks its whole tree).
 	MaskedPaths []string
 
+	// UnmaskedRoots are read-only roots carved out of MaskedPaths: the installed
+	// plugin files and user skills directory (HostFacts.EvenerContentRoots),
+	// readable in both layers in every mode. A root is admitted only if it holds
+	// no masked path and lies outside the pseudo-fs floor, so the carve-out
+	// exposes that content and nothing the credential denylist protects.
+	UnmaskedRoots []string
+
+	// carveOutAt records where each of the UnmaskedRoots that existed at
+	// resolution resolved to (CarveOutResolvesTo holds it to that location).
+	carveOutAt map[string]string
+
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
@@ -222,15 +233,41 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 }
 
 // Masks reports whether path is denied by the masked set: at or beneath a
-// masked path. Every layer asks this one question, so the file tools, the
+// masked path and not inside one of the UnmaskedRoots carved out of it. Inside
+// a carve-out, any .git stays masked: an installed copy cloned from git keeps
+// its remote URL, which may carry a token, in .git/config, and skills and hooks
+// never need it. Every layer asks this one question, so the file tools, the
 // policy filters and the backends agree on what a mask hides.
 func (rp ResolvedPolicy) Masks(path string) bool {
-	return isUnderAnyRoot(path, rp.MaskedPaths)
+	if !isUnderAnyRoot(path, rp.MaskedPaths) {
+		return false
+	}
+	for _, root := range rp.UnmaskedRoots {
+		if pathUnder(path, root) {
+			return insideGitDir(path, root)
+		}
+	}
+	return true
 }
 
-// MasksWrite reports whether a write to path is denied by the masked set. It
-// is asked separately from Masks so a read-only exception to the mask never
-// reaches writes.
+// insideGitDir reports whether path has a .git component below root. The name
+// is compared case-insensitively: on a case-insensitive filesystem (macOS by
+// default) .GIT names the same directory.
+func insideGitDir(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(strings.Split(rel, string(filepath.Separator)), isGitName)
+}
+
+// isGitName reports whether a path component names git metadata (.git, in any
+// letter case).
+func isGitName(name string) bool { return strings.EqualFold(name, ".git") }
+
+// MasksWrite reports whether a write to path is denied by the masked set. The
+// carve-outs (UnmaskedRoots) are read-only, so unlike Masks it makes no
+// exception for them.
 func (rp ResolvedPolicy) MasksWrite(path string) bool {
 	return isUnderAnyRoot(path, rp.MaskedPaths)
 }
@@ -403,7 +440,8 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		backend = chosen
 	}
 
-	masked := withResolvedMasks(withEvenerConfigMask(policy.EffectiveDenylist(host.Home), host, policy))
+	masked, configMasks := withEvenerConfigMask(policy.EffectiveDenylist(host.Home), host, policy)
+	masked, configMasks = withResolvedMasks(masked), withResolvedMasks(configMasks)
 	worktree := layout.WorktreeRoot
 
 	rp := ResolvedPolicy{
@@ -420,12 +458,28 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveHost:   host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
+	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
+		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree, host.OS == "darwin")
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
-	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, rp)
+	// Read roots are filtered against the whole mask, carve-outs included: a
+	// read grant inside a carve-out would become a file-tool anchor of its own
+	// that the carve-out's open-time checks never see, and the carve-out root
+	// itself covers it. Spawned processes keep the whole mask too: the
+	// backends grant a read root at its canonical path at every spawn and do
+	// not re-check a carve-out, so a carve-out swapped for a symlink would
+	// widen their grant. Only the file tools, which re-validate where they
+	// open a carve-out root, get the carve-out.
+	wholeMask := rp
+	wholeMask.UnmaskedRoots = nil
+	rp.FileTool.ReadRoots = filterMasked(rp.FileTool.ReadRoots, wholeMask)
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
-	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, rp)
+	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, wholeMask)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
+
+	// File-tool read roots: restricted needs the grant, and the read-anywhere
+	// modes' file tools use it as an open anchor.
+	rp.FileTool.ReadRoots = dedupeRoots(slices.Concat(rp.FileTool.ReadRoots, rp.UnmaskedRoots))
 
 	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
@@ -647,27 +701,16 @@ func dedupeRoots(roots []string) []string {
 	return out
 }
 
-// withEvenerConfigMask adds Evener's config root to the masked set where
-// XDG_CONFIG_HOME moved it (HostFacts.EvenerConfigRoot), alongside
-// ~/.config/evener, since hub configuration and credentials live wherever that
-// root is. A user who removed ~/.config/evener from the denylist removed both,
-// and one who removed the relocated root itself removed that.
-func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy) []string {
-	def := filepath.Join(host.Home, ".config", "evener")
-	cr := filepath.Clean(host.EvenerConfigRoot)
-	if !slices.Contains(masked, def) || !filepath.IsAbs(host.EvenerConfigRoot) || slices.Contains(masked, cr) {
-		return masked
-	}
-	for _, r := range policy.DenylistRemove {
-		if resolveHomePath(r, host.Home) == cr {
-			return masked
-		}
-	}
-	return append(slices.Clone(masked), cr)
+// resolveExistingPrefix returns p with its longest existing ancestor resolved
+// through symlinks and the missing rest appended, so a path that does not exist
+// yet is still placed where creating it would land.
+func resolveExistingPrefix(p string) string {
+	return StripDataVolumeAlias(canonicalizeLongestPrefix(p, filepath.EvalSymlinks))
 }
 
 // withResolvedMasks adds the symlink-resolved location of each masked path that
-// is reached through a symlink, so a secret is masked under both spellings: the
+// is reached through a symlink (for one not created yet, where creating it
+// would land), so a secret is masked under both spellings: the
 // file tools compare paths, and would otherwise read a symlinked credential
 // directory (or config root) by its target's name. The backends already mask
 // the resolved target. The pseudo-filesystem floor is left as written: its
@@ -679,7 +722,7 @@ func withResolvedMasks(masked []string) []string {
 		if slices.Contains(defaultPseudoFSPaths, m) {
 			continue
 		}
-		if resolved, err := filepath.EvalSymlinks(m); err == nil && resolved != m && !slices.Contains(out, resolved) {
+		if resolved := resolveExistingPrefix(m); resolved != m && !slices.Contains(out, resolved) {
 			out = append(out, resolved)
 		}
 	}
@@ -702,4 +745,187 @@ func filterMasked(roots []string, rp ResolvedPolicy) []string {
 		return nil
 	}
 	return out
+}
+
+// withEvenerConfigMask returns the masked set with Evener's own config root in
+// it, plus the masks that stand for that root: ~/.config/evener while the
+// denylist holds it, and the host's configured root (HostFacts.EvenerConfigRoot)
+// when XDG_CONFIG_HOME moved it, since the credentials live wherever the root
+// is. A user who removed ~/.config/evener from the denylist removed both, and one
+// who removed the relocated root itself removed that.
+func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy) (all, configMasks []string) {
+	def := filepath.Join(host.Home, ".config", "evener")
+	if !slices.Contains(masked, def) {
+		return masked, nil
+	}
+	configMasks = []string{def}
+	cr := filepath.Clean(host.EvenerConfigRoot)
+	// A config root the user denylisted themselves stays theirs: it is masked,
+	// and nothing is carved from it, since their own entries win.
+	for _, a := range policy.DenylistAdd {
+		if added := resolveHomePath(a, host.Home); sameDir(added, def) || sameDir(added, cr) {
+			configMasks = nil
+		}
+	}
+	if !filepath.IsAbs(host.EvenerConfigRoot) || cr == def || slices.Contains(masked, cr) {
+		return masked, configMasks
+	}
+	for _, r := range policy.DenylistRemove {
+		if resolveHomePath(r, host.Home) == cr {
+			return masked, configMasks
+		}
+	}
+	if configMasks == nil {
+		return append(slices.Clone(masked), cr), nil
+	}
+	return append(slices.Clone(masked), cr), append(configMasks, cr)
+}
+
+// sameDir reports whether a and b name the same directory: the same spelling,
+// or the same symlink-resolved location (for one not created yet, where
+// creating it would land).
+func sameDir(a, b string) bool {
+	return a == b || resolveExistingPrefix(a) == resolveExistingPrefix(b)
+}
+
+// unmaskedContentRoots admits the host's Evener content roots as read-only
+// roots carved out of Evener's config mask. A candidate is refused when it
+// fails the shared-tree guard (relative, at or above home, the worktree or a
+// temp root), lies at or beneath the non-removable pseudo-fs floor, sits under
+// any mask other than Evener's config mask (a user's own denylist entry above
+// it wins), holds a masked path (carving it out would expose that path),
+// overlaps a write root (it would not stay read-only), or resolves anywhere but
+// its own place under the mask (carveOutEscapes). guardedHostRoots only cleans
+// a candidate, without resolving symlinks, so these checks see its literal
+// spelling: a cache -> plugins symlink is refused
+// (TestEvenerContentRootsRefuseASymlinkWithinTheConfigMask). Masking is by
+// path, so a hard link placed inside a carve-out to a masked file is readable
+// through it, the same documented residual as a hard link in the worktree
+// (docs/sandboxing.md, "Known residuals"); the sandboxed session cannot create
+// one, since it can neither write the carve-out nor see the masked file.
+func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string, darwin bool) ([]string, map[string]string) {
+	// A writable root can alias a content root through a symlink, so overlap is
+	// judged by resolved location as well as by spelling.
+	for _, w := range slices.Clone(writeRoots) {
+		if resolved, err := filepath.EvalSymlinks(w); err == nil && resolved != w {
+			writeRoots = append(writeRoots, resolved)
+		}
+	}
+	var out []string
+	at := map[string]string{}
+	for _, root := range guardedHostRoots(candidates, home, worktree) {
+		switch {
+		case isUnderAnyRoot(root, defaultPseudoFSPaths),
+			slices.ContainsFunc(masked, func(m string) bool { return pathUnder(m, root) }),
+			slices.ContainsFunc(masked, func(m string) bool { return pathUnder(root, m) && !slices.Contains(configMasks, m) }),
+			slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, root) || pathUnder(root, w) }):
+			continue
+		}
+		// Resolved once: every check below, the pinned location and the
+		// resolved spelling all use this same answer, so a swap in between
+		// cannot slip a different location in.
+		// One not created yet resolves to where creating it would land.
+		resolved := resolveExistingPrefix(root)
+		if slices.ContainsFunc(writeRoots, func(w string) bool { return pathUnder(w, resolved) || pathUnder(resolved, w) }) ||
+			carveOutEscapes(resolved, root, masked) {
+			continue
+		}
+		// A mask that is itself a symlink into this root (~/.ssh pointing under
+		// the skills dir) would make its secrets readable through the carve-out.
+		if slices.ContainsFunc(masked, func(m string) bool {
+			rm, merr := filepath.EvalSymlinks(m)
+			return merr == nil && (pathUnder(rm, root) || pathUnder(rm, resolved))
+		}) {
+			continue
+		}
+		// The root is exempt under its resolved spelling too, which is how the
+		// file tools see a directory they opened (its canonical path), and is
+		// held to this location (CarveOutResolvesTo), even one not created yet.
+		out = append(out, root, resolved)
+		at[root], at[resolved] = resolved, resolved
+		// guardedHostRoots strips the macOS data-volume firmlink spelling
+		// (/System/Volumes/Data/Users/...), which names the same directory and
+		// which a configured XDG_CONFIG_HOME, and so a skill's path, may carry.
+		if darwin {
+			alias := firmlinkAlias(root)
+			out = append(out, alias)
+			at[alias] = resolved
+		}
+	}
+	return dedupeRoots(out), at
+}
+
+// CarveOutIntact reports whether root, one of the UnmaskedRoots, still resolves
+// to its own place under the mask it is carved from. A root can be swapped for
+// a symlink after resolution, so a layer that opens it checks again first.
+func (rp ResolvedPolicy) CarveOutIntact(root string) bool {
+	resolved, err := filepath.EvalSymlinks(root)
+	return err == nil && rp.CarveOutResolvesTo(root, resolved)
+}
+
+// CarveOutResolvesTo reports whether resolved, a real location the carve-out
+// root was found at (say the canonical path of a directory opened through it),
+// is the root's own place under the mask it is carved from.
+func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
+	// A root is held to where it resolved at session start (or, not created
+	// yet, where creating it would land), so redirecting an enclosing
+	// directory later cannot move the grant.
+	// The macOS data-volume firmlink spelling names the same directory, and
+	// EvalSymlinks does not collapse it, so both sides compare stripped.
+	at, ok := rp.carveOutAt[root]
+	return ok && StripDataVolumeAlias(resolved) == at
+}
+
+// carveOutEscapes reports whether resolved, the symlink-resolved location of the
+// carve-out root, is anywhere but the root's own place inside the mask it is
+// carved from: under another mask, under the pseudo-fs floor, or elsewhere in
+// its own mask through a symlink at or below that mask.
+// The backends re-grant a carve-out at its real path, so such a root would
+// re-expose that other mask. Masks are compared both as written and resolved.
+func carveOutEscapes(resolved, root string, masked []string) bool {
+	if isUnderAnyRoot(resolved, defaultPseudoFSPaths) {
+		return true
+	}
+	// A resolution at or above any mask would re-grant that mask whole.
+	for _, m := range masked {
+		if pathUnder(m, resolved) {
+			return true
+		}
+	}
+	// The masks the root's own path sits under, and their resolved spellings
+	// (withResolvedMasks lists both), are the mask it is carved from.
+	var own []string
+	for _, m := range masked {
+		if pathUnder(root, m) {
+			own = append(own, resolveExistingPrefix(m))
+		}
+	}
+	isOwn := func(m string) bool {
+		if slices.Contains(own, m) {
+			return true
+		}
+		return slices.Contains(own, resolveExistingPrefix(m))
+	}
+	for _, m := range masked {
+		if !pathUnder(root, m) && isOwn(m) {
+			continue
+		}
+		if pathUnder(root, m) {
+			// The mask the root is carved from: the root must resolve to its own
+			// place inside it, so a symlink at or below the mask cannot redirect
+			// the re-grant to the config root or the store's metadata.
+			rel, err := filepath.Rel(m, root)
+			if err != nil || resolved != filepath.Join(resolveExistingPrefix(m), rel) {
+				return true
+			}
+			continue
+		}
+		if pathUnder(resolved, m) {
+			return true
+		}
+		if pathUnder(resolved, resolveExistingPrefix(m)) {
+			return true
+		}
+	}
+	return false
 }

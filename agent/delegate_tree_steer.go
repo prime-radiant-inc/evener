@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -31,8 +30,7 @@ func (c *delegateTreeController) completionDecision(lease delegateLease) (delega
 }
 
 type delegateSteeringAdmission struct {
-	entryID    string
-	provenance *provenance.Causal
+	entryID string
 	// carriesAcrossGeneration marks an admission accepted under a covering stop.
 	// Ordinary admissions belong to the generation that took them and are
 	// dropped when it is released; this one's generation is already ending, and
@@ -46,15 +44,13 @@ type delegateSteeringClaim struct {
 	lease      delegateLease
 	runtime    *Session
 	entryID    string
-	provenance *provenance.Causal
 }
 
 type delegateModelRequestClaim struct {
-	token              uint64
-	lease              delegateLease
-	runtime            *Session
-	steeringIDs        []string
-	steeringProvenance map[string]*provenance.Causal
+	token       uint64
+	lease       delegateLease
+	runtime     *Session
+	steeringIDs []string
 }
 
 type delegateTranscriptEntry struct {
@@ -93,10 +89,6 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
 		return nil, err
 	}
-	return c.beginSteerPersistenceLocked(delegateID, nil)
-}
-
-func (c *delegateTreeController) beginSteerPersistenceLocked(delegateID string, p *provenance.Causal) (*delegateSteeringClaim, error) {
 	live := c.live[delegateID]
 	if live == nil || live.binding == nil || live.binding.runtime == nil {
 		return nil, errDelegateTargetBusy
@@ -114,7 +106,6 @@ func (c *delegateTreeController) beginSteerPersistenceLocked(delegateID string, 
 		lease:      live.binding.lease,
 		runtime:    live.binding.runtime,
 		entryID:    newQueueEntryID(),
-		provenance: provenance.Clone(p),
 	}
 	c.steeringClaims[claim.token] = claim
 	c.evidenceVersion++
@@ -138,17 +129,14 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 		// A covering stop owns the earlier admission. Transcript fsync remains
 		// its durable acceptance point even after the exact binding is released.
 		//
-		// The admission is still recorded. The transcript replays the message,
-		// but only an admission carries the steer's causal provenance into the
-		// successor's model claim -- without one the successor runs the steer
-		// with no idea which watch drove it, and the loss is invisible because
-		// the text arrived.
+		// The admission is still recorded: the successor's model claim binds
+		// it like any steer its own generation took, which is what makes that
+		// generation answer it (escalateCompletionRequirementLocked).
 		if stopFenced && claim.delegateID == claim.lease.delegateID {
 			live = c.live[claim.delegateID]
 			if live != nil {
 				live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{
 					entryID:                 entry.entryID,
-					provenance:              provenance.Clone(claim.provenance),
 					carriesAcrossGeneration: true,
 				})
 				if entry.timestamp.After(live.activityAt) {
@@ -173,10 +161,7 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 		c.evidenceVersion++
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
-	live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{
-		entryID:    entry.entryID,
-		provenance: provenance.Clone(claim.provenance),
-	})
+	live.pendingSteers = append(live.pendingSteers, delegateSteeringAdmission{entryID: entry.entryID})
 	if entry.timestamp.After(live.activityAt) {
 		live.activityAt = entry.timestamp
 	}
@@ -230,12 +215,6 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 	}
 	for _, pending := range live.pendingSteers {
 		claim.steeringIDs = append(claim.steeringIDs, pending.entryID)
-		if pending.provenance != nil {
-			if claim.steeringProvenance == nil {
-				claim.steeringProvenance = make(map[string]*provenance.Causal)
-			}
-			claim.steeringProvenance[pending.entryID] = provenance.Clone(pending.provenance)
-		}
 	}
 	c.modelClaims[claim.token] = claim
 	c.evidenceVersion++
@@ -245,15 +224,14 @@ func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delega
 func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelRequestClaim, history []schema.Turn, scope replayScope) ([]llm.Message, error) {
 	defer c.retirementChanged()
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if claim == nil || c.modelClaims[claim.token] != claim {
-		c.mu.Unlock()
 		return nil, errDelegateStaleLease
 	}
 	_, live, err := c.admitLeaseLocked(claim.lease, delegatestore.PhaseRunning)
 	if err != nil || live.binding.runtime != claim.runtime {
 		c.releaseModelClaimLocked(claim.token)
 		c.evidenceVersion++
-		c.mu.Unlock()
 		if err != nil {
 			return nil, err
 		}
@@ -262,10 +240,7 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	pending := make([]delegateSteeringAdmission, 0, len(claim.steeringIDs))
 	claimedIDs := make(map[string]struct{}, len(claim.steeringIDs))
 	for _, entryID := range claim.steeringIDs {
-		pending = append(pending, delegateSteeringAdmission{
-			entryID:    entryID,
-			provenance: provenance.Clone(claim.steeringProvenance[entryID]),
-		})
+		pending = append(pending, delegateSteeringAdmission{entryID: entryID})
 		claimedIDs[entryID] = struct{}{}
 	}
 	lateIDs := make(map[string]struct{})
@@ -286,13 +261,8 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 		if err := c.escalateCompletionRequirementLocked(claim.lease); err != nil {
 			c.releaseModelClaimLocked(claim.token)
 			c.evidenceVersion++
-			c.mu.Unlock()
 			return nil, err
 		}
-	}
-	var consumedProvenance *provenance.Causal
-	for entryID := range bound {
-		consumedProvenance = provenance.Union(consumedProvenance, claim.steeringProvenance[entryID])
 	}
 	kept := live.pendingSteers[:0]
 	for _, pending := range live.pendingSteers {
@@ -301,20 +271,9 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 		}
 	}
 	live.pendingSteers = kept
-	c.evidenceVersion++
-	expanded := expandHistory(history, scope)
-	runtime := claim.runtime
-	c.mu.Unlock()
-	runtime.unionActiveProvenance(consumedProvenance)
-	c.mu.Lock()
-	if c.modelClaims[claim.token] != claim {
-		c.mu.Unlock()
-		return nil, errDelegateStaleLease
-	}
 	c.releaseModelClaimLocked(claim.token)
 	c.evidenceVersion++
-	c.mu.Unlock()
-	return expanded, nil
+	return expandHistory(history, scope), nil
 }
 
 func (c *delegateTreeController) AbortModelRequest(claim *delegateModelRequestClaim) error {
