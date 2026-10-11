@@ -91,38 +91,58 @@ wait:
 
 	sawUpdate := slices.ContainsFunc(rootAttentionFold(t, root).order, func(id string) bool { return strings.Contains(id, "/update/") })
 	answer := classifyParentAnswer(toolCallsAfterQuestion(rootEntries(t, root)), codename)
-	childEntries := delegateEntries(t, root)
-	// A provider or runtime failure in the delegate is not model behavior, so
-	// it stops the run instead of being tallied as an unanswered question. A
-	// model that answers with empty or bare text is model behavior: it is
-	// tallied and named in the RESULT line.
-	for _, failure := range turnFailures(childEntries) {
-		if !isModelResponseFailure(failure) {
-			t.Fatalf("the delegate's turn failed, so this run says nothing about the model: %s", failure)
+	delegates := delegateRuns(t, root)
+	// A provider or runtime failure in a delegate is not model behavior, so it
+	// stops the run instead of being tallied as an unanswered question. That
+	// covers a failed turn in its transcript and the run error the session
+	// keeps when no failed turn was recorded. A model that answers with empty
+	// or bare text is model behavior: it is tallied and named in the RESULT
+	// line.
+	received, briefLeaked := false, false
+	for _, d := range delegates {
+		if d.runErr != nil && !isModelResponseFailure(d.runErr.Error()) {
+			t.Fatalf("a delegate's run failed, so this run says nothing about the model: %v", d.runErr)
 		}
-		modelFailures = append(modelFailures, failure)
+		for _, failure := range turnFailures(d.entries) {
+			if !isModelResponseFailure(failure) {
+				t.Fatalf("a delegate's turn failed, so this run says nothing about the model: %s", failure)
+			}
+			modelFailures = append(modelFailures, failure)
+		}
+		r, leaked := childReceivedCodename(d.entries, codename)
+		received, briefLeaked = received || r, briefLeaked || leaked
 	}
-	received, briefLeaked := childReceivedCodename(childEntries, codename)
-	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, received, briefLeaked, reportWritten, modelFailures)
+	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s delegates=%d child_received=%v brief_leaked=%v report_written=%v model_failures=%q", *delegateUpdateEvalModel, sawUpdate, answer, len(delegates), received, briefLeaked, reportWritten, modelFailures)
 }
 
-// delegateEntries reads the transcript of the root's one delegate: the only
-// other transcript in the root's state directory. It is nil when no delegate
-// started.
-func delegateEntries(t *testing.T, root *Session) []transcript.Entry {
+// delegateRun is one delegate the root started: its transcript and the run
+// error its session settled with.
+type delegateRun struct {
+	entries []transcript.Entry
+	runErr  error
+}
+
+// delegateRuns reads every delegate the root started: each transcript in the
+// root's state directory other than the root's own. The model may start more
+// than one, so the count is part of the result rather than an assumption.
+func delegateRuns(t *testing.T, root *Session) []delegateRun {
 	t.Helper()
 	paths, err := filepath.Glob(transcriptPath(root.stateDir, "*"))
 	if err != nil {
 		t.Fatalf("glob transcripts: %v", err)
 	}
 	paths = slices.DeleteFunc(paths, func(path string) bool { return path == root.TranscriptPath() })
-	if len(paths) == 0 {
-		return nil
+	runs := make([]delegateRun, 0, len(paths))
+	for _, path := range paths {
+		run := delegateRun{entries: readEntries(t, path)}
+		if sub := root.getSub(strings.TrimSuffix(filepath.Base(path), ".transcript.jsonl")); sub != nil {
+			sub.mu.Lock()
+			run.runErr = sub.err
+			sub.mu.Unlock()
+		}
+		runs = append(runs, run)
 	}
-	if len(paths) != 1 {
-		t.Fatalf("want one delegate transcript, got %v", paths)
-	}
-	return readEntries(t, paths[0])
+	return runs
 }
 
 // readEntries reads a transcript's entries.
@@ -373,6 +393,43 @@ func TestClassifyParentAnswer(t *testing.T) {
 	} {
 		if got := classifyParentAnswer(tc.calls, "HALCYON-42"); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A model that starts more than one delegate is tallied, not rejected: every
+// delegate's transcript is read, and a delegate that finished cleanly has no
+// run error.
+func TestDelegateRunsReadsEveryDelegate(t *testing.T) {
+	adapter := newMessagingAdapter("FIRST-CHILD", "SECOND-CHILD")
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("one", "FIRST-CHILD: report the repository name.")
+		},
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("two", "SECOND-CHILD: report the repository name.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("root done") },
+	)
+	root := newMessagingRoot(t, adapter, nil)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "FIRST-CHILD", 1)
+	adapter.waitForRequests(t, "SECOND-CHILD", 1)
+	runs := delegateRuns(t, root)
+	if len(runs) != 2 {
+		t.Fatalf("delegateRuns found %d delegates, want 2", len(runs))
+	}
+	for i, run := range runs {
+		if len(run.entries) == 0 {
+			t.Errorf("delegate %d has no transcript entries", i)
+		}
+		if run.runErr != nil {
+			t.Errorf("delegate %d settled with %v, want a clean run", i, run.runErr)
 		}
 	}
 }
