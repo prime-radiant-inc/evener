@@ -472,9 +472,13 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   overlaid, since the discarded upper layer would swallow writes there. Such a
   cache is left as it is: the granted root is writable, and other writes into
   it fail rather than vanish. The same holds for a cache holding the session
-  scratch. A root that does not exist yet is created empty at
-  session start (as the go command itself would) so it can be overlaid; a file
-  or a dangling symlink is left out.
+  scratch. A root that does not exist yet is created empty at session start
+  (as the go command itself would) so it can be overlaid. Each spawn judges
+  the roots again: one removed since is recreated, one that is not a directory
+  (a file, a link to an unmounted drive) is overlaid only once it is, one
+  whose real location has since moved into the workspace, onto a shared tree,
+  or to share storage with a write root is not overlaid, and one inside
+  another is served by the outer overlay.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session

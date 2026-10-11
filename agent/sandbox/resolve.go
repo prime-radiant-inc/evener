@@ -632,7 +632,8 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		}
 		roots := guardedHostRoots(append(out, goCacheRoots(host)...), host.Home, worktree)
 		// A root that is not a directory yet (a file, a dangling link to an
-		// unmounted drive) stays listed; bwrap overlays only a directory.
+		// unmounted drive) stays: each spawn decides whether it is overlaid
+		// (liveCacheRoots), so one that becomes available is served.
 		roots = slices.DeleteFunc(roots, func(r string) bool {
 			rr := resolveExistingPrefix(r)
 			// bwrap mounts a private /tmp and /dev before the overlays, so a
@@ -661,12 +662,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // session scratch is the env floor's job once it judges which cache
 // directories an overlay serves, #4303.)
 //
-// This is judged at resolution and for the scratch at wrapper creation;
-// judging it again at each spawn, after a granted root is retargeted, is the
-// per-spawn judgement stacked on this change (servableCacheRoot, #4302). A
-// retarget by the session itself would at worst send its own writes into the
-// discarded layer, which the threat model leaves to the session
-// (docs/sandboxing.md#threat-model).
+// This is judged at resolution, for the scratch at wrapper creation, and
+// again at each spawn (servableCacheRoot), so a granted root retargeted since
+// is caught too.
 //
 // Containment compares resolved spellings exactly. Two spellings that differ
 // only by letter case on a case-insensitive Linux volume are not matched:
@@ -780,9 +778,8 @@ func walkPhysical(p string, visit func(path string, link, followed bool) bool) (
 // database, Go's default $HOME/go/pkg, plus a GOMODCACHE or GOCACHE configured
 // somewhere else. A relative value, which the go command refuses, contributes
 // nothing. A configured root nested in another (GOMODCACHE=$HOME/go/pkg/mod)
-// is listed here and gets its own overlay until the per-spawn judgement
-// stacked on this change (liveCacheRoots, #4302) serves it through the outer
-// one, so go clean -modcache can remove it again.
+// is listed here; each spawn serves it through the outer overlay
+// (liveCacheRoots), so go clean -modcache can remove it.
 func goCacheRoots(host HostFacts) []string {
 	var roots []string
 	if entries := goPathEntries(host); len(entries) > 0 {

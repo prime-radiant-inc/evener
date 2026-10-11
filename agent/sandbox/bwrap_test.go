@@ -561,6 +561,231 @@ func TestBuildBwrapArgvDoesNotOverlayACacheHoldingAWriteRoot(t *testing.T) {
 	notOverlaid(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo)
 }
 
+// A cache root removed on the host after the wrapper was built (go clean
+// -modcache outside the sandbox) is recreated at the next spawn and overlaid
+// again, as at wrapper creation.
+func TestWrapRecreatesACacheRootRemovedSinceTheWrapperWasBuilt(t *testing.T) {
+	gocache := filepath.Join(t.TempDir(), "gocache")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(gocache); err != nil {
+		t.Fatal(err)
+	}
+	argv := w.Wrap([]string{"/bin/true"}, cwd)
+	if fi, err := os.Stat(gocache); err != nil || !fi.IsDir() {
+		t.Fatalf("the removed cache root must be recreated at spawn: %v", err)
+	}
+	if !hasSeq(argv, "--overlay-src", gocache, "--tmp-overlay", gocache) {
+		t.Errorf("the recreated cache root must be overlaid: %v", argv)
+	}
+}
+
+// A cache root whose symlinked parent was retargeted into the worktree after
+// resolution is not overlaid at the next spawn: its overlay would swallow
+// edits to the workspace there.
+func TestWrapSkipsACacheRootRetargetedIntoTheWorktree(t *testing.T) {
+	base := overlayFixtureDir(t)
+	realDir := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(realDir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(link, "cache")
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(w.Policy().CacheRoots, gocache) {
+		t.Fatalf("fixture: the cache root must be served at first: %v", w.Policy().CacheRoots)
+	}
+	inWorktree := filepath.Join(cwd, "sub")
+	if err := os.MkdirAll(filepath.Join(inWorktree, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inWorktree, link); err != nil {
+		t.Fatal(err)
+	}
+	if argv := w.Wrap([]string{"/bin/true"}, cwd); slices.Contains(argv, gocache) {
+		t.Errorf("a cache root now resolving inside the worktree must not be overlaid: %v", argv)
+	}
+}
+
+// overlayFixture resolves a workspace-write policy on an overlay-capable host.
+func overlayFixture(t *testing.T, facts HostFacts) (ResolvedPolicy, string) {
+	t.Helper()
+	facts.OS, facts.BwrapPath, facts.BwrapCapable, facts.OverlaySupported = "linux", "/usr/bin/bwrap", true, true
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rp, cwd
+}
+
+// A cache root whose real location lies inside another's is served by the
+// outer overlay alone at each spawn (a nested overlay is a mountpoint go clean
+// -modcache cannot remove), but one merely spelled under another that links
+// elsewhere (~/.cache/go-build -> /ssd/go-build) keeps its own overlay.
+func TestLiveCacheRootsServeNestedOnesThroughTheOuterOverlay(t *testing.T) {
+	home := overlayFixtureDir(t)
+	modcache := filepath.Join(home, "go", "pkg", "mod")
+	elsewhere := filepath.Join(overlayFixtureDir(t), "go-build")
+	for _, d := range []string{modcache, filepath.Join(home, ".cache"), elsewhere} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gocache := filepath.Join(home, ".cache", "go-build")
+	if err := os.Symlink(elsewhere, gocache); err != nil {
+		t.Fatal(err)
+	}
+	rp, _ := overlayFixture(t, HostFacts{Home: home, GoModCache: modcache, GoCache: gocache})
+	live := liveCacheRoots(rp)
+	if slices.Contains(live, modcache) || !slices.Contains(live, filepath.Join(home, "go", "pkg")) {
+		t.Errorf("a nested GOMODCACHE must be served by its parent's overlay alone: %v", live)
+	}
+	if !slices.Contains(live, gocache) {
+		t.Errorf("a GOCACHE linked out of ~/.cache must keep its own overlay: %v", live)
+	}
+}
+
+// A cache root whose symlinked parent was retargeted after resolution so the
+// root now resolves to a shared tree (a temp root, /) fails the shared-tree
+// guard at the next spawn and is not overlaid.
+func TestLiveCacheRootsReapplyTheSharedTreeGuard(t *testing.T) {
+	base := overlayFixtureDir(t)
+	disk := filepath.Join(base, "disk")
+	if err := os.MkdirAll(filepath.Join(disk, "tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "current")
+	if err := os.Symlink(disk, link); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(link, "tmp")
+	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), GoCache: gocache})
+	if !slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Fatalf("fixture: the cache root must be served at first: %v", liveCacheRoots(rp))
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/", link); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Errorf("a cache root now resolving to /tmp must not be overlaid: %v", liveCacheRoots(rp))
+	}
+}
+
+// A cache root that could not be made a directory at wrapper creation stays
+// in the policy, so it is served once it becomes available.
+func TestWrapperKeepsACacheRootUnavailableAtCreation(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "volume")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(blocker, "gocache")
+	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), GoCache: gocache})
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(w.Policy()), gocache) {
+		t.Fatalf("an unavailable cache root must not be overlaid")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(liveCacheRoots(w.Policy()), gocache) {
+		t.Errorf("a cache root that became available must be overlaid: %v", w.Policy().CacheRoots)
+	}
+}
+
+// bwrap's private /tmp hides a cache root spelled under /tmp, so such a root
+// cannot serve another cache that merely resolves inside it: that other root
+// keeps its own overlay.
+func TestLiveCacheRootsDoNotNestUnderARootSpelledInTmp(t *testing.T) {
+	store, err := os.MkdirTemp("/var/tmp", "evener-cache-store-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(store) })
+	gocache := filepath.Join(store, "go-build")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "cache-link") // under /tmp in the Linux harness
+	if err := os.Symlink(store, link); err != nil {
+		t.Fatal(err)
+	}
+	if !pathUnder(link, "/tmp") {
+		t.Skip("the test temp dir is not under /tmp here")
+	}
+	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), XDGCacheHome: link, GoCache: gocache})
+	if !slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Errorf("a cache resolving inside a /tmp-spelled root must keep its own overlay: %v", liveCacheRoots(rp))
+	}
+}
+
+// A cache root that was an ordinary directory at resolution but has since been
+// replaced by a link through a private mount is not overlaid at the next
+// spawn: its overlay would no longer sit over the storage it names.
+func TestLiveCacheRootsDropARootLaterLinkedThroughAPrivateMount(t *testing.T) {
+	store := overlayFixtureDir(t)
+	dirInTmp, err := os.MkdirTemp("/tmp", "evener-cache-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dirInTmp) })
+	gocache := filepath.Join(dirInTmp, "gocache")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if linksThroughPrivateMount(gocache) {
+		t.Skip("/tmp is itself a link on this host")
+	}
+	rp, _ := overlayFixture(t, HostFacts{Home: overlayFixtureDir(t), GoCache: gocache})
+	if !slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Fatalf("fixture: the ordinary /tmp cache root must be served at first: %v", liveCacheRoots(rp))
+	}
+	if err := os.Remove(gocache); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, gocache); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Errorf("a cache root now linked through /tmp must not be overlaid: %v", liveCacheRoots(rp))
+	}
+}
+
 // The plugin store is re-bound read-only after the tmpfs that masks
 // ~/.config/evener, so the carve-out wins over the mask (#4171).
 func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {

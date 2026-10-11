@@ -714,6 +714,34 @@ func TestCacheRootsNeverCoverTheWorktreeThroughAMissingPathsSymlinkedParent(t *t
 	}
 }
 
+// A cache root that is a file, or a dangling symlink (a drive not mounted at
+// session start), is not overlaid while it is so, but stays in the policy:
+// once it is a directory (the drive mounted), the next spawn serves it.
+func TestCacheRootsUnavailableAtResolutionAreServedOnceAvailable(t *testing.T) {
+	dir := overlayFixtureDir(t)
+	file := filepath.Join(dir, "gocache-is-a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	drive := filepath.Join(dir, "unmounted", "drive")
+	link := filepath.Join(dir, "modcache")
+	if err := os.Symlink(drive, link); err != nil {
+		t.Fatal(err)
+	}
+	host := HostFacts{OS: "linux", Home: clean(t.TempDir()), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: file, GoModCache: link}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, host, mainRepo(t))
+	live := liveCacheRoots(rp)
+	if slices.Contains(live, file) || slices.Contains(live, link) {
+		t.Errorf("a file or dangling-symlink cache root must not be overlaid: %v", live)
+	}
+	if err := os.MkdirAll(drive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(liveCacheRoots(rp), link) {
+		t.Errorf("a cache root whose drive is now mounted must be overlaid: %v (policy %v)", liveCacheRoots(rp), rp.CacheRoots)
+	}
+}
+
 // An overlay at or inside a persistent write root (an extra writable root)
 // would discard writes the user granted for good, so such a cache root is
 // dropped, like one inside the worktree, and so is one holding a write root
