@@ -653,10 +653,7 @@ func (jm *jobManager) retryUnsettledWatchSendLocked(deliveryID string) bool {
 		return false
 	}
 	delete(jm.unsettledWatchSends, deliveryID)
-	if jm.stableWatchSettlementRetries == nil {
-		jm.stableWatchSettlementRetries = make(map[string]pendingWatchSendDelivery)
-	}
-	jm.stableWatchSettlementRetries[deliveryID] = unsettled
+	jm.rememberStableWatchSettlementRetryLocked(unsettled)
 	return true
 }
 
@@ -4851,10 +4848,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		for _, diagnostic := range evictionDiagnostics {
 			jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 		}
-		if verr != nil {
-			return record.persisted, true, verr
-		}
-		return record.persisted, true, nil
+		return record.persisted, true, verr
 	}
 	group := append([]jobstore.Event(nil), record.pendingEvents...)
 	var evictionSnapshots []watchSendTerminalSnapshot
@@ -4886,10 +4880,7 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	for _, diagnostic := range evictionDiagnostics {
 		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	}
-	if verr != nil {
-		return record.persisted, true, verr
-	}
-	return record.persisted, true, nil
+	return record.persisted, true, verr
 }
 
 // verifyStableWatchEnqueue completes an admitted stable enqueue and checks the
@@ -5010,12 +5001,18 @@ func (jm *jobManager) rememberStableWatchSettlementRetry(cfg *watchConfig, state
 		return
 	}
 	jm.mu.Lock()
+	jm.rememberStableWatchSettlementRetryLocked(pendingWatchSendDelivery{cfg: cfg, state: state})
+	jm.mu.Unlock()
+	jm.kick()
+}
+
+// rememberStableWatchSettlementRetryLocked queues retry for the settlement
+// retry pass. Caller holds jm.mu and wakes the owner once it lets go.
+func (jm *jobManager) rememberStableWatchSettlementRetryLocked(retry pendingWatchSendDelivery) {
 	if jm.stableWatchSettlementRetries == nil {
 		jm.stableWatchSettlementRetries = make(map[string]pendingWatchSendDelivery)
 	}
-	jm.stableWatchSettlementRetries[state.DeliveryID] = pendingWatchSendDelivery{cfg: cfg, state: state}
-	jm.mu.Unlock()
-	jm.kick()
+	jm.stableWatchSettlementRetries[retry.state.DeliveryID] = retry
 }
 
 func (jm *jobManager) forgetStableWatchSettlementRetry(state jobstore.WatchSendState) {
@@ -5248,13 +5245,14 @@ func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord
 
 // storeWatchSendPendingRecord installs record's frame as its key's pending
 // frame and returns the delivery id of the replaced frame whose receipt the
-// caller releases, or "" when there is none to release now. A replaced frame a deliverer holds the claim on
-// is marked superseded under the same hold that publishes its replacement, so
-// that deliverer sees the mark however soon the replacement settles; its
-// receipt goes with the claim (releaseWatchSendDeliveryClaim). An unclaimed
-// replaced frame the receiver took without an acknowledgement goes to the
-// settlement retry, which keeps its receipt; the persist caller's wake of the
-// owner runs it (recordWatchSendsAndKick).
+// caller releases, or "" when there is none to release now. A replaced frame
+// a deliverer holds the claim on is marked superseded under the same hold that
+// publishes its replacement, so that deliverer sees the mark however soon the
+// replacement settles; its receipt goes with the claim
+// (releaseWatchSendDeliveryClaim). An unclaimed replaced frame the receiver
+// took without an acknowledgement goes to the settlement retry, which keeps
+// its receipt; the persist caller's wake of the owner runs it
+// (recordWatchSendsAndKick).
 func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord, detached bool) (release string) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()

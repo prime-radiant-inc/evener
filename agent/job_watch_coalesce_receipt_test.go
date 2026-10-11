@@ -1,14 +1,9 @@
 package agent
 
 import (
-	"context"
 	"errors"
-	"os"
 	"slices"
-	"sync"
 	"testing"
-
-	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -28,19 +23,36 @@ func stableWatchDeliveryReceiptIDs(c *delegateTreeController) []string {
 	return ids
 }
 
-// newCommunicateStableWatch watches dlg_source's communicate events from the
-// root, so each event records a pending stable-receiver frame.
-func newCommunicateStableWatch(t *testing.T) *stableWatchRuntimeFixture {
+// requireOnlyStableWatchReceipts fails unless the controller holds delivery
+// receipts for exactly ids.
+func requireOnlyStableWatchReceipts(t *testing.T, fixture *stableWatchRuntimeFixture, ids ...string) {
 	t.Helper()
-	fixture := newStableWatchRuntimeBase(t, nil)
-	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
-		"operation": "create",
-		"source":    "dlg_source",
-		"events":    []any{"communicate"},
-	}, 4096); err != nil {
-		t.Fatalf("create watch: %v", err)
+	want := slices.Sorted(slices.Values(ids))
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, want) {
+		t.Fatalf("delivery receipts = %v, want only %v", got, want)
 	}
-	return fixture
+}
+
+// stableWatchSettlementRetrying reports whether deliveryID is queued for the
+// settlement retry.
+func stableWatchSettlementRetrying(jm *jobManager, deliveryID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
+	return retrying
+}
+
+// requireSettlementRetryAcknowledges runs the settlement retry and requires it
+// to acknowledge accepted, leaving only pending's receipt.
+func requireSettlementRetryAcknowledges(t *testing.T, fixture *stableWatchRuntimeFixture, accepted, pending jobstore.WatchSendState) {
+	t.Helper()
+	if _, err := fixture.sourceJM.retryStableWatchSettlements(); err != nil {
+		t.Fatalf("settlement retry: %v", err)
+	}
+	if !fixture.sourceJM.watchSendDelivered(accepted.DeliveryID) {
+		t.Fatal("the retry did not acknowledge the accepted frame")
+	}
+	requireOnlyStableWatchReceipts(t, fixture, pending.DeliveryID)
 }
 
 // When a second frame coalesces over a stable-receiver frame that is still
@@ -49,7 +61,7 @@ func newCommunicateStableWatch(t *testing.T) *stableWatchRuntimeFixture {
 // receipt fences the receiver's stop forever, and closing the root waits out
 // the close budget.
 func TestCoalescedStableWatchFrameReleasesSupersededReceipt(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
 	first := fixture.requireOnePending(t).state
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "second"})
@@ -57,16 +69,14 @@ func TestCoalescedStableWatchFrameReleasesSupersededReceipt(t *testing.T) {
 	if second.DeliveryID == first.DeliveryID {
 		t.Fatalf("coalesced frame kept delivery id %s", first.DeliveryID)
 	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only the pending frame's %s (superseded %s)", got, second.DeliveryID, first.DeliveryID)
-	}
+	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }
 
 // A deliverer already handing off the first frame when the second coalesces
 // over it keeps the first receipt through the supersede, then stands down
 // without an error and releases it: the newer frame carries the content on.
 func TestInFlightSupersededStableWatchFrameStandsDown(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
 	first := fixture.requireOnePending(t).state
 	if !fixture.sourceJM.claimWatchSendDelivery(first.DeliveryID) {
@@ -82,16 +92,14 @@ func TestInFlightSupersededStableWatchFrameStandsDown(t *testing.T) {
 	if delivered || err != nil {
 		t.Fatalf("superseded deliverer: delivered=%t err=%v, want a quiet stand-down", delivered, err)
 	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
-	}
+	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }
 
 // A deliverer that claimed the first frame and then exits early, because the
 // frame stopped being the current pending one, releases the receipt with its
 // claim: the coalescing commit left the receipt to it.
 func TestSupersededStableWatchReceiptReleasesWithEarlyExitClaim(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
 	first := fixture.requireOnePending(t).state
 	if !fixture.sourceJM.claimWatchSendDelivery(first.DeliveryID) {
@@ -103,9 +111,7 @@ func TestSupersededStableWatchReceiptReleasesWithEarlyExitClaim(t *testing.T) {
 		t.Fatal("first frame still current after the coalesce")
 	}
 	fixture.sourceJM.releaseWatchSendDeliveryClaim(first.DeliveryID)
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
-	}
+	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }
 
 // When the replacement is delivered before the superseded deliverer reaches
@@ -113,7 +119,7 @@ func TestSupersededStableWatchReceiptReleasesWithEarlyExitClaim(t *testing.T) {
 // superseded deliverer still stands down without a staleness error, and its
 // receipt goes with its claim, leaving none behind.
 func TestSupersededStableWatchDelivererAfterReplacementDelivered(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
 	first := fixture.requireOnePending(t).state
@@ -130,9 +136,7 @@ func TestSupersededStableWatchDelivererAfterReplacementDelivered(t *testing.T) {
 	if delivered || err != nil {
 		t.Fatalf("superseded deliverer: delivered=%t err=%v, want a quiet stand-down", delivered, err)
 	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); len(got) != 0 {
-		t.Fatalf("delivery receipts outlived their frames: %v", got)
-	}
+	requireOnlyStableWatchReceipts(t, fixture)
 }
 
 // The replacement frame is durable before its runtime commit marks the
@@ -141,7 +145,7 @@ func TestSupersededStableWatchDelivererAfterReplacementDelivered(t *testing.T) {
 // stands down without a staleness error, and its receipt still goes once the
 // coalesce and its claim have both finished.
 func TestSupersededStableWatchDelivererBeforeRuntimeCommit(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -176,9 +180,7 @@ func TestSupersededStableWatchDelivererBeforeRuntimeCommit(t *testing.T) {
 		t.Fatalf("deliverer in the commit window: %v, want a quiet stand-down", standDown)
 	}
 	second := fixture.requireOnePending(t).state
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
-	}
+	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }
 
 // The receiver takes the first frame, a replacement coalesces over it before
@@ -186,7 +188,7 @@ func TestSupersededStableWatchDelivererBeforeRuntimeCommit(t *testing.T) {
 // no longer pending, so nothing would redeliver it: its receipt stays held
 // for a settlement retry, which acknowledges it on the next pass.
 func TestSupersededAcceptedFrameRetriesItsAcknowledgement(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -198,7 +200,7 @@ func TestSupersededAcceptedFrameRetriesItsAcknowledgement(t *testing.T) {
 	failed := false
 	originalAppend := jm.appendEvent
 	jm.appendEvent = func(event jobstore.Event) error {
-		if !failed && event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.DeliveryID == first.DeliveryID {
+		if !failed && exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, first) {
 			failed = true
 			onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
 			return ackFailure
@@ -215,15 +217,7 @@ func TestSupersededAcceptedFrameRetriesItsAcknowledgement(t *testing.T) {
 	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
 		t.Fatalf("the accepted, unacknowledged frame lost its receipt: %v", got)
 	}
-	if _, err := jm.retryStableWatchSettlements(); err != nil {
-		t.Fatalf("settlement retry: %v", err)
-	}
-	if !jm.watchSendDelivered(first.DeliveryID) {
-		t.Fatal("the retry did not acknowledge the accepted frame")
-	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
-	}
+	requireSettlementRetryAcknowledges(t, fixture, first, second)
 }
 
 // The first frame's deliverer passed its durable check before the
@@ -234,7 +228,7 @@ func TestSupersededAcceptedFrameRetriesItsAcknowledgement(t *testing.T) {
 // dropping its receipt. The deliverer's state at that point is a noted failed
 // acknowledgement and no claim.
 func TestAcceptedFrameReplacedAfterItsClaimRetriesItsAcknowledgement(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -252,22 +246,14 @@ func TestAcceptedFrameReplacedAfterItsClaimRetriesItsAcknowledgement(t *testing.
 	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
 		t.Fatalf("the accepted, unacknowledged frame lost its receipt: %v", got)
 	}
-	if _, err := jm.retryStableWatchSettlements(); err != nil {
-		t.Fatalf("settlement retry: %v", err)
-	}
-	if !jm.watchSendDelivered(first.DeliveryID) {
-		t.Fatal("the retry did not acknowledge the accepted frame")
-	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
-	}
+	requireSettlementRetryAcknowledges(t, fixture, first, second)
 }
 
 // A frame whose receipt was already released (its watch was cleared between
 // the hand-off and the failed acknowledgement) is retired: noting the failed
 // acknowledgement keeps nothing, so no note outlives it.
 func TestFailedAcknowledgementOfRetiredFrameKeepsNoNote(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -288,7 +274,7 @@ func TestFailedAcknowledgementOfRetiredFrameKeepsNoNote(t *testing.T) {
 // coalesce's later promotion makes a second one, which nothing releases. So
 // the frame is never visible to drains without a remembered receipt.
 func TestCoalescedFramePublishedOnlyAfterItsReceiptIsPromoted(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -313,9 +299,7 @@ func TestCoalescedFramePublishedOnlyAfterItsReceiptIsPromoted(t *testing.T) {
 	if _, err := jm.deliverPendingWatchSend(cfg, second, false); err != nil {
 		t.Fatalf("deliver replacement: %v", err)
 	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); len(got) != 0 {
-		t.Fatalf("delivery receipts outlived their frames: %v", got)
-	}
+	requireOnlyStableWatchReceipts(t, fixture)
 }
 
 // The receiver took the first frame but its acknowledgement failed. On the
@@ -324,15 +308,8 @@ func TestCoalescedFramePublishedOnlyAfterItsReceiptIsPromoted(t *testing.T) {
 // time, so it keeps its receipt and goes to the settlement retry when its
 // claim is released.
 func TestAcceptedFrameKeepsItsRetryThroughAFailedSupersededRedelivery(t *testing.T) {
-	rootFS := &writeHookFS{Fs: afero.NewOsFs()}
-	fixture := newStableWatchRuntimeBase(t, rootFS)
-	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
-		"operation": "create",
-		"source":    "dlg_source",
-		"events":    []any{"communicate"},
-	}, 4096); err != nil {
-		t.Fatalf("create watch: %v", err)
-	}
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	rootFS := attachEnvironmentFailureFS(t, fixture.root)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -342,13 +319,13 @@ func TestAcceptedFrameKeepsItsRetryThroughAFailedSupersededRedelivery(t *testing
 		t.Fatal("claim first frame")
 	}
 	appendFailure := errors.New("receiver append failed")
-	rootFS.setOnWrite(func() error {
-		rootFS.setOnWrite(nil)
+	rootFS.mu.Lock()
+	rootFS.writeFailure = appendFailure
+	rootFS.onWriteFailure = func() {
 		onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
-		return appendFailure
-	})
+	}
+	rootFS.mu.Unlock()
 	_, err := jm.deliverStableWatchSend(cfg, first)
-	rootFS.setOnWrite(nil)
 	jm.releaseWatchSendDeliveryClaim(first.DeliveryID)
 	if !errors.Is(err, appendFailure) {
 		t.Fatalf("redelivery: err = %v, want the receiver append failure", err)
@@ -358,64 +335,9 @@ func TestAcceptedFrameKeepsItsRetryThroughAFailedSupersededRedelivery(t *testing
 	if !slices.Contains(got, first.DeliveryID) || !slices.Contains(got, second.DeliveryID) {
 		t.Fatalf("delivery receipts = %v, want the accepted frame's kept beside %s", got, second.DeliveryID)
 	}
-	jm.mu.Lock()
-	_, retrying := jm.stableWatchSettlementRetries[first.DeliveryID]
-	jm.mu.Unlock()
-	if !retrying {
+	if !stableWatchSettlementRetrying(jm, first.DeliveryID) {
 		t.Fatal("the accepted frame was not handed to the settlement retry")
 	}
-}
-
-// writeHookFS runs onWrite before each write to a file it opened; an error
-// from onWrite fails that write.
-type writeHookFS struct {
-	afero.Fs
-	mu      sync.Mutex
-	onWrite func() error
-}
-
-func (fs *writeHookFS) setOnWrite(hook func() error) {
-	fs.mu.Lock()
-	fs.onWrite = hook
-	fs.mu.Unlock()
-}
-
-func (fs *writeHookFS) hook() error {
-	fs.mu.Lock()
-	hook := fs.onWrite
-	fs.mu.Unlock()
-	if hook == nil {
-		return nil
-	}
-	return hook()
-}
-
-func (fs *writeHookFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
-	f, err := fs.Fs.OpenFile(name, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	return writeHookFile{File: f, fs: fs}, nil
-}
-
-func (fs *writeHookFS) Create(name string) (afero.File, error) {
-	f, err := fs.Fs.Create(name)
-	if err != nil {
-		return nil, err
-	}
-	return writeHookFile{File: f, fs: fs}, nil
-}
-
-type writeHookFile struct {
-	afero.File
-	fs *writeHookFS
-}
-
-func (f writeHookFile) Write(p []byte) (int, error) {
-	if err := f.fs.hook(); err != nil {
-		return 0, err
-	}
-	return f.File.Write(p)
 }
 
 // The receiver takes the first frame but arming its attention fails, and a
@@ -423,7 +345,7 @@ func (f writeHookFile) Write(p []byte) (int, error) {
 // so it keeps its receipt and goes to the settlement retry, which arms and
 // acknowledges it.
 func TestAcceptedFrameWithFailedArmRetriesAfterACoalesce(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -439,22 +361,14 @@ func TestAcceptedFrameWithFailedArmRetriesAfterACoalesce(t *testing.T) {
 	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
 		t.Fatalf("the accepted, unarmed frame lost its receipt: %v", got)
 	}
-	if _, err := jm.retryStableWatchSettlements(); err != nil {
-		t.Fatalf("settlement retry: %v", err)
-	}
-	if !jm.watchSendDelivered(first.DeliveryID) {
-		t.Fatal("the retry did not acknowledge the accepted frame")
-	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
-	}
+	requireSettlementRetryAcknowledges(t, fixture, first, second)
 }
 
 // The settlement retry for an accepted frame whose arm failed arms it before
 // acknowledging it. While the arm keeps failing, the retry and the receipt
 // stay; once it succeeds the frame is armed, acknowledged and released.
 func TestSettlementRetryArmsBeforeItAcknowledges(t *testing.T) {
-	fixture := newCommunicateStableWatch(t)
+	fixture := newStableWatchRuntimeFixture(t, nil)
 	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
@@ -469,9 +383,7 @@ func TestSettlementRetryArmsBeforeItAcknowledges(t *testing.T) {
 	if _, err := jm.retryStableWatchSettlements(); !errors.Is(err, armFailure) {
 		t.Fatalf("retry while the arm still fails: err = %v, want the arm failure", err)
 	}
-	jm.mu.Lock()
-	_, retrying := jm.stableWatchSettlementRetries[first.DeliveryID]
-	jm.mu.Unlock()
+	retrying := stableWatchSettlementRetrying(jm, first.DeliveryID)
 	if !retrying || jm.watchSendDelivered(first.DeliveryID) {
 		t.Fatalf("after a failed retry arm: retrying=%t acknowledged=%t, want the retry kept and no acknowledgement", retrying, jm.watchSendDelivered(first.DeliveryID))
 	}
@@ -485,7 +397,5 @@ func TestSettlementRetryArmsBeforeItAcknowledges(t *testing.T) {
 	if !jm.watchSendDelivered(first.DeliveryID) {
 		t.Fatal("the retry did not acknowledge the frame")
 	}
-	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
-		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
-	}
+	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }
