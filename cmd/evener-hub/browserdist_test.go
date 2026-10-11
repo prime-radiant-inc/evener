@@ -16,21 +16,6 @@ import (
 // produced a false red/green verdict in #4336's safe-area round.
 const distFreshnessTolerance = 2 * time.Second
 
-// requireFreshDist fails a browser guard when the embedded production
-// frontend is missing or plausibly stale. The guard serves the built dist,
-// not the source tree, so running `go test` after a source edit silently
-// exercises yesterday's bundle. Rebuilding is cheap; a stale verdict is worse
-// than none.
-func requireFreshDist(t *testing.T) {
-	t.Helper()
-	if _, err := fs.ReadFile(distFS(), "index.html"); err != nil {
-		t.Fatalf("production frontend is required, run make build-web: %v", err)
-	}
-	if err := distStalenessError(newestMtime(t, "frontend/dist"), buildInputNewest(t)); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // distStalenessError reports whether a dist build older than the newest
 // source input is stale beyond the checkout tolerance. It is pure so the
 // tolerance semantics stay covered in the ordinary (untagged) test lane.
@@ -42,10 +27,12 @@ func distStalenessError(distNewest, srcNewest time.Time) error {
 }
 
 // The frontend's top-level build inputs live outside src/ and feed the
-// bundle directly: the SPA entry, the build config, and the dependency
-// lock. A change confined to any of them must read as stale too.
+// bundle directly: the SPA entry, the build config, the build manifest's
+// script, and the dependency lock. A change confined to any of them must
+// read as stale too.
 var distBuildInputs = []string{
 	"frontend/index.html",
+	"frontend/package.json",
 	"frontend/vite.config.ts",
 	"frontend/package-lock.json",
 }
