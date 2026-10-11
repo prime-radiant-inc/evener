@@ -143,7 +143,7 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 		// cache root of theirs dropped from CacheRoots lies at or inside a
 		// directory the user made writable on purpose, whose writes this
 		// must not override.
-		dirs, unknown := overlayGoCacheDirs(env, policy.resolveHost)
+		dirs, unknown := overlayGoCacheDirs(env, policy)
 		writeRoots := bwrapWriteRoots(policy)
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name} {
 			if dir := dirs[name]; unknown[name] || (filepath.IsAbs(dir) && (!overlayServes(policy, dir) || overlapsAnyRoot(dir, writeRoots))) {
@@ -227,7 +227,8 @@ func canBeDirectory(dir string) bool {
 // the probe read and the floor can read it as the spawn will (see below);
 // otherwise every setting the spawn's environment leaves to it is reported
 // unknown (the environment overrides the file).
-func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, map[string]bool) {
+func overlayGoCacheDirs(env []string, policy ResolvedPolicy) (map[string]string, map[string]bool) {
+	host := policy.resolveHost
 	vars := envVars(env)
 	firstOr := func(values ...string) string {
 		for _, v := range values {
@@ -253,12 +254,10 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, map[st
 		// spelled under /tmp or /dev, or whose link chain passes through or
 		// into them at any step, is hidden by bwrap's private mounts (the
 		// overlay strategy is bwrap's), so the spawn's go does not read it.
-		// A go env file the user masked (a denylist entry over ~/.config/go)
-		// is still read here: its spawn then falls back to Go's defaults,
-		// whose caches this floor judges as usual, and at worst one the spawn
-		// pointed into its own workspace stays there, inside its grants
-		// (docs/sandboxing.md#threat-model).
-		judged := spawnFile == host.GoEnvFile && filepath.IsAbs(spawnFile) && !inPrivateMount(spawnFile) && !linksThroughPrivateMount(spawnFile)
+		// One the user masked (a denylist entry over ~/.config/go) is hidden
+		// from the spawn just the same.
+		judged := spawnFile == host.GoEnvFile && filepath.IsAbs(spawnFile) && !inPrivateMount(spawnFile) && !linksThroughPrivateMount(spawnFile) &&
+			!policy.MasksWrite(spawnFile) && !policy.MasksWrite(resolveExistingPrefix(spawnFile))
 		if judged {
 			var ok bool
 			file, ok = currentGoEnvSettings(spawnFile)

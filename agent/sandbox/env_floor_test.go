@@ -811,6 +811,26 @@ func TestEnvFloorRedirectsGoCachesForAGoEnvFileLinkedThroughTmp(t *testing.T) {
 	}
 }
 
+// A go env file the user masked (a denylist entry over ~/.config/go) is
+// hidden from the spawn, whose go then falls back to its defaults, so the
+// floor must not trust the file's settings: its caches go to the scratch.
+func TestEnvFloorRedirectsGoCachesForAMaskedGoEnvFile(t *testing.T) {
+	home := servedHome(t)
+	envFile := filepath.Join(home, ".config", "go", "env")
+	if err := os.MkdirAll(filepath.Dir(envFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envFile, []byte("GOCACHE="+filepath.Join(home, ".cache", "go-build")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{filepath.Join(home, ".cache"), filepath.Join(home, "go", "pkg")}, MaskedPaths: []string{filepath.Dir(envFile)}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: home, GoEnvFile: envFile}}
+	out := ApplyEnvFloor([]string{"HOME=" + home, "XDG_CACHE_HOME=/work/project/.cache"}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a masked go env file must not decide the spawn's caches, got GOCACHE=%q", v)
+	}
+}
+
 // Settings the spawn's environment gives explicitly override its go env file,
 // so they are known even when a go env file exists: served ones are left
 // alone, and only the settings left to the file are unknown.
