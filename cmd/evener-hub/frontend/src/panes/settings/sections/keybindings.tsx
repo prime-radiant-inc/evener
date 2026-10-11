@@ -40,7 +40,7 @@ import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { Button, Chip, KeyHint, Switch } from "../../../widgets";
+import { Button, Chip, InlineNotice, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./keybindings.module.css";
 
@@ -51,7 +51,6 @@ const CLASS = {
   help: requireClass(styles.help, "keybindings.module.css", "help"),
   status: requireClass(styles.status, "keybindings.module.css", "status"),
   warningList: requireClass(styles.warningList, "keybindings.module.css", "warningList"),
-  error: requireClass(styles.error, "keybindings.module.css", "error"),
   list: requireClass(styles.list, "keybindings.module.css", "list"),
   row: requireClass(styles.row, "keybindings.module.css", "row"),
   label: requireClass(styles.label, "keybindings.module.css", "label"),
@@ -64,7 +63,6 @@ const CLASS = {
   capture: requireClass(styles.capture, "keybindings.module.css", "capture"),
   capturePrompt: requireClass(styles.capturePrompt, "keybindings.module.css", "capturePrompt"),
   captureHint: requireClass(styles.captureHint, "keybindings.module.css", "captureHint"),
-  captureError: requireClass(styles.captureError, "keybindings.module.css", "captureError"),
 };
 
 // The keys that are modifiers themselves: holding one updates the live
@@ -257,11 +255,7 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         )}
         <span className={CLASS.captureHint}>Enter to save · Esc to cancel</span>
       </div>
-      {error !== null && (
-        <p className={CLASS.captureError} role="alert">
-          {error}
-        </p>
-      )}
+      {error !== null && <InlineNotice tone="danger">{error}</InlineNotice>}
     </div>
   );
 }
@@ -450,9 +444,9 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
         </p>
       )}
       {error !== null && (
-        <p className={CLASS.rowError} role="alert">
-          {error}
-        </p>
+        <div className={CLASS.rowError}>
+          <InlineNotice tone="danger">{error}</InlineNotice>
+        </div>
       )}
     </li>
   );
@@ -524,9 +518,9 @@ export function KeybindingsSection() {
         </p>
       )}
       {hubError !== null && (
-        <p className={CLASS.error} role="alert">
-          Could not load keybinding overrides: {hubError}
-          {hubSupport === "supported" && (
+        <InlineNotice
+          tone="danger"
+          action={
             // Finding 37: the round-3 gate locks editing while hubError is
             // set, and a successful refresh clears it - offer the recovery
             // inline. Supported hubs only: on an unsupported hub a refresh
@@ -534,16 +528,20 @@ export function KeybindingsSection() {
             // rollback message's own retry is connection-change-driven.
             // Disabled while hubLoading so a double-click cannot double-fire
             // the refresh.
-            <Button
-              variant="quiet"
-              size="xs"
-              disabled={hubLoading}
-              onClick={() => void keybindingsStore.getState().refreshOverrides()}
-            >
-              Retry
-            </Button>
-          )}
-        </p>
+            hubSupport === "supported" ? (
+              <Button
+                variant="quiet"
+                size="xs"
+                disabled={hubLoading}
+                onClick={() => void keybindingsStore.getState().refreshOverrides()}
+              >
+                Retry
+              </Button>
+            ) : undefined
+          }
+        >
+          Could not load keybinding overrides: {hubError}
+        </InlineNotice>
       )}
       {warnings.length > 0 && (
         <div className={CLASS.status} role="status">

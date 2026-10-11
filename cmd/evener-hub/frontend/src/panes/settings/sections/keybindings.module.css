@@ -41,15 +41,6 @@
   padding-left: var(--space-4);
 }
 
-.error {
-  margin: 0;
-  background: var(--surface-inset);
-  padding: var(--space-2) var(--space-3);
-  color: var(--ink-hi);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}
-
 .list {
   list-style: none;
   margin: 0;
@@ -111,10 +102,6 @@
 
 .rowError {
   flex-basis: 100%;
-  margin: 0;
-  color: var(--danger-ink);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
 }
 
 /* The capture widget plus its inline error, stacked under the row label. */
@@ -157,9 +144,3 @@
   white-space: nowrap;
 }
 
-.captureError {
-  margin: 0;
-  color: var(--danger-ink);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}

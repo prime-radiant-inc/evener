@@ -44,7 +44,7 @@ import {
   schemaPathKind,
 } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Eyebrow, useToasts } from "../../../../widgets";
+import { Button, Eyebrow, InlineNotice, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
@@ -56,7 +56,6 @@ const CLASS = {
   groupHeader: requireClass(styles.groupHeader, "LaunchConfigForm.module.css", "groupHeader"),
   field: requireClass(styles.field, "LaunchConfigForm.module.css", "field"),
   actions: requireClass(styles.actions, "LaunchConfigForm.module.css", "actions"),
-  conflict: requireClass(styles.conflict, "LaunchConfigForm.module.css", "conflict"),
   status: requireClass(styles.status, "LaunchConfigForm.module.css", "status"),
 };
 
@@ -416,12 +415,15 @@ export function LaunchConfigForm({
         </div>
       ))}
       {conflict && (
-        <p className={CLASS.conflict} role="status">
-          These settings changed on the host while you were editing. Saving will overwrite the newer values.{" "}
-          <Button type="button" onClick={() => adoptHostValues()}>
-            Use the host's values
-          </Button>
-        </p>
+        <InlineNotice
+          action={
+            <Button type="button" onClick={() => adoptHostValues()}>
+              Use the host's values
+            </Button>
+          }
+        >
+          These settings changed on the host while you were editing. Saving will overwrite the newer values.
+        </InlineNotice>
       )}
       <div className={CLASS.actions}>
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
