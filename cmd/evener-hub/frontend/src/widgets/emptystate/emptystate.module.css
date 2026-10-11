@@ -31,7 +31,13 @@
   line-height: var(--line-height-body);
 }
 
+/* One action or several: a fragment of buttons sits in one row that wraps
+ * on a narrow pane, centered under a centered block. */
 .action {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
   margin-top: var(--space-2);
 }
 
@@ -65,5 +71,6 @@
 }
 
 .compact .action {
+  justify-content: flex-start;
   margin-top: 0;
 }
