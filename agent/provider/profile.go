@@ -332,21 +332,25 @@ func (p *Profile) Cost() *registry.Cost { return p.res.Caps.Cost }
 // InputModalities lists what the model accepts ("text", "image", "pdf", …).
 func (p *Profile) InputModalities() []string { return cloneStringSlice(p.res.Caps.InputModalities) }
 
-// AcceptsImageInput reports whether the row declares image input at all. It
-// says the model can be handed an image in a user message (the shape the
-// vision side-channel uses); it says nothing about tool results.
+// AcceptsImageInput reports whether the model's own row declares image
+// input. It says the model can be handed an image in a user message (the
+// shape the vision side-channel uses); it says nothing about tool results. A
+// profile renamed over another row (withModelID) inherits its source row's
+// modalities, and inherited image input is not evidence the named model sees
+// media, so it does not count.
 func (p *Profile) AcceptsImageInput() bool {
-	return p.res.Caps.AcceptsModality("image")
+	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("image")
 }
 
-// AcceptsDocumentInput reports whether the row declares document ("pdf")
-// input and its adapter represents a user-message document on the wire.
-// Unlike an image — the one user-message shape every protocol vouches for —
-// a document needs the protocol check too: the Responses builder writes
+// AcceptsDocumentInput reports whether the model's own row declares document
+// ("pdf") input and its adapter represents a user-message document on the
+// wire. Unlike an image — the one user-message shape every protocol vouches
+// for — a document needs the protocol check too: the Responses builder writes
 // input_file, while the Anthropic and Google builders reject the kind and
-// chat strips it (llm.DeliversUserMessageDocuments).
+// chat strips it (llm.DeliversUserMessageDocuments). Renamed profiles do not
+// count, for the same reason as AcceptsImageInput.
 func (p *Profile) AcceptsDocumentInput() bool {
-	return p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res)
+	return !p.rowFactsInherited && p.res.Caps.AcceptsModality("pdf") && llm.DeliversUserMessageDocuments(p.res)
 }
 
 // SeesToolResultMedia reports whether the session model receives tool-result

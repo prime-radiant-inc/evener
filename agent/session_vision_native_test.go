@@ -559,6 +559,35 @@ func TestDescribeImage_NamespacedFallbackOnAGatewayKeepsTheSideChannel(t *testin
 	}
 }
 
+// A profile renamed through withModelID inherits its source row's input
+// modalities, and inherited image input is no evidence the named model sees
+// media. An ordinary configured-route failure must not retry the image on
+// such a session model: the retry would ask an uncatalogued, possibly
+// text-only model and could accept a hallucinated description.
+func TestDescribeImage_RouteFailureDoesNotRetryMediaOnAnInheritedRowProfile(t *testing.T) {
+	t.Parallel()
+	openai := &fakeErrAdapter{name: "openai"}
+	anthropic := &fakeErrAdapter{name: "anthropic", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, visionRouteError("anthropic")
+		},
+	}}
+	sess := newSession(t, withAdapter(openai), withAdapter(anthropic),
+		withProfile(NewOpenAIProfile("gpt-5.2").WithModel("anthropic/claude-x")),
+		withConfig(SessionConfig{VisionModel: "anthropic/claude-route-x"}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("route-failure outcome = %v, want provider failure", result.outcome)
+	}
+	if len(anthropic.Requests()) != 1 {
+		t.Fatalf("configured-route calls = %d, want 1", len(anthropic.Requests()))
+	}
+	if len(openai.Requests()) != 0 {
+		t.Fatalf("inherited-capability session model received %d retry calls", len(openai.Requests()))
+	}
+}
+
 // A document media type reaches the side-channel normalized: case and
 // surrounding whitespace must not reclassify a PDF as a raster image, which
 // would send document bytes in an image part and open the retry gate to

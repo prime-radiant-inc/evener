@@ -969,3 +969,25 @@ func TestCompleteRoutedCaseVariantOfTheSessionRouteIsTheSessionRoute(t *testing.
 		t.Fatalf("models = %v, want exactly the session call", got)
 	}
 }
+
+// A profile renamed through withModelID inherits its source row's input
+// modalities; inherited image input is not evidence the named model sees
+// media, so the refusal fallback never hands it the image.
+func TestCompleteRoutedMediaNeverFallsBackToAnInheritedRowProfile(t *testing.T) {
+	t.Parallel()
+	adapter := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("gpt-5.2").WithModel("anthropic/claude-x")
+	req := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "describe"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("png"), MediaType: "image/png"}},
+	}}}}
+
+	_, _, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", req)
+	if !errors.Is(err, cheapmodel.ErrSessionModelCannotTakeMedia) {
+		t.Fatalf("inherited-row media fallback error = %v, want ErrSessionModelCannotTakeMedia", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want exactly the routed probe and no session call", got)
+	}
+}
