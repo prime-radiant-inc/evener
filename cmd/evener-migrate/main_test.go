@@ -60,7 +60,7 @@ func reportCounts(t *testing.T, stdout string) map[string]int {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	counts := map[string]int{}
-	for _, field := range strings.Fields(lines[len(lines)-1]) {
+	for field := range strings.FieldsSeq(lines[len(lines)-1]) {
 		key, value, ok := strings.Cut(field, "=")
 		if !ok {
 			continue
