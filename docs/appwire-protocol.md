@@ -739,6 +739,7 @@ _(no fields)_
 | `runStartedAt` | `string` | yes |  |
 | `runEndedAt` | `string` | yes |  |
 | `latestActivityAt` | `string` | yes |  |
+| `latestIntent` | `string` | yes |  |
 | `runningForMs` | `*int64` | yes |  |
 | `quietForMs` | `*int64` | yes |  |
 | `durationMs` | `*int64` | yes |  |
@@ -2417,6 +2418,7 @@ _(no fields)_
 | `runStartedAt` | `string` | yes |  |
 | `runEndedAt` | `string` | yes |  |
 | `latestActivityAt` | `string` | yes |  |
+| `latestIntent` | `string` | yes |  |
 | `usage` | `*appwire.EvenerUsage` | yes |  |
 | `worktree` | `*appwire.JobActivityWorktree` | yes |  |
 
