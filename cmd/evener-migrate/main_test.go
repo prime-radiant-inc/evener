@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/envvars"
 )
 
 func baseOpts(home, cwd string) options {
@@ -15,6 +18,60 @@ func baseOpts(home, cwd string) options {
 		stateBase:  filepath.Join(home, ".local", "state"),
 		cwd:        cwd,
 	}
+}
+
+// assertRunRefusesWithoutMigrating runs the command with args against a
+// sandboxed home that holds a legacy providers.toml, and checks that the
+// invocation was refused before any work: exit status 2, a diagnostic on
+// stderr, no report on stdout, and the legacy file left where it was.
+func assertRunRefusesWithoutMigrating(t *testing.T, args []string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(envvars.XDGConfigHome.Name, "")
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	t.Chdir(t.TempDir())
+	legacy := filepath.Join(home, ".serf", "providers.toml")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run(args, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("refusal wrote nothing to stderr")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("refusal printed a report: %q", stdout.String())
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("refused run must not move %s: %v", legacy, err)
+	}
+}
+
+// reportCounts parses the key=count fields of the closing report line.
+func reportCounts(t *testing.T, stdout string) map[string]int {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	counts := map[string]int{}
+	for _, field := range strings.Fields(lines[len(lines)-1]) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			t.Fatalf("report field %q is not a count: %v", field, err)
+		}
+		counts[key] = n
+	}
+	return counts
 }
 
 // TestExecuteMovesHomeRootFiles covers generation (a): a legacy ~/.serf home
@@ -271,8 +328,11 @@ func TestExecuteRefusesOverwriteDestExists(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dst, "new")); err != nil {
 		t.Fatalf("dest content should be preserved: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "destination already exists") {
-		t.Fatalf("stdout = %q, want 'destination already exists'", stdout.String())
+	if !strings.Contains(stdout.String(), src) {
+		t.Fatalf("stdout = %q, want the refused source %s reported", stdout.String(), src)
+	}
+	if got := reportCounts(t, stdout.String()); got["moved"] != 0 {
+		t.Fatalf("report = %v, want moved=0", got)
 	}
 }
 
@@ -308,8 +368,11 @@ func TestExecuteRefusesOverwriteHomeRootFile(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(configEvener, "providers.toml")); err != nil || string(got) != "new" {
 		t.Fatalf("dest content should be preserved: content=%q err=%v", got, err)
 	}
-	if !strings.Contains(stdout.String(), "destination already exists") {
-		t.Fatalf("stdout = %q, want 'destination already exists'", stdout.String())
+	if refused := filepath.Join(src, "providers.toml"); !strings.Contains(stdout.String(), refused) {
+		t.Fatalf("stdout = %q, want the refused source %s reported", stdout.String(), refused)
+	}
+	if got := reportCounts(t, stdout.String()); got["moved"] != 0 {
+		t.Fatalf("report = %v, want moved=0", got)
 	}
 }
 
@@ -356,8 +419,8 @@ func TestExecuteDryRunMakesNoChanges(t *testing.T) {
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
 		t.Fatalf("dest %s should not exist", dst)
 	}
-	if !strings.Contains(stdout.String(), "would move") {
-		t.Fatalf("stdout = %q, want 'would move'", stdout.String())
+	if !strings.Contains(stdout.String(), dst) {
+		t.Fatalf("stdout = %q, want the planned destination %s reported", stdout.String(), dst)
 	}
 	if !strings.Contains(stdout.String(), "would_move=1") {
 		t.Fatalf("stdout = %q, want would_move=1", stdout.String())
@@ -673,8 +736,9 @@ func TestExecuteVerbosePrintsSkippedSources(t *testing.T) {
 		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr.String())
 	}
 
-	if !strings.Contains(stdout.String(), "source does not exist") {
-		t.Fatalf("stdout = %q, want 'source does not exist' with --verbose", stdout.String())
+	// Missing sources are silent by default; --verbose names each one.
+	if missing := filepath.Join(home, ".serf", "providers.toml"); !strings.Contains(stdout.String(), missing) {
+		t.Fatalf("stdout = %q, want the missing source %s named with --verbose", stdout.String(), missing)
 	}
 }
 
@@ -729,12 +793,5 @@ func TestRunRespectsXDGEnvVars(t *testing.T) {
 }
 
 func TestRunRejectsPositionalArgs(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"unexpected"}, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("code = %d, want 2; stderr = %q", code, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "positional arguments are not accepted") {
-		t.Fatalf("stderr = %q, want positional arguments rejection", stderr.String())
-	}
+	assertRunRefusesWithoutMigrating(t, []string{"unexpected"})
 }

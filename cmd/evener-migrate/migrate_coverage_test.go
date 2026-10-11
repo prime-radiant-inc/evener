@@ -12,14 +12,7 @@ import (
 
 // TestRunPositionalArgs covers the positional-args rejection path.
 func TestRunMigratePositionalArgs(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"extra"}, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("code = %d, want 2", code)
-	}
-	if !strings.Contains(stderr.String(), "positional arguments are not accepted") {
-		t.Fatalf("stderr missing positional args rejection: %s", stderr.String())
-	}
+	assertRunRefusesWithoutMigrating(t, []string{"extra"})
 }
 
 // TestRunXDGDefaults covers the XDG default path computation (lines 127-128,
@@ -35,8 +28,8 @@ func TestRunXDGDefaults(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, want 0; stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "migration report:") {
-		t.Fatalf("stdout missing migration report: %s", stdout.String())
+	if got := reportCounts(t, stdout.String()); got["moved"] != 0 || got["failed"] != 0 {
+		t.Fatalf("report = %v, want a real-run report with nothing moved or failed", got)
 	}
 }
 
