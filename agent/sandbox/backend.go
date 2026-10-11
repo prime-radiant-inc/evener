@@ -88,17 +88,17 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 // upper layer, so writes there would vanish. Creating it empty first lets it
 // be bound writable over the overlay; it is a directory the user granted for
 // writing. When it cannot be created (a full or read-only disk, a dangling or
-// looping link), the caches holding it are not overlaid for this spawn, so
-// writes there fail where they happen instead of vanishing. That drop lasts
-// for this wrapper only, a stopgap the per-spawn judgement stacked on this
-// change (liveCacheRoots, #4302) replaces, so a repaired write root gets its
-// cache's overlay back at the next spawn. Git's own entries (some of them
-// files, such as packed-refs) are never created here.
+// looping link), or is one of git's own entries, which are never created here
+// (some are files, such as packed-refs), the caches holding it are not
+// overlaid, so writes there fail or persist where they happen instead of
+// vanishing. That drop lasts for this wrapper only, a stopgap the per-spawn
+// judgement stacked on this change (liveCacheRoots, #4302) replaces, so a
+// repaired write root gets its cache's overlay back at the next spawn.
 func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 	for _, w := range bwrapWriteRoots(rp) {
 		// bwrap binds only a write root that stats cleanly; any other (missing,
 		// a dangling or looping link, an unreadable parent) is unbindable.
-		if _, err := os.Stat(w); err == nil || isGitEntry(rp, w) {
+		if _, err := os.Stat(w); err == nil {
 			continue
 		}
 		// Every place a write to w touches on the host, links on the way and
@@ -111,9 +111,10 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 		if !slices.ContainsFunc(rp.CacheRoots, holds) {
 			continue
 		}
-		// MkdirAll refuses a dangling link (on w or on its way) rather than
-		// creating its target, so the overlays over it go instead.
-		if os.MkdirAll(w, 0o755) != nil {
+		// Git's own entries are never created (some are files), and MkdirAll
+		// refuses a dangling link (on w or on its way) rather than creating
+		// its target; either way the overlays over it go instead.
+		if isGitEntry(rp, w) || os.MkdirAll(w, 0o755) != nil {
 			rp.CacheRoots = slices.DeleteFunc(slices.Clone(rp.CacheRoots), holds)
 		}
 	}

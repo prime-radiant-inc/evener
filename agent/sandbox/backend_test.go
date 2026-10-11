@@ -380,3 +380,28 @@ func TestWrapperLeavesAnAliasedGitFileGrantUncreated(t *testing.T) {
 		t.Errorf("an aliased git file grant must not be created (err=%v)", err)
 	}
 }
+
+// A dangling write root inside a cache whose target is git metadata is not
+// created (git's entries never are), but the cache holding it is not overlaid
+// either: a spawn could replace the link with a directory and write there.
+func TestPrepareCacheRootsDropsAnOverlayHoldingADanglingLinkIntoGit(t *testing.T) {
+	cache := t.TempDir()
+	commonDir := filepath.Join(t.TempDir(), "repo", ".git")
+	if err := os.MkdirAll(commonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	library := filepath.Join(cache, "library")
+	if err := os.Symlink(filepath.Join(commonDir, "library"), library); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Git.CommonDir = commonDir
+	rp.Git.GitDir = commonDir
+	rp.Spawned.WriteRoots = []string{library}
+	if got := prepareCacheRoots(rp); slices.Contains(got.CacheRoots, cache) {
+		t.Errorf("a cache holding a dangling link into git metadata must not be overlaid: %v", got.CacheRoots)
+	}
+	if _, err := os.Lstat(filepath.Join(commonDir, "library")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("git metadata must not be created (err=%v)", err)
+	}
+}
