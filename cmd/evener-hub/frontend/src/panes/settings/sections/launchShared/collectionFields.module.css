@@ -4,68 +4,8 @@
   gap: var(--space-2);
 }
 
-.header {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.label {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  color: var(--ink-hi);
-}
-
-.help {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-.envRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
 .envField {
   display: flex;
   flex: 1;
-  min-width: 0;
-}
-
-/* modelList add row: the model picker takes the row's free width (it's a
- * full-width form control now, same as Input) with the Add button beside it. */
-/* The row is itself a flex child of CollectionEditor's own add <form>, so it
- * needs to grow before its picker has any free width to take. */
-.modelAddRow {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-/* The wrapper has to grow for the picker to have any width to fill: the
- * trigger's own width is 100% of this span, so with no growing wrapper it
- * collapses to its content. */
-.modelAddField {
-  display: flex;
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-/* pathList add row: same recipe as the modelList row above - the picker's
- * trigger is a full-width form control, so both the row and the picker's own
- * wrapper have to grow before it has any width to fill. */
-.pathAddRow {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.pathAddField {
-  display: flex;
-  flex: 1 1 0;
   min-width: 0;
 }

@@ -4,3 +4,8 @@
   gap: var(--space-4);
   max-width: 320px;
 }
+
+.pair {
+  display: flex;
+  gap: var(--space-2);
+}

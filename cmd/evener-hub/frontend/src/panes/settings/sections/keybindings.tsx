@@ -47,8 +47,6 @@ import styles from "./keybindings.module.css";
 const CLASS = {
   root: requireClass(styles.root, "keybindings.module.css", "root"),
   intro: requireClass(styles.intro, "keybindings.module.css", "intro"),
-  toggle: requireClass(styles.toggle, "keybindings.module.css", "toggle"),
-  help: requireClass(styles.help, "keybindings.module.css", "help"),
   status: requireClass(styles.status, "keybindings.module.css", "status"),
   warningList: requireClass(styles.warningList, "keybindings.module.css", "warningList"),
   list: requireClass(styles.list, "keybindings.module.css", "list"),
@@ -500,17 +498,12 @@ export function KeybindingsSection() {
           decision 3): off unregisters the "?" cheatsheet trigger, leaving
           every shortcut on a modifier chord. Browser-local (prefs store),
           by controller ruling. */}
-      <div className={CLASS.toggle}>
-        <Switch
-          label="Character-key shortcuts"
-          checked={characterKeyTriggers}
-          onChange={(value) => prefsStore.getState().setCharacterKeyTriggers(value)}
-        />
-        <p className={CLASS.help}>
-          When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut
-          on a modifier chord.
-        </p>
-      </div>
+      <Switch
+        label="Character-key shortcuts"
+        checked={characterKeyTriggers}
+        onChange={(value) => prefsStore.getState().setCharacterKeyTriggers(value)}
+        description="When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
+      />
 
       {status !== undefined && (
         <p className={CLASS.status} role="status">

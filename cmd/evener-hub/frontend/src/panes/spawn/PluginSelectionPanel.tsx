@@ -132,12 +132,14 @@ export function PluginSelectionPanel({
                 onChange={(next) => {
                   if (!removeOnly || !next) onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
                 }}
+                description={
+                  <span className={CLASS.metadata} data-testid="plugin-row-metadata">
+                    <span className={CLASS.source}>{sourceLabel(plugin)}</span>
+                    <span className={CLASS.counts}>{componentCounts(plugin)}</span>
+                    {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
+                  </span>
+                }
               />
-              <div className={CLASS.metadata} data-testid="plugin-row-metadata">
-                <span className={CLASS.source}>{sourceLabel(plugin)}</span>
-                <span className={CLASS.counts}>{componentCounts(plugin)}</span>
-                {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
-              </div>
             </div>
           );
         })}
