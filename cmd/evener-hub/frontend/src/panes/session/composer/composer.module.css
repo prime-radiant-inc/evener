@@ -130,57 +130,31 @@
   font-family: var(--font-mono);
 }
 
-/* Inside the tile, not straddling its corner: the tile clips its own
- * overflow, so a button hung at top/right -8px lost its outer corner to
- * that clip - measured at 21x21 of a 28x28 control actually painted. */
-.removeImageButton {
+/* Positions and reveals the remove IconButton; the button's own look and
+ * focus ring are the widget's. Inside the tile, not straddling its corner:
+ * the tile clips its own overflow, so a button hung at top/right -8px lost
+ * its outer corner to that clip - measured at 21x21 of a 28x28 control
+ * actually painted. */
+.removeSlot {
   position: absolute;
   top: var(--space-1);
   right: var(--space-1);
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--surface-1);
-  border: 1px solid var(--edge);
-  cursor: pointer;
   display: flex;
-  align-items: center;
-  justify-content: center;
   opacity: 0;
   transition: opacity var(--motion-duration-overlay);
-  color: var(--ink-mid);
-  padding: 0;
 }
 
-.imageTile:hover .removeImageButton {
+.imageTile:hover .removeSlot {
   opacity: 1;
 }
 
 /* Hover is not the only way to reach this control: a keyboard user tabs to
  * it, and an opacity:0 button under focus is a control you cannot see you
- * are standing on (kata hk8v). Focus reveals it exactly the way hover does,
- * and draws the same ring chip.module.css's own .remove:focus-visible draws.
- * jsdom evaluates no cascade, so the guard for this is a layoutguard case
- * (scripts/layoutguard/cases/hk8v-remove-button-focus-visible). */
-.removeImageButton:focus-visible {
+ * are standing on (kata hk8v). Keyboard focus reveals it exactly the way
+ * hover does. jsdom evaluates no cascade, so the guard for this is a
+ * layoutguard case (scripts/layoutguard/cases/hk8v-remove-button-focus-visible). */
+.removeSlot:has(:focus-visible) {
   opacity: 1;
-  outline: var(--focus-ring);
-  outline-offset: 1px;
-}
-
-.removeImageButton:hover {
-  background: var(--accent);
-  color: var(--surface-0);
-  border-color: var(--accent);
-}
-
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
 }
 
 /* Button intentionally owns no caller className API, so select the one

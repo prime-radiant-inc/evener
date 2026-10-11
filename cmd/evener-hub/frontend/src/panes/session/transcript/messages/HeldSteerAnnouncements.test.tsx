@@ -368,9 +368,8 @@ const VISUALLY_HIDDEN_CLASS = requireClass(visuallyHiddenStyles.root, "visuallyh
 
 // The region's text renders through the shared VisuallyHidden widget - the
 // same sr-only wrapping Session.tsx's own transcript-view-announcement region
-// uses, and the rule the AskDockAnnouncements pattern's visuallyHidden class
-// encodes - so an announcement is audible but never visible text below the
-// virtual list.
+// and AskDockAnnouncements use - so an announcement is audible but never
+// visible text below the virtual list.
 test("the announcement text is visually hidden", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");

@@ -1,3 +1,4 @@
+import { VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { GoalGlyph } from "../GoalGlyph";
 import styles from "./currentwork.module.css";
@@ -22,7 +23,6 @@ const CLASS = {
   statusBlocked: requireClass(styles.statusBlocked, "currentwork.module.css", "statusBlocked"),
   link: requireClass(styles.link, "currentwork.module.css", "link"),
   divider: requireClass(styles.divider, "currentwork.module.css", "divider"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "currentwork.module.css", "visuallyHidden"),
 };
 
 // The wire status is a free string (agent/internal/goal's enum does not
@@ -55,9 +55,11 @@ export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }:
 
   return (
     <>
-      <span className={CLASS.visuallyHidden} role="status" aria-live="polite" aria-atomic="true">
-        {announcement}
-      </span>
+      <VisuallyHidden>
+        <span role="status" aria-live="polite" aria-atomic="true">
+          {announcement}
+        </span>
+      </VisuallyHidden>
       {(currentTask || currentGoal) && (
         <div className={CLASS.currentWork} data-testid="current-work">
           {currentTask && (

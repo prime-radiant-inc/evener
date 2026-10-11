@@ -29,9 +29,7 @@
 // sentence-case "Failed turn" (more legible as a phrase, consistent with
 // WarningItem's own sentence-case fallback "Warning") - the count itself is
 // never shown once upgraded, same as the needs-you branch.
-import { Badge, Chevron, Chip } from "../../../../widgets";
-import { requireClass } from "../../../../widgets/internal/requireClass";
-import styles from "./newcontentpill.module.css";
+import { Badge, Button, Chevron, Chip } from "../../../../widgets";
 
 export interface NewContentPillProps {
   /** Items rendered since the reader scrolled away from the bottom. */
@@ -57,11 +55,6 @@ export interface NewContentPillProps {
   onClick: () => void;
 }
 
-const CLASS = {
-  pill: requireClass(styles.pill, "newcontentpill.module.css", "pill"),
-  arrow: requireClass(styles.arrow, "newcontentpill.module.css", "arrow"),
-};
-
 export function NewContentPill({
   count,
   visible = false,
@@ -80,10 +73,13 @@ export function NewContentPill({
   if (!visible && count <= 0 && !error) return null;
 
   return (
-    <button type="button" data-testid="new-content-pill" className={CLASS.pill} onClick={onClick}>
-      <span className={CLASS.arrow} aria-hidden="true">
-        <Chevron direction={pillArrowDirection} />
-      </span>
+    <Button
+      variant="secondary"
+      size="sm"
+      icon={<Chevron direction={pillArrowDirection} />}
+      data-testid="new-content-pill"
+      onClick={onClick}
+    >
       {error ? (
         <Chip tone="danger">Failed turn</Chip>
       ) : needsYou ? (
@@ -96,6 +92,6 @@ export function NewContentPill({
       ) : (
         <span>latest</span>
       )}
-    </button>
+    </Button>
   );
 }

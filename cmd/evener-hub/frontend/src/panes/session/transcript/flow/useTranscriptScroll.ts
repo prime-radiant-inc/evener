@@ -36,7 +36,7 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets/virtuallist";
+import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets";
 import type { TranscriptReadView } from "../transcriptReadView";
 import { isDormantTranscript } from "../transcriptVisibility";
 import {

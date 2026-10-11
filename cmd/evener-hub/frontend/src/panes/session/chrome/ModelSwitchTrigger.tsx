@@ -37,6 +37,7 @@ import {
   ModelCatalogPanel,
   Popover,
   Sheet,
+  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./modelswitch.module.css";
@@ -81,7 +82,6 @@ const CLASS = {
   trigger: requireClass(styles.trigger, "modelswitch.module.css", "trigger"),
   value: requireClass(styles.value, "modelswitch.module.css", "value"),
   chevron: requireClass(styles.chevron, "modelswitch.module.css", "chevron"),
-  srOnly: requireClass(styles.srOnly, "modelswitch.module.css", "srOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
   sheetBody: requireClass(styles.sheetBody, "modelswitch.module.css", "sheetBody"),
   triggerWrapper: requireClass(styles.triggerWrapper, "modelswitch.module.css", "triggerWrapper"),
@@ -293,7 +293,7 @@ export function ModelSwitchTrigger({
           whitespace-only text node between them survives that trim and
           renders nothing of its own (an all-whitespace anonymous flex item
           is not laid out). */}
-      <span className={CLASS.srOnly}>— {actionLabel}</span>
+      <VisuallyHidden>— {actionLabel}</VisuallyHidden>
     </button>
   );
 

@@ -100,15 +100,6 @@
   color: var(--ink-mid);
 }
 
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-}
-
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision
  * 4): the tab strip is dense (kata 99yf's question-switcher, several tabs
  * side by side), so a coarse pointer needs the platform's 44px tap floor -
