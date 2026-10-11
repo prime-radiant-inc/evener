@@ -1,9 +1,13 @@
 package sandbox
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 )
 
 // Wrapper turns a spawned command's argv into a kernel-wrapped argv that
@@ -53,8 +57,38 @@ func NewWrapper(policy ResolvedPolicy, binaryPath, sessionTmp string) (*Wrapper,
 		if err := prepareGitSurfaces(policy); err != nil {
 			return nil, err
 		}
+		policy = prepareCacheRoots(policy)
 	}
 	return &Wrapper{policy: policy, binaryPath: binaryPath, sessionTmp: sessionTmp}, nil
+}
+
+// prepareCacheRoots creates, empty, each overlaid cache root that does not exist
+// yet. Such a root has no lower to overlay and a mount target bwrap cannot create
+// in the read-only tree, so it would stay read-only while GOCACHE or GOMODCACHE
+// still point at it; the go command would create the same empty directory on its
+// first unsandboxed run. An empty directory cannot poison a cache. One whose
+// creation would land inside a persistent write root or the worktree is left
+// alone.
+func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
+	if rp.CacheStrategy != CacheOverlay {
+		return rp
+	}
+	for _, c := range rp.CacheRoots {
+		if _, err := os.Lstat(c); errors.Is(err, fs.ErrNotExist) && !landsInPersistentRoot(rp, c) {
+			_ = os.MkdirAll(c, 0o755)
+		}
+	}
+	return rp
+}
+
+// landsInPersistentRoot reports whether c's real location (or, not created
+// yet, where creating it would land) is at or inside a persistent write root
+// or the worktree.
+func landsInPersistentRoot(rp ResolvedPolicy, c string) bool {
+	rc := resolveExistingPrefix(c)
+	return slices.ContainsFunc(appendNonEmpty(slices.Clone(bwrapWriteRoots(rp)), rp.Git.WorktreeRoot), func(w string) bool {
+		return pathUnder(rc, resolveExistingPrefix(w))
+	})
 }
 
 // Policy returns the resolved policy this wrapper enforces.
