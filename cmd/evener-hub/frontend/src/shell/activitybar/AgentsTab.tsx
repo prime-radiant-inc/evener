@@ -8,7 +8,7 @@ import { useLayoutEffect } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Button, Chevron } from "../../widgets";
+import { Button, Chevron, Skeleton } from "../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isMobileViewport } from "../useIsMobile";
@@ -55,7 +55,7 @@ export function AgentsTab({ scope, onDrill = drill }: ActivityTabBodyProps) {
   if (collection?.permanent && collection.rows.length === 0)
     return <span className={CLASS.emptyNote}>Subagents unavailable for this session.</span>;
   if (!collection || (collection.rows.length === 0 && !collection.complete)) {
-    return <span className={CLASS.emptyNote}>Loading subagents…</span>;
+    return <Skeleton lines={2} />;
   }
   return (
     <div className={CLASS.stack}>

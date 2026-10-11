@@ -151,7 +151,7 @@ describe("TasksTab", () => {
   test("no hydrated model yet reads as a loading state, never an empty list", () => {
     openTasks({ total: 5, done: 2 });
     renderSidebar();
-    expect(screen.getByText("Loading tasks…")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   });
 
   test("mounting subscribes to the thread and loads its real task list", async () => {
