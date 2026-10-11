@@ -15,10 +15,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/searchresult"
@@ -40,6 +42,12 @@ type CompactionMeta struct {
 	// or a session with no state directory at all, must not be pointed at one
 	// (ruled 2026-08-06). Empty means the artifact says nothing about recovery.
 	AvailableTranscriptTools []string
+
+	// TranscriptKept reports that the session is writing its durable
+	// transcript, which holds every message in full. A persistent session
+	// whose transcript could not be created has a session id but no kept
+	// transcript.
+	TranscriptKept bool
 }
 
 // compactionPointer is the line a compaction artifact opens with to say that
@@ -51,6 +59,12 @@ func (m *CompactionMeta) compactionPointer(artifact string) string {
 		return ""
 	}
 	return fmt.Sprintf("Earlier history was compacted into this %s to free context-window headroom. This session's id is %s.%s\n", artifact, m.SessionID, m.TranscriptRecoverySentence())
+}
+
+// hasTranscript reports whether the session is writing a durable transcript,
+// which holds every message in full.
+func (m *CompactionMeta) hasTranscript() bool {
+	return m != nil && m.SessionID != "" && m.TranscriptKept
 }
 
 // TranscriptRecoverySentence is the trailing instruction a compaction artifact
@@ -1052,7 +1066,8 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 // 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
 // alongside the instruction prefix, and leaves room for preserved recent turns
 // in the main model's context. The human partner's messages a model-written
-// compaction turn carries share the same cap.
+// compaction turn carries share the same cap. The cap yields to those
+// messages: none is ever dropped to meet it (fitCheckpointConversation).
 const maxCheckpointChars = 60_000
 
 // checkpoint replaces old history with a structured state snapshot.
@@ -1288,9 +1303,8 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
-// notes first and then the oldest conversation entries after the original task
-// (the earliest user entry), which is pinned so budget pressure never drops what
-// the user asked for.
+// notes first, then the agent's own replies, and never the human partner's
+// messages (fitCheckpointConversation).
 func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
@@ -1416,7 +1430,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 		workingNotes = workingNotes[1:] // drop oldest note first
 		notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 	}
-	conversationMarkdown = renderCheckpointConversation(fitCheckpointConversation(conversation, variableBudget-len(notesMarkdown)))
+	conversationMarkdown = renderCheckpointConversation(fitCheckpointConversation(conversation, variableBudget-len(notesMarkdown), meta.hasTranscript()))
 
 	// Assemble final checkpoint.
 	var b strings.Builder
@@ -1437,46 +1451,77 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	return b.String()
 }
 
-// fitCheckpointConversation sheds conversation entries until their rendering
-// fits budget: the oldest first, except the original task — the earliest user
-// entry — which is never shed, so a compaction keeps what the human partner
-// asked for. Notes are exhaustible, so a lone over-budget entry is all the
-// shedding can leave behind; it is trimmed by its exact rendered length so the
-// result still honors its size cap instead of keeping an oversized task or
-// dropping it.
+// partnerMessageEdgeChars is how much of each end of a human partner's
+// message a middle trim keeps. A message no longer than both edges together is
+// a short instruction and is never trimmed.
+const partnerMessageEdgeChars = 1000
+
+// fitCheckpointConversation fits conversation entries into budget without
+// ever dropping the human partner's messages (#4281). It sheds the agent's own
+// replies first, oldest first. If the partner's messages alone still exceed
+// the budget, it trims the middle of the longest ones (pasted logs, say), each
+// at most once and never below partnerMessageEdgeChars at each end, with a
+// note saying where the full text is. Short instructions are never touched,
+// nor is a message trimming would not shorten, nor any message when the
+// session keeps no transcript to recover it from (recoverable false); when
+// what is left still exceeds the budget, the budget yields.
 //
 // conversation must already be cleaned (cleanCheckpointConversation), so the
-// pin index and the rendered slice refer to the same entries;
-// renderCheckpointConversation would otherwise drop whitespace-only entries
-// after the pin was chosen, letting the pin land on a vanishing one.
-func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int) []checkpointConversationEntry {
-	// With no user entry (-1) the pin is inactive and shedding keeps its
-	// oldest-first order.
-	pinnedOriginal := slices.IndexFunc(conversation, func(entry checkpointConversationEntry) bool { return entry.Role == "user" })
-	rendered := renderCheckpointConversation(conversation)
-	for len(rendered) > budget && len(conversation) > 1 {
-		// Drop the oldest entry that is not the pinned original task.
-		drop := 0
-		if drop == pinnedOriginal {
-			drop = 1
-		}
-		conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
-		if drop < pinnedOriginal {
-			pinnedOriginal--
-		}
-		rendered = renderCheckpointConversation(conversation)
+// rendered slice and the entries line up.
+func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int, recoverable bool) []checkpointConversationEntry {
+	// The rendering is the section heading plus one block per entry, so its
+	// length is the sum of the entries' block lengths and the heading's.
+	blockLen := func(entry checkpointConversationEntry) int {
+		return len(renderCheckpointConversation([]checkpointConversationEntry{entry})) - len(checkpointConversationHeading+"\n\n")
 	}
-	if len(conversation) == 1 && len(rendered) > budget {
-		role := conversation[0].Role
-		render := func(text string) int {
-			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
+	rendered := len(renderCheckpointConversation(conversation))
+	// Shed the agent's own replies, oldest first, until the rest fits.
+	kept := make([]checkpointConversationEntry, 0, len(conversation))
+	for _, entry := range conversation {
+		if rendered > budget && entry.Role != "user" {
+			rendered -= blockLen(entry)
+			continue
 		}
-		conversation = []checkpointConversationEntry{{
-			Role: role,
-			Text: truncateRendered(conversation[0].Text, budget, render),
-		}}
+		kept = append(kept, entry)
 	}
-	return conversation
+	if rendered <= budget || !recoverable {
+		return kept
+	}
+	// Only the partner's messages are left: trim the longest first, each once.
+	long := make([]int, 0, len(kept))
+	for i, entry := range kept {
+		if len(entry.Text) > 2*partnerMessageEdgeChars {
+			long = append(long, i)
+		}
+	}
+	slices.SortStableFunc(long, func(a, b int) int { return len(kept[b].Text) - len(kept[a].Text) })
+	for _, i := range long {
+		if rendered <= budget {
+			break
+		}
+		text := kept[i].Text
+		// Keep what the budget allows, leaving room for the note.
+		keep := max(2*partnerMessageEdgeChars, len(text)-(rendered-budget)-len(trimmedMessageNote(len(text))))
+		trimmed := middleTrim(text, keep/2)
+		if len(trimmed) >= len(text) {
+			continue // the note would cost what the trim saves
+		}
+		before := blockLen(kept[i])
+		kept[i].Text = trimmed
+		rendered += blockLen(kept[i]) - before
+	}
+	return kept
+}
+
+// middleTrim keeps edge characters at each end of text, cut on rune
+// boundaries, and puts the trimmed-message note between them.
+func middleTrim(text string, edge int) string {
+	if 2*edge >= len(text) {
+		return text
+	}
+	head := runetrim.Cut(text, edge)
+	tail := string(runetrim.TrimLeadingPartial([]byte(text[len(text)-edge:])))
+	return head + trimmedMessageNote(len(text)-len(head)-len(tail)) + tail
 }
 
 // partnerMessagesMarkdown renders the human partner's messages from the turns
@@ -1490,10 +1535,10 @@ func fitCheckpointConversation(conversation []checkpointConversationEntry, budge
 // "Verbatim" means each message's text unchanged apart from surrounding
 // whitespace, which cleanCheckpointConversation trims and the checkpoint's
 // own extraction (parseMarkdownBlocks) trims again on every round trip.
-// Shedding follows the checkpoint's rules, as the #4173 ruling chose: only
-// when the partner's messages together exceed maxCheckpointChars are the
-// oldest after the first shed. No message is classified as authority-bearing;
-// that would mean judging natural language in Go.
+// Fitting follows the checkpoint's rule (fitCheckpointConversation): no
+// partner message is ever dropped; past maxCheckpointChars the longest are
+// middle-trimmed with a pointer to the transcript, and short ones are never
+// touched.
 //
 // Only the partner's messages are carried. An earlier summary a folded
 // checkpoint holds is input to the new summary, which supersedes it; carrying
@@ -1501,14 +1546,178 @@ func fitCheckpointConversation(conversation []checkpointConversationEntry, budge
 // every compaction. Checkpoints written by the opt-in session-log strategy
 // keep no conversation section, so nothing is recovered from them here
 // (#4181).
-func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string) string {
+//
+// Past ceiling characters (partnerCarryCeiling; 0 means none) the oldest
+// messages are left out, newest kept, and returned as summarized: the
+// summarizer is given each of them to summarize, quoting any permission or
+// hold per the summary prompt, and the turn reminds the model where to read
+// them verbatim. The newest message is held to the ceiling too: when it alone
+// exceeds it, its middle is trimmed (transcript permitting).
+// The ceiling applies with or without a kept transcript: it keeps the session
+// inside the model's window, and the left-out messages are still summarized,
+// every one (condensePartnerMessages), as the #4309 ruling chose. Without a
+// transcript the reminder only says they were summarized.
+func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool, ceiling int) (markdown string, summarized []checkpointConversationEntry) {
 	var partner []checkpointConversationEntry
 	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
 		if entry.Role == "user" {
 			partner = append(partner, entry)
 		}
 	}
-	return renderCheckpointConversation(fitCheckpointConversation(partner, maxCheckpointChars))
+	// The carry is chosen from the messages as written, newest first, and
+	// only then fitted; the messages left to the summary go to it as written.
+	kept := partner
+	if ceiling > 0 {
+		heading := len(checkpointConversationHeading + "\n\n")
+		size, n := heading, 0
+		for _, entry := range slices.Backward(partner) {
+			block := len(renderCheckpointConversation([]checkpointConversationEntry{entry})) - heading
+			if n > 0 && size+block > ceiling {
+				break
+			}
+			size += block
+			n++
+		}
+		if size > ceiling && !recoverable {
+			// The newest alone overflows and cannot be trimmed: summarize it
+			// with the rest.
+			n = 0
+		}
+		summarized = partner[:len(partner)-n]
+		kept = partner[len(partner)-n:]
+	}
+	partner = fitCheckpointConversation(kept, maxCheckpointChars, recoverable)
+	if len(partner) == 0 {
+		return "", summarized
+	}
+	if size := len(renderCheckpointConversation(partner)); ceiling > 0 && size > ceiling {
+		// Only the newest can overflow: trim its middle to fit, note included.
+		newest := &partner[len(partner)-1]
+		edge := (len(newest.Text) - (size - ceiling) - len(trimmedMessageNote(len(newest.Text)))) / 2
+		if trimmed := middleTrim(newest.Text, max(edge, 1)); len(trimmed) < len(newest.Text) {
+			newest.Text = trimmed
+		}
+	}
+	return renderCheckpointConversation(partner), summarized
+}
+
+// condensePartnerMessages fits the partner's messages a summary will not quote
+// (each a line of text) into budget characters for the summarizer's input.
+// When they overflow it, they are summarized in batches of at most budget
+// characters, each batch summary quoting their permissions and holds, and the
+// batch summaries are condensed the same way until they fit, so every message
+// reaches a summarizer however many there are. If they will not shrink to fit,
+// it fails rather than cut any short.
+func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
+	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
+	for round := 0; ; round++ {
+		total := 0
+		for _, line := range lines {
+			total += len(line)
+		}
+		if total <= budget {
+			return strings.Join(lines, ""), nil
+		}
+		if round == maxRounds {
+			break
+		}
+		var summaries []string
+		for start := 0; start < len(lines); {
+			end, size := start, 0
+			for end < len(lines) && (end == start || size+len(lines[end]) <= budget) {
+				size += len(lines[end])
+				end++
+			}
+			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply string) error {
+				if strings.TrimSpace(reply) == "" {
+					return errors.New("summarizer returned an empty batch summary")
+				}
+				return nil
+			})
+			if err != nil {
+				return "", err
+			}
+			if resp.Finish.Reason == llm.FinishReasonLength {
+				// Cut off at the output limit, it may have dropped a hold.
+				return "", errors.New("a batch summary was cut off at the model's output limit")
+			}
+			// A long summary is split like a long message, so the next round's
+			// batches stay within budget.
+			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
+			for i, part := range parts {
+				label := "Summary of earlier messages: "
+				if len(parts) > 1 {
+					label = fmt.Sprintf("Summary of earlier messages (part %d of %d): ", i+1, len(parts))
+				}
+				summaries = append(summaries, label+part+"\n")
+			}
+			start = end
+		}
+		lines = summaries
+	}
+	// Summaries that will not shrink to fit are never cut short: failing here
+	// fails the summary, and the checkpoint, which keeps every partner
+	// message, stands.
+	return "", errors.New("partner messages did not condense to fit the summarizer")
+}
+
+// splitMessage splits text into parts of at most size bytes, each cut at the
+// last paragraph, line or sentence break before the limit when there is one,
+// else on a rune boundary, and each repeating the last overlap bytes of the
+// part before it, so an instruction that crosses a cut is whole in one part.
+func splitMessage(text string, size, overlap int) []string {
+	var parts []string
+	for len(text) > size {
+		part := runetrim.Cut(text, size)
+		if part == "" {
+			part = text[:size] // not valid UTF-8 at the cut; keep every byte
+		}
+		for _, br := range []string{"\n\n", "\n", ". "} {
+			if i := strings.LastIndex(part, br); i > size/2 {
+				part = part[:i+len(br)]
+				break
+			}
+		}
+		parts = append(parts, part)
+		next := max(len(part)-overlap, 1)
+		for next < len(part) && !utf8.RuneStart(text[next]) {
+			next++
+		}
+		text = text[next:]
+	}
+	return append(parts, text)
+}
+
+// partnerBatchPrompt asks the summarizer to condense a batch of the human
+// partner's messages that a compaction will not quote.
+const partnerBatchPrompt = `You are condensing messages from your human partner that a context compaction will not quote. Summarize what they asked for and told you, as briefly as keeps it usable. ` + partnerAuthorityRule + `
+
+`
+
+// partnerCarryCeiling bounds the partner's messages a model-written
+// compaction turn carries verbatim to a quarter of the model's context window,
+// in characters at the char/4 token estimate the context manager uses
+// elsewhere: a quarter of W tokens is W characters. Compaction starts at 80% of
+// the window; a carry of at most a quarter leaves the rest for the system
+// prompt and tools, the model's own summary, the preserved recent turns and the
+// work until the next compaction, so the carry alone can never push a compacted
+// context back over the threshold. It is 0, no ceiling, when the model's window
+// is unknown (and compaction never runs).
+func partnerCarryCeiling(prof *provider.Profile) int {
+	return contextWindowOf(prof)
+}
+
+// partnerCarry renders the partner's messages a model-written compaction turn
+// carries (from history[:cutoff]), held to ceiling (0 for none), the reminder
+// its opening adds when some are left to the summary instead, and those
+// messages, which the summarizer must be given.
+func (cm *Manager) partnerCarry(ctx context.Context, history []schema.Turn, cutoff, ceiling int) (reminder, carry string, summarized []checkpointConversationEntry) {
+	meta := cm.metaFor(ctx)
+	carry, summarized = partnerMessagesMarkdown(history, cutoff, cm.resultToolName(), meta.hasTranscript(), ceiling)
+	if len(summarized) > 0 {
+		reminder = partnerCarryReminder(len(summarized), meta)
+	}
+	return reminder, carry, summarized
 }
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
@@ -2061,7 +2270,43 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		return s
 	}
 
+	// The checkpoint at history[0] stands for checkpointed; the summary also
+	// folds whatever follows it up to cutoff, including turns the pre-compact
+	// hook pushed out of the preserved tail.
+	partnerSource := history[:cutoff]
+	if checkpointed != nil {
+		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
+	}
+	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(cm.currentProfile()))
+
 	var b strings.Builder
+	// The partner's messages the turn will not quote come first, so the
+	// summarizer reads every one of them whatever else the budget cuts; past
+	// half the history budget they arrive condensed in bounded batches
+	// (condensePartnerMessages).
+	if len(summarized) > 0 {
+		// Each message goes in whole; one longer than a part is split into
+		// overlapping, numbered parts rather than cut short, small enough that
+		// two share a batch.
+		var lines []string
+		for _, entry := range summarized {
+			parts := splitMessage(entry.Text, maxHistoryChars/6, 400)
+			for i, part := range parts {
+				label := "User: "
+				if len(parts) > 1 {
+					label = fmt.Sprintf("User (part %d of %d of one message): ", i+1, len(parts))
+				}
+				lines = append(lines, label+part+"\n")
+			}
+		}
+		condensed, err := cm.condensePartnerMessages(ctx, lines, maxHistoryChars/2)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString("Your human partner's messages that the handoff will not quote, oldest first; summarize them:\n")
+		b.WriteString(condensed)
+		b.WriteString("\nThe conversation:\n")
+	}
 	for i := range cutoff {
 		t := history[i]
 		switch t.Kind {
@@ -2085,8 +2330,10 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 			// conversation) always arrives whole; the rest of the budget stays
 			// for the turns it precedes. A longer one keeps its head, where
 			// both summary prompts put the permissions and holds it quotes.
+			// Left-out partner messages written first take their share of
+			// the budget from it.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), maxCheckpointChars))
+			b.WriteString(truncText(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
@@ -2152,22 +2399,20 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if err != nil {
 		return nil, err
 	}
+	if resp.Finish.Reason == llm.FinishReasonLength {
+		// Cut off at the output limit, the reply may have dropped what it
+		// alone records: messages left out of this carry, or of an earlier
+		// one whose summary it replaces. The checkpoint stands instead.
+		return nil, errors.New("the summary was cut off at the model's output limit")
+	}
 
 	// The turn is the model's reply, bounded by the provider's output limit,
 	// plus the partner's messages, bounded by maxCheckpointChars; the preserved
 	// recent turns sit outside it. One combined budget would mean truncating
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
-	// The checkpoint at history[0] stands for checkpointed; the summary also
-	// folds whatever follows it up to cutoff, including turns the pre-compact
-	// hook pushed out of the preserved tail.
-	partnerSource := history[:cutoff]
-	if checkpointed != nil {
-		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
-	}
-	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") +
-		renderCompactionModelText(summaryModelTextHeading, resp.Text()) +
-		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + summaryTurnEnd
+	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

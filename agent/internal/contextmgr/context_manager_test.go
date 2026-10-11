@@ -3046,10 +3046,11 @@ func TestCheckpoint_ShedOrder_NoUserEntryShedsOldestFirst(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
-	// A pinned original task too large to ever fit must be trimmed, not left to
-	// defeat the checkpoint's size cap and not dropped entirely.
-	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000)
+func TestCheckpoint_ShedOrder_MiddleTrimsAnOversizedPartnerMessage(t *testing.T) {
+	// The human partner's messages are never dropped (#4281). One too large to
+	// fit is trimmed in the middle, keeping its head and tail and saying where
+	// the full text is, and the agent's own reply is shed first.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000) + " TASK_TAIL"
 	data := checkpointData{
 		conversation: []checkpointConversationEntry{
 			{Role: "user", Text: original},
@@ -3057,18 +3058,37 @@ func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
 		},
 	}
 
-	const maxChars = 1200
-	cp := formatCheckpoint(data, nil, maxChars)
+	cp := formatCheckpoint(data, persistentMeta, 1200)
 
-	if len(cp) > maxChars {
-		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	entries := extractCheckpointConversation(cp)
+	if len(entries) != 1 || entries[0].Role != "user" {
+		t.Fatalf("want only the partner's message, trimmed; got %q", entries)
 	}
-	if !strings.Contains(cp, "ORIGINAL TASK: "+strings.Repeat("t", 900)) {
-		t.Fatalf("the head of the original task should survive trimming:\n%s", cp)
+	got := entries[0].Text
+	if !strings.HasPrefix(got, "ORIGINAL TASK: ") || !strings.HasSuffix(got, " TASK_TAIL") {
+		t.Fatalf("the trimmed message lost its head or tail:\n%s", got)
 	}
-	if !strings.Contains(cp, "...") {
-		t.Fatalf("the trimmed original task should carry an ellipsis:\n%s", cp)
+	if !isMiddleTrimOf(got, original) {
+		t.Fatalf("want the message's head and tail around the trimmed-message note:\n%s", got)
 	}
+}
+
+// isMiddleTrimOf reports whether got is original with its middle replaced by
+// the trimmed-message note for the characters removed.
+func isMiddleTrimOf(got, original string) bool {
+	// The note's length depends only on how many digits the trimmed count has,
+	// which fixes how much of each end was kept.
+	for digits := 1; digits <= 9; digits++ {
+		noteLen := len(trimmedMessageNote(0)) - 1 + digits
+		keep := (len(got) - noteLen) / 2
+		if keep <= 0 || 2*keep >= len(original) {
+			continue
+		}
+		if got == original[:keep]+trimmedMessageNote(len(original)-2*keep)+original[len(original)-keep:] {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCheckpoint_ShedOrder_ShedsNotesToFitBudget(t *testing.T) {

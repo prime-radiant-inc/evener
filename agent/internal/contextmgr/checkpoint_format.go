@@ -2,7 +2,10 @@ package contextmgr
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+
+	"primeradiant.com/evener/agent/internal/sysmsg"
 )
 
 // checkpointConversationHeading heads the conversation a compaction turn
@@ -130,17 +133,18 @@ func carriesPartnerMessages(text string) bool {
 
 // isSummaryTurnOpening reports whether prefix is what the renderer writes
 // before a summary turn's model text: the opening marker, optionally followed
-// by the one compaction pointer line.
+// by the one compaction pointer line and the partner-carry reminder.
 func isSummaryTurnOpening(prefix string) bool {
 	rest, ok := strings.CutPrefix(prefix, summaryTurnStart)
 	if !ok {
 		return false
 	}
-	if rest == "" {
-		return true
+	if line, after, found := strings.Cut(rest, "\n"); found && strings.HasPrefix(line, summaryPointerLead) {
+		rest = after
 	}
-	line, after, _ := strings.Cut(rest, "\n")
-	return after == "" && strings.HasSuffix(rest, "\n") && strings.HasPrefix(line, summaryPointerLead)
+	// Then, when some partner messages were summarized, the one reminder.
+	reminder, ok := strings.CutSuffix(rest, "\n")
+	return rest == "" || (ok && sysmsg.IsReminderBlock(reminder))
 }
 
 // soleFencedText returns the content of the one fenced block section holds,
@@ -160,6 +164,19 @@ func soleFencedText(section string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// trimmedMessageNote stands in for the middle of a human partner's message
+// that was too long to carry whole: it says how much was trimmed and where the
+// full text is.
+func trimmedMessageNote(trimmed int) string {
+	return fmt.Sprintf("\n\n[... %d characters of this message trimmed here; the full message is in this session's transcript ...]\n\n", trimmed)
+}
+
+// partnerCarryReminder tells the model that summarized partner messages
+// are in the summary, not quoted, and how to read them verbatim.
+func partnerCarryReminder(summarized int, meta *CompactionMeta) string {
+	return sysmsg.ReminderBlock(fmt.Sprintf("Your human partner's %d earliest messages folded here are summarized above, not quoted.%s", summarized, meta.TranscriptRecoverySentence())) + "\n"
 }
 
 // renderCompactionModelText renders a model-written compaction turn's own text
