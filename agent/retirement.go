@@ -731,7 +731,8 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 }
 
 // attemptRetirement makes one automatic attempt and returns why it did not
-// retire, or nil when it retired or the tick was not an attempt. A tick that
+// retire, or nil when it retired (committed, whatever its teardown reported)
+// or the tick was not an attempt. A tick that
 // arrives before the deadline (stale, or re-armed by a Retarget) gets no
 // claim, no blockers and no error from TryClaim: nothing was evaluated, so it
 // is not recorded as a refusal with no reason.
@@ -740,7 +741,13 @@ func (c *RetirementController) attemptRetirement(ctx context.Context, retire fun
 	at := c.clock.Now()
 	claim, refusal, err := c.TryClaim(false)
 	if claim != nil {
-		if err := retire(ctx, claim); err != nil {
+		err := retire(ctx, claim)
+		c.mu.Lock()
+		committed := claim.committed
+		c.mu.Unlock()
+		// Past Commit the process has retired: a teardown error is already the
+		// lifecycle's Failure, not a reason the attempt did not retire.
+		if err != nil && !committed {
 			return &RetirementAttempt{At: at, Error: err.Error()}
 		}
 		return nil

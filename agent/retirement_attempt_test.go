@@ -177,11 +177,57 @@ func TestRetirementTimerEarlyTickRecordsNoAttempt(t *testing.T) {
 
 	clk.Advance(30 * time.Minute)
 	clk.fire(t)
-	if d := clk.awaitArm(t); d != 30*time.Minute {
-		t.Fatalf("re-arm after early tick = %v, want the 30m remainder", d)
+	// Startup may arm the full interval twice (Run's first evaluation and the
+	// AttachRoot notification, in either order), so skip full-interval arms
+	// until the early tick's re-arm for the remainder.
+	for {
+		d := clk.awaitArm(t)
+		if d == 30*time.Minute {
+			break
+		}
+		if d != time.Hour {
+			t.Fatalf("re-arm after early tick = %v, want the 30m remainder", d)
+		}
 	}
 	assertNoRetirementReport(t, reports)
 	if last := ctrl.Snapshot().LastAttempt; last != nil {
 		t.Fatalf("snapshot last attempt = %+v, want none before the deadline", last)
+	}
+}
+
+// TestRetirementTimerCommittedFailureIsNotAnAttempt pins that a consumer error
+// after Commit is not a failed attempt: the process retired, and the
+// teardown failure is already the lifecycle's Failure. Recording it would
+// tell an operator a retired daemon failed to retire.
+func TestRetirementTimerCommittedFailureIsNotAnAttempt(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	consumed := make(chan struct{})
+	consume := func(ctx context.Context, claim *RetirementClaim) error {
+		defer close(consumed)
+		if err := commitClaim(ctrl)(ctx, claim); err != nil {
+			t.Errorf("commit: %v", err)
+		}
+		return errors.New("retirement release: teardown failed")
+	}
+	reports := startReportingRetirementRun(t, ctrl, consume)
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+
+	clk.Advance(time.Hour)
+	clk.fire(t)
+	<-consumed
+	clk.awaitDisarm(t)
+	assertNoRetirementReport(t, reports)
+	if last := ctrl.Snapshot().LastAttempt; last != nil {
+		t.Fatalf("snapshot last attempt = %+v after a committed retirement, want none", last)
 	}
 }
