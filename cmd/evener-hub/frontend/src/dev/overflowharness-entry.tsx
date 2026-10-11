@@ -13,6 +13,7 @@
 // window.measure() returns, for every scroll container under the pane, how
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MotionProvider } from "../motion";
 import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
@@ -1246,6 +1247,17 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
 // The second: the standard visually-hidden recipe (`width: 1px; overflow:
 // hidden`) is a 1px box on every page that has one, and is not a pane anyone
 // can see or scroll.
+// Opens or closes a disclosure the way a reader does - a click on its
+// summary - and lets React commit before returning. A store-backed
+// Disclosure (the system prompt) mounts its body only while open, so writing
+// details.open would leave nothing to measure; a native <details> (the raw
+// notification) toggles on the same click.
+function setDisclosureTargetOpen(target: DisclosureTarget, open: boolean): void {
+  if (target.details.open === open) return;
+  const summary = target.details.querySelector<HTMLElement>(":scope > summary");
+  if (summary) flushSync(() => summary.click());
+}
+
 function disclosureContract(target: DisclosureTarget): DisclosureContract | null {
   const { kind, details, originalOpen } = target;
   const summary = details.firstElementChild;
@@ -1560,7 +1572,7 @@ function measure() {
       });
     }
 
-    for (const target of disclosureTargets) target.details.open = true;
+    for (const target of disclosureTargets) setDisclosureTargetOpen(target, true);
     disclosures = disclosureTargets.flatMap((target) => {
       const measured = disclosureContract(target);
       return measured ? [measured] : [];
@@ -1613,7 +1625,7 @@ function measure() {
       });
     }
   } finally {
-    for (const target of disclosureTargets) target.details.open = target.originalOpen;
+    for (const target of disclosureTargets) setDisclosureTargetOpen(target, target.originalOpen);
     for (const disclosure of disclosures) {
       const target = disclosureTargets.find((candidate) => candidate.kind === disclosure.kind);
       disclosure.restoredOpen = target?.details.open ?? false;

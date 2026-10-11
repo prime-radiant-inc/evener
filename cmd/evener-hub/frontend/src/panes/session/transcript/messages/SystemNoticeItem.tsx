@@ -42,7 +42,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { Disclosure, FailureGlyph, Markdown } from "../../../../widgets";
-import { disclosureDefault, isDisclosureOpen, setDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
@@ -59,8 +59,6 @@ const CLASS = {
   failure: requireClass(styles.failure, "systemnoticeitem.module.css", "failure"),
   failureText: requireClass(styles.failureText, "systemnoticeitem.module.css", "failureText"),
   groupBody: requireClass(styles.groupBody, "systemnoticeitem.module.css", "groupBody"),
-  scaffold: requireClass(styles.scaffold, "systemnoticeitem.module.css", "scaffold"),
-  scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
   literalBody: requireClass(styles.literalBody, "systemnoticeitem.module.css", "literalBody"),
   approval: requireClass(styles.approval, "systemnoticeitem.module.css", "approval"),
@@ -131,27 +129,18 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
   const isNotesSnapshot = item.eventKind === "notes-context";
   const disclosureFallback =
     !isNotesSnapshot && (expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false));
-  const open = isDisclosureOpen(
-    disclosureKey,
-    disclosureFallback,
-    isNotesSnapshot ? { ignoreBaseline: true } : undefined,
-  );
   return (
-    <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
-      <summary
-        className={CLASS.scaffoldSummary}
-        onClick={(e) => {
-          e.preventDefault();
-          setDisclosureOpen(disclosureKey, !open);
-        }}
-      >
-        {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
-      </summary>
+    <Disclosure
+      id={disclosureKey}
+      defaultOpen={disclosureFallback}
+      ignoreBaseline={isNotesSnapshot}
+      data-testid="system-notice-scaffold"
+      summary={`${scaffoldLabel(item)} · ${formatCharCount(item.text.length)}`}
+    >
       <div className={CLASS.scaffoldBody} data-testid="system-notice-scaffold-body">
         {isNotesSnapshot ? <pre className={CLASS.literalBody}>{item.text}</pre> : <Markdown source={item.text} />}
       </div>
-    </details>
+    </Disclosure>
   );
 }
 
