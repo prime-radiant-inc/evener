@@ -1382,6 +1382,32 @@ test("a direct drain settles the queued messages it consumed once storage answer
 	await runtime.stop();
 });
 
+test("a drain's consumed messages left unsettled by a refused write settle on the next authoritative read", async () => {
+	let nextId = 0;
+	const { runtime, client } = await readyRuntimeWithClient(() => `mutation-${++nextId}`);
+	client.on("turn/queue", (params) => appliedReceipt(params));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await runtime.submit(request("queue"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+	client.on("turn/drainAsSteer", (params) => {
+		const response = appliedReceipt(params) as { receipt: object };
+		return { receipt: { ...response.receipt, consumedClientMutationIds: ["mutation-1"] } } as never;
+	});
+	refuseWrites(database!);
+
+	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
+	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+
+	database!.exec("PRAGMA query_only = OFF");
+	const reread = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(reread!, readResponse("ref-1"));
+	expect(await runtime.storage.getOptimistic("mutation-1")).toBeUndefined();
+	await runtime.stop();
+});
+
 // SQLITE_FULL rolls the transaction back itself, so the savepoint's own
 // rollback fails too; the send must still see the full-disk error.
 test("a send on a full disk goes out as a plain request", async () => {

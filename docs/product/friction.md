@@ -423,7 +423,7 @@ The phone follows the same rule over its SQLite outbox. A composer send whose
 durable write fails because SQLite reports the storage itself failing (a full
 disk, an I/O error, a database that cannot be opened or written) is dispatched
 as a plain request on the target's ready connection, and a failed request
-rejects so the draft stays. It makes one attempt; the web retries once. The send is remembered as this phone's, and a direct drain settles the queued messages it consumed on a best-effort write. Constraint violations, a missing table, syntax errors and the outbox's own
+rejects so the draft stays. It makes one attempt; the web retries once. The send is remembered as this phone's for coordinator messages, and a direct drain settles the queued messages it consumed once a write succeeds. A direct send has no row, so the composer shows no pending ghost for it: its pending projection reads durable records, and the turn appears when the daemon applies it. Constraint violations, a missing table, syntax errors and the outbox's own
 validation stay ordinary send failures, as do Stop and promote. The phone has
 no in-memory ordering guard, so the per-ref ordering gap applies without
 a refusal, and its dispatch gate does not apply to the fallback. With no

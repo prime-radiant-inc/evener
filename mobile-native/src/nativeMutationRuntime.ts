@@ -128,6 +128,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	readonly #dispatcher: MutationDispatcher;
 	readonly #createMutationId: () => string;
 	readonly #now: () => number;
+	readonly #unsettledConsumed = new Set<string>();
 	readonly #targets = new Map<
 		string,
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
@@ -362,6 +363,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		const authoritativeIds = collectAuthoritativeMutationIds(response);
 		if (!this.#isCurrentRead(lease)) return "stale";
 		await this.#dispatcher.reconcileIdentities(authoritativeIds);
+		await this.#settleRetainedConsumed();
 		if (!this.#isCurrentRead(lease)) return "stale";
 
 		const status = response.thread.status.type;
@@ -511,16 +513,24 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	}
 
 	// The queued messages a direct drain consumed settle as the dispatcher
-	// settles them. Storage just failed, so this is best effort: a refused
-	// write leaves them for a later authoritative read.
+	// settles them. Storage just failed, so the ids are retained until a
+	// write succeeds: a later authoritative read cannot name them, because a
+	// drain removes the queue ids it consumed.
 	async #settleConsumedByDrain(result: unknown): Promise<void> {
 		const receipt = (result as { receipt?: { consumedClientMutationIds?: unknown } } | null)?.receipt;
-		const consumed = validConsumedClientMutationIds(receipt?.consumedClientMutationIds);
-		if (consumed.length === 0) return;
+		for (const id of validConsumedClientMutationIds(receipt?.consumedClientMutationIds))
+			this.#unsettledConsumed.add(id);
+		await this.#settleRetainedConsumed();
+	}
+
+	async #settleRetainedConsumed(): Promise<void> {
+		if (this.#unsettledConsumed.size === 0) return;
+		const ids = [...this.#unsettledConsumed];
 		try {
-			await this.#dispatcher.reconcileIdentities(consumed);
+			await this.#dispatcher.reconcileIdentities(ids);
+			for (const id of ids) this.#unsettledConsumed.delete(id);
 		} catch {
-			// Storage is still failing.
+			// Storage is still failing; the next authoritative read retries.
 		}
 	}
 
