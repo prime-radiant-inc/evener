@@ -1144,3 +1144,32 @@ func TestSummarizerHistoryBudget(t *testing.T) {
 		t.Fatalf("8192-token window: budget = %d chars, want under the %d tokens left after the reserve and prefix", got, room)
 	}
 }
+
+// On a 2,048-token window the request still fits beside the client's safety
+// reserve: compaction succeeds rather than sending a request the client
+// refuses.
+func TestForceCompact_SummaryFitsATwoThousandTokenWindow(t *testing.T) {
+	const window = 2048
+	client := llm.NewClient()
+	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		if len(req.Messages[0].Text())/4+llm.SafetyReserveTokens(window) >= window {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
+		}
+		return llm.Response{Message: llm.Assistant(emptySummaryReply)}, nil
+	}})
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	// Short partner messages (all carried) and long agent replies, enough to
+	// fill the summarizer's full history budget.
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("refactor the parser"))}
+	for i := range 6 {
+		history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("progress %d %s", i, strings.Repeat("detail ", 500)))))
+	}
+	history = append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want a summary that fit the 2,048-token window", history[0].Kind)
+	}
+}

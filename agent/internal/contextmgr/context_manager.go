@@ -1614,10 +1614,9 @@ const maxSummarizerHistoryChars = 80_000
 // the char/4 estimate; it never exceeds maxSummarizerHistoryChars. An unknown
 // window imposes nothing (#4321).
 //
-// It never drops below minSummarizerHistoryChars either. A window that small
-// cannot hold the summary prefix and the safety reserve alone, so no budget
-// would make the request fit: the request is sent, the client refuses it, and
-// the summary fails like any other, leaving the checkpoint in place.
+// It never drops below minSummarizerHistoryChars, a floor small enough that a
+// 2,048-token window still holds the prefix, the reserve and that much
+// history; the reply allowance is what gives way on windows that small.
 func summarizerHistoryBudget(prof *provider.Profile) int {
 	budget := maxSummarizerHistoryChars
 	if prof == nil {
@@ -1638,8 +1637,8 @@ func summarizerHistoryBudget(prof *provider.Profile) int {
 // left-out messages' label and the conversation label.
 const summarizerFramingTokens = 256
 
-// minSummarizerHistoryChars floors summarizerHistoryBudget: about 500 tokens.
-const minSummarizerHistoryChars = 2000
+// minSummarizerHistoryChars floors summarizerHistoryBudget: about 100 tokens.
+const minSummarizerHistoryChars = 400
 
 // condensePartnerMessages fits the partner's messages a summary will not quote
 // (each a line of text) into budget characters for the summarizer's input.

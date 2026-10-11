@@ -2435,16 +2435,10 @@ func TestCheckpoint_OriginalPromptNotOverriddenByFollowup(t *testing.T) {
 
 // TestMaybeCompact_SummarizeThreshold verifies summarize fires through the orchestrator.
 func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\nSummary: tests were run and passed")}
-			},
-		},
-	}
+	// The 50-token window also shrinks the summarizer's budgets, so the
+	// partner's message is condensed in batches first: answer every call.
 	client := llm.NewClient()
-	client.Register(adapter)
+	client.Register(alwaysReplying(func(llm.Request) string { return "## Progress\nSummary: tests were run and passed" }))
 
 	// Small window. Checkpoint replaces old history with a checkpoint
 	// message, but the preserved recent turns are large enough to keep
