@@ -369,7 +369,7 @@ export function pinSectionDisclosureID(sectionID: string): string {
 }
 
 // The data projection uses the same needs-you family as
-// shell/SessionStatusIndicator.tsx without importing the UI renderer.
+// shell/sessionStatus.ts's cadenceStateFor.
 function stateNeedsYou(state: string): boolean {
   return state === "awaiting" || state === "warning" || state === "restartRequired";
 }

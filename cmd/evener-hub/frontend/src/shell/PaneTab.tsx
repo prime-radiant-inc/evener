@@ -18,14 +18,10 @@ import type { IDockviewPanelHeaderProps } from "dockview-core";
 import { DockviewDefaultTab } from "dockview-react";
 import { cadenceStateForStatus } from "../panes/session/liveness";
 import { useThreadsStore } from "../stores/threads";
-import { type CadenceState, StatusDot } from "../widgets";
+import { StatusDot } from "../widgets";
 import styles from "./PaneTab.module.css";
+import { SIGNAL_STATES } from "./sessionStatus";
 import type { PanePanelParams } from "./workspace";
-
-// The three states worth spending a dot on, mirroring shell/SessionStatusIndicator.tsx's
-// own SIGNAL_STATES: a session is working, needs a human, or failed. idle/
-// ended stay dot-less - a quiet tab needs no glyph asserting that.
-const DOT_STATES: ReadonlySet<CadenceState> = new Set(["working", "needs-you", "failed"]);
 
 // A session pane's params carry its thread ref (SessionPaneParams, panes/
 // session/Session.tsx) - undefined for any other pane type, or a
@@ -49,7 +45,7 @@ export function PaneTab(props: IDockviewPanelHeaderProps<PanePanelParams>) {
     // the session-cycling chip positions itself over the first session tab.
     <span className={styles.tab} data-session-tab={ref !== undefined ? "" : undefined}>
       <DockviewDefaultTab {...props} />
-      {state !== undefined && DOT_STATES.has(state) && (
+      {state !== undefined && SIGNAL_STATES.has(state) && (
         <span className={styles.dot}>
           <StatusDot state={state} />
         </span>
