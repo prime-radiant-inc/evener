@@ -758,13 +758,13 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 	}
 	// Removing the read page also removes its index line: neither the page nor
 	// the line is reported, so the removal turn and the one after add nothing.
-	changedTurn, removedTurn, unchangedTurn := noticeTurn(2), noticeTurn(2), noticeTurn(2)
+	changedTurn, removedTurn, unchangedTurn, restoredTurn := noticeTurn(2), noticeTurn(2), noticeTurn(2), noticeTurn(3)
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(llm.Request) llm.Response {
 			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-read-page.md"})
 		},
 		func(llm.Request) llm.Response { return finalResponse("read") },
-		changedTurn, removedTurn, unchangedTurn,
+		changedTurn, removedTurn, unchangedTurn, restoredTurn,
 	))
 	turn := func() {
 		t.Helper()
@@ -781,6 +781,12 @@ func TestMemoryRefreshNoticesChangedReadPages(t *testing.T) {
 	}
 	turn()
 	turn()
+	// The removal advanced the page's record, so restoring it is one change.
+	writeMemoryPage(t, root, "opaque-read-page.md", describedMemoryPage("opaque-page-body-3\n"))
+	turn()
+	if !strings.Contains(notices[len(notices)-1], "opaque-read-page.md") {
+		t.Fatalf("restored page not reported as changed: %q", notices[len(notices)-1])
+	}
 	if !strings.Contains(notices[0], "opaque-read-page.md") {
 		t.Fatalf("notice does not name the read page: %q", notices[0])
 	}
@@ -1558,7 +1564,7 @@ func TestMemoryRefreshRemovalOnlyBoundaryEmitsNothingThenAddReportsOnlyTheAdd(t 
 	root := t.TempDir()
 	memorySeedPage(t, root, "memory", "kept.md", "opaque-kept")
 	gone := memorySeedPage(t, root, "memory", "gone.md", "opaque-gone")
-	var delta string
+	var delta, returned string
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(
 		func(req llm.Request) llm.Response {
 			if got := memoryContextMessages(req); got != 1 {
@@ -1579,6 +1585,13 @@ func TestMemoryRefreshRemovalOnlyBoundaryEmitsNothingThenAddReportsOnlyTheAdd(t 
 			delta = latestMemoryContext(req, "personal")
 			return finalResponse("third")
 		},
+		func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != 3 {
+				t.Fatalf("turn after the page returns carries %d memory contexts, want one new", got)
+			}
+			returned = latestMemoryContext(req, "personal")
+			return finalResponse("fourth")
+		},
 	))
 	turn := func() {
 		t.Helper()
@@ -1595,5 +1608,11 @@ func TestMemoryRefreshRemovalOnlyBoundaryEmitsNothingThenAddReportsOnlyTheAdd(t 
 	turn()
 	if !strings.Contains(delta, "opaque-added") || strings.Contains(delta, "opaque-gone") || strings.Contains(delta, "removed") {
 		t.Fatalf("delta after the add should name only the add: %q", delta)
+	}
+	// The removal advanced the baseline, so the page returning is an add.
+	memorySeedPage(t, root, "memory", "gone.md", "opaque-gone")
+	turn()
+	if !strings.Contains(returned, "opaque-gone") || strings.Contains(returned, "opaque-added") {
+		t.Fatalf("a returned page should arrive as an added line only: %q", returned)
 	}
 }
