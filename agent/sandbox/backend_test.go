@@ -239,3 +239,19 @@ func TestWrapperCreatesAWorktreeSpelledWriteRootThatResolvesInsideACache(t *test
 		t.Errorf("a write root reached through a worktree link into a cache must be created (err=%v)", err)
 	}
 }
+
+// A write root that is a dangling link inside a cache cannot be bound, and
+// creating its target through the link could land anywhere, so the cache
+// holding it is not overlaid for the spawn.
+func TestPrepareCacheRootsDropsAnOverlayHoldingADanglingWriteRoot(t *testing.T) {
+	cache := t.TempDir()
+	library := filepath.Join(cache, "library")
+	if err := os.Symlink(filepath.Join(cache, "library-data"), library); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Spawned.WriteRoots = []string{library}
+	if got := prepareCacheRoots(rp); slices.Contains(got.CacheRoots, cache) {
+		t.Errorf("a cache holding a dangling write root must not be overlaid: %v", got.CacheRoots)
+	}
+}

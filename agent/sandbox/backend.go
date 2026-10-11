@@ -87,19 +87,24 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 // created by the spawn in the overlay's discarded upper layer, so writes
 // there would vanish. Creating it empty first lets it be bound writable over
 // the overlay; it is a directory the user granted for writing. When it cannot
-// be created (a full or read-only disk), the caches holding it are not
-// overlaid for this spawn, so writes there fail where they happen instead of
-// vanishing. Git's own entries (some of them files, such as packed-refs) are
+// be created (a full or read-only disk, or it is a dangling link), the caches
+// holding it are not overlaid for this spawn, so writes there fail where they
+// happen instead of vanishing. Git's own entries (some of them files, such as packed-refs) are
 // never created here.
 func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 	gitRoots := appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir)
 	for _, w := range bwrapWriteRoots(rp) {
-		if _, err := os.Lstat(w); !errors.Is(err, fs.ErrNotExist) || isUnderAnyRoot(w, gitRoots) {
+		if _, err := os.Stat(w); !errors.Is(err, fs.ErrNotExist) || isUnderAnyRoot(w, gitRoots) {
 			continue
 		}
 		rw := resolveExistingPrefix(w)
 		holds := func(c string) bool { return pathUnder(w, c) || pathUnder(rw, resolveExistingPrefix(c)) }
-		if slices.ContainsFunc(rp.CacheRoots, holds) && os.MkdirAll(w, 0o755) != nil {
+		if !slices.ContainsFunc(rp.CacheRoots, holds) {
+			continue
+		}
+		// A dangling link is left as it is: creating its target could land
+		// anywhere, so the overlay over it goes instead.
+		if _, err := os.Lstat(w); err == nil || os.MkdirAll(w, 0o755) != nil {
 			rp.CacheRoots = slices.DeleteFunc(slices.Clone(rp.CacheRoots), holds)
 		}
 	}
