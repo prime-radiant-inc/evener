@@ -391,7 +391,9 @@ on `availability`. A negative-path test must pin the fallback.
   flight, which settles them at its displayed boundary without restarting, so the
   reads stay bounded and the refresh promise resolves. A frame the buffer evicts
   before it can be placed is recovered by one read once that walk is over, so its
-  row does not keep the snapshot the walk served.
+  row does not keep the snapshot the walk served. Only the delegates walk consumes
+  that demand: a sibling collection's walk reaching its own boundary leaves it
+  standing for the delegates.
 - **Retained row never seeds the new order.** An epoch replacement observed while a
   multi-page refresh is in flight leaves a row the walk has not re-served yet
   unrecorded, so the replacement's row at revision 1 wins on the page that serves
@@ -435,7 +437,7 @@ on `availability`. A negative-path test must pin the fallback.
 | Read clobbers a newer frame | each read row joins the order; keep the newer of read and applied. |
 | Stale row from an out-of-order frame | `mergeAppwireDelegateInfo`'s join: greater revision for fields, independent maximum for activity time. |
 | Epoch replacement outlives the old map | clear the applied map and seen-unknown set on an epoch change. |
-| Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID, and a reconciled read places or drops the buffered frame; an ambiguous id reads once per ID and once per strictly newer revision; a fresh walk in flight settles the frames it already carries instead of being restarted, and an evicted unplaced frame is recovered by one read after that walk. Step 1's scope check gates it. |
+| Later-page frame loops | the per-ID seen-unknown set bounds it to one read per ID, and a reconciled read places or drops the buffered frame; an ambiguous id reads once per ID and once per strictly newer revision; a fresh walk in flight settles the frames it already carries instead of being restarted, and an evicted unplaced frame is recovered by one read after that walk, which only the delegates walk consumes. Step 1's scope check gates it. |
 | Report preview in the roster | `SlimDelegateForRoster` clears it; roster test. |
 | Missed removal | Append-only invariant pinned by a behavioral test; a future removal path must signal membership. |
 | Old source with no preview | producer-authored context capability; the read stays unless the source advertises. |

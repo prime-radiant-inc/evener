@@ -4165,6 +4165,72 @@ test("an evicted frame during a walk is recovered by one read", async () => {
   expect(callsTo(client, "evener/thread/delegates/list")).toBeLessThanOrEqual(8);
 });
 
+test("a sibling walk does not consume the delegates' eviction recovery", async () => {
+  const client = pushClient();
+  let revision = 1;
+  const delegateRows = (count: number, first: number) =>
+    Array.from({ length: count }, (_, index) => {
+      const id = first + index;
+      return delegateRow({
+        delegateId: `delegate-${id}`,
+        childRef: `remote:${id}`,
+        projectionRevision: id === 1 ? revision : 1,
+        status: id === 1 && revision > 1 ? "completed" : "running",
+        ...(id === 1 && revision > 1 ? { reportPreview: "settled" } : {}),
+      });
+    });
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page:
+      cursor === "d3"
+        ? { complete: true, issues: [] }
+        : { complete: false, issues: [], nextCursor: cursor === "d2" ? "d3" : "d2" },
+    delegates: cursor ? delegateRows(2, cursor === "d2" ? 200 : 300) : delegateRows(129, 1),
+  }));
+  client.on("evener/thread/jobs/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: cursor ? { complete: true, issues: [] } : { complete: false, issues: [], nextCursor: "j2" },
+    jobs: [jobFixture(cursor ? "older" : "newer")],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  store.observe("jobs");
+  await activityState(
+    store,
+    () => store.getSnapshot().delegates.rows.length === 129 && store.getSnapshot().jobs.rows.length === 1,
+  );
+  // Both collections carry a displayed boundary that needs the walk's pages.
+  await store.loadMore("delegates");
+  await store.loadMore("delegates");
+  await store.loadMore("jobs");
+  const delegatesRefreshed = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 4, status: "completed", reportPreview: "settled" })),
+  );
+  for (let id = 2; id <= 129; id += 1) {
+    client.emitNotification(
+      pushedFrame(frameInfo({ delegateId: `delegate-${id}`, projectionRevision: 2, status: "running" })),
+    );
+  }
+  // The jobs walk finishes one page sooner, and must not clear the delegate
+  // buffer's recovery.
+  const jobsRefreshed = store.refresh("jobs");
+  revision = 5;
+  // Both walks step on the timed pacing, and the delegates' recovery read walks
+  // the collection again.
+  await vi.advanceTimersByTimeAsync(500);
+  await delegatesRefreshed;
+  await jobsRefreshed;
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
+    delegateId: "delegate-1",
+    projectionRevision: 5,
+    status: "completed",
+  });
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({

@@ -605,8 +605,9 @@ export class SessionActivityStore {
             read.refresh = null;
             if (reconciled) read.boundary = undefined;
             // A frame evicted while this walk held it was never placed: recover
-            // it with one read now that the walk is over.
-            if (this.evictedDelegateFrame) {
+            // it with one read now that the walk is over. The flag belongs to the
+            // delegate buffer, so another collection's walk does not consume it.
+            if (resource === "delegates" && this.evictedDelegateFrame) {
               this.evictedDelegateFrame = false;
               read.rootQueued = true;
             }
