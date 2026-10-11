@@ -89,14 +89,52 @@ func TestDelegateMessagingGuidanceGoldens(t *testing.T) {
 		{"delegate", delegateRequest, nil},
 		{"delegate-result-schema", schemaDelegateRequest, nil},
 	} {
-		agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", tc.name+".md"), messagingGuidanceGolden(t, tc.req, tc.extra), *updatePromptGoldens,
+		agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", tc.name+".md"), messagingGuidanceGolden(t, tc.req, tc.extra, "communicate"), *updatePromptGoldens,
 			"Regenerate with `go test ./agent -run 'TestDelegateMessagingGuidanceGoldens$' -count=1 -update-prompt` and read the diff.")
 	}
 }
 
+// A session whose result tool is renamed names that tool everywhere its
+// guidance mentions it: the Reporting section, the delegate, delegate_send,
+// job_list and job_watch descriptions.
+func TestDelegateMessagingGuidanceGoldenRenamedResultTool(t *testing.T) {
+	t.Parallel()
+	adapter := newMessagingAdapter()
+	adapter.script("root", func(llm.Request) llm.Response {
+		resp := finalResponse("root done")
+		resp.Message.Content[0].ToolCall.Name = "respond"
+		return resp
+	})
+	root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.ResultToolName = "respond" })
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	rootRequest := adapter.waitForRequests(t, "root", 1)[0]
+	// The live delegate tool's sandbox wording depends on the host, so the
+	// golden renders it from fixed inputs.
+	extra := []llm.ToolDefinition{toolpkg.DefDelegateWithResultTool(nil, toolpkg.DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, "respond")}
+	for _, def := range rootRequest.Tools {
+		if slices.Contains([]string{"ask_user", "job_list", "job_watch"}, def.Name) {
+			extra = append(extra, def)
+		}
+	}
+	if len(extra) != 4 {
+		t.Fatalf("root request offers %d of ask_user, job_list and job_watch, want all three", len(extra)-1)
+	}
+	agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", "root-renamed-result-tool.md"), messagingGuidanceGolden(t, rootRequest, extra, "respond"), *updatePromptGoldens,
+		"Regenerate with `go test ./agent -run 'TestDelegateMessagingGuidanceGolden' -count=1 -update-prompt` and read the diff.")
+}
+
 // messagingGuidanceGolden renders the Reporting section of req's system
 // prompt and the description of every messaging tool req offers, plus extra.
-func messagingGuidanceGolden(t *testing.T, req llm.Request, extra []llm.ToolDefinition) []byte {
+// resultTool is the name of the session's result tool.
+func messagingGuidanceGolden(t *testing.T, req llm.Request, extra []llm.ToolDefinition, resultTool string) []byte {
 	t.Helper()
 	var system strings.Builder
 	for _, msg := range req.Messages {
@@ -113,7 +151,8 @@ func messagingGuidanceGolden(t *testing.T, req llm.Request, extra []llm.ToolDefi
 	}
 	tools := slices.Clone(extra)
 	for _, def := range req.Tools {
-		if def.Name == "communicate" || def.Name == "delegate_send" {
+		switch def.Name {
+		case resultTool, "delegate_send":
 			tools = append(tools, def)
 		}
 	}

@@ -1,6 +1,9 @@
 # Agent cascade does not repeat its origin conversation
 
 Status: approved by Jesse on 2026-10-10 ("Don't repeat the origin").
+Superseded the same evening by [the cascade pane redesign](2026-10-10-cascade-pane-redesign.md):
+the origin conversation now never renders in the pane at all — no readable
+column and no spine — rather than collapsing to a spine.
 
 ## Authority and scope
 

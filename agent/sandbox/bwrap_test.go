@@ -9,6 +9,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -444,5 +445,372 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 				t.Errorf("the session's own scratch must be bound writable after the tree: %v", args)
 			}
 		})
+	}
+}
+
+// The plugin store is re-bound read-only after the tmpfs that masks
+// ~/.config/evener, so the carve-out wins over the mask (#4171).
+func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {
+	home := t.TempDir()
+	config := filepath.Join(home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			maskIdx := seqIndex(args, "--tmpfs", config)
+			bindIdx := seqIndex(args[maskIdx+1:], "--ro-bind", store, store)
+			if maskIdx < 0 || bindIdx < 0 {
+				t.Fatalf("the store %q must be re-bound read-only after the mask of %q: %v", store, config, args)
+			}
+			if seqIndex(args, "--bind", store, store) >= 0 {
+				t.Errorf("the store must never be bound writable: %v", args)
+			}
+		})
+	}
+}
+
+// Inside the carve-out, an installed copy's .git (where a cloned plugin keeps
+// its remote URL) is masked again after the read-only re-bind.
+func TestBuildBwrapArgvMasksGitInsideEvenerContent(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	gitDir := filepath.Join(cache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{cache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			bindIdx := seqIndex(args, "--ro-bind", cache, cache)
+			if bindIdx < 0 || seqIndex(args[bindIdx:], "--tmpfs", gitDir) < 0 {
+				t.Errorf("%q must be masked after the carve-out's re-bind: %v", gitDir, args)
+			}
+		})
+	}
+}
+
+// bwrap masks a .git at any depth inside the carve-out, matching the file
+// tools and Seatbelt. A tree too large to inspect fully at spawn stays masked
+// for spawned processes rather than being re-granted with .git entries unseen.
+func TestBuildBwrapArgvMasksDeepGitAndSkipsUninspectableRoots(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	deepGit := filepath.Join(skills, "a", "b", "c", "d", "e", ".git")
+	if err := os.MkdirAll(deepGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--tmpfs", deepGit) {
+		t.Errorf("a deep .git %q must be masked: %v", deepGit, args)
+	}
+
+	if _, complete := gitDirsUnder(skills, 3); complete {
+		t.Errorf("a tree larger than the walk budget must be reported incomplete, so its root is not re-granted")
+	}
+}
+
+// A subdirectory the walk cannot list may still hide a .git reachable by name,
+// so a root with one is reported incomplete and is not re-granted.
+func TestGitDirsUnderReportsAnUnlistableSubtreeIncomplete(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can list any directory")
+	}
+	root := t.TempDir()
+	hidden := filepath.Join(root, "plugin", "hidden")
+	if err := os.MkdirAll(filepath.Join(hidden, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o311); err != nil { // search but no read
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o755) })
+	if _, complete := gitDirsUnder(root, gitWalkBudget); complete {
+		t.Error("a walk that could not list a subdirectory must be reported incomplete")
+	}
+}
+
+// With ~/.config/evener a symlink, the carve-out is listed under both
+// spellings, which resolve to one directory. It is bound once, and its .git
+// masks land after every carve-out bind, so no later bind covers them.
+func TestBuildBwrapArgvMasksGitAfterEveryBindOfASymlinkedCarveOut(t *testing.T) {
+	home := clean(t.TempDir())
+	realConfig := filepath.Join(clean(t.TempDir()), "real-evener")
+	realCache := filepath.Join(realConfig, "plugins", "cache")
+	realGit := filepath.Join(realCache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(realGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{filepath.Join(home, ".config", "evener", "plugins", "cache")}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			binds, lastBind := 0, -1
+			for i := 0; i+2 < len(args); i++ {
+				if args[i] == "--ro-bind" && args[i+1] == realCache && args[i+2] == realCache {
+					binds++
+					lastBind = i
+				}
+			}
+			if binds != 1 {
+				t.Errorf("the carve-out must be bound once, got %d binds: %v", binds, args)
+			}
+			if lastBind < 0 || seqIndex(args[lastBind:], "--tmpfs", realGit) < 0 {
+				t.Errorf("%q must be masked after the carve-out's last bind: %v", realGit, args)
+			}
+		})
+	}
+}
+
+// A .git that is a symlink is never masked at its target outside the
+// carve-out (a skill's .git pointing at the workspace's .git, or at /, would
+// hide that instead): one pointing outside leaves the carve-out masked for
+// spawned processes, and one pointing inside is masked at its target.
+func TestGitDirsUnderJudgesSymlinkedGitEntries(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	inside := filepath.Join(root, "store", "real.git")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, filepath.Join(root, "a", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	found, complete := gitDirsUnder(root, gitWalkBudget)
+	resolvedInside, _ := filepath.EvalSymlinks(inside)
+	if !complete || !slices.Contains(found, resolvedInside) {
+		t.Errorf("a .git linked inside the carve-out must be masked at its target %q: %v (complete=%v)", resolvedInside, found, complete)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "b", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if _, complete := gitDirsUnder(root, gitWalkBudget); complete {
+		t.Errorf("a .git linked outside the carve-out must leave it uninspectable, so it stays masked")
+	}
+}
+
+// The walk budget bounds directory reads themselves, not only visited
+// entries, so one huge directory is not read and sorted whole at each spawn.
+func TestGitDirsUnderStopsReadingAHugeDirectoryAtTheBudget(t *testing.T) {
+	root := t.TempDir()
+	for i := range 40 {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := 0
+	old := gitReadDirChunk
+	gitReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) {
+		reads++
+		return f.ReadDir(n)
+	}
+	t.Cleanup(func() { gitReadDirChunk = old })
+	if _, complete := gitDirsUnder(root, 10); complete {
+		t.Fatalf("a directory past the budget must be reported incomplete")
+	}
+	if reads > 2 {
+		t.Errorf("the walk must stop reading once the budget is spent, read %d chunks", reads)
+	}
+}
+
+// In a read-anywhere mode a carve-out's symlinked spelling under /tmp is
+// hidden by the private /tmp, so it is recreated as a link too.
+func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderTmp(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "evener-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := filepath.EvalSymlinks(skills)
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--symlink", resolved, skills) {
+		t.Errorf("a carve-out spelled under /tmp must be recreated as a link in read-anywhere modes: %v", args)
+	}
+}
+
+// With Evener's config mask removed by the user, the carve-out is still bound
+// (restricted mode needs the read grant) but its .git is not masked: nothing
+// masks that directory any more.
+func TestBuildBwrapArgvLeavesGitUnmaskedWithoutTheConfigMask(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	gitDir := filepath.Join(skills, "mine", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.FileTool.ReadRoots, skills) {
+		t.Errorf("the skills read grant must stay when the config mask is removed: %v", rp.FileTool.ReadRoots)
+	}
+	args := buildBwrapArgv(rp, t.TempDir(), cwd)
+	if !hasSeq(args, "--ro-bind", skills, skills) {
+		t.Errorf("restricted mode must still bind the skills dir: %v", args)
+	}
+	if hasSeq(args, "--tmpfs", gitDir) {
+		t.Errorf("a .git the user unmasked must not be masked: %v", args)
+	}
+}
+
+// A carve-out spelling already exposed by the read-only re-bind of a /tmp cwd
+// gets no link of its own (creating one over the existing path would make
+// bubblewrap fail).
+func TestBuildBwrapArgvSkipsALinkForASpellingTheCwdBindExposes(t *testing.T) {
+	cwd := tmpMainCheckout(t)
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	xdg := filepath.Join(cwd, ".xdg")
+	if err := os.MkdirAll(xdg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(xdg, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(xdg, "evener", "skills")
+	facts := bwrapFacts(t.TempDir())
+	facts.EvenerConfigRoot = filepath.Join(xdg, "evener")
+	facts.EvenerContentRoots = []string{skills}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Skipf("fixture: the skills dir is not carved out here: %v", rp.UnmaskedRoots)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); slices.Contains(args, "--symlink") {
+		t.Errorf("a spelling the cwd bind already exposes must get no link: %v", args)
+	}
+}
+
+// With Evener's config mask removed, nothing masks the carve-out's .git, so a
+// tree the walk cannot vouch for (here a .git linked outside it) is still
+// bound: the walk only decides what to mask, and there is nothing to mask.
+func TestBuildBwrapArgvBindsAnUninspectableCarveOutWithoutTheConfigMask(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "mine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(skills, "mine", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--ro-bind", skills, skills) {
+		t.Errorf("an unmasked carve-out must be bound even when its walk is incomplete: %v", args)
+	}
+}
+
+// The minimal --dev hides /dev/shm as the private tmpfs hides /tmp, so a
+// carve-out spelled there through a link is recreated in read-anywhere modes.
+func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderDevShm(t *testing.T) {
+	xdg, err := os.MkdirTemp("/dev/shm", "evener-xdg-")
+	if err != nil {
+		t.Skipf("no writable /dev/shm: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(xdg) })
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(xdg, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(xdg, "evener", "skills")
+	facts := bwrapFacts(t.TempDir())
+	facts.EvenerConfigRoot = filepath.Join(xdg, "evener")
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Fatalf("fixture: the skills dir is not carved out here: %v", rp.UnmaskedRoots)
+	}
+	resolved, _ := filepath.EvalSymlinks(skills)
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--symlink", resolved, skills) {
+		t.Errorf("a carve-out spelled under /dev/shm must be recreated as a link in read-anywhere modes: %v", args)
 	}
 }

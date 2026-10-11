@@ -165,11 +165,16 @@ rules, not permission to fabricate a summary or rewrite stored evidence.
 
 Desktop Agents rows open or reuse a read-only cascade in the secondary pane group.
 Keep the original center conversation mounted with its composer and reading position.
-Keep the selected child and immediate parent readable; earlier ancestors become
-live 52px spines. The parent is 400px wide.
-The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontally
-and reveal the selected leaf instead of squeezing either reader. Parent and
-leaf transcript scrollers remain independent.
+The origin conversation never renders in the cascade — no column and no spine —
+so a first drill shows only the subagent's conversation, and that lone column
+fills the pane. Keep the selected child and immediate parent readable above the
+removed origin; earlier ancestors become live 52px spines, and the spines are
+the breadcrumb: the pane has no title and no separate path nav. The parent is
+400px wide. The leaf flexes with a 440px minimum. Narrow desktop surfaces
+scroll horizontally and reveal the selected leaf instead of squeezing either
+reader. Parent and leaf transcript scrollers remain independent, each column's
+activity controls sit below its transcript content, and the pane body hosting
+the spines and columns never scrolls as a unit.
 
 Only ancestor spines use the session list's shared
 [SessionStatusIndicator](../../cmd/evener-hub/frontend/src/shell/SessionStatusIndicator.tsx):

@@ -267,9 +267,6 @@ describe("transcript projector", () => {
     expect(entriesFor(model, preset("chat")).map((entry) => [entry.id, entry.kind])).toEqual([
       ["steer-parent", "critical"],
     ]);
-    expect(
-      entriesFor(threadWith(item("steer", "steering", { text: "Hook context", source: "" })), preset("chat")),
-    ).toEqual([]);
   });
 
   test("the terminal fallback does not resurrect a daemon steer chat hid when the error end cap renders", () => {

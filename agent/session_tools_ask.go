@@ -473,7 +473,7 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]AskUserQuestion, error) {
 // below is defense in depth for config drift (spec §7 point 4).
 func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
-		Definition: tool.DefAskUser(),
+		Definition: tool.DefAskUserNamed(s.resultToolName()),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			release, err := s.beginRetirementMutation("question")
 			if err != nil {
