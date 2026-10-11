@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -92,12 +93,15 @@ wait:
 	answer := classifyParentAnswer(toolCallsAfterQuestion(rootEntries(t, root)), codename)
 	childEntries := delegateEntries(t, root)
 	// A provider or runtime failure in the delegate is not model behavior, so
-	// it stops the run instead of being tallied as an unanswered question.
-	if failure := firstTurnFailure(childEntries); failure != "" {
+	// it stops the run instead of being tallied as an unanswered question. A
+	// model that answers with empty or bare text is model behavior: it is
+	// tallied and named in the RESULT line.
+	failure := firstTurnFailure(childEntries)
+	if failure != "" && !isModelResponseFailure(failure) {
 		t.Fatalf("the delegate's turn failed, so this run says nothing about the model: %s", failure)
 	}
 	received, briefLeaked := childReceivedCodename(childEntries, codename)
-	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v brief_leaked=%v report_written=%v", *delegateUpdateEvalModel, sawUpdate, answer, received, briefLeaked, reportWritten)
+	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v brief_leaked=%v report_written=%v model_failure=%q", *delegateUpdateEvalModel, sawUpdate, answer, received, briefLeaked, reportWritten, failure)
 }
 
 // delegateEntries reads the transcript of the root's one delegate: the only
@@ -133,9 +137,18 @@ func firstTurnFailure(entries []transcript.Entry) string {
 	return ""
 }
 
+// isModelResponseFailure reports whether a failed turn's message is the
+// session giving up on a model that kept returning empty or bare text, as
+// opposed to a provider or runtime error.
+func isModelResponseFailure(message string) bool {
+	return message == (&emptyResponseExhaustedError{retries: maxEmptyRetries}).Error() ||
+		message == (&bareTextWithoutResultToolError{toolName: tool.DefaultResultToolName, retries: maxBareTextRetries}).Error()
+}
+
 // childReceivedCodename reports whether the delegate was handed the codename
-// after its first input, which is its brief: received is true only when a
-// later user-role entry (the parent's steering) carries it. A codename already
+// after its brief, the first user-input entry (environment context is
+// harness-written and precedes it): received is true only when a later
+// user-role entry (the parent's steering) carries it. A codename already
 // in the brief means the delegate never had to ask, so briefLeaked marks runs
 // that cannot show an answer arriving. Files the delegate wrote do not count.
 func childReceivedCodename(entries []transcript.Entry, codename string) (received, briefLeaked bool) {
@@ -145,7 +158,7 @@ func childReceivedCodename(entries []transcript.Entry, codename string) (receive
 			continue
 		}
 		carries := strings.Contains(e.Turn.Message.Text(), codename)
-		if !seenBrief {
+		if !seenBrief && e.Turn.Kind == schema.TurnUserInput {
 			seenBrief, briefLeaked = true, carries
 			continue
 		}
@@ -157,6 +170,13 @@ func childReceivedCodename(entries []transcript.Entry, codename string) (receive
 func TestChildReceivedCodename(t *testing.T) {
 	user := func(text string) transcript.Entry {
 		var e transcript.Entry
+		e.Turn.Kind = schema.TurnUserInput
+		e.Turn.Message = llm.User(text)
+		return e
+	}
+	environment := func(text string) transcript.Entry {
+		var e transcript.Entry
+		e.Turn.Kind = schema.TurnEnvironment
 		e.Turn.Message = llm.User(text)
 		return e
 	}
@@ -176,10 +196,25 @@ func TestChildReceivedCodename(t *testing.T) {
 		{"delegate wrote the codename itself", []transcript.Entry{user("ask me"), assistant("I will write HALCYON-42")}, false, false},
 		{"parent never answered", []transcript.Entry{user("ask me"), assistant("waiting"), user("keep going")}, false, false},
 		{"codename in the brief", []transcript.Entry{user("the codename is HALCYON-42"), user("HALCYON-42 again")}, false, true},
+		{"codename in the brief after environment context", []transcript.Entry{environment("cwd: /work"), user("the codename is HALCYON-42")}, false, true},
+		{"answer steered in after environment context", []transcript.Entry{environment("cwd: /work"), user("ask me"), user("It is HALCYON-42")}, true, false},
 	} {
 		received, leaked := childReceivedCodename(tc.entries, "HALCYON-42")
 		if received != tc.wantReceived || leaked != tc.wantLeaked {
 			t.Errorf("%s: got received=%v leaked=%v, want %v %v", tc.name, received, leaked, tc.wantReceived, tc.wantLeaked)
+		}
+	}
+}
+
+func TestIsModelResponseFailure(t *testing.T) {
+	for message, want := range map[string]bool{
+		(&emptyResponseExhaustedError{retries: maxEmptyRetries}).Error():                                             true,
+		(&bareTextWithoutResultToolError{toolName: tool.DefaultResultToolName, retries: maxBareTextRetries}).Error(): true,
+		"provider 429": false,
+		"":             false,
+	} {
+		if got := isModelResponseFailure(message); got != want {
+			t.Errorf("isModelResponseFailure(%q) = %v, want %v", message, got, want)
 		}
 	}
 }
