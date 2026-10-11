@@ -211,6 +211,7 @@ const CLASS = {
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
+  pluginSummaryAction: requireClass(pluginSelectionStyles.summaryAction, "pluginSelection.module.css", "summaryAction"),
   // The host picker's native <select> reuses the Select widget's own stylesheet
   // class: the widget renders a native <select> too, but its SelectOption has no
   // per-option disabled flag, and an offline host must be RENDERED yet not
@@ -2803,9 +2804,11 @@ function SpawnForm({
                     <span title={pluginPreview.state.message}>
                       Couldn't inspect plugins: {pluginPreview.state.message}
                     </span>
-                    <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
-                      Retry
-                    </Button>
+                    <div className={CLASS.pluginSummaryAction}>
+                      <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                        Retry
+                      </Button>
+                    </div>
                   </>
                 )}
               </div>

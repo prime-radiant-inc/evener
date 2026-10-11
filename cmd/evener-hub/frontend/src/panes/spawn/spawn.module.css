@@ -348,14 +348,6 @@
     max-width: none;
   }
 
-  /* The field's size comes from widgets/textarea (the 16px phone floor lives
-   * there); the min-height keeps the field a usable writing surface on a
-   * short viewport where the card's line-count floor would otherwise be all
-   * it gets. */
-  .form textarea {
-    min-height: 96px;
-  }
-
   .cfgDir {
     display: none;
   }

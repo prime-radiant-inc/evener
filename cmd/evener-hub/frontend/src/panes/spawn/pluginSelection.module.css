@@ -46,7 +46,7 @@
 
 /* The summary column stretches its children; the error state's Retry stays a
  * small inline action instead of growing into a full-width band. */
-.summary button {
+.summaryAction {
   align-self: flex-start;
 }
 
