@@ -112,12 +112,24 @@ export interface QueueStripProps {
 
 // ActionButton wraps an IconButton in a Tooltip only when there's a reason
 // worth explaining (a disabled control) - an always-enabled button needs no
-// tooltip beyond its own accessible name (IconButton's `label`).
-function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?: string } & IconButtonProps) {
-  if (!disabledReason) return <IconButton {...iconButtonProps} />;
+// tooltip beyond its own accessible name (IconButton's `label`). A refusal
+// that carries a reason is aria-disabled rather than natively disabled: a
+// native disabled button cannot take focus, which would leave the reason
+// reachable by mouse only. With no onClick the press does nothing.
+function ActionButton({
+  disabledReason,
+  disabled,
+  onClick,
+  ...iconButtonProps
+}: { disabledReason?: string } & IconButtonProps) {
+  if (!disabledReason) return <IconButton {...iconButtonProps} disabled={disabled} onClick={onClick} />;
   return (
     <Tooltip label={disabledReason}>
-      <IconButton {...iconButtonProps} />
+      {disabled ? (
+        <IconButton {...iconButtonProps} aria-disabled="true" />
+      ) : (
+        <IconButton {...iconButtonProps} onClick={onClick} />
+      )}
     </Tooltip>
   );
 }

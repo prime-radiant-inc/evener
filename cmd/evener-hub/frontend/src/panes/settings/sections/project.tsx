@@ -27,7 +27,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
-import { Button } from "../../../widgets";
+import { Button, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import type { LaunchFormPaths } from "./launchShared/fields";
@@ -191,7 +191,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       <p className={CLASS.help}>
         Layered on top of the global Evener launch settings. Only fields set here override the global defaults.
       </p>
-      {load.phase === "loading" && <p className={CLASS.help}>Loading project launch settings…</p>}
+      {load.phase === "loading" && <Loader label="Loading project launch settings" />}
       {load.phase === "error" && (
         <p className={CLASS.error}>
           Failed to load project launch settings. {load.message}{" "}

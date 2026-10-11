@@ -1,0 +1,4 @@
+/* Narrow enough that the long mono path shows the ellipsis truncation. */
+.sample {
+  max-width: 22rem;
+}

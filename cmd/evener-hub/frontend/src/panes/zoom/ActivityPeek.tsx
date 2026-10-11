@@ -1,8 +1,8 @@
 import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
-import { SessionStatusIndicator } from "../../shell/SessionStatusIndicator";
+import { SIGNAL_STATES } from "../../shell/sessionStatus";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
-import { IconButton, Popover } from "../../widgets";
+import { IconButton, Popover, StatusDot } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../session/liveness";
@@ -99,9 +99,10 @@ export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityS
   const state = scope.activity?.runtime?.status.type;
   const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown";
   if (compact) {
+    const signal = cadenceStateForStatus(state ?? "");
     return (
       <span className={CLASS.stateIndicator} data-runtime-state={state ?? "unknown"} title={label}>
-        <SessionStatusIndicator state={cadenceStateForStatus(state ?? "")} />
+        {SIGNAL_STATES.has(signal) && <StatusDot state={signal} />}
         <span className={CLASS.stateLabel} data-runtime-label>
           {label}
         </span>

@@ -1,7 +1,7 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Disclosure } from "../../../widgets/disclosure";
+import { CodeBlock, Disclosure } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./about.module.css";
 import { FieldDim } from "./settingsField";
@@ -10,7 +10,6 @@ const CLASS = {
   root: requireClass(styles.root, "about.module.css", "root"),
   identity: requireClass(styles.identity, "about.module.css", "identity"),
   help: requireClass(styles.help, "about.module.css", "help"),
-  license: requireClass(styles.license, "about.module.css", "license"),
 };
 
 // The MIT license text Beautiful UI's own terms require reproducing
@@ -82,7 +81,7 @@ export function AboutSection() {
         under the MIT License.
       </p>
       <Disclosure id="about-mit-license" summary="MIT License">
-        <pre className={CLASS.license}>{MIT_LICENSE_TEXT}</pre>
+        <CodeBlock text={MIT_LICENSE_TEXT} fold={false} />
       </Disclosure>
 
       <p className={CLASS.help}>Inter and JetBrains Mono, used under the SIL Open Font License.</p>

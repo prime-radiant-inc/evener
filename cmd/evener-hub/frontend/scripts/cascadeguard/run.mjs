@@ -646,7 +646,7 @@ async function openPeek(ref, kind) {
 // Each runtime state's exact hover and screen-reader text and its
 // session-list signal in the compact spine.
 const spineStatus = {
-  active: { text: "Active", signalLabel: "Running" },
+  active: { text: "Active", signalLabel: "Working" },
   idle: { text: "Idle", signalLabel: null },
   awaiting: { text: "Awaiting", signalLabel: "Needs you" },
 };
@@ -674,7 +674,7 @@ async function assertSpineStatus(ref, ...states) {
   assert.notEqual(status.hiddenFromAT, "true");
   assert.ok(status.labelWidth <= 1 && status.labelHeight <= 1, "runtime text does not paint horizontally in the spine");
   assert.equal(status.signalLabel, signalLabel, "ancestor uses the session-list signal family");
-  if (signalLabel === "Running" && reducedMotion) {
+  if (signalLabel === "Working" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
   driver.milestone("compact-spine-status", { ref, ...status });
@@ -1269,6 +1269,33 @@ async function reloadAndMobileJourney() {
   await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only selected readonly leaf");
   await wait(cascadeUntitledExpr, "the phone cascade has no path nav and no pane title");
   await assertPaneBodyFlush("phone");
+  await wait(`(() => {
+    const col = document.querySelector(${q(column(fixture.refs[6]))});
+    if (!col) return null;
+    const footer = col.querySelector('[data-testid="cascade-column-footer"]');
+    return col.querySelector("h3") === null
+      && (footer?.querySelector("button")?.textContent.trim() === "Open conversation")
+      && col.querySelector('[data-testid="cascade-column-content"]').compareDocumentPosition(footer)
+        & Node.DOCUMENT_POSITION_FOLLOWING
+      && document.querySelector(${q(inspectorFooter)}) === null;
+  })()`, "the phone column carries no duplicate title, keeps status and Open conversation at its bottom, and renders no pane footer status bar");
+  // env(safe-area-inset-bottom) cannot be emulated through CDP, so drive the
+  // shared clearance formula's --keyboard-inset custom property seam with a
+  // negative stand-in for a 44px home-indicator band: only the phone media
+  // rule reserves it (the base padding alone stays at var(--space-2)).
+  const phonePadding = await read(`(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--keyboard-inset", "-44px");
+    const padding = getComputedStyle(
+      document.querySelector(${q(`${column(fixture.refs[6])} [data-testid="cascade-activity-controls"]`)}),
+    ).paddingBottom;
+    root.style.removeProperty("--keyboard-inset");
+    return padding;
+  })()`);
+  assert.ok(
+    Number.parseFloat(phonePadding) > 44,
+    `the phone column's activity controls reserve the home-indicator band (got ${phonePadding})`,
+  );
   assert.equal(await read('document.querySelectorAll("[role=textbox]").length'), 0, "saved phone cascade has no composer");
   await wait(`document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`, "real selected phone transcript");
   driver.milestone("mobile-saved-cascade");

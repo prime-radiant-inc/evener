@@ -1,20 +1,4 @@
-/* The rail's dialog + picker form styles - the one stylesheet two rail
- * components genuinely share: Rail.tsx (the delete-project dialog) and
- * PinSectionPicker.tsx. */
-
-.dialogField {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
-}
-
-.dialogActions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
+/* The pin-section picker's list and error styles. */
 
 .pickerList {
   display: flex;

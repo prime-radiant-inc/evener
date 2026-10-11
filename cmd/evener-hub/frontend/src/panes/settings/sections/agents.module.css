@@ -42,8 +42,6 @@
   font-size: var(--font-size-ui);
 }
 
-.builtin {
+.trailing {
   margin-left: auto;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }

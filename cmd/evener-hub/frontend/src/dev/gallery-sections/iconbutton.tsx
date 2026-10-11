@@ -1,9 +1,9 @@
-import type { ButtonVariant } from "../../widgets/button";
+import type { IconButtonVariant } from "../../widgets/iconbutton";
 import { IconButton } from "../../widgets/iconbutton";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
-const VARIANTS: ButtonVariant[] = ["primary", "quiet", "danger", "dangerQuiet"];
+const VARIANTS: IconButtonVariant[] = ["primary", "quiet", "danger", "dangerQuiet"];
 
 function DotIcon() {
   return (
@@ -13,7 +13,7 @@ function DotIcon() {
   );
 }
 
-function VariantRow({ variant }: { variant: ButtonVariant }) {
+function VariantRow({ variant }: { variant: IconButtonVariant }) {
   return (
     <div className={styles.row}>
       <p className={styles.rowLabel}>{variant}</p>
@@ -21,6 +21,7 @@ function VariantRow({ variant }: { variant: ButtonVariant }) {
       <IconButton variant={variant} size="sm" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="xs" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="md" label="Close" icon={<DotIcon />} disabled />
+      <IconButton variant={variant} size="md" label="Close (refused)" icon={<DotIcon />} aria-disabled />
     </div>
   );
 }

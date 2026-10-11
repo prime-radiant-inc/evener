@@ -4,7 +4,9 @@
   "cssFiles": [
     "styles/tokens.css",
     "styles/global.css",
-    "panes/session/composer/composer.module.css"
+    "panes/session/composer/composer.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css"
   ],
   "mutation": {
     "declaration": "composer.module.css: .imageThumbnail { height: 100% } (reverted to height: auto)",

@@ -24,10 +24,15 @@ working procedure.
 1. **Compose from widgets.** A button is `Button` or `IconButton`, a text
    field is `Input` or `Textarea`, a choice is `Select`, `SegmentedControl`,
    `RadioGroup`, or `Switch`, a count is `Badge`, a label pill is `Chip`, an
-   empty pane is `EmptyState`, a modal is `Dialog`/`Sheet`/`ConfirmDialog`.
+   empty pane is `EmptyState` (`size="compact"` inside a list or section), a
+   modal is `Dialog`/`Sheet`/`ConfirmDialog`. An inline status, hint, or
+   error is `InlineNotice`; a list row is `ListRow`; an uppercase group label
+   is `Eyebrow`; label/value facts are `PropertyList`; a shortcut reference
+   is `ShortcutList`; an inline text action is `Button variant="link"`;
+   screen-reader-only text is `VisuallyHidden`.
    Do not write a raw `<button>`, `<input>`, `<select>`, or `<textarea>`
    outside `src/widgets/`, and do not write a module class that re-creates a
-   widget (`.chip`, `.card`, `.empty`, `.badge`, ...).
+   widget (`.chip`, `.card`, `.empty`, `.notice`, `.srOnly`, ...).
 2. **Import from the barrel.** `import { Button } from "../../widgets"`,
    never `widgets/button` or anything under `widgets/internal/`.
 3. **Never style a widget's insides.** No descendant, `:global`, or
@@ -44,6 +49,11 @@ working procedure.
 5. **Use the right widget for the state.** Loading is `Skeleton` or
    `Loader`, not an `EmptyState` titled "Loading…". Destructive
    confirmation is `ConfirmDialog`, not a hand-built dialog.
+6. **Session and agent status is always `StatusDot`.** Its labels (Idle,
+   Working, Needs you, Failed, Ended) are the one status vocabulary; text
+   naming a session's state uses `STATUS_LABEL`. Do not hand-roll a status
+   dot or spinner: StatusDot's `working` state already carries the activity
+   motion, gated by reduced motion.
 
 ## When no widget fits
 

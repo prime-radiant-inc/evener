@@ -43,6 +43,14 @@ test("each variant renders a distinct class", () => {
   expect(new Set([primaryClass, quietClass, dangerClass, dangerQuietClass]).size).toBe(4);
 });
 
+// Button's link variant is underlined text; an icon-only control has no text
+// to underline, so IconButton does not offer it. The typecheck is the test.
+test("does not accept Button's link variant", () => {
+  // @ts-expect-error link is a text-only Button variant
+  const props: IconButtonProps = { label: "Go", icon: <DotIcon />, variant: "link" };
+  expect(props.variant).toBe("link");
+});
+
 test("each size renders a distinct class", () => {
   const { rerender } = render(<IconButton label="Go" icon={<DotIcon />} size="xs" />);
   const xsClass = screen.getByRole("button").className;
@@ -62,6 +70,25 @@ test("disabled blocks onClick", async () => {
   render(<IconButton label="Go" icon={<DotIcon />} disabled onClick={onClick} />);
   await user.click(screen.getByRole("button"));
   expect(onClick).not.toHaveBeenCalled();
+});
+
+test("an aria-disabled refusal swallows the click but keeps focus, exactly as Button does", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  const { rerender } = render(<IconButton label="Go" icon={<DotIcon />} aria-disabled={true} onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" });
+  await user.click(button);
+  expect(onClick).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(button);
+
+  // The other spelling of the attribute is the same refusal.
+  rerender(<IconButton label="Go" icon={<DotIcon />} aria-disabled="true" onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).not.toHaveBeenCalled();
+
+  rerender(<IconButton label="Go" icon={<DotIcon />} onClick={onClick} />);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).toHaveBeenCalledOnce();
 });
 
 test("disabled marks the native button inert (not focusable)", () => {

@@ -24,6 +24,10 @@ test("rawControlsIn ignores controls named only in comments", () => {
   });
 });
 
+test("rawControlsIn still sees code after a line comment that mentions a glob", () => {
+  assert.equal(rawControlsIn("// lives in widgets/**\n<input value={v} />\n// end */").input, 1);
+});
+
 test("widgetConceptClassesIn finds module classes that re-implement widgets", () => {
   const css = `
 		.chip { display: inline-flex; }

@@ -166,6 +166,29 @@ test("removing a config file confirms first, then saves with it filtered out", a
   await waitFor(() => expect(screen.queryByText("/etc/mcp.json")).toBeNull());
 });
 
+// The inline-server add field takes "name command [args...]" and submits
+// through the Add button of its own form (the config-file list has another).
+async function addInlineServer(user: ReturnType<typeof userEvent.setup>, entry: string): Promise<void> {
+  const field = screen.getByRole("textbox", { name: "Inline MCP servers" });
+  await user.type(field, entry);
+  const form = field.closest("form");
+  if (form === null) throw new Error("the inline-server add form did not render");
+  await user.click(within(form).getByRole("button", { name: "Add" }));
+}
+
+test("an inline server entry without a command is refused before validating", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  const validateSpy = vi.fn();
+  fake.on("evener/path/validate", validateSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("No inline MCP servers. Add one below.");
+  await addInlineServer(user, "search");
+  expect(await screen.findByText("Use: name command [args...]")).toBeTruthy();
+  expect(validateSpy).not.toHaveBeenCalled();
+});
+
 test("renders inline MCP servers as '{name} → {command} {args}'", async () => {
   const fake = connectFakeClient();
   fake.on("evener/launch/getLayer", () => ({
@@ -194,11 +217,7 @@ test("adding an inline server validates the command as kind:command and saves mc
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No inline MCP servers. Add one below.");
-  await user.type(screen.getByPlaceholderText("name"), "search");
-  await user.type(screen.getByPlaceholderText("command"), "/usr/bin/search-mcp");
-  await user.type(screen.getByPlaceholderText("args (space-separated)"), "--port 9000");
-  const addButtons = screen.getAllByRole("button", { name: "Add" });
-  await user.click(addButtons[addButtons.length - 1]!);
+  await addInlineServer(user, "search /usr/bin/search-mcp --port 9000");
   expect(await screen.findByText("search → /usr/bin/search-mcp --port 9000")).toBeTruthy();
 });
 
@@ -211,10 +230,7 @@ test("an invalid command shows the inline error and does not save", async () => 
   fake.on("evener/launch/setLayer", setLayerSpy);
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No inline MCP servers. Add one below.");
-  await user.type(screen.getByPlaceholderText("name"), "search");
-  await user.type(screen.getByPlaceholderText("command"), "nope");
-  const addButtons = screen.getAllByRole("button", { name: "Add" });
-  await user.click(addButtons[addButtons.length - 1]!);
+  await addInlineServer(user, "search nope");
   expect(await screen.findByText("command not found")).toBeTruthy();
   expect(setLayerSpy).not.toHaveBeenCalled();
 });
@@ -322,10 +338,7 @@ test("adding an inline server when setLayer fails shows error message", async ()
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No inline MCP servers. Add one below.");
-  await user.type(screen.getByPlaceholderText("name"), "srv");
-  await user.type(screen.getByPlaceholderText("command"), "/usr/bin/srv");
-  const addButtons = screen.getAllByRole("button", { name: "Add" });
-  await user.click(addButtons[addButtons.length - 1]!);
+  await addInlineServer(user, "srv /usr/bin/srv");
   expect(await screen.findByText("persist failed")).toBeTruthy();
 });
 
@@ -380,7 +393,7 @@ test("under a remote host the discovered-servers block is not shown, and this hu
     mcpDiscovered: { servers: [{ name: "controller-tool", transport: "stdio", status: "available" }] },
   };
   render(<McpSection host="beta" useOverviewStore={overviewHook({ data, fetch: fetchFn })} />);
-  await screen.findByPlaceholderText("name");
+  await screen.findByRole("textbox", { name: "Inline MCP servers" });
 
   expect(screen.queryByText("Discovered servers")).toBeNull();
   expect(screen.queryByText(/controller-tool/)).toBeNull();
