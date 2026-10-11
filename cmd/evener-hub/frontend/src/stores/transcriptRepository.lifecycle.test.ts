@@ -270,6 +270,18 @@ function orderedPositions(model: ThreadModel | undefined): number[] {
     .filter((entry): entry is number => entry !== undefined);
 }
 
+// The positions a reader actually displays with a body. Pruning keeps history
+// identities with their positions but drops bodies from the display turns, so a
+// truncated restore is invisible in `orderedPositions` and only shows here.
+function displayedPositions(model: ThreadModel | undefined): number[] {
+  return (model?.turns ?? [])
+    .flatMap((turn) => turn.items)
+    .filter((item) => (item.text ?? "") !== "")
+    .map((item) => item.position?.entry)
+    .filter((entry): entry is number => entry !== undefined)
+    .sort((left, right) => left - right);
+}
+
 // Holds the real batch write for one transcript key until released.
 function holdNextEntryWrite(cache: SessionEntryCache, transcriptKey: string) {
   const commit = cache.commitBatch.bind(cache);
@@ -967,6 +979,57 @@ test("committed rows reopen as a stale seed with no overlay, and a source read r
   expect(JSON.stringify(restored.model ?? null)).not.toContain("CRASH_OVERLAY_BODY");
   reader.dispose();
   reopened.dispose();
+});
+
+test("a reopened opening restores the durable older rows a retired page chain no longer certifies", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache, { lifetime: 1 });
+  const reader = repo.attachReader();
+  // A latest window and the three older pages the pane loaded below it.
+  repo.acceptRead(readOf([30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40], { olderCursor: "C1", length: 60 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "b1",
+  });
+  const authority = repo.getBaselineIdentity();
+  repo.acceptPage(pageOf([19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29], { nextCursor: "C2", length: 60 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "p1",
+    authority,
+    requestCursor: "C1",
+  });
+  repo.acceptPage(pageOf([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18], { nextCursor: "C3", length: 60 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "p2",
+    authority,
+    requestCursor: "C2",
+  });
+  repo.acceptPage(pageOf([1, 2, 3, 4, 5, 6, 7], { length: 60 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "p3",
+    authority,
+    requestCursor: "C3",
+  });
+  await repo.settled();
+  expect(displayedPositions(repo.getSnapshot())).toEqual(Array.from({ length: 40 }, (_, index) => index + 1));
+  reader.dispose();
+  // A reconciliation boundary (the store's beginFreshBaseline on a reconnect or
+  // an unverified frontier) retires this baseline's page chain. The rows it
+  // produced remain durable recorded history in the same cache.
+  repo.beginFreshBaseline();
+  await repo.settled();
+  const reopened = repo.attachReader();
+  const opened = await reopened.openLocal(200);
+  // The reopened opening restores the whole window the pane had loaded, not
+  // only the latest durable read, and keeps a usable older cursor.
+  expect(displayedPositions(opened.model)).toEqual(Array.from({ length: 40 }, (_, index) => index + 1));
+  expect(opened.olderCursor).toBe("C1");
+  reopened.dispose();
+  repo.dispose();
 });
 
 test("a delete with queued work cancels the queued ticket and no queued row reaches the cache", async () => {

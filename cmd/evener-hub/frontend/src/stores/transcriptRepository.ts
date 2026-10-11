@@ -461,6 +461,28 @@ export class TranscriptRepository {
   }
 
   /**
+   * @internal The recovery flags that decide whether a local open may report
+   * "current". `openLocal`'s status is `current` only while the opening cut is
+   * authoritative, which requires `!recoveryNeeded` (a refused durable write sets
+   * it). Read-only; used to measure why an opening declined to serve locally.
+   */
+  getRecoveryStateForTesting(): {
+    recoveryNeeded: boolean;
+    seedAuthorityInvalid: boolean;
+    cacheContinuityLost: boolean;
+    invalidated: boolean;
+    disposed: boolean;
+  } {
+    return {
+      recoveryNeeded: this.#recoveryNeeded,
+      seedAuthorityInvalid: this.#seedAuthorityInvalid,
+      cacheContinuityLost: this.#cacheContinuityLost,
+      invalidated: this.#invalidated,
+      disposed: this.#disposed,
+    };
+  }
+
+  /**
    * @internal The aggregate admission scalars this repository sees in the shared
    * queue, paired with `retainedInventoryForTesting` so a test can observe the
    * bound against real retained references, not only a counter.
@@ -996,24 +1018,41 @@ export class TranscriptRepository {
           const loadedStart = cut.model && this.#oldestPosition(cut.model);
           const latestStart = window.rows[0]?.position;
           if (
-            cut.authorityValid &&
             window.complete &&
             loadedStart &&
             latestStart &&
             comparePosition(loadedStart, latestStart) < 0 &&
             window.rows.length < limit
           ) {
-            const older = await this.#cache.getOlderWindow(
-              this.#binding.historyKey,
-              latestStart,
-              limit - window.rows.length,
-              this.#baselineIdentity,
+            // Durable rows below the certified window that the opening cut had
+            // loaded. The certified older query only reaches them while this
+            // baseline's own page chain is intact; a reconciliation (a fresh
+            // baseline after a reconnect or an unverified frontier), a newer
+            // authoritative read, or a failed durable write retires that chain,
+            // yet the rows are still recorded history. Restore the bounded seeds
+            // the opening had loaded without certifying an interval or handing
+            // out a cursor, so a reopened pane is not silently truncated to the
+            // latest window (global-contracts: isolated stored seeds merge
+            // without certifying an interval).
+            let olderRows: readonly TranscriptItemRow<unknown>[] = [];
+            if (cut.authorityValid) {
+              const older = await this.#cache.getOlderWindow(
+                this.#binding.historyKey,
+                latestStart,
+                limit - window.rows.length,
+                this.#baselineIdentity,
+              );
+              if (!older.stale) olderRows = older.rows;
+            }
+            if (olderRows.length === 0) {
+              olderRows = await this.#cache.getLatest(this.#binding.historyKey, limit);
+            }
+            const boundedOlder = olderRows.filter(
+              (row) =>
+                comparePosition(row.position, latestStart) < 0 && comparePosition(row.position, loadedStart) >= 0,
             );
-            if (!older.stale) {
-              window = {
-                ...window,
-                rows: [...older.rows.filter((row) => comparePosition(row.position, loadedStart) >= 0), ...window.rows],
-              };
+            if (boundedOlder.length > 0) {
+              window = { ...window, rows: [...boundedOlder, ...window.rows] };
             }
           }
           if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
