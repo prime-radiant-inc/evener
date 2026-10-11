@@ -115,14 +115,23 @@ func rootToolCalls(t *testing.T, root *Session) []llm.ToolCallData {
 // the codename: delegate_send (right), communicate (wrong: it reaches the
 // parent's own human partner), or none. Only a call whose arguments carry the
 // codename answers; narration such as "starting the delegate" does not. The
-// first answering call decides.
+// parent knows the codename from its brief, so it may repeat it in a
+// communicate message as well; a delegate_send carrying it is the answer
+// whenever there is one.
 func classifyParentAnswer(calls []llm.ToolCallData, codename string) string {
+	answer := "none"
 	for _, call := range calls {
-		if (call.Name == "delegate_send" || call.Name == "communicate") && strings.Contains(string(call.Arguments), codename) {
-			return call.Name
+		if !strings.Contains(string(call.Arguments), codename) {
+			continue
+		}
+		switch call.Name {
+		case "delegate_send":
+			return "delegate_send"
+		case "communicate":
+			answer = "communicate"
 		}
 	}
-	return "none"
+	return answer
 }
 
 func TestClassifyParentAnswer(t *testing.T) {
@@ -139,7 +148,7 @@ func TestClassifyParentAnswer(t *testing.T) {
 		{"delegate_send with the codename", []llm.ToolCallData{call("delegate", `{"prompt":"ask me"}`), call("delegate_send", `{"to":"dlg_1","message":"It is HALCYON-42"}`)}, "delegate_send"},
 		{"communicate update with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":false}`)}, "communicate"},
 		{"terminal communicate with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":true}`)}, "communicate"},
-		{"first answer decides", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":false}`), call("delegate_send", `{"message":"HALCYON-42"}`)}, "communicate"},
+		{"delegate_send wins over an earlier communicate", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":false}`), call("delegate_send", `{"message":"HALCYON-42"}`)}, "delegate_send"},
 	} {
 		if got := classifyParentAnswer(tc.calls, "HALCYON-42"); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
