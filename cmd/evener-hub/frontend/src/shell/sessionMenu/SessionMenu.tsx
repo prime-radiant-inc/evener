@@ -22,7 +22,7 @@
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useState } from "react";
-import { Button, Dialog, FormRow, Input, Menu, type MenuEntry, VisuallyHidden } from "../../widgets";
+import { Button, Dialog, FormRow, Input, Menu, type MenuEntry } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
 import { isTopLevelSession } from "../rail/sessionKind";
@@ -231,14 +231,12 @@ export function SessionMenu({
       <Menu
         variant="quiet"
         triggerTabIndex={triggerTabIndex}
-        trigger={
-          <>
-            <span aria-hidden="true" data-session-actions-ref={sessionRef} data-pane-id={paneId}>
-              ⋯
-            </span>
-            <VisuallyHidden>{triggerLabel}</VisuallyHidden>
-          </>
+        icon={
+          <span data-session-actions-ref={sessionRef} data-pane-id={paneId}>
+            ⋯
+          </span>
         }
+        label={triggerLabel}
         items={items}
       />
 

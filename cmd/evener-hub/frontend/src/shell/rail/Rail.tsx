@@ -70,7 +70,6 @@ import {
   type TreeProps,
   type TreeRowInfo,
   useToasts,
-  VisuallyHidden,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -417,12 +416,8 @@ function PinnedRailSection({
         action={
           <Menu
             variant="quiet"
-            trigger={
-              <>
-                <span aria-hidden="true">⋯</span>
-                <VisuallyHidden>{`Actions for ${section.name}`}</VisuallyHidden>
-              </>
-            }
+            icon="⋯"
+            label={`Actions for ${section.name}`}
             items={[
               { id: "rename", label: "Rename", onSelect: onRename },
               { id: "delete", label: "Delete", onSelect: onDelete },

@@ -50,11 +50,22 @@ function isActionable(entry: MenuEntry): boolean {
 
 export type MenuVariant = "default" | "quiet";
 
-export interface MenuProps {
-  /** Visible content of the trigger button Menu renders (its own aria and
-   * open/close wiring - see this task's report for why the trigger isn't
-   * the imported Button widget). */
-  trigger: ReactNode;
+/** The trigger's content: visible content that also names it, or an
+ * icon-only trigger whose accessible name is `label`. The icon-only form is
+ * square at IconButton's sm size (28px) with the same phone tap floor, and
+ * its glyph is hidden from assistive tech. */
+export type MenuTriggerContent =
+  | {
+      /** Visible content of the trigger button Menu renders (its own aria and
+       * open/close wiring - see this task's report for why the trigger isn't
+       * the imported Button widget). */
+      trigger: ReactNode;
+      icon?: never;
+      label?: never;
+    }
+  | { icon: ReactNode; label: string; trigger?: never };
+
+export type MenuProps = MenuTriggerContent & {
   items: MenuEntry[];
   /** Forwarded to the trigger button's own tabIndex. Omitted (the default)
    * leaves the button's native tabIndex (0) untouched - every existing
@@ -81,12 +92,14 @@ export interface MenuProps {
    * visually loud. Omitted (the default) keeps every existing consumer's
    * look unchanged. */
   variant?: MenuVariant;
-}
+};
 
 const CLASS = {
   root: requireClass(styles.root, "menu.module.css", "root"),
   trigger: requireClass(styles.trigger, "menu.module.css", "trigger"),
   triggerQuiet: requireClass(styles.triggerQuiet, "menu.module.css", "triggerQuiet"),
+  triggerIcon: requireClass(styles.triggerIcon, "menu.module.css", "triggerIcon"),
+  triggerGlyph: requireClass(styles.triggerGlyph, "menu.module.css", "triggerGlyph"),
   popup: requireClass(styles.popup, "menu.module.css", "popup"),
   item: requireClass(styles.item, "menu.module.css", "item"),
   itemDisabled: requireClass(styles.itemDisabled, "menu.module.css", "itemDisabled"),
@@ -153,7 +166,7 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * pane - leaves the trigger's rect exactly where it was, so the menu stays
  * open (kata: the session's "..." menu must survive transcript scrolling).
  */
-export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: MenuProps) {
+export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "default" }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
   const [position, setPosition] = useState<MenuPosition | null>(null);
@@ -344,7 +357,14 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
     };
   }, [isOpen, closeMenu]);
 
-  const triggerClassName = variant === "quiet" ? `${CLASS.trigger} ${CLASS.triggerQuiet}` : CLASS.trigger;
+  const iconOnly = label !== undefined;
+  const triggerClassName = [
+    CLASS.trigger,
+    variant === "quiet" ? CLASS.triggerQuiet : "",
+    iconOnly ? CLASS.triggerIcon : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div ref={rootRef} className={CLASS.root}>
@@ -354,12 +374,19 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
         type="button"
         tabIndex={triggerTabIndex}
         className={triggerClassName}
+        aria-label={label}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         onClick={handleTriggerClick}
         onKeyDown={handleTriggerKeyDown}
       >
-        {trigger}
+        {iconOnly ? (
+          <span className={CLASS.triggerGlyph} aria-hidden="true">
+            {icon}
+          </span>
+        ) : (
+          trigger
+        )}
       </button>
       {isOpen &&
         position &&
