@@ -879,31 +879,92 @@ func TestEnvFloorKnowsExplicitGoSettingsDespiteAGoEnvFile(t *testing.T) {
 	}
 }
 
-// The floor reads the go env file outside the sandbox, so it never follows one
-// the session retargeted at a masked file: that file's settings would reach
-// the spawn's environment. Its values stay out of the floored GOPATH.
-func TestEnvFloorNeverReadsAGoEnvFileLinkedIntoAMask(t *testing.T) {
-	base := t.TempDir()
-	secretDir := filepath.Join(base, "secret")
-	if err := os.MkdirAll(secretDir, 0o755); err != nil {
-		t.Fatal(err)
+// goEnvLeakFixture builds, outside /tmp (bwrap's private mount would hide it
+// on its own), a masked directory holding a go env file whose GOPATH must
+// never reach a spawn, an ordinary one, and a go env file path in the
+// workspace for a test to link at either.
+func goEnvLeakFixture(t *testing.T) (secret, plain, envFile string, policyFor func(masked string) ResolvedPolicy) {
+	t.Helper()
+	base, err := os.MkdirTemp("/var/tmp", "evener-goenv-mask-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
 	}
-	secret := filepath.Join(secretDir, "go.env")
-	if err := os.WriteFile(secret, []byte("GOPATH=/leaked/value\n"), 0o600); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	for name, body := range map[string]string{"secret/go.env": "GOPATH=/leaked/value\n", "plain/go.env": "GOPATH=/plain/value\n"} {
+		p := filepath.Join(base, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	envFile := filepath.Join(base, "work", "go.env")
+	envFile = filepath.Join(base, "work", "go.env")
 	if err := os.MkdirAll(filepath.Dir(envFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyFor = func(masked string) ResolvedPolicy {
+		return ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, MaskedPaths: []string{masked}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: envFile}}
+	}
+	return filepath.Join(base, "secret", "go.env"), filepath.Join(base, "plain", "go.env"), envFile, policyFor
+}
+
+func flooredGoPath(policy ResolvedPolicy, envFile string) string {
+	v, _ := envValue(ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=" + envFile}, policy, "/tmp/evener-session-xyz"), "GOPATH")
+	return v
+}
+
+// The floor reads the go env file outside the sandbox, so it never follows one
+// the session retargeted at a masked file, by its final target or through a
+// masked directory on the way: that file's settings would reach the spawn's
+// environment. An ordinary file's GOPATH still follows the scratch.
+func TestEnvFloorNeverReadsAGoEnvFileLinkedIntoAMask(t *testing.T) {
+	secret, plain, envFile, policyFor := goEnvLeakFixture(t)
+	secretDir := filepath.Dir(secret)
+	if err := os.Symlink(plain, envFile); err != nil {
+		t.Fatal(err)
+	}
+	if v := flooredGoPath(policyFor(secretDir), envFile); !strings.Contains(v, "/plain/value") {
+		t.Fatalf("fixture: an ordinary go env file's GOPATH must follow the scratch, got %q", v)
+	}
+	if err := os.Remove(envFile); err != nil {
+		t.Fatal(err)
+	}
+	// Through the masked directory and back out with "..".
+	// filepath.Join would clean the ".." away, so the target is spelled raw.
+	if err := os.Symlink(secretDir+"/../plain/go.env", envFile); err != nil {
+		t.Fatal(err)
+	}
+	if v := flooredGoPath(policyFor(secretDir), envFile); strings.Contains(v, "/plain/value") {
+		t.Errorf("a go env file reached through a masked directory must not be read, got GOPATH=%q", v)
+	}
+	if err := os.Remove(envFile); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(secret, envFile); err != nil {
 		t.Fatal(err)
 	}
 	for _, masked := range []string{secretDir, envFile} {
-		policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, MaskedPaths: []string{masked}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: envFile}}
-		out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=" + envFile}, policy, "/tmp/evener-session-xyz")
-		if v, _ := envValue(out, "GOPATH"); strings.Contains(v, "/leaked/value") {
+		if v := flooredGoPath(policyFor(masked), envFile); strings.Contains(v, "/leaked/value") {
 			t.Errorf("mask %s: a masked go env file's settings must not reach the spawn, got GOPATH=%q", masked, v)
 		}
+	}
+}
+
+// The judgement holds for the file actually opened: a link swapped to a masked
+// file between the check and the open (a sandboxed background process racing
+// the floor) is caught on the opened descriptor.
+func TestEnvFloorJudgesTheGoEnvFileItOpened(t *testing.T) {
+	secret, plain, envFile, policyFor := goEnvLeakFixture(t)
+	if err := os.Symlink(plain, envFile); err != nil {
+		t.Fatal(err)
+	}
+	beforeGoEnvFileOpen = func(string) {
+		_ = os.Remove(envFile)
+		_ = os.Symlink(secret, envFile)
+	}
+	t.Cleanup(func() { beforeGoEnvFileOpen = func(string) {} })
+	if v := flooredGoPath(policyFor(filepath.Dir(secret)), envFile); strings.Contains(v, "/leaked/value") {
+		t.Errorf("a go env file swapped to a masked target before the open must not be read, got GOPATH=%q", v)
 	}
 }

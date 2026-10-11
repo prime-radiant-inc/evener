@@ -224,13 +224,24 @@ const goEnvFileLimit = 64 << 10
 // runs before any sandbox exists, so a FIFO (which would block session start),
 // a device such as /dev/zero (which never ends) or an oversized file is refused.
 func (hostProbeSystem) readFile(path string) ([]byte, error) {
-	// Open without blocking (a FIFO's open waits for a writer), then judge the
-	// descriptor itself, so a file swapped in after a path check cannot slip by.
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+	f, err := openGoEnvFile(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	return readGoEnvFile(f, path)
+}
+
+// openGoEnvFile opens a go env file without blocking (a FIFO's open waits for
+// a writer); readGoEnvFile then judges the descriptor itself, so a file
+// swapped in after a path check cannot slip by.
+func openGoEnvFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|openNonblock, 0)
+}
+
+// readGoEnvFile reads an opened go env file: a regular file of at most
+// goEnvFileLimit bytes.
+func readGoEnvFile(f *os.File, path string) ([]byte, error) {
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -412,6 +423,12 @@ func readGoEnvFileSettings(system probeSystem, path string) (map[string]string, 
 	if err != nil {
 		return nil, err
 	}
+	return parseGoEnvSettings(data), nil
+}
+
+// parseGoEnvSettings returns the Go cache settings a go env file's contents
+// set.
+func parseGoEnvSettings(data []byte) map[string]string {
 	settings := map[string]string{}
 	for line := range strings.SplitSeq(string(data), "\n") {
 		key, val, ok := strings.Cut(line, "=")
@@ -419,7 +436,7 @@ func readGoEnvFileSettings(system probeSystem, path string) (map[string]string, 
 			settings[key] = val
 		}
 	}
-	return settings, nil
+	return settings
 }
 
 // goEnvFile returns the go env file the go command reads: $GOENV, or

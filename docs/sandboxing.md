@@ -486,7 +486,10 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   directory, or one whose root has since been removed, is redirected into the
   session scratch instead. So are all three Go settings when the spawn's go
   env file can't be judged: named by a relative path, or not the file read at
-  session start. When the spawn's go env file exists but cannot be read at
+  session start, or hidden from the spawn (under a mask, or behind a link in
+  bwrap's private /tmp or /dev, at any step of its link chain; the file is
+  judged on the descriptor actually opened). When the spawn's go env file
+  exists but cannot be read at
   that spawn (a FIFO, a device, an oversized file), or is named by a relative
   path the floor cannot check against the spawn's directory, the Go settings
   go to the scratch and that spawn gets `GOENV=off`, since reading it would

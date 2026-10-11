@@ -4,10 +4,10 @@ package execenv
 
 import (
 	"errors"
-	"os"
-	"strconv"
 
 	"golang.org/x/sys/unix"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 var secureOpenat2 = unix.Openat2
@@ -22,9 +22,7 @@ var canonicalRecheckRequired = false
 // /proc/self/fd. Used to re-verify the denylist against the real (true-cased)
 // path after opening — the seam that closes case/normalization-insensitive
 // masking bypasses on other platforms.
-func canonicalPathOfFd(fd int) (string, error) {
-	return os.Readlink("/proc/self/fd/" + strconv.Itoa(fd))
-}
+func canonicalPathOfFd(fd int) (string, error) { return sandbox.FdPath(fd) }
 
 // openBeneathRoot opens rel beneath rootFd such that no symlink is traversed and
 // the result can never escape rootFd. On Linux this is a single openat2(2) with

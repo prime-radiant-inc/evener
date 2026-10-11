@@ -330,34 +330,60 @@ func spawnGoEnvFileRefused(env []string, goos string) bool {
 // spawned go reads it at every run (a `go env -w` mid-session changes what the
 // next spawn does). ok is false when the file exists but cannot be read, or
 // when the spawn cannot see it (goEnvFileHidden); a missing file has no
-// settings.
+// settings. The floor reads it outside the sandbox, so the file actually
+// opened is judged on its descriptor as well: a link a sandboxed process swaps
+// to a masked file between the check and the open is refused, not read into
+// the spawn's environment.
 func currentGoEnvSettings(policy ResolvedPolicy, path string) (map[string]string, bool) {
 	if goEnvFileHidden(policy, path) {
 		return nil, false
 	}
-	settings, err := readGoEnvFileSettings(hostProbeSystem{}, path)
+	beforeGoEnvFileOpen(path)
+	f, err := openGoEnvFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return map[string]string{}, true
 	}
-	return settings, err == nil
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = f.Close() }()
+	opened, err := FdPath(int(f.Fd()))
+	if err != nil || underAMask(policy, StripDataVolumeAlias(opened)) {
+		return nil, false
+	}
+	data, err := readGoEnvFile(f, path)
+	if err != nil {
+		return nil, false
+	}
+	return parseGoEnvSettings(data), true
 }
 
-// goEnvFileHidden reports whether the spawn cannot see the go env file at path:
-// spelled in, or linked at any step through, bwrap's private /tmp or /dev, or
-// under a mask at any step of its link chain (physicalPlaces). The floor reads
-// the file outside the sandbox, so it must never follow one the session
-// retargeted at a masked file: that file's settings would reach the spawn's
-// environment.
+// beforeGoEnvFileOpen runs between currentGoEnvSettings' path check and its
+// open, a seam for tests that race the two.
+var beforeGoEnvFileOpen = func(string) {}
+
+// goEnvFileHidden reports whether the spawn cannot see the go env file at
+// path: under a mask at any step of resolving it (every link and directory
+// walkPhysical visits), or, outside Seatbelt, spelled in or linked through
+// bwrap's private /tmp or /dev.
 func goEnvFileHidden(policy ResolvedPolicy, path string) bool {
-	if inPrivateMount(path) || linksThroughPrivateMount(path) {
+	if policy.Backend != BackendSeatbelt && (inPrivateMount(path) || linksThroughPrivateMount(path)) {
 		return true
 	}
-	masked := func(p string) bool {
-		return slices.ContainsFunc(policy.MaskedPaths, func(m string) bool {
-			return isUnderAnyRoot(p, []string{m, physicalLanding(m)})
-		})
-	}
-	return masked(path) || slices.ContainsFunc(physicalPlaces(path), masked)
+	hidden := underAMask(policy, path)
+	walkPhysical(path, func(p string, _, _ bool) bool {
+		hidden = hidden || underAMask(policy, p)
+		return hidden
+	})
+	return hidden
+}
+
+// underAMask reports whether p lies at or under a masked path, by its spelling
+// or where the mask resolves.
+func underAMask(policy ResolvedPolicy, p string) bool {
+	return slices.ContainsFunc(policy.MaskedPaths, func(m string) bool {
+		return isUnderAnyRoot(p, []string{m, physicalLanding(m)})
+	})
 }
 
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
