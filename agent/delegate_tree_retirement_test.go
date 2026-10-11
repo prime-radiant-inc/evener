@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
@@ -1570,6 +1571,49 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 	claim, state, err = c.TryClaim(true)
 	if err != nil || claim == nil {
 		t.Fatalf("settled quiet source blocks: %+v %v", state, err)
+	}
+	c.Abort(claim, "")
+}
+
+// A daemon steer the root has queued but not consumed is retained input: it
+// blocks retirement as root-owned input, retirement leaves the persisted queue
+// bytes alone, and consuming it lets retirement claim.
+func TestRetirementRetainedRootSteeringBlocksUntilConsumed(t *testing.T) {
+	t.Parallel()
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	if err := root.SteerKind("retained-root-sentinel", events.SteeringKindAgentMessage); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	steering, _, err := loadQueues(root.stateDir, root.ID())
+	if err != nil || len(steering) != 1 || steering[0].Text != "retained-root-sentinel" {
+		t.Fatalf("persisted root queue missing: %#v %v", steering, err)
+	}
+	claim, state, err := retirementClaimAfterFirstTurn(root, c)
+	if err != nil || claim != nil {
+		t.Fatalf("retained root input admitted retirement: %+v %v", state, err)
+	}
+	blockers, _, err := tree.retirementEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
+		return b.Category == "input" && b.SessionID == root.ID() && b.DelegateID == ""
+	}) || len(root.retirementInputBlockers()) == 0 {
+		t.Fatalf("retained root input not reported as root-owned: %+v", blockers)
+	}
+	preserved, err := os.ReadFile(queuesFilePath(root.stateDir, root.ID()))
+	if err != nil || !bytes.Equal(original, preserved) {
+		t.Fatalf("retirement changed persisted root input: %v", err)
+	}
+	root.injectDrainedSteering()
+	claim, state, err = retirementClaimAfterFirstTurn(root, c)
+	if err != nil || claim == nil {
+		t.Fatalf("consumed root input blocks: %+v %v", state, err)
 	}
 	c.Abort(claim, "")
 }

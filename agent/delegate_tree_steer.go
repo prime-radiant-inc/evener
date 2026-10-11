@@ -50,12 +50,11 @@ type delegateSteeringClaim struct {
 }
 
 type delegateModelRequestClaim struct {
-	token                uint64
-	lease                delegateLease
-	runtime              *Session
-	steeringIDs          []string
-	steeringProvenance   map[string]*provenance.Causal
-	testBeforeProvenance func()
+	token              uint64
+	lease              delegateLease
+	runtime            *Session
+	steeringIDs        []string
+	steeringProvenance map[string]*provenance.Causal
 }
 
 type delegateTranscriptEntry struct {
@@ -306,9 +305,6 @@ func (c *delegateTreeController) CompleteModelRequest(claim *delegateModelReques
 	expanded := expandHistory(history, scope)
 	runtime := claim.runtime
 	c.mu.Unlock()
-	if claim.testBeforeProvenance != nil {
-		claim.testBeforeProvenance()
-	}
 	runtime.unionActiveProvenance(consumedProvenance)
 	c.mu.Lock()
 	if c.modelClaims[claim.token] != claim {
