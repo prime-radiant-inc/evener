@@ -1552,6 +1552,10 @@ func middleTrim(text string, edge int) string {
 // hold per the summary prompt, and the turn reminds the model where to read
 // them verbatim. The newest message is held to the ceiling too: when it alone
 // exceeds it, its middle is trimmed (transcript permitting).
+// The ceiling applies with or without a kept transcript: it keeps the session
+// inside the model's window, and the left-out messages are still summarized,
+// every one (condensePartnerMessages), as the #4309 ruling chose. Without a
+// transcript the reminder only says they were summarized.
 func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool, ceiling int) (markdown string, summarized []checkpointConversationEntry) {
 	var partner []checkpointConversationEntry
 	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
@@ -1598,13 +1602,16 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 // it fails rather than cut any short.
 func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
 	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
-	for range maxRounds {
+	for round := 0; ; round++ {
 		total := 0
 		for _, line := range lines {
 			total += len(line)
 		}
 		if total <= budget {
 			return strings.Join(lines, ""), nil
+		}
+		if round == maxRounds {
+			break
 		}
 		var summaries []string
 		for start := 0; start < len(lines); {
@@ -2284,8 +2291,10 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 			// conversation) always arrives whole; the rest of the budget stays
 			// for the turns it precedes. A longer one keeps its head, where
 			// both summary prompts put the permissions and holds it quotes.
+			// Left-out partner messages written first take their share of
+			// the budget from it.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), maxCheckpointChars))
+			b.WriteString(truncText(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent

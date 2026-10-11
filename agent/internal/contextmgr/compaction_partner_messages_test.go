@@ -817,3 +817,52 @@ func TestForceCompact_NonShrinkingBatchSummariesKeepTheCheckpoint(t *testing.T) 
 		t.Fatalf("the standing checkpoint lost the hold")
 	}
 }
+
+// Batch summaries that first fit after the last condensing round are used, not
+// rejected.
+func TestForceCompact_SummariesFittingOnTheLastRoundAreUsed(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(alwaysReplying(func(req llm.Request) string {
+		text := req.Messages[0].Text()
+		if batch, ok := strings.CutPrefix(text, partnerBatchPrompt); ok {
+			return batch[:len(batch)/3] // each round shrinks the text to a third
+		}
+		return emptySummaryReply
+	}))
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	// About 1.3M characters left out: three rounds leave over 40k, the fourth fits.
+	history := partnerFloodHistory(900, 1500, -1)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want the summary built from the last round", history[0].Kind)
+	}
+}
+
+// The summary request stays within the summarizer's history budget when the
+// left-out partner messages come first: the previous compaction gets what is
+// left.
+func TestForceCompact_SummaryRequestStaysInBudgetWithLeftOutMessages(t *testing.T) {
+	var main string
+	client := llm.NewClient()
+	client.Register(alwaysReplying(func(req llm.Request) string {
+		text := req.Messages[0].Text()
+		if strings.HasPrefix(text, partnerBatchPrompt) {
+			return "summary of a batch"
+		}
+		main = text
+		return emptySummaryReply
+	}))
+	cm := NewManager(testProfile("openai", "test", 20_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	// About 38k characters left out (just under the 40k unbatched limit) and a
+	// checkpoint near its 60k cap.
+	history := partnerFloodHistory(38, 1500, -1)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	historyText := len(main) - len(buildSummaryPrompt("", ""))
+	if historyText > 80_000+5_000 {
+		t.Fatalf("the summary request carries %d characters of history, over the summarizer's 80k budget", historyText)
+	}
+}
