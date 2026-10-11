@@ -89,6 +89,15 @@ Use this boundary:
 A provider API key by itself must never cause default tests to issue live
 requests.
 
+## Building web UI
+
+Before adding or changing UI in `cmd/evener-hub/frontend/src`, read
+`docs/developing-evener/design-system.md`. Build from the widget library
+(`src/widgets`, imported through its barrel) and design tokens: no raw
+`<button>`/`<input>`/`<select>`/`<textarea>` outside `src/widgets`, no CSS
+that reaches into a widget's DOM, and no new widget or widget prop without
+asking Jesse first.
+
 ## Frontend gates
 
 Run `make hooks` once per clone: the pre-commit hook formats staged TypeScript
