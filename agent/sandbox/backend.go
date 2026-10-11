@@ -130,6 +130,14 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 // no link on its way sits in a cache root outside that bind (the bind reaches
 // a link's target, not the link a spawn could replace). Whatever the spawn
 // creates there then persists.
+//
+// A link that resolves (to a directory a bind reaches) is not judged here:
+// writes through it land in that bind and persist. Only a spawn that deletes
+// the link and makes a directory in its place writes into the overlay, and
+// that is the spawn choosing the overlay's private copy over the granted
+// storage, which stays intact. A dangling link is different: ordinary writes
+// through it fail, so replacing it is the natural repair, and the overlay over
+// it goes.
 func insideABoundWriteRoot(rp ResolvedPolicy, w string, places []string) bool {
 	links, landing := places[:len(places)-1], places[len(places)-1]
 	return slices.ContainsFunc(bwrapWriteRoots(rp), func(b string) bool {
