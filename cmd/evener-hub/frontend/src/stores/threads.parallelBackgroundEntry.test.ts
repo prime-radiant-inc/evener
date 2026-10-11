@@ -8,7 +8,7 @@ import {
   type ThreadModel,
   type ThreadTurnsListResponse,
 } from "@evener/appwire-client";
-import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
+import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
@@ -19,6 +19,7 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
+  observePendingHydrationRetirementsForTests,
   putThreadModel,
   resetThreadsStoreForTests,
   setProductionEntryCacheForTests,
@@ -208,6 +209,67 @@ describe("background thread claims", () => {
       expect(threadReadRequests(socket)).toHaveLength(1);
     } finally {
       socket.closeFromServer(1000);
+      await background.release();
+      client.close();
+    }
+  });
+
+  test("last-owner retirement releases the pending charge and detaches frames and base model", async () => {
+    const { client, socket } = await connectRealClientWithSocket();
+    const ref = "local:retired-buffer";
+    const background = acquireBackgroundThread(ref);
+    const retirements: Array<{
+      ref: string;
+      retainedNotificationCount: number;
+      hadBaseModel: boolean;
+      notificationCount: number;
+      hasBaseModel: boolean;
+    }> = [];
+    let restoreObserver: (() => void) | undefined;
+    try {
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
+      const initial = threadReadRequests(socket)[0]!;
+      socket.receive({ id: initial.id, result: currentRead(ref) });
+      await background.ready;
+
+      restoreObserver = observePendingHydrationRetirementsForTests((retirement) => retirements.push(retirement));
+      socket.receive({
+        method: "evener/thread/resync",
+        params: { ref, threadId: `thr_${ref}` },
+      });
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(2));
+      const retired = threadReadRequests(socket)[1]!;
+      const update = textDelta(ref, "buffered while snapshot waits");
+      socket.receive({ method: update.method, params: update.params });
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0));
+
+      // R54: held resync leaves retirement work unresolved, so driven and real
+      // clocks reach the same repository stale deadline, no assertion measures time.
+      // Ordinary release is bounded, unlike legacy immediate release. This is
+      // the retirement race's deadline, not the issued RPC's client timeout.
+      // Keep the real-timer resync held until its unchanged late response.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const releasing = background.release();
+        await vi.advanceTimersByTimeAsync(30_000);
+        await releasing;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBe(0);
+      expect(retirements).toEqual([
+        { ref, retainedNotificationCount: 1, hadBaseModel: true, notificationCount: 0, hasBaseModel: false },
+      ]);
+
+      expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1);
+      socket.receive({ id: retired.id, result: currentRead(ref) });
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
+      expect(threadsStore.getState().threads.has(ref)).toBe(false);
+    } finally {
+      restoreObserver?.();
+      for (const request of threadReadRequests(socket)) {
+        socket.receive({ id: request.id, result: currentRead(request.ref) });
+      }
       await background.release();
       client.close();
     }

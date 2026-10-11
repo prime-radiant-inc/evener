@@ -217,54 +217,6 @@ function sharesTranscriptBody(base: ThreadModel, canonical: ThreadModel): boolea
 }
 
 describe("background thread claims", () => {
-  test("last-owner retirement releases the pending charge and detaches frames and base model", async () => {
-    const { client, socket } = await connectRealClientWithSocket();
-    const ref = "local:retired-buffer";
-    const background = acquireBackgroundThread(ref);
-    const retirements: Array<{
-      ref: string;
-      retainedNotificationCount: number;
-      hadBaseModel: boolean;
-      notificationCount: number;
-      hasBaseModel: boolean;
-    }> = [];
-    let restoreObserver: (() => void) | undefined;
-    try {
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
-      const initial = threadReadRequests(socket)[0]!;
-      socket.receive({ id: initial.id, result: currentRead(ref) });
-      await background.ready;
-
-      restoreObserver = observePendingHydrationRetirementsForTests((retirement) => retirements.push(retirement));
-      socket.receive({
-        method: "evener/thread/resync",
-        params: { ref, threadId: `thr_${ref}` },
-      });
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(2));
-      const retired = threadReadRequests(socket)[1]!;
-      const update = textDelta(ref, "buffered while snapshot waits");
-      socket.receive({ method: update.method, params: update.params });
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBeGreaterThan(0));
-
-      await background.release();
-      expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBe(0);
-      expect(retirements).toEqual([
-        { ref, retainedNotificationCount: 1, hadBaseModel: true, notificationCount: 0, hasBaseModel: false },
-      ]);
-
-      socket.receive({ id: retired.id, result: currentRead(ref) });
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
-      expect(threadsStore.getState().threads.has(ref)).toBe(false);
-    } finally {
-      restoreObserver?.();
-      for (const request of threadReadRequests(socket)) {
-        socket.receive({ id: request.id, result: currentRead(request.ref) });
-      }
-      await background.release();
-      client.close();
-    }
-  });
-
   test("last pane release detaches its pending frames and base model", async () => {
     const { client, socket } = await connectRealClientWithSocket();
     const ref = "local:retired-pane-buffer";
