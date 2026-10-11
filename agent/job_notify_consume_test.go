@@ -458,3 +458,29 @@ func TestUnpersistedKeptForegroundShellIsRenotifiedOnRestore(t *testing.T) {
 		t.Fatalf("restore queued %d notification(s), want 1 for a reply that never persisted", got)
 	}
 }
+
+// TestKeptForegroundShellTranscriptFailureLeavesNotificationUnsettled pins
+// that the settlement waits for a reply that is actually durable: when the
+// transcript write of a kept shell's reply fails, the caller never got it, so
+// the job is left for restore to arm.
+func TestKeptForegroundShellTranscriptFailureLeavesNotificationUnsettled(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	call, result, jobID := keptForegroundShellCall(t, s)
+
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	writer, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: s.ID()})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	s.transcript = writer
+	fs.fail = true
+
+	err = s.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tooldefs.ExecResult{result})
+	if !errors.Is(err, errInjectedTranscriptWrite) {
+		t.Errorf("persistToolResults error = %v, want %v", err, errInjectedTranscriptWrite)
+	}
+	if rec := loadShellRecord(t, s.jobManager, jobID); rec.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("terminal_notification_state = %q after a failed reply write, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
+	}
+}
