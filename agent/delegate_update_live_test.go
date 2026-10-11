@@ -111,7 +111,11 @@ wait:
 		if d.runErrUnknown {
 			runErrUnknown++
 		}
-		if d.runErr != nil && !isModelResponseFailure(d.runErr.Error()) {
+		// A delegate the model stopped (job_stop) ends canceled; that is model
+		// behavior, named in the RESULT line, not a harness failure.
+		if errors.Is(d.runErr, context.Canceled) {
+			modelFailures = append(modelFailures, "delegate canceled")
+		} else if d.runErr != nil && !isModelResponseFailure(d.runErr.Error()) {
 			t.Fatalf("a delegate's run failed, so this run says nothing about the model: %v", d.runErr)
 		}
 		for _, failure := range turnFailures(d.entries) {
@@ -227,26 +231,25 @@ func isModelResponseFailure(message string) bool {
 }
 
 // childReceivedCodename reports whether the delegate was handed the codename
-// after its brief, the first user-input entry (environment context is
-// harness-written and precedes it): received is true only when a later
-// user-role entry (the parent's steering) carries it. A codename already
+// after its brief. The parent's delegate_send arrives in the delegate's
+// transcript as a user-input entry, as does the brief (the first one); harness
+// entries such as environment and notes context, steering nudges and
+// compaction summaries are not the parent and never count. received is true
+// only when a later user-input entry carries the codename. A codename already
 // in the brief means the delegate never had to ask, so briefLeaked marks runs
 // that cannot show an answer arriving. Files the delegate wrote do not count.
 func childReceivedCodename(entries []transcript.Entry, codename string) (received, briefLeaked bool) {
 	seenBrief := false
 	for _, e := range entries {
-		if e.Turn.Message.Role != llm.RoleUser {
+		if e.Turn.Kind != schema.TurnUserInput {
 			continue
 		}
 		carries := strings.Contains(e.Turn.Message.Text(), codename)
-		switch {
-		case !seenBrief && e.Turn.Kind == schema.TurnUserInput:
+		if !seenBrief {
 			seenBrief, briefLeaked = true, carries
-		case !seenBrief, e.Turn.Kind == schema.TurnEnvironment, e.Turn.Kind == schema.TurnNotesContext:
-			// Harness context, and anything before the brief, is not the parent.
-		default:
-			received = received || carries
+			continue
 		}
+		received = received || carries
 	}
 	return received && !briefLeaked, briefLeaked
 }
@@ -283,6 +286,8 @@ func TestChildReceivedCodename(t *testing.T) {
 		{"parent never answered", []transcript.Entry{user("ask me"), assistant("waiting"), user("keep going")}, false, false},
 		{"codename in the brief", []transcript.Entry{user("the codename is HALCYON-42"), user("HALCYON-42 again")}, false, true},
 		{"codename in the brief after environment context", []transcript.Entry{environment("cwd: /work"), user("the codename is HALCYON-42")}, false, true},
+		{"steering nudge carries the codename", []transcript.Entry{user("ask me"), harness(schema.TurnSteering, "HALCYON-42")}, false, false},
+		{"compaction summary carries the codename", []transcript.Entry{user("ask me"), harness(schema.TurnSummary, "HALCYON-42")}, false, false},
 		{"notes context carries the codename after the brief", []transcript.Entry{user("ask me"), notes("note: HALCYON-42")}, false, false},
 		{"codename before the brief is not an answer", []transcript.Entry{environment("HALCYON-42"), user("ask me")}, false, false},
 		{"answer steered in after environment context", []transcript.Entry{environment("cwd: /work"), user("ask me"), user("It is HALCYON-42")}, true, false},
