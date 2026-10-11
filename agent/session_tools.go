@@ -1522,6 +1522,9 @@ func (s *Session) rebuildToolDefsCache() {
 			if s.hasHumanPartnerToAsk() {
 				defs[i] = tool.WithCommunicateEndReason(defs[i])
 			}
+			if s.reportsToParent() {
+				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
+			}
 		} else {
 			// Same wire contract as wireToolDef: intent is required in the
 			// advertised schema, optional in the registry's validation schema.
