@@ -182,6 +182,53 @@ func (s *Session) hasPendingStableSteering() bool {
 	return s != nil && s.owningDelegateID != "" && s.delegateController != nil && s.delegateController.generationOwesSteering(s.owningDelegateID)
 }
 
+// pendingDelegateUpdateAttentionIDs lists the updates from this session's own
+// delegates that no turn has consumed. A delegate run parked in its
+// finalization drain reads this to run a turn for them: a parent waiting on
+// its delegates is idle, and an update wakes an idle parent, so a delegate's
+// mid-work question is not hidden until that delegate finishes. A child's
+// report waits for the generation's end, where the next attention generation
+// takes it with everything else pending. The root's attention has its own
+// rail, so this is always empty there. A failed transcript read reads as no
+// update: the drain keeps waiting, and the generation's end still delivers
+// the attention.
+func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
+	if s == nil || s.owningDelegateID == "" {
+		return nil
+	}
+	ids, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return nil
+	}
+	var updates []string
+	for _, attentionID := range ids {
+		if isDelegateUpdateAttentionID(attentionID) {
+			updates = append(updates, attentionID)
+		}
+	}
+	return updates
+}
+
+// presentedDelegateUpdateAttentionIDs lists the pending updates the turn that
+// just ran showed the model: the ones its settled requests credited
+// (attentionCoveredIDs). An update that arrived after the turn's last request
+// is not among them.
+func (s *Session) presentedDelegateUpdateAttentionIDs() []string {
+	pending := s.pendingDelegateUpdateAttentionIDs()
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return slices.DeleteFunc(pending, func(id string) bool {
+		_, covered := s.attentionCoveredIDs[id]
+		return !covered
+	})
+}
+
+// hasPendingDelegateUpdateAttention reports whether any update from this
+// session's own delegates is unconsumed.
+func (s *Session) hasPendingDelegateUpdateAttention() bool {
+	return len(s.pendingDelegateUpdateAttentionIDs()) != 0
+}
+
 // autonomyInFlight reports whether autonomous work will move this session
 // without user input: pending job notifications, queued input, a pending
 // delegate report, or a working child subagent (hasWorkingSubagent). Reads

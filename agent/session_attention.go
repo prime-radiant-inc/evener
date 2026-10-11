@@ -815,11 +815,8 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if len(covered) == 0 {
 		return nil
 	}
-	if err := s.resolveAttentionDurably(covered, delegateAttentionConsumed); err != nil {
-		return err
-	}
-	s.delegateController.forgetConsumedDelegateAttention(s.owningDelegateID, covered)
-	return nil
+	// The delegate's noted wakes stay; see clearResolvedDelegateAttention.
+	return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
 }
 
 // finishRootDelegateAttentionTurn consumes the exact selected IDs only after a

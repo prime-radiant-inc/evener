@@ -1193,7 +1193,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if err := s.armDelegateAttention(attentionID); err != nil {
 			return err
 		}
-		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded); err != nil {
+		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded, 0); err != nil {
 			return err
 		}
 		s.delegateController.forgetDelegateAttention(plan.delegateID, attentionID)

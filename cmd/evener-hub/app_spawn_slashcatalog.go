@@ -104,7 +104,7 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 	sources, _ := plugin.SkillSources(pluginDirs)
 	catalog := skill.Discover(env, skill.DiscoverOptions{
 		HomeDir:       home,
-		UserSkillsDir: userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"),
+		UserSkillsDir: userdirs.UserSkills(userdirs.DefaultConfigRoot()),
 		ExtraDirs:     preview.resolved.Effective.SkillsDirs,
 		Plugins:       sources,
 	})

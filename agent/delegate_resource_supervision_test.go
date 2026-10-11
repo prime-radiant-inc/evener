@@ -3921,6 +3921,82 @@ func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T)
 	}
 }
 
+// resolvedStableDelegateAttention warms the stable supervision delegate, then
+// appends and opens one attention item on it and resolves that item with
+// disposition, leaving its wake noted. It returns the root's controller and
+// the delegate's ID.
+func resolvedStableDelegateAttention(t *testing.T, attentionID string, disposition delegateAttentionResolution) (*delegateTreeController, string) {
+	t.Helper()
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	controller := root.delegateController
+	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "already handled"); err != nil || !appended {
+		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
+	}
+	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+		t.Fatalf("open stable attention: %v", err)
+	}
+	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, disposition); err != nil {
+		t.Fatalf("resolve stable attention: %v", err)
+	}
+	return controller, fixture.delegateID
+}
+
+// TestClearResolvedDelegateAttentionDropsWakesAfterTheFlagWasLowered pins that
+// the clear reconciles a resolved wake even when the journal fold already
+// lowered NeedsAttention (a closing delegate does): a wake left behind would
+// block retirement of the whole tree with nothing pending in the transcript.
+func TestClearResolvedDelegateAttentionDropsWakesAfterTheFlagWasLowered(t *testing.T) {
+	controller, delegateID := resolvedStableDelegateAttention(t, "delegate:resolved-after-the-flag-lowered", delegateAttentionConsumed)
+	controller.mu.Lock()
+	_, err := controller.appendLocked(delegatestore.Event{
+		Kind:             delegatestore.EventDelegateAttentionChanged,
+		DelegateID:       delegateID,
+		AttentionChanged: &delegatestore.DelegateAttentionChanged{NeedsAttention: false},
+	})
+	controller.mu.Unlock()
+	if err != nil {
+		t.Fatalf("lower the flag: %v", err)
+	}
+
+	if err := controller.clearResolvedDelegateAttention(delegateID); err != nil {
+		t.Fatalf("clear after the flag was lowered: %v", err)
+	}
+	controller.mu.Lock()
+	remaining := len(attentionWakeIDsOf(controller, delegateID))
+	controller.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("wakes after the clear = %d, want 0", remaining)
+	}
+}
+
+// TestClearResolvedDelegateAttentionLeavesWakesToAPendingStop pins that the
+// clear does not forget a wake while a stop is pending: the stop's cleanup owns
+// it and renews the durability of its resolution marker before forgetting it.
+func TestClearResolvedDelegateAttentionLeavesWakesToAPendingStop(t *testing.T) {
+	const attentionID = "delegate:resolved-during-a-stop"
+	controller, delegateID := resolvedStableDelegateAttention(t, attentionID, delegateAttentionDiscarded)
+	controller.mu.Lock()
+	controller.durable[delegateID].PendingStopSeq = 1
+	controller.mu.Unlock()
+
+	if err := controller.clearResolvedDelegateAttention(delegateID); err != nil {
+		t.Fatalf("clear during a pending stop: %v", err)
+	}
+	controller.mu.Lock()
+	_, kept := attentionWakeIDsOf(controller, delegateID)[attentionID]
+	controller.mu.Unlock()
+	if !kept {
+		t.Fatal("the clear forgot a wake the pending stop's cleanup owns")
+	}
+}
+
 // warmStableSupervisionDelegate starts the warm run and acknowledges its result.
 // It does NOT wait for that run to quiesce: the run's finalizer outlives the
 // acknowledged result, because `running` goes false at the top of the finalize
