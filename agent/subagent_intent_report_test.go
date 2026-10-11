@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -210,9 +211,9 @@ func intentRequestHasToolCall(req llm.Request, name string) bool {
 // intentRequestLastUserText is the newest non-empty user message's text, the
 // spawned child's assignment.
 func intentRequestLastUserText(req llm.Request) string {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == llm.RoleUser {
-			if text := req.Messages[i].Text(); text != "" {
+	for _, message := range slices.Backward(req.Messages) {
+		if message.Role == llm.RoleUser {
+			if text := message.Text(); text != "" {
 				return text
 			}
 		}
