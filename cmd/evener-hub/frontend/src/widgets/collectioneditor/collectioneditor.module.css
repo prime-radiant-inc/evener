@@ -58,15 +58,22 @@
   font-size: var(--font-size-caption);
 }
 
+/* Bottom-aligned so Add sits level with the field even when a caller's
+ * renderAddField sets a visible label above it. */
 .addForm {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: var(--space-2);
 }
 
+/* Takes the row's free width; a renderAddField picker (PathField,
+ * ModelCatalog) is a direct flex child here, so its stretched trigger fills
+ * it. Several caller fields (envMap's name and value) sit side by side. */
 .addField {
   display: flex;
-  flex: 1;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
 }
 

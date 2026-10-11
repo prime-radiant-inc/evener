@@ -56,9 +56,6 @@ const CLASS = {
   defaultHint: requireClass(styles.defaultHint, "fields.module.css", "defaultHint"),
   radioBlock: requireClass(styles.radioBlock, "fields.module.css", "radioBlock"),
   compositeControls: requireClass(styles.compositeControls, "fields.module.css", "compositeControls"),
-  modelBlock: requireClass(styles.modelBlock, "fields.module.css", "modelBlock"),
-  modelLabel: requireClass(styles.modelLabel, "fields.module.css", "modelLabel"),
-  modelHelp: requireClass(styles.modelHelp, "fields.module.css", "modelHelp"),
 };
 
 function nonEmptyChoices(option: LaunchOption): RadioGroupOption[] {
@@ -243,20 +240,17 @@ export function ScalarField({
   }
 
   if (option.kind === "modelPicker") {
-    // A composite widget, not a single labelable control, so the field label
-    // is a plain span (mirroring the spawn form's own Model field) rather than
-    // a FormRow's <label htmlFor> - the ModelCatalog's inner combobox carries
-    // its own accessible name. loadCatalog is the host-scoped model/list call:
+    // A composite widget, not a single labelable control, so the row is a
+    // FormRow group rather than a <label htmlFor> - the ModelCatalog's inner
+    // combobox carries its own accessible name. loadCatalog is the host-scoped model/list call:
     // the local hub's plain call (launch defaults aren't harness/cwd-scoped
     // the way a live spawn is), or the selected remote host's through
     // evener/host/request.
     return (
-      <div className={CLASS.modelBlock}>
-        <span className={CLASS.modelLabel}>{option.label}</span>
+      <FormRow label={option.label} help={option.description || undefined}>
         <SettingsModelCatalog host={host} value={value} onChange={onChange} emptyLabel={resolvedLabel} />
-        {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
         <DefaultHint text={globalDefaultHint} />
-      </div>
+      </FormRow>
     );
   }
 
