@@ -1175,8 +1175,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 
 		case schema.TurnSteering:
 			// Steering the human partner sent during a turn is their message
-			// too; daemon nudges are not.
-			if text := t.Message.Text(); isPartnerSteering(t) && text != "" {
+			// too, and so is a parent agent's steer into its delegate, which
+			// carries its own attribution; daemon nudges are not.
+			if text := t.Message.Text(); (isPartnerSteering(t) || isParentSteering(t)) && text != "" {
 				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 			}
 
@@ -1876,6 +1877,15 @@ Follow the caller instructions above when deciding what to preserve verbatim and
 // whose words a steer is.
 func isPartnerSteering(t schema.Turn) bool {
 	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceUser
+}
+
+// isParentSteering reports whether a steering turn is the delegate's parent
+// agent speaking into the running turn (delegate_send). Compaction keeps it
+// like the partner's own messages, since it is the instruction the delegate
+// works from, but it is not the human partner's: only isPartnerSteering
+// answers for them.
+func isParentSteering(t schema.Turn) bool {
+	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceParent
 }
 
 // noteElicitationPrompt asks the model, at compaction time, to enumerate the

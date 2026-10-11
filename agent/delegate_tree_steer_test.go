@@ -16,6 +16,34 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// A parent's delegate_send into its running delegate is steering from the
+// parent: source parent, no daemon kind, and the delegate's model reads the
+// attribution line before the parent's words.
+func TestDelegateSteerArrivesFromTheParent(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	fs := afero.NewMemMapFs()
+	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", fs)
+	if _, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "dlg_target", "use drain_log"); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	entries := decodeTranscriptEntries(t, fs, "/dlg_target.jsonl")
+	if len(entries) != 1 {
+		t.Fatalf("delegate transcript = %#v, want one steer", entries)
+	}
+	turn := entries[0].Turn
+	if turn.Kind != schema.TurnSteering || turn.SteeringSource != events.SteeringSourceParent || turn.SteeringKind != "" ||
+		turn.Message.Text() != parentMessageAttribution+"use drain_log" {
+		t.Fatalf("parent steer = %#v, want source parent with the attribution line first", turn)
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if len(runtime.history) != 1 || runtime.history[0].StableTurnID != turn.StableTurnID {
+		t.Fatalf("resident history = %#v, want the same steer", runtime.history)
+	}
+}
+
 func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
@@ -50,7 +78,7 @@ func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	if len(runtime.history) != 1 || runtime.history[0].Message.Text() != "persist me" || runtime.history[0].StableTurnID == "" {
+	if len(runtime.history) != 1 || runtime.history[0].Message.Text() != parentMessageAttribution+"persist me" || runtime.history[0].StableTurnID == "" {
 		t.Fatalf("durable steering history = %#v", runtime.history)
 	}
 }
@@ -122,7 +150,7 @@ func TestDelegateControllerBeginModelRequestBindsPendingEntriesOnce(t *testing.T
 	if err != nil {
 		t.Fatalf("BeginModelRequest: %v", err)
 	}
-	if got := []string{history[0].Text(), history[1].Text()}; !reflect.DeepEqual(got, []string{"first", "second"}) {
+	if got := []string{history[0].Text(), history[1].Text()}; !reflect.DeepEqual(got, []string{parentMessageAttribution + "first", parentMessageAttribution + "second"}) {
 		t.Fatalf("bound history = %#v", got)
 	}
 	c.mu.Lock()
@@ -187,7 +215,7 @@ func TestDelegateControllerBoundSteeringLegacyBindingWithoutEvidenceDoesNotPanic
 	if err != nil {
 		t.Fatalf("complete legacy model request: %v", err)
 	}
-	if len(history) != 1 || history[0].Text() != "legacy steering" {
+	if len(history) != 1 || history[0].Text() != parentMessageAttribution+"legacy steering" {
 		t.Fatalf("legacy bound history = %#v, want projected steering", history)
 	}
 	c.mu.Lock()
@@ -258,7 +286,7 @@ func TestDelegateControllerBeginModelRequestProjectsInFlightSteersAfterResponseO
 	for i := range request {
 		got[i] = request[i].Text()
 	}
-	want := []string{"initial", "in-flight response", "first steer", "second steer"}
+	want := []string{"initial", "in-flight response", parentMessageAttribution + "first steer", parentMessageAttribution + "second steer"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("next request history = %#v, want %#v", got, want)
 	}
@@ -364,7 +392,7 @@ func TestDelegateControllerModelSnapshotDefersUncompletedSteerUntilNextRequest(t
 	if err != nil {
 		t.Fatalf("current model request: %v", err)
 	}
-	if countMessageText(current, "in-flight steer") != 0 {
+	if countMessageText(current, parentMessageAttribution+"in-flight steer") != 0 {
 		t.Fatalf("uncompleted steer entered current request: %#v", current)
 	}
 	if _, err := c.CompleteSteerPersistence(steerClaim, entry); err != nil {
@@ -374,7 +402,7 @@ func TestDelegateControllerModelSnapshotDefersUncompletedSteerUntilNextRequest(t
 	if err != nil {
 		t.Fatalf("next model request: %v", err)
 	}
-	if got := countMessageText(next, "in-flight steer"); got != 1 {
+	if got := countMessageText(next, parentMessageAttribution+"in-flight steer"); got != 1 {
 		t.Fatalf("next request contains in-flight steer %d times, want once: %#v", got, next)
 	}
 }
@@ -395,14 +423,14 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 	if err != nil {
 		t.Fatalf("CompleteModelRequest: %v", err)
 	}
-	if countMessageText(current, "late accepted steer") != 0 {
+	if countMessageText(current, parentMessageAttribution+"late accepted steer") != 0 {
 		t.Fatalf("late accepted steer entered already-bound request: %#v", current)
 	}
 	next, err := completeDelegateModelRequest(c, lease)
 	if err != nil {
 		t.Fatalf("next model request: %v", err)
 	}
-	if got := countMessageText(next, "late accepted steer"); got != 1 {
+	if got := countMessageText(next, parentMessageAttribution+"late accepted steer"); got != 1 {
 		t.Fatalf("next request contains late accepted steer %d times, want once: %#v", got, next)
 	}
 }
@@ -495,7 +523,7 @@ func TestDelegateControllerSteerDuringContextManagementEntersNextRequestOnce(t *
 	if prepared.err != nil {
 		t.Fatalf("prepare model request: %v", prepared.err)
 	}
-	if got := countMessageText(prepared.history, "accepted during context management"); got != 1 {
+	if got := countMessageText(prepared.history, parentMessageAttribution+"accepted during context management"); got != 1 {
 		t.Fatalf("next request contains context-management steer %d times, want once: %#v", got, prepared.history)
 	}
 }

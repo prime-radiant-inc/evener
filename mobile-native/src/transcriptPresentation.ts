@@ -203,7 +203,7 @@ function isDroppedStep(item: MobileTimelineItem): boolean {
 }
 
 function isDaemonSteering(item: MobileTimelineItem): boolean {
-	return item.kind === "notice" && item.origin === "steering";
+	return item.kind === "notice" && item.origin === "steering" && !item.fromParent;
 }
 
 export function projectNativeTranscript(
