@@ -278,7 +278,9 @@ func envVars(env []string) map[string]string {
 // follows, so GOPATH-mode builds still find the packages already there,
 // read-only: the spawn's own GOPATH when it has one, else what its go would
 // resolve: the host's `go env -w` setting when it reads the same env file,
-// otherwise Go's default for its HOME.
+// otherwise Go's default for its HOME. A GOPATH set only in a different go
+// env file is not read here, so GOPATH-mode builds relying on one lose it
+// (#4328): uncommon friction, with nothing leaving the spawn's grants.
 // Restricted mode cannot read it, so it gets the scratch alone. Entries inside
 // the scratch are dropped from the ambient value, so flooring an already-floored
 // env does not repeat them.
