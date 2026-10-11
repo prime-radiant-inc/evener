@@ -18,6 +18,7 @@ import {
 } from "../../../../stores/credentials";
 import {
   Button,
+  Card,
   Dialog,
   Disclosure,
   FormRow,
@@ -737,10 +738,12 @@ function SelectedConnection({
           </>
         )}
         {row && (
-          <div className={styles.review}>
-            <p>{row.baseUrl}</p>
-            <p>{activeSourceLabel(row)}</p>
-          </div>
+          <Card variant="outlined">
+            <div className={styles.review}>
+              <p>{row.baseUrl}</p>
+              <p>{activeSourceLabel(row)}</p>
+            </div>
+          </Card>
         )}
         {configured && needsConfiguration(row) ? (
           <>
@@ -808,21 +811,23 @@ function SelectedConnection({
             )}
             <p>The check requests only the model list. It does not send a prompt or generate a response.</p>
             {review ? (
-              <div className={styles.review}>
-                <p>Review changed access before contacting the provider.</p>
-                <p>Previous destination: {baseline?.baseUrl ?? "Not configured"}</p>
-                <p>Current destination: {review.baseUrl}</p>
-                <p>{activeSourceLabel(review)}</p>
-                <Button
-                  disabled={unavailable}
-                  onClick={() => {
-                    setBaseline(review);
-                    void check(++operation.current, review);
-                  }}
-                >
-                  Use reviewed access and check
-                </Button>
-              </div>
+              <Card variant="outlined">
+                <div className={styles.review}>
+                  <p>Review changed access before contacting the provider.</p>
+                  <p>Previous destination: {baseline?.baseUrl ?? "Not configured"}</p>
+                  <p>Current destination: {review.baseUrl}</p>
+                  <p>{activeSourceLabel(review)}</p>
+                  <Button
+                    disabled={unavailable}
+                    onClick={() => {
+                      setBaseline(review);
+                      void check(++operation.current, review);
+                    }}
+                  >
+                    Use reviewed access and check
+                  </Button>
+                </div>
+              </Card>
             ) : result?.status === "success" ? (
               <>
                 <p role="status">Model list access confirmed. This does not verify generation access.</p>
