@@ -46,9 +46,11 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
   Chevron,
+  CloseIcon,
   ConfirmDialog,
   chordLabel,
   Dialog,
+  DirectoryIcon,
   DirectoryPicker,
   Disclosure,
   Dropzone,
@@ -65,8 +67,6 @@ import {
   useToasts,
   VisuallyHidden,
 } from "../../widgets";
-import { CloseIcon } from "../../widgets/dialog/CloseIcon";
-import { DirectoryIcon } from "../../widgets/directorypicker";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
