@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Chevron } from "../chevron";
 import { requireClass } from "../internal/requireClass";
 import styles from "./disclosure.module.css";
-import { isDisclosureOpen, toggleDisclosure } from "./disclosureStore";
+import { isDisclosureOpen, setDisclosureOpen } from "./disclosureStore";
 
 const CLASS = {
   details: requireClass(styles.details, "disclosure.module.css", "details"),
@@ -19,14 +19,23 @@ interface DisclosureCommonProps {
 }
 
 type DisclosureStateProps =
-  | { id: string; defaultOpen?: boolean; open?: never; onOpenChange?: never }
-  | { open: boolean; onOpenChange(open: boolean): void; id?: never; defaultOpen?: never };
+  | { id: string; defaultOpen?: boolean; ignoreBaseline?: boolean; open?: never; onOpenChange?: never }
+  | {
+      open: boolean;
+      onOpenChange(open: boolean): void;
+      id?: never;
+      defaultOpen?: never;
+      ignoreBaseline?: never;
+    };
 
 export type DisclosureProps = DisclosureCommonProps & DisclosureStateProps;
 
 type StoreBackedDisclosureProps = DisclosureCommonProps & {
   id: string;
   defaultOpen?: boolean;
+  /** Keep the row on `defaultOpen` through the transcript's expand-all and
+   * collapse-all baselines; a reader's own click still wins. */
+  ignoreBaseline?: boolean;
 };
 
 type ControlledDisclosureProps = DisclosureCommonProps & {
@@ -69,10 +78,11 @@ function DisclosureView({
   );
 }
 
-function StoreBackedDisclosure(props: StoreBackedDisclosureProps) {
-  const fallback = props.defaultOpen ?? false;
-  const open = isDisclosureOpen(props.id, fallback);
-  return <DisclosureView {...props} open={open} requestToggle={() => toggleDisclosure(props.id, fallback)} />;
+function StoreBackedDisclosure({ ignoreBaseline, ...props }: StoreBackedDisclosureProps) {
+  const open = isDisclosureOpen(props.id, props.defaultOpen ?? false, ignoreBaseline ? { ignoreBaseline } : undefined);
+  // Flip what the reader sees: an expand-all baseline can hold the row open
+  // with no explicit choice recorded, and the click must still close it.
+  return <DisclosureView {...props} open={open} requestToggle={() => setDisclosureOpen(props.id, !open)} />;
 }
 
 function ControlledDisclosure(props: ControlledDisclosureProps) {

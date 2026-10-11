@@ -23,6 +23,11 @@ function DisclosureDemo() {
       <Disclosure id="gallery-disclosure-closed" summary="Tool call · write_file">
         <p className={styles.body}>This one starts collapsed. Click the summary row to toggle it.</p>
       </Disclosure>
+      <Disclosure id="gallery-disclosure-ignore-baseline" summary="Shared notes updated · 1.2K chars" ignoreBaseline>
+        <p className={styles.body}>
+          ignoreBaseline: stays folded when the transcript expands everything; only a click opens it.
+        </p>
+      </Disclosure>
       <Disclosure id="gallery-disclosure-disabled-collapsed" summary="Disabled collapsed store" disabled>
         <p className={styles.body}>This disabled store-backed disclosure remains collapsed.</p>
       </Disclosure>
