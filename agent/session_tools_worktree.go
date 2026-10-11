@@ -3280,6 +3280,14 @@ func (s *Session) releaseStrandedOwnMarker(files execenv.FileMutator, lanePath s
 // policy: it writes and removes a probe file there. The lock file itself is then
 // edited with plain os calls, which have the exclusive-create and hard-link
 // semantics the claim and restore depend on and the file layer does not offer.
+//
+// The probe authorizes the directory as it is now. It does not defend against a
+// process that swaps the registry entry for a symlink between the probe and the
+// edit: anything able to do that already holds write access to the worktree
+// registry, the very grant the control policy gives this op, and could rewrite
+// any lock directly. Anchoring each edit to a captured directory descriptor
+// would need exclusive-create, rename and link operations on the file layer;
+// the threat does not justify that surface.
 func requireRegistryWrite(files execenv.FileMutator, dir string) error {
 	probe := filepath.Join(dir, ".locked.probe")
 	if err := files.WriteFileRaw(probe, nil, 0o644); err != nil {
