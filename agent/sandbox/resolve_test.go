@@ -759,3 +759,36 @@ func TestCacheRootsLeaveOutALinkSpelledInsideAPrivateMount(t *testing.T) {
 		t.Errorf("a cache root reached through a link under /tmp must not be overlaid: %v", roots)
 	}
 }
+
+// A cache root spelled outside /tmp whose resolution passes through a link in
+// /tmp (/var/tmp/front -> /tmp/router -> store) would also be overlaid at a
+// path bwrap's private /tmp hides, so it is left out too.
+func TestCacheRootsLeaveOutALinkChainThroughAPrivateMount(t *testing.T) {
+	store, err := os.MkdirTemp("/var/tmp", "evener-cache-store-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(store) })
+	routerDir, err := os.MkdirTemp("/tmp", "evener-cache-router-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(routerDir) })
+	router := filepath.Join(routerDir, "router")
+	if err := os.Symlink(store, router); err != nil {
+		t.Fatal(err)
+	}
+	front := filepath.Join(store+"-front", "front")
+	if err := os.MkdirAll(filepath.Dir(front), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(front)) })
+	if err := os.Symlink(router, front); err != nil {
+		t.Fatal(err)
+	}
+	xdg := filepath.Join(front, "cache")
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/home/tester", XDGCacheHome: xdg}, "/work/project")
+	if slices.Contains(roots, xdg) {
+		t.Errorf("a cache root whose resolution passes through a link in /tmp must not be overlaid: %v", roots)
+	}
+}

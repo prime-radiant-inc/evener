@@ -563,3 +563,28 @@ func TestBuildBwrapArgvRebindsWritableLocationsInsideACacheOverlay(t *testing.T)
 	}
 	rebindAfterOverlay(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo, rp.Git.CommonDir)
 }
+
+// A persistent writable root inside an overlaid cache root that does not exist
+// yet is created when the wrapper is built, so it is bound writable over the
+// overlay and writes there persist rather than vanishing with the overlay.
+func TestWrapperCreatesAMissingWriteRootInsideACacheOverlay(t *testing.T) {
+	home := t.TempDir()
+	library := filepath.Join(home, ".cache", "library")
+	if err := os.MkdirAll(filepath.Join(home, ".cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := w.Wrap([]string{"/bin/true"}, cwd)
+	if !hasSeq(argv, "--bind", library, library) {
+		t.Errorf("a missing write root inside an overlaid cache must be created and bound: %v", argv)
+	}
+}

@@ -78,7 +78,25 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 			_ = os.MkdirAll(c, 0o755)
 		}
 	}
+	createWriteRootsInsideCaches(rp)
 	return rp
+}
+
+// createWriteRootsInsideCaches creates each missing persistent write root
+// that lies inside a cache root. bwrap binds only existing roots, and one
+// missing inside an overlaid cache would be created by the spawn in the
+// overlay's discarded upper layer, so writes there would vanish. Creating it
+// empty first lets it be bound writable over the overlay; it is a directory
+// the user granted for writing.
+func createWriteRootsInsideCaches(rp ResolvedPolicy) {
+	for _, w := range bwrapWriteRoots(rp) {
+		if _, err := os.Lstat(w); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if slices.ContainsFunc(rp.CacheRoots, func(c string) bool { return pathUnder(w, c) }) {
+			_ = os.MkdirAll(w, 0o755)
+		}
+	}
 }
 
 // landsInPersistentRoot reports whether c's real location (or, not created

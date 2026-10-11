@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -550,9 +551,10 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		roots = slices.DeleteFunc(roots, func(r string) bool {
 			rr := resolveExistingPrefix(r)
 			// bwrap mounts a private /tmp and /dev before the overlays, so a
-			// root spelled there through a symlink would be overlaid at the
-			// link's path inside that mount, not at the storage it names.
-			return pathUnder(r, worktree) || pathUnder(rr, worktree) || (inPrivateMount(r) && rr != r)
+			// root whose resolution follows a link in or into those would be
+			// overlaid where the sandbox cannot see that link, not at the
+			// storage it names.
+			return pathUnder(r, worktree) || pathUnder(rr, worktree) || linksThroughPrivateMount(r)
 		})
 		return dedupeRoots(roots)
 	default:
@@ -581,6 +583,41 @@ func dropCacheRootsInWriteRoots(cacheRoots, writeRoots []string) []string {
 // symlinks are not visible.
 func inPrivateMount(p string) bool {
 	return pathUnder(p, "/tmp") || pathUnder(p, "/dev")
+}
+
+// linksThroughPrivateMount reports whether resolving p follows a symlink that
+// lies in, or points into, a private mount (inPrivateMount), at any step of
+// the chain. Inside the sandbox such a link is hidden or leads elsewhere, so
+// an overlay at p would not sit over the storage p names on the host.
+func linksThroughPrivateMount(p string) bool {
+	pending := strings.Split(strings.TrimPrefix(filepath.Clean(p), "/"), "/")
+	cur := "/"
+	for hops := 0; len(pending) > 0; {
+		comp := pending[0]
+		pending = pending[1:]
+		if comp == "" {
+			continue
+		}
+		next := filepath.Join(cur, comp)
+		fi, err := os.Lstat(next)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if hops++; err != nil || hops > 40 {
+			return false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(cur, target)
+		}
+		if inPrivateMount(next) || inPrivateMount(target) {
+			return true
+		}
+		pending = append(strings.Split(strings.TrimPrefix(filepath.Clean(target), "/"), "/"), pending...)
+		cur = "/"
+	}
+	return false
 }
 
 // resolveExistingPrefix returns p with its longest existing ancestor resolved
