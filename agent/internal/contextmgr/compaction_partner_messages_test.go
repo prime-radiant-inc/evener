@@ -768,3 +768,52 @@ func alwaysReplying(reply func(llm.Request) string) *stubSummarizeAdapter {
 		return llm.Response{Message: llm.Assistant(reply(req))}, nil
 	}}
 }
+
+// A hold deep inside a long left-out message still reaches a summarizer: long
+// messages are fed in full, in bounded chunks, never cut short.
+func TestForceCompact_LongLeftOutMessagesReachTheSummarizerWhole(t *testing.T) {
+	var all strings.Builder
+	client := llm.NewClient()
+	client.Register(alwaysReplying(func(req llm.Request) string {
+		all.WriteString(req.Messages[0].Text())
+		return "## Progress\nsummary"
+	}))
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = CompactionMeta{} // no transcript, so nothing is middle-trimmed
+	history := partnerFloodHistory(50, 6000, -1)
+	deep := strings.Repeat("y", 5500) + " " + partnerHold + " " + strings.Repeat("z", 500)
+	history[40] = schema.NewTurn(schema.TurnUserInput, llm.User(deep)) // message 20
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if strings.Contains(history[0].Message.Text(), deep) {
+		t.Fatalf("fixture: the message is carried, so this does not test the left-out path")
+	}
+	if !strings.Contains(all.String(), partnerHold) {
+		t.Fatalf("a hold past byte 5000 of a left-out message never reached a summarizer")
+	}
+}
+
+// When batch summaries will not shrink to fit, condensing fails rather than
+// cutting them short, so the checkpoint, which keeps every partner message,
+// stands instead of a summary that lost one.
+func TestForceCompact_NonShrinkingBatchSummariesKeepTheCheckpoint(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(alwaysReplying(func(req llm.Request) string {
+		text := req.Messages[0].Text()
+		if batch, ok := strings.CutPrefix(text, partnerBatchPrompt); ok {
+			return batch // never shorter
+		}
+		return emptySummaryReply
+	}))
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(200, 1500, 80)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history starts with a %s, want the checkpoint to stand", history[0].Kind)
+	}
+	if !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("the standing checkpoint lost the hold")
+	}
+}

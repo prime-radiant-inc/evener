@@ -1594,7 +1594,8 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 // When they overflow it, they are summarized in batches of at most budget
 // characters, each batch summary quoting their permissions and holds, and the
 // batch summaries are condensed the same way until they fit, so every message
-// reaches a summarizer however many there are.
+// reaches a summarizer however many there are. If they will not shrink to fit,
+// it fails rather than cut any short.
 func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
 	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
 	for range maxRounds {
@@ -1626,7 +1627,25 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 		}
 		lines = summaries
 	}
-	return runetrim.Cut(strings.Join(lines, ""), budget), nil
+	// Summaries that will not shrink to fit are never cut short: failing here
+	// fails the summary, and the checkpoint, which keeps every partner
+	// message, stands.
+	return "", errors.New("partner messages did not condense to fit the summarizer")
+}
+
+// splitRunes splits text into consecutive parts of at most size bytes, cut on
+// rune boundaries.
+func splitRunes(text string, size int) []string {
+	var parts []string
+	for len(text) > size {
+		part := runetrim.Cut(text, size)
+		if part == "" {
+			part = text[:size] // not valid UTF-8 at the cut; keep every byte
+		}
+		parts = append(parts, part)
+		text = text[len(part):]
+	}
+	return append(parts, text)
 }
 
 // partnerBatchPrompt asks the summarizer to condense a batch of the human
@@ -2226,9 +2245,13 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// half the history budget they arrive condensed in bounded batches
 	// (condensePartnerMessages).
 	if len(summarized) > 0 {
-		lines := make([]string, 0, len(summarized))
+		// Each message goes in whole; one longer than a batch is split into
+		// batch-sized parts rather than cut short.
+		var lines []string
 		for _, entry := range summarized {
-			lines = append(lines, "User: "+truncText(entry.Text, 5000)+"\n")
+			for _, part := range splitRunes(entry.Text, maxHistoryChars/4) {
+				lines = append(lines, "User: "+part+"\n")
+			}
 		}
 		condensed, err := cm.condensePartnerMessages(ctx, lines, maxHistoryChars/2)
 		if err != nil {
