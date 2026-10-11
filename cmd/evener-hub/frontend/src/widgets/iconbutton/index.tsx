@@ -4,6 +4,10 @@ import buttonStyles from "../button/button.module.css";
 import { requireClass } from "../internal/requireClass";
 import styles from "./iconbutton.module.css";
 
+/** Button's variants minus link: link is underlined text, and an icon-only
+ * control has no text to underline. */
+export type IconButtonVariant = Exclude<ButtonVariant, "link">;
+
 export interface IconButtonProps
   extends Omit<
     ButtonHTMLAttributes<HTMLButtonElement>,
@@ -11,7 +15,7 @@ export interface IconButtonProps
   > {
   label: string;
   icon: ReactNode;
-  variant?: ButtonVariant;
+  variant?: IconButtonVariant;
   size?: ButtonSize;
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
@@ -32,7 +36,7 @@ const BASE_CLASS = {
   icon: requireClass(buttonStyles.icon, "button.module.css", "icon"),
 };
 
-const VARIANT_CLASS: Record<ButtonVariant, string> = {
+const VARIANT_CLASS: Record<IconButtonVariant, string> = {
   primary: requireClass(buttonStyles.primary, "button.module.css", "primary"),
   secondary: requireClass(buttonStyles.secondary, "button.module.css", "secondary"),
   quiet: requireClass(buttonStyles.quiet, "button.module.css", "quiet"),
