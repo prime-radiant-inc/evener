@@ -48,6 +48,22 @@ func costFor(reg *hubcore.ProviderRegistry, instance, model string) *registry.Co
 	return res.Caps.Cost
 }
 
+// evenerUsageFromCumulative maps a persisted SessionMeta.CumulativeUsage
+// to the saved thread's AppWire token totals. Returns nil when every total
+// (including CacheReadTokens) is zero: a session that never accumulated usage,
+// or a meta written before WS2 (mirrors evenerUsageFromLLM in cmd/evener/serve.go).
+func evenerUsageFromCumulative(u schema.CumulativeUsage) *appwire.EvenerUsage {
+	if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	return &appwire.EvenerUsage{
+		InputTokens:     u.InputTokens,
+		OutputTokens:    u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens,
+		TotalTokens:     u.TotalTokens,
+	}
+}
+
 // pastEntryCost is costFor over the instance and model a past session
 // recorded, the pair every one of its persisted figures is priced at.
 func pastEntryCost(cfg hubcore.WebConfig, entry hubcore.PastEntry) *registry.Cost {
@@ -1257,17 +1273,6 @@ func stampDerivedTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread a
 	}
 	thread.Evener.FailedToolCalls = &failures
 	return thread
-}
-
-// derivedWorkspaceUsage is stampDerivedTotals's usage-only view, for the legacy
-// web surface that assembles its own WorkspaceData rather than an appwire.Thread
-// and owes no failure count. Returns nil for an absent total, on the same terms.
-func derivedWorkspaceUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
-	total, _, err := pastTranscriptCache.DerivedTotalsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
-	if err != nil {
-		return nil
-	}
-	return total
 }
 
 // stampDerivedFailureCount is stampDerivedTotals's failure-only half, for a

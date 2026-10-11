@@ -23,7 +23,7 @@ session's meta changed.
 authoritative for the session verbs this card drives. The old text used
 `POST /s/$SID/send` and `POST /s/$SID/shutdown`; that shim was deleted at
 `660376f78` and now 404s silently
-(`cmd/evener-hub/web_workspace.go:19-22,37-46`). The namespace is
+(`handleSession` in `cmd/evener-hub/web_workspace.go`). The namespace is
 `/api/sessions/local:$SID/…`.
 
 ## The gap this card found, and its current status

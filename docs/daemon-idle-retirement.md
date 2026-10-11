@@ -161,6 +161,16 @@ one of these on its lifecycle diagnostics:
 
 An empty failure field with a resident phase is the healthy case.
 
+Every automatic attempt that does not retire the process also leaves its
+reason in the lifecycle's `lastAttempt`: when it ran, the blockers that refused
+it and the error that failed it. The blockers there come from the full
+evidence read, so they include obligations that hold no admission lease (a
+running shell job, an active watch, pending job notifications or delegate
+attention) and never appear in the live `blockers` list. A refused attempt
+re-arms a fresh full interval, and the daemon log gets one line per distinct
+reason (`automatic retirement refused: …` or `automatic retirement failed:
+…`), so a daemon that keeps retrying for the same reason logs it once.
+
 ## Rollout and compatibility
 
 - Already-running daemons are unchanged. The setting applies to daemons spawned

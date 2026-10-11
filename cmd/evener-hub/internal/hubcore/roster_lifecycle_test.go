@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -110,6 +111,46 @@ func TestCloneDaemonLifecycleIsolation(t *testing.T) {
 	src.Blockers[0].Category = "mutated-src"
 	if clone.Blockers[0].Category != "corrupted" {
 		t.Fatalf("mutating the source corrupted the clone: %+v", clone.Blockers[0])
+	}
+}
+
+// TestCloneDaemonLifecycleIsolatesLastAttempt pins that the last automatic
+// attempt is deep-copied too: the clone owns its own attempt and blockers.
+func TestCloneDaemonLifecycleIsolatesLastAttempt(t *testing.T) {
+	src := &appwire.DaemonLifecycle{Phase: "resident", LastAttempt: &appwire.DaemonRetirementAttempt{
+		At:       "2026-10-10T21:34:19Z",
+		Blockers: []appwire.DaemonBlocker{{Category: "watch", SessionID: "sess_a"}},
+	}}
+	clone := cloneDaemonLifecycle(src)
+	clone.LastAttempt.Error = "corrupted"
+	clone.LastAttempt.Blockers[0].Category = "corrupted"
+	if src.LastAttempt.Error != "" || src.LastAttempt.Blockers[0].Category != "watch" {
+		t.Fatalf("mutating the clone corrupted the source: %+v", src.LastAttempt)
+	}
+}
+
+// TestCloneDaemonLifecycleKeepsEmptyAttemptBlockers pins that an attempt that
+// failed with no blockers keeps its empty, non-nil list through the roster, so
+// evener/daemon/list encodes "blockers": [] and never null.
+func TestCloneDaemonLifecycleKeepsEmptyAttemptBlockers(t *testing.T) {
+	src := &appwire.DaemonLifecycle{Phase: "resident", Blockers: []appwire.DaemonBlocker{}, LastAttempt: &appwire.DaemonRetirementAttempt{
+		At:       "2026-10-10T21:34:19Z",
+		Blockers: []appwire.DaemonBlocker{},
+		Error:    "retirement preparation: job store: closed",
+	}}
+	encoded, err := json.Marshal(cloneDaemonLifecycle(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lifecycle, attempt map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(lifecycle["lastAttempt"], &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(attempt["blockers"]); got != "[]" {
+		t.Fatalf("cloned attempt blockers encode as %s, want []", got)
 	}
 }
 
