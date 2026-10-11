@@ -209,18 +209,21 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	return updates
 }
 
-// presentedDelegateUpdateAttentionIDs lists the pending updates the turn that
-// just ran showed the model: the ones its settled requests credited
+// presentedDelegateUpdateAttentionIDs lists the updates the turn that just ran
+// showed the model: the ones its settled requests credited
 // (attentionCoveredIDs). An update that arrived after the turn's last request
-// is not among them.
+// is not among them. Coverage alone answers, with no transcript read to fail,
+// so an update already marked consumed may be listed too.
 func (s *Session) presentedDelegateUpdateAttentionIDs() []string {
-	pending := s.pendingDelegateUpdateAttentionIDs()
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	return slices.DeleteFunc(pending, func(id string) bool {
-		_, covered := s.attentionCoveredIDs[id]
-		return !covered
-	})
+	var updates []string
+	for id := range s.attentionCoveredIDs {
+		if isDelegateUpdateAttentionID(id) {
+			updates = append(updates, id)
+		}
+	}
+	return updates
 }
 
 // hasPendingDelegateUpdateAttention reports whether any update from this
