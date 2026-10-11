@@ -144,6 +144,7 @@ func renderPacket(tr doctor.TranscriptResult) string {
 		if turn.Kind == string(schema.TurnSteering) {
 			switch turn.SteeringSource {
 			case events.SteeringSourceUser:
+				// The person's own words keep the steering turn's default section.
 			case events.SteeringSourceParent:
 				section = parentSteeringSection
 			default:

@@ -346,9 +346,10 @@ func TestWriteReviewPackMasksAPathInsideADelegateBrief(t *testing.T) {
 
 // TestRenderPacketLabelsHarnessSteering: a steering turn is only the person's
 // own words when its source is SteeringSourceUser. A delegate's parent speaks
-// under its own heading (SteeringSourceParent), never as a human. The harness's own reminder
-// (such as the bare-text nudge) is recorded as steering the person never saw,
-// so the blind reader must not read it as the user speaking.
+// under its own heading (SteeringSourceParent), never as a human. The
+// harness's own reminder (such as the bare-text nudge) is recorded as steering
+// the person never saw, so the blind reader must not read it as the user
+// speaking.
 func TestRenderPacketLabelsHarnessSteering(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
