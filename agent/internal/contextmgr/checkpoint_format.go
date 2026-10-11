@@ -82,6 +82,13 @@ func extractCheckpointEarlierSummaries(text string) []string {
 	return summaries
 }
 
+// summaryTurnStart opens a summary turn.
+const summaryTurnStart = "[CONTEXT SUMMARY]\n"
+
+// summaryPointerLead begins the compaction pointer line a summary turn opens
+// with (CompactionMeta.compactionPointer("summary")).
+const summaryPointerLead = "Earlier history was compacted into this summary "
+
 // summaryTurnEnd closes a summary turn.
 const summaryTurnEnd = "[END SUMMARY]"
 
@@ -108,12 +115,32 @@ func carriesPartnerMessages(text string) bool {
 			return false
 		}
 	}
+	// Before the heading the renderer writes only the turn's opening marker
+	// and, for a persistent session, the transcript pointer line.
+	if !isSummaryTurnOpening(text[:start]) {
+		return false
+	}
 	// Everything from the heading on must be exactly what the renderer writes
 	// for that model text and those entries. The block holds the model text
 	// with a trailing newline ensured, which soleFencedText strips once, so
 	// re-rendering it with that newline restored reproduces any model text,
 	// trailing blank lines included.
 	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText+"\n")+renderCheckpointConversation(entries)+summaryTurnEnd
+}
+
+// isSummaryTurnOpening reports whether prefix is what the renderer writes
+// before a summary turn's model text: the opening marker, optionally followed
+// by the one compaction pointer line.
+func isSummaryTurnOpening(prefix string) bool {
+	rest, ok := strings.CutPrefix(prefix, summaryTurnStart)
+	if !ok {
+		return false
+	}
+	if rest == "" {
+		return true
+	}
+	line, after, _ := strings.Cut(rest, "\n")
+	return after == "" && strings.HasSuffix(rest, "\n") && strings.HasPrefix(line, summaryPointerLead)
 }
 
 // soleFencedText returns the content of the one fenced block section holds,

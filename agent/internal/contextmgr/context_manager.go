@@ -2155,7 +2155,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if checkpointed != nil {
 		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
-	summaryText := "[CONTEXT SUMMARY]\n" + cm.metaFor(ctx).compactionPointer("summary") +
+	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") +
 		renderCompactionModelText(summaryModelTextHeading, resp.Text()) +
 		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
