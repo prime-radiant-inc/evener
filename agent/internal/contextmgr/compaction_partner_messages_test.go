@@ -428,3 +428,82 @@ func TestForceCompact_CarryAfterAReplyEndingInBlankLines(t *testing.T) {
 	cm.ForceCompact(context.Background(), &history, "", noopEmit)
 	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 }
+
+// The human partner's messages are never dropped (#4281): over budget the
+// checkpoint sheds the agent's own text first, keeps a short later stop whole,
+// and trims only the middle of a very long pasted log, saying where its full
+// text is.
+func TestFormatCheckpoint_KeepsEveryPartnerMessage(t *testing.T) {
+	log := "LOG_HEAD " + strings.Repeat("log line\n", 6000) + " LOG_TAIL"
+	stop := "stop, don't push until I review STOP_SENTINEL"
+	data := checkpointData{
+		fileWrites:      map[string]checkpointWriteStatus{},
+		activatedSkills: map[string]bool{},
+		toolCounts:      map[string]int{},
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: "please look at this log"},
+			{Role: "user", Text: log},
+			{Role: "agent", Text: "reading it " + strings.Repeat("analysis ", 2000)},
+			{Role: "agent", Text: "found the cause " + strings.Repeat("detail ", 2000)},
+			{Role: "user", Text: stop},
+		},
+		workingNotes: []string{"a note " + strings.Repeat("n", 3000)},
+	}
+	cp := formatCheckpoint(data, nil, 20_000)
+	var partner []string
+	for _, entry := range extractCheckpointConversation(cp) {
+		if entry.Role != "user" {
+			t.Fatalf("the agent's own text survived while the partner's messages did not fit: %.60q", entry.Text)
+		}
+		partner = append(partner, entry.Text)
+	}
+	if len(partner) != 3 || partner[0] != "please look at this log" || partner[2] != stop {
+		t.Fatalf("partner messages = %d, want all three with the short ones whole", len(partner))
+	}
+	if !isMiddleTrimOf(partner[1], log) {
+		t.Fatalf("the pasted log was not middle-trimmed with the note:\n%.300s", partner[1])
+	}
+}
+
+// When even the partner's short messages exceed the budget, every one is kept
+// whole: the cap yields, never a message.
+func TestFormatCheckpoint_KeepsShortPartnerMessagesOverBudget(t *testing.T) {
+	data := checkpointData{
+		fileWrites:      map[string]checkpointWriteStatus{},
+		activatedSkills: map[string]bool{},
+		toolCounts:      map[string]int{},
+	}
+	for i := range 40 {
+		data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: fmt.Sprintf("instruction %d %s", i, strings.Repeat("x", 300))})
+	}
+	entries := extractCheckpointConversation(formatCheckpoint(data, nil, 4000))
+	if len(entries) != 40 {
+		t.Fatalf("kept %d of 40 short partner messages", len(entries))
+	}
+	for i, entry := range entries {
+		if entry.Text != data.conversation[i].Text {
+			t.Fatalf("short message %d was changed: %.60q", i, entry.Text)
+		}
+	}
+}
+
+// The summary's verbatim carry follows the same rule end to end: a later
+// short stop survives whole beside a middle-trimmed pasted log.
+func TestForceCompact_CarryKeepsAStopBesideALongLog(t *testing.T) {
+	cm := partnerTestManager(emptySummaryReply)
+	log := "LOG_HEAD " + strings.Repeat("log line\n", 9000) + " LOG_TAIL"
+	stop := "stop, don't push until I review STOP_SENTINEL"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(log)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reading it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(stop)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("holding")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	entries := extractMarkdownConversation(history[0].Message.Text())
+	if len(entries) != 2 || entries[1].Text != stop || !isMiddleTrimOf(entries[0].Text, log) {
+		t.Fatalf("summary carry = %d entries; want the trimmed log and the whole stop", len(entries))
+	}
+}

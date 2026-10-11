@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/searchresult"
@@ -1052,7 +1053,8 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 // 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
 // alongside the instruction prefix, and leaves room for preserved recent turns
 // in the main model's context. The human partner's messages a model-written
-// compaction turn carries share the same cap.
+// compaction turn carries share the same cap. The cap yields to those
+// messages: none is ever dropped to meet it (fitCheckpointConversation).
 const maxCheckpointChars = 60_000
 
 // checkpoint replaces old history with a structured state snapshot.
@@ -1287,9 +1289,8 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
-// notes first and then the oldest conversation entries after the original task
-// (the earliest user entry), which is pinned so budget pressure never drops what
-// the user asked for.
+// notes first, then the agent's own replies, and never the human partner's
+// messages (fitCheckpointConversation).
 func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
@@ -1436,46 +1437,65 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	return b.String()
 }
 
-// fitCheckpointConversation sheds conversation entries until their rendering
-// fits budget: the oldest first, except the original task — the earliest user
-// entry — which is never shed, so a compaction keeps what the human partner
-// asked for. Notes are exhaustible, so a lone over-budget entry is all the
-// shedding can leave behind; it is trimmed by its exact rendered length so the
-// result still honors its size cap instead of keeping an oversized task or
-// dropping it.
+// partnerMessageEdgeChars is how much of each end of a human partner's
+// message a middle trim keeps. A message no longer than both edges together is
+// a short instruction and is never trimmed.
+const partnerMessageEdgeChars = 1000
+
+// fitCheckpointConversation fits conversation entries into budget without
+// ever dropping the human partner's messages (#4281). It sheds the agent's own
+// replies first, oldest first. If the partner's messages alone still exceed
+// the budget, it trims the middle of the longest ones (pasted logs, say), each
+// at most once and never below partnerMessageEdgeChars at each end, with a
+// note saying where the full text is. Short instructions are never touched;
+// when they alone exceed the budget, the budget yields.
 //
 // conversation must already be cleaned (cleanCheckpointConversation), so the
-// pin index and the rendered slice refer to the same entries;
-// renderCheckpointConversation would otherwise drop whitespace-only entries
-// after the pin was chosen, letting the pin land on a vanishing one.
+// rendered slice and the entries line up.
 func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int) []checkpointConversationEntry {
-	// With no user entry (-1) the pin is inactive and shedding keeps its
-	// oldest-first order.
-	pinnedOriginal := slices.IndexFunc(conversation, func(entry checkpointConversationEntry) bool { return entry.Role == "user" })
-	rendered := renderCheckpointConversation(conversation)
-	for len(rendered) > budget && len(conversation) > 1 {
-		// Drop the oldest entry that is not the pinned original task.
-		drop := 0
-		if drop == pinnedOriginal {
-			drop = 1
+	conversation = slices.Clone(conversation)
+	rendered := len(renderCheckpointConversation(conversation))
+	for rendered > budget {
+		agent := slices.IndexFunc(conversation, func(entry checkpointConversationEntry) bool { return entry.Role != "user" })
+		if agent < 0 {
+			break
 		}
-		conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
-		if drop < pinnedOriginal {
-			pinnedOriginal--
-		}
-		rendered = renderCheckpointConversation(conversation)
+		conversation = slices.Delete(conversation, agent, agent+1)
+		rendered = len(renderCheckpointConversation(conversation))
 	}
-	if len(conversation) == 1 && len(rendered) > budget {
-		role := conversation[0].Role
-		render := func(text string) int {
-			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
+	trimmed := make([]bool, len(conversation))
+	for rendered > budget {
+		longest := -1
+		for i, entry := range conversation {
+			if !trimmed[i] && len(entry.Text) > 2*partnerMessageEdgeChars && (longest < 0 || len(entry.Text) > len(conversation[longest].Text)) {
+				longest = i
+			}
 		}
-		conversation = []checkpointConversationEntry{{
-			Role: role,
-			Text: truncateRendered(conversation[0].Text, budget, render),
-		}}
+		if longest < 0 {
+			break
+		}
+		text := conversation[longest].Text
+		// Keep what the budget allows, leaving room for the note.
+		keep := max(2*partnerMessageEdgeChars, len(text)-(rendered-budget)-len(trimmedMessageNote(len(text))))
+		conversation[longest].Text = middleTrim(text, keep/2)
+		trimmed[longest] = true
+		rendered = len(renderCheckpointConversation(conversation))
 	}
 	return conversation
+}
+
+// middleTrim keeps edge characters at each end of text, cut on rune
+// boundaries, and puts the trimmed-message note between them.
+func middleTrim(text string, edge int) string {
+	if 2*edge >= len(text) {
+		return text
+	}
+	head := runetrim.Cut(text, edge)
+	tail := string(runetrim.TrimLeadingPartial([]byte(text[len(text)-edge:])))
+	if len(head)+len(tail) >= len(text) {
+		return text
+	}
+	return head + trimmedMessageNote(len(text)-len(head)-len(tail)) + tail
 }
 
 // partnerMessagesMarkdown renders the human partner's messages from the turns
@@ -1489,10 +1509,10 @@ func fitCheckpointConversation(conversation []checkpointConversationEntry, budge
 // "Verbatim" means each message's text unchanged apart from surrounding
 // whitespace, which cleanCheckpointConversation trims and the checkpoint's
 // own extraction (parseMarkdownBlocks) trims again on every round trip.
-// Shedding follows the checkpoint's rules, as the #4173 ruling chose: only
-// when the partner's messages together exceed maxCheckpointChars are the
-// oldest after the first shed. No message is classified as authority-bearing;
-// that would mean judging natural language in Go.
+// Fitting follows the checkpoint's rule (fitCheckpointConversation): no
+// partner message is ever dropped; past maxCheckpointChars the longest are
+// middle-trimmed with a pointer to the transcript, and short ones are never
+// touched.
 //
 // Only the partner's messages are carried. An earlier summary a folded
 // checkpoint holds is input to the new summary, which supersedes it; carrying

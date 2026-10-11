@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -160,6 +161,13 @@ func soleFencedText(section string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// trimmedMessageNote stands in for the middle of a human partner's message
+// that was too long to carry whole: it says how much was trimmed and where the
+// full text is.
+func trimmedMessageNote(trimmed int) string {
+	return fmt.Sprintf("\n\n[... %d characters of this message trimmed here; the full message is in this session's transcript ...]\n\n", trimmed)
 }
 
 // renderCompactionModelText renders a model-written compaction turn's own text
