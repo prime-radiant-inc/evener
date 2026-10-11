@@ -52,6 +52,7 @@ import {
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
 	MEMORY_CONTEXT_EVENT_KIND,
+	isParentSteer,
 	MEMORY_CONTEXT_LABEL,
 	type MemoryContextObservation,
 	parseMemoryContext,
@@ -812,7 +813,7 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 		id: it.id,
 		origin: "steering" as const,
 		steeringKind: it.steeringKind,
-		...(it.source === "parent" ? { fromParent: true as const } : {}),
+		...(isParentSteer(it.source) ? { fromParent: true as const } : {}),
 		family: "informational" as const,
 		tone: "info" as const,
 	};

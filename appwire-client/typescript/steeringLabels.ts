@@ -68,12 +68,17 @@ const STEERED = "System steered";
 // the system, so it says so instead of "System steered".
 const FROM_PARENT = "From parent";
 
+/** Whether a steer's wire source is its session's parent agent. */
+export function isParentSteer(source: string | undefined): boolean {
+  return source === "parent";
+}
+
 /** The label a steer folds to in both clients: "From parent" for a steer from
  * the session's parent agent; otherwise "System steered: <what it did>", or a
  * bare "System steered" for a kind with no label, since a colon promises a
  * value. */
 export function steeringLabel(kind: string | undefined, source?: string): string {
-  if (source === "parent") return FROM_PARENT;
+  if (isParentSteer(source)) return FROM_PARENT;
   const label = steeringKindLabel(kind);
   return label === undefined ? STEERED : `${STEERED}: ${label}`;
 }
