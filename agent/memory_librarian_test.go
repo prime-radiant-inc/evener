@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -410,5 +412,62 @@ func TestLibrarianSidecarStartsOnceAndWakesOnTurnEnd(t *testing.T) {
 	s.delegateController.mu.Unlock()
 	if librarians != 1 {
 		t.Fatalf("librarian delegates = %d, want 1", librarians)
+	}
+}
+
+// A restored root brings its librarian back cold with the memory save tools:
+// the runtime role in the frozen descriptor still grants them in a new
+// process, as it did when the librarian was created.
+func TestRestoredLibrarianKeepsSaveTools(t *testing.T) {
+	t.Setenv(memoryLibrarianEnv, "sidecar")
+	workspace, project := memoryGitFixture(t)
+	host, history := t.TempDir(), t.TempDir()
+	testCfg := testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: host, MemoryProjectID: project.ID, Project: project, MaxSubagentDepth: 2,
+		AcquireSessionOwnership: func(string) error { return nil }, testOnly: testCfg}), withSteps(func(llm.Request) llm.Response { return finalResponse("no changes") }))
+	result := s.createDelegate(context.Background(), delegateArgs{Task: "librarian pass", DelegationAllowance: new(0), runtimeRole: memoryLibrarianRole})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	child := memoryWaitChild(t, s, result.ChildSessionID)
+	if child.sess.reg.Get("memory_write") == nil {
+		t.Fatal("fresh librarian lacks memory_write")
+	}
+	if !child.sess.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("idle librarian did not retire")
+	}
+	s.Close()
+	meta, err := schema.LoadSessionMeta(history, s.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: history, MemoryStateRoot: host, Project: project, AcquireSessionOwnership: func(string) error { return nil }, testOnly: testCfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var childTools []llm.ToolDefinition
+	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		childTools = req.Tools
+		return finalResponse("no changes")
+	}}})
+	if send := (delegateRuntime{owner: r}).send(context.Background(), result.DelegateID, "catch up", 0).result; send.Err != nil {
+		t.Fatalf("send to restored librarian: %+v", send)
+	}
+	restored := memoryWaitChild(t, r, result.ChildSessionID)
+	if restored.sess == child.sess {
+		t.Fatal("reused the old runtime instead of a cold restore")
+	}
+	for _, name := range memorySaveToolNames {
+		if restored.sess.reg.Get(name) == nil {
+			t.Errorf("restored librarian lacks %s", name)
+		}
+	}
+	offered := map[string]bool{}
+	for _, def := range childTools {
+		offered[def.Name] = true
+	}
+	if !offered["memory_write"] {
+		t.Errorf("restored librarian's model request does not offer memory_write")
 	}
 }

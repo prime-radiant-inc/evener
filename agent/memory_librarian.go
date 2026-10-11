@@ -55,6 +55,14 @@ func (s *Session) librarianMode() memoryLibrarianMode {
 	}
 }
 
+// descriptorGrantsMemorySaves reports whether a delegate's frozen descriptor
+// grants the memory save tools: only the runtime-started librarian's does.
+// Every path that builds a delegate session from its descriptor (fresh start
+// and cold restore) reads the grant here.
+func descriptorGrantsMemorySaves(descriptor *delegatestore.Descriptor) bool {
+	return descriptor != nil && descriptor.RuntimeRole == memoryLibrarianRole
+}
+
 // selectRuntimeRoleModel selects a runtime-only role on this session's own
 // model and profile.
 func (s *Session) selectRuntimeRoleModel(role string) (subagentModelSelection, error) {

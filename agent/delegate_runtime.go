@@ -2752,6 +2752,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			isolation:                     descriptor.Isolation,
 			communicateOutputSchema:       cloneMap(resultSchema),
 			parentWatchGranted:            descriptor.ParentWatchGranted,
+			memoryLibrarian:               descriptorGrantsMemorySaves(&descriptor),
 			jobActivityClock:              s.jobActivityClock,
 		},
 	}
