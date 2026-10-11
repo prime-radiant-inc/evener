@@ -375,9 +375,10 @@ func TestCovstmtCountModeRejectsGapsOnlyFlags(t *testing.T) {
 		if code := covstmtRun(args, &out, &errOut); code != 2 {
 			t.Errorf("covstmtRun(%q) exits %d, want 2", args, code)
 		}
-		// The refusal names the stray flag.
-		if !strings.Contains(errOut.String(), args[0]) {
-			t.Errorf("covstmtRun(%q) stderr = %q, want %s named", args, errOut.String(), args[0])
+		// The refusal, ahead of the usage text that lists every flag, names
+		// the stray one.
+		if refusal, _, _ := strings.Cut(errOut.String(), "\n"); !strings.Contains(refusal, args[0]) {
+			t.Errorf("covstmtRun(%q) refusal = %q, want %s named", args, refusal, args[0])
 		}
 		if got := out.String(); got != "" {
 			t.Errorf("covstmtRun(%q) stdout = %q, want empty", args, got)
