@@ -1,10 +1,9 @@
-// Tests-first checkpoint for the saved-highlight overlay component (Task 5).
-//
-// `./DocumentHighlights` is the production module this checkpoint precedes, so
-// the static import below deliberately does NOT resolve yet: the file is a
-// collection/setup failure until the source grant lands, and `tsc` reports the
-// missing module instead of this file hiding it behind a stub. The approved
-// props are `map`, `annotations`, `scrollElement`.
+// Component tests for the saved-highlight overlay (Task 5). `./DocumentHighlights`
+// is the accepted production module; the approved props are `map`, `annotations`,
+// `scrollElement`. The restored interaction reveals a note on hover, keyboard
+// focus and a completed click/tap for every annotation overlapping the touched
+// passage; the synthetic pointer cases at the end add cancelled-press and
+// unrelated-release protection for the forthcoming interaction design.
 //
 // The component consumes the REAL bound document map and REAL DOM. The shared
 // geometry seam supplies the rectangles jsdom cannot lay out, for BOTH the Range
@@ -162,6 +161,52 @@ function installFontAndViewportCapabilities(): { fonts: EventTarget; viewport: E
     else Reflect.deleteProperty(window, "visualViewport");
   });
   return { fonts, viewport };
+}
+
+// jsdom ships no ResizeObserver. This supplies a minimal, real class so a
+// genuine observed-element size change can drive the production re-measure.
+// It is NOT a geometry fake: the test still supplies every rectangle through the
+// geometry seam; this only delivers the browser's "the observed element changed
+// size" notification, which jsdom cannot compute.
+interface InstalledResizeObserver {
+  cb: ResizeObserverCallback;
+  targets: Element[];
+  disconnected: boolean;
+}
+function installResizeObserverCapability(): {
+  observers: InstalledResizeObserver[];
+  fire: () => void;
+} {
+  const observers: InstalledResizeObserver[] = [];
+  class StubResizeObserver {
+    cb: ResizeObserverCallback;
+    targets: Element[] = [];
+    disconnected = false;
+    constructor(cb: ResizeObserverCallback) {
+      this.cb = cb;
+      observers.push(this as unknown as InstalledResizeObserver);
+    }
+    observe(target: Element): void {
+      this.targets.push(target);
+    }
+    unobserve(): void {}
+    disconnect(): void {
+      this.disconnected = true;
+    }
+  }
+  const before = Object.getOwnPropertyDescriptor(window, "ResizeObserver");
+  Object.defineProperty(window, "ResizeObserver", { configurable: true, value: StubResizeObserver });
+  onRestore(() => {
+    if (before) Object.defineProperty(window, "ResizeObserver", before);
+    else Reflect.deleteProperty(window, "ResizeObserver");
+  });
+  const fire = (): void => {
+    for (const observer of observers) {
+      const entry = { target: observer.targets[0] } as unknown as ResizeObserverEntry;
+      observer.cb([entry], observer as unknown as ResizeObserver);
+    }
+  };
+  return { observers, fire };
 }
 
 interface ReaderProps {
@@ -446,6 +491,28 @@ test("recomputes bands after scroll and resize changes", () => {
   view.unmount();
 });
 
+test("recomputes bands when the pane element itself changes size (no window or visualViewport event)", () => {
+  const { observers, fire } = installResizeObserverCapability();
+  const { view, map, scroll } = renderReader(single);
+  geometry.configure(map, FIRST, [[{ left: 10, top: 10, right: 20, bottom: 20 }]]);
+  fireEvent.scroll(scroll);
+  expect(bandFor(scroll, "op-1").style.left).toBe("10px");
+
+  // The pane element narrows on its own: no scroll, no window resize and no
+  // font/visualViewport event fires. A pane-only reflow must still re-measure
+  // the same verified ranges at their new geometry.
+  expect(observers.length).toBeGreaterThan(0);
+  expect(observers.some((observer) => observer.targets.includes(scroll))).toBe(true);
+  geometry.configure(map, FIRST, [[{ left: 30, top: 10, right: 40, bottom: 20 }]]);
+  act(() => {
+    fire();
+  });
+  expect(bandFor(scroll, "op-1").style.left).toBe("30px");
+
+  view.unmount();
+  expect(observers.every((observer) => observer.disconnected)).toBe(true);
+});
+
 test("recomputes bands after a font-set load and visualViewport events", () => {
   const { fonts, viewport } = installFontAndViewportCapabilities();
   const { view, map, scroll } = renderReader(single);
@@ -715,5 +782,293 @@ test("reveals a complete copyable pending reference for a saved operation whose 
   // The reference renders as inert literal text, never parsed/active markup.
   expect(reference?.querySelector("a, script")).toBeNull();
   expect(scroll.ownerDocument.querySelector("script")).toBeNull();
+  view.unmount();
+});
+
+// Synthetic component event coverage. These dispatch the pointer events a real
+// browser would deliver to the component in jsdom; they are NOT trusted
+// real-browser input and are labelled as synthetic here. The restored component
+// reveals a note on a completed `click` (and on hover/focus). The cases below
+// separate a cancelled press, an armed pointer A followed by an unrelated
+// pointer B release, and a matching A down/up lifecycle, using DISTINCT concrete
+// pointer IDs so pointer identity is actually exercised. These are protection
+// tests for the forthcoming interaction design, not a TDD claim for any
+// discarded implementation.
+function pointerEvent(
+  type: "pointerdown" | "pointerup" | "pointermove" | "pointercancel",
+  target: EventTarget,
+  init: PointerEventInit = {},
+): boolean {
+  return target.dispatchEvent(
+    new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      button: 0,
+      buttons: 1,
+      pointerId: 1,
+      pointerType: "mouse",
+      isPrimary: true,
+      ...init,
+    }),
+  );
+}
+
+test("separates a cancelled press, an armed A with an unrelated B release, and a matching A lifecycle (synthetic component events)", () => {
+  const { view, map, scroll } = renderReader(single);
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const band = bandFor(scroll, "op-1");
+  expect(noteTexts(scroll)).toEqual([]);
+
+  // 1. A press that the browser cancels (no completed click) reveals nothing.
+  act(() => {
+    pointerEvent("pointerdown", band, { pointerId: 11, clientX: 30, clientY: 20 });
+    pointerEvent("pointercancel", band, { pointerId: 11, clientX: 30, clientY: 20 });
+  });
+  expect(noteTexts(scroll)).toEqual([]);
+
+  // 2. Pointer A arms the band, then an UNRELATED pointer B releases: nothing is
+  //    revealed before B's release and nothing after it.
+  act(() => {
+    pointerEvent("pointerdown", band, { pointerId: 21, clientX: 30, clientY: 20 });
+  });
+  expect(noteTexts(scroll)).toEqual([]);
+  act(() => {
+    pointerEvent("pointerup", band, { pointerId: 22, clientX: 30, clientY: 20, buttons: 0 });
+  });
+  expect(noteTexts(scroll)).toEqual([]);
+
+  // 3. A matching A down/up lifecycle reveals the note. A real browser fires the
+  //    `click` after that sequence; jsdom does not synthesize it, so the click is
+  //    dispatched explicitly (labelled) while the down/up lifecycle is retained.
+  act(() => {
+    pointerEvent("pointerdown", band, { pointerId: 31, clientX: 30, clientY: 20 });
+    pointerEvent("pointerup", band, { pointerId: 31, clientX: 30, clientY: 20, buttons: 0 });
+    band.click(); // the browser's post-up click, dispatched explicitly in jsdom
+  });
+  expect(noteTexts(scroll)).toEqual(["note"]);
+  view.unmount();
+});
+
+test("preserves the browser selection through a drag that reveals no note (synthetic component events)", () => {
+  const { view, map, scroll } = renderReader(single);
+  const prose = scroll.firstElementChild;
+  if (!(prose instanceof HTMLElement)) throw new Error("missing prose root");
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const band = bandFor(scroll, "op-1");
+
+  selectRenderedText(prose, "same");
+  const selection = document.getSelection();
+  if (!selection) throw new Error("selection unavailable");
+  const selectedBefore = selection.toString();
+
+  act(() => {
+    pointerEvent("pointerdown", band, { pointerId: 41, clientX: 30, clientY: 20 });
+    pointerEvent("pointermove", band, { pointerId: 41, clientX: 60, clientY: 60, buttons: 1 });
+    pointerEvent("pointerup", band, { pointerId: 41, clientX: 60, clientY: 60, buttons: 0 });
+  });
+
+  expect(noteTexts(scroll)).toEqual([]);
+  expect(selection.rangeCount).toBe(1);
+  expect(selection.toString()).toBe(selectedBefore);
+  view.unmount();
+});
+
+// The restored component resolves note reveal by pointer COORDINATES against the
+// saved band rectangles, so an ordinary hover or click whose target is the PROSE
+// beneath a (non-hit-testable) band still reveals the note. These are the missing
+// behavior tests: against the accepted target-only activation they fail, because
+// a prose target has no `[data-document-highlight]` ancestor to resolve.
+test("reveals a saved band by hover and click coordinates when the pointer targets the prose beneath it", () => {
+  const { view, map, scroll } = renderReader(single);
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const prose = scroll.firstElementChild;
+  if (!(prose instanceof HTMLElement)) throw new Error("missing prose root");
+  const band = bandFor(scroll, "op-1");
+  geometry.setElementRect(band, { left: 10, top: 10, right: 50, bottom: 30 });
+
+  expect(noteTexts(scroll)).toEqual([]);
+  // A hover outside the band's rectangle reveals nothing.
+  fireEvent.mouseOver(prose, { clientX: 5, clientY: 5 });
+  expect(noteTexts(scroll)).toEqual([]);
+  // A hover whose coordinates fall inside the band reveals the note.
+  fireEvent.mouseOver(prose, { clientX: 30, clientY: 20 });
+  expect(noteTexts(scroll)).toEqual(["note"]);
+  view.unmount();
+
+  // A click whose TARGET is the prose but whose coordinates fall inside the band
+  // also reveals (the band itself is not hit-testable).
+  const second = renderReader(single);
+  geometry.configure(second.map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(second.scroll);
+  const prose2 = second.scroll.firstElementChild;
+  if (!(prose2 instanceof HTMLElement)) throw new Error("missing prose root");
+  geometry.setElementRect(bandFor(second.scroll, "op-1"), { left: 10, top: 10, right: 50, bottom: 30 });
+  expect(noteTexts(second.scroll)).toEqual([]);
+  fireEvent.click(prose2, { clientX: 30, clientY: 20 });
+  expect(noteTexts(second.scroll)).toEqual(["note"]);
+  second.view.unmount();
+});
+
+// ---------------------------------------------------------------------------
+// Discriminating diagnostics for the REJECTED candidate's new pointer and wheel
+// arbitration. These are SYNTHETIC jsdom cases and TESTS-AFTER, not the missing
+// pre-implementation RED. They pin the measured band rectangle and target the
+// PROSE (the band is non-hit-testable), so they isolate the coordinate path
+// instead of an already-revealing `band.click()`. A matching pointer-up without
+// a compatibility click diagnoses the candidate helper's own behavior; it is NOT
+// a new product requirement. The real browser remains the scrolling/Copy
+// authority; the scroll seam below represents only layout jsdom cannot compute.
+// ---------------------------------------------------------------------------
+
+// A scroll-position seam: jsdom lays nothing out and keeps `scrollTop` at 0, so
+// this represents the one piece of layout it cannot compute. It asserts the
+// component's arbitration (did it move the outer stack and cancel the event),
+// not a fake scroll engine.
+function pinScrollable(element: HTMLElement, initial = 0): void {
+  const before = Object.getOwnPropertyDescriptor(element, "scrollTop");
+  let value = initial;
+  Object.defineProperty(element, "scrollTop", {
+    configurable: true,
+    get: () => value,
+    set: (next: number) => {
+      value = next;
+    },
+  });
+  onRestore(() => {
+    if (before) Object.defineProperty(element, "scrollTop", before);
+    else Reflect.deleteProperty(element, "scrollTop");
+  });
+}
+
+interface PinnedReader {
+  view: ReturnType<typeof render>;
+  scroll: HTMLDivElement;
+  prose: HTMLElement;
+  band: HTMLElement;
+}
+
+// A fresh reader whose band rectangle is pinned and whose pointer target is the
+// prose beneath it.
+function pinnedProseReader(): PinnedReader {
+  const { view, map, scroll } = renderReader(single);
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const prose = scroll.firstElementChild;
+  if (!(prose instanceof HTMLElement)) throw new Error("missing prose root");
+  const band = bandFor(scroll, "op-1");
+  geometry.setElementRect(band, { left: 10, top: 10, right: 50, bottom: 30 });
+  return { view, scroll, prose, band };
+}
+
+test("isolates matching pointer-up reveal from cancel, unrelated pointer, Shift and drag (synthetic, tests-after)", () => {
+  // Matching down/up over the band's rectangle, with NO click: the candidate
+  // helper reveals on its own pointer-up.
+  {
+    const { view, scroll, prose } = pinnedProseReader();
+    expect(noteTexts(scroll)).toEqual([]);
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 51, clientX: 30, clientY: 20 });
+      pointerEvent("pointerup", prose, { pointerId: 51, clientX: 30, clientY: 20, buttons: 0 });
+    });
+    expect(noteTexts(scroll)).toEqual(["note"]);
+    view.unmount();
+  }
+  // Cancellation of the arming pointer reveals nothing.
+  {
+    const { view, scroll, prose } = pinnedProseReader();
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 61, clientX: 30, clientY: 20 });
+      pointerEvent("pointercancel", prose, { pointerId: 61, clientX: 30, clientY: 20 });
+    });
+    expect(noteTexts(scroll)).toEqual([]);
+    view.unmount();
+  }
+  // An unrelated pointer's release reveals nothing (the arming id must match).
+  {
+    const { view, scroll, prose } = pinnedProseReader();
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 71, clientX: 30, clientY: 20 });
+    });
+    expect(noteTexts(scroll)).toEqual([]);
+    act(() => {
+      pointerEvent("pointerup", prose, { pointerId: 72, clientX: 30, clientY: 20, buttons: 0 });
+    });
+    expect(noteTexts(scroll)).toEqual([]);
+    view.unmount();
+  }
+  // A Shift press is a selection adjustment, never a note tap.
+  {
+    const { view, scroll, prose } = pinnedProseReader();
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 81, clientX: 30, clientY: 20, shiftKey: true });
+      pointerEvent("pointerup", prose, { pointerId: 81, clientX: 30, clientY: 20, buttons: 0, shiftKey: true });
+    });
+    expect(noteTexts(scroll)).toEqual([]);
+    view.unmount();
+  }
+  // A drag (movement past the tap threshold) reveals nothing.
+  {
+    const { view, scroll, prose } = pinnedProseReader();
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 91, clientX: 30, clientY: 20 });
+      pointerEvent("pointermove", prose, { pointerId: 91, clientX: 30, clientY: 60, buttons: 1 });
+      pointerEvent("pointerup", prose, { pointerId: 91, clientX: 30, clientY: 60, buttons: 0 });
+    });
+    expect(noteTexts(scroll)).toEqual([]);
+    view.unmount();
+  }
+});
+
+// A reader displaying a revealed pending reference whose stack is pinned and
+// scrollable, so the wheel arbitration can be observed without a live browser.
+function pendingReferenceReader(): {
+  view: ReturnType<typeof render>;
+  scroll: HTMLDivElement;
+  stack: HTMLElement;
+  reference: HTMLElement;
+} {
+  const { view, map, scroll } = renderReader([
+    annotationView("op-legacy", FIRST, "Legacy note.", { state: "pending", reason: "owner-unavailable" }),
+  ]);
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const band = bandFor(scroll, "op-legacy");
+  geometry.setElementRect(band, { left: 10, top: 10, right: 50, bottom: 30 });
+  fireEvent.click(band);
+  const reference = scroll.querySelector<HTMLElement>("[data-annotation-reference]");
+  if (!reference) throw new Error("the pending reference was not revealed");
+  const stack = reference.parentElement;
+  if (!(stack instanceof HTMLElement)) throw new Error("the note stack is missing");
+  geometry.setElementRect(stack, { left: 0, top: 0, right: 120, bottom: 60 });
+  pinScrollable(stack, 0);
+  return { view, scroll, stack, reference };
+}
+
+// Each wheel-arbitration observation runs in its own case, so a failing first
+// assertion can never hide the others. Synthetic, tests-after; the scroll seam
+// represents only layout jsdom cannot compute.
+test("a wheel over the interactive pending reference does not move the outer stack (synthetic, tests-after)", () => {
+  const { view, stack, reference } = pendingReferenceReader();
+  fireEvent.wheel(reference, { clientX: 30, clientY: 20, deltaY: 40 });
+  expect(stack.scrollTop).toBe(0);
+  view.unmount();
+});
+
+test("a wheel over the interactive pending reference is not cancelled by the outer forwarding (synthetic, tests-after)", () => {
+  const { view, reference } = pendingReferenceReader();
+  const notPrevented = fireEvent.wheel(reference, { clientX: 30, clientY: 20, deltaY: 40 });
+  expect(notPrevented).toBe(true);
+  view.unmount();
+});
+
+test("a wheel over the non-interactive stack region is forwarded to the outer stack and cancelled (synthetic, tests-after)", () => {
+  const { view, scroll, stack } = pendingReferenceReader();
+  const notPrevented = fireEvent.wheel(scroll, { clientX: 30, clientY: 20, deltaY: 40 });
+  expect(stack.scrollTop).toBe(40);
+  expect(notPrevented).toBe(false);
   view.unmount();
 });

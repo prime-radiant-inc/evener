@@ -39,6 +39,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
   const [fragments, setFragments] = useState<readonly HighlightFragment[]>([]);
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const notesRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const measure = (): void => {
@@ -49,14 +50,91 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
       }));
       setFragments(measureDocumentHighlights(map, targets, clip).slice());
     };
+    // Saved bands are pointer-events:none decorations, so a real pointer targets
+    // the prose beneath them. Reveal is resolved BOTH from the event target
+    // (keyboard focus and a direct band click, which still target the band) AND
+    // from the pointer's own coordinates against the measured band rectangles
+    // (ordinary hover and a coordinate click on the prose).
+    const bandAtPoint = (x: number, y: number): string | null => {
+      const hit = [...scrollElement.querySelectorAll<HTMLElement>("[data-document-highlight]")].find((band) => {
+        const rect = band.getBoundingClientRect();
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      });
+      return hit?.getAttribute("data-operation-id") ?? null;
+    };
     // Active-passage selection is delegated from the scroll owner so one capture
     // listener covers hover, focus and click: `focus` does not bubble, so only a
     // capture-phase listener sees it.
     const activate = (event: Event): void => {
       const target = event.target;
-      if (!(target instanceof Element)) return;
-      const operationId = target.closest("[data-document-highlight]")?.getAttribute("data-operation-id");
+      let operationId =
+        target instanceof Element
+          ? (target.closest("[data-document-highlight]")?.getAttribute("data-operation-id") ?? null)
+          : null;
+      if (!operationId && event instanceof MouseEvent) {
+        const hover = (event.type === "mouseover" || event.type === "mousemove") && event.buttons === 0;
+        if (hover || event.type === "click") operationId = bandAtPoint(event.clientX, event.clientY);
+      }
       if (operationId) setActiveOperationId(operationId);
+    };
+    // A genuine tap is a stationary primary press over a band's rectangle,
+    // completed by the SAME uncancelled pointer's release — never a Shift
+    // release and never a drag. Cancellation resets without revealing, and an
+    // unrelated pointer's release is ignored because the arming pointer id must
+    // match.
+    let tapPointerId: number | null = null;
+    let tapStart: { x: number; y: number } | null = null;
+    let tapOperationId: string | null = null;
+    let tapMoved = false;
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.button !== 0 || event.isPrimary === false || event.shiftKey) return;
+      tapPointerId = event.pointerId;
+      tapStart = { x: event.clientX, y: event.clientY };
+      tapMoved = false;
+      tapOperationId = bandAtPoint(event.clientX, event.clientY);
+    };
+    const onPointerMove = (event: PointerEvent): void => {
+      if (event.pointerId !== tapPointerId || !tapStart) return;
+      if (Math.abs(event.clientX - tapStart.x) > 3 || Math.abs(event.clientY - tapStart.y) > 3) tapMoved = true;
+    };
+    const onPointerUp = (event: PointerEvent): void => {
+      if (event.pointerId !== tapPointerId) return;
+      if (tapOperationId && !tapMoved && !event.shiftKey) setActiveOperationId(tapOperationId);
+      tapPointerId = null;
+      tapStart = null;
+      tapOperationId = null;
+      tapMoved = false;
+    };
+    const onPointerCancel = (event: PointerEvent): void => {
+      if (event.pointerId !== tapPointerId) return;
+      tapPointerId = null;
+      tapStart = null;
+      tapOperationId = null;
+      tapMoved = false;
+    };
+    // The revealed note surface is pointer-events:none so it never intercepts a
+    // selection press or release; that also makes its scrollbar non-hit-testable,
+    // so a genuine wheel over the stack must still scroll it. Forward the wheel by
+    // coordinates while the pointer is inside the stack and the stack can move.
+    const onWheel = (event: WheelEvent): void => {
+      const notes = notesRef.current;
+      if (notes === null || !notes.isConnected || !scrollElement.contains(notes)) return;
+      // A nested note control (the pending reference re-enables pointer events
+      // for itself) must keep a wheel it can consume natively: only forward a
+      // wheel that targets the non-hit-testable stack region, never one that
+      // targets an interactive descendant of the stack.
+      if (event.target instanceof Node && notes.contains(event.target)) return;
+      const rect = notes.getBoundingClientRect();
+      if (
+        event.clientX < rect.left ||
+        event.clientX > rect.right ||
+        event.clientY < rect.top ||
+        event.clientY > rect.bottom
+      )
+        return;
+      const before = notes.scrollTop;
+      notes.scrollTop = before + event.deltaY;
+      if (notes.scrollTop !== before) event.preventDefault();
     };
 
     const ownerDocument = scrollElement.ownerDocument;
@@ -65,26 +143,45 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
     const visualViewport = view?.visualViewport ?? null;
     const onScroll = (): void => measure();
     const onResize = (): void => measure();
+    // A pane-only width change reflows the prose without any browser viewport
+    // resize, so the window/visualViewport listeners never fire and the saved
+    // bands would keep stale geometry. Observe the scroll owner's own box so a
+    // layout change to the pane re-measures the same verified ranges.
+    const sizeObserver = view?.ResizeObserver ? new view.ResizeObserver(() => measure()) : null;
 
     measure();
+    sizeObserver?.observe(scrollElement);
     scrollElement.addEventListener("scroll", onScroll);
     view?.addEventListener("resize", onResize);
     fonts?.addEventListener("loadingdone", onScroll);
     visualViewport?.addEventListener("resize", onScroll);
     visualViewport?.addEventListener("scroll", onScroll);
     scrollElement.addEventListener("mouseover", activate, true);
+    scrollElement.addEventListener("mousemove", activate, true);
     scrollElement.addEventListener("click", activate, true);
     scrollElement.addEventListener("focus", activate, true);
+    scrollElement.addEventListener("pointerdown", onPointerDown, true);
+    scrollElement.addEventListener("wheel", onWheel, { passive: false });
+    ownerDocument.addEventListener("pointermove", onPointerMove);
+    ownerDocument.addEventListener("pointerup", onPointerUp);
+    ownerDocument.addEventListener("pointercancel", onPointerCancel);
 
     return () => {
+      sizeObserver?.disconnect();
       scrollElement.removeEventListener("scroll", onScroll);
       view?.removeEventListener("resize", onResize);
       fonts?.removeEventListener("loadingdone", onScroll);
       visualViewport?.removeEventListener("resize", onScroll);
       visualViewport?.removeEventListener("scroll", onScroll);
       scrollElement.removeEventListener("mouseover", activate, true);
+      scrollElement.removeEventListener("mousemove", activate, true);
       scrollElement.removeEventListener("click", activate, true);
       scrollElement.removeEventListener("focus", activate, true);
+      scrollElement.removeEventListener("pointerdown", onPointerDown, true);
+      scrollElement.removeEventListener("wheel", onWheel);
+      ownerDocument.removeEventListener("pointermove", onPointerMove);
+      ownerDocument.removeEventListener("pointerup", onPointerUp);
+      ownerDocument.removeEventListener("pointercancel", onPointerCancel);
     };
   }, [map, annotations, scrollElement]);
 
@@ -147,7 +244,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
           />
         ))}
       {revealed.length > 0 && (
-        <div className={CLASS.notes} style={notesStyle}>
+        <div className={CLASS.notes} style={notesStyle} ref={notesRef}>
           {revealed.map((annotation) => (
             <Fragment key={annotation.operation.operationId}>
               <div data-annotation-note="" className={CLASS.note}>
