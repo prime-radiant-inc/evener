@@ -190,7 +190,11 @@ type jobManager struct {
 	// stable-watch receipt. Nil in production; lock-order tests use it to prove
 	// the job manager released its local persistence lock first.
 	watchReceiptBoundary func()
-	clock                clock.Clock
+	// stableWatchArmFailure, when set, fails arming a stable watch frame's
+	// attention after the receiver took it, as a cold receiver's arm can.
+	// Nil in production.
+	stableWatchArmFailure func(attentionID string) error
+	clock                 clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.

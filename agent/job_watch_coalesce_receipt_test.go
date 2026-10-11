@@ -417,3 +417,35 @@ func (f writeHookFile) Write(p []byte) (int, error) {
 	}
 	return f.File.Write(p)
 }
+
+// The receiver takes the first frame but arming its attention fails, and a
+// replacement then coalesces over it. Nothing will redeliver the first frame,
+// so it keeps its receipt and goes to the settlement retry, which arms and
+// acknowledges it.
+func TestAcceptedFrameWithFailedArmRetriesAfterACoalesce(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	armFailure := errors.New("arm failed")
+	jm.stableWatchArmFailure = func(string) error { return armFailure }
+	if _, err := jm.deliverPendingWatchSend(cfg, first, false); !errors.Is(err, armFailure) {
+		t.Fatalf("deliver first frame: err = %v, want the arm failure", err)
+	}
+	jm.stableWatchArmFailure = nil
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
+	second := fixture.requireOnePending(t).state
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
+		t.Fatalf("the accepted, unarmed frame lost its receipt: %v", got)
+	}
+	if _, err := jm.retryStableWatchSettlements(); err != nil {
+		t.Fatalf("settlement retry: %v", err)
+	}
+	if !jm.watchSendDelivered(first.DeliveryID) {
+		t.Fatal("the retry did not acknowledge the accepted frame")
+	}
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
+		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
+	}
+}

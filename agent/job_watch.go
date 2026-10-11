@@ -4632,7 +4632,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			}
 			return false, appendErr
 		}
-		if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
+		if err := jm.armAcceptedStableWatchFrame(controller, receiver, cfg, state, attentionID); err != nil {
 			return false, err
 		}
 		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
@@ -4644,7 +4644,7 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 	if appendErr != nil {
 		return false, appendErr
 	}
-	if err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID); err != nil {
+	if err := jm.armAcceptedStableWatchFrame(controller, receiver, cfg, state, attentionID); err != nil {
 		return false, err
 	}
 	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
@@ -4677,6 +4677,21 @@ func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.Wa
 		jm.unsettledWatchSends = make(map[string]pendingWatchSendDelivery)
 	}
 	jm.unsettledWatchSends[state.DeliveryID] = pendingWatchSendDelivery{cfg: cfg, state: state}
+}
+
+// armAcceptedStableWatchFrame arms the attention of a frame the receiver has
+// durably taken. A failed arm notes the frame like a failed acknowledgement:
+// while it stays pending a redelivery re-arms it, and once a replacement
+// coalesces over it the settlement retry arms and acknowledges it.
+func (jm *jobManager) armAcceptedStableWatchFrame(controller *delegateTreeController, receiver delegateDeliveryReceiver, cfg *watchConfig, state jobstore.WatchSendState, attentionID string) error {
+	err := armStableWatchAttention(controller, receiver, state.ReceiverDelegateID, attentionID)
+	if err == nil && jm.stableWatchArmFailure != nil {
+		err = jm.stableWatchArmFailure(attentionID)
+	}
+	if err != nil {
+		jm.noteUnsettledWatchSend(cfg, state)
+	}
+	return err
 }
 
 func armStableWatchAttention(controller *delegateTreeController, receiver delegateDeliveryReceiver, receiverDelegateID, attentionID string) error {
@@ -4845,17 +4860,17 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		})
 		return state, false, err
 	}
+	// The eviction events landed with the pending event above: drop the
+	// evicted keys from the runtime map (releasing their receipts) first, so
+	// no drain woken during verification finds a frame that is no longer
+	// durably pending.
+	jm.removeWatchSendTerminalSnapshots(evictionSnapshots)
 	// Promote the receipt and check the refold before the runtime map
 	// publishes the frame to drains: a drain that delivers it at once then
 	// reuses that receipt, and its Delivered marker can't fail the refold.
 	completed, verr := jm.verifyStableWatchEnqueue(enqueueReceipt, record.persisted)
 	enqueueCompleted = completed
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
-	// The eviction events landed with the pending event above: drop the
-	// evicted keys from the runtime map (releasing their receipts) and surface
-	// their diagnostics before returning a verification failure, so the
-	// journal and the runtime map agree on every return path.
-	jm.removeWatchSendTerminalSnapshots(evictionSnapshots)
 	var evictionDiagnostics []jobNotification
 	for _, eviction := range record.evictions {
 		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
