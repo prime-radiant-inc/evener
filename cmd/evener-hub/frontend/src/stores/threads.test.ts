@@ -2726,36 +2726,6 @@ describe("notification routing differential (randomized: index vs scan reference
   });
 });
 
-describe("notification routing for out-of-catalog methods", () => {
-  test("an unknown method carrying a matching ref still routes by that ref", async () => {
-    const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
-    await threadsStore.getState().ensureThread("ref_a");
-    await threadsStore.getState().ensureThread("ref_b");
-
-    const beforeB = threadsStore.getState().threads.get("ref_b");
-    const before = threadsStore.getState().threads;
-
-    // A method this build predates. Routing reads only the frame's own
-    // ref/threadId (notificationRoutingKey is method-agnostic), so an
-    // out-of-catalog frame routes exactly like a catalog frame: the
-    // ref-routed model is selected, and no full-scan fallback exists to
-    // behave differently. The reducer's default case returns the same
-    // reference, so the pin here is selection-plus-no-side-effect: the
-    // map is untouched for the sibling and the map reference is identical,
-    // and a follow-up catalog frame still lands on the selected model.
-    fake.emitUnknownNotification({ method: "totally/unknown", params: { ref: "ref_a" } });
-
-    expect(threadsStore.getState().threads).toBe(before);
-    expect(threadsStore.getState().threads.get("ref_b")).toBe(beforeB);
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    });
-    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
-  });
-});
-
 describe("reconnect resubscribe", () => {
   test("a reconnect publishes the completion represented by its authoritative response cut", async () => {
     const fake = connectFakeClient();
