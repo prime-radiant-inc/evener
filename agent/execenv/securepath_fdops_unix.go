@@ -633,10 +633,8 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 	if s.underMasked(abs) {
 		return false
 	}
-	// A granted root is judged by opening it, since its parent may be outside
-	// policy (under restricted, the worktree root's parent is not a read
-	// root); one not created yet, such as an Evener content directory before
-	// anything is installed, does not exist.
+	// A granted root's parent may be outside policy, so judge the root by
+	// opening it; a root not created yet does not exist.
 	if s.isGrantedRoot(abs) {
 		_, err := s.rootFd(abs)
 		return err == nil
