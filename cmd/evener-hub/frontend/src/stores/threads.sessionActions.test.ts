@@ -7807,3 +7807,41 @@ test.each(["accepted", "absent", "unavailable"])(
     }
   },
 );
+
+for (const status of ["active", "idle"]) {
+  test(`saved ${status} delegate snapshots do not release uncertain mutations`, async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "delegate-uncertain" });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let snapshot = readResponse("ref_a", { status: { type: "restartRequired" } });
+    fake.on("thread/read", (params) => ({ ...snapshot, requestGeneration: params.requestGeneration }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    snapshot = readResponse("ref_a", { status: { type: status } });
+    Object.assign(snapshot.thread.evener, { mutationStateAuthoritative: false, kind: "subagent" });
+    await threadsStore.getState().refreshThread("ref_a");
+    expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    snapshot = readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, clientMutationIds: [record.clientMutationId] },
+      },
+    });
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(await storage.getOutbox(record.clientMutationId)).toBeUndefined();
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+  });
+}
