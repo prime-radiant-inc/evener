@@ -1347,6 +1347,41 @@ test.each([
 	},
 );
 
+test("a direct send is remembered as this phone's", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	await runtime.submit(request("send"));
+
+	const sent = (client.calls[0]?.params as { clientMutationId: string }).clientMutationId;
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1")).has(sent)).toBe(true);
+	await runtime.stop();
+});
+
+test("a direct drain settles the queued messages it consumed once storage answers", async () => {
+	let nextId = 0;
+	const { runtime, client } = await readyRuntimeWithClient(() => `mutation-${++nextId}`);
+	client.on("turn/queue", (params) => appliedReceipt(params));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await runtime.submit(request("queue"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+	client.on("turn/drainAsSteer", (params) => {
+		database!.exec("PRAGMA query_only = OFF");
+		const response = appliedReceipt(params) as { receipt: object };
+		return { receipt: { ...response.receipt, consumedClientMutationIds: ["mutation-1"] } } as never;
+	});
+	refuseWrites(database!);
+
+	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
+
+	expect(await runtime.storage.getOptimistic("mutation-1")).toBeUndefined();
+	await runtime.stop();
+});
+
 // SQLITE_FULL rolls the transaction back itself, so the savepoint's own
 // rollback fails too; the send must still see the full-disk error.
 test("a send on a full disk goes out as a plain request", async () => {

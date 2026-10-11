@@ -5,6 +5,7 @@ import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
 	createClientIdentity,
 	createSecureUUID,
+	validConsumedClientMutationIds,
 	MutationDispatcher,
 	MutationOutbox,
 	type MutationAttachmentRef,
@@ -126,6 +127,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	readonly #outbox: MutationOutbox;
 	readonly #dispatcher: MutationDispatcher;
 	readonly #createMutationId: () => string;
+	readonly #now: () => number;
 	readonly #targets = new Map<
 		string,
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
@@ -165,10 +167,11 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 
 	constructor(database: SqliteSync, options: NativeMutationRuntimeOptions = {}) {
 		const identity = createClientIdentity(undefined, nativeRandomSource());
+		this.#now = options.now ?? Date.now;
 		this.#createMutationId = options.createMutationId ?? (() => createSecureUUID(nativeRandomSource()));
 		this.storage = new MutationOutboxSQLite(database, {
 			createMutationId: this.#createMutationId,
-			now: options.now,
+			now: this.#now,
 			getOwnClientId: options.getOwnClientId ?? identity.ownClientId,
 		});
 		this.#dispatcher = new MutationDispatcher(this.storage, {
@@ -498,8 +501,27 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		const client = this.#targets.get(intent.targetRef)?.client;
 		if (!client || client.state !== "ready") throw storageError;
 		const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
-		await request.call(client, intent.method, { ...intent.payload, clientMutationId: this.#createMutationId() });
+		const clientMutationId = this.#createMutationId();
+		const result = await request.call(client, intent.method, { ...intent.payload, clientMutationId });
+		// The send is this phone's, so a read that lists it as pending must
+		// not classify it as another client's.
+		this.#rememberSubmitted(intent.targetRef, clientMutationId, this.#now());
+		if (intent.method === "turn/drainAsSteer") await this.#settleConsumedByDrain(result);
 		return undefined;
+	}
+
+	// The queued messages a direct drain consumed settle as the dispatcher
+	// settles them. Storage just failed, so this is best effort: a refused
+	// write leaves them for a later authoritative read.
+	async #settleConsumedByDrain(result: unknown): Promise<void> {
+		const receipt = (result as { receipt?: { consumedClientMutationIds?: unknown } } | null)?.receipt;
+		const consumed = validConsumedClientMutationIds(receipt?.consumedClientMutationIds);
+		if (consumed.length === 0) return;
+		try {
+			await this.#dispatcher.reconcileIdentities(consumed);
+		} catch {
+			// Storage is still failing.
+		}
 	}
 
 	/** The mutations this phone submitted to a target this launch, by id,
