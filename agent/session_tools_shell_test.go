@@ -1375,8 +1375,9 @@ func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
 }
 
 // TestCompleteOrHandleKeptNoNotification pins spec §6.4(d): a within-bound
-// job that finishes and is kept (large output) has NotifyState "not_armed" —
-// synchronous completion needs no duplicate terminal notification.
+// job that finishes and is kept (large output) arms no terminal notification —
+// synchronous completion needs no duplicate. Its notification is recorded as
+// consumed, so a restore cannot mistake it for one a crash interrupted.
 func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -1400,8 +1401,8 @@ func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
 	}
 
 	rec := loadShellRecord(t, s.jobManager, out.JobID)
-	if rec.NotifyState != jobstore.NotifyNotArmed {
-		t.Fatalf("kept within-bound job NotifyState = %q, want %q (spec §6.4d — synchronous completion must not arm notification)", rec.NotifyState, jobstore.NotifyNotArmed)
+	if rec.NotifyState != jobstore.NotifyConsumed {
+		t.Fatalf("kept within-bound job NotifyState = %q, want %q (spec §6.4d — synchronous completion must not arm notification)", rec.NotifyState, jobstore.NotifyConsumed)
 	}
 }
 

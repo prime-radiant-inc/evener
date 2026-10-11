@@ -50,7 +50,8 @@ func TestCovFinalizeWithRunNoNotification(t *testing.T) {
 	if got == nil || got.Status != jobstore.StatusCompleted || got.Reason != "exit_zero" || got.ExitCode == nil || *got.ExitCode != 0 {
 		t.Fatalf("finalized record = %+v, want completed exit_zero with exit code 0", got)
 	}
-	if got.NotifyState != jobstore.NotifyNotArmed || len(notifications) != 0 {
+	// No notification is armed or enqueued; the inline result settles it.
+	if got.NotifyState != jobstore.NotifyConsumed || len(notifications) != 0 {
 		t.Fatalf("no-notification finalize produced notify state %q and %d enqueues", got.NotifyState, len(notifications))
 	}
 }

@@ -69,6 +69,10 @@ type Event struct {
 	StructuredResult       any        `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool      `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string     `json:"structured_result_reason,omitempty"`
+	// ResultInline marks a job_finished whose complete result the caller
+	// already received in its own tool reply (a foreground shell that finished
+	// within its bound), so no completion notification is owed.
+	ResultInline bool `json:"result_inline,omitempty"`
 
 	// job_message_sent payload
 	Target string `json:"target,omitempty"`

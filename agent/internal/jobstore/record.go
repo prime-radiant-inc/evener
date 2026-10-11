@@ -56,7 +56,8 @@ const (
 	NotifyPending   NotifyState = "pending"
 	NotifyDelivered NotifyState = "delivered"
 	// NotifyConsumed means the caller learned the job ended by reading its
-	// terminal job_status, not by being shown the notification. The caller was
+	// terminal job_status, or by receiving the whole result in its own tool
+	// reply, not by being shown the notification. The caller was
 	// told either way — which is why it settles the pending notification — but
 	// it is a separate value from NotifyDelivered so the durable ledger and
 	// evener-doctor keep saying which of the two actually happened.

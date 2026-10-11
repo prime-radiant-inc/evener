@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -1459,5 +1460,50 @@ func TestJobManagerCloseClosesStoreAfterRuntimeWaitTimeout(t *testing.T) {
 	}
 	if _, loadErr := jm.store.Load(); !errors.Is(loadErr, jobstore.ErrStoreClosed) {
 		t.Fatalf("store.Load after timed-out close err = %v, want ErrStoreClosed", loadErr)
+	}
+}
+
+// TestRestoreDoesNotRenotifyAForegroundResultTheModelAlreadySaw pins #4290. A
+// foreground shell command that finishes within its bound returns its whole
+// result inline, so it arms no completion notification. On restore that job
+// must not be mistaken for one whose notification a crash interrupted:
+// re-arming it delivers a "job completed" notice the model already read, and
+// wakes the resumed session for a turn nobody asked for.
+func TestRestoreDoesNotRenotifyAForegroundResultTheModelAlreadySaw(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, testOwnerSessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	res := runShell(context.Background(), jm, execenv.NewLocalExecutionEnvironment(t.TempDir()), shellArgs{Command: "printf done", BlockTimeoutMS: 5000})
+	if res.settle == nil || res.RunningInBackground {
+		t.Fatalf("a quick command must complete in the foreground: %+v", res)
+	}
+	jobID := res.settle(true)
+	if jobID == "" {
+		t.Fatal("the foreground result was not kept as a job")
+	}
+	waitForShellDone(t, jm, jobID)
+
+	var queued []jobNotification
+	restarted, err := newJobManager(stateDir, testOwnerSessionID, func(n jobNotification) {
+		queued = append(queued, n)
+	})
+	if err != nil {
+		t.Fatalf("restart newJobManager: %v", err)
+	}
+	if err := restarted.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("restore re-notified a foreground result the model already saw: %+v", queued)
+	}
+	recs, err := restarted.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := recs[jobID].NotifyState; got == jobstore.NotifyPending || got == jobstore.NotifyNotArmed {
+		t.Fatalf("notify state = %q, want the inline delivery recorded as settled", got)
 	}
 }

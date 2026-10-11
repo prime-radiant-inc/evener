@@ -251,7 +251,7 @@ func seed100JobsMore(t *testing.T) {
 	writeRun := &runningJob{rec: &jobstore.JobRecord{JobID: "write-forward", Type: jobstore.JobShell, Status: jobstore.StatusRunning}, output: writeOut, done: make(chan struct{})}
 	jm3.running[writeRun.rec.JobID] = writeRun
 	jm3.forward = func(jobstore.Event) error { return want }
-	_, _ = jm3.writeFinishJob(writeRun, jobstore.StatusCompleted, "done", nil)
+	_, _ = jm3.writeFinishJob(writeRun, jobstore.StatusCompleted, "done", nil, false)
 	delete(jm3.running, writeRun.rec.JobID)
 	successOut, err := jobstore.OpenOutputNoSync(filepath.Join(jm3.dir, "jobs", "success-terminal.log"), 64)
 	if err != nil {

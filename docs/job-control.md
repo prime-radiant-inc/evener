@@ -1273,6 +1273,12 @@ Delegate generations never create job records. A shell job record contains:
 }
 ```
 
+A kept within-bound completion already handed its result to the caller in the
+tool reply, so it arms no completion notification: its `job_finished` event
+carries `result_inline`, and the record folds to `consumed`. A restore re-arms
+only terminal records still `not_armed` or `pending`, so it never re-delivers a
+result the model already read.
+
 `parent_job_id` links shell-to-shell work. `parent_delegate_id` names the stable
 delegate that caused a shell job; a shell never points at a private delegate
 generation. Fields that do not apply are omitted.
