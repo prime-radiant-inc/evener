@@ -26,7 +26,7 @@ export function scriptSearchFailure(): void {
 
 // The palette's results carry structured markers so tests can read what the
 // palette shows without reading its copy: section headers carry data-section,
-// rows carry data-kind, the no-rows placeholder carries data-empty-reason, and
+// rows carry data-kind, the no-rows placeholder carries data-reason, and
 // each keyboard-shortcut legend row carries data-help-row.
 
 export function paletteSection(section: string): Element | null {
@@ -38,7 +38,7 @@ export function paletteRowsOfKind(kind: string): HTMLElement[] {
 }
 
 export function paletteEmptyReason(): string | null {
-  return document.querySelector("[data-empty-reason]")?.getAttribute("data-empty-reason") ?? null;
+  return document.querySelector("[data-reason]")?.getAttribute("data-reason") ?? null;
 }
 
 // Each legend row's chord as KeyHint renders it, e.g. "Ctrl+K".

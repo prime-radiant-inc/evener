@@ -900,7 +900,7 @@ function renderResults(args: {
   return <Empty reason="free-arg" body={query.trim() ? `press ↵ to run with: ${query}` : "type a value and press ↵"} />;
 }
 
-// reason names which placeholder this is (data-empty-reason), independent of
+// reason names which placeholder this is (data-reason), independent of
 // its copy.
 function Empty({
   reason,
@@ -912,7 +912,7 @@ function Empty({
   body?: string;
 }) {
   return (
-    <div className={CLASS.empty} data-empty-reason={reason}>
+    <div className={CLASS.empty} data-reason={reason}>
       {title && <p className={CLASS.emptyTitle}>{title}</p>}
       {body && <p className={CLASS.emptyBody}>{body}</p>}
     </div>
