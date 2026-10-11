@@ -874,6 +874,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.MCPInline = nil
 	subCfg.spawn.sessionID = ""
 	subCfg.spawn.parentJobActivity = nil
+	subCfg.spawn.parentJobIntent = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.delegateController = s.delegateController
 	subCfg.spawn.retirementController = s.retirementController.Load()
@@ -1367,6 +1368,19 @@ func (s *Session) noteParentJobActivity(phase string) {
 	parentID := s.cfg.spawn.parentDelegateID
 	if parentID != "" {
 		s.cfg.spawn.parentJobActivity(parentID, phase)
+	}
+}
+
+// noteParentJobIntent reports the open generation's newest stated tool-call
+// intent to the child's own delegate row, or the explicit clear an execution
+// start states. Plain phase reports never touch this channel.
+func (s *Session) noteParentJobIntent(intent string) {
+	if s == nil || s.cfg.spawn.parentJobIntent == nil {
+		return
+	}
+	parentID := s.cfg.spawn.parentDelegateID
+	if parentID != "" {
+		s.cfg.spawn.parentJobIntent(parentID, intent)
 	}
 }
 

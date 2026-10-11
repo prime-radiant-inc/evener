@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -868,6 +869,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 	if d := toolStartDescription(args); d != "" {
 		startData.Description = d
+		// Report the call's stated intent to the parent's delegate row, the
+		// same line the root meter reads from this event's description. A
+		// call stating no intent reports nothing and the previous line stands.
+		s.noteParentJobIntent(appwire.Excerpt(d, appwire.MaxIntentRunes))
 	}
 	s.execToolCheckpoint("before_side_effects")
 	toolEventOpen := false

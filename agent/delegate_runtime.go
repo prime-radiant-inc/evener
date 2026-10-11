@@ -713,6 +713,12 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	child.cfg.spawn.parentJobActivity = func(_ string, phase string) {
 		_ = controller.ReportActivityPhase(lease, child.sclock().Now(), phase)
 	}
+	// The intent closure binds to this child's own lease, the fence that keeps
+	// a descendant's tool calls off every other row: each child reports to its
+	// own delegate id, never its parent's.
+	child.cfg.spawn.parentJobIntent = func(_ string, intent string) {
+		_ = controller.ReportIntent(lease, child.sclock().Now(), intent)
+	}
 	jm := child.jobManager
 	child.mu.Unlock()
 	if jm != nil {
