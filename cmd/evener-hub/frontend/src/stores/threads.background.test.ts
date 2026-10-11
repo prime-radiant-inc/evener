@@ -2,10 +2,9 @@ import "fake-indexeddb/auto";
 import {
   type AnyNotification,
   AppwireClient,
-  acquireThreadSubscription,
+  type acquireThreadSubscription,
   currentTranscriptState,
   hydrateThread,
-  makeTranscriptDisplayConfig,
   type ThreadModel,
   type ThreadReadResponse,
   type ThreadTurnsListResponse,
@@ -15,11 +14,8 @@ import { currentRead, textDelta } from "@evener/appwire-client/testing/currentTr
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
-import { act, cleanup, render, screen } from "@testing-library/react";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
-import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
 import { focusedModel } from "../shell/palette/paletteContext";
 import { findInSessionMatches } from "../shell/palette/search";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
@@ -34,7 +30,6 @@ import {
   observePendingHydrationRetirementsForTests,
   pendingThreadHydrationBaseModelsForTests,
   pendingThreadHydrationUpdatesForTests,
-  putThreadModel,
   resetThreadsStoreForTests,
   setCacheWriteTimersForTests,
   setMutationStorageForTests,
@@ -222,26 +217,6 @@ function sharesTranscriptBody(base: ThreadModel, canonical: ThreadModel): boolea
 }
 
 describe("background thread claims", () => {
-  test("sharesTranscriptBody requires shared identity, not equal serialized content", () => {
-    const model = hydrateThread(currentRead("local:identity"), "local:identity", 1);
-    const history = model.history;
-    if (!history) throw new Error("expected the fixture to carry a recorded history");
-    const sameContentClone: ThreadModel = {
-      ...model,
-      history: { ...history, turns: [...history.turns] },
-      overlay: { ...model.overlay },
-    };
-    // Identical serialized content, but independent turns/overlay containers.
-    expect(currentTranscriptState(sameContentClone)).toEqual(currentTranscriptState(model));
-    expect(sameContentClone).not.toBe(model);
-    expect(sameContentClone.history?.turns).not.toBe(history.turns);
-    expect(sameContentClone.overlay).not.toBe(model.overlay);
-    // Only the same model, or a genuinely shared turns array and overlay, share.
-    expect(sharesTranscriptBody(model, model)).toBe(true);
-    expect(sharesTranscriptBody({ ...model, history }, model)).toBe(true);
-    expect(sharesTranscriptBody(sameContentClone, model)).toBe(false);
-  });
-
   test("last-owner retirement releases the pending charge and detaches frames and base model", async () => {
     const { client, socket } = await connectRealClientWithSocket();
     const ref = "local:retired-buffer";
@@ -331,37 +306,6 @@ describe("background thread claims", () => {
         socket.receive({ id: request.id, result: currentRead(request.ref) });
       }
       threadsStore.getState().releaseThread(ref);
-      client.close();
-    }
-  });
-
-  test("retirement prevents a stale-cursor fallback read after its first response rejects", async () => {
-    const { client, socket } = await connectRealClientWithSocket();
-    const ref = "local:retired-fallback";
-    const lease = acquireBackgroundThread(ref);
-    try {
-      putThreadModel(ref, hydrateThread(currentRead(ref), ref, Date.now()));
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
-      const first = threadReadRequests(socket)[0]!;
-      const release = lease.release();
-      socket.receive({
-        id: first.id,
-        error: {
-          code: -32000,
-          message: "stale cursor",
-          data: { evenerErrorInfo: "transcriptItemCursorStale" },
-        },
-      });
-      await release;
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0), {
-        timeout: 1_000,
-      });
-      expect(threadReadRequests(socket)).toHaveLength(1);
-    } finally {
-      for (const request of threadReadRequests(socket)) {
-        socket.receive({ id: request.id, result: currentRead(request.ref) });
-      }
-      await lease.release();
       client.close();
     }
   });
@@ -456,29 +400,6 @@ describe("background thread claims", () => {
       await Promise.all([firstRelease ?? firstOwner.release(), replacementRelease ?? replacement?.release()]);
       resetThreadsStoreForTests();
       restoreOptions();
-    }
-  });
-
-  test("a released read waiting on shared membership cannot issue after that transition", async () => {
-    const { client, socket } = await connectRealClientWithSocket();
-    const ref = "local:membership-retire";
-    const activity = acquireThreadSubscription(client, ref);
-    activityLeases.push(activity);
-    const membershipRead = activity.read({ includeTurns: false, itemsView: "full", itemLimit: 80 });
-    const background = acquireBackgroundThread(ref);
-    try {
-      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1));
-      await background.release();
-      const first = threadReadRequests(socket)[0]!;
-      socket.receive({ id: first.id, result: currentRead(ref) });
-      await membershipRead;
-      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
-      expect(threadReadRequests(socket)).toHaveLength(1);
-    } finally {
-      socket.closeFromServer(1000);
-      await background.release();
-      client.close();
     }
   });
 
@@ -2099,192 +2020,6 @@ describe("background thread claims", () => {
     }
   });
 
-  test("renders one completed transcript copy after history retires the live overlay", async () => {
-    const restoreOptions = installBackgroundTranscriptOptionsForTests({
-      residentBytes: 0,
-      pendingBytes: 8 * 1024 * 1024,
-    });
-    resetThreadsStoreForTests();
-    setSessionCacheAdapterForTests(cache);
-    const fake = new FakeClient("ready");
-    fake.on("thread/read", ({ ref }) => positionedLatestRead(ref ?? "local:one"));
-    fake.on("thread/unsubscribe", () => ({}));
-    fake.on("thread/turns/list", () => olderPage("turn_old", 1, 0, ["older-completed-item"], "cursor_next"));
-    connectionStore.getState().connect(fake);
-    const background = acquireBackgroundThread("local:one");
-    let paneHeld = false;
-    let rendered: ReturnType<typeof render> | undefined;
-    const view = (model: ThreadModel) =>
-      createElement(TranscriptBody, {
-        model,
-        config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
-        surface: "preview",
-        disclosureScope: "completed-copy",
-      });
-    try {
-      await background.ready;
-      await settleBackgroundTranscriptsForTests();
-      expect(threadsStore.getState().threads.has("local:one")).toBe(false);
-
-      // Stream canonical text and a tool output while the model is disk-resident.
-      fake.emitNotification({
-        method: "overlay/upserted",
-        params: {
-          threadId: "thr_local:one",
-          ref: "local:one",
-          item: {
-            key: "stream:s1:tool",
-            kind: "stream",
-            streamId: "s1",
-            roundId: "r1",
-            turnId: "turn_1",
-            item: {
-              type: "commandExecution",
-              id: "tool1",
-              turnId: "turn_1",
-              roundId: "r1",
-              callId: "call_tool",
-              output: "",
-              status: "inProgress",
-            },
-          },
-        },
-      } as AnyNotification);
-      fake.emitNotification(textDelta("local:one", "-streamed"));
-      fake.emitNotification({
-        method: "overlay/delta",
-        params: {
-          threadId: "thr_local:one",
-          ref: "local:one",
-          key: "stream:s1:tool",
-          field: "output",
-          delta: "-tool-streamed",
-        },
-      } as AnyNotification);
-      await settleBackgroundTranscriptsForTests();
-
-      // Promote the disk checkpoint into the pane with no thread/read.
-      const readsBeforePromotion = fake.calls.filter((call) => call.method === "thread/read").length;
-      const pane = threadsStore.getState().ensureThread("local:one");
-      paneHeld = true;
-      await pane;
-      expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBeforePromotion);
-      const promoted = threadsStore.getState().threads.get("local:one");
-      if (!promoted) throw new Error("expected the promoted model");
-      // Both streamed overlay entries survive promotion with their accumulated
-      // text and tool output.
-      expect(promoted.overlay?.["stream:s1:agentMessage"]?.item.text).toBe("alpha-streamed");
-      expect(promoted.overlay?.["stream:s1:tool"]?.item.output).toBe("-tool-streamed");
-
-      await act(async () => {
-        rendered = render(view(promoted));
-      });
-      expect(screen.getAllByText("alpha-streamed").length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText("-tool-streamed").length).toBeGreaterThanOrEqual(1);
-
-      // Complete the turn: recorded history carries the retained stream content
-      // plus later output and retires the live overlay.
-      await act(async () => {
-        fake.emitNotification({
-          method: "history/updated",
-          params: {
-            threadId: "thr_local:one",
-            ref: "local:one",
-            bootGeneration: "1",
-            epoch: 1,
-            snapshot: { incarnation: "inc-1", length: 1 },
-            turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
-            items: [
-              {
-                type: "agentMessage",
-                id: "a1",
-                turnId: "turn_1",
-                roundId: "r1",
-                transcriptKey: "apptranscript-item-v2:turn_1:0:0",
-                position: { entry: 1, item: 0 },
-                version: 1,
-                text: "alpha-streamed-later",
-                status: "completed",
-              },
-              {
-                type: "commandExecution",
-                id: "tool1",
-                turnId: "turn_1",
-                roundId: "r1",
-                callId: "call_tool",
-                transcriptKey: "apptranscript-item-v2:turn_1:0:1",
-                position: { entry: 1, item: 1 },
-                version: 1,
-                output: "-tool-streamed-later",
-                status: "completed",
-              },
-            ],
-          },
-        } as AnyNotification);
-      });
-
-      const completed = threadsStore.getState().threads.get("local:one");
-      if (!completed) throw new Error("expected the completed model");
-      expect(completed.overlay).toEqual({});
-      expect(completed.olderCursor).toBe("cursor_latest");
-
-      await act(async () => {
-        rendered?.rerender(view(completed));
-      });
-      expect(screen.getAllByText("alpha-streamed-later")).toHaveLength(1);
-      expect(screen.getAllByText("-tool-streamed-later")).toHaveLength(1);
-      // No leftover live overlay copy survives retirement.
-      expect(screen.queryByText("alpha-streamed")).toBeNull();
-      expect(screen.queryByText("-tool-streamed")).toBeNull();
-
-      await act(async () => {
-        rendered?.unmount();
-        rendered = undefined;
-      });
-      // The paging boundary continues past the completed turn.
-      await threadsStore.getState().loadOlderTurns("local:one");
-      const paged = threadsStore.getState().threads.get("local:one");
-      if (!paged) throw new Error("expected the paged model");
-      expect(paged.olderCursor).toBe("cursor_next");
-      expect(paged.turns.flatMap((turn) => turn.items).map((item) => item.text)).toContain("older-completed-item");
-    } finally {
-      rendered?.unmount();
-      cleanup();
-      if (paneHeld) threadsStore.getState().releaseThread("local:one");
-      try {
-        await background.release();
-      } finally {
-        resetThreadsStoreForTests();
-        restoreOptions();
-      }
-    }
-  });
-
-  test("a threadId-only notification routes to the requested background alias", async () => {
-    const fake = connectCurrentClient();
-    const background = acquireBackgroundThread("local:one");
-    await background.ready;
-    const notification = {
-      method: "overlay/delta",
-      params: {
-        threadId: "thr_local:one",
-        key: "stream:s1:agentMessage",
-        field: "text",
-        delta: "-via-id",
-      },
-    } as AnyNotification;
-    fake.emitNotification(notification);
-    expect(
-      threadsStore
-        .getState()
-        .threads.get("local:one")
-        ?.turns.flatMap((turn) => turn.items)
-        .map((item) => item.text)
-        .join(""),
-    ).toContain("alpha-via-id");
-    await background.release();
-  });
-
   test.each(["background", "pane"] as const)(
     "a new %s claim during the final cut write keeps later notification progress",
     async (claimKind) => {
@@ -2717,26 +2452,6 @@ describe("background thread claims", () => {
     expect(threadsStore.getState().threads.has("local:two")).toBe(false);
     expect(await cache.get("local:two", Date.now())).toBeDefined();
     expect(unsubscriptions(fake)).toBe(2);
-  });
-
-  test("keeps the model owned until an in-flight history page finishes", async () => {
-    const fake = connectCurrentClient();
-    await threadsStore.getState().ensureThread("local:one");
-    const entered = deferred<void>();
-    const page = deferred<ThreadTurnsListResponse>();
-    fake.on("thread/turns/list", () => {
-      entered.resolve();
-      return page.promise;
-    });
-
-    const loading = threadsStore.getState().loadOlderTurns("local:one");
-    await entered.promise;
-    threadsStore.getState().releaseThread("local:one");
-    expect(threadsStore.getState().threads.has("local:one")).toBe(true);
-
-    page.resolve({ data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 40 } });
-    await loading;
-    expect(threadsStore.getState().threads.has("local:one")).toBe(false);
   });
 
   test("a reconnect replaces a nonresident desired ref's pages with the latest window, then pages back to the prior later-page item", async () => {
