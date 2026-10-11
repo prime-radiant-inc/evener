@@ -42,6 +42,7 @@ import {
   Badge,
   Button,
   Chevron,
+  Eyebrow,
   IconButton,
   Popover,
   RadioGroup,
@@ -902,9 +903,9 @@ function MockSection(props: {
   return (
     <section className={railStyles.section}>
       <div className={railStyles.sectionHeadingRow}>
-        <h3 className={`${railStyles.sectionTitle} ${railStyles.staticSectionLabel}`}>
+        <h3 className={railStyles.sectionTitle}>
           <button type="button" className={railStyles.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-            {title}
+            <Eyebrow as="span">{title}</Eyebrow>
             <Chevron direction={open ? "down" : "right"} />
           </button>
         </h3>
@@ -1091,7 +1092,7 @@ function ControlCloseups(): JSX.Element {
         </div>
         <div className={styles.closeup}>
           <div className={styles.closeupHeadingRow}>
-            <span className={railStyles.staticSectionLabel}>PROJECTS</span>
+            <Eyebrow as="span">Projects</Eyebrow>
             <SegmentedControl
               label="Group by"
               size="sm"

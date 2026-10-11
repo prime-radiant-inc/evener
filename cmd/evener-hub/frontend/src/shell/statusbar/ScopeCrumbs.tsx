@@ -5,6 +5,7 @@
 import { navigationSummaryFor } from "../../panes/session/threadTitle";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
+import { Button, ListRow } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { refParam } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
@@ -18,7 +19,6 @@ const CLASS = {
   crumbWrap: requireClass(styles.crumbWrap, "scopeCrumbs.module.css", "crumbWrap"),
   crumbSep: requireClass(styles.crumbSep, "scopeCrumbs.module.css", "crumbSep"),
   crumbCurrent: requireClass(styles.crumbCurrent, "scopeCrumbs.module.css", "crumbCurrent"),
-  crumbBtn: requireClass(styles.crumbBtn, "scopeCrumbs.module.css", "crumbBtn"),
 };
 
 /** A scope's display title: the loaded thread name, then the navigation row's
@@ -45,6 +45,20 @@ function ScopeCrumbLabel({
   onNavigate?: (ref: string) => void;
 }) {
   const title = useScopeTitle(crumb.ref, crumb.title);
+  const navigate = () => {
+    if (onNavigate) {
+      onNavigate(crumb.ref);
+      return;
+    }
+    const workspace = workspaceStore.getState();
+    const transcript = workspace.panes.find(
+      (pane) => pane.type === "transcript" && refParam(pane.params) === crumb.ref,
+    );
+    // Ancestor navigation preserves the selected read-only context;
+    // the rail and other session links still request live session chrome.
+    if (transcript) workspace.focusPane(transcript.id);
+    else openSessionByRef(crumb.ref);
+  };
   return (
     <span
       className={CLASS.crumbWrap}
@@ -55,29 +69,18 @@ function ScopeCrumbLabel({
         <span className={CLASS.crumbCurrent} aria-current="page" title={title}>
           {title}
         </span>
-      ) : (
-        <button
-          type="button"
-          className={CLASS.crumbBtn}
+      ) : hierarchy ? (
+        <ListRow
+          variant="plain"
+          label={title}
           title={title}
           data-session-navigation-ref={crumb.ref}
-          onClick={() => {
-            if (onNavigate) {
-              onNavigate(crumb.ref);
-              return;
-            }
-            const workspace = workspaceStore.getState();
-            const transcript = workspace.panes.find(
-              (pane) => pane.type === "transcript" && refParam(pane.params) === crumb.ref,
-            );
-            // Ancestor navigation preserves the selected read-only context;
-            // the rail and other session links still request live session chrome.
-            if (transcript) workspace.focusPane(transcript.id);
-            else openSessionByRef(crumb.ref);
-          }}
-        >
+          onSelect={navigate}
+        />
+      ) : (
+        <Button variant="link" title={title} data-session-navigation-ref={crumb.ref} onClick={navigate}>
           {title}
-        </button>
+        </Button>
       )}
     </span>
   );

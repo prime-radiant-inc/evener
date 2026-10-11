@@ -305,14 +305,16 @@ describe("resource-backed Rail", () => {
       ),
     ]);
     render(<Rail />);
-    for (const label of ["Live", "Projects"]) {
-      expect(screen.getByRole("heading", { name: label }).className).toMatch(/staticSectionLabel/);
+    // A static label is set in the Eyebrow inside its disclosure; an authored
+    // pin name is the disclosure's own bare text, so it keeps its casing.
+    for (const label of ["Live", "Projects", "Archived sessions"]) {
+      const disclosure = within(screen.getByRole("heading", { name: new RegExp(label) })).getByRole("button");
+      expect(disclosure.firstChild?.nodeType).toBe(Node.ELEMENT_NODE);
+      expect(disclosure.firstChild?.contains(disclosure.querySelector("svg"))).toBe(false);
     }
-    expect(screen.getByRole("heading", { name: /Archived sessions/ }).className).toMatch(/staticSectionLabel/);
     const authored = screen.getByRole("heading", { name });
     const disclosure = within(authored).getByRole("button", { name });
-    expect(authored.className).not.toMatch(/staticSectionLabel/);
-    expect(disclosure.className).not.toMatch(/staticSectionLabel/);
+    expect(disclosure.firstChild?.nodeType).toBe(Node.TEXT_NODE);
     expect(disclosure.textContent).toContain(name);
     const expanded = disclosure.getAttribute("aria-expanded");
     disclosure.focus();
@@ -324,16 +326,6 @@ describe("resource-backed Rail", () => {
       /\/\*[\s\S]*?\*\//g,
       "",
     );
-    const recipe = css.match(/\.staticSectionLabel\s*\{([^}]*)\}/)?.[1];
-    expect(recipe).toBeDefined();
-    for (const declaration of [
-      "font-size: var(--font-size-caption)",
-      "font-weight: var(--font-weight-medium)",
-      "color: var(--ink-mid)",
-      "text-transform: uppercase",
-      "letter-spacing: var(--tracking-eyebrow)",
-    ])
-      expect(recipe).toContain(declaration);
     for (const shared of ["sectionTitle", "sectionDisclosure"]) {
       const rule = css.match(new RegExp(`\\.${shared}\\s*\\{([^}]*)\\}`))?.[1];
       expect(rule).toBeDefined();
@@ -463,7 +455,8 @@ describe("resource-backed Rail", () => {
       const disclosure = sectionDisclosure(name);
       const chevron = disclosure.querySelector("svg");
       expect(chevron).toBeTruthy();
-      expect(disclosure.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+      expect(disclosure.firstChild).not.toBe(chevron);
+      expect(disclosure.firstChild?.contains(chevron)).toBe(false);
       expect(disclosure.lastElementChild).toBe(chevron);
     }
   });

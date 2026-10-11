@@ -57,6 +57,7 @@ import {
   ConfirmDialog,
   Dialog,
   EmptyState,
+  Eyebrow,
   FormRow,
   IconButton,
   Input,
@@ -136,7 +137,6 @@ const CLASS = {
   parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
-  staticSectionLabel: requireClass(styles.staticSectionLabel, "Rail.module.css", "staticSectionLabel"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
@@ -196,9 +196,9 @@ interface SectionHeadingProps {
 function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: SectionHeadingProps) {
   return (
     <div className={CLASS.sectionHeadingRow}>
-      <h3 className={staticLabel ? `${CLASS.sectionTitle} ${CLASS.staticSectionLabel}` : CLASS.sectionTitle}>
+      <h3 className={CLASS.sectionTitle}>
         <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-          {label}
+          {staticLabel ? <Eyebrow as="span">{label}</Eyebrow> : label}
           <Chevron direction={open ? "down" : "right"} />
         </button>
       </h3>
