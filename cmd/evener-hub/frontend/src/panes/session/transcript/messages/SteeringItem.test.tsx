@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ItemModel, TurnModel } from "@evener/appwire-client";
+import { type ItemModel, steeringLabel, type TurnModel } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -103,6 +103,8 @@ test("the divider is collapsed by default and expands to show the verbatim text"
   render(<SteeringItem item={item({ text: "the raw steering body" })} turn={turn} live={false} />);
   const details = screen.getByTestId("steering-item") as HTMLDetailsElement;
   expect(details.open).toBe(false);
+  fireEvent.click(details.querySelector("summary")!);
+  expect(details.open).toBe(true);
   expect(details.textContent).toContain("the raw steering body");
 });
 
@@ -159,6 +161,7 @@ test("a daemon-sourced steering item with BOTH real text and images renders the 
     />,
   );
   const el = screen.getByTestId("steering-item");
+  fireEvent.click(el.querySelector("summary")!);
   expect(el.textContent).toContain("daemon nudge with a picture");
   expect(screen.queryByTestId("user-message-image-placeholder")).toBeNull();
   expect(el.textContent).not.toMatch(/\[\d+ images?\]/);
@@ -539,6 +542,7 @@ test("a mixed notification steer keeps its wire-kind label on the leftover divid
   );
   expect(screen.getByTestId("notification-card")).toBeTruthy();
   expect(screen.getByText("System steered: Tasks complete")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   expect(screen.getByText("trailing steering prose")).toBeTruthy();
 });
 
@@ -561,6 +565,7 @@ Job job_8 failed.
     "steering-item",
     "notification-card",
   ]);
+  fireEvent.click(nodes[1]!.querySelector("summary")!);
   expect(nodes[1]?.textContent).toContain("middle steering text");
 });
 
@@ -592,28 +597,32 @@ test("an observer callback with no steeringKind still renders its notification c
 
 // --- structure: glyph leading, chevron trailing, one ink for the row -------
 
-test("the chevron trails the label, and the diamond leads inside its rail slot", () => {
+test("the diamond leads the summary, then the label, then the Disclosure's own chevron", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "loop-detected" })} turn={turn} live={false} />);
   const summary = screen.getByTestId("steering-item").querySelector("summary");
   const kids = Array.from(summary?.children ?? []);
   expect(kids[0]?.getAttribute("data-testid")).toBe("steering-rail-icon");
   expect(kids[0]?.querySelector('[data-testid="steering-glyph"]')).not.toBeNull();
-  expect(kids[kids.length - 1]?.getAttribute("data-testid")).toBe("steering-chevron");
+  expect(kids[1]?.textContent).toBe(steeringLabel("loop-detected"));
+  expect(kids[kids.length - 1]?.getAttribute("aria-hidden")).toBe("true");
+  expect(kids[kids.length - 1]?.querySelector("svg")).not.toBeNull();
+  expect(screen.queryByTestId("steering-chevron")).toBeNull();
 });
 
-test("the diamond rails at 50% opacity in the speaker-avatar column, gutter-pulled on the summary above the breakpoint", () => {
+test("a collapsed divider keeps its steered text out of the document until opened", () => {
+  render(<SteeringItem item={item({ text: "the steered note" })} turn={turn} live={false} />);
+  expect(screen.queryByText("the steered note")).toBeNull();
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
+  expect(screen.getByText("the steered note")).toBeTruthy();
+});
+
+test("the diamond sits in the content column at 50% opacity - no gutter pull", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "steeringitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const slot = /\.railIcon\s*\{([^}]*)\}/.exec(css);
   expect(slot).not.toBeNull();
   expect(slot![1]).toContain("opacity: 0.5");
-  expect(slot![1]).toContain("width: var(--speaker-avatar-size)");
-  // slot + margin + the row's own gap = one speaker-gutter, so the label
-  // lands exactly on the content edge (same arithmetic as ToolRow's rail).
-  expect(slot![1]).toContain("margin-right: calc(var(--speaker-gap) - var(--space-2))");
-  const media = /@media \(min-width: 700px\) \{\s*\.summary\s*\{([^}]*)\}/.exec(css);
-  expect(media).not.toBeNull();
-  expect(media![1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  expect(css).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
 });
 
 test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {

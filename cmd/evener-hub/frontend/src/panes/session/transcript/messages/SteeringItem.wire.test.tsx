@@ -4,7 +4,7 @@
 // task list render nothing.
 import { type ItemModel, stripSystemReminder, type TurnModel } from "@evener/appwire-client";
 import { type SystemEventWireCase, systemEventWireItem } from "@evener/appwire-client/testing/systemEventWireFixtures";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { SteeringItem } from "./SteeringItem";
@@ -33,6 +33,7 @@ test.each([
 ] as const)("folds %s to %s, opening to what it said", (name, label) => {
   render(<SteeringItem item={steer(name)} turn={turn} live={false} />);
   expect(screen.getByText(label)).toBeTruthy();
+  fireEvent.click(screen.getByText(label));
   const body = screen.getByTestId("steering-item").querySelector("pre")?.textContent;
   expect(body).toBe(stripSystemReminder(systemEventWireItem(name).text ?? ""));
 });
@@ -48,6 +49,7 @@ Delegate dlg_42 completed.
   const item = { ...steer("steer-from-parent"), text };
   render(<SteeringItem item={item} turn={turn} live={false} />);
   expect(screen.getByText("From parent")).toBeTruthy();
+  fireEvent.click(screen.getByText("From parent"));
   expect(screen.getByTestId("steering-item").querySelector("pre")?.textContent).toBe(text);
 });
 
