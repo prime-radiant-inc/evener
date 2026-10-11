@@ -383,6 +383,67 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	return plans, nil
 }
 
+// PostUpdate records a running delegate's mid-work update in its journal,
+// queued behind the delegate's earlier deliveries and ahead of the report its
+// generation will settle, and plans the update's delivery when it is the
+// delegate's head. A delegate parked in its finalization drain after its
+// terminal communicate can still post: its report is prepared only when the
+// settlement claim is taken, and the fold refuses an update from then on. It
+// refuses a run that is no longer current, a delegate that is stopping or
+// settling, and a blank message; the update is then not queued anywhere.
+func (c *delegateTreeController) PostUpdate(actor delegateActor, message string) (string, delegateMutationPlans, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return "", delegateMutationPlans{}, err
+	}
+	defer release()
+	if actor.lease == nil {
+		return "", delegateMutationPlans{}, errDelegateNotControllable
+	}
+	defer c.retirementChanged()
+	lease := *actor.lease
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _, err = c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err != nil {
+		return "", delegateMutationPlans{}, err
+	}
+	if c.hasSettlementClaimLocked(lease) {
+		return "", delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	appended, err := c.appendLocked(delegatestore.Event{
+		Kind:         delegatestore.EventDelegateUpdatePosted,
+		TS:           c.now(),
+		DelegateID:   lease.delegateID,
+		UpdatePosted: &delegatestore.UpdatePosted{Generation: lease.generation, Message: message},
+	})
+	if err != nil {
+		return "", delegateMutationPlans{}, err
+	}
+	deliveryID := delegatestore.UpdateDeliveryID(lease.delegateID, appended[0].Seq)
+	c.evidenceVersion++
+	var plans delegateMutationPlans
+	// Only the head is planned; an update behind an earlier delivery waits for
+	// its turn rather than carrying the earlier one.
+	if pending := c.durable[lease.delegateID].PendingDeliveries; len(pending) != 0 && pending[0].DeliveryID == deliveryID {
+		if plan := c.newHeadDeliveryPlanLocked(lease.delegateID, deliveryID); plan != nil {
+			plans.deliveries = append(plans.deliveries, *plan)
+		}
+	}
+	return deliveryID, plans, nil
+}
+
+// deliveryPending reports whether delegateID's delivery queue still holds
+// deliveryID unacknowledged.
+func (c *delegateTreeController) deliveryPending(delegateID, deliveryID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[delegateID]
+	return aggregate != nil && slices.ContainsFunc(aggregate.PendingDeliveries, func(pending delegatestore.PendingDelivery) bool {
+		return pending.DeliveryID == deliveryID
+	})
+}
+
 func (c *delegateTreeController) ReplayDeliveries() []delegateDeliveryPlan {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
@@ -571,6 +632,13 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
 
+// isDelegateUpdateAttentionID reports whether attentionID names a delegate
+// update's delivery rather than a generation's report.
+func isDelegateUpdateAttentionID(attentionID string) bool {
+	deliveryID, ok := strings.CutPrefix(attentionID, delegateAttentionID(""))
+	return ok && delegatestore.IsUpdateDeliveryID(deliveryID)
+}
+
 // completeDelegateDeliveryCommits acknowledges one tool call's delivery
 // commits in order. A reply carrying earlier results acknowledges them, oldest
 // first, ahead of its own (#3906, #3951), and the store takes them only in
@@ -649,7 +717,9 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	c.nextToken++
 	claimToken := delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: deliveryID}
 	// An update never answers an inline wait: the waiting caller wants the
-	// generation's report, so the waiter stays registered for it.
+	// generation's report, so the waiter stays registered for it, and the
+	// report's reply carries the update ahead of itself
+	// (carriableHeldClaimLocked).
 	var waiter *delegateInlineWaiter
 	if head.Packet.Kind != delegatestore.PacketUpdate {
 		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)

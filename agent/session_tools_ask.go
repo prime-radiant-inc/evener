@@ -59,6 +59,14 @@ func (s *Session) hasHumanPartnerToAsk() bool {
 	return !s.cfg.noOneToAsk() && !s.isSubagentSession()
 }
 
+// reportsToParent reports whether this session's communicate messages go to
+// a parent agent rather than a human partner; communicate's wording follows
+// it. It is isSubagentSession, the predicate behind the system prompt's
+// IsSubagent branches, so the tool and the prompt cannot disagree.
+func (s *Session) reportsToParent() bool {
+	return s.isSubagentSession()
+}
+
 // askPendingCount returns the number of questions currently pending this turn
 // (spec §5.1's per-turn pending set) — a later round-boundary check uses this
 // to decide whether the round just posted question(s).

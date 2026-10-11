@@ -108,13 +108,18 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	}
 
 	// Layer 3: Predictive checkpoint (replaces deterministic checkpoint).
+	// checkpointed is what a deterministic fallback checkpoint folded this
+	// pass, which the summary completing that fold reads the partner's
+	// messages from (summarizeFold). A predictive checkpoint carries them
+	// whole itself, so it needs none.
+	var checkpointed []schema.Turn
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
-			*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
+			*history, checkpointed = checkpointFold(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
 			// The fallback already worked, so this is an informational
 			// context notice, coded for clients to show only at their most
 			// detailed level, with a neutral title and hint so the
@@ -150,7 +155,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
-		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
+		result, err := s.cm.summarizeFold(ctx, *history, s.cm.PreserveRecentTurns, "", checkpointed)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
@@ -242,7 +247,12 @@ Write ONLY the checkpoint content. Be specific and concise (under 500 words). Fo
 		return nil, err
 	}
 
-	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + resp.Text() + "\n[END CHECKPOINT]"
+	// The prediction is model-written, so the human partner's messages ride
+	// beside it verbatim (partnerMessagesMarkdown), after the prediction
+	// (renderCompactionModelText).
+	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + s.cm.metaFor(ctx).compactionPointer("checkpoint") +
+		renderCompactionModelText("## Predicted Context", resp.Text()) +
+		partnerMessagesMarkdown(history, cutoff, s.cm.resultToolName()) + "[END CHECKPOINT]"
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(checkpointText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
