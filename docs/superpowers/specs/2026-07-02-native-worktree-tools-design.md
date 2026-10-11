@@ -734,7 +734,9 @@ sweeps, all through the control env:
      back), and the lock is re-taken if the
      removal then fails with the lane still present. Only the session's own
      marker is released; another session's or a live delegate's marker stays the
-     skip it was;
+     skip it was. Only the model-facing `prune` reclaims such a lane; the
+     automatic residue sweep leaves it alone, since it can run between a switch
+     taking the marker and recording the lane as current;
    - no live work under it per this session's `liveWorkUnder` (belt and
      braces alongside the lock);
    - clean per `git -C <path> status --porcelain=v1 --untracked-files=all`;

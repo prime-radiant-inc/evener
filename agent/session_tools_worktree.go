@@ -2972,6 +2972,12 @@ type laneSweepPolicy struct {
 	// prepareDispose, when non-nil, durably closes a stable delegate before the
 	// first destructive collection operation.
 	prepareDispose func(delegateID string) error
+	// reclaimStrandedOwnMarker lets the sweep collect a lane carrying this
+	// session's own marker while the session does not occupy it. Only the
+	// model-facing prune sets it: it is a tool call serialized against the
+	// session's own create/switch, whereas the timer-driven residue sweep can run
+	// between a switch taking its marker and recording the lane as current.
+	reclaimStrandedOwnMarker bool
 }
 
 // ctxCancelled reports whether ctx's deadline/cancellation has fired. It exists
@@ -2987,7 +2993,8 @@ func ctxCancelled(ctx context.Context) bool {
 // and cherry arms), and no Disposed mark.
 func prunePolicy() laneSweepPolicy {
 	return laneSweepPolicy{
-		abortOnError: true,
+		abortOnError:             true,
+		reclaimStrandedOwnMarker: true,
 		disposableAt: func(run worktree.GitRunner, lanePath string, sc worktree.Sidecar) (bool, string, error) {
 			clean, offending, cErr := worktree.CleanTree(run, lanePath)
 			if cErr != nil {
@@ -3053,7 +3060,7 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 		// live-work view cannot see this session's work under the lane. Only our
 		// own marker is ever released; a foreign or delegate marker stays the skip
 		// it was, so another live session's occupancy is never taken.
-		staleOwnMarker := lockSt == worktree.OwnSession && !s.occupiesManagedLane(e.Path)
+		staleOwnMarker := policy.reclaimStrandedOwnMarker && lockSt == worktree.OwnSession && !s.occupiesManagedLane(e.Path)
 		if !staleOwnMarker && worktree.Decide(worktree.EvPruneCandidate, lockSt) == worktree.ActSkip {
 			reason := "locked"
 			if e.LockReason != "" {
@@ -3126,9 +3133,6 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 		// while that session is rooted in it. A lane whose lock is no longer ours
 		// is skipped, not collected.
 		if staleOwnMarker {
-			if s.worktreeBeforeStrandedMarkerRelease != nil {
-				s.worktreeBeforeStrandedMarkerRelease(e.Path)
-			}
 			released, relErr := s.releaseStrandedOwnMarker(e.Path)
 			if relErr != nil {
 				skipped = append(skipped, WorktreePruneEntry{Name: e.Name, Path: e.Path, Reason: "releasing stranded own marker: " + relErr.Error()})
@@ -3175,8 +3179,9 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 // owner-checked unlock, so the lock file itself is claimed with a rename, which
 // moves exactly the file that was there at that instant. The claimed content
 // is then read: our own marker is deleted (the lane is unlocked), anything else
-// is put back without displacing a lock taken since. A foreign lock is absent
-// only for the instant between the claim and that restore.
+// is put back without displacing a lock taken since. The lock file is read
+// first, so a foreign lock is taken away only when it replaced ours between that
+// read and the claim, and then only until the restore.
 func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err error) {
 	if s.occupiesManagedLane(lanePath) {
 		return false, nil
@@ -3184,6 +3189,21 @@ func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err 
 	lockFile, err := laneLockFile(lanePath)
 	if err != nil {
 		return false, err
+	}
+	// Look before claiming: the claim briefly takes the lock away, so a lock that
+	// is plainly not ours is never touched.
+	reason, readErr := os.ReadFile(lockFile)
+	if os.IsNotExist(readErr) {
+		return false, nil
+	}
+	if readErr != nil {
+		return false, readErr
+	}
+	if !s.isOwnMarker(reason) {
+		return false, nil
+	}
+	if s.worktreeBeforeStrandedMarkerRelease != nil {
+		s.worktreeBeforeStrandedMarkerRelease(lanePath)
 	}
 	claimed, err := os.CreateTemp(filepath.Dir(lockFile), "locked.release-*")
 	if err != nil {
@@ -3198,8 +3218,8 @@ func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err 
 		}
 		return false, err
 	}
-	reason, readErr := os.ReadFile(claimedPath)
-	if readErr == nil && worktree.ClassifyReason(strings.TrimSpace(string(reason)), s.id, "") == worktree.OwnSession {
+	claimedReason, claimedErr := os.ReadFile(claimedPath)
+	if claimedErr == nil && s.isOwnMarker(claimedReason) {
 		return true, os.Remove(claimedPath)
 	}
 	// Not ours, or unreadable: restore it. Link fails when a lock was taken in
@@ -3208,7 +3228,13 @@ func (s *Session) releaseStrandedOwnMarker(lanePath string) (released bool, err 
 		return false, fmt.Errorf("restoring the lock claimed from %s: %w", lanePath, linkErr)
 	}
 	_ = os.Remove(claimedPath)
-	return false, readErr
+	return false, claimedErr
+}
+
+// isOwnMarker reports whether the contents of a lock file are this session's
+// own occupancy marker.
+func (s *Session) isOwnMarker(lockFileContents []byte) bool {
+	return worktree.ClassifyReason(strings.TrimSpace(string(lockFileContents)), s.id, "") == worktree.OwnSession
 }
 
 // laneLockFile is the file git keeps a locked worktree's reason in, found

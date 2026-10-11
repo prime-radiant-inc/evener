@@ -206,14 +206,13 @@ func TestWorktreePrune_LeavesAnotherSessionsMarkerAlone(t *testing.T) {
 	}
 }
 
-// TestLaneResidueSweep_LeavesOwnMarkerAlone: the automatic residue sweep is
-// delegate-only, so it never reaches the collect path for a plain session lane
-// and never releases this session's own marker — a lane locked with it is left
-// exactly as it was. That is what keeps the sweep out of the lock→record window
-// of a create/switch: the session locks its target with its own marker before
-// recording that lane as current, and the only operation that releases that
-// marker is a prune the session itself runs (a tool call, serialized against
-// its own create/switch), never the timer pass.
+// TestLaneResidueSweep_LeavesOwnMarkerAlone: the automatic residue sweep never
+// reclaims this session's own marker (only the model-facing prune does), so a
+// lane locked with it is left exactly as it was. That is what keeps the sweep out
+// of the lock-then-record window of a create/switch: the session locks its target
+// with its own marker before recording that lane as current, and the only
+// operation that releases that marker is a prune the session itself runs (a tool
+// call, serialized against its own create/switch), never the timer pass.
 func TestLaneResidueSweep_LeavesOwnMarkerAlone(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -404,5 +403,27 @@ func TestWorktreePrune_KeepsTheLaneTheSessionIsRootedInEvenWithoutARecordedPath(
 	_, locked, reason := r.laneLocked(t, rootedPath)
 	if want := worktree.FormatSessionMarker(r.s.id); !locked || reason != want {
 		t.Errorf("lane lock = locked=%v reason=%q, want the session's marker kept (%q)", locked, reason, want)
+	}
+}
+
+// TestLaneResidueSweep_LeavesAnAgedDelegateLaneCarryingOwnMarkerAlone: a session
+// that has locked an aged delegate lane with its own marker, and has not yet
+// recorded the lane as current, holds the lane. The automatic residue sweep
+// (which does include delegate lanes) must not read that marker as stranded.
+func TestLaneResidueSweep_LeavesAnAgedDelegateLaneCarryingOwnMarkerAlone(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, path, _ := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id)
+	own := worktree.FormatSessionMarker(r.s.id)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", own, path)
+
+	r.s.runLaneResidueSweep(context.Background())
+
+	if !r.lanePresent(path) {
+		t.Fatal("the residue sweep collected a delegate lane the session had locked with its own marker")
+	}
+	if _, locked, reason := r.laneLocked(t, path); !locked || reason != own {
+		t.Errorf("lane lock = locked=%v reason=%q, want the session's marker kept (%q)", locked, reason, own)
 	}
 }
