@@ -3002,7 +3002,9 @@ async function hydrateAndSubscribe(
     } catch (err) {
       if (signal?.aborted) throw err;
       if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
-      if (signal?.aborted) throw err;
+      // Logical retirement removes this operation before its issued request's
+      // physical slot settles. Its still-live signal cannot authorize a retry.
+      if (signal?.aborted || pendingThreadHydrations.get(ref) !== pending) throw err;
       response = await lease.read(threadReadParams(true, pending.requestGeneration, undefined));
       discardHeldHistory = true;
     }

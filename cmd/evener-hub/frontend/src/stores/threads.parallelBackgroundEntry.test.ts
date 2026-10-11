@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import * as appwireClient from "@evener/appwire-client";
 import {
   type AnyNotification,
   AppwireClient,
@@ -14,18 +15,21 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
   observePendingHydrationRetirementsForTests,
+  productionEntryTranscriptForTests,
   putThreadModel,
   resetThreadsStoreForTests,
   setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
+import * as residencyModule from "./transcriptResidency";
 
 let cache: SessionEntryCache;
 const activityLeases: ReturnType<typeof acquireThreadSubscription>[] = [];
@@ -320,6 +324,200 @@ describe("background thread claims", () => {
     } finally {
       stringify.mockRestore();
       await background.release();
+    }
+  });
+  test("resync control does not issue fallback during a held final write", async () => {
+    const path = "resync control";
+    let joiningRetirement = false;
+    let executingEntryHistory = false;
+    const readProducers: Array<{ ref: string; kind: "entry-history" | "hydration"; params: unknown }> = [];
+    const restoreReadObservers: Array<() => void> = [];
+    const acquireRealSubscription = appwireClient.acquireThreadSubscription;
+    const subscriptionSpy = vi.spyOn(appwireClient, "acquireThreadSubscription").mockImplementation((...args) => {
+      const subscription = acquireRealSubscription(...args);
+      const read = subscription.read.bind(subscription);
+      const observer = vi.spyOn(subscription, "read").mockImplementation((params) => {
+        readProducers.push({ ref: args[1], kind: executingEntryHistory ? "entry-history" : "hydration", params });
+        return read(params);
+      });
+      restoreReadObservers.push(() => observer.mockRestore());
+      return subscription;
+    });
+    const barrierReached = deferred<void>();
+    const createRealResidency = residencyModule.createTranscriptResidency;
+    const factorySpy = vi.spyOn(residencyModule, "createTranscriptResidency").mockImplementation((...args) => {
+      const residency = createRealResidency(...args);
+      const schedule = residency.scheduleHydration.bind(residency);
+      residency.scheduleHydration = (...request) => {
+        // Identify the actual named ordinary history caller, then observe
+        // its synchronous read producer inside the real scheduled callback.
+        // A stale-cursor fallback resumes outside that callback and cannot
+        // acquire the entry-history kind even with identical wire fields.
+        const entryHistoryCaller = new Error().stack?.includes("runEntryHistoryRequest") === true;
+        const run = request[2];
+        const observedRun = run
+          ? (signal: AbortSignal) => {
+              const previous = executingEntryHistory;
+              executingEntryHistory = entryHistoryCaller;
+              try {
+                return run(signal);
+              } finally {
+                executingEntryHistory = previous;
+              }
+            }
+          : undefined;
+        const result = schedule(request[0], request[1], observedRun);
+        if (joiningRetirement && request[0] === "local:recovery-retirement" && request[2]) {
+          if (!entryHistoryCaller) throw new Error("retirement did not join the actual ordinary history caller");
+          barrierReached.resolve();
+        }
+        return result;
+      };
+      return residency;
+    });
+    const restoreOptions = installBackgroundTranscriptOptionsForTests({ pendingBytes: 1 });
+    const { client, socket } = await connectRealClientWithSocket();
+    const ref = "local:recovery-retirement";
+    const lease = acquireBackgroundThread(ref);
+    let restoreRetireObserver: (() => void) | undefined;
+    let release: ReturnType<ReturnType<typeof acquireBackgroundThread>["release"]> | undefined;
+    try {
+      await cache.getClearEpoch();
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(1));
+      socket.receive({ id: threadReadRequests(socket)[0]!.id, result: currentRead(ref) });
+      await lease.ready;
+      await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
+
+      if (path === "resync control") {
+        socket.receive({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+      } else {
+        const update = textDelta(ref, "overflow forces canonical residency recovery");
+        socket.receive({ method: update.method, params: update.params });
+      }
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(2));
+      expect(threadReadRequests(socket)[1]?.ref).toBe(ref);
+      const repository = productionEntryTranscriptForTests(ref).repository;
+      if (!repository) throw new Error("expected ordinary repository");
+      const retire = repository.retire.bind(repository);
+      const retireSpy = vi.spyOn(repository, "retire").mockImplementation(() => {
+        joiningRetirement = true;
+        try {
+          return retire();
+        } finally {
+          joiningRetirement = false;
+        }
+      });
+      restoreRetireObserver = () => retireSpy.mockRestore();
+      const finalGeneration = (repository.getSnapshot()?.history?.issuedGeneration ?? 0) + 1;
+      const receiveObserver = vi.spyOn(socket, "receive");
+      release = lease.release();
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          barrierReached.promise,
+          new Promise<never>((_, reject) => {
+            watchdog = setTimeout(
+              () => reject(new Error("R58 ordinary retire read did not join its held request within 1000ms")),
+              1000,
+            );
+          }),
+        ]);
+      } finally {
+        if (watchdog) clearTimeout(watchdog);
+      }
+      expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1);
+      expect(threadReadRequests(socket)).toHaveLength(2);
+      const recovery = threadReadRequests(socket)[1]!;
+      socket.receive({
+        id: recovery.id,
+        error: {
+          code: -32000,
+          message: "stale cursor",
+          data: { evenerErrorInfo: "transcriptItemCursorStale" },
+        },
+      });
+      expect(receiveObserver).toHaveBeenCalledWith({
+        id: recovery.id,
+        error: { code: -32000, message: "stale cursor", data: { evenerErrorInfo: "transcriptItemCursorStale" } },
+      });
+      await vi.waitFor(() =>
+        expect(
+          backgroundTranscriptSnapshotForTests().networkHydrations === 0 || threadReadRequests(socket).length > 2,
+        ).toBe(true),
+      );
+      expect(readProducers.filter((read) => read.ref === ref && read.kind === "hydration")).toHaveLength(2);
+      const wireReads = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string; params?: Record<string, unknown> })
+        .filter((frame) => frame.method === "thread/read");
+      expect(readProducers.filter((read) => read.ref === ref)).toStrictEqual([
+        { ref, kind: "hydration", params: { includeTurns: true, itemsView: "full", itemLimit: 40 } },
+        {
+          ref,
+          kind: "hydration",
+          params: {
+            includeTurns: true,
+            itemsView: "full",
+            itemLimit: 40,
+            requestGeneration: 2,
+            heldSnapshot: { incarnation: "inc-1", length: 40 },
+          },
+        },
+        {
+          ref,
+          kind: "entry-history",
+          params: { includeTurns: true, itemsView: "full", itemLimit: 40, requestGeneration: finalGeneration },
+        },
+      ]);
+      expect(wireReads).toStrictEqual([
+        {
+          id: threadReadRequests(socket)[0]!.id,
+          method: "thread/read",
+          params: {
+            includeTurns: true,
+            itemsView: "full",
+            itemLimit: 40,
+            ref,
+            subscribe: true,
+            replaceSubscription: false,
+          },
+        },
+        {
+          id: recovery.id,
+          method: "thread/read",
+          params: {
+            includeTurns: true,
+            itemsView: "full",
+            itemLimit: 40,
+            requestGeneration: 2,
+            heldSnapshot: { incarnation: "inc-1", length: 40 },
+            ref,
+            subscribe: false,
+            replaceSubscription: false,
+          },
+        },
+        {
+          id: threadReadRequests(socket)[2]?.id,
+          method: "thread/read",
+          params: {
+            includeTurns: true,
+            itemsView: "full",
+            itemLimit: 40,
+            requestGeneration: finalGeneration,
+            ref,
+            subscribe: false,
+            replaceSubscription: false,
+          },
+        },
+      ]);
+    } finally {
+      restoreRetireObserver?.();
+      for (const restore of restoreReadObservers) restore();
+      subscriptionSpy.mockRestore();
+      factorySpy.mockRestore();
+      client.close();
+      await (release ?? lease.release());
+      resetThreadsStoreForTests();
+      restoreOptions();
     }
   });
 });
