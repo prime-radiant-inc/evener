@@ -27,8 +27,10 @@
    * design system allows for agent liveness (design-system.md §5). The dot
    * becomes an open alive ring that turns while the agent works. Under
    * reduced motion none of this applies and working stays the static alive
-   * dot. Linear easing keeps the rotation's speed constant. */
-  .working {
+   * dot. Linear easing keeps the rotation's speed constant. .dot.working
+   * outranks the state -> family rules below, whose background would
+   * otherwise fill the ring into a solid disk. */
+  .dot.working {
     box-sizing: border-box;
     border: 1.5px solid var(--alive);
     border-top-color: transparent;

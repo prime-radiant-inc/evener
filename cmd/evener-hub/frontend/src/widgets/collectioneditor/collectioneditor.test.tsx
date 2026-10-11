@@ -325,3 +325,15 @@ test("identical items each keep their own row through a removal", async () => {
   ]);
   errors.mockRestore();
 });
+
+test("an item whose key looks like another row's occurrence still gets its own row", () => {
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  render(
+    <CollectionEditor<DirItem>
+      {...baseProps({ items: [{ path: "/tmp/item" }, { path: "/tmp/item" }, { path: "/tmp/item#1" }] })}
+    />,
+  );
+  expect(errors).not.toHaveBeenCalled();
+  expect(screen.getAllByRole("button", { name: /^Remove / })).toHaveLength(3);
+  errors.mockRestore();
+});

@@ -107,7 +107,7 @@ function rowKeys<T>(items: readonly T[], getKey: (item: T) => string): [T, strin
     const key = getKey(item);
     const occurrence = seen.get(key) ?? 0;
     seen.set(key, occurrence + 1);
-    return [item, occurrence === 0 ? key : `${key}#${occurrence}`];
+    return [item, JSON.stringify([key, occurrence])];
   });
 }
 
