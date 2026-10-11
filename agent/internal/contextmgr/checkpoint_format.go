@@ -91,13 +91,16 @@ const summaryModelTextHeading = "## Summary"
 // summary written before that layout is the model's text throughout, whatever
 // headings it used, and is carried whole.
 func carriesPartnerMessages(text string) bool {
-	_, body, _, ok := markdownSectionSpan(text, summaryModelTextHeading)
+	_, body, end, ok := markdownSectionSpan(text, summaryModelTextHeading)
 	if !ok {
 		return false
 	}
 	first, _, _ := strings.Cut(strings.TrimLeft(text[body:], "\n"), "\n")
-	_, n := fenceRun(first)
-	return n >= 3
+	if _, n := fenceRun(first); n == 0 {
+		return false
+	}
+	carry, _, _, ok := markdownSectionSpan(text, checkpointConversationHeading)
+	return ok && carry >= end
 }
 
 // renderCompactionModelText renders a model-written compaction turn's own text
@@ -249,6 +252,7 @@ func markdownSectionSpan(text, heading string) (start, body, end int, ok bool) {
 		}
 		content := strings.TrimSuffix(line, "\n")
 		switch {
+		// Fence lines and fenced content are never boundaries.
 		case fence.step(content):
 		case fence.inside():
 		case start < 0:
@@ -338,7 +342,7 @@ func (f *fenceTracker) inside() bool { return f.length > 0 }
 // step advances over line and reports whether it opened or closed a block.
 func (f *fenceTracker) step(line string) bool {
 	char, n := fenceRun(line)
-	if n < 3 {
+	if n == 0 {
 		return false
 	}
 	if f.length == 0 {
@@ -353,7 +357,8 @@ func (f *fenceTracker) step(line string) bool {
 }
 
 // fenceRun returns the fence character a line starts with and how many of it
-// lead the line, or 0, 0 when it starts with neither a backtick nor a tilde.
+// lead the line, or 0, 0 when the line does not start with a fence: three or
+// more backticks or tildes.
 func fenceRun(line string) (byte, int) {
 	if line == "" || (line[0] != '`' && line[0] != '~') {
 		return 0, 0
@@ -361,6 +366,9 @@ func fenceRun(line string) (byte, int) {
 	n := 0
 	for n < len(line) && line[n] == line[0] {
 		n++
+	}
+	if n < 3 {
+		return 0, 0
 	}
 	return line[0], n
 }
