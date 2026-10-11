@@ -715,13 +715,6 @@ func linksThroughPrivateMount(p string) bool {
 	return false
 }
 
-// resolveExistingPrefix returns p with its longest existing ancestor resolved
-// through symlinks and the missing rest appended, so a path that does not exist
-// yet is still placed where creating it would land.
-func resolveExistingPrefix(p string) string {
-	return StripDataVolumeAlias(canonicalizeLongestPrefix(p, filepath.EvalSymlinks))
-}
-
 // goCacheRoots are the directories the go command writes caches to: pkg under
 // the first GOPATH entry, which holds the default module cache and the checksum
 // database, Go's default $HOME/go/pkg, plus a GOMODCACHE or GOCACHE configured
