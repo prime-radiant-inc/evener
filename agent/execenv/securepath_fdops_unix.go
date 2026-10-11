@@ -82,6 +82,27 @@ func (s *sandboxFS) close() {
 		_ = unix.Close(fd)
 		delete(s.rootFds, k)
 	}
+	s.closeStaleFdsLocked()
+}
+
+// closeStaleFds closes the carve-out root fds dropped from the cache, once no
+// operation holds the layer. The count is checked again under s.mu: an
+// operation that began after release saw zero may already hold a root fd that
+// a later one moved to staleFds, and every fd an operation can still reach was
+// handed out under s.mu, which this holds.
+func (s *sandboxFS) closeStaleFds() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inUse.Load() == 0 {
+		s.closeStaleFdsLocked()
+	}
+}
+
+func (s *sandboxFS) closeStaleFdsLocked() {
+	for _, fd := range s.staleFds {
+		_ = unix.Close(fd)
+	}
+	s.staleFds = nil
 }
 
 // isTraversalRefusal reports whether an open error from a component walk means the
@@ -113,12 +134,23 @@ func (s *sandboxFS) mapOpenErr(tool, p string, err error) error {
 func (s *sandboxFS) rootFd(root string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	carveOut := slices.Contains(s.policy.UnmaskedRoots, root)
 	if fd, ok := s.rootFds[root]; ok {
-		return fd, nil
+		// A carve-out can stop holding its pinned place after its fd was
+		// cached (moved aside and recreated, or a mask linked into it), so it
+		// is judged on every use. This keeps the grant correct as the files
+		// around it change; another local process rearranging them is
+		// trusted (docs/sandboxing.md, "Threat model"), not raced. A stale fd is dropped and the root opened
+		// afresh below, which reads a directory recreated in place and refuses
+		// (without caching) while a mask still points into it.
+		if !carveOut || s.carveOutFdValid(root, fd) {
+			return fd, nil
+		}
+		delete(s.rootFds, root)
+		s.staleFds = append(s.staleFds, fd)
 	}
 	// A carve-out root swapped for a symlink after resolution would otherwise be
 	// followed here; it must still resolve to its own place under its mask.
-	carveOut := slices.Contains(s.policy.UnmaskedRoots, root)
 	if carveOut && !s.policy.CarveOutIntact(root) {
 		return -1, errEscapesRoot
 	}
@@ -128,17 +160,21 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 	}
 	// The directory actually opened is judged too, since the root could be
 	// swapped between the check above and the open.
-	if carveOut {
-		canon, cerr := canonicalPathForFd(fd)
-		// Required on every platform for a carve-out: without the opened
-		// directory's canonical path the swap cannot be ruled out.
-		if cerr != nil || canon == "" || !s.policy.CarveOutResolvesTo(root, canon) {
-			_ = unix.Close(fd)
-			return -1, errEscapesRoot
-		}
+	if carveOut && !s.carveOutFdValid(root, fd) {
+		_ = unix.Close(fd)
+		return -1, errEscapesRoot
 	}
 	s.rootFds[root] = fd
 	return fd, nil
+}
+
+// carveOutFdValid reports whether fd, a directory opened for the carve-out
+// root, is still the root's own place under its mask with no mask pointing
+// into it. The canonical path is required on every platform: without it a swap
+// cannot be ruled out.
+func (s *sandboxFS) carveOutFdValid(root string, fd int) bool {
+	canon, err := canonicalPathForFd(fd)
+	return err == nil && canon != "" && s.policy.CarveOutResolvesTo(root, canon)
 }
 
 // openRead opens abs for reading per the policy's file-tool read shape, returning

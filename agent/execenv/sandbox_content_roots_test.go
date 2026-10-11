@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -381,6 +382,137 @@ func TestFileToolsHonourACaseVariantMaskThroughAnotherSpellingInReadAnywhereMode
 	}
 }
 
+// A credential mask redirected into a carve-out after the file tools opened
+// it (~/.ssh made a link into the skills dir) is refused on the next read, as
+// a fresh spawn refuses it, and reads come back once the link is gone.
+func TestFileToolsRefuseACachedCarveOutAMaskNowPointsInto(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	keys := filepath.Join(skills, "mine", "ssh")
+	for _, dir := range []string{worktree, keys} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skill := filepath.Join(skills, "mine", "SKILL.md")
+	key := filepath.Join(keys, "id_ed25519")
+	for path, body := range map[string]string{skill: "user skill\n", key: "PRIVATE KEY\n"} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{skills}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if _, err := env.ReadFile(skill, nil, nil); err != nil {
+		t.Fatalf("priming read of the skill: %v", err)
+	}
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(keys, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err = env.ReadFile(key, nil, nil)
+	mustDenied(t, err, "read_file of a key a credential mask now points to inside the carve-out")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := env.ReadFile(skill, nil, nil); err != nil || !strings.Contains(got, "user skill") {
+		t.Errorf("reads must resume once the mask no longer points into the carve-out: %q %v", got, err)
+	}
+}
+
+// A credential mask pointed into a carve-out after resolution is refused
+// whichever root the read is anchored at: here a writable root that became a
+// link to the carve-out, which the carve-out's own root checks never see.
+func TestFileToolsRefuseAMaskPointedIntoACarveOutThroughAWritableAlias(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	keys := filepath.Join(skills, "mine", "ssh")
+	for _, dir := range []string{worktree, keys} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(keys, "id_ed25519"), []byte("PRIVATE KEY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(home, "alias")
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{skills}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, ExtraWritableRoots: []string{alias}}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := os.Symlink(skills, alias); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(keys, link); err != nil {
+		t.Fatal(err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	_, err = env.ReadFile(filepath.Join(alias, "mine", "ssh", "id_ed25519"), nil, nil)
+	mustDenied(t, err, "read_file of a mask's new target through a writable alias of the carve-out")
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := env.ReadFile(filepath.Join(skills, "mine", "ssh", "id_ed25519"), nil, nil); err != nil || !strings.Contains(got, "PRIVATE KEY") {
+		t.Errorf("reads must resume once the mask no longer points into the carve-out: %q %v", got, err)
+	}
+}
+
+// A carve-out root replaced in place after the file tools opened it (moved
+// aside and recreated at its location) is read again from the new directory:
+// the stale cached descriptor is dropped rather than refusing forever.
+func TestFileToolsReopenACarveOutRecreatedInPlace(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	for _, dir := range []string{worktree, filepath.Join(skills, "mine")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skill := filepath.Join(skills, "mine", "SKILL.md")
+	if err := os.WriteFile(skill, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{skills}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if _, err := env.ReadFile(skill, nil, nil); err != nil {
+		t.Fatalf("priming read: %v", err)
+	}
+	if err := os.Rename(skills, skills+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(skills, "mine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := env.ReadFile(skill, nil, nil); err != nil || !strings.Contains(got, "new") {
+		t.Errorf("a carve-out recreated in place must read from the new directory: %q %v", got, err)
+	}
+}
+
 // On macOS the file tools read a skill named through the data-volume firmlink
 // spelling of a configured config root, in every mode.
 func TestFileToolsReadACarveOutThroughTheFirmlinkSpelling(t *testing.T) {
@@ -416,6 +548,59 @@ func TestFileToolsReadACarveOutThroughTheFirmlinkSpelling(t *testing.T) {
 				t.Errorf("read_file %s: got %q err %v", path, got, err)
 			}
 		})
+	}
+}
+
+// The descriptors of carve-out roots replaced in place are closed once no
+// file-tool operation holds the layer, so repeated replacement in a long
+// session does not pile them up.
+func TestFileToolsCloseStaleCarveOutFdsOnceDrained(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	skill := filepath.Join(skills, "mine", "SKILL.md")
+	for _, dir := range []string{worktree, filepath.Dir(skill)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(skill, []byte("v0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := sbTestHost(home)
+	host.EvenerContentRoots = []string{skills}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	for i := range 3 {
+		if _, err := env.ReadFile(skill, nil, nil); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		if err := os.Rename(skills, fmt.Sprintf("%s.old%d", skills, i)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(skill, []byte("v\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := env.ReadFile(skill, nil, nil); err != nil {
+		t.Fatalf("final read: %v", err)
+	}
+	env.sbMu.Lock()
+	sfs := env.sbfs
+	env.sbMu.Unlock()
+	sfs.mu.Lock()
+	stale := len(sfs.staleFds)
+	sfs.mu.Unlock()
+	if stale != 0 {
+		t.Errorf("stale carve-out fds must be closed once drained, %d still held", stale)
 	}
 }
 

@@ -66,6 +66,11 @@ type sandboxFS struct {
 
 	mu      sync.Mutex
 	rootFds map[string]int // canonical root path → cached O_DIRECTORY fd
+	// staleFds are carve-out root fds dropped from rootFds once they no longer
+	// held their pinned place. An operation may still be using one, so they
+	// are closed once the layer drains (release) or closes, not at once; no
+	// operation that starts later can reach them.
+	staleFds []int
 
 	// inUse counts the file-tool operations currently holding this layer: the
 	// environment acquires it for an operation under sbMu when it hands the
@@ -94,8 +99,12 @@ func (s *sandboxFS) release() {
 	if s == nil {
 		return
 	}
-	if s.inUse.Add(-1) == 0 && s.retired.Load() {
-		s.close()
+	if s.inUse.Add(-1) == 0 {
+		if s.retired.Load() {
+			s.close()
+			return
+		}
+		s.closeStaleFds()
 	}
 }
 

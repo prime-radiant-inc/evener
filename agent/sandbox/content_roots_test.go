@@ -669,29 +669,132 @@ func TestEvenerContentRootsHonourAnExplicitMaskOfAMissingRealConfigRoot(t *testi
 	}
 }
 
-// A config root configured through the macOS data-volume firmlink spelling
-// (/System/Volumes/Data/Users/...) keeps that spelling: skill paths that carry
-// it read through the carve-out, while the rest of the config stays masked.
-func TestEvenerContentRootsKeepTheFirmlinkSpelling(t *testing.T) {
+// A mask redirected into an admitted carve-out after resolution (~/.ssh made a
+// link into the skills dir before the next spawn) must stop the carve-out's
+// grant: re-granting the root would expose the mask's target.
+func TestCarveOutIsUnsafeOnceAMaskPointsIntoIt(t *testing.T) {
 	root := mainRepo(t)
 	home := clean(t.TempDir())
-	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	keys := filepath.Join(skills, "mine", "ssh")
+	if err := os.MkdirAll(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Fatalf("skills must be admitted at resolution: %v", rp.UnmaskedRoots)
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Fatalf("an intact carve-out must be safe")
+	}
+	if err := os.Symlink(keys, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(skills) {
+		t.Errorf("a carve-out holding a mask's new target must not be granted")
+	}
+}
+
+// A mask pointed at a directory above a carve-out after resolution (~/.ssh
+// made a link to ~/.config/evener/plugins) holds the carve-out, so the
+// carve-out is refused until the link goes.
+func TestCarveOutIsUnsafeOnceAMaskPointsAboveIt(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	plugins := filepath.Join(home, ".config", "evener", "plugins")
+	cache := filepath.Join(plugins, "cache")
 	if err := os.MkdirAll(cache, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	alias := dataVolumePrefix + home
-	if _, err := os.Stat(alias); err != nil {
-		t.Skip("no data-volume firmlink spelling on this host")
-	}
-	host := HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/fixture/sandbox-exec"}
-	host.EvenerConfigRoot = filepath.Join(alias, ".config", "evener")
-	host.EvenerContentRoots = []string{filepath.Join(alias, ".config", "evener", "plugins", "cache")}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
 	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
-	if rp.Masks(filepath.Join(alias, ".config", "evener", "plugins", "cache", "p", "SKILL.md")) {
-		t.Errorf("a skill under the firmlink spelling must be readable: %v", rp.UnmaskedRoots)
+	if !rp.CarveOutIntact(cache) {
+		t.Fatalf("an intact carve-out must be granted: %v", rp.UnmaskedRoots)
 	}
-	if !rp.Masks(filepath.Join(alias, ".config", "evener", "hub.toml")) {
-		t.Errorf("the rest of the config must stay masked under the firmlink spelling")
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(plugins, link); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(cache) {
+		t.Errorf("a carve-out under a mask's new target must not be granted")
+	}
+	if !rp.Masks(filepath.Join(cache, "p", "SKILL.md")) {
+		t.Errorf("content under a mask's new target must be masked")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(cache) || rp.Masks(filepath.Join(cache, "p", "SKILL.md")) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
+	}
+}
+
+// A mask pointed at Evener's config root itself after resolution (~/.ssh made
+// a link to ~/.config/evener) is not Evener's own config mask: the carve-outs
+// under it are refused until the link goes.
+func TestCarveOutIsUnsafeOnceAMaskPointsAtTheConfigRoot(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	config := filepath.Join(home, ".config", "evener")
+	skills := filepath.Join(config, "skills")
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !rp.CarveOutIntact(skills) {
+		t.Fatalf("an intact carve-out must be granted: %v", rp.UnmaskedRoots)
+	}
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(config, link); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(skills) || !rp.Masks(filepath.Join(skills, "mine", "SKILL.md")) {
+		t.Errorf("a carve-out under a mask's new target, the config root, must be refused")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
+	}
+}
+
+// On a case-insensitive volume, a mask pointed after resolution at a
+// directory inside a carve-out spelled in another case is still caught.
+func TestCarveOutIsUnsafeOnceAMaskPointsIntoItInAnotherCase(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "mine", "ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "evener", "SKILLS")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(filepath.Join(home, ".config", "evener", "SKILLS", "mine", "ssh"), link); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(skills) {
+		t.Errorf("a mask pointed into the carve-out in another case must refuse it")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
 	}
 }
 
@@ -728,6 +831,32 @@ func TestCarveOutIsUnsafeOnceAMasksAncestorPointsIntoIt(t *testing.T) {
 	}
 	if !rp.CarveOutIntact(skills) {
 		t.Errorf("the carve-out must be granted again once the link is gone")
+	}
+}
+
+// A config root configured through the macOS data-volume firmlink spelling
+// (/System/Volumes/Data/Users/...) keeps that spelling: skill paths that carry
+// it read through the carve-out, while the rest of the config stays masked.
+func TestEvenerContentRootsKeepTheFirmlinkSpelling(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := dataVolumePrefix + home
+	if _, err := os.Stat(alias); err != nil {
+		t.Skip("no data-volume firmlink spelling on this host")
+	}
+	host := HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/fixture/sandbox-exec"}
+	host.EvenerConfigRoot = filepath.Join(alias, ".config", "evener")
+	host.EvenerContentRoots = []string{filepath.Join(alias, ".config", "evener", "plugins", "cache")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if rp.Masks(filepath.Join(alias, ".config", "evener", "plugins", "cache", "p", "SKILL.md")) {
+		t.Errorf("a skill under the firmlink spelling must be readable: %v", rp.UnmaskedRoots)
+	}
+	if !rp.Masks(filepath.Join(alias, ".config", "evener", "hub.toml")) {
+		t.Errorf("the rest of the config must stay masked under the firmlink spelling")
 	}
 }
 
