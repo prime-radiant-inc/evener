@@ -727,14 +727,25 @@ func attentionTurns(history []schema.Turn) []schema.Turn {
 	return turns
 }
 
-// withAttentionTurns appends to history the attention turns it does not hold.
-// It is the lock-free form of retainDelegateAttentionTurn's append, for a
-// caller that already holds s.mu and owns the slice.
+// withAttentionTurns restores to history the attention turns it does not hold.
+// Each goes before the first held turn of a later-arriving item (attention is
+// in arrival order), or at the end when none is held, so the model still reads
+// the items in the order they were delivered. It is the lock-free form of
+// retainDelegateAttentionTurn's append, for a caller that already holds s.mu
+// and owns the slice.
 func withAttentionTurns(history, attention []schema.Turn) []schema.Turn {
-	for _, turn := range attention {
-		if !slices.ContainsFunc(history, func(held schema.Turn) bool { return held.AttentionID == turn.AttentionID }) {
-			history = append(history, turn)
+	for i, turn := range attention {
+		if slices.ContainsFunc(history, func(held schema.Turn) bool { return held.AttentionID == turn.AttentionID }) {
+			continue
 		}
+		later := attention[i+1:]
+		at := slices.IndexFunc(history, func(held schema.Turn) bool {
+			return slices.ContainsFunc(later, func(next schema.Turn) bool { return next.AttentionID == held.AttentionID })
+		})
+		if at < 0 {
+			at = len(history)
+		}
+		history = slices.Insert(history, at, turn)
 	}
 	return history
 }

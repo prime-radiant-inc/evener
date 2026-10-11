@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,5 +143,43 @@ func TestRootDelegateAttentionSurvivesCompactionWhenTheTranscriptReadFails(t *te
 	}
 	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
 		t.Fatalf("pending after the notification turn = %v (err %v), want it consumed", pending, err)
+	}
+}
+
+// Items delivered before and after the compaction boundary keep their delivery
+// order: the older item is restored ahead of the newer one that survived in the
+// recent tail, and one turn presents and consumes both.
+func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompaction(t *testing.T) {
+	t.Parallel()
+	sess, main := newCompactableSession(t)
+	deliver := func(attentionID, text string) {
+		t.Helper()
+		if _, err := sess.appendDelegateNotificationDurably(attentionID, text); err != nil {
+			t.Fatalf("append attention: %v", err)
+		}
+		if err := sess.armDelegateAttention(attentionID); err != nil {
+			t.Fatalf("arm attention: %v", err)
+		}
+	}
+	deliver("delegate:dlg_worker/delivery/1", `<delegate-notification delegate_id="dlg_worker" kind="update">FIRST_ITEM</delegate-notification>`)
+	seedNumberedSessionHistory(t, sess, 12)
+	deliver("delegate:dlg_worker/delivery/2", `<delegate-notification delegate_id="dlg_worker" kind="update">SECOND_ITEM</delegate-notification>`)
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn: %v", err)
+	}
+	if len(main.requests) != 1 {
+		t.Fatalf("the notification turn made %d model requests, want 1", len(main.requests))
+	}
+	text := messagesText(main.requests[0].Messages)
+	first, second := strings.Index(text, "FIRST_ITEM"), strings.Index(text, "SECOND_ITEM")
+	if first < 0 || second < 0 || first > second {
+		t.Fatalf("request presents the items at %d and %d, want both with the first ahead:\n%s", first, second, text)
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after the notification turn = %v (err %v), want both consumed", pending, err)
 	}
 }
