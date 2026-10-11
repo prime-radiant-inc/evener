@@ -6,6 +6,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
+import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import {
@@ -76,27 +77,37 @@ function fixture(ancestryKnown = true) {
     ["root", "old-root"],
     ["child", "child-id"],
     ["grandchild", "grandchild-id"],
+    ["greatgrandchild", "greatgrandchild-id"],
     ["sibling", "sibling-id"],
   ]);
   let epoch = "epoch-1";
-  const lineage = (ref: string) => (ref === "grandchild" ? ["root", "child"] : ref === "root" ? [] : ["root"]);
+  const LINEAGE: Record<string, string[]> = {
+    root: [],
+    child: ["root"],
+    sibling: ["root"],
+    grandchild: ["root", "child"],
+    greatgrandchild: ["root", "child", "grandchild"],
+  };
+  const PARENT_REF: Record<string, string> = {
+    child: "root",
+    sibling: "root",
+    grandchild: "child",
+    greatgrandchild: "grandchild",
+  };
+  const DELEGATE_ID: Record<string, string> = { child: "d1", grandchild: "d2", greatgrandchild: "d4", sibling: "d3" };
+  const lineage = (ref: string) => LINEAGE[ref] ?? ["root"];
   const context = (ref: string): SessionActivityContext => ({
     ...activityContext(ref),
     sessionId: identities.get(ref) ?? ref,
     rootRef: "root",
     epoch,
     ancestryKnown,
-    ...(ref === "root"
-      ? {}
-      : {
-          parentRef: ref === "grandchild" ? "child" : "root",
-          delegateId: ref === "grandchild" ? "d2" : ref === "sibling" ? "d3" : "d1",
-        }),
+    ...(ref === "root" ? {} : { parentRef: PARENT_REF[ref] ?? "root", delegateId: DELEGATE_ID[ref] ?? "d1" }),
     ancestors: lineage(ref).map((ancestor) => ({
       ref: ancestor,
       sessionId: identities.get(ancestor) ?? ancestor,
       title: ancestor,
-      ...(ancestor === "child" ? { delegateId: "d1" } : {}),
+      ...(ancestor === "root" ? {} : { delegateId: DELEGATE_ID[ancestor] ?? "d1" }),
     })),
   });
   const response = (ref: string): ThreadReadResponse => {
@@ -175,7 +186,7 @@ function columnRefs() {
   return screen.queryAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"));
 }
 function spineRefs() {
-  return screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"));
+  return screen.queryAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"));
 }
 function inspectedCascade() {
   const source: OpenPaneRecord = { id: "source", type: "session", params: { ref: "root" }, slot: "main" };
@@ -271,37 +282,15 @@ test("root and child render through real read-only readers inside one scaffold",
   expect(columnRefs()).toEqual(["root", "child"]);
   expect(mounted.container.querySelectorAll('[data-pane-scaffold="cascade"]')).toHaveLength(1);
   expect(screen.getAllByTestId("transcript-virtual-list")).toHaveLength(2);
+  // The per-column activity controls render below the transcript content.
+  for (const column of screen.getAllByTestId("cascade-column")) {
+    const content = within(column).getByTestId("cascade-column-content");
+    const controls = within(column).getByTestId("cascade-activity-controls");
+    expect(content.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
-});
-
-test("the agent path nav shows resolved thread names, not raw refs", async () => {
-  const { fake, response } = fixture();
-  fake.on("thread/read", ({ ref, requestGeneration, includeTurns }) => {
-    if (!ref) throw new Error("thread/read requires ref");
-    const read = response(ref);
-    return {
-      ...read,
-      requestGeneration,
-      thread: {
-        ...read.thread,
-        // The wire's ancestor titles are session ids and the leaf scope title
-        // is the requested ref, so only the threads store can supply the
-        // display names the nav must show.
-        name: `Thread name ${ref}`,
-        turns: includeTurns === false ? [] : read.thread.turns,
-      },
-    };
-  });
-  mount(fake);
-  await screen.findByText("root content old-root");
-  await screen.findByText("child content child-id");
-  const nav = within(screen.getByRole("navigation", { name: "Agent path" }));
-  expect(nav.getAllByRole("button").map((button) => button.textContent)).toEqual([
-    "Thread name root",
-    "Thread name child",
-  ]);
 });
 
 test("separated read-only Zoom Return closes inspection and focuses its surviving source", async () => {
@@ -312,9 +301,9 @@ test("separated read-only Zoom Return closes inspection and focuses its survivin
   mount(fake);
   await screen.findByText("child content child-id");
   // The origin conversation is already live as its own pane, so the cascade
-  // must not repeat it: only the leaf stays readable, the parent is a spine.
+  // never renders it: the first drill shows only the subagent's conversation.
   expect(columnRefs()).toEqual(["child"]);
-  expect(spineRefs()).toEqual(["root"]);
+  expect(spineRefs()).toEqual([]);
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(inspectorLifetime.composer).toBeNull();
   requestPaneFocus(inspector.id);
@@ -328,30 +317,53 @@ test("separated read-only Zoom Return closes inspection and focuses its survivin
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
 });
 
-test("a live origin conversation collapses only its own duplicate parent column", async () => {
+test("a live origin conversation never renders in the pane, at any depth", async () => {
   const { fake } = fixture();
   const { source, inspector } = inspectedCascade();
   mount(fake);
   await screen.findByText("child content child-id");
+  // No Agent path nav and no pane title: the spines are the breadcrumb and
+  // the tab label carries the selected conversation.
+  expect(screen.queryByRole("navigation", { name: "Agent path" })).toBeNull();
+  expect(screen.queryByText("Agent cascade")).toBeNull();
+  // The deleted path nav carried the pane's positive name resolution; its
+  // replacement surface is the mobile top bar's published title: the
+  // selected conversation's resolved name, never a pane-generic label.
+  expect(chromeStore.getState().paneTitle).toBe("child");
+  // The single column fills the pane rather than pinning at 440px, so the
+  // first drill reads as the subagent's own conversation pane.
   expect(columnRefs()).toEqual(["child"]);
-  expect(spineRefs()).toEqual(["root"]);
-  // A deeper drill makes the origin the grandparent, not the immediate
-  // parent, so the two readable columns return for the drill.
+  expect(spineRefs()).toEqual([]);
+  expect(screen.getByTestId("cascade-column").style.width).toBe("100%");
+  // Deeper drills keep the readable pair above the removed origin: level 2
+  // has no spines at all, and level 3 collapses the first non-origin
+  // ancestor while the origin stays absent.
   act(() =>
     enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), inspector.id),
   );
   await screen.findByText("grandchild content grandchild-id");
   expect(columnRefs()).toEqual(["child", "grandchild"]);
-  expect(spineRefs()).toEqual(["root"]);
-  // Popping back to depth one keeps the collapse while the origin lives...
+  expect(spineRefs()).toEqual([]);
+  act(() =>
+    enterAgentCascade(
+      activityDelegate({ ownerRef: "grandchild", childRef: "greatgrandchild", delegateId: "d4" }),
+      inspector.id,
+    ),
+  );
+  await screen.findByText("greatgrandchild content greatgrandchild-id");
+  expect(columnRefs()).toEqual(["grandchild", "greatgrandchild"]);
+  expect(spineRefs()).toEqual(["child"]);
+  // Popping back to depth one keeps the origin filtered while it lives...
   act(() => popAgentCascade(inspector.id, "child"));
   await screen.findByText("child content child-id");
   expect(columnRefs()).toEqual(["child"]);
+  expect(spineRefs()).toEqual([]);
   // ...and closing the origin retires the association, so the readable
   // parent column returns without disturbing the selected leaf.
   act(() => workspaceStore.getState().closePane(source.id));
   await screen.findByText("root content old-root");
   expect(columnRefs()).toEqual(["root", "child"]);
+  expect(spineRefs()).toEqual([]);
 });
 
 test("a cascade with no live origin keeps the readable parent column", async () => {
@@ -415,11 +427,7 @@ test.each(["deleted", "missing"] as const)(
         .getState()
         .panes.some((pane) => pane.type === "session" && (pane.params as { ref: string }).ref === "child"),
     ).toBe(true);
-    act(() =>
-      fireEvent.click(
-        within(screen.getByRole("navigation", { name: "Agent path" })).getByRole("button", { name: "root" }),
-      ),
-    );
+    act(() => popAgentCascade("cascade", "root"));
     expect(currentParams().ref).toBe("root");
     expect(columnRefs()).toEqual(["root"]);
     expect(screen.getByText("root content old-root")).toBeTruthy();
@@ -774,6 +782,107 @@ test("a rebound root retires old child edges and readers before replacement cont
   } finally {
     observer.disconnect();
   }
+});
+
+test("a rebound live origin retires its stale descendants even though it never renders", async () => {
+  const { fake, identities } = fixture();
+  inspectedCascade();
+  mount(fake);
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  // The origin pane beside the cascade is the origin conversation's only
+  // rendered reader; its replacement must still retire the cascade's stale
+  // descendants through the live-origin binding.
+  identities.set("root", "new-root");
+  act(() =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "root", threadId: "wire-new-root" } }),
+  );
+  await waitFor(() => expect(currentParams().ref).toBe("root"));
+  expect(currentParams().edges).toEqual([]);
+  expect(childView.alive).toBe(false);
+  // The popped origin never renders: the emptied pane keeps only the Return
+  // path back to the source conversation.
+  expect(columnRefs()).toEqual([]);
+  expect(spineRefs()).toEqual([]);
+  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+});
+
+test("a live origin replaced before its first summary resolves still retires stale descendants", async () => {
+  const { fake, identities, context } = fixture();
+  inspectedCascade();
+  const held = deferred<ReturnType<typeof activitySummary>>();
+  // The origin's own activity summary stays pending while the child's
+  // ancestry — which already carries the origin's identity — is known.
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => {
+    const summary = () => ({ ...activitySummary(ref, scope), context: context(ref) });
+    if (ref === "root" && scope !== "subtree") return held.promise.then(summary);
+    return summary();
+  });
+  mount(fake);
+  await screen.findByText("child content child-id");
+  expect(columnRefs()).toEqual(["child"]);
+  const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  identities.set("root", "new-root");
+  act(() =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "root", threadId: "wire-new-root" } }),
+  );
+  await act(async () => held.resolve(activitySummary("root", "session")));
+  await waitFor(() => expect(currentParams().ref).toBe("root"));
+  expect(currentParams().edges).toEqual([]);
+  expect(childView.alive).toBe(false);
+  expect(columnRefs()).toEqual([]);
+  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+});
+
+// AppShell.test.tsx's installMobileViewport, verbatim: the mobile query
+// matches, every other query (the reduced-motion read included) does not.
+function installMobileViewport(): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+}
+
+test("a replaced nested origin never renders a non-leaf column on the phone", async () => {
+  const { fake, identities } = fixture();
+  installMobileViewport();
+  // A nested origin: the cascade inspects child, drilled to grandchild, so the
+  // full path is root -> child(origin) -> grandchild and only grandchild
+  // renders on the phone.
+  const origin: OpenPaneRecord = { id: "child-origin", type: "session", params: { ref: "child" }, slot: "main" };
+  const inspector: OpenPaneRecord = {
+    ...currentPane(),
+    slot: "secondary",
+    params: {
+      ref: "grandchild",
+      source: { type: "transcript", params: { ref: "child" } },
+      edges: [{ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }],
+      inspection: { origin: { paneId: origin.id, type: "session", ref: "child" } },
+    } satisfies SessionZoomParams,
+  };
+  workspaceStore.setState({ panes: [origin, inspector], focusedPaneId: inspector.id });
+  recordCascadeOrigin(inspector, origin);
+  mount(fake);
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["grandchild"]);
+  identities.set("child", "new-child");
+  act(() =>
+    fake.emitNotification({ method: "evener/thread/resync", params: { ref: "child", threadId: "wire-new-child" } }),
+  );
+  await waitFor(() => expect(currentParams().ref).toBe("child"));
+  // The popped origin never renders, at any depth: the phone keeps only the
+  // Return path, never the non-leaf root column under the selected
+  // conversation's name.
+  expect(columnRefs()).toEqual([]);
+  expect(spineRefs()).toEqual([]);
+  expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
+  expect(chromeStore.getState().paneTitle).toBe("child");
 });
 
 test("a new cursor epoch for the same root preserves child branch and retained readers", async () => {

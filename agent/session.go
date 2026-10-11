@@ -1054,12 +1054,6 @@ type Session struct {
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
 	attentionStagedIDs map[string]struct{}
-	// attentionPreTurnIDs snapshots rootAttentionWakeIDs at turn start
-	// (resetAttentionCoverage). Marking consults it to separate the root's
-	// deliveries armed mid-turn from attention already owed a dedicated
-	// notification turn. A delegate session arms no root wakes, so for it
-	// the snapshot is empty.
-	attentionPreTurnIDs map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue

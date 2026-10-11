@@ -91,7 +91,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Definition: tool.DefJobList(), ReadOnly: true,
+		Definition: tool.DefJobListNamed(s.resultToolName()), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -112,7 +112,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Definition: tool.DefJobWatch(availableEventKindNames()),
+		Definition: tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName()),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -149,6 +149,7 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 	if err != nil {
 		return "", err
 	}
+	a.ResultTool = s.resultToolName()
 	if a.Operation == "create" && watchArgsIsTimer(a) && s.cfg.TurnEndsProcess {
 		return "", errors.New("invalid_request: timers need a session that outlives the turn")
 	}
