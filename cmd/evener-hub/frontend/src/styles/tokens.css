@@ -222,6 +222,8 @@
   --motion-duration-overlay: 120ms;
   --motion-duration-hover: 150ms;
   --motion-duration-spatial: 240ms;
+  /* one turn of StatusDot's continuous working spinner (agent liveness) */
+  --motion-duration-activity: 800ms;
   --motion-easing-standard: ease-out;
 }
 

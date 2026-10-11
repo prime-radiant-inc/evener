@@ -45,7 +45,8 @@ const BASE_CLASS = {
 
 /** A standalone session-state indicator: just the dot, no activity trace.
  * The working state turns as a spinner (a static dot under reduced motion)
- * so an active agent always reads as active.
+ * so an active agent always reads as active. Failed is a diamond so it never
+ * depends on hue alone to differ from needs-you.
  * Use Cadence instead where the trailing ~60s trace is wanted; StatusDot is
  * for tighter contexts (tree rows, compact lists) that only have room for
  * the dot. Passive - no interaction, no focus ring - but carries its own
@@ -57,6 +58,7 @@ export function StatusDot({ state }: StatusDotProps) {
     <span
       role="img"
       aria-label={STATUS_LABEL[state]}
+      data-shape={state === "failed" ? "diamond" : "dot"}
       className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}${working}`}
     />
   );

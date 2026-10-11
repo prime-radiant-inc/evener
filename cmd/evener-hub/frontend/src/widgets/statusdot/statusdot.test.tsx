@@ -55,6 +55,27 @@ test("working plays its activity spinner only when motion is allowed", () => {
   expect(CSS.replace(motionRules, "")).not.toMatch(/animation:/);
 });
 
+// §1 bans color-only distinctions: failed and needs-you must differ in shape,
+// not just hue, and the diamond's geometry must actually exist in the CSS.
+test("failed is a diamond while every other state is a round dot", () => {
+  const shapes = Object.fromEntries(
+    (["idle", "working", "needs-you", "failed", "ended"] as const).map((state) => {
+      const { unmount } = render(<StatusDot state={state} />);
+      const shape = screen.getByRole("img").getAttribute("data-shape");
+      unmount();
+      return [state, shape];
+    }),
+  );
+  expect(shapes).toEqual({ idle: "dot", working: "dot", "needs-you": "dot", failed: "diamond", ended: "dot" });
+  expect(CSS).toMatch(/\.dot\[data-shape="diamond"\]\s*\{[^}]*border-radius:\s*1px;[^}]*rotate\(45deg\)/);
+});
+
+test("the spinner's period is the activity motion token", () => {
+  expect(mediaBlock(CSS, "prefers-reduced-motion: no-preference")).toMatch(
+    /animation:[^;]*var\(--motion-duration-activity\)/,
+  );
+});
+
 test("only the working state carries the activity spinner", () => {
   const working = requireClass(rawStyles.working, "statusdot.module.css", "working");
   for (const state of ["idle", "needs-you", "failed", "ended"] as const) {

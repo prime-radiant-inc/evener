@@ -178,7 +178,7 @@ the spines and columns never scrolls as a unit.
 
 Only ancestor spines use the session list's
 [StatusDot](../../cmd/evener-hub/frontend/src/widgets/statusdot/index.tsx):
-a turning alive ring for active work, an amber dot for attention and a red dot
+a turning alive ring for active work, an amber dot for attention and a red diamond
 for failure. Idle and ended states have no glyph. Under reduced motion the ring
 is the static working dot. Each spine maps its own raw runtime status through
 `cadenceStateForStatus`: `systemError` means failure and `closed` means ended;
@@ -282,9 +282,9 @@ number}`.
 
 The browser rail uses a deliberately smaller status grammar instead of `<Cadence>` because its
 navigation summaries carry no frame trace and every session row must stay one line. Its indicator
-is `StatusDot`, with StatusDot's labels: amber dot = Needs you, red dot = Failed, turning alive ring
-= Working. The accessible name carries the state for assistive tech; sighted users read hue plus
-the working state's motion. Precedence is failed, needs-you, working. Idle and ended rows reserve
+is `StatusDot`, with StatusDot's labels: amber dot = Needs you, red diamond = Failed, turning alive
+ring = Working. The shape difference keeps needs-you and failed distinct without hue, and the
+accessible name carries the state for assistive tech. Precedence is failed, needs-you, working. Idle and ended rows reserve
 no indicator. The visible face is indicator, title, and age/actions only. Project,
 host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
@@ -758,10 +758,10 @@ continuously. This is the one continuous motion allowed for agent liveness, and 
 StatusDot. It plays wherever a StatusDot shows `working` (rail rows, while the navigation summary
 reports active work including running jobs or descendants; pane tabs; ancestor spines; the command
 palette; delegate rows), and stops the moment the status authority stops reporting work. It
-communicates state, not frame throughput or percent complete. Needs-you and failed stay static
-dots. Under `prefers-reduced-motion: reduce` the ring does not render; working is the static alive
-dot. Its period (800ms, linear) is literal because the motion tokens are one-shot transition
-budgets and none describes a continuous rotation.
+communicates state, not frame throughput or percent complete. Needs-you (a solid dot) and failed
+(a diamond) stay static and shape-distinct. Under `prefers-reduced-motion: reduce` the ring does
+not render; working is the static alive dot. One turn takes `--motion-duration-activity` (800ms)
+on linear easing, so the rotation's speed stays constant.
 
 One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
 shown for a live reasoning item while the Reasoning content flag is off, uses the catalog

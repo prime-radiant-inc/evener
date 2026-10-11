@@ -6,6 +6,15 @@
   border-radius: 50%;
 }
 
+/* Failed is shape-distinct from needs-you so the two never differ by hue
+ * alone: a 7px square turned 45deg, which fits the dot's 8px box. */
+.dot[data-shape="diamond"] {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .dot {
     /* attention onset, when a state change (usually into needs-you)
@@ -18,14 +27,13 @@
    * design system allows for agent liveness (design-system.md §5). The dot
    * becomes an open alive ring that turns while the agent works. Under
    * reduced motion none of this applies and working stays the static alive
-   * dot. A continuous rotation has no motion token (the tokens are one-shot
-   * transition budgets), so the period and linear easing are literal. */
+   * dot. Linear easing keeps the rotation's speed constant. */
   .working {
     box-sizing: border-box;
     border: 1.5px solid var(--alive);
     border-top-color: transparent;
     background-color: transparent;
-    animation: statusDotSpin 800ms linear infinite;
+    animation: statusDotSpin var(--motion-duration-activity) linear infinite;
   }
 }
 
