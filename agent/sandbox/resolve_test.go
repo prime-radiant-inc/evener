@@ -760,3 +760,15 @@ func TestCacheRootsNeverLieInsideAPersistentWriteRoot(t *testing.T) {
 		t.Errorf("a cache root inside an extra writable root must be dropped: %v", rp.CacheRoots)
 	}
 }
+
+// A cache root inside another (an explicit GOMODCACHE at Go's default
+// $HOME/go/pkg/mod, under the served $HOME/go/pkg) is served by the outer
+// overlay; a nested overlay would make it a mountpoint go clean -modcache
+// cannot remove.
+func TestCacheRootsDropOnesInsideAnother(t *testing.T) {
+	host := HostFacts{OS: "linux", Home: "/home/tester", GoModCache: "/home/tester/go/pkg/mod"}
+	roots := cacheRootsFor(ModeWorkspaceWrite, host, "/work/project")
+	if slices.Contains(roots, "/home/tester/go/pkg/mod") || !slices.Contains(roots, "/home/tester/go/pkg") {
+		t.Errorf("the nested GOMODCACHE must be served by its parent's overlay alone: %v", roots)
+	}
+}

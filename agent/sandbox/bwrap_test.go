@@ -563,3 +563,75 @@ func TestBuildBwrapArgvRebindsWritableLocationsInsideACacheOverlay(t *testing.T)
 	}
 	rebindAfterOverlay(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo, rp.Git.CommonDir)
 }
+
+// A cache root removed on the host after the wrapper was built (go clean
+// -modcache outside the sandbox) is recreated at the next spawn and overlaid
+// again, as at wrapper creation.
+func TestWrapRecreatesACacheRootRemovedSinceTheWrapperWasBuilt(t *testing.T) {
+	gocache := filepath.Join(t.TempDir(), "gocache")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(gocache); err != nil {
+		t.Fatal(err)
+	}
+	argv := w.Wrap([]string{"/bin/true"}, cwd)
+	if fi, err := os.Stat(gocache); err != nil || !fi.IsDir() {
+		t.Fatalf("the removed cache root must be recreated at spawn: %v", err)
+	}
+	if !hasSeq(argv, "--overlay-src", gocache, "--tmp-overlay", gocache) {
+		t.Errorf("the recreated cache root must be overlaid: %v", argv)
+	}
+}
+
+// A cache root whose symlinked parent was retargeted into the worktree after
+// resolution is not overlaid at the next spawn: its overlay would swallow
+// edits to the workspace there.
+func TestWrapSkipsACacheRootRetargetedIntoTheWorktree(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(realDir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(link, "cache")
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(w.Policy().CacheRoots, gocache) {
+		t.Fatalf("fixture: the cache root must be served at first: %v", w.Policy().CacheRoots)
+	}
+	inWorktree := filepath.Join(cwd, "sub")
+	if err := os.MkdirAll(filepath.Join(inWorktree, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inWorktree, link); err != nil {
+		t.Fatal(err)
+	}
+	if argv := w.Wrap([]string{"/bin/true"}, cwd); slices.Contains(argv, gocache) {
+		t.Errorf("a cache root now resolving inside the worktree must not be overlaid: %v", argv)
+	}
+}
