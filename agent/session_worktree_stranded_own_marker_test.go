@@ -468,3 +468,79 @@ func TestWorktreePrune_RestoresTheMarkerWhenGitIsUnreachableAfterTheFailure(t *t
 		t.Errorf("lane lock = locked=%v reason=%q, want this session's own marker back (%q)", locked, reason, want)
 	}
 }
+
+// TestWorktreePrune_KeepsTheLaneTheSessionIsRootedInsideOf: a session resumed in
+// a subdirectory of a lane, with no lane path recorded as current, still works in
+// that lane; its own marker is occupancy and prune must not remove the lane.
+func TestWorktreePrune_KeepsTheLaneTheSessionIsRootedInsideOf(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	made, err := r.create(t, map[string]any{"name": "rooted"})
+	if err != nil {
+		t.Fatalf("create rooted lane: %v", err)
+	}
+	rootedPath := made["path"].(string)
+	sub := filepath.Join(rootedPath, "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	r.s.mu.Lock()
+	r.s.worktreeCurrentPath = ""
+	r.s.env = r.s.env.(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(sub)
+	r.s.mu.Unlock()
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if e := findPruneEntry(t, pruneEntries(t, out, "removed"), "rooted"); e != nil {
+		t.Fatalf("prune removed the lane the session works inside: %+v", e)
+	}
+	if _, statErr := os.Stat(rootedPath); statErr != nil {
+		t.Fatalf("the occupied lane is gone: %v", statErr)
+	}
+	_, locked, reason := r.laneLocked(t, rootedPath)
+	if want := worktree.FormatSessionMarker(r.s.id); !locked || reason != want {
+		t.Errorf("lane lock = locked=%v reason=%q, want the session's marker kept (%q)", locked, reason, want)
+	}
+}
+
+// denyingLockFiles is a control environment whose policy refuses every write, as
+// a read-only session's does; reads still work.
+type denyingLockFiles struct{ execenv.FileMutator }
+
+func (denyingLockFiles) WriteFileRaw(string, []byte, os.FileMode) error {
+	return errors.New("denied by the control policy")
+}
+func (denyingLockFiles) RemovePath(string) error { return errors.New("denied by the control policy") }
+func (denyingLockFiles) RenamePath(string, string) error {
+	return errors.New("denied by the control policy")
+}
+
+// TestReleaseStrandedOwnMarker_HonorsTheControlPolicy: the lock file is part of
+// the worktree registry, so releasing a marker needs the same write authority
+// the sandboxed `git worktree remove` that follows needs. Without it the marker
+// stays put.
+func TestReleaseStrandedOwnMarker_HonorsTheControlPolicy(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	first, err := r.create(t, map[string]any{"name": "stranded"})
+	if err != nil {
+		t.Fatalf("create stranded lane: %v", err)
+	}
+	strandedPath := first["path"].(string)
+	if _, err := r.create(t, map[string]any{"name": "current"}); err != nil {
+		t.Fatalf("create current lane: %v", err)
+	}
+	own := worktree.FormatSessionMarker(r.s.id)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", own, strandedPath)
+
+	files := denyingLockFiles{FileMutator: r.s.currentEnv().(*execenv.LocalExecutionEnvironment)}
+	released, err := r.s.releaseStrandedOwnMarker(files, strandedPath)
+	if released || err == nil {
+		t.Fatalf("release = (%v, %v), want a refusal", released, err)
+	}
+	if _, locked, reason := r.laneLocked(t, strandedPath); !locked || reason != own {
+		t.Errorf("lane lock = locked=%v reason=%q, want the marker untouched (%q)", locked, reason, own)
+	}
+}
