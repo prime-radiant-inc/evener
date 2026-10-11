@@ -744,9 +744,9 @@ const memoryIndexDeltaCap = 2048
 // knownMemoryIndexSection reports a completed read of a scope whose index
 // the session already knows. A current index delivers only the lines added
 // since the baseline, which then advances; removed lines are never reported,
-// and an index that only lost lines delivers nothing. That covers another session's edit and an index it
-// created where the session had deleted its own. A missing index the session
-// knows it deleted delivers nothing. Any other missing index, or a failed
+// and an index that only lost lines delivers nothing. That covers another
+// session's edit and an index it created where the session had deleted its
+// own. A missing index the session knows it deleted delivers nothing. Any other missing index, or a failed
 // read, is projected as that state, as at any boundary. A read that missed
 // the boundary budget or went stale never reaches here.
 func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memoryProjection) memoryContextSection {
@@ -760,9 +760,10 @@ func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memory
 	}
 }
 
-// memoryIndexDeltaSection lists the lines another session added to p's index since the baseline index, or is "" when no line was added. A
-// change whose section would exceed memoryIndexDeltaCap is reported as a line
-// count instead.
+// memoryIndexDeltaSection lists the lines another session added to p's index
+// since the baseline index, or is "" when no line was added. A change whose
+// section would exceed memoryIndexDeltaCap is reported as a line count
+// instead.
 func memoryIndexDeltaSection(baseline string, p memoryProjection) string {
 	added := memoryIndexAddedLines(baseline, p.Index)
 	if len(added) == 0 {

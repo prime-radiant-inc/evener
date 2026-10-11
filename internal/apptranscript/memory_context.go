@@ -206,7 +206,7 @@ func validMemoryChangeLines(lines string) bool {
 // quoted path, then " changed", per line.
 func validMemoryPageLines(lines string) bool {
 	for line := range strings.SplitSeq(lines, "\n") {
-		if _, tail, ok := unquotePrefix(line); !ok || (tail != memoryPageChanged) {
+		if _, tail, ok := unquotePrefix(line); !ok || tail != memoryPageChanged {
 			return false
 		}
 	}
