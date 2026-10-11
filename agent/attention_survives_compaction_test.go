@@ -1,0 +1,104 @@
+package agent
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/llm"
+)
+
+const compactedAttentionText = `<delegate-notification delegate_id="dlg_worker" kind="update">COMPACTED_UPDATE: which table holds the drain cursor?</delegate-notification>`
+
+// newCompactableSession builds a session whose summarizer is scripted and whose
+// main model records its requests and answers each with a final report.
+func newCompactableSession(t *testing.T) (*Session, *fakeAdapter) {
+	t.Helper()
+	main := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("answered the update") },
+	}}
+	client := llm.NewClient()
+	client.Register(main)
+	client.Register(&agenttest.ScriptedAdapter{Provider: "compact-cheap", Responder: func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}})
+	stateDir := t.TempDir()
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "compact-cheap/model")
+	sess := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot(), withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}))
+	return sess, main
+}
+
+func compactAfterAttention(t *testing.T, sess *Session) {
+	t.Helper()
+	seedNumberedSessionHistory(t, sess, 12)
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+}
+
+// A draining delegate's pending update survives a live compaction: the update's
+// attention turn stays in the history, so the drain's one turn presents it,
+// credits it, and marks it consumed with no second turn.
+func TestDelegateUpdatePendingAcrossCompactionIsPresentedAndConsumedOnce(t *testing.T) {
+	t.Parallel()
+	sess, main := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_coordinator", "")
+	controller.mu.Lock()
+	controller.live["dlg_coordinator"].binding.runtime = sess
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_coordinator"
+	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID("dlg_worker", 1))
+	if _, err := sess.appendDelegateNotificationDurably(updateID, compactedAttentionText); err != nil {
+		t.Fatalf("append update attention: %v", err)
+	}
+	compactAfterAttention(t, sess)
+
+	turns := 0
+	process := func(ctx context.Context, text string, images []ImageAttachment, kind EntryKind) (string, error) {
+		turns++
+		if turns > 2 {
+			t.Error("the drain keeps running turns for an update that stays pending")
+			return "", context.Canceled
+		}
+		return sess.ProcessInputKind(ctx, text, images, kind)
+	}
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_coordinator", generation: 1})
+	if _, err := sess.drainJobTreeWith(ctx, make(chan time.Time), func(context.Context) error { return nil }, process); err != nil {
+		t.Fatalf("drainJobTreeWith: %v", err)
+	}
+	if len(main.requests) != 1 || !requestMessagesContainText(main.requests[0].Messages, "COMPACTED_UPDATE") {
+		t.Fatalf("the drain made %d model requests; want 1 presenting the compacted update", len(main.requests))
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after the drain turn = %v (err %v), want it consumed", pending, err)
+	}
+}
+
+// The root's pending delegate attention survives a live compaction the same
+// way: its notification turn presents the report and consumes it.
+func TestRootDelegateAttentionPendingAcrossCompactionIsPresentedAndConsumed(t *testing.T) {
+	t.Parallel()
+	sess, main := newCompactableSession(t)
+	const attentionID = "delegate:dlg_worker/delivery/1"
+	if _, err := sess.appendDelegateNotificationDurably(attentionID, compactedAttentionText); err != nil {
+		t.Fatalf("append attention: %v", err)
+	}
+	if err := sess.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm attention: %v", err)
+	}
+	compactAfterAttention(t, sess)
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn: %v", err)
+	}
+	if len(main.requests) != 1 || !requestMessagesContainText(main.requests[0].Messages, "COMPACTED_UPDATE") {
+		t.Fatalf("the notification turn made %d model requests; want 1 that presents the attention item pending across compaction", len(main.requests))
+	}
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after the notification turn = %v (err %v), want it consumed", pending, err)
+	}
+}

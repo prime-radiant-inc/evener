@@ -353,6 +353,18 @@ func (f delegateAttentionFold) pendingIDs() []string {
 	return pending
 }
 
+// pendingTurns returns the durable model-visible turn behind every pending
+// attention item, in arrival order.
+func (f delegateAttentionFold) pendingTurns() []schema.Turn {
+	var turns []schema.Turn
+	for _, attentionID := range f.pendingIDs() {
+		if turn, ok := f.turns[attentionID]; ok {
+			turns = append(turns, turn)
+		}
+	}
+	return turns
+}
+
 func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, attentionID, content string, now time.Time, open delegateAttentionWriterOpener) (appended bool, err error) {
 	return appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID, llm.User(content), now, open)
 }
@@ -670,8 +682,18 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 }
 
 func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return nil, err
+	}
+	return fold.pendingIDs(), nil
+}
+
+// delegateAttentionFoldLocked folds the session's own transcript; the zero fold
+// stands in until a transcript is attached. The caller holds attentionMu.
+func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 	if s == nil {
-		return nil, nil
+		return delegateAttentionFold{}, nil
 	}
 	s.mu.Lock()
 	ready := s.transcriptReady
@@ -679,13 +701,43 @@ func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
 	stateDir := s.stateDir
 	s.mu.Unlock()
 	if !ready || sessionID == "" || stateDir == "" {
-		return nil, nil
+		return delegateAttentionFold{}, nil
 	}
-	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	return s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+}
+
+// pendingAttentionTurnsLocked returns the turns behind the pending attention
+// items. A fold read failure returns none: the restart rearm restores them
+// (rearmRootDelegateAttentionFromTranscript). The caller holds attentionMu.
+func (s *Session) pendingAttentionTurnsLocked() []schema.Turn {
+	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
-		return nil, err
+		return nil
 	}
-	return fold.pendingIDs(), nil
+	return fold.pendingTurns()
+}
+
+// attentionTurnCount counts the turns that carry an attention identity.
+func attentionTurnCount(history []schema.Turn) int {
+	count := 0
+	for _, turn := range history {
+		if turn.AttentionID != "" {
+			count++
+		}
+	}
+	return count
+}
+
+// withAttentionTurns appends to history the attention turns it does not hold.
+// It is the lock-free form of retainDelegateAttentionTurn's append, for a
+// caller that already holds s.mu and owns the slice.
+func withAttentionTurns(history, attention []schema.Turn) []schema.Turn {
+	for _, turn := range attention {
+		if !slices.ContainsFunc(history, func(held schema.Turn) bool { return held.AttentionID == turn.AttentionID }) {
+			history = append(history, turn)
+		}
+	}
+	return history
 }
 
 // acceptDelegateAttention records the exact reserved generation in the child
@@ -1424,11 +1476,7 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	// and idempotent — a still-resident turn is replaced in place (no
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.
-	for _, id := range ids {
-		durable, ok := fold.turns[id]
-		if !ok {
-			continue
-		}
+	for _, durable := range fold.pendingTurns() {
 		if err := s.retainDelegateAttentionTurn(durable); err != nil {
 			s.attentionMu.Unlock()
 			return err
