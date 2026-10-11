@@ -69,10 +69,8 @@ func NeedsResponse(state string, askPending bool) bool {
 	return state == "awaiting" && !askPending
 }
 
-// StateWord returns the unified display word for a normalized attention
-// state — one word, shared verbatim by the web (cmd/evener-hub's stateLabel)
-// and the TUI (displayWord) so the two surfaces can never independently
-// drift on vocabulary (Track A §1). askPending selects the word for awaiting:
+// StateWord returns the display word for a normalized attention state, used by
+// the TUI (displayWord). askPending selects the word for awaiting:
 // "Question waiting" for a pending question, "Needs you" for a turn that
 // ended on needs_response (#4093). It is ignored for every other state.
 func StateWord(state string, askPending bool) string {

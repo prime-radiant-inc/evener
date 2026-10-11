@@ -81,7 +81,7 @@ terminal `communicate(end_turn:true)` callbacks.
 5. If the filtered watch remains active after the assertions, send a
    cleanup turn through `POST /api/sessions/local:$SID/send`
    (the legacy `/s/<id>/<action>` form-POSTs are gone —
-   `cmd/evener-hub/web_workspace.go:20-22`, routes at
+   `handleSession` in `cmd/evener-hub/web_workspace.go`, routes at
    `cmd/evener-hub/web_api_tree.go:1399,1415`):
 
    ```json

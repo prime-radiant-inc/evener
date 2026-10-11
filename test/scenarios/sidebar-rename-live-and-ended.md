@@ -135,15 +135,13 @@ optimistic overlay.
 - **`GET /api/sessions/local:<SID>`'s `title` no longer comes from the daemon
   for a local session.** The old text warned that the detail endpoint sourced
   the title from the live daemon's `ReadThread` and would show the bare session
-  id after a rename. That path is now taken only for **non-local** refs
-  (`web_workspace.go:91-105`); a local session — live or ended — gets
-  `liveTitle` / `pastTitle`, which re-read the on-disk `meta.json` fresh
-  (`web_workspace.go:112,175`, `web_format.go:132-157`). So the detail object's
+  id after a rename. That path is now taken only for **non-local** refs; a local session — live or ended — gets
+  `liveTitle` / `pastTitle`, which re-read the on-disk `meta.json` fresh. So the detail object's
   `title` *should* now agree with the AppWire navigation resource and the meta file. It is worth a
   spare glance during step 3: if it still reports a short id after a confirmed
   rename, that is a live regression worth its own kata. The remaining honest
   fallback is `hubcore.ShortID` when the past index has never seen the id at
-  all (`web_format.go:132-138`) — a brand-new live session can legitimately be
+  all — a brand-new live session can legitimately be
   in that window.
 - **Compaction on a short transcript can finish before your first poll.** Don't
   read "already done at poll #1" as "didn't run"; confirm via the

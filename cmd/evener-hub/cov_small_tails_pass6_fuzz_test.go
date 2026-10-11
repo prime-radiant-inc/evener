@@ -131,7 +131,6 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		_, _ = resolveGitHead(context.Background(), root)
 		gitCommand = oldGit
 
-		_ = workspaceDataFromAppThread(appwire.Thread{ID: "x", Source: "local", Preview: "preview", Status: appwire.ThreadStatus{Type: ""}})
 		_ = json.RawMessage(nil)
 		_ = variant
 	})
