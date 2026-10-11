@@ -104,3 +104,17 @@ func TestEnvFloorJudgesGoEnvFileReadabilityAtEachSpawn(t *testing.T) {
 	write()
 	healthy("after repair")
 }
+
+// A go env file hidden from the spawn is not probed for readability either:
+// the spawn never sees it, so an unreadable one there (a FIFO) must not turn
+// the spawn's GOENV off.
+func TestEnvFloorKeepsGoEnvOnForAnUnreadableHiddenFile(t *testing.T) {
+	_, _, envFile, policyFor := goEnvLeakFixture(t)
+	if err := syscall.Mkfifo(envFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=" + envFile}, policyFor(filepath.Dir(envFile)), "/tmp/evener-session-xyz")
+	if v, _ := envValue(out, "GOENV"); v == "off" {
+		t.Errorf("a hidden go env file must not turn GOENV off")
+	}
+}

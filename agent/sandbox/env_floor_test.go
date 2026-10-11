@@ -968,3 +968,18 @@ func TestEnvFloorJudgesTheGoEnvFileItOpened(t *testing.T) {
 		t.Errorf("a go env file swapped to a masked target before the open must not be read, got GOPATH=%q", v)
 	}
 }
+
+// A relative GOENV resolves against the spawn's own directory, which the floor
+// does not know, so the floor never reads it from its own: a file there with
+// the same relative name must not lend the spawn its GOPATH.
+func TestEnvFloorNeverReadsARelativeGoEnvFileFromItsOwnDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.env"), []byte("GOPATH=/unrelated/value\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: "go.env"}}
+	if v := flooredGoPath(policy, "go.env"); strings.Contains(v, "/unrelated/value") {
+		t.Errorf("a relative go env file must not be read from the floor's own directory, got GOPATH=%q", v)
+	}
+}

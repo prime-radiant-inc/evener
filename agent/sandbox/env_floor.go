@@ -57,7 +57,7 @@ var floorPrefixDrops = []string{
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	out := make([]string, 0, len(env)+4)
 	redirected, pinned := redirectedCacheVars(env, policy)
-	goEnvOff := spawnGoEnvFileRefused(env, policy.resolveHost.OS)
+	goEnvOff := spawnGoEnvFileRefused(env, policy)
 	for _, kv := range env {
 		name, val, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -312,8 +312,8 @@ func envVars(env []string) map[string]string {
 // spawnGoEnvFileRefused reports whether the go env file a spawn's go would read
 // exists now but cannot be read as a small regular file (a FIFO, a device, an
 // oversized file), the way the probe reads it, or is named by a relative path.
-func spawnGoEnvFileRefused(env []string, goos string) bool {
-	file := goEnvFileFor(envVars(env), goos)
+func spawnGoEnvFileRefused(env []string, policy ResolvedPolicy) bool {
+	file := goEnvFileFor(envVars(env), policy.resolveHost.OS)
 	if file == "" {
 		return false
 	}
@@ -321,6 +321,10 @@ func spawnGoEnvFileRefused(env []string, goos string) bool {
 	// floor does not know, so it cannot be checked and is refused.
 	if !filepath.IsAbs(file) {
 		return true
+	}
+	// One hidden from the spawn is never read: the spawn's go does not see it.
+	if goEnvFileHidden(policy, file) {
+		return false
 	}
 	_, err := readGoEnvFileSettings(hostProbeSystem{}, file)
 	return err != nil && !errors.Is(err, fs.ErrNotExist)
@@ -335,7 +339,9 @@ func spawnGoEnvFileRefused(env []string, goos string) bool {
 // to a masked file between the check and the open is refused, not read into
 // the spawn's environment.
 func currentGoEnvSettings(policy ResolvedPolicy, path string) (map[string]string, bool) {
-	if goEnvFileHidden(policy, path) {
+	// A relative path resolves against the spawn's directory, which the floor
+	// does not know; read from the floor's own, it would name another file.
+	if !filepath.IsAbs(path) || goEnvFileHidden(policy, path) {
 		return nil, false
 	}
 	beforeGoEnvFileOpen(path)
