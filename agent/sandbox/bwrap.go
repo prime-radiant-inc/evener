@@ -212,9 +212,10 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// A .git inside a carve-out stays masked (see ResolvedPolicy.Masks). bwrap
 	// cannot mask by pattern, so the existing ones are found at each spawn and
 	// masked after every carve-out bind, so no later bind covers them; one
-	// cloned in mid-command is masked from the next spawn on. A root too large
-	// to inspect within gitWalkBudget is not re-granted at all, so it stays
-	// masked rather than exposing an unseen .git.
+	// cloned in mid-command is masked from the next spawn on. A root still
+	// under a mask that is too large to inspect within gitWalkBudget is not
+	// re-granted at all, so it stays masked rather than exposing an unseen
+	// .git.
 	//
 	// The restricted namespace starts empty, so a root named through a symlink
 	// gets that spelling recreated as a link to the real path: skill discovery
@@ -237,25 +238,29 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		}
 		ok, seen := granted[resolved]
 		if !seen {
-			gitDirs, complete := gitDirsUnder(resolved, gitWalkBudget)
-			ok = complete
-			granted[resolved] = ok
-			if ok {
-				add("--ro-bind", resolved, resolved)
-				// Only a carve-out still under a mask keeps its .git masked:
-				// with the user's own removal of Evener's config mask, its
-				// .git is as readable as the file tools say (Masks).
-				if rp.MasksWrite(r) || rp.MasksWrite(resolved) {
+			// Only a carve-out still under a mask keeps its .git masked, so
+			// only then must the walk vouch for it: with the user's own
+			// removal of Evener's config mask, its .git is as readable as the
+			// file tools say (Masks), and the tree is bound as it is.
+			ok = true
+			if rp.MasksWrite(r) || rp.MasksWrite(resolved) {
+				var gitDirs []string
+				gitDirs, ok = gitDirsUnder(resolved, gitWalkBudget)
+				if ok {
 					carvedGitDirs = append(carvedGitDirs, gitDirs...)
 				}
 			}
+			granted[resolved] = ok
+			if ok {
+				add("--ro-bind", resolved, resolved)
+			}
 		}
 		// The host's link is missing where the namespace has no host view:
-		// everywhere in restricted mode, and under the private /tmp in the
-		// read-anywhere modes.
+		// everywhere in restricted mode, and under the private /tmp and the
+		// minimal /dev (which hides /dev/shm) in the read-anywhere modes.
 		// A spelling already exposed by an earlier bind (a read root, or a
 		// cwd or scratch tree re-bound under /tmp) needs no link.
-		hidden := sp.Read != ReadAnywhere || pathUnder(r, "/tmp")
+		hidden := sp.Read != ReadAnywhere || pathUnder(r, "/tmp") || pathUnder(r, "/dev")
 		exposed := isUnderAnyRoot(r, sp.ReadRoots) || isUnderAnyRoot(r, slices.Collect(maps.Keys(reboundRO))) ||
 			(sessionTmp != "" && pathUnder(r, sessionTmp))
 		if ok && r != resolved && hidden && !exposed {

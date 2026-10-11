@@ -753,3 +753,64 @@ func TestBuildBwrapArgvSkipsALinkForASpellingTheCwdBindExposes(t *testing.T) {
 		t.Errorf("a spelling the cwd bind already exposes must get no link: %v", args)
 	}
 }
+
+// With Evener's config mask removed, nothing masks the carve-out's .git, so a
+// tree the walk cannot vouch for (here a .git linked outside it) is still
+// bound: the walk only decides what to mask, and there is nothing to mask.
+func TestBuildBwrapArgvBindsAnUninspectableCarveOutWithoutTheConfigMask(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "mine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(skills, "mine", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--ro-bind", skills, skills) {
+		t.Errorf("an unmasked carve-out must be bound even when its walk is incomplete: %v", args)
+	}
+}
+
+// The minimal --dev hides /dev/shm as the private tmpfs hides /tmp, so a
+// carve-out spelled there through a link is recreated in read-anywhere modes.
+func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderDevShm(t *testing.T) {
+	xdg, err := os.MkdirTemp("/dev/shm", "evener-xdg-")
+	if err != nil {
+		t.Skipf("no writable /dev/shm: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(xdg) })
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(xdg, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(xdg, "evener", "skills")
+	facts := bwrapFacts(t.TempDir())
+	facts.EvenerConfigRoot = filepath.Join(xdg, "evener")
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Fatalf("fixture: the skills dir is not carved out here: %v", rp.UnmaskedRoots)
+	}
+	resolved, _ := filepath.EvalSymlinks(skills)
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--symlink", resolved, skills) {
+		t.Errorf("a carve-out spelled under /dev/shm must be recreated as a link in read-anywhere modes: %v", args)
+	}
+}
