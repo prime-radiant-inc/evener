@@ -33,6 +33,7 @@ import {
 import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
 import {
   Button,
+  CodeBlock,
   CollectionEditor,
   FormRow,
   Input,
@@ -57,7 +58,6 @@ const CLASS = {
   pickerAddField: requireClass(styles.pickerAddField, "advancedOptions.module.css", "pickerAddField"),
   toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
   panel: requireClass(styles.panel, "advancedOptions.module.css", "panel"),
-  resolved: requireClass(styles.resolved, "advancedOptions.module.css", "resolved"),
   error: requireClass(styles.error, "advancedOptions.module.css", "error"),
 };
 
@@ -252,9 +252,9 @@ export function AdvancedOptions({
             </p>
           )}
           {resolved !== null && (
-            // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the <pre> code dump; <pre> itself takes no aria-label
+            // biome-ignore lint/a11y/useSemanticElements: a labeled group is the accessible-name host for the CodeBlock dump, which takes no aria-label of its own
             <div role="group" aria-label="Resolved config">
-              <pre className={CLASS.resolved}>{resolved}</pre>
+              <CodeBlock text={resolved} language="json" fold={false} />
             </div>
           )}
         </div>
