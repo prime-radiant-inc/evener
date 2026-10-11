@@ -177,7 +177,7 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map
 	}
 	return appwire.SearchResult{
 		ID:              le.SessionID,
-		Title:           liveTitle(le.SessionID, le, cfg.Past),
+		Title:           liveTitle(le.SessionID, cfg.Past),
 		State:           hubcore.NormalizeState(le.Status),
 		Project:         filepath.Base(le.WorkingDir),
 		Age:             "now",
@@ -191,7 +191,7 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map
 // liveTitle prefers the generated short session name from metadata, but avoids
 // using the full initial prompt as the search result title. If the past index
 // does not have the session yet, fall back to a compact session ID.
-func liveTitle(id string, le hubcore.LiveEntry, past *hubcore.PastIndex) string {
+func liveTitle(id string, past *hubcore.PastIndex) string {
 	if past != nil {
 		if pe, ok := past.Find(id); ok {
 			return pastTitle(pe)

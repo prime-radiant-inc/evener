@@ -29,7 +29,7 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 			_ = sessionTitleFromMeta(meta)
 			_ = searchPastTitle(hubcore.PastEntry{Meta: meta})
 		}
-		_ = liveTitle("0123456789", hubcore.LiveEntry{}, nil)
+		_ = liveTitle("0123456789", nil)
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "session", Source: "remote", Name: title,
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},

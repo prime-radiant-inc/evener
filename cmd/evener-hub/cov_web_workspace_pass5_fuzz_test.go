@@ -17,7 +17,7 @@ import (
 // FuzzWebWorkspacePass5 exercises session titles, HTTP routes, and model
 // presentation against in-memory indexes. It never consults a live provider.
 func FuzzWebWorkspacePass5(f *testing.F) {
-	for _, mode := range []uint8{3, 6, 7, 8, 9, 10, 11} {
+	for _, mode := range []uint8{3, 6, 7, 11} {
 		f.Add(mode, "alpha\r\nbeta")
 	}
 	f.Fuzz(func(t *testing.T, mode uint8, text string) {

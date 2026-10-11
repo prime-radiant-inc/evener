@@ -83,7 +83,7 @@ func FuzzSessionTreePass3(f *testing.F) {
 			pe := hubcore.PastEntry{StateDir: dir, Meta: meta}
 			_ = pastTitle(pe)
 			_ = searchPastTitle(pe)
-			_ = liveTitle(meta.ID, hubcore.LiveEntry{}, nil)
+			_ = liveTitle(meta.ID, nil)
 		}
 	})
 }
