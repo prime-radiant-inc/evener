@@ -55,7 +55,6 @@ import { SettingsModelCatalog } from "./SettingsModelCatalog";
 const CLASS = {
   defaultHint: requireClass(styles.defaultHint, "fields.module.css", "defaultHint"),
   radioBlock: requireClass(styles.radioBlock, "fields.module.css", "radioBlock"),
-  radioHelp: requireClass(styles.radioHelp, "fields.module.css", "radioHelp"),
   compositeControls: requireClass(styles.compositeControls, "fields.module.css", "compositeControls"),
   modelBlock: requireClass(styles.modelBlock, "fields.module.css", "modelBlock"),
   modelLabel: requireClass(styles.modelLabel, "fields.module.css", "modelLabel"),
@@ -205,9 +204,14 @@ export function ScalarField({
     ];
     return (
       <div className={CLASS.radioBlock}>
-        <RadioGroup label={option.label} value={value} onChange={onChange} options={options} />
+        <RadioGroup
+          label={option.label}
+          value={value}
+          onChange={onChange}
+          options={options}
+          description={option.description || undefined}
+        />
         <DefaultHint text={globalDefaultHint} />
-        {option.description && <p className={CLASS.radioHelp}>{option.description}</p>}
       </div>
     );
   }
@@ -350,8 +354,13 @@ export function PromptCompositeField({
 
   return (
     <div className={CLASS.radioBlock}>
-      <RadioGroup label={option.label} value={modeValue} onChange={onModeChange} options={modeOptions} />
-      {option.description && <p className={CLASS.radioHelp}>{option.description}</p>}
+      <RadioGroup
+        label={option.label}
+        value={modeValue}
+        onChange={onModeChange}
+        options={modeOptions}
+        description={option.description || undefined}
+      />
       <div className={CLASS.compositeControls}>
         {/* The same picker the scalar path kind renders: this sub-field's wire
             field IS systemPromptFile/systemPromptAppendFile, a file-kind path

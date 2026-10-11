@@ -10,12 +10,6 @@
   gap: var(--space-1);
 }
 
-.radioHelp {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
 .compositeControls {
   display: flex;
   flex-direction: column;

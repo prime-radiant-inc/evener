@@ -77,15 +77,11 @@
   border-top: 1px solid var(--edge);
 }
 
-/* Indented to line up under the switch label: the 32px track plus the
- * wrapper's --space-2 gap (the 899px media query below widens the hit target
- * to 44px and adjusts this to match). */
 .metadata {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 2px;
-  padding-left: calc(32px + var(--space-2));
 }
 
 .source,
@@ -141,9 +137,5 @@
 @media (max-width: 899px) {
   .desktopSurface {
     display: none;
-  }
-
-  .metadata {
-    padding-left: calc(44px + var(--space-2));
   }
 }
