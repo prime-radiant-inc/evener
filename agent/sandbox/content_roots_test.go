@@ -538,6 +538,111 @@ func TestEvenerContentRootsBeforeTheConfigDirExistsUnderASymlinkedHome(t *testin
 	}
 }
 
+// On a case-insensitive volume (macOS's default), denylisting the config root
+// under another case is the same directory, so nothing is carved from it.
+func TestEvenerContentRootsHonourACaseVariantConfigMask(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG", "EVENER")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{".CONFIG/EVENER"}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("a case-variant denylist entry for the config root must keep its content masked, got %v", rp.UnmaskedRoots)
+	}
+}
+
+// On a case-insensitive volume, a denylist entry naming a content root (or a
+// directory inside one) under another case is the same directory, so that
+// root is not carved out and stays masked.
+func TestEvenerContentRootsHonourACaseVariantMaskOfAContentRoot(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "mine", "private"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "evener", "SKILLS")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	for _, entry := range []string{".config/evener/SKILLS", ".config/evener/skills/MINE/PRIVATE"} {
+		rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{entry}}, host, root)
+		if slices.Contains(rp.UnmaskedRoots, skills) {
+			t.Errorf("denylisting %s must keep the skills dir masked, got %v", entry, rp.UnmaskedRoots)
+		}
+		if !rp.Masks(filepath.Join(skills, "mine", "private", "notes.md")) {
+			t.Errorf("denylisting %s: the denied directory must stay masked", entry)
+		}
+	}
+}
+
+// Letter case is ignored only where resolution saw a case-insensitive volume.
+// On a case-sensitive one, a carve-out swapped after resolution for a link to a
+// separate directory spelled in another case is a different place, refused.
+func TestCarveOutRefusesACaseVariantRedirectOnACaseSensitiveVolume(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG")); err == nil {
+		t.Skip("this volume is case-insensitive")
+	}
+	other := filepath.Join(home, ".config", "evener", "plugins", "CACHE")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if err := os.Rename(cache, cache+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, cache); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(cache) || rp.CarveOutResolvesTo(cache, other) {
+		t.Errorf("a case-variant directory on a case-sensitive volume must not pass for the carve-out")
+	}
+}
+
+// An explicit denylist entry for the config root spelled in another case, made
+// while the directory did not exist, is still the user's boundary once the
+// directory is created: it is never mistaken for Evener's own config mask.
+func TestCarveOutHonoursACaseVariantConfigMaskCreatedLater(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".CONFIG")); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{".CONFIG/EVENER"}}, host, root)
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rp.UnmaskedRoots, skills) && rp.CarveOutIntact(skills) {
+		t.Errorf("an explicit case-variant config mask must keep the skills dir masked once it exists")
+	}
+}
+
 // Denylisting the real location of a symlinked config root that does not
 // exist yet is the user's boundary too: content installed there later stays
 // masked under both spellings.
@@ -587,5 +692,176 @@ func TestEvenerContentRootsKeepTheFirmlinkSpelling(t *testing.T) {
 	}
 	if !rp.Masks(filepath.Join(alias, ".config", "evener", "hub.toml")) {
 		t.Errorf("the rest of the config must stay masked under the firmlink spelling")
+	}
+}
+
+// A mask reached through an ancestor made a symlink after resolution (~/.docker
+// linked to a directory inside the skills dir, so ~/.docker/config.json lands
+// there) refuses the carve-out too, until the link goes.
+func TestCarveOutIsUnsafeOnceAMasksAncestorPointsIntoIt(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	mine := filepath.Join(skills, "mine")
+	if err := os.MkdirAll(mine, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mine, "config.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !slices.Contains(rp.MaskedPaths, filepath.Join(home, ".docker", "config.json")) {
+		t.Skipf("~/.docker/config.json is not in the default denylist: %v", rp.MaskedPaths)
+	}
+	link := filepath.Join(home, ".docker")
+	if err := os.Symlink(mine, link); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutIntact(skills) || !rp.Masks(filepath.Join(mine, "config.json")) {
+		t.Errorf("a mask reached through a new ancestor link into the carve-out must refuse it")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !rp.CarveOutIntact(skills) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
+	}
+}
+
+// Adding the session scratch re-filters the grants, but a mask pointed into a
+// carve-out at that moment is a transient condition the file tools deny at
+// access: it does not drop the carve-out for the rest of the session.
+func TestSessionScratchKeepsACarveOutAMaskTransientlyPointsInto(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	keys := filepath.Join(skills, "mine", "ssh")
+	if err := os.MkdirAll(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, host, root)
+	link := filepath.Join(home, ".ssh")
+	if err := os.Symlink(keys, link); err != nil {
+		t.Fatal(err)
+	}
+	withScratch := rp.WithSessionScratch(filepath.Join(clean(t.TempDir()), "scratch"))
+	if !slices.Contains(withScratch.FileTool.ReadRoots, skills) {
+		t.Errorf("a transient overlap must not drop the carve-out's read root: %v", withScratch.FileTool.ReadRoots)
+	}
+	if withScratch.CarveOutIntact(skills) {
+		t.Errorf("while the mask points into it, the carve-out must still be refused at access")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if !withScratch.CarveOutIntact(skills) {
+		t.Errorf("the carve-out must be granted again once the link is gone")
+	}
+}
+
+// On a normalization-insensitive volume (APFS), a denylist entry spelling the
+// home path in another Unicode normalization names the same directory, so a
+// skills dir it masks that is created after resolution stays masked.
+func TestCarveOutHonoursANormalizationVariantMaskCreatedLater(t *testing.T) {
+	root := mainRepo(t)
+	home := filepath.Join(clean(t.TempDir()), "café")
+	if err := os.MkdirAll(filepath.Join(home, ".config", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nfdHome := filepath.Join(filepath.Dir(home), "café")
+	if _, err := os.Stat(nfdHome); err != nil {
+		t.Skip("this volume is normalization-sensitive")
+	}
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{skills}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{filepath.Join(nfdHome, ".config", "evener", "skills")}}, host, root)
+	if err := os.MkdirAll(skills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(rp.UnmaskedRoots, skills) && rp.CarveOutIntact(skills) {
+		t.Errorf("a normalization-variant mask of the skills dir must keep it masked once it exists")
+	}
+}
+
+// A reported location is spelled on disk without following symlinks: a path
+// that is (now) a link to the carve-out is not the carve-out. Otherwise a
+// directory opened elsewhere, renamed and replaced by a link to the carve-out,
+// would pass when its reported path is checked.
+func TestCarveOutRefusesALocationReachedThroughALink(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := bwrapHost()
+	host.Home = home
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	if !rp.CarveOutResolvesTo(cache, cache) {
+		t.Fatalf("the intact carve-out must be accepted")
+	}
+	elsewhere := filepath.Join(home, "elsewhere")
+	if err := os.Symlink(cache, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if rp.CarveOutResolvesTo(cache, elsewhere) {
+		t.Errorf("a reported location that is a link to the carve-out must not pass for it")
+	}
+}
+
+// A path named through the macOS data-volume firmlink spelling is masked as
+// its plain spelling is: .git inside a carve-out and the rest of the config
+// stay masked under /System/Volumes/Data too.
+func TestMasksJudgeTheFirmlinkSpellingAsThePlainOne(t *testing.T) {
+	root := mainRepo(t)
+	home := clean(t.TempDir())
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host := HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/fixture/sandbox-exec"}
+	host.EvenerContentRoots = []string{cache}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, root)
+	alias := dataVolumePrefix + cache
+	if !rp.Masks(filepath.Join(alias, "p", ".git", "config")) {
+		t.Errorf(".git inside the carve-out must stay masked under the firmlink spelling")
+	}
+	if !rp.Masks(dataVolumePrefix + filepath.Join(home, ".config", "evener", "hub.toml")) {
+		t.Errorf("the rest of the config must stay masked under the firmlink spelling")
+	}
+	if rp.Masks(filepath.Join(alias, "p", "SKILL.md")) {
+		t.Errorf("content must stay readable under the firmlink spelling")
+	}
+}
+
+// An explicit denylist entry spelling the config root as it is stored on disk,
+// while home is configured in another case and the config directory does not
+// exist yet, is still the user's boundary: nothing is carved from it.
+func TestEvenerContentRootsHonourAStoredSpellingConfigMaskBeforeTheDirExists(t *testing.T) {
+	root := mainRepo(t)
+	parent := clean(t.TempDir())
+	stored := filepath.Join(parent, "casehome")
+	if err := os.MkdirAll(stored, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spelled := filepath.Join(parent, "CASEHOME")
+	if _, err := os.Stat(spelled); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	host := bwrapHost()
+	host.Home = spelled
+	host.EvenerContentRoots = []string{filepath.Join(spelled, ".config", "evener", "skills")}
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true), DenylistAdd: []string{filepath.Join(stored, ".config", "evener")}}, host, root)
+	if len(rp.UnmaskedRoots) != 0 {
+		t.Errorf("an explicit stored-spelling config mask must keep content masked, got %v", rp.UnmaskedRoots)
 	}
 }

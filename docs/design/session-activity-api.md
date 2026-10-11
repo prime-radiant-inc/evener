@@ -248,6 +248,24 @@ reads with a paced yield between them. Source `issues` use the existing
 transient-error backoff even when the RPC returns a successful partial response.
 Unknown badge counts alone do not demand cold scans.
 
+Delegate rows also ride `evener/delegate/updated`. That frame gains the
+delegate's bounded `reportPreview`/`reportPreviewTruncated` and its logical
+owner (`logicalOwnerSessionId` — never `ownerSessionId`, which is always the
+physical root); the activity `SessionDelegate` row gains `projectionRevision`,
+and `SessionActivityContext` gains the per-response `reportPreview` capability,
+authored by the producing daemon (or the local agent projection for a retained
+session) and passed through the hub unchanged. A client applies a frame in place
+when the accepted context advertises the capability and is live, joining it with
+the projector's own rule (the greater revision chooses the snapshot fields while
+`latestActivityAt` is an independent maximum), and otherwise keeps reading
+`delegates` on the invalidation. It reads for a delegate it has not loaded (at
+most once per id, buffering that id's latest frame until a read admits the row),
+and clears its applied map, seen-unknown set and buffered frames per source
+epoch and on session replacement. The prose bound lives in one leaf package
+shared by the read and the projector so a push can never widen a row the read
+capped. Delegate membership is append-only within a source epoch, so no removal
+signal is needed.
+
 The shared TypeScript owner is `SessionActivityStore`, exported from
 `@evener/appwire-client`. It is framework-free. Its public surface is:
 

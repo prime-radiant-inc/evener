@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -150,6 +151,16 @@ type ResolvedPolicy struct {
 	// resolution resolved to (CarveOutResolvesTo holds it to that location).
 	carveOutAt map[string]string
 
+	// configMasks are the masked entries that stand for Evener's config mask,
+	// the only ones a carve-out may sit under.
+	configMasks []string
+
+	// maskResolvedAt and maskExistedAt record where each of MaskedPaths
+	// resolved (or would land) at resolution and whether it existed, so a
+	// mask redirected or created since is noticed.
+	maskResolvedAt map[string]string
+	maskExistedAt  map[string]bool
+
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
 	Git GitLayout
@@ -239,12 +250,22 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 // never need it. Every layer asks this one question, so the file tools, the
 // policy filters and the backends agree on what a mask hides.
 func (rp ResolvedPolicy) Masks(path string) bool {
+	return rp.masks(path, true)
+}
+
+// masks is Masks, with live false leaving out the live overlap check: a
+// grant (filterMasked) is a lasting decision that must not take in a
+// transient condition, which every access judges for itself.
+func (rp ResolvedPolicy) masks(path string, live bool) bool {
+	// The macOS data-volume firmlink spelling names the same file as the
+	// plain one, which is how masks and carve-outs are listed.
+	path = StripDataVolumeAlias(path)
 	if !isUnderAnyRoot(path, rp.MaskedPaths) {
 		return false
 	}
 	for _, root := range rp.UnmaskedRoots {
 		if pathUnder(path, root) {
-			return insideGitDir(path, root)
+			return insideGitDir(path, root) || (live && rp.maskOverlapsCarveOut(root))
 		}
 	}
 	return true
@@ -269,7 +290,7 @@ func isGitName(name string) bool { return strings.EqualFold(name, ".git") }
 // carve-outs (UnmaskedRoots) are read-only, so unlike Masks it makes no
 // exception for them.
 func (rp ResolvedPolicy) MasksWrite(path string) bool {
-	return isUnderAnyRoot(path, rp.MaskedPaths)
+	return isUnderAnyRoot(StripDataVolumeAlias(path), rp.MaskedPaths)
 }
 
 // FileToolEnforceable reports whether this OS has an in-process file-tool
@@ -458,6 +479,17 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveHost:   host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
+	rp.configMasks = configMasks
+	// The masks' state is recorded before admission judges them, so a mask
+	// that changes in between differs from this record and is judged again
+	// at access (maskOverlapsCarveOut), rather than becoming the baseline.
+	rp.maskResolvedAt = make(map[string]string, len(masked))
+	rp.maskExistedAt = make(map[string]bool, len(masked))
+	for _, m := range masked {
+		rp.maskResolvedAt[m] = resolveExistingPrefix(m)
+		_, err := os.Lstat(m)
+		rp.maskExistedAt[m] = err == nil
+	}
 	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
 		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree, host.OS == "darwin")
 
@@ -722,8 +754,14 @@ func withResolvedMasks(masked []string) []string {
 		if slices.Contains(defaultPseudoFSPaths, m) {
 			continue
 		}
-		if resolved := resolveExistingPrefix(m); resolved != m && !slices.Contains(out, resolved) {
-			out = append(out, resolved)
+		resolved := resolveExistingPrefix(m)
+		// The filesystem's own spelling too (another letter case or Unicode
+		// normalization than the configured path), which the kernel reports
+		// for an opened file and the carve-outs are pinned to.
+		for _, spelling := range []string{resolved, onDiskSpelling(resolved)} {
+			if spelling != m && !slices.Contains(out, spelling) {
+				out = append(out, spelling)
+			}
 		}
 	}
 	return out
@@ -737,7 +775,7 @@ func filterMasked(roots []string, rp ResolvedPolicy) []string {
 	}
 	out := roots[:0:0]
 	for _, r := range roots {
-		if !rp.Masks(r) {
+		if !rp.masks(r, false) {
 			out = append(out, r)
 		}
 	}
@@ -781,11 +819,75 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 	return append(slices.Clone(masked), cr), append(configMasks, cr)
 }
 
-// sameDir reports whether a and b name the same directory: the same spelling,
-// or the same symlink-resolved location (for one not created yet, where
-// creating it would land).
+// sameDir reports whether a and b name the same directory: by file identity,
+// since neither spelling nor resolved path tells on a case-insensitive volume
+// (~/.CONFIG/EVENER is ~/.config/evener), or, for one not created yet, by
+// where creating each would land, in the filesystem's own spelling of the
+// existing part.
 func sameDir(a, b string) bool {
-	return a == b || resolveExistingPrefix(a) == resolveExistingPrefix(b)
+	return a == b || sameFile(a, b) || resolveExistingPrefix(a) == resolveExistingPrefix(b) ||
+		onDiskSpelling(resolveExistingPrefix(a)) == onDiskSpelling(resolveExistingPrefix(b))
+}
+
+// sameFile reports whether a and b both exist and are the same file.
+func sameFile(a, b string) bool {
+	fa, aerr := os.Stat(a)
+	fb, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(fa, fb)
+}
+
+// underByIdentity reports whether p, or a directory above it, is the existing
+// directory dir (sameFile), so containment holds under any spelling of either.
+func underByIdentity(p, dir string) bool {
+	for {
+		if p == dir || sameFile(p, dir) {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
+}
+
+// overlapsMaskByIdentity reports whether any of masked, other than the entries
+// standing for Evener's config mask (configMasks, as resolution listed them),
+// is by file identity at, above or inside the directory at. Only those exact
+// entries are exempt: a user's entry naming the same directory in another
+// case is theirs, and wins.
+func overlapsMaskByIdentity(masked, configMasks []string, at string) bool {
+	return slices.ContainsFunc(masked, func(m string) bool {
+		if slices.Contains(configMasks, m) {
+			return false
+		}
+		// The mask (through any symlink: os.Stat follows it) at or above the
+		// directory, the mask's spelling inside it, or where it now resolves
+		// inside it.
+		return underByIdentity(at, m) || underByIdentity(m, at) || underByIdentity(resolveExistingPrefix(m), at)
+	})
+}
+
+// onDiskSpelling returns p as the filesystem stores it (diskSpelling: real
+// letter case and Unicode normalization, read without following symlinks, the
+// macOS data-volume firmlink spelling stripped), or, for a path not created
+// yet or running through a link, its nearest such ancestor so spelled with the
+// rest appended. Callers pass symlink-resolved paths; one that runs through a
+// link therefore never matches a pinned carve-out.
+func onDiskSpelling(p string) string {
+	p = filepath.Clean(p)
+	var rest []string
+	for {
+		if s, ok := diskSpelling(p); ok {
+			return StripDataVolumeAlias(filepath.Join(append([]string{s}, rest...)...))
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return StripDataVolumeAlias(filepath.Join(append([]string{p}, rest...)...))
+		}
+		rest = append([]string{filepath.Base(p)}, rest...)
+		p = parent
+	}
 }
 
 // unmaskedContentRoots admits the host's Evener content roots as read-only
@@ -830,6 +932,13 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			carveOutEscapes(resolved, root, masked) {
 			continue
 		}
+		// The checks above compare spellings; on a case-insensitive volume a
+		// mask spelled in another case (~/.config/evener/SKILLS) is the same
+		// directory, so overlap with any mask but Evener's config mask is also
+		// judged by file identity.
+		if overlapsMaskByIdentity(masked, configMasks, resolved) {
+			continue
+		}
 		// A mask that is itself a symlink into this root (~/.ssh pointing under
 		// the skills dir) would make its secrets readable through the carve-out.
 		if slices.ContainsFunc(masked, func(m string) bool {
@@ -839,17 +948,20 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			continue
 		}
 		// The root is exempt under its resolved spelling too, which is how the
-		// file tools see a directory they opened (its canonical path), and is
-		// held to this location (CarveOutResolvesTo), even one not created yet.
-		out = append(out, root, resolved)
-		at[root], at[resolved] = resolved, resolved
+		// file tools see a directory they opened (its canonical path), and
+		// under the filesystem's own spelling of it. Every spelling is held to
+		// that on-disk spelling (CarveOutResolvesTo compares exactly), even for
+		// a root not created yet.
+		disk := onDiskSpelling(resolved)
+		out = append(out, root, resolved, disk)
+		at[root], at[resolved], at[disk] = disk, disk, disk
 		// guardedHostRoots strips the macOS data-volume firmlink spelling
 		// (/System/Volumes/Data/Users/...), which names the same directory and
 		// which a configured XDG_CONFIG_HOME, and so a skill's path, may carry.
 		if darwin {
 			alias := firmlinkAlias(root)
 			out = append(out, alias)
-			at[alias] = resolved
+			at[alias] = disk
 		}
 	}
 	return dedupeRoots(out), at
@@ -870,10 +982,48 @@ func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	// A root is held to where it resolved at session start (or, not created
 	// yet, where creating it would land), so redirecting an enclosing
 	// directory later cannot move the grant.
-	// The macOS data-volume firmlink spelling names the same directory, and
-	// EvalSymlinks does not collapse it, so both sides compare stripped.
+	//
+	// These re-checks keep the grant correct when the files around it change;
+	// they are not a defence against another local process rearranging the
+	// user's home mid-session, which the threat model trusts
+	// (docs/sandboxing.md, "Threat model"). Both sides are compared exactly
+	// in the filesystem's own spelling (onDiskSpelling): a spelling from the
+	// environment in another letter case or Unicode normalization, or the
+	// macOS firmlink alias, names the same directory, while a different
+	// directory never shares its on-disk spelling.
 	at, ok := rp.carveOutAt[root]
-	return ok && StripDataVolumeAlias(resolved) == at
+	if !ok || onDiskSpelling(resolved) != at {
+		return false
+	}
+	return !rp.maskOverlapsCarveOut(root)
+}
+
+// maskOverlapsCarveOut reports whether a mask other than Evener's config mask
+// overlaps root's pinned location now, by file identity: a user's mask naming
+// it in another case (for a directory created after resolution), or a mask
+// whose own path or an ancestor was made a link after resolution so it
+// resolves into, onto or above the carve-out (~/.docker linked to a directory
+// inside the skills dir). It is asked at every carve-out open and by Masks for
+// every path inside one, so a read reaching the carve-out by another spelling
+// or anchor is caught too, and the carve-out comes back once the cause goes.
+//
+// Evener's own config-mask entries stay exempt even if their targets change
+// mid-session: only another local process could retarget them, and the threat
+// model trusts it (docs/sandboxing.md, "Threat model").
+//
+// Because it runs on every such check, only the masks that can have come to
+// overlap since admission (which judged every mask by identity) are judged
+// again: one that resolves somewhere other than at resolution, or one that has
+// come into or gone out of existence, such as a case- or normalization-variant
+// entry for a directory created since. A mask unchanged since admission still
+// does not overlap.
+func (rp ResolvedPolicy) maskOverlapsCarveOut(root string) bool {
+	at := rp.carveOutAt[root]
+	candidates := slices.DeleteFunc(slices.Clone(rp.MaskedPaths), func(m string) bool {
+		_, err := os.Lstat(m)
+		return err == nil == rp.maskExistedAt[m] && resolveExistingPrefix(m) == rp.maskResolvedAt[m]
+	})
+	return overlapsMaskByIdentity(candidates, rp.configMasks, at)
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the

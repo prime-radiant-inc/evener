@@ -68,6 +68,23 @@ boundary. The same structured scope and sandbox policy are revalidated before
 a stable delegate is restored, and a write-blocked delegate cannot relax that
 inherited floor for its own descendants.
 
+## Threat model
+
+The sandbox defends against the sandboxed session itself: a model, or anything
+it runs, that misbehaves or runs amok. Only sandboxed sessions are treated as
+even potentially hostile. Other local processes running as you are trusted:
+they could read `~/.ssh` directly anyway, so the sandbox does not try to stop
+them, and it does not treat a change they make to your files mid-session (a
+directory renamed, a symlink retargeted, a mount moved) as an attack.
+
+That bounds what the checks below defend. A sandboxed session cannot rearrange
+your home or Evener's config directory, because they are read-only or masked
+for it, so the re-checks at each open and spawn exist to keep the grants
+correct (a carve-out that moved stops being granted; one restored is granted
+again), not to win a race against another local process. A finding that needs
+an outside process to rearrange those directories at the right moment is out
+of scope.
+
 ## Independently confined memory
 
 The five [memory tools](tools/memory.md) use separate confined roots under the
@@ -358,7 +375,8 @@ token, in its installed copy's `.git/config`, and skills never need it. The
 carve-out never writes and never touches the pseudo-filesystem floor. It is cut
 only from Evener's own config mask, and a directory is left masked when it
 contains a masked path or sits under another one (so your own denylist entries,
-inside or above it, win), when a write root overlaps it (it would not stay
+inside or above it, win, under any spelling of the same directory, letter case
+included), when a write root overlaps it (it would not stay
 read-only), or when it resolves anywhere but its own place under Evener's config
 mask (a symlink into, or above, a masked directory). The file tools check that
 resolution again when they open the directory, against the directory actually
@@ -621,7 +639,7 @@ Three boundary edges are deliberately documented as open rather than claimed clo
   (path-based masking cannot see that two names share an inode). Nothing Evener
   installs creates one: plugin installs clone or copy file contents. A *write* through such a hardlink does not propagate to the original —
   the file tools write atomically via temp-plus-rename, which replaces the name with
-  a fresh inode. This read residual is out of the running-amok threat model.
+  a fresh inode. This read residual is out of the [threat model](#threat-model).
 - **On Linux, a protected surface pinned into existence stays on disk.** bubblewrap
   denies a not-yet-created config/hook surface by mounting over it, and the
   mountpoint is real, so an absent `config.worktree` or `gitdir` under a write root

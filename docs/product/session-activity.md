@@ -295,9 +295,48 @@ an observed summary so its counts can become known. A summary with
 `refreshPending` uses the same existing paced summary timer until established
 sources catch up; closing the last holder or going offline cancels that demand.
 
-Scoped activity consumers refresh only resources named by
+Scoped activity consumers refresh the resources named by
 `evener/thread/activity/changed`, honoring its logical owner and the selected
-session/subtree scope. Legacy job lifecycle, delegate-update and tree-update
+session/subtree scope. Delegate field changes are instead applied from the
+pushed `evener/delegate/updated` row when the owning source advertises the
+bounded report preview and is live (`SessionActivityContext.reportPreview` and
+`availability`): the store merges the frame into loaded rows by the delegate's
+logical owner. A frame patches a row only where the loaded row set proves its
+delegate id names one child; otherwise the store reads the collection, which
+bounds those reads to one per id and then one per strictly newer revision,
+because a frame that cannot be attributed may still become addressable. It reads
+for a delegate it has not loaded, for a delegate id that names more than one
+loaded row, and for one no final row set has yet proved unique, since a page the
+collection continues past can still serve that id for another child. It reads
+none of that while a fresh walk is in flight: that walk settles the frames
+it carries at its displayed boundary, so they do not restart it. A frame the
+buffer evicts before that is recovered by one read when the walk ends. It also
+reads on observe/paging/resync/reconnect, and when an epoch change retires its
+push state; a resync and a reconnect both turn the merge off until a refreshed
+live context confirms the source again, so a frame racing their re-reads is
+recovered by the invalidation read rather than merged and then cleared. A frame
+that arrives while a sibling announces the replacement merges
+under the announced epoch, and only a row a response served seeds the new epoch's
+ordering. A response that first reveals a replacement nobody announced queues one
+fresh read, because the clear retires the frames it had merged and that response
+alone cannot recount them. An epoch the ordering has left is retired, and so is
+an announcement another one replaces, so a
+response that still names either is late rather than news: it does not re-retire
+the ordering or force a read, and a delegates read settling while such an
+announcement stands clears it. A frame the loaded rows cannot be proved to own waits
+for the read whose row set is final, which places it on the row the id names,
+drops it when
+the id turns out to name two, and leaves it waiting while that read does not
+serve it. A source that
+does not advertise the capability, a retained context
+whose released runtime receives invalidations but no frames, or an invalidation
+that refreshes no other observed resource (the store observes none, the
+notification omits it, its only other demand is an explicit read nobody retries,
+or its read has permanently failed) keeps the
+invalidation read. A read that was carrying that capability can also fail for
+good, and the delegates it stood in for are read then.
+Delegate membership is append-only within a source epoch;
+jobs and watches are unchanged. Legacy job lifecycle and tree-update
 notifications remain available to other consumers but do not trigger these
 reads. The domain APIs and scoped invalidations form one contract; resync and
 reconnect still refresh observed demand.
@@ -626,7 +665,10 @@ subtree summary (for the Agents count) by explicit ref, so side-by-side panes
 retain independent counts while duplicate consumers of one ref and scope share
 the same owner. Agents, Jobs and Watches tabs observe their own
 session-scoped collection. A visible page boundary supplies further demand,
-while the shared store retains and retries an interrupted continuation. When a
+while the shared store retains and retries an interrupted continuation. The
+boundary control reports only a page it asked for: a background refresh of the
+collection changes neither its label nor its disabled state, so a refresh the
+user did not request presents nothing. When a
 collection's last observer leaves, the store drops that collection's read in
 flight and any demand queued or walking behind it, explicit loads included, so
 a store another holder keeps alive takes in no late page for a view that has
