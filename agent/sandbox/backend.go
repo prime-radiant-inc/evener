@@ -104,7 +104,7 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 		// Every place a write to w touches on the host, links on the way and
 		// where it lands, dangling links included.
 		places := physicalPlaces(w)
-		if insideABoundWriteRoot(rp, w) {
+		if insideABoundWriteRoot(rp, w, places) {
 			continue
 		}
 		holds := func(c string) bool {
@@ -124,18 +124,23 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 	return rp
 }
 
-// insideABoundWriteRoot reports whether w lands (physicalLanding, dangling
-// links included) inside another write root that binds cleanly: that bind
-// already reaches w (a missing packed-refs under a bound common dir), so
-// whatever the spawn creates there persists.
-func insideABoundWriteRoot(rp ResolvedPolicy, w string) bool {
-	lw := physicalLanding(w)
+// insideABoundWriteRoot reports whether every place a write to w touches
+// that the overlays could swallow lies inside another write root that binds
+// cleanly: w lands there (a missing packed-refs under a bound common dir), and
+// no link on its way sits in a cache root outside that bind (the bind reaches
+// a link's target, not the link a spawn could replace). Whatever the spawn
+// creates there then persists.
+func insideABoundWriteRoot(rp ResolvedPolicy, w string, places []string) bool {
+	links, landing := places[:len(places)-1], places[len(places)-1]
 	return slices.ContainsFunc(bwrapWriteRoots(rp), func(b string) bool {
 		if _, err := os.Stat(b); b == w || err != nil {
 			return false
 		}
 		lb := physicalLanding(b)
-		return lw == lb || pathUnder(lw, lb)
+		inside := func(l string) bool { return l == lb || pathUnder(l, lb) }
+		return inside(landing) && !slices.ContainsFunc(links, func(l string) bool {
+			return !inside(l) && slices.ContainsFunc(rp.CacheRoots, func(c string) bool { rc := physicalLanding(c); return l == rc || pathUnder(l, rc) })
+		})
 	})
 }
 

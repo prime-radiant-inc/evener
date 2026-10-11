@@ -423,3 +423,19 @@ func TestPrepareCacheRootsKeepsAnOverlayWhoseMissingWriteRootABindCovers(t *test
 		t.Errorf("a missing write root under a bound one must not drop the overlay: %v", got.CacheRoots)
 	}
 }
+
+// A dangling link inside a cache whose target lands in a bound write root is
+// still replaceable inside the overlay: the bind reaches its target, not the
+// link, so the cache holding the link is not overlaid.
+func TestPrepareCacheRootsDropsAnOverlayHoldingALinkIntoABoundWriteRoot(t *testing.T) {
+	cache, bound := t.TempDir(), t.TempDir()
+	library := filepath.Join(cache, "library")
+	if err := os.Symlink(filepath.Join(bound, "missing"), library); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Spawned.WriteRoots = []string{bound, library}
+	if got := prepareCacheRoots(rp); slices.Contains(got.CacheRoots, cache) {
+		t.Errorf("a cache holding a dangling link into a bound write root must not be overlaid: %v", got.CacheRoots)
+	}
+}
