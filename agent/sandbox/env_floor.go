@@ -56,7 +56,7 @@ var floorPrefixDrops = []string{
 // so no spawned process escapes the floor.
 func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	out := make([]string, 0, len(env)+4)
-	redirected := redirectedCacheVars(env, policy)
+	redirected, pinned := redirectedCacheVars(env, policy)
 	goEnvOff := spawnGoEnvFileRefused(env, policy.resolveHost.OS)
 	for _, kv := range env {
 		name, val, ok := strings.Cut(kv, "=")
@@ -84,6 +84,9 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 	// or a healthy one the spawn names instead, is read as usual.
 	if goEnvOff {
 		out = append(out, envvars.GoEnv.Assignment("off"))
+	}
+	for name, value := range pinned {
+		out = append(out, name+"="+value)
 	}
 	out = applyToolchainPath(out, policy.ToolchainBinDir)
 	out = ApplySessionScratchEnv(out, sessionScratch)
@@ -120,8 +123,13 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 // so `go install` output in the scratch GOPATH's bin runs by its path: a
 // session-writable directory on PATH would let anything the model writes there
 // shadow the commands every spawn site runs, hooks included.
-func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
+//
+// The second result pins a served GOMODCACHE that go would otherwise derive
+// from a redirected GOPATH: without the pin the spawn's go would put its
+// module cache in the scratch GOPATH and lose the warm one it is served.
+func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, map[string]string) {
 	out := map[string]bool{}
+	pins := map[string]string{}
 	switch policy.CacheStrategy {
 	case CacheSessionPrivate:
 		for _, name := range []string{envvars.GoCache.Name, envvars.GoModCache.Name, envvars.GoPath.Name, "npm_config_cache", envvars.CargoHome.Name} {
@@ -139,18 +147,25 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 				out[name] = true
 			}
 		}
+		if out[envvars.GoPath.Name] && !out[envvars.GoModCache.Name] && filepath.IsAbs(dirs[envvars.GoModCache.Name]) {
+			if _, set := envVars(env)[envvars.GoModCache.Name]; !set {
+				pins[envvars.GoModCache.Name] = dirs[envvars.GoModCache.Name]
+			}
+		}
 	}
-	return out
+	return out, pins
 }
 
-// overlayServes reports whether the overlay covers writes to dir: dir lies under
-// an existing cache root by spelling, can be a directory, and its real destination
-// (following any symlink on the way, existing or not yet created) still lies
-// under one, so a link from a served root into the worktree does not count.
+// overlayServes reports whether the overlay covers writes to dir: dir can be a
+// directory, and its real destination (following any symlink on the way,
+// existing or not yet created) lies under a root bwrap overlays at this spawn.
+// It is judged by real location only, so a spelling through another path to
+// the same storage is served, and a link from a served root into the worktree
+// is not.
 func overlayServes(policy ResolvedPolicy, dir string) bool {
 	// Only a root bwrap overlays at this spawn serves (liveCacheRoots).
 	roots := liveCacheRoots(policy)
-	if !isUnderAnyRoot(dir, roots) || !canBeDirectory(dir) {
+	if !canBeDirectory(dir) {
 		return false
 	}
 	dest := resolveExistingPrefix(dir)

@@ -610,6 +610,39 @@ func TestEnvFloorRedirectsAGoCacheHoldingAWritableRoot(t *testing.T) {
 	if v, _ := envValue(out, "GOPATH"); !strings.HasPrefix(v, tmp+"/") {
 		t.Errorf("a GOPATH whose pkg holds a writable root must get the scratch first, got %q", v)
 	}
+	// The module cache is still served where it was; go must not derive a
+	// new, empty one from the scratch GOPATH.
+	if v, _ := envValue(out, "GOMODCACHE"); v != filepath.Join(home, "go", "pkg", "mod") {
+		t.Errorf("a served GOMODCACHE must stay where it was when GOPATH moves, got %q", v)
+	}
+}
+
+// A Go cache spelled through a different path to the same storage as an
+// overlaid root (GOMODCACHE=/ssd/go/pkg/mod with $HOME/go linked to /ssd/go)
+// is served by that overlay and left alone.
+func TestEnvFloorServesACacheSpelledThroughAnAlias(t *testing.T) {
+	home := servedHome(t)
+	ssd := filepath.Join(t.TempDir(), "go")
+	if err := os.MkdirAll(filepath.Join(ssd, "pkg", "mod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(home, "go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(ssd, filepath.Join(home, "go")); err != nil {
+		t.Fatal(err)
+	}
+	modcache := filepath.Join(ssd, "pkg", "mod")
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	out := ApplyEnvFloor([]string{"HOME=" + home, "GOENV=off", "GOMODCACHE=" + modcache}, rp, tmp)
+	if v, _ := envValue(out, "GOMODCACHE"); v != modcache {
+		t.Errorf("a GOMODCACHE the overlay serves under another spelling must be left alone, got %q", v)
+	}
 }
 
 // A relative GOENV resolves against the spawn's own directory, which the floor
