@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // The human partner's hold, given early enough that every compaction folds it.
@@ -1256,5 +1257,53 @@ func TestForceCompact_SteeredSummaryFitsASmallWindow(t *testing.T) {
 	cm.ForceCompact(context.Background(), &history, instructions, noopEmit)
 	if history[0].Kind != schema.TurnSummary {
 		t.Fatalf("history starts with a %s, want a steered summary that fit the window", history[0].Kind)
+	}
+}
+
+// A model's input cap counts as well as its window: on an 8,192-token window
+// with a 4,096-token input cap, the summary request stays under the cap.
+func TestForceCompact_SummaryFitsAnInputCap(t *testing.T) {
+	window, maxInput := 8192, 4096
+	prof := provider.FromResolved(registry.Resolved{Instance: "openai", ModelID: "capped", WireID: "capped",
+		Caps: registry.Caps{ContextWindow: &window, MaxInputTokens: &maxInput}}, nil)
+	client := llm.NewClient()
+	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		if len(req.Messages[0].Text())/4+llm.SafetyReserveTokens(maxInput) > maxInput {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "max input exceeded", nil, nil)
+		}
+		return llm.Response{Message: llm.Assistant(emptySummaryReply)}, nil
+	}})
+	cm := NewManager(prof, client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := partnerFloodHistory(20, 1500, -1) // enough to fill the full budget
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want a summary under the input cap", history[0].Kind)
+	}
+}
+
+// An instruction longer than the old 250-byte overlap but within the 400-byte
+// one still reaches a summarizer whole across a part boundary.
+func TestForceCompact_LongHoldAcrossAPartBoundaryReachesTheSummarizer(t *testing.T) {
+	const window = 2048
+	var all strings.Builder
+	client := llm.NewClient()
+	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		text := req.Messages[0].Text()
+		if len(text)/4+llm.SafetyReserveTokens(window) >= window {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
+		}
+		all.WriteString(text)
+		all.WriteString("\x00")
+		return llm.Response{Message: llm.Assistant("## Progress\nsummary")}, nil
+	}})
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := partnerFloodHistory(6, 1500, -1)
+	hold := "LONG_HOLD " + strings.Repeat("do not publish anything until I review it, ", 8) + "END_HOLD"
+	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", 700)+hold+strings.Repeat("f", 1500)))
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if !strings.Contains(all.String(), hold) {
+		t.Fatalf("a %d-byte hold across a part boundary never reached a summarizer whole", len(hold))
 	}
 }

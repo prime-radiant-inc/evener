@@ -1624,13 +1624,40 @@ func summarizerHistoryBudget(prof *provider.Profile, promptChars int) int {
 		return budget
 	}
 	prefixTokens := promptChars/4 + summarizerFramingTokens
-	for _, window := range []int{prof.ContextWindowSize(), prof.CheapContextWindowSize()} {
-		if window > 0 {
-			available := window - llm.SafetyReserveTokens(window) - prefixTokens - window/4
+	routes := [][2]int{
+		{prof.ContextWindowSize(), prof.MaxInputTokens()},
+		{prof.CheapContextWindowSize(), prof.CheapMaxInputTokens()},
+	}
+	for _, route := range routes {
+		if input := summarizerInputLimit(route[0], route[1]); input > 0 {
+			available := input - prefixTokens
 			budget = min(budget, available*4)
 		}
 	}
 	return max(budget, minSummarizerHistoryChars)
+}
+
+// summarizerInputLimit is how many tokens of input a summarizer request may
+// carry on a model with this window and input cap (0 for unknown): what the
+// window leaves after a quarter for the reply, held to the input cap, less the
+// safety reserve the client keeps on top of the input. It is 0 when neither
+// is known.
+func summarizerInputLimit(window, maxInput int) int {
+	limit := 0
+	if window > 0 {
+		limit = window - window/4
+	}
+	if maxInput > 0 && (limit == 0 || maxInput < limit) {
+		limit = maxInput
+	}
+	if limit == 0 {
+		return 0
+	}
+	smallest := window
+	if maxInput > 0 && (smallest == 0 || maxInput < smallest) {
+		smallest = maxInput
+	}
+	return max(limit-llm.SafetyReserveTokens(smallest), 1)
 }
 
 // summarizerFramingTokens allows for the request text around the history that
@@ -1702,7 +1729,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 // else on a rune boundary, and each repeating the last overlap bytes of the
 // part before it, so an instruction that crosses a cut is whole in one part.
 func splitMessage(text string, size, overlap int) []string {
-	overlap = min(overlap, size/4) // each part must still advance through text
+	overlap = min(overlap, size/2) // each part must still advance through text
 	var parts []string
 	for len(text) > size {
 		part := runetrim.Cut(text, size)

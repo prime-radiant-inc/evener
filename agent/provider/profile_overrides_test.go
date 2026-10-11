@@ -403,7 +403,13 @@ func TestCheapContextWindowSize(t *testing.T) {
 	if got := NewOpenAIProfile("gpt-5.5").CheapContextWindowSize(); got != 0 {
 		t.Fatalf("no cheap model configured: window = %d, want 0", got)
 	}
+	if got := NewOpenAIProfile("gpt-5.5").CheapMaxInputTokens(); got != 0 {
+		t.Fatalf("no cheap model configured: input cap = %d, want 0", got)
+	}
 	mini := NewOpenAIProfile("gpt-5-mini")
+	if got := WithCheapModel(NewOpenAIProfile("gpt-5.5"), "gpt-5-mini").CheapMaxInputTokens(); got != mini.MaxInputTokens() {
+		t.Fatalf("cheap model input cap = %d, want gpt-5-mini's %d", got, mini.MaxInputTokens())
+	}
 	if mini.ContextWindowSize() <= 0 {
 		t.Skip("the embedded registry names no window for openai/gpt-5-mini")
 	}
