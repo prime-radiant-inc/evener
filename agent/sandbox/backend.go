@@ -95,11 +95,10 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 // cache's overlay back at the next spawn. Git's own entries (some of them
 // files, such as packed-refs) are never created here.
 func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
-	gitRoots := appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir)
 	for _, w := range bwrapWriteRoots(rp) {
 		// bwrap binds only a write root that stats cleanly; any other (missing,
 		// a dangling or looping link, an unreadable parent) is unbindable.
-		if _, err := os.Stat(w); err == nil || isUnderAnyRoot(w, gitRoots) {
+		if _, err := os.Stat(w); err == nil || isGitEntry(rp, w) {
 			continue
 		}
 		// Every place a write to w touches on the host, links on the way and
@@ -119,6 +118,19 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 		}
 	}
 	return rp
+}
+
+// isGitEntry reports whether w is one of git's own entries, under the git or
+// common dir by spelling or by where it lands (physicalLanding, so an alias of
+// the git dir counts).
+func isGitEntry(rp ResolvedPolicy, w string) bool {
+	landing := physicalLanding(w)
+	for _, g := range appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir) {
+		if isUnderAnyRoot(w, []string{g}) || isUnderAnyRoot(landing, []string{physicalLanding(g)}) {
+			return true
+		}
+	}
+	return false
 }
 
 // landsInPersistentRoot reports whether c's real location (or, not created

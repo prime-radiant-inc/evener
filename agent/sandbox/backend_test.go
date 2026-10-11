@@ -357,3 +357,26 @@ func TestACacheUnderADanglingWriteRootsTargetIsPersistent(t *testing.T) {
 		t.Errorf("a cache under a dangling write root's target lands in that persistent root")
 	}
 }
+
+// A git file grant reached through an alias (a link to the git dir) is still
+// git's own entry, judged where it lands, so it is never created as a
+// directory either.
+func TestWrapperLeavesAnAliasedGitFileGrantUncreated(t *testing.T) {
+	cache := t.TempDir()
+	commonDir := filepath.Join(cache, "repo", ".git")
+	if err := os.MkdirAll(commonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "gitalias")
+	if err := os.Symlink(commonDir, alias); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheRoots: []string{cache}}
+	rp.Git.CommonDir = commonDir
+	rp.Git.GitDir = commonDir
+	rp.Spawned.WriteRoots = []string{filepath.Join(alias, "packed-refs")}
+	createWriteRootsInsideCaches(rp)
+	if _, err := os.Lstat(filepath.Join(commonDir, "packed-refs")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an aliased git file grant must not be created (err=%v)", err)
+	}
+}
