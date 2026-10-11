@@ -730,3 +730,29 @@ func TestWrapperKeepsACacheRootUnavailableAtCreation(t *testing.T) {
 		t.Errorf("a cache root that became available must be overlaid: %v", w.Policy().CacheRoots)
 	}
 }
+
+// bwrap's private /tmp hides a cache root spelled under /tmp, so such a root
+// cannot serve another cache that merely resolves inside it: that other root
+// keeps its own overlay.
+func TestLiveCacheRootsDoNotNestUnderARootSpelledInTmp(t *testing.T) {
+	store, err := os.MkdirTemp("/var/tmp", "evener-cache-store-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(store) })
+	gocache := filepath.Join(store, "go-build")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "cache-link") // under /tmp in the Linux harness
+	if err := os.Symlink(store, link); err != nil {
+		t.Fatal(err)
+	}
+	if !pathUnder(link, "/tmp") {
+		t.Skip("the test temp dir is not under /tmp here")
+	}
+	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), XDGCacheHome: link, GoCache: gocache})
+	if !slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Errorf("a cache resolving inside a /tmp-spelled root must keep its own overlay: %v", liveCacheRoots(rp))
+	}
+}
