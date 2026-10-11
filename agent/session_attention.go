@@ -764,6 +764,15 @@ func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema
 	return slices.Insert(history, at, turn), at
 }
 
+// holdAcceptedTrigger latches an accepted generation's trigger so a fold keeps
+// its turn until a settled request presents it. The accept path and the
+// restart of an owed generation both set it.
+func (s *Session) holdAcceptedTrigger(attentionID string) {
+	s.attentionMu.Lock()
+	s.attentionAcceptedID = attentionID
+	s.attentionMu.Unlock()
+}
+
 // acceptDelegateAttention records the exact reserved generation in the child
 // transcript before asking the controller to publish that generation. The
 // reservation remains the per-child claim across both durability boundaries;
@@ -779,9 +788,7 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
 		return err
 	}
-	s.attentionMu.Lock()
-	s.attentionAcceptedID = attentionID
-	s.attentionMu.Unlock()
+	s.holdAcceptedTrigger(attentionID)
 	pendingIDs, err := s.pendingDelegateAttentionIDs()
 	if err != nil {
 		return err
