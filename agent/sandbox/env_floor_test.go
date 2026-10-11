@@ -878,3 +878,32 @@ func TestEnvFloorKnowsExplicitGoSettingsDespiteAGoEnvFile(t *testing.T) {
 		t.Errorf("a GOMODCACHE left to an unjudged go env file is unknown and must go to the scratch, got %q", v)
 	}
 }
+
+// The floor reads the go env file outside the sandbox, so it never follows one
+// the session retargeted at a masked file: that file's settings would reach
+// the spawn's environment. Its values stay out of the floored GOPATH.
+func TestEnvFloorNeverReadsAGoEnvFileLinkedIntoAMask(t *testing.T) {
+	base := t.TempDir()
+	secretDir := filepath.Join(base, "secret")
+	if err := os.MkdirAll(secretDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(secretDir, "go.env")
+	if err := os.WriteFile(secret, []byte("GOPATH=/leaked/value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envFile := filepath.Join(base, "work", "go.env")
+	if err := os.MkdirAll(filepath.Dir(envFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, envFile); err != nil {
+		t.Fatal(err)
+	}
+	for _, masked := range []string{secretDir, envFile} {
+		policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheSessionPrivate, MaskedPaths: []string{masked}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/home/u", GoEnvFile: envFile}}
+		out := ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=" + envFile}, policy, "/tmp/evener-session-xyz")
+		if v, _ := envValue(out, "GOPATH"); strings.Contains(v, "/leaked/value") {
+			t.Errorf("mask %s: a masked go env file's settings must not reach the spawn, got GOPATH=%q", masked, v)
+		}
+	}
+}

@@ -253,20 +253,15 @@ func overlayGoCacheDirs(env []string, policy ResolvedPolicy) (map[string]string,
 		// the floor does not know, so it may not be the probe's file. One
 		// spelled under /tmp or /dev, or whose link chain passes through or
 		// into them at any step, is hidden by bwrap's private mounts (the
-		// overlay strategy is bwrap's), so the spawn's go does not read it.
-		// One the user masked (a denylist entry over ~/.config/go) is hidden
-		// from the spawn just the same. A mask over a link in the middle of
-		// the file's chain is not traced: at worst that spawn's default cache
-		// lands where its own environment points, inside its grants
-		// (docs/sandboxing.md#threat-model). So does a file the session can
-		// write (one kept in the worktree) changed by `go env -w` mid-command:
-		// later go runs in that command put their caches where the session
-		// said, inside its own writable storage.
-		judged := spawnFile == host.GoEnvFile && filepath.IsAbs(spawnFile) && !inPrivateMount(spawnFile) && !linksThroughPrivateMount(spawnFile) &&
-			!policy.MasksWrite(spawnFile) && !policy.MasksWrite(resolveExistingPrefix(spawnFile))
+		// overlay strategy is bwrap's), and so is one under a mask at any step
+		// (currentGoEnvSettings refuses both). A file the session can write
+		// (one kept in the worktree) changed by `go env -w` mid-command sends
+		// later go runs in that command to caches where the session said,
+		// inside its own writable storage (docs/sandboxing.md#threat-model).
+		judged := spawnFile == host.GoEnvFile && filepath.IsAbs(spawnFile)
 		if judged {
 			var ok bool
-			file, ok = currentGoEnvSettings(spawnFile)
+			file, ok = currentGoEnvSettings(policy, spawnFile)
 			judged = ok
 		}
 		if !judged {
@@ -333,14 +328,36 @@ func spawnGoEnvFileRefused(env []string, goos string) bool {
 
 // currentGoEnvSettings reads the go env file at path as it is now, since the
 // spawned go reads it at every run (a `go env -w` mid-session changes what the
-// next spawn does). ok is false when the file exists but cannot be read; a
-// missing file has no settings.
-func currentGoEnvSettings(path string) (map[string]string, bool) {
+// next spawn does). ok is false when the file exists but cannot be read, or
+// when the spawn cannot see it (goEnvFileHidden); a missing file has no
+// settings.
+func currentGoEnvSettings(policy ResolvedPolicy, path string) (map[string]string, bool) {
+	if goEnvFileHidden(policy, path) {
+		return nil, false
+	}
 	settings, err := readGoEnvFileSettings(hostProbeSystem{}, path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return map[string]string{}, true
 	}
 	return settings, err == nil
+}
+
+// goEnvFileHidden reports whether the spawn cannot see the go env file at path:
+// spelled in, or linked at any step through, bwrap's private /tmp or /dev, or
+// under a mask at any step of its link chain (physicalPlaces). The floor reads
+// the file outside the sandbox, so it must never follow one the session
+// retargeted at a masked file: that file's settings would reach the spawn's
+// environment.
+func goEnvFileHidden(policy ResolvedPolicy, path string) bool {
+	if inPrivateMount(path) || linksThroughPrivateMount(path) {
+		return true
+	}
+	masked := func(p string) bool {
+		return slices.ContainsFunc(policy.MaskedPaths, func(m string) bool {
+			return isUnderAnyRoot(p, []string{m, physicalLanding(m)})
+		})
+	}
+	return masked(path) || slices.ContainsFunc(physicalPlaces(path), masked)
 }
 
 // sessionGoPath returns the GOPATH a session-private spawn gets: the scratch
@@ -376,7 +393,7 @@ func sessionGoPath(env []string, policy ResolvedPolicy, sessionScratch string) s
 		host := policy.resolveHost
 		configured := ""
 		if file := goEnvFileFor(vars, host.OS); file != "" && file == host.GoEnvFile {
-			if settings, ok := currentGoEnvSettings(file); ok {
+			if settings, ok := currentGoEnvSettings(policy, file); ok {
 				configured = settings[envvars.GoPath.Name]
 			}
 		}
