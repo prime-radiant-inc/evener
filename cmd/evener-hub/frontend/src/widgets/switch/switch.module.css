@@ -1,7 +1,14 @@
+/* Two columns: the control, then the label with the description set under it,
+ * so a description lines up with the label at every control width (the
+ * control widens to the touch floor below 899px). Items start-align so the
+ * label's click target stays its own text, not the row's full width. */
 .wrapper {
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: var(--space-2);
+  justify-items: start;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
 }
 
 .control {
@@ -84,6 +91,16 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   cursor: pointer;
+}
+
+.description {
+  grid-column: 2;
+  justify-self: stretch;
+  min-width: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
 }
 
 /* The label is an intentional click target as well as the switch button. Keep
