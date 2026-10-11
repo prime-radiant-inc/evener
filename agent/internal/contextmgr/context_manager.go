@@ -1589,6 +1589,52 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 	return renderCheckpointConversation(partner), summarized
 }
 
+// condensePartnerMessages fits the partner's messages a summary will not quote
+// (each a line of text) into budget characters for the summarizer's input.
+// When they overflow it, they are summarized in batches of at most budget
+// characters, each batch summary quoting their permissions and holds, and the
+// batch summaries are condensed the same way until they fit, so every message
+// reaches a summarizer however many there are.
+func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
+	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
+	for range maxRounds {
+		total := 0
+		for _, line := range lines {
+			total += len(line)
+		}
+		if total <= budget {
+			return strings.Join(lines, ""), nil
+		}
+		var summaries []string
+		for start := 0; start < len(lines); {
+			end, size := start, 0
+			for end < len(lines) && (end == start || size+len(lines[end]) <= budget) {
+				size += len(lines[end])
+				end++
+			}
+			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply string) error {
+				if strings.TrimSpace(reply) == "" {
+					return errors.New("summarizer returned an empty batch summary")
+				}
+				return nil
+			})
+			if err != nil {
+				return "", err
+			}
+			summaries = append(summaries, "Summary of earlier messages: "+strings.TrimSpace(resp.Text())+"\n")
+			start = end
+		}
+		lines = summaries
+	}
+	return runetrim.Cut(strings.Join(lines, ""), budget), nil
+}
+
+// partnerBatchPrompt asks the summarizer to condense a batch of the human
+// partner's messages that a compaction will not quote.
+const partnerBatchPrompt = `You are condensing messages from your human partner that a context compaction will not quote. Summarize what they asked for and told you, as briefly as keeps it usable. ` + partnerAuthorityRule + `
+
+`
+
 // partnerCarryCeiling bounds the partner's messages a model-written
 // compaction turn carries verbatim to a quarter of the model's context window,
 // in characters at the char/4 token estimate the context manager uses
@@ -2175,25 +2221,21 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(cm.currentProfile()))
 
 	var b strings.Builder
-	// The partner's messages the turn will not quote come first, each capped
-	// like a user turn, so the summarizer reads them before anything else the
-	// budget cuts. They get up to half the history budget, the newest of them
-	// kept when they overflow it; any beyond that are still in the transcript
-	// the turn's reminder points to.
+	// The partner's messages the turn will not quote come first, so the
+	// summarizer reads every one of them whatever else the budget cuts; past
+	// half the history budget they arrive condensed in bounded batches
+	// (condensePartnerMessages).
 	if len(summarized) > 0 {
-		var lines []string
-		size := 0
-		for _, entry := range slices.Backward(summarized) {
-			line := "User: " + truncText(entry.Text, 5000) + "\n"
-			if size+len(line) > maxHistoryChars/2 {
-				break
-			}
-			size += len(line)
-			lines = append(lines, line)
+		lines := make([]string, 0, len(summarized))
+		for _, entry := range summarized {
+			lines = append(lines, "User: "+truncText(entry.Text, 5000)+"\n")
 		}
-		slices.Reverse(lines)
+		condensed, err := cm.condensePartnerMessages(ctx, lines, maxHistoryChars/2)
+		if err != nil {
+			return nil, err
+		}
 		b.WriteString("Your human partner's messages that the handoff will not quote, oldest first; summarize them:\n")
-		b.WriteString(strings.Join(lines, ""))
+		b.WriteString(condensed)
 		b.WriteString("\nThe conversation:\n")
 	}
 	for i := range cutoff {

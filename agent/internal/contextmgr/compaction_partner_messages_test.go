@@ -586,10 +586,8 @@ func TestFormatCheckpoint_KeepsMessagesWholeWithoutATranscript(t *testing.T) {
 func TestForceCompact_PartnerMessagesPastTheCeilingAreSummarized(t *testing.T) {
 	const window = 20_000 // tokens; the ceiling is a quarter of it, 20_000 chars
 	reply := "## Permissions and Holds\n\"" + partnerHold + "\" (message 0)\n\n## Progress\nDone"
-	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(reply)} }
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
 	client := llm.NewClient()
-	client.Register(adapter)
+	client.Register(alwaysReplying(func(llm.Request) string { return reply }))
 	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	cm.Meta = *persistentMeta
@@ -656,12 +654,11 @@ func partnerFloodHistory(n, size, holdAt int) []schema.Turn {
 // the newest messages the carry keeps.
 func TestForceCompact_MessagesLeftOutOfTheCarryReachTheSummarizer(t *testing.T) {
 	var prompt string
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
-		prompt = req.Messages[0].Text()
-		return llm.Response{Message: llm.Assistant(emptySummaryReply)}
-	}}}
 	client := llm.NewClient()
-	client.Register(adapter)
+	client.Register(alwaysReplying(func(req llm.Request) string {
+		prompt += req.Messages[0].Text()
+		return emptySummaryReply
+	}))
 	cm := NewManager(testProfile("openai", "test", 20_000), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	cm.Meta = *persistentMeta
@@ -721,4 +718,53 @@ func TestCheckpointPred_PredictionKeepsEveryPartnerMessage(t *testing.T) {
 	if got := len(extractCheckpointConversation(history[0].Message.Text())); got != 40 {
 		t.Fatalf("the predictive checkpoint kept %d of 40 partner messages", got)
 	}
+}
+
+// However many partner messages the carry leaves out, every one reaches a
+// summarizer request: those that overflow one request are summarized in
+// bounded batches first, and the hold among them survives into the summary.
+func TestForceCompact_EveryLeftOutMessageIsSummarized(t *testing.T) {
+	var requests []string
+	respond := func(req llm.Request) llm.Response {
+		text := req.Messages[0].Text()
+		requests = append(requests, text)
+		reply := "## Progress\nsummary"
+		if strings.Contains(text, partnerHold) {
+			reply = "## Permissions and Holds\n\"" + partnerHold + "\"\n\n## Progress\nsummary"
+		}
+		return llm.Response{Message: llm.Assistant(reply)}
+	}
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) { return respond(req), nil }}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(200, 1500, 80)
+	var messages []string
+	for _, turn := range history {
+		if turn.Kind == schema.TurnUserInput {
+			messages = append(messages, turn.Message.Text())
+		}
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+
+	summary := history[0].Message.Text()
+	carried := extractMarkdownConversation(summary)
+	all := strings.Join(requests, "\n")
+	for i, message := range messages[:len(messages)-len(carried)] {
+		if !strings.Contains(all, message) {
+			t.Fatalf("left-out partner message %d never reached a summarizer request (%d requests)", i, len(requests))
+		}
+	}
+	if !strings.Contains(summary, partnerHold) {
+		t.Fatalf("the hold among the left-out messages did not survive into the summary")
+	}
+}
+
+// alwaysReplying is a model that answers every request with reply's result.
+func alwaysReplying(reply func(llm.Request) string) *stubSummarizeAdapter {
+	return &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		return llm.Response{Message: llm.Assistant(reply(req))}, nil
+	}}
 }

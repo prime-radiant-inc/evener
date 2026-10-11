@@ -251,6 +251,9 @@ Write ONLY the checkpoint content. Be specific and concise (under 500 words). Fo
 	// beside it verbatim (partnerMessagesMarkdown), after the prediction
 	// (renderCompactionModelText). The prediction's input sees them only cut
 	// short, so none is left to it: this carry has no ceiling.
+	// Earlier compaction turns never reach the prediction's input either, so
+	// a hold an earlier summary quoted can be lost here; checkpoint-pred is an
+	// opt-in strategy and that gap is tracked with the others in #4181.
 	_, carry, _ := s.cm.partnerCarry(ctx, history, cutoff, 0)
 	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + s.cm.metaFor(ctx).compactionPointer("checkpoint") +
 		renderCompactionModelText("## Predicted Context", resp.Text()) + carry + "[END CHECKPOINT]"
