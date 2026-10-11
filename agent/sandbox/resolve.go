@@ -691,12 +691,20 @@ func linksThroughPrivateMount(p string) bool {
 	return found
 }
 
-// physicalLanding returns where p lands once every symlink on its way is
-// followed, dangling ones included: for a path that does not exist yet, where
-// creating it would put it.
-func physicalLanding(p string) string {
-	landing, _ := walkPhysical(p, nil)
-	return StripDataVolumeAlias(landing)
+// physicalPlaces returns the host locations a write to p touches: each
+// symlink on its way, where it sits (a spawn could replace a dangling one with
+// a directory), and where p lands once every link is followed, dangling ones
+// included (for a path that does not exist yet, where creating it would put
+// it).
+func physicalPlaces(p string) []string {
+	var places []string
+	landing, _ := walkPhysical(p, func(path string, link, _ bool) bool {
+		if link {
+			places = append(places, StripDataVolumeAlias(path))
+		}
+		return false
+	})
+	return append(places, StripDataVolumeAlias(landing))
 }
 
 // walkPhysical resolves p one component at a time as the kernel does: each

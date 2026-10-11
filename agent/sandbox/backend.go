@@ -97,12 +97,12 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 		if _, err := os.Stat(w); !errors.Is(err, fs.ErrNotExist) || isUnderAnyRoot(w, gitRoots) {
 			continue
 		}
-		// Where writes to w land, following every link on the way, dangling
-		// ones included: the spawn could create a dangling link's target.
-		landing := physicalLanding(w)
+		// Every place a write to w touches on the host, links on the way and
+		// where it lands, dangling links included.
+		places := physicalPlaces(w)
 		holds := func(c string) bool {
 			rc := resolveExistingPrefix(c)
-			return pathUnder(w, c) || landing == rc || pathUnder(landing, rc)
+			return pathUnder(w, c) || slices.ContainsFunc(places, func(l string) bool { return l == rc || pathUnder(l, rc) })
 		}
 		if !slices.ContainsFunc(rp.CacheRoots, holds) {
 			continue

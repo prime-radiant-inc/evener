@@ -296,3 +296,27 @@ func TestPrepareCacheRootsDropsTheOverlayBehindADanglingIntermediateLink(t *test
 		t.Errorf("the cache a dangling intermediate link leads into must not stay overlaid: %v", got.CacheRoots)
 	}
 }
+
+// A dangling link that is itself inside a cache (reached through an alias of
+// that cache) can be replaced by a directory and written to, so that cache is
+// not overlaid either, besides the one its target points into.
+func TestPrepareCacheRootsDropsTheOverlayHoldingADanglingLinkReachedByAlias(t *testing.T) {
+	home := t.TempDir()
+	cache, npm := filepath.Join(home, ".cache"), filepath.Join(home, ".npm")
+	for _, d := range []string{cache, npm} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(cache, filepath.Join(home, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(npm, "data"), filepath.Join(cache, "library")); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache, npm}}
+	rp.Spawned.WriteRoots = []string{filepath.Join(home, "alias", "library")}
+	if got := prepareCacheRoots(rp); len(got.CacheRoots) != 0 {
+		t.Errorf("both the cache holding the link and the one its target names must drop their overlay: %v", got.CacheRoots)
+	}
+}
