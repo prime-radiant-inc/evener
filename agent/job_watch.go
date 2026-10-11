@@ -4656,6 +4656,11 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.WatchSendState) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
+	// A frame whose receipt is gone was retired meanwhile (its watch cleared
+	// or the frame dropped); nothing would ever clear a note for it.
+	if _, held := jm.stableWatchReceipts[state.DeliveryID]; !held {
+		return
+	}
 	if jm.unsettledWatchSends == nil {
 		jm.unsettledWatchSends = make(map[string]pendingWatchSendDelivery)
 	}

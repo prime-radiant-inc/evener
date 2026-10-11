@@ -258,3 +258,22 @@ func TestAcceptedFrameReplacedAfterItsClaimRetriesItsAcknowledgement(t *testing.
 		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
 	}
 }
+
+// A frame whose receipt was already released (its watch was cleared between
+// the hand-off and the failed acknowledgement) is retired: noting the failed
+// acknowledgement keeps nothing, so no note outlives it.
+func TestFailedAcknowledgementOfRetiredFrameKeepsNoNote(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	jm.releaseStableWatchReceipt(first.DeliveryID)
+	jm.noteUnsettledWatchSend(cfg, first)
+	jm.mu.Lock()
+	_, noted := jm.unsettledWatchSends[first.DeliveryID]
+	jm.mu.Unlock()
+	if noted {
+		t.Fatal("a retired frame's failed acknowledgement was kept")
+	}
+}
