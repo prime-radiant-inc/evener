@@ -22,7 +22,7 @@ import {
   type CollectionAddResult,
   CollectionEditor,
   ConfirmDialog,
-  EmptyState,
+  InlineNotice,
   Skeleton,
   useToasts,
 } from "../../../widgets";
@@ -183,7 +183,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
           <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
           {discovered?.error !== undefined ? (
-            <EmptyState title="Failed to load" hint={discovered.error} />
+            <InlineNotice tone="danger">{discovered.error}</InlineNotice>
           ) : overview.loading && overview.data === null ? (
             <Skeleton />
           ) : (
@@ -208,9 +208,11 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
         </section>
       )}
 
-      {launchLayerError !== null ? (
-        <EmptyState title="Failed to load" hint={launchLayerError} />
-      ) : launchLayerLoading && layer === null ? (
+      {/* A failed refresh over a layer already on screen keeps the editors
+          mounted, so an entry the reader is typing survives the error and the
+          recovery after it; only a layer that never loaded has nothing to show. */}
+      {launchLayerError !== null && <InlineNotice tone="danger">{launchLayerError}</InlineNotice>}
+      {layer === null && launchLayerError !== null ? null : launchLayerLoading && layer === null ? (
         <Skeleton />
       ) : (
         <>
