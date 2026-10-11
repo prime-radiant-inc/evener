@@ -121,7 +121,7 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	}
 	reg.Remove("delegate_send")
 	return reg.Register(tool.RegisteredTool{
-		Definition: tool.DefDelegateSend(),
+		Definition: tool.DefDelegateSendNamed(s.resultToolName()),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -1399,22 +1399,6 @@ func (s *Session) delegateAgentTypeNames() []string {
 	return names
 }
 
-// withResultToolGuidance rewrites the description of a built-in tool that
-// teaches the result tool so it names this session's result tool. Only the
-// description changes: the tool's schema is whatever the caller built.
-func (s *Session) withResultToolGuidance(td llm.ToolDefinition) llm.ToolDefinition {
-	name := s.resultToolName()
-	switch td.Name {
-	case "delegate_send":
-		td.Description = tool.DefDelegateSendNamed(name).Description
-	case "job_list":
-		td.Description = tool.DefJobListNamed(name).Description
-	case "ask_user":
-		td.Description = tool.DefAskUserNamed(name).Description
-	}
-	return td
-}
-
 // wireToolDef renders a canonical tool definition in its provider-visible wire
 // form: it renames the tool to the provider-specific name (nameMap is
 // canonical→provider) and adds the shared "intent" parameter to work tools.
@@ -1487,7 +1471,11 @@ func (s *Session) rebuildToolDefsCache() {
 			if td.Name == "job_watch" {
 				td = tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName())
 			}
-			td = s.withResultToolGuidance(td)
+			if td.Name == "job_list" || td.Name == "delegate_send" {
+				// The registration built this description from the session's
+				// result tool name; the profile's copy names the default.
+				td.Description = s.reg.Get(td.Name).Definition.Description
+			}
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
 				wire.Name = mapped
@@ -1512,7 +1500,7 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
-		defs = append(defs, s.withResultToolGuidance(normalizeRegistryToolDefinition(td)))
+		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
