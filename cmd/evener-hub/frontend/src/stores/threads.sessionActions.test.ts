@@ -1,5 +1,6 @@
 import "fake-indexeddb/auto";
 import {
+  type AnyNotification,
   type ConnectionState,
   hydrateThread,
   type MethodName,
@@ -1615,6 +1616,210 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
       ref: "ref_a",
       clientMutationId: expect.any(String),
       input: [{ type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }],
+    });
+  });
+});
+
+// settleCallerContinuations yields to the task queue exactly once, which the
+// hydration-retry tests use to park an ensureThread/watchThread caller on its
+// lifecycle before firing the retry that lifecycle scheduled.
+//
+// Why a task yield and not `flushUntil(() => false, N)`: a count is an
+// assumption about how many microtask turns separate the failed read from the
+// caller's own catch, and nothing fails when that assumption stops holding -
+// the caller instead converges through the "adopt a replacement read already in
+// flight" arm and the test silently stops covering the owner's wait. A task
+// yield holds however many turns that path grows (see nextMacrotask).
+//
+// Its one boundary: it does not cover a future change that parks the caller
+// behind a task or I/O of its own (an IndexedDB read on the rejection path,
+// say). That would need its own awaited condition, and the mutation proof in
+// this task's report - which fires each owner-wait arm and requires the
+// matching test to fail - is what would catch it.
+const settleCallerContinuations = nextMacrotask;
+
+// drainAsSteer (kata 0bq1 Path B): the plan's terse locked-interfaces block
+// shows `drainAsSteer(ref)`, but the wire method it calls
+// (TurnDrainAsSteerParams, appwire/types.go:769-776) carries an optional
+// Input the daemon appends before draining ("Input lets clients atomically
+// append the current composer payload before the drain"), and the parity
+// floor's Path B row requires exactly that ("anything + non-empty queue ...
+// turn/drainAsSteer carrying the textarea text/items so the daemon
+// appends-then-drains atomically" - parity-m5-composer.md §A). Shipping a
+// bare `drainAsSteer(ref)` would silently drop the composer's pending
+// text/attachments on every Path-B drain, contradicting both the parity
+// floor and the "optimistic pending applies uniformly to
+// send/steer/queue/drain" binding constraint (which needs to know WHAT was
+// submitted to render a pending chip). This store therefore ships
+// `drainAsSteer(ref, text, attachments?)`, mirroring send/steer/queue's own
+// shape exactly - flagged in the T1 report as an interpretation, not a
+// silent deviation.
+describe("useThreadsStore.drainAsSteer", () => {
+  test("sends turn/drainAsSteer with the composer's text and attachments as input", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore
+      .getState()
+      .drainAsSteer("ref_a", "drain text", [{ marker: 1, mediaType: "image/png", data: "aGVsbG8=" }]);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/drainAsSteer"));
+
+    const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+      expectedQueueRevision: 7,
+      input: [
+        { type: "text", text: "drain text" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    });
+  });
+
+  test("sends an empty input array when the composer was empty (draining the queue alone)", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/drainAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore.getState().drainAsSteer("ref_a", "");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/drainAsSteer"));
+
+    const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+      expectedQueueRevision: 7,
+      input: [],
+    });
+  });
+
+  // A drain's own thread/queueChanged push names the client mutation ids it
+  // consumed (issue #1704), so the client settles those optimistic turn/queue
+  // records by positive evidence -- never by inferring consumption from
+  // sequence order.
+  test("a queueChanged naming consumed ids settles the matching optimistic queue record", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    });
+
+    let settled = false;
+    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
+    }
+    expect(settled).toBe(true);
+    inspector.close();
+  });
+
+  // A malformed consumedClientMutationIds (anything that is not an array of
+  // non-empty strings) must be ignored outright: a string is itself iterable
+  // character-by-character, so an unguarded spread would settle a record
+  // named by coincidence rather than by the daemon. The fixed id below ("a")
+  // is deliberately a substring of the malformed value, so an unguarded
+  // spread of "abc" would wrongly retire it.
+  test("a malformed consumedClientMutationIds on a queueChanged push is ignored, not iterated", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "a" });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    let record: Awaited<ReturnType<typeof storage.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await storage.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+    expect(record.clientMutationId).toBe("a");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: "abc",
+      },
+    } as unknown as AnyNotification);
+    await settleCallerContinuations();
+
+    expect(await storage.getOptimistic("a")).toBeDefined();
+    storage.close();
+  });
+});
+
+describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
+  test("promoteQueuedAsSteer sends turn/promoteQueuedAsSteer with {ref, index, expectedEntryId}", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/promoteQueuedAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    await threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2", { text: "queued message" });
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/promoteQueuedAsSteer"));
+
+    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      index: 1,
+      clientMutationId: expect.any(String),
+      expectedInstanceId: "thr_ref_a",
+      expectedEntryId: "entry_2",
+    });
+  });
+
+  test("cancelQueued durably enqueues turn/cancelQueued with {ref, index, expectedEntryId}", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/cancelQueued", (params) => ({
+      removedText: "queued message",
+      removedImages: 2,
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+
+    await threadsStore.getState().cancelQueued("ref_a", 0, "entry_1");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/cancelQueued"));
+
+    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      index: 0,
+      clientMutationId: expect.any(String),
+      expectedEntryId: "entry_1",
     });
   });
 });
