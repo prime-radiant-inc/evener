@@ -4588,9 +4588,10 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		// A newer frame for the same key coalesced over this one while it was
 		// being delivered, and carries its content forward: stand down. The
 		// mark covers a replacement that has since settled (no pending frame
-		// left); the newer durable frame covers the window before the
-		// replacement's runtime commit sets the mark. Either way the claim or
-		// the coalesce, whichever finishes last, releases this frame's receipt.
+		// left); the newer durable frame covers the window between the
+		// replacement's append and its runtime commit, which sets the mark.
+		// Releasing the claim releases this frame's receipt once marked; a
+		// commit that finds the claim already gone releases it itself.
 		if jm.watchSendSuperseded(state.DeliveryID) || (pending != nil && pending.UpdateSeq > state.UpdateSeq) {
 			return false, nil
 		}
@@ -4914,28 +4915,6 @@ func (jm *jobManager) stableWatchReceipt(deliveryID string) *delegateWatchReceip
 	return jm.stableWatchReceipts[deliveryID]
 }
 
-// releaseSupersededStableWatchReceipt releases the delivery receipt of a
-// pending frame a coalesced frame just replaced. Coalescing mints the new
-// frame its own delivery id, so nothing would ever deliver, drop or settle the
-// old id again, and its receipt would fence the receiver's stop until the
-// close budget ran out. A deliverer that holds the old id's claim is mid-hand-
-// off, so the receipt keeps fencing the stop until that claim is released
-// (releaseWatchSendDeliveryClaim), whichever way the deliverer exits.
-func (jm *jobManager) releaseSupersededStableWatchReceipt(deliveryID string) {
-	jm.mu.Lock()
-	_, delivering := jm.deliveringWatchSends[deliveryID]
-	if delivering {
-		if jm.supersededWatchSends == nil {
-			jm.supersededWatchSends = make(map[string]struct{})
-		}
-		jm.supersededWatchSends[deliveryID] = struct{}{}
-	}
-	jm.mu.Unlock()
-	if !delivering {
-		jm.releaseStableWatchReceipt(deliveryID)
-	}
-}
-
 func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
 	jm.mu.Lock()
 	receipt := jm.stableWatchReceipts[deliveryID]
@@ -5165,16 +5144,25 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	return record
 }
 
+// commitWatchSendPendingRecord installs record's frame as its key's pending
+// frame. A frame it replaces under coalescing had its own delivery id, which
+// nothing will deliver, drop or settle again, so the replaced frame's receipt
+// is released here; otherwise it would fence the receiver's stop until the
+// close budget ran out.
 func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord, detached bool) {
-	if superseded := jm.storeWatchSendPendingRecord(record, detached); superseded != "" {
-		jm.releaseSupersededStableWatchReceipt(superseded)
+	if release := jm.storeWatchSendPendingRecord(record, detached); release != "" {
+		jm.releaseStableWatchReceipt(release)
 	}
 }
 
 // storeWatchSendPendingRecord installs record's frame as its key's pending
-// frame and returns the delivery id of the pending frame it replaced, or ""
-// when it replaced none (or one with the same id).
-func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord, detached bool) (superseded string) {
+// frame and returns the delivery id of the replaced frame whose receipt the
+// caller releases, or "" when there is none to release now. A replaced frame
+// a deliverer holds the claim on is marked superseded under the same hold
+// that publishes its replacement, so that deliverer sees the mark however
+// soon the replacement settles; its receipt goes with the claim
+// (releaseWatchSendDeliveryClaim).
+func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord, detached bool) (release string) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	if record.cfg == nil || len(record.pendingEvents) == 0 {
@@ -5190,15 +5178,22 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 	}
 	if current == nil {
 		cfg.pendingOrder = append(cfg.pendingOrder, record.key)
-	} else if current.DeliveryID != record.persisted.DeliveryID {
-		superseded = current.DeliveryID
+	} else if replaced := current.DeliveryID; replaced != "" && replaced != record.persisted.DeliveryID {
+		if _, delivering := jm.deliveringWatchSends[replaced]; delivering {
+			if jm.supersededWatchSends == nil {
+				jm.supersededWatchSends = make(map[string]struct{})
+			}
+			jm.supersededWatchSends[replaced] = struct{}{}
+		} else {
+			release = replaced
+		}
 	}
 	persisted := record.persisted
 	cfg.pending[record.key] = &persisted
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
 	}
-	return superseded
+	return release
 }
 
 func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {
