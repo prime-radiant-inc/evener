@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -68,11 +69,11 @@ func TestDelegateUpdateGetsItsParentsAnswerLive(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	report := filepath.Join(dir, "report.txt")
-	childReceived := false
+	reportWritten := false
 wait:
 	for {
 		if data, err := os.ReadFile(report); err == nil && strings.TrimSpace(string(data)) == codename {
-			childReceived = true
+			reportWritten = true
 			break
 		}
 		select {
@@ -89,12 +90,116 @@ wait:
 
 	sawUpdate := slices.ContainsFunc(rootAttentionFold(t, root).order, func(id string) bool { return strings.Contains(id, "/update/") })
 	answer := classifyParentAnswer(toolCallsAfterQuestion(rootEntries(t, root)), codename)
-	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v", *delegateUpdateEvalModel, sawUpdate, answer, childReceived)
+	childEntries := delegateEntries(t, root)
+	// A provider or runtime failure in the delegate is not model behavior, so
+	// it stops the run instead of being tallied as an unanswered question.
+	if failure := firstTurnFailure(childEntries); failure != "" {
+		t.Fatalf("the delegate's turn failed, so this run says nothing about the model: %s", failure)
+	}
+	received, briefLeaked := childReceivedCodename(childEntries, codename)
+	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v brief_leaked=%v report_written=%v", *delegateUpdateEvalModel, sawUpdate, answer, received, briefLeaked, reportWritten)
+}
+
+// delegateEntries reads the transcript of the root's one delegate: the only
+// other transcript in the root's state directory. It is nil when no delegate
+// started.
+func delegateEntries(t *testing.T, root *Session) []transcript.Entry {
+	t.Helper()
+	paths, err := filepath.Glob(transcriptPath(root.stateDir, "*"))
+	if err != nil {
+		t.Fatalf("glob transcripts: %v", err)
+	}
+	paths = slices.DeleteFunc(paths, func(path string) bool { return path == root.TranscriptPath() })
+	if len(paths) == 0 {
+		return nil
+	}
+	if len(paths) != 1 {
+		t.Fatalf("want one delegate transcript, got %v", paths)
+	}
+	data, err := readTranscriptFull(paths[0], "")
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	return data.Entries
+}
+
+// firstTurnFailure is the message of the first failed turn, or "".
+func firstTurnFailure(entries []transcript.Entry) string {
+	for _, e := range entries {
+		if e.Turn.Kind == schema.TurnFailure && e.Turn.Error != nil {
+			return e.Turn.Error.Message
+		}
+	}
+	return ""
+}
+
+// childReceivedCodename reports whether the delegate was handed the codename
+// after its first input, which is its brief: received is true only when a
+// later user-role entry (the parent's steering) carries it. A codename already
+// in the brief means the delegate never had to ask, so briefLeaked marks runs
+// that cannot show an answer arriving. Files the delegate wrote do not count.
+func childReceivedCodename(entries []transcript.Entry, codename string) (received, briefLeaked bool) {
+	seenBrief := false
+	for _, e := range entries {
+		if e.Turn.Message.Role != llm.RoleUser {
+			continue
+		}
+		carries := strings.Contains(e.Turn.Message.Text(), codename)
+		if !seenBrief {
+			seenBrief, briefLeaked = true, carries
+			continue
+		}
+		received = received || carries
+	}
+	return received && !briefLeaked, briefLeaked
+}
+
+func TestChildReceivedCodename(t *testing.T) {
+	user := func(text string) transcript.Entry {
+		var e transcript.Entry
+		e.Turn.Message = llm.User(text)
+		return e
+	}
+	assistant := func(text string) transcript.Entry {
+		var e transcript.Entry
+		e.Turn.Message = llm.Assistant(text)
+		return e
+	}
+	for _, tc := range []struct {
+		name         string
+		entries      []transcript.Entry
+		wantReceived bool
+		wantLeaked   bool
+	}{
+		{"no delegate", nil, false, false},
+		{"answer steered in", []transcript.Entry{user("ask me"), assistant("HALCYON-42?"), user("It is HALCYON-42")}, true, false},
+		{"delegate wrote the codename itself", []transcript.Entry{user("ask me"), assistant("I will write HALCYON-42")}, false, false},
+		{"parent never answered", []transcript.Entry{user("ask me"), assistant("waiting"), user("keep going")}, false, false},
+		{"codename in the brief", []transcript.Entry{user("the codename is HALCYON-42"), user("HALCYON-42 again")}, false, true},
+	} {
+		received, leaked := childReceivedCodename(tc.entries, "HALCYON-42")
+		if received != tc.wantReceived || leaked != tc.wantLeaked {
+			t.Errorf("%s: got received=%v leaked=%v, want %v %v", tc.name, received, leaked, tc.wantReceived, tc.wantLeaked)
+		}
+	}
+}
+
+func TestFirstTurnFailure(t *testing.T) {
+	var ok, failed transcript.Entry
+	failed.Turn.Kind = schema.TurnFailure
+	failed.Turn.Error = &schema.TurnFailureInfo{Message: "provider 429"}
+	if got := firstTurnFailure([]transcript.Entry{ok, failed}); got != "provider 429" {
+		t.Errorf("got %q, want the failure message", got)
+	}
+	if got := firstTurnFailure([]transcript.Entry{ok}); got != "" {
+		t.Errorf("got %q, want none", got)
+	}
 }
 
 // The classification is a tally aid, not a proof: a question that lands while
 // a parent request is in flight can let that response's narration count, and
-// child_received is the ground truth for whether an answer arrived.
+// child_received (read from the delegate's own transcript) is the ground truth
+// for whether an answer arrived.
 //
 // toolCallsAfterQuestion lists the tool calls from the entry that delivered
 // the delegate's question onward, in transcript order. Calls before it, such
