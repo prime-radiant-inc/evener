@@ -61,31 +61,6 @@
   margin-inline: auto;
 }
 
-.intentGroupSummary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-  color: var(--ink-low);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-style: italic;
-  text-align: center;
-  cursor: pointer;
-  list-style: none;
-}
-
-.intentGroupSummary::-webkit-details-marker {
-  display: none;
-}
-
-.intentGroupSummary::before,
-.intentGroupSummary::after {
-  content: "";
-  flex: 1;
-  border-top: 1px solid var(--edge);
-}
-
 .intentGroupItems {
   display: flex;
   flex-direction: column;

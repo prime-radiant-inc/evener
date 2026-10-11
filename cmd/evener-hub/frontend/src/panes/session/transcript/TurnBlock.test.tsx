@@ -328,8 +328,8 @@ test("an intent-less tool shows its own derived summary at chat and tools levels
   });
   const { rerender } = render(withConfig(config, <TurnBlock turn={turn([blankIntent], {}, config)} />));
 
-  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
-  // <details> children), so it is present even when the group is closed.
+  // A closed intent group mounts its rows only once opened.
+  fireEvent.click(screen.getByTestId("intent-group").querySelector("summary")!);
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo derived-summary");
 
@@ -356,6 +356,8 @@ test("an intent-less read_file shows the Read summary, never 'Action summary una
   for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
+    const group = screen.queryByTestId("intent-group") as HTMLDetailsElement | null;
+    if (group && !group.open) fireEvent.click(group.querySelector("summary")!);
     expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
     expect(screen.queryByText("Action summary unavailable")).toBeNull();
     unmount();
@@ -376,9 +378,8 @@ test("Chat renders a closed action group that expands reasons without tool UI (c
 
   const group = screen.getByTestId("intent-group");
   expect(group.hasAttribute("open")).toBe(false);
-  // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
-  // <details> children), so it is present even when the group is closed.
-  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  // A closed group mounts none of its rows.
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
 
   const summary = group.querySelector("summary");
   if (summary === null) throw new Error("Chat intent summary did not render");

@@ -901,7 +901,7 @@ describe("TranscriptBody", () => {
     );
     const crossGroup = screen.getAllByTestId("intent-group").at(-1);
     if (crossGroup === undefined) throw new Error("cross-turn intent group did not render");
-    expect(crossGroup?.getAttribute("data-transcript-row-id")).toBe("intent-group:intent:tool_a");
+    expect(crossGroup?.parentElement?.getAttribute("data-transcript-row-id")).toBe("intent-group:intent:tool_a");
     expect(crossGroup?.hasAttribute("open")).toBe(true);
     const crossSummary = crossGroup.querySelector("summary");
     if (crossSummary === null) throw new Error("cross-turn intent summary did not render");
@@ -1021,9 +1021,16 @@ describe("TranscriptBody", () => {
     expect(group.compareDocumentPosition(separator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(separator.textContent).toContain("1.5s");
     expect(firstAnchor.getAttribute("data-view-anchor-source-index")).toBe("0");
+    // Closed, the group mounts no entries and is itself the alias anchor for them.
+    expect(firstAnchor).toBe(group.parentElement);
+    expect(firstAnchor.getAttribute("data-view-anchor-members")).toBe("intent:tool_a");
+    expect(group.querySelector("[data-view-anchor-id]")).toBeNull();
     expect(group.hasAttribute("open")).toBe(false);
     fireEvent.click(summary);
     expect(group.hasAttribute("open")).toBe(true);
+    const openAnchor = document.querySelector('[data-view-anchor-id="intent:tool_a"]');
+    if (!(openAnchor instanceof HTMLElement)) throw new Error("open intent entry anchor did not render");
+    expect(group.contains(openAnchor)).toBe(true);
 
     rerender(
       <TranscriptBody
@@ -1040,14 +1047,14 @@ describe("TranscriptBody", () => {
     expect(screen.getByTestId("intent-group")).toBe(group);
     expect(group.textContent).toContain("2 actions");
     expect(group.hasAttribute("open")).toBe(true);
-    expect(group.getAttribute("data-transcript-source-turn-ids")).toBe("turn_a,turn_b");
+    expect(group.parentElement?.getAttribute("data-transcript-source-turn-ids")).toBe("turn_a,turn_b");
     expect(screen.getByTestId("seen-divider")).toBe(divider);
     expect(divider.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(screen.getByTestId("turn-separator")).toBe(separator);
     expect(group.compareDocumentPosition(separator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(separator.textContent).toContain("2.5s");
-    expect(document.querySelector('[data-view-anchor-id="intent:tool_a"]')).toBe(firstAnchor);
-    expect(firstAnchor.getAttribute("data-view-anchor-source-index")).toBe("0");
+    expect(document.querySelector('[data-view-anchor-id="intent:tool_a"]')).toBe(openAnchor);
+    expect(openAnchor.getAttribute("data-view-anchor-source-index")).toBe("0");
     expect(
       document.querySelector('[data-view-anchor-id="intent:tool_b"]')?.getAttribute("data-view-anchor-source-index"),
     ).toBe("1");
@@ -1161,6 +1168,7 @@ describe("TranscriptBody", () => {
 
     const groups = screen.getAllByTestId("intent-group");
     expect(groups).toHaveLength(3);
+    for (const group of groups) fireEvent.click(group.querySelector("summary")!);
     expect(groups.map((group) => group.textContent)).toEqual(["1 actionBefore", "1 actionBoundary", "1 actionAfter"]);
     const boundaryGroup = groups[1];
     const afterGroup = groups[2];
