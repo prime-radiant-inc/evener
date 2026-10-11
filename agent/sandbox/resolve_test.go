@@ -716,8 +716,8 @@ func TestCacheRootsNeverCoverTheWorktreeThroughAMissingPathsSymlinkedParent(t *t
 
 // An overlay at or inside a persistent write root (an extra writable root)
 // would discard writes the user granted for good, so such a cache root is
-// dropped, like one inside the worktree. A write root inside a cache root is
-// bound again after the overlay instead (see buildBwrapArgv).
+// dropped, like one inside the worktree, and so is one holding a write root
+// (TestBuildBwrapArgvDoesNotOverlayACacheHoldingAWriteRoot).
 func TestCacheRootsNeverLieInsideAPersistentWriteRoot(t *testing.T) {
 	shared := clean(t.TempDir())
 	gocache := filepath.Join(shared, "gocache")

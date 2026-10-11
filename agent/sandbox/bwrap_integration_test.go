@@ -422,10 +422,12 @@ if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
 	}
 }
 
-// Under a real cache overlay, writes to an extra writable root and to the
-// session scratch inside the overlaid cache root persist on the host, while a
-// write elsewhere in the cache is discarded with the overlay's upper layer.
-func TestBwrapWritesInsideACacheOverlayPersistOnlyWhereGranted(t *testing.T) {
+// Under real bwrap, a cache root holding an extra writable root is not
+// overlaid: the write to the granted root persists, and a write elsewhere in
+// that cache fails where it happens instead of vanishing with an overlay.
+// Another cache that holds no write root stays overlaid (its write succeeds
+// and is discarded).
+func TestBwrapCacheHoldingAWritableRootIsNotOverlaid(t *testing.T) {
 	facts := requireRealBwrap(t)
 	if !facts.OverlaySupported {
 		t.Skip("this bwrap has no overlay support")
@@ -437,8 +439,8 @@ func TestBwrapWritesInsideACacheOverlayPersistOnlyWhereGranted(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	cache := filepath.Join(home, ".cache")
 	library := filepath.Join(cache, "library")
-	sessionTmp := filepath.Join(cache, "tmp", "session")
-	for _, dir := range []string{library, sessionTmp} {
+	npm := filepath.Join(home, ".npm")
+	for _, dir := range []string{library, npm} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -452,28 +454,30 @@ func TestBwrapWritesInsideACacheOverlayPersistOnlyWhereGranted(t *testing.T) {
 	if rp.CacheStrategy != CacheOverlay {
 		t.Skipf("cache strategy is %v, not overlay", rp.CacheStrategy)
 	}
-	w, err := NewWrapper(rp, facts.BwrapPath, sessionTmp)
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := `echo kept > "$1/kept" && echo kept > "$2/kept" && echo gone > "$3/discarded"`
-	argv := w.Wrap([]string{"/bin/sh", "-c", script, "overlay-test", library, sessionTmp, cache}, cwd)
-	if out, err := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput(); err != nil {
-		t.Fatalf("sandboxed command failed: %v\n%s", err, out)
+	script := `echo kept > "$1/kept"; echo private > "$3/private" && echo NPM-WRITABLE; if echo gone > "$2/stray" 2>/dev/null; then echo STRAY-WRITTEN; fi`
+	argv := w.Wrap([]string{"/bin/sh", "-c", script, "overlay-test", library, cache, npm}, cwd)
+	out, _ := exec.CommandContext(t.Context(), argv[0], argv[1:]...).CombinedOutput()
+	if _, err := os.Stat(filepath.Join(library, "kept")); err != nil {
+		t.Errorf("a write to the granted root must persist: %v\n%s", err, out)
 	}
-	for _, p := range []string{filepath.Join(library, "kept"), filepath.Join(sessionTmp, "kept")} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("a write to %s must persist: %v", p, err)
-		}
+	if strings.Contains(string(out), "STRAY-WRITTEN") {
+		t.Errorf("a write elsewhere in a cache holding a writable root must fail, not land in an overlay:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(cache, "discarded")); !os.IsNotExist(err) {
-		t.Errorf("a write elsewhere in the overlaid cache must be discarded: %v", err)
+	if !strings.Contains(string(out), "NPM-WRITABLE") {
+		t.Errorf("a cache holding no writable root must stay overlaid and writable:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(npm, "private")); !os.IsNotExist(err) {
+		t.Errorf("a write into an overlaid cache must be discarded: %v", err)
 	}
 }
 
-// A writable root inside an overlaid cache root is bound again even when the two
-// are spelled through different symlinks to the same storage.
-func TestBwrapRebindsAWritableRootSpelledThroughAnotherSymlink(t *testing.T) {
+// A cache root sharing storage with a writable root through another symlink
+// is not overlaid either, and the write to the writable root persists.
+func TestBwrapCacheSharingAWritableRootThroughASymlinkIsNotOverlaid(t *testing.T) {
 	facts := requireRealBwrap(t)
 	if !facts.OverlaySupported {
 		t.Skip("this bwrap has no overlay support")
@@ -499,8 +503,8 @@ func TestBwrapRebindsAWritableRootSpelledThroughAnotherSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rp.CacheStrategy != CacheOverlay || !slices.Contains(rp.CacheRoots, facts.GoCache) {
-		t.Skipf("the GOCACHE root is not overlaid here: %v %v", rp.CacheStrategy, rp.CacheRoots)
+	if slices.Contains(rp.CacheRoots, facts.GoCache) {
+		t.Errorf("a cache holding a writable root through a symlink must not be overlaid: %v", rp.CacheRoots)
 	}
 	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
 	if err != nil {

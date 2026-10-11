@@ -465,14 +465,16 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   host's bubblewrap supports it: builds read warm from the real cache, but writes
   land in a per-session tmpfs that is discarded at session end. The Go settings
   are the host's, resolved once at session start (see the GOPATH note below). A
-  root at, above or inside the worktree, at or inside another persistent write
-  root (an extra writable root, a linked worktree's git metadata), at or above
+  root at, above or inside the worktree, sharing storage with another
+  persistent write root (an extra writable root or a linked worktree's git
+  metadata inside it, or it inside one, by any spelling or link), at or above
   your home directory or a temp root, or one that is not a directory, is never
-  overlaid, since the discarded upper layer would swallow writes there; such a
-  write root, or the session scratch, inside an overlaid root is bound writable
-  again on top of the overlay; a root that does
-  not exist yet is created empty at session start (as the go command itself
-  would) so it can be; a file or a dangling symlink is left out.
+  overlaid, since the discarded upper layer would swallow writes there. Such a
+  cache is left as it is: the granted root is writable, the Go cache variables
+  that pointed into it go to the session scratch, and other writes into it
+  fail rather than vanish. A root that does not exist yet is created empty at
+  session start (as the go command itself would) so it can be overlaid; a file
+  or a dangling symlink is left out.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session

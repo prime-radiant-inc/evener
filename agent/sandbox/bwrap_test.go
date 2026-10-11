@@ -516,22 +516,18 @@ func TestBuildBwrapArgvSkipsANonDirectoryCacheRoot(t *testing.T) {
 	}
 }
 
-// A persistent writable location inside an overlaid cache root (an extra
-// writable root, a linked worktree's shared git metadata, the session scratch)
-// is bound writable again after the overlay, so writes there persist while the
-// rest of the cache stays write-private.
-func TestBuildBwrapArgvRebindsWritableLocationsInsideACacheOverlay(t *testing.T) {
+// A cache root holding a persistent writable location (an extra writable
+// root, existing or not yet created, or a linked worktree's shared git
+// metadata) is not overlaid at all: an overlay would take the spawn's writes
+// there into its discarded layer. The writable location is bound as usual.
+func TestBuildBwrapArgvDoesNotOverlayACacheHoldingAWriteRoot(t *testing.T) {
 	overlayFacts := func(home string) HostFacts {
 		return HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	}
-	rebindAfterOverlay := func(t *testing.T, args []string, cache, w string) {
+	notOverlaid := func(t *testing.T, args []string, cache string) {
 		t.Helper()
-		overlay := seqIndex(args, "--overlay-src", cache, "--tmp-overlay", cache)
-		if overlay < 0 {
-			t.Fatalf("the cache root %q must stay overlaid: %v", cache, args)
-		}
-		if seqIndex(args[overlay:], "--bind", w, w) < 0 {
-			t.Errorf("%q must be bound writable after the overlay of %q: %v", w, cache, args)
+		if seqIndex(args, "--overlay-src", cache, "--tmp-overlay", cache) >= 0 {
+			t.Errorf("the cache root %q holds a writable root and must not be overlaid: %v", cache, args)
 		}
 	}
 
@@ -542,59 +538,27 @@ func TestBuildBwrapArgvRebindsWritableLocationsInsideACacheOverlay(t *testing.T)
 		t.Fatal(err)
 	}
 	cwd := MaterializeWorkspace(t, MainCheckout)
-	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, overlayFacts(home), cwd)
-	if err != nil {
-		t.Fatal(err)
+	for _, w := range []string{library, filepath.Join(cache, "not-yet")} {
+		rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{w}}, overlayFacts(home), cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := buildBwrapArgv(rp, t.TempDir(), cwd)
+		notOverlaid(t, args, cache)
+		if w == library && !hasSeq(args, "--bind", library, library) {
+			t.Errorf("the writable root must be bound: %v", args)
+		}
 	}
-	sessionTmp := filepath.Join(cache, "tmp", "session")
-	if err := os.MkdirAll(sessionTmp, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	args := buildBwrapArgv(rp, sessionTmp, cwd)
-	rebindAfterOverlay(t, args, cache, library)
-	rebindAfterOverlay(t, args, cache, sessionTmp)
 
 	linked := MaterializeWorkspace(t, LinkedWorktree)
 	mainRepo := strings.TrimSuffix(linked, "-wt")
 	facts := overlayFacts(t.TempDir())
 	facts.XDGCacheHome = mainRepo
-	rp, err = Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, linked)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, linked)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rebindAfterOverlay(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo, rp.Git.CommonDir)
-	// Through the wrapper too: git's missing entries under the bound common
-	// dir (packed-refs and its lock) must not cost the cache its overlay.
-	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	rebindAfterOverlay(t, w.Wrap([]string{"/bin/true"}, linked), mainRepo, rp.Git.CommonDir)
-}
-
-// A persistent writable root inside an overlaid cache root that does not exist
-// yet is created when the wrapper is built, so it is bound writable over the
-// overlay and writes there persist rather than vanishing with the overlay.
-func TestWrapperCreatesAMissingWriteRootInsideACacheOverlay(t *testing.T) {
-	home := t.TempDir()
-	library := filepath.Join(home, ".cache", "library")
-	if err := os.MkdirAll(filepath.Join(home, ".cache"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
-	cwd := MaterializeWorkspace(t, MainCheckout)
-	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	argv := w.Wrap([]string{"/bin/true"}, cwd)
-	if !hasSeq(argv, "--bind", library, library) {
-		t.Errorf("a missing write root inside an overlaid cache must be created and bound: %v", argv)
-	}
+	notOverlaid(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo)
 }
 
 // The plugin store is re-bound read-only after the tmpfs that masks

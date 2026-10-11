@@ -508,7 +508,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, wholeMask)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
-	rp.CacheRoots = dropCacheRootsInWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
+	rp.CacheRoots = dropCacheRootsSharingWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
 
 	// File-tool read roots: restricted needs the grant, and the read-anywhere
 	// modes' file tools use it as an open anchor.
@@ -649,24 +649,29 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	}
 }
 
-// dropCacheRootsInWriteRoots drops each cache root at or inside a persistent
-// write root (an extra writable root, a linked worktree's git metadata), by
-// spelling or by where each lands with every link followed, dangling ones
-// included (physicalLanding): an overlay there would discard writes the
-// user granted for good, as it would inside the worktree (which cacheRootsFor
-// already drops). A write root inside a cache root keeps the overlay and is
-// bound writable again on top of it (buildBwrapArgv).
+// dropCacheRootsSharingWriteRoots drops each cache root that shares storage
+// with a persistent write root (an extra writable root, a linked worktree's
+// git metadata): the cache at or inside the write root, or the write root
+// inside the cache, by spelling or by where each lands with every link
+// followed, dangling ones included, and any link on the write root's way
+// (physicalPlaces). An overlay there would discard writes the user granted
+// for good. Such a cache is simply not overlaid: the granted root is bound
+// writable as usual, the env floor sends the Go cache variables that pointed
+// there to the session scratch, and other writes into it fail where they
+// happen instead of vanishing.
 //
 // Containment compares resolved spellings exactly. Two spellings that differ
 // only by letter case on a case-insensitive Linux volume are not matched:
 // that friction case is tracked as a known Low in #4306, alongside the same
 // limit for carve-outs, rather than handled by identity checks here.
-func dropCacheRootsInWriteRoots(cacheRoots, writeRoots []string) []string {
+func dropCacheRootsSharingWriteRoots(cacheRoots, writeRoots []string) []string {
 	within := func(c, w string) bool { return c == w || pathUnder(c, w) }
 	return slices.DeleteFunc(cacheRoots, func(c string) bool {
 		rc := physicalLanding(c)
 		return slices.ContainsFunc(writeRoots, func(w string) bool {
-			return within(c, w) || within(rc, physicalLanding(w))
+			return within(c, w) || within(w, c) || slices.ContainsFunc(physicalPlaces(w), func(l string) bool {
+				return within(rc, l) || within(l, rc)
+			})
 		})
 	})
 }
