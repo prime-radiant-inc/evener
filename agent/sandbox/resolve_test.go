@@ -734,3 +734,28 @@ func TestCacheRootsNeverLieInsideAPersistentWriteRoot(t *testing.T) {
 		t.Errorf("a cache root inside an extra writable root must be dropped: %v", rp.CacheRoots)
 	}
 }
+
+// bwrap mounts a private /tmp and /dev before the overlays, so a cache root
+// spelled there through a symlink would be overlaid at the link's path inside
+// the private mount, not at the storage the link names. Such a root is never
+// overlaid.
+func TestCacheRootsLeaveOutALinkSpelledInsideAPrivateMount(t *testing.T) {
+	store, err := os.MkdirTemp("/var/tmp", "evener-cache-store-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(store) })
+	linkDir, err := os.MkdirTemp("/tmp", "evener-cache-link-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(linkDir) })
+	link := filepath.Join(linkDir, "cache")
+	if err := os.Symlink(store, link); err != nil {
+		t.Fatal(err)
+	}
+	roots := cacheRootsFor(ModeWorkspaceWrite, HostFacts{OS: "linux", Home: "/home/tester", XDGCacheHome: link}, "/work/project")
+	if slices.Contains(roots, link) {
+		t.Errorf("a cache root reached through a link under /tmp must not be overlaid: %v", roots)
+	}
+}

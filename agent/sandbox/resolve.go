@@ -548,7 +548,11 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 		// A root that is not a directory yet (a file, a dangling link to an
 		// unmounted drive) stays listed; bwrap overlays only a directory.
 		roots = slices.DeleteFunc(roots, func(r string) bool {
-			return pathUnder(r, worktree) || pathUnder(resolveExistingPrefix(r), worktree)
+			rr := resolveExistingPrefix(r)
+			// bwrap mounts a private /tmp and /dev before the overlays, so a
+			// root spelled there through a symlink would be overlaid at the
+			// link's path inside that mount, not at the storage it names.
+			return pathUnder(r, worktree) || pathUnder(rr, worktree) || (inPrivateMount(r) && rr != r)
 		})
 		return dedupeRoots(roots)
 	default:
@@ -570,6 +574,13 @@ func dropCacheRootsInWriteRoots(cacheRoots, writeRoots []string) []string {
 			return within(c, w) || within(rc, resolveExistingPrefix(w))
 		})
 	})
+}
+
+// inPrivateMount reports whether p is spelled under a directory bwrap gives
+// each spawn its own copy of (a private /tmp and a minimal /dev), where host
+// symlinks are not visible.
+func inPrivateMount(p string) bool {
+	return pathUnder(p, "/tmp") || pathUnder(p, "/dev")
 }
 
 // resolveExistingPrefix returns p with its longest existing ancestor resolved
