@@ -479,13 +479,18 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   whose real location has since moved into the workspace, onto a shared tree,
   or to share storage with a write root is not overlaid, and one inside
   another is served by the outer overlay. A Go cache the overlay does not
-  serve (set in the spawn's environment, or by Go's defaults under the spawn's
-  own `HOME`), one at, inside or holding a persistent write root, one whose
-  root no longer resolves outside the persistent roots, or one that cannot be
-  a directory, is redirected into the session scratch instead. So are all
-  three Go settings when the spawn's go reads a go env file (one that exists,
-  or one named by a relative path), since its settings could put the caches
-  anywhere.
+  serve (set in the spawn's environment, with `go env -w`, which is read again
+  at each spawn as go itself does, or by Go's defaults under the spawn's own
+  `HOME`), one at, inside or holding a persistent write root, one whose root
+  no longer resolves outside the persistent roots, one that cannot be a
+  directory, or one whose root has since been removed, is redirected into the
+  session scratch instead. So are all three Go settings when the spawn's go
+  env file can't be judged: named by a relative path, or not the file read at
+  session start. When the spawn's go env file exists but cannot be read at
+  that spawn (a FIFO, a device, an oversized file), or is named by a relative
+  path the floor cannot check against the spawn's directory, the Go settings
+  go to the scratch and that spawn gets `GOENV=off`, since reading it would
+  block it too; once the file is readable again, spawns read it as usual.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
