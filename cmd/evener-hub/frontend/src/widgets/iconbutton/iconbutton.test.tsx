@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
+import { SHOW_DELAY_MS } from "../hovercard/useFloatingLabel";
 import { IconButton, type IconButtonProps } from "./index";
 
 function DotIcon() {
@@ -88,6 +89,50 @@ test("an aria-disabled refusal swallows the click but keeps focus, exactly as Bu
 
   rerender(<IconButton label="Go" icon={<DotIcon />} onClick={onClick} />);
   await user.click(screen.getByRole("button", { name: "Go" }));
+  expect(onClick).toHaveBeenCalledOnce();
+});
+
+function focusAndWaitForTooltip(button: HTMLElement): void {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => button.focus());
+    act(() => {
+      vi.advanceTimersByTime(SHOW_DELAY_MS);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+test("a disabled button with a disabledReason stays focusable, refuses the press, and is described by its reason", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  const reason = "test-reason";
+  render(<IconButton label="Go" icon={<DotIcon />} disabled disabledReason={reason} onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.getAttribute("aria-disabled")).toBe("true");
+
+  focusAndWaitForTooltip(button);
+  expect(document.activeElement).toBe(button);
+  const tooltip = screen.getByRole("tooltip");
+  expect(button.getAttribute("aria-describedby")).toBe(tooltip.id);
+  expect(tooltip.textContent).toBe(reason);
+
+  await user.keyboard("{Enter}");
+  await user.click(button);
+  expect(onClick).not.toHaveBeenCalled();
+});
+
+test("a disabledReason on an enabled button is inert: no refusal, no tooltip", async () => {
+  const user = userEvent.setup();
+  const onClick = vi.fn();
+  render(<IconButton label="Go" icon={<DotIcon />} disabledReason="test-reason" onClick={onClick} />);
+  const button = screen.getByRole("button", { name: "Go" });
+  expect(button.hasAttribute("aria-disabled")).toBe(false);
+  focusAndWaitForTooltip(button);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  await user.click(button);
   expect(onClick).toHaveBeenCalledOnce();
 });
 

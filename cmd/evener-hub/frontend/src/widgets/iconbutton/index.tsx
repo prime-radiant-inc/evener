@@ -2,6 +2,7 @@ import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode 
 import { type ButtonSize, type ButtonVariant, isAriaRefusal } from "../button";
 import buttonStyles from "../button/button.module.css";
 import { requireClass } from "../internal/requireClass";
+import { Tooltip } from "../tooltip";
 import styles from "./iconbutton.module.css";
 
 /** Button's variants minus link: link is underlined text, and an icon-only
@@ -19,6 +20,11 @@ export interface IconButtonProps
   size?: ButtonSize;
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
+  /** Why a disabled button is disabled. With disabled, the button refuses
+   * through aria-disabled instead of the native attribute, so it keeps focus
+   * and a keyboard user can reach the reason, which a Tooltip shows and
+   * aria-describedby announces. Ignored while the button is enabled. */
+  disabledReason?: string;
   type?: "button" | "submit" | "reset";
 }
 
@@ -69,23 +75,40 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
  * "arriving via untyped spread" test in iconbutton.test.tsx.
  */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { label, icon, variant = "primary", size = "md", onClick, disabled = false, type = "button", ...rest },
+  {
+    label,
+    icon,
+    variant = "primary",
+    size = "md",
+    onClick,
+    disabled = false,
+    disabledReason,
+    type = "button",
+    ...rest
+  },
   ref,
 ) {
+  // A disabled button with a reason refuses the way an aria-disabled one does:
+  // a native disabled control cannot take focus, which would leave the reason
+  // reachable by mouse only.
+  const reason = disabled && disabledReason ? disabledReason : undefined;
+  const explained = reason !== undefined;
   // The same refusal Button makes: aria-disabled keeps the control focusable,
   // so the browser still delivers the click and the widget swallows it here.
-  const refused = isAriaRefusal(rest["aria-disabled"]);
-  return (
+  const refused = explained || isAriaRefusal(rest["aria-disabled"]);
+  const button = (
     <button
       ref={ref}
       {...rest}
       type={type}
       aria-label={label}
+      aria-disabled={explained || rest["aria-disabled"]}
       className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
       onClick={refused ? undefined : onClick}
-      disabled={disabled}
+      disabled={disabled && !explained}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>
     </button>
   );
+  return explained ? <Tooltip label={reason}>{button}</Tooltip> : button;
 });
