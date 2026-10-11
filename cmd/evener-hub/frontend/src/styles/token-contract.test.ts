@@ -420,7 +420,6 @@ const SEMANTIC_USE_ALLOWLIST = [
   "statusdot", // state color
   "meter", // danger/attention fill tone
   "toast", // tone prop
-  "dialog", // danger footer
   "formrow", // error-state left border + message text (wave 7)
   "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
@@ -512,14 +511,6 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // Its --alive ring marks an actually in-progress task, which is precisely the
 // semantic "agent working" meaning the token contract reserves for that hue.
 //
-// delegate-status: panes/session/transcript/tools/delegateStatus.module.css
-// earns the same exception for the same structural reason - it lives under
-// panes/session/transcript/tools/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
-// .dangerText — failure text for a delegate's not-resumable reason and last
-// failed outcome reason. Error text is the danger hue's canonical, ungateable
-// job.
-//
 // hover-card-glow-up: panes/session/transcript/entityref.module.css earns the
 // same exception for the same structural reason - it lives under
 // panes/session/transcript/, not widgets/<name>/, so it can never match
@@ -530,39 +521,8 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // the same meaning-per-hue split RailRow.module.css's signal-row family and
 // the subagent row's attribute-keyed state colors already established; every
 // terminal or neutral state stays on the ink ramp.
-//
-// webui-keybindings-p4 task 6: panes/settings/sections/keybindings.module.css
-// earns the same exception for the same structural reason - it lives under
-// panes/settings/sections/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
-// .rowError and .captureError, the keybindings editor's inline validation and
-// hub-error text. Error text is the danger hue's canonical, ungateable job,
-// the same as delegateStatus.module.css's .dangerText above.
-// marketplace-sheet-editor task 4: panes/settings/sections/marketplacesPlugins/
-// marketplacesPlugins.module.css earns the same exception for the same
-// structural reason - it lives under panes/settings/sections/, not
-// widgets/<name>/, so it can never match WIDGET_STYLESHEET_RE either. Its one
-// semantic reach is --danger-ink on .sheetError, the MarketplaceSheet's inline
-// failed-save text. Error text is the danger hue's canonical, ungateable job,
-// the same as keybindings.module.css's .rowError above.
-// shared-notes panel: panes/session/chrome/notespanel.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/session/chrome/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger on
-// .statusError, the blur-save failure text under the human textarea. Error
-// text is the danger hue's canonical, ungateable job, the same as
-// delegateStatus.module.css's .dangerText above.
-// host-registry slice 1: panes/settings/sections/hosts.module.css earns the
-// same exception for the same structural reason - it lives under
-// panes/settings/sections/, not widgets/<name>/, so it can never match
-// WIDGET_STYLESHEET_RE either. Its semantic reaches are --danger on .error
-// and .formError, the hosts pane's inline load-failure and add-form failure
-// text. Error text is the danger hue's canonical, ungateable job, the same as
-// keybindings.module.css's .rowError and marketplacesPlugins.module.css's
-// .sheetError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
-  "panes/session/chrome/notespanel.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/askDock/askdock.module.css",
   "panes/session/composer/currentwork.module.css",
@@ -577,10 +537,6 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   // above.
   "dev/taskcardmockups/taskcardmockups.module.css",
   "panes/session/transcript/tools/sandboxescalation.module.css",
-  "panes/session/transcript/tools/delegateStatus.module.css",
-  "panes/settings/sections/keybindings.module.css",
-  "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
-  "panes/settings/sections/hosts.module.css",
   "panes/session/transcript/entityref.module.css",
   "shell/activitybar/activitybar.module.css",
 ]);
