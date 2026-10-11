@@ -941,3 +941,52 @@ func TestForceCompact_HoldAcrossAPartBoundaryReachesTheSummarizer(t *testing.T) 
 		t.Fatalf("only %d of 4 holds crossing part boundaries reached a summarizer whole", got)
 	}
 }
+
+// A batch summary the model cut off at its output limit may have dropped a
+// hold, so it fails the summary and the checkpoint, which keeps every partner
+// message, stands.
+func TestForceCompact_TruncatedBatchSummaryKeepsTheCheckpoint(t *testing.T) {
+	adapter := &stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		if strings.HasPrefix(req.Messages[0].Text(), partnerBatchPrompt) {
+			return llm.Response{Message: llm.Assistant("partial summary"), Finish: llm.FinishReason{Reason: llm.FinishReasonLength}}, nil
+		}
+		return llm.Response{Message: llm.Assistant(emptySummaryReply)}, nil
+	}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(200, 1500, 80)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if history[0].Kind != schema.TurnCheckpoint || !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("history starts with a %s; want the checkpoint, with the hold, to stand", history[0].Kind)
+	}
+}
+
+// A long batch summary is split into parts like a long message, so no later
+// condensing request runs past the batch limit.
+func TestForceCompact_OversizedBatchSummariesStayInBatchBounds(t *testing.T) {
+	largest, first := 0, true
+	client := llm.NewClient()
+	client.Register(alwaysReplying(func(req llm.Request) string {
+		batch, ok := strings.CutPrefix(req.Messages[0].Text(), partnerBatchPrompt)
+		if !ok {
+			return emptySummaryReply
+		}
+		largest = max(largest, len(batch))
+		if first {
+			first = false
+			return strings.Repeat("verbose summary line.\n", 6000) // about 130k characters
+		}
+		return "short summary"
+	}))
+	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	history := partnerFloodHistory(200, 1500, -1)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if largest > 40_000+1_000 {
+		t.Fatalf("a condensing request carried %d characters, over the 40k batch limit", largest)
+	}
+}

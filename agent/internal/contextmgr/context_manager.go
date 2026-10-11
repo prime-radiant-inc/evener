@@ -1639,7 +1639,20 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 			if err != nil {
 				return "", err
 			}
-			summaries = append(summaries, "Summary of earlier messages: "+strings.TrimSpace(resp.Text())+"\n")
+			if resp.Finish.Reason == llm.FinishReasonLength {
+				// Cut off at the output limit, it may have dropped a hold.
+				return "", errors.New("a batch summary was cut off at the model's output limit")
+			}
+			// A long summary is split like a long message, so the next round's
+			// batches stay within budget.
+			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
+			for i, part := range parts {
+				label := "Summary of earlier messages: "
+				if len(parts) > 1 {
+					label = fmt.Sprintf("Summary of earlier messages (part %d of %d): ", i+1, len(parts))
+				}
+				summaries = append(summaries, label+part+"\n")
+			}
 			start = end
 		}
 		lines = summaries
