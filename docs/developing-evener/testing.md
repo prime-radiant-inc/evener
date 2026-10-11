@@ -59,6 +59,36 @@ Exact text assertions are allowed only when the text is itself a machine or API
 contract value, such as a JSON field name, enum token, error code, or CLI flag.
 Prefer asserting such values through their structured representation.
 
+### Copy Is Not a Test Oracle
+
+The same rule holds for every human-readable string, not only prompts: UI copy,
+labels, empty-state and usage text, toast and error messages, log lines, and Go
+error strings. A test that passes because a string came out the same as it went
+in proves nothing and breaks on every wording change. Never write:
+
+- an assertion that rendered or returned text equals, contains, or matches a
+  hardcoded phrase (`findByText("Use: name command [args...]")`,
+  `strings.Contains(err.Error(), "not found")`);
+- an assertion that output equals a constant imported from the code under test
+  (`findByText(USAGE_MESSAGE)`): the test only re-reads the source, so it
+  cannot fail for a behavioral reason;
+- a test whose whole claim is that some copy exists.
+
+Assert what the copy is for instead:
+
+- **Frontend:** that the state changed. A refusal raises `role="alert"`, the
+  list did not grow, the request was never sent, focus moved, a control became
+  disabled, a callback fired with the right structured value. Locate elements
+  by role, and by accessible name only to pick the right control, never as the
+  thing being verified. Use `data-testid` when no role and name is stable.
+- **Go:** that the error is the right error. Match a sentinel with
+  `errors.Is`, a type with `errors.As`, or a structured field or code, and
+  assert the side effects that did or did not happen.
+
+When the text really is the contract (an enum token, a wire field, a CLI flag,
+a file format), assert it through its structured form, as above. When it is
+copy a person reads, review it in the diff and test the behavior around it.
+
 ## Flakes and Timeouts
 
 Two standing rules (Jesse, 2026-07-20/21), both absolute:

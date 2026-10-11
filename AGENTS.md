@@ -53,6 +53,9 @@ reconnect after loading multiple pages, including a visible row on a later page.
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.
+Never assert on phrasing: no test may check that copy, error messages, or other
+human-readable strings match a hardcoded phrase or a constant imported from the
+code. Assert the behavior instead ("Copy Is Not a Test Oracle" in that doc).
 For the rest of the dev-facing docs (building, linting, coverage, fuzzing,
 environment, worktrees), see `docs/developing-evener/README.md`; for every
 `make` target with a one-line summary, run `make help`.
