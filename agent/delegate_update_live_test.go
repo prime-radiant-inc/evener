@@ -142,8 +142,9 @@ type delegateRun struct {
 	entries   []transcript.Entry
 	runErr    error
 	unsettled bool
-	// runErrUnknown marks a delegate the session already reclaimed, whose
-	// run error is no longer readable.
+	// runErrUnknown marks a delegate this root cannot look up: one the
+	// session already reclaimed, or a deeper descendant it does not own. Its
+	// run error is unknown and reported as such, never assumed clean.
 	runErrUnknown bool
 }
 
@@ -223,6 +224,11 @@ func recordRootStep(ctx context.Context, t *testing.T, modelFailures []string, e
 // model behavior.
 func isModelBehaviorError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A provider error that wraps a cancellation is still a provider error.
+	var providerErr llm.Error
+	if errors.As(err, &providerErr) {
 		return false
 	}
 	var joined interface{ Unwrap() []error }
@@ -371,6 +377,7 @@ func TestIsModelBehaviorError(t *testing.T) {
 		{"model error joined to a runtime error", errors.Join(model, runtime), false},
 		{"cancellation joined to a runtime error", errors.Join(context.Canceled, runtime), false},
 		{"model error joined to cancellation", errors.Join(model, context.Canceled), true},
+		{"provider error wrapping a cancellation", llm.NewStreamError("openai", "stream broke", context.Canceled), false},
 	} {
 		if got := isModelBehaviorError(tc.err); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
