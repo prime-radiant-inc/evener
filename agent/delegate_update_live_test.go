@@ -92,6 +92,10 @@ wait:
 	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v", *delegateUpdateEvalModel, sawUpdate, answer, childReceived)
 }
 
+// The classification is a tally aid, not a proof: a question that lands while
+// a parent request is in flight can let that response's narration count, and
+// child_received is the ground truth for whether an answer arrived.
+//
 // toolCallsAfterQuestion lists the tool calls from the entry that delivered
 // the delegate's question onward, in transcript order. Calls before it, such
 // as narration while starting the delegate, cannot answer it.
