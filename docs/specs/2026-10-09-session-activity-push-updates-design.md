@@ -17,7 +17,7 @@ re-reading the collection for a field change.
 commits 6342f22da8, a784dd40f7, and 99504f04ff.
 
 **Related:** [session activity product guide](../product/session-activity.md),
-[API design](session-activity-api.md),
+[API design](../design/session-activity-api.md),
 [client](../../appwire-client/typescript/sessionActivityStore.ts),
 [delegate projection](../../internal/appprojector/appwire_projection.go),
 [read projection](../../agent/session_activity_delegates.go).
@@ -185,9 +185,10 @@ under-invalidating a count. Revisit only against a measured win.
 4. On `evener/thread/activity/changed`, refresh `summary`, `jobs`, and `watches`
    as today, but do not refresh `delegates`, unless this invalidation refreshes
    no other observed resource: a store that observes nothing else, one whose
-   other observed resource is absent from the notification, and one whose other
-   read has permanently failed all keep the delegates read, because nothing else
-   in this notification can carry a gate or availability change back.
+   other observed resource is absent from the notification, one whose only other
+   demand is an explicit read nobody retries, and one whose other read has
+   permanently failed all keep the delegates read, because nothing else in this
+   notification can carry a gate or availability change back.
    `evener/thread/resync` still refreshes every observed resource.
 5. Publish nothing when a merge changes no mapped field.
 6. Treat a response whose context `epoch` differs from the loaded one as a source
@@ -348,10 +349,11 @@ on `availability`. A negative-path test must pin the fallback.
   read that reveals an unannounced replacement queues exactly one reconciliation
   read, bounded by the change rather than a loop.
 - **Unguarded invalidation.** A store that observes no other collection, one
-  whose other observed resource is absent from the notification, and one whose
-  other read has permanently failed all keep the invalidation-driven delegate
-  read, so a runtime released without any frame still lands as a retained
-  context with refreshed rows.
+  whose other observed resource is absent from the notification, one whose only
+  other demand is an explicit read nobody retries, and one whose other read has
+  permanently failed all keep the invalidation-driven delegate read, so a runtime
+  released without any frame still lands as a retained context with refreshed
+  rows.
 - **Raced settlement.** A delegate settlement that arrives while the read first
   revealing the replacement epoch is pending shows the completed status and
   report once that read's reconciliation read settles.

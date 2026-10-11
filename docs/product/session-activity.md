@@ -327,7 +327,8 @@ serve it. A source that
 does not advertise the capability, a retained context
 whose released runtime receives invalidations but no frames, or an invalidation
 that refreshes no other observed resource (the store observes none, the
-notification omits it, or its read has permanently failed) keeps the
+notification omits it, its only other demand is an explicit read nobody retries,
+or its read has permanently failed) keeps the
 invalidation read. A read that was carrying that capability can also fail for
 good, and the delegates it stood in for are read then.
 Delegate membership is append-only within a source epoch;

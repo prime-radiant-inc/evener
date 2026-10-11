@@ -1169,15 +1169,14 @@ export class SessionActivityStore {
    * accepted response can carry a capability or availability change back to this
    * store. Suppressing the invalidation-driven delegate read assumes one can: a
    * store that observes no other collection, one whose other resource is absent
-   * from this invalidation, or one whose other read has permanently failed still
-   * has no way to learn that its ancestor released the runtime, which sends
+   * from this invalidation, one whose only other demand is an explicit read
+   * nobody retries, and one whose other read has permanently failed all still
+   * have no way to learn that their ancestor released the runtime, which sends
    * invalidations and no frames. */
   private refreshesAnotherResource(changed: readonly SessionActivityResource[]): boolean {
     return changed.some(
       (resource) =>
-        resource !== "delegates" &&
-        (this.reads[resource].observers > 0 || this.reads[resource].oneShot) &&
-        !this.readState(resource).permanent,
+        resource !== "delegates" && this.reads[resource].observers > 0 && !this.readState(resource).permanent,
     );
   }
   private releaseIdle(): void {

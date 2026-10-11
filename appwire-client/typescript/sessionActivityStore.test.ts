@@ -3955,6 +3955,33 @@ test("a permanent summary failure reconciles the delegates its read stood in for
   expect(store.getSnapshot().context?.availability).toBe("retained");
 });
 
+test("an explicit summary read is no substitute for the delegates read", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  const before = callsTo(client, "evener/thread/delegates/list");
+  // An explicit read has no retry owner, so the invalidation cannot lean on it
+  // to carry the capability back: it is held open here and then fails.
+  const pending = deferred<SessionActivitySummary>();
+  client.on("evener/thread/activity/read", () => pending.promise);
+  const summary = store.refresh("summary");
+  await vi.advanceTimersByTimeAsync(0);
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  activityChanged(client, ["summary", "delegates"]);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBeGreaterThan(before);
+  pending.reject(new WireError("summary hiccup", -32000, { evenerErrorInfo: "internal" }));
+  await summary;
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.status === "failed");
+  expect(store.getSnapshot().context?.availability).toBe("retained");
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
