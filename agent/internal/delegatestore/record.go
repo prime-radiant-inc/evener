@@ -132,9 +132,9 @@ type Descriptor struct {
 	// RuntimeRole names the runtime-only role a delegate was started in
 	// (memory-librarian). Only runtime code sets it, never a model's delegate
 	// call; it is what grants that role's capabilities.
-	RuntimeRole string `json:"runtime_role,omitempty"`
-	Provenance                    *provenance.Causal    `json:"provenance,omitempty"`
-	Resumable                     bool                  `json:"resumable"`
+	RuntimeRole string             `json:"runtime_role,omitempty"`
+	Provenance  *provenance.Causal `json:"provenance,omitempty"`
+	Resumable   bool               `json:"resumable"`
 }
 
 type SandboxSnapshot struct {
