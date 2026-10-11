@@ -23,11 +23,10 @@ func (s *Session) retirementEvidence() ([]RetirementBlocker, error) {
 	// Root attention cached behind a Stop's park is not work this process can
 	// do: it waits for the user's re-engagement, and both the attention
 	// (transcript fold) and the park (the durable queue/steering holds) are
-	// restored by the next resume. Read the park before attentionMu, the lock
-	// order rootAttentionRailParked documents.
-	parked := s.rootAttentionRailParked()
+	// restored by the next resume. pendingRootDelegateAttention is that rule;
+	// it takes attentionMu itself, so it is read before the lock below.
+	rootAttentionPending := s.pendingRootDelegateAttention()
 	s.attentionMu.Lock()
-	rootAttentionPending := len(s.rootAttentionWakeIDs) != 0 && !parked
 	if rootAttentionPending || s.rootAttentionRetry.active || s.attentionCallbacks != 0 || len(s.delegateAttentionArmIDs) != 0 || s.delegateAttentionArmRetry.active {
 		blockers = append(blockers, RetirementBlocker{Category: "notification", SessionID: s.id})
 	}
