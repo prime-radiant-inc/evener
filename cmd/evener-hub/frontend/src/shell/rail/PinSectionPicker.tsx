@@ -3,7 +3,7 @@ import { errorText } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useId, useState } from "react";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
-import { Button, Dialog, FormRow, Input, Sheet, Skeleton } from "../../widgets";
+import { Button, Dialog, FormRow, InlineNotice, Input, ListRow, Sheet, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
 import { isPinSectionNotFound, type PinSectionSummary } from "./actions";
@@ -16,9 +16,8 @@ export interface PinSectionPickerProps {
 }
 
 const CLASS = {
+  pickerBody: requireClass(styles.pickerBody, "railDialog.module.css", "pickerBody"),
   pickerList: requireClass(styles.pickerList, "railDialog.module.css", "pickerList"),
-  pickerItem: requireClass(styles.pickerItem, "railDialog.module.css", "pickerItem"),
-  pickerError: requireClass(styles.pickerError, "railDialog.module.css", "pickerError"),
 };
 
 function compareSections(a: PinSectionSummary, b: PinSectionSummary): number {
@@ -119,7 +118,7 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
 
   const title = `Pin ${session.title}`;
   const body = (
-    <>
+    <div className={CLASS.pickerBody}>
       {nameMode ? (
         <FormRow label="Section name" htmlFor={inputID} error={error || undefined}>
           <Input
@@ -140,36 +139,28 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
             <ul className={CLASS.pickerList} aria-label="Pin sections">
               {sections.map((section) => (
                 <li key={section.id}>
-                  <button
-                    type="button"
-                    className={CLASS.pickerItem}
+                  <ListRow
+                    variant="plain"
+                    label={section.name}
                     disabled={submitting}
-                    onClick={() => void assignExisting(section)}
-                  >
-                    <span>{section.name}</span>
-                  </button>
+                    onSelect={() => void assignExisting(section)}
+                  />
                 </li>
               ))}
               <li>
-                <button
-                  type="button"
-                  className={CLASS.pickerItem}
-                  onClick={() => setNameMode(true)}
+                <ListRow
+                  variant="plain"
+                  label="New section…"
                   disabled={submitting}
-                >
-                  New section…
-                </button>
+                  onSelect={() => setNameMode(true)}
+                />
               </li>
             </ul>
           )}
         </>
       )}
-      {!nameMode && error && (
-        <p className={CLASS.pickerError} role="alert">
-          {error}
-        </p>
-      )}
-    </>
+      {!nameMode && error && <InlineNotice tone="danger">{error}</InlineNotice>}
+    </div>
   );
 
   // Mobile gets the standard Sheet (side=bottom, the same geometry the
