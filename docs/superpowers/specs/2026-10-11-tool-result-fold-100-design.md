@@ -15,10 +15,16 @@ behind a "Show N earlier lines" control; revealing swaps in the full text plus
 is the "~20 lines" perception. The fold is the mechanism the request names:
 windowing (tail view), truncation (head hidden), "show more" (the reveal button).
 
-The fold covers every tool body that renders text: shell, read_file (text), grep,
-list_dir, glob, read_transcript, and `RawToolOutput` — the default body for every
-unregistered tool, including all MCP tools. Callers that pass `fold={false}`
-(`MCPToolArguments`, `compactContext`) are unaffected.
+The fold covers every tool body that renders tool output TEXT as the framed mono
+block: shell, read_file (text), grep, list_dir, glob, read_transcript,
+memory_read, memory_search, the job_* family's raw output dumps, the delegate
+status and worktree/find_session fallback bodies, job_watch's own raw fallback,
+and `RawToolOutput` — the default body for every unregistered tool, including
+all MCP tools. Bodies with domain-specific shapes keep their own budgets and
+are untouched by this change: web_fetch's ContextCard (240-char snippet),
+web_search's five 200-char result lines, edit diffs, plain-text confirmations.
+Callers that pass `fold={false}` (`ShellCommandBlock`, `MCPToolArguments`,
+`compactContext`) are unaffected.
 
 `job_watch` bodies carry a second, separate clamp: notes over
 `NOTE_CLAMP_LINES = 20` lines hide behind "Show full note"
@@ -46,7 +52,13 @@ unregistered tool, including all MCP tools. Callers that pass `fold={false}`
   visible line number = total − 99).
 - B2 — job_watch notes. Notes at or under 100 lines render in full with no
   disclosure; longer notes clamp behind "Show full note" / "Show less", same
-  mechanism as today, threshold 100.
+  mechanism as today, threshold 100. The clamp has two halves that must move
+  together: `NOTE_CLAMP_LINES` in `jobWatch.tsx` (when the clamped class and
+  disclosure apply) and `.noteClamped`'s `-webkit-line-clamp` in
+  `jobWatch.module.css` (how many lines the clamped view shows). Both go to
+  100. jsdom cannot apply line-clamp, so the CSS half is pinned by a
+  stylesheet-text assertion (the `toolRowGrammar.test.tsx` pattern), not by
+  layout.
 - B3 — Character budgets unchanged. The 8,000-char elision lines and Copy
   behavior are exactly as before.
 - B4 — Honesty preserved. The fold still never offers expansion over bytes that
@@ -59,6 +71,9 @@ unregistered tool, including all MCP tools. Callers that pass `fold={false}`
   keeps its own preview line counts).
 - No change to the character budgets, DiffBlock, ThinkBlock, or markdown fenced
   blocks (those render static HTML with no fold).
+- No change to domain-specific body budgets: web_fetch's 240-char ContextCard
+  snippet, web_search's five 200-char result lines, and other non-CodeBlock
+  body shapes keep their own limits.
 - No redesign of the fold mechanics: tail window + reveal stays; only the
   threshold moves.
 - No change to `fold={false}` callers.
@@ -69,8 +84,9 @@ unregistered tool, including all MCP tools. Callers that pass `fold={false}`
 | --- | --- |
 | `widgets/codeblock/index.tsx` | `TAIL_VISIBLE_LINES` 14 → 100; rewrite the 67zh comments (prop doc and constant rationale) to state the 100-line window and keep the tail-keeping rationale. |
 | `tools/jobWatch.tsx` | `NOTE_CLAMP_LINES` 20 → 100; update the note-policy comment (mockup's "~20 lines" superseded by Jesse's 2026-10-11 100-line call). |
-| `widgets/codeblock/codeblock.test.tsx` | Re-pin the fold tests at the new boundary: ≤100 no fold; 101 folds with "Show 1 earlier line"; reveal/refold cycle; true gutter numbers; ANSI SGR continuation across the fold (samples must exceed 100 lines). |
-| `tools/jobWatch.test.tsx` | Clamp test uses a 101+ line note; the ≤100-line full-render test keeps its shape with an updated length. |
+| `tools/jobWatch.module.css` | `.noteClamped` `-webkit-line-clamp` 20 → 100; update the "~20 lines" comment. |
+| `widgets/codeblock/codeblock.test.tsx` | Move every fold-dependent sample past 100 lines so each test keeps exercising the fold, not just failing loudly: the boundary pair (exactly 100 renders with no controls; 101 folds with "Show 1 earlier line"), the reveal/refold cycle, true gutter numbers in the folded view, copy-while-folded (the folded state is the point of that test), and ANSI SGR continuation across the fold. Rewrite the 67zh rationale comment for the 100-line window. |
+| `tools/jobWatch.test.tsx` | Clamp test uses a 101-line note; add a stylesheet-text pin that `.noteClamped` carries `-webkit-line-clamp: 100`. The full-render test needs no change — its `TIMER_NOTE` is a one-line note, and lengthening it would break the summary pins that share `TIMER_RAW`. |
 | `panes/session/transcript/ToolCallItem.test.tsx` | The real recorded memory fixture (24/21-line outputs) now renders in full: drop the fold-click, assert both markers directly. Add an integration test with a synthetic 101-line output through the generic body so the expand → fold → reveal journey stays covered at the tool-row level. The recorded fixture itself is not modified. |
 | `dev/gallery-sections/codeblock.tsx` | The 21-line pytest sample no longer folds; lengthen it past 100 lines so the gallery still demos the folded state; update the comment and row label. |
 | `dev/editorial-preview/data.ts` | The 120-line "long native source evidence" sample folds so shallowly that the documented click-to-reveal scenario no longer hides the long line; lengthen to 160 lines so the long line (31) stays in the hidden head ("Show 60 earlier lines"). |
@@ -90,7 +106,9 @@ Whole journey, red first:
    view starts at the true line number (total − 99). ANSI sample over 100
    lines keeps SGR state that began on a hidden line.
 2. Unit (job_watch): a 101-line note clamps behind "Show full note"; a
-   ≤100-line note renders in full with no disclosure.
+   ≤100-line note renders in full with no disclosure; a stylesheet-text
+   assertion pins `.noteClamped`'s `-webkit-line-clamp` at 100 (jsdom cannot
+   apply line-clamp, so layout cannot prove this half).
 3. Integration (tool row): a synthetic 101-line generic-body output folds in
    the expanded transcript row and reveals; the recorded memory fixture test
    keeps asserting its real output renders whole.
@@ -98,7 +116,10 @@ Whole journey, red first:
 5. Gates: targeted vitest runs while red-green; `make test-web` (typecheck,
    vitest, Biome) green before the PR; `make test-web-browser` on this
    Chrome-capable host before merge (no guard pins the fold, but the editorial
-   fixture feeds real transcript rendering).
+   fixture feeds real transcript rendering, and expanded bodies grow ~7x
+   taller — the transcript's VirtualList is dynamically measured, so
+   correctness is safe; the browser guards prove the real geometry still
+   behaves with the taller rows).
 6. Baseline recorded before any change: `make test-web` PASS in this lane at
    base 246e68444b (typecheck 28.7s, web-test 194.4s, web-lint 2.2s).
 
@@ -110,6 +131,23 @@ unchanged; CodeBlock's reveal stays component-local state that re-folds on
 remount, as today. Nothing here destroys or duplicates user work under any
 condition; no recovery path changes.
 
+## Spec review round (2026-10-11)
+
+Two competing independent reviewers examined this spec (PAR); every reported
+finding was reproduced against the tree before revision, and none were
+invented or inflated. The significant finding, reported by both reviewers:
+the job_watch clamp has a CSS half (`jobWatch.module.css` `.noteClamped`
+`-webkit-line-clamp: 20`) the first draft missed — now in B2 and the files
+table. Further revisions: the mechanism paragraph now enumerates the
+fold-covered bodies completely and names the domain-specific bodies that keep
+their own budgets (web_fetch, web_search); the `fold={false}` list includes
+`ShellCommandBlock`; the codeblock test row keeps copy-while-folded
+exercising the folded state; the jobWatch test row no longer claims the
+one-line-note full-render test changes; the test plan names the taller-row
+geometry risk and its browser-gate coverage.
+
 ## Approval
 
-Jesse approves this spec before implementation proceeds.
+Jesse approves this spec before implementation proceeds. Approved 2026-10-11;
+the review-round revisions above stay inside the approved decisions (the CSS
+half is the same "align job_watch to 100" call completed).
