@@ -222,13 +222,13 @@ func recordRootStep(ctx context.Context, t *testing.T, modelFailures []string, e
 // provider or runtime error anywhere in a join makes the whole error not
 // model behavior.
 func isModelBehaviorError(err error) bool {
-	switch e := err.(type) {
-	case nil:
+	if err == nil {
 		return false
-	case interface{ Unwrap() []error }:
-		return len(e.Unwrap()) > 0 && !slices.ContainsFunc(e.Unwrap(), func(inner error) bool { return !isModelBehaviorError(inner) })
-	case interface{ Unwrap() error }:
-		return isModelBehaviorError(e.Unwrap())
+	}
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		inner := joined.Unwrap()
+		return len(inner) > 0 && !slices.ContainsFunc(inner, func(e error) bool { return !isModelBehaviorError(e) })
 	}
 	return errors.Is(err, errEmptyResponseExhausted) || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, context.Canceled)
 }
