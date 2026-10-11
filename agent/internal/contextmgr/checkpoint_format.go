@@ -109,8 +109,11 @@ func carriesPartnerMessages(text string) bool {
 		}
 	}
 	// Everything from the heading on must be exactly what the renderer writes
-	// for that model text and those entries.
-	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText)+renderCheckpointConversation(entries)+summaryTurnEnd
+	// for that model text and those entries. The block holds the model text
+	// with a trailing newline ensured, which soleFencedText strips once, so
+	// re-rendering it with that newline restored reproduces any model text,
+	// trailing blank lines included.
+	return text[start:] == renderCompactionModelText(summaryModelTextHeading, modelText+"\n")+renderCheckpointConversation(entries)+summaryTurnEnd
 }
 
 // soleFencedText returns the content of the one fenced block section holds,
@@ -140,9 +143,7 @@ func soleFencedText(section string) (string, bool) {
 func renderCompactionModelText(heading, text string) string {
 	var b strings.Builder
 	b.WriteString(heading + "\n\n")
-	// Trailing newlines are dropped so the block reads back to the same text
-	// (carriesPartnerMessages round-trips it).
-	writeMarkdownFence(&b, strings.TrimRight(text, "\n"))
+	writeMarkdownFence(&b, text)
 	return b.String()
 }
 

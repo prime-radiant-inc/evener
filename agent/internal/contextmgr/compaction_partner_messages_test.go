@@ -403,3 +403,24 @@ func TestCheckpoint_IndentedClosingFenceEndsTheBlock(t *testing.T) {
 		t.Fatalf("conversation after an indented closing fence = %q", entries)
 	}
 }
+
+// A summary the renderer wrote from a reply ending in blank lines is still
+// recognized, so a later compaction keeps carrying its partner messages even
+// when the model's reply then drops them.
+func TestForceCompact_CarryAfterAReplyEndingInBlankLines(t *testing.T) {
+	// As #4241's renderer wrote it: the reply's trailing blank lines kept.
+	persisted := "[CONTEXT SUMMARY]\n## Summary\n\n```text\n## Progress\nDone\n\n```\n\n" +
+		renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: partnerHold}}) + summaryTurnEnd
+	if !carriesPartnerMessages(persisted) {
+		t.Fatalf("a persisted summary ending in blank lines was not recognized:\n%s", persisted)
+	}
+	cm := partnerTestManager(emptySummaryReply + "\n\n")
+	history := partnerHoldHistory()
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	if !carriesPartnerMessages(history[0].Message.Text()) {
+		t.Fatalf("a summary the renderer wrote was not recognized:\n%s", history[0].Message.Text())
+	}
+	history = append(history, moreTurns()...)
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	requirePartnerHoldInContext(t, history, schema.TurnSummary)
+}
