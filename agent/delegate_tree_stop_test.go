@@ -1278,9 +1278,8 @@ func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, del
 // A steer whose transcript fsync landed under a covering stop is recorded as an
 // admission that carries across the generation being released. The successor's
 // first model claim binds it, clears it from pendingSteers, and returns its
-// text exactly once. The two orderings are
-// the two legal interleavings of the steer's completion and the stop's
-// FinishGeneration.
+// text exactly once. The two orderings are the two legal interleavings of the
+// steer's completion and the stop's FinishGeneration.
 func TestDelegateControllerStopFencedSteerReachesSuccessorWhenCompletedAfterFinish(t *testing.T) {
 	assertStopFencedSteerReachesSuccessor(t, false)
 }

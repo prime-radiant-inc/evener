@@ -89,10 +89,6 @@ func (c *delegateTreeController) BeginSteerPersistence(actor delegateActor, dele
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
 		return nil, err
 	}
-	return c.beginSteerPersistenceLocked(delegateID)
-}
-
-func (c *delegateTreeController) beginSteerPersistenceLocked(delegateID string) (*delegateSteeringClaim, error) {
 	live := c.live[delegateID]
 	if live == nil || live.binding == nil || live.binding.runtime == nil {
 		return nil, errDelegateTargetBusy
