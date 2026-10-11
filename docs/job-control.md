@@ -1268,6 +1268,13 @@ Delegate generations never create job records. A shell job record contains:
 }
 ```
 
+A kept within-bound completion arms no completion notification: its tool reply
+already told the caller the job ended. Once that reply is durable in the
+transcript the job's notification is recorded `consumed`, the same settlement a
+terminal `job_status` read gets, so a restore never re-announces it. If the
+process stops before the reply is durable, the record is still `not_armed` and
+the restore arms its notification.
+
 `parent_job_id` links shell-to-shell work. `parent_delegate_id` names the stable
 delegate that caused a shell job; a shell never points at a private delegate
 generation. Fields that do not apply are omitted.
