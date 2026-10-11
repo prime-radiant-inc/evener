@@ -651,7 +651,8 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 
 // dropCacheRootsInWriteRoots drops each cache root at or inside a persistent
 // write root (an extra writable root, a linked worktree's git metadata), by
-// spelling or resolved location: an overlay there would discard writes the
+// spelling or by where each lands with every link followed, dangling ones
+// included (physicalLanding): an overlay there would discard writes the
 // user granted for good, as it would inside the worktree (which cacheRootsFor
 // already drops). A write root inside a cache root keeps the overlay and is
 // bound writable again on top of it (buildBwrapArgv).
@@ -663,9 +664,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 func dropCacheRootsInWriteRoots(cacheRoots, writeRoots []string) []string {
 	within := func(c, w string) bool { return c == w || pathUnder(c, w) }
 	return slices.DeleteFunc(cacheRoots, func(c string) bool {
-		rc := resolveExistingPrefix(c)
+		rc := physicalLanding(c)
 		return slices.ContainsFunc(writeRoots, func(w string) bool {
-			return within(c, w) || within(rc, resolveExistingPrefix(w))
+			return within(c, w) || within(rc, physicalLanding(w))
 		})
 	})
 }
@@ -689,6 +690,14 @@ func linksThroughPrivateMount(p string) bool {
 		return found
 	})
 	return found
+}
+
+// physicalLanding returns where p lands once every symlink on its way is
+// followed, dangling ones included: for a path that does not exist yet, where
+// creating it would put it.
+func physicalLanding(p string) string {
+	places := physicalPlaces(p)
+	return places[len(places)-1]
 }
 
 // physicalPlaces returns the host locations a write to p touches: each

@@ -336,3 +336,24 @@ func TestPrepareCacheRootsDropsAnOverlayHoldingALoopingWriteRoot(t *testing.T) {
 		t.Errorf("a cache holding a looping write root must not be overlaid: %v", got.CacheRoots)
 	}
 }
+
+// A write root that is a dangling link lands where its target would be
+// created, so a cache root under that target is inside the persistent root:
+// it is neither overlaid (an overlay would swallow writes made through the
+// link once the target exists) nor created by the wrapper.
+func TestACacheUnderADanglingWriteRootsTargetIsPersistent(t *testing.T) {
+	home := t.TempDir()
+	library := filepath.Join(home, "library")
+	if err := os.Symlink(filepath.Join(home, "library-data"), library); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(home, "library-data", "cache")
+	if got := dropCacheRootsInWriteRoots([]string{cache}, []string{library}); len(got) != 0 {
+		t.Errorf("a cache under a dangling write root's target must not be overlaid: %v", got)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay}
+	rp.Spawned.WriteRoots = []string{library}
+	if !landsInPersistentRoot(rp, cache) {
+		t.Errorf("a cache under a dangling write root's target lands in that persistent root")
+	}
+}

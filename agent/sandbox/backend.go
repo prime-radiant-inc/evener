@@ -89,8 +89,11 @@ func prepareCacheRoots(rp ResolvedPolicy) ResolvedPolicy {
 // be bound writable over the overlay; it is a directory the user granted for
 // writing. When it cannot be created (a full or read-only disk, a dangling or
 // looping link), the caches holding it are not overlaid for this spawn, so
-// writes there fail where they happen instead of vanishing. Git's own entries
-// (some of them files, such as packed-refs) are never created here.
+// writes there fail where they happen instead of vanishing. That drop lasts
+// for this wrapper only, a stopgap the per-spawn judgement stacked on this
+// change (liveCacheRoots, #4302) replaces, so a repaired write root gets its
+// cache's overlay back at the next spawn. Git's own entries (some of them
+// files, such as packed-refs) are never created here.
 func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 	gitRoots := appendNonEmpty(appendNonEmpty(nil, rp.Git.GitDir), rp.Git.CommonDir)
 	for _, w := range bwrapWriteRoots(rp) {
@@ -119,12 +122,12 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 }
 
 // landsInPersistentRoot reports whether c's real location (or, not created
-// yet, where creating it would land) is at or inside a persistent write root
-// or the worktree.
+// yet, where creating it would land) is at or inside where a persistent write
+// root or the worktree lands, dangling links included (physicalLanding).
 func landsInPersistentRoot(rp ResolvedPolicy, c string) bool {
-	rc := resolveExistingPrefix(c)
+	rc := physicalLanding(c)
 	return slices.ContainsFunc(appendNonEmpty(slices.Clone(bwrapWriteRoots(rp)), rp.Git.WorktreeRoot), func(w string) bool {
-		return pathUnder(rc, resolveExistingPrefix(w))
+		return pathUnder(rc, physicalLanding(w))
 	})
 }
 
