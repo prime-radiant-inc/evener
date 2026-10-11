@@ -334,3 +334,21 @@ func TestCheckpoint_KeepsAnOlderSummaryWhole(t *testing.T) {
 		}
 	}
 }
+
+// An older summary can look like the new layout in part: a "## Summary"
+// section opening with a fenced example, then more sections, then a
+// "## Conversation" of its own in prose. Only the exact layout the renderer
+// writes is split; this one is carried whole.
+func TestCheckpoint_KeepsAnOlderSummaryWithASummarySectionWhole(t *testing.T) {
+	older := "[CONTEXT SUMMARY]\n## Summary\n\n```\nexample output\n```\nthen more notes\n\n## Progress\nshipped it\n\n## Conversation\nThe partner said HOLD_IN_PROSE_SENTINEL until review.\n[END SUMMARY]"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User(older)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cp := checkpoint(history, 2, nil, "communicate")[0].Message.Text()
+	if got := extractCheckpointEarlierSummaries(cp); len(got) != 1 || got[0] != older {
+		t.Fatalf("checkpoint carried %q, want the older summary whole", got)
+	}
+}

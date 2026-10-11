@@ -95,12 +95,34 @@ func carriesPartnerMessages(text string) bool {
 	if !ok {
 		return false
 	}
-	first, _, _ := strings.Cut(strings.TrimLeft(text[body:], "\n"), "\n")
-	if _, n := fenceRun(first); n == 0 {
+	// The renderer writes exactly one fenced block under the heading, with
+	// the carried conversation section right after it.
+	if !isSingleFencedBlock(text[body:end]) {
 		return false
 	}
 	carry, _, _, ok := markdownSectionSpan(text, checkpointConversationHeading)
-	return ok && carry >= end
+	return ok && carry == end
+}
+
+// isSingleFencedBlock reports whether text, blank lines aside, is one fenced
+// code block and nothing else.
+func isSingleFencedBlock(text string) bool {
+	var fence fenceTracker
+	opened, closed := false, false
+	for line := range strings.SplitSeq(strings.TrimSpace(text), "\n") {
+		switch {
+		case closed:
+			return false
+		case fence.step(line):
+			if opened {
+				closed = true
+			}
+			opened = true
+		case !opened:
+			return false
+		}
+	}
+	return closed
 }
 
 // renderCompactionModelText renders a model-written compaction turn's own text
