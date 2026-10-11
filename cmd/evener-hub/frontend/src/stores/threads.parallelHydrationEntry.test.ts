@@ -372,6 +372,15 @@ describe("useThreadsStore.ensureThread", () => {
     // One failed read, one successful retry, one distinct terminal read,
     // then this cycle's fresh initial read. The terminal owner is observed above.
     expect(readCount).toBe(4);
+    expect(fake.calls.filter((call) => call.method === "thread/read")[3]?.params).toEqual({
+      ref: "ref_a",
+      includeTurns: true,
+      itemsView: "full",
+      subscribe: true,
+      replaceSubscription: false,
+      itemLimit: 40,
+      requestGeneration: 1,
+    });
     threadsStore.getState().releaseThread("ref_a");
     // R36, ordinary final ownership retains the model at this same boundary.
     expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
