@@ -26,6 +26,7 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
+import { Eyebrow } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -38,7 +39,6 @@ const CLASS = {
   option: requireClass(styles.option, "askuser.module.css", "option"),
   label: requireClass(styles.label, "askuser.module.css", "label"),
   detail: requireClass(styles.detail, "askuser.module.css", "detail"),
-  recommended: requireClass(styles.recommended, "askuser.module.css", "recommended"),
   note: requireClass(styles.note, "askuser.module.css", "note"),
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
   fallback: requireClass(styles.fallback, "askuser.module.css", "fallback"),
@@ -71,7 +71,7 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
           <li key={opt.label} className={CLASS.option}>
             <span className={CLASS.label}>{opt.label}</span>
             <span className={CLASS.detail}>{opt.detail}</span>
-            {opt.recommended && <span className={CLASS.recommended}>recommended</span>}
+            {opt.recommended && <Eyebrow as="span">Recommended</Eyebrow>}
           </li>
         ))}
       </ul>

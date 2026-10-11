@@ -17,7 +17,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useEntityOwnerRef, useEntityViews } from "../../../transcriptDisplay/entityViews";
-import { HoverCard, OpenButton } from "../../../widgets";
+import { Eyebrow, HoverCard, OpenButton, PropertyList, type PropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatQuietAge, formatUsagePair, jobStatusDisplay } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
@@ -39,25 +39,18 @@ const CLASS = {
   trigger: requireClass(styles.trigger, "entityref.module.css", "trigger"),
   card: requireClass(styles.card, "entityref.module.css", "card"),
   head: requireClass(styles.head, "entityref.module.css", "head"),
-  kind: requireClass(styles.kind, "entityref.module.css", "kind"),
   status: requireClass(styles.status, "entityref.module.css", "status"),
   caption: requireClass(styles.caption, "entityref.module.css", "caption"),
   summary: requireClass(styles.summary, "entityref.module.css", "summary"),
-  rows: requireClass(styles.rows, "entityref.module.css", "rows"),
-  row: requireClass(styles.row, "entityref.module.css", "row"),
-  key: requireClass(styles.key, "entityref.module.css", "key"),
-  value: requireClass(styles.value, "entityref.module.css", "value"),
-  mono: requireClass(styles.mono, "entityref.module.css", "mono"),
 };
 
-function CardRow({ label, value, mono = false }: { label: string; value: ReactNode; mono?: boolean }) {
-  if (value === undefined || value === null || value === "") return null;
-  return (
-    <div className={CLASS.row}>
-      <dt className={CLASS.key}>{label}</dt>
-      <dd className={`${CLASS.value}${mono ? ` ${CLASS.mono}` : ""}`}>{value}</dd>
-    </div>
-  );
+// CardRows lists a card's facts, dropping each one the entity does not
+// carry. Values wrap in full: a hover card is read, not scanned.
+function CardRows({ rows }: { rows: { label: string; value: ReactNode; mono?: boolean }[] }) {
+  const present: PropertyListRow[] = rows
+    .filter((row) => row.value !== undefined && row.value !== null && row.value !== "")
+    .map((row) => ({ ...row, wrap: true }));
+  return <PropertyList rows={present} />;
 }
 
 function ViewCaptions({ view }: { view: EntityView }) {
@@ -96,7 +89,7 @@ function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; l
   return (
     <div className={CLASS.card} data-entity-kind="job">
       <div className={CLASS.head}>
-        <strong className={CLASS.kind}>Job</strong>
+        <Eyebrow as="span">Job</Eyebrow>
         {status ? (
           <span className={CLASS.status} data-state={failed ? "failed" : statusKind}>
             {status}
@@ -105,13 +98,15 @@ function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; l
         <ViewCaptions view={view} />
       </div>
       {detail ? <div className={CLASS.summary}>{detail}</div> : null}
-      <dl className={CLASS.rows}>
-        <CardRow label="Type" value={job.type} />
-        <CardRow label="Command" value={command} mono />
-        <CardRow label={duration ? "Duration" : "Started"} value={duration ?? started} />
-        <CardRow label="Exit" value={job.exitCode === undefined ? undefined : `exit ${job.exitCode}`} />
-        <CardRow label="Output" value={formatByteCount(job.outputBytes)} />
-      </dl>
+      <CardRows
+        rows={[
+          { label: "Type", value: job.type },
+          { label: "Command", value: command, mono: true },
+          { label: duration ? "Duration" : "Started", value: duration ?? started },
+          { label: "Exit", value: job.exitCode === undefined ? undefined : `exit ${job.exitCode}` },
+          { label: "Output", value: formatByteCount(job.outputBytes) },
+        ]}
+      />
     </div>
   );
 }
@@ -153,7 +148,7 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
   return (
     <div className={CLASS.card} data-entity-kind="delegate">
       <div className={CLASS.head}>
-        <strong className={CLASS.kind}>Delegate</strong>
+        <Eyebrow as="span">Delegate</Eyebrow>
         {displayedStatus ? (
           <span className={CLASS.status} data-state={statusKind}>
             {displayedStatus}
@@ -162,13 +157,15 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
         <ViewCaptions view={view} />
       </div>
       {mandate ? <div className={CLASS.summary}>{mandate}</div> : null}
-      <dl className={CLASS.rows}>
-        <CardRow label="Agent" value={agent} />
-        <CardRow label="Model" value={model} mono />
-        <CardRow label={duration ? "Duration" : "Running"} value={duration ?? running} />
-        <CardRow label="Quiet" value={quiet} />
-        <CardRow label="Usage" value={usageText(view.row?.delegate.usage ?? view.stable?.usage)} />
-      </dl>
+      <CardRows
+        rows={[
+          { label: "Agent", value: agent },
+          { label: "Model", value: model, mono: true },
+          { label: duration ? "Duration" : "Running", value: duration ?? running },
+          { label: "Quiet", value: quiet },
+          { label: "Usage", value: usageText(view.row?.delegate.usage ?? view.stable?.usage) },
+        ]}
+      />
     </div>
   );
 }
@@ -202,24 +199,25 @@ function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
   return (
     <div className={CLASS.card} data-entity-kind="watch">
       <div className={CLASS.head}>
-        <strong className={CLASS.kind}>Watch</strong>
+        <Eyebrow as="span">Watch</Eyebrow>
         <span className={CLASS.status}>{watch.state}</span>
         <span className={CLASS.caption}>last-known</span>
       </div>
       {condition.summary ? <div className={CLASS.summary}>{condition.summary}</div> : null}
-      <dl className={CLASS.rows}>
-        <CardRow label="Note" value={condition.note} />
-        <CardRow
-          label="Deliveries"
-          value={
-            watch.deliveries === undefined
-              ? undefined
-              : `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`
-          }
-        />
-        <CardRow label="Source" value={source} mono />
-        <CardRow label="Ended" value={watch.endReason} />
-      </dl>
+      <CardRows
+        rows={[
+          { label: "Note", value: condition.note },
+          {
+            label: "Deliveries",
+            value:
+              watch.deliveries === undefined
+                ? undefined
+                : `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`,
+          },
+          { label: "Source", value: source, mono: true },
+          { label: "Ended", value: watch.endReason },
+        ]}
+      />
     </div>
   );
 }

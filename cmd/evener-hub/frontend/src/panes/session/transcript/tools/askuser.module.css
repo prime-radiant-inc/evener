@@ -39,13 +39,6 @@
   font-size: var(--font-size-caption);
 }
 
-.recommended {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-}
-
 .note {
   font-size: var(--font-size-caption);
   color: var(--ink-mid);

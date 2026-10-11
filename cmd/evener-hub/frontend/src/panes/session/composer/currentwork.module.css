@@ -9,12 +9,15 @@
   line-height: 1.4;
 }
 
+/* nowrap is inherited by the link-variant Buttons, which then ellipsize a
+   long task or goal inside their own box instead of wrapping the row. */
 .task,
 .goal {
   display: flex;
   align-items: center;
   min-width: 0;
   gap: var(--space-1);
+  white-space: nowrap;
 }
 
 .task {
@@ -44,22 +47,6 @@
   color: var(--ink-mid);
 }
 
-.label {
-  flex: none;
-  color: var(--ink-mid);
-  font-weight: var(--font-weight-medium);
-  font-size: var(--font-size-caption);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-}
-
-.value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* The status word is wire text, not a fixed micro-label: known statuses are
    title-cased in code and unknown ones must render as written, so there is
    deliberately no text-transform here. It shares the row's sizing contract,
@@ -78,30 +65,6 @@
 
 .statusBlocked {
   color: var(--attention-ink);
-}
-
-.link {
-  appearance: none;
-  border: 0;
-  padding: 0;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-  text-decoration: underline;
-  text-decoration-color: var(--edge-strong);
-  text-underline-offset: 2px;
-}
-
-.link:hover {
-  text-decoration-color: currentColor;
-}
-
-.link:focus-visible {
-  border-radius: var(--radius-chip);
-  outline: var(--focus-ring);
-  outline-offset: 2px;
 }
 
 .divider {
