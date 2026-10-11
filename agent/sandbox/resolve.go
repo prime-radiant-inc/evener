@@ -661,6 +661,13 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // session scratch is the env floor's job once it judges which cache
 // directories an overlay serves, #4303.)
 //
+// This is judged at resolution and for the scratch at wrapper creation;
+// judging it again at each spawn, after a granted root is retargeted, is the
+// per-spawn judgement stacked on this change (servableCacheRoot, #4302). A
+// retarget by the session itself would at worst send its own writes into the
+// discarded layer, which the threat model leaves to the session
+// (docs/sandboxing.md#threat-model).
+//
 // Containment compares resolved spellings exactly. Two spellings that differ
 // only by letter case on a case-insensitive Linux volume are not matched:
 // that friction case is tracked as a known Low in #4306, alongside the same
@@ -771,8 +778,11 @@ func walkPhysical(p string, visit func(path string, link, followed bool) bool) (
 // goCacheRoots are the directories the go command writes caches to: pkg under
 // the first GOPATH entry, which holds the default module cache and the checksum
 // database, Go's default $HOME/go/pkg, plus a GOMODCACHE or GOCACHE configured
-// somewhere else. A relative
-// value, which the go command refuses, contributes nothing.
+// somewhere else. A relative value, which the go command refuses, contributes
+// nothing. A configured root nested in another (GOMODCACHE=$HOME/go/pkg/mod)
+// is listed here and gets its own overlay until the per-spawn judgement
+// stacked on this change (liveCacheRoots, #4302) serves it through the outer
+// one, so go clean -modcache can remove it again.
 func goCacheRoots(host HostFacts) []string {
 	var roots []string
 	if entries := goPathEntries(host); len(entries) > 0 {
