@@ -1609,20 +1609,21 @@ const maxSummarizerHistoryChars = 80_000
 // summarizerHistoryBudget sizes the history text of a summarizer request so it
 // fits every model the request may go to (the configured cheap model and the
 // session model it falls back to). For each known window it leaves the
-// client's input safety reserve (llm.SafetyReserveTokens), the instruction
-// prefix and a quarter of the window for the reply, and converts the rest at
+// client's input safety reserve (llm.SafetyReserveTokens), the request's own
+// instructions (promptChars: the summary prefix, or the caller-instruction
+// prompt with its instructions) and a quarter of the window for the reply, and converts the rest at
 // the char/4 estimate; it never exceeds maxSummarizerHistoryChars. An unknown
 // window imposes nothing (#4321).
 //
 // It never drops below minSummarizerHistoryChars, a floor small enough that a
 // 2,048-token window still holds the prefix, the reserve and that much
 // history; the reply allowance is what gives way on windows that small.
-func summarizerHistoryBudget(prof *provider.Profile) int {
+func summarizerHistoryBudget(prof *provider.Profile, promptChars int) int {
 	budget := maxSummarizerHistoryChars
 	if prof == nil {
 		return budget
 	}
-	prefixTokens := len(defaultSummaryPrefix)/4 + summarizerFramingTokens
+	prefixTokens := promptChars/4 + summarizerFramingTokens
 	for _, window := range []int{prof.ContextWindowSize(), prof.CheapContextWindowSize()} {
 		if window > 0 {
 			available := window - llm.SafetyReserveTokens(window) - prefixTokens - window/4
@@ -1633,8 +1634,8 @@ func summarizerHistoryBudget(prof *provider.Profile) int {
 }
 
 // summarizerFramingTokens allows for the request text around the history that
-// the summary prefix does not count: caller instructions' framing, the
-// left-out messages' label and the conversation label.
+// the instructions do not count: the left-out messages' label and the
+// conversation label.
 const summarizerFramingTokens = 256
 
 // minSummarizerHistoryChars floors summarizerHistoryBudget: about 100 tokens.
@@ -2316,7 +2317,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// One profile serves the whole fold: sizing and every request it sends,
 	// so a model switch mid-fold cannot pair one model's budget with another.
 	sumProfile := cm.currentProfile()
-	maxHistoryChars := summarizerHistoryBudget(sumProfile)
+	maxHistoryChars := summarizerHistoryBudget(sumProfile, len(buildSummaryPrompt("", instructions)))
 
 	truncText := func(s string, limit int) string {
 		if len(s) > limit {

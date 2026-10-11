@@ -1131,14 +1131,14 @@ func TestForceCompact_SummarizerRequestsFitASmallWindow(t *testing.T) {
 // safety reserve, the summary prefix and a reply in the smallest window it may
 // go to, and keeps the old cap for large or unknown windows.
 func TestSummarizerHistoryBudget(t *testing.T) {
-	if got := summarizerHistoryBudget(testProfile("openai", "test", 1_000_000)); got != maxSummarizerHistoryChars {
+	if got := summarizerHistoryBudget(testProfile("openai", "test", 1_000_000), len(defaultSummaryPrefix)); got != maxSummarizerHistoryChars {
 		t.Fatalf("large window: budget = %d, want the %d cap", got, maxSummarizerHistoryChars)
 	}
-	if got := summarizerHistoryBudget(testProfile("openai", "test", 0)); got != maxSummarizerHistoryChars {
+	if got := summarizerHistoryBudget(testProfile("openai", "test", 0), len(defaultSummaryPrefix)); got != maxSummarizerHistoryChars {
 		t.Fatalf("unknown window: budget = %d, want the %d cap", got, maxSummarizerHistoryChars)
 	}
 	const window = 8192
-	got := summarizerHistoryBudget(testProfile("openai", "test", window))
+	got := summarizerHistoryBudget(testProfile("openai", "test", window), len(defaultSummaryPrefix))
 	room := window - llm.SafetyReserveTokens(window) - len(defaultSummaryPrefix)/4
 	if got/4 >= room || got < minSummarizerHistoryChars {
 		t.Fatalf("8192-token window: budget = %d chars, want under the %d tokens left after the reserve and prefix", got, room)
@@ -1187,12 +1187,14 @@ func TestForceCompact_SmallWindowHoldAcrossAPartBoundaryReachesTheSummarizer(t *
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
 		}
 		all.WriteString(text)
+		all.WriteString("\x00") // requests stay apart: a hold must be whole in one
 		return llm.Response{Message: llm.Assistant("## Progress\nsummary")}, nil
 	}})
 	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	history := partnerFloodHistory(6, 1500, -1)
-	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", 40)+partnerHold+strings.Repeat("f", 1500)))
+	// The hold straddles the first 1000-character part boundary.
+	history[2] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("e", minPartnerPartChars-12)+partnerHold+strings.Repeat("f", 1500)))
 	cm.ForceCompact(context.Background(), &history, "", noopEmit)
 	if !strings.Contains(all.String(), partnerHold) {
 		t.Fatalf("a hold crossing a small-window part boundary never reached a summarizer whole")
@@ -1227,5 +1229,32 @@ func TestForceCompact_ModelSwitchDuringAFoldKeepsItsProfile(t *testing.T) {
 	}
 	if history[0].Kind != schema.TurnSummary {
 		t.Fatalf("history starts with a %s, want the fold to finish on the profile it started with", history[0].Kind)
+	}
+}
+
+// Steered compaction's caller instructions count against the window too: a
+// long instruction shrinks the history so the request still fits.
+func TestForceCompact_SteeredSummaryFitsASmallWindow(t *testing.T) {
+	const window = 4096
+	client := llm.NewClient()
+	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+		if len(req.Messages[0].Text())/4+llm.SafetyReserveTokens(window) >= window {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "context length exceeded", nil, nil)
+		}
+		return llm.Response{Message: llm.Assistant("kept the plan")}, nil
+	}})
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("refactor the parser"))}
+	for i := range 8 {
+		history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("progress %d %s", i, strings.Repeat("detail ", 500)))))
+	}
+	history = append(history,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")))
+	instructions := "Keep the migration plan verbatim. " + strings.Repeat("Also keep every file path. ", 300)
+	cm.ForceCompact(context.Background(), &history, instructions, noopEmit)
+	if history[0].Kind != schema.TurnSummary {
+		t.Fatalf("history starts with a %s, want a steered summary that fit the window", history[0].Kind)
 	}
 }
