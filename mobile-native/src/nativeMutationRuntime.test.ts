@@ -1322,34 +1322,30 @@ async function readyRuntimeWithClient(createMutationId?: () => string) {
 	return { runtime, client };
 }
 
-test.each(["send", "queue", "steer"] as const)(
-	"a %s whose outbox write is refused by storage goes out as a plain request",
-	async (kind) => {
+test.each([
+	["send", "turn/start", {}],
+	["queue", "turn/queue", {}],
+	["steer", "turn/steer", {}],
+	["steer", "turn/drainAsSteer", { expectedQueueRevision: 7 }],
+] as const)(
+	"a %s on %s whose outbox write is refused by storage goes out as a plain request",
+	async (kind, method, extra) => {
 		const { runtime, client } = await readyRuntimeWithClient();
-		const method = { send: "turn/start", queue: "turn/queue", steer: "turn/steer" }[kind];
 		client.on(method as never, (params) => appliedReceipt(params));
 		refuseWrites(database!);
 
-		await runtime.submit({ ...request(kind) });
+		await runtime.submit({ ...request(kind), ...extra });
 
 		expect(client.calls).toHaveLength(1);
-		expect(client.calls[0]).toMatchObject({ method, params: { ref: "ref-1", expectedInstanceId: "instance-1" } });
+		expect(client.calls[0]).toMatchObject({
+			method,
+			params: { ref: "ref-1", expectedInstanceId: "instance-1", ...extra },
+		});
 		expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toEqual(expect.any(String));
 		expect(await runtime.storage.listOutbox("")).toEqual([]);
 		await runtime.stop();
 	},
 );
-
-test("a drain-as-steer whose outbox write is refused by storage goes out as a plain request", async () => {
-	const { runtime, client } = await readyRuntimeWithClient();
-	client.on("turn/drainAsSteer", (params) => appliedReceipt(params));
-	refuseWrites(database!);
-
-	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
-
-	expect(client.calls[0]).toMatchObject({ method: "turn/drainAsSteer", params: { expectedQueueRevision: 7 } });
-	await runtime.stop();
-});
 
 // SQLITE_FULL rolls the transaction back itself, so the savepoint's own
 // rollback fails too; the send must still see the full-disk error.

@@ -495,8 +495,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	// earlier undelivered rows, no Stop fence, and a human retry after a lost
 	// reply is a new mutation.
 	async #sendDirectly(intent: MutationIntent, storageError: unknown): Promise<undefined> {
-		const targetKey = intent.targetRef;
-		const client = this.#targets.get(targetKey)?.client;
+		const client = this.#targets.get(intent.targetRef)?.client;
 		if (!client || client.state !== "ready") throw storageError;
 		const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
 		await request.call(client, intent.method, { ...intent.payload, clientMutationId: this.#createMutationId() });
