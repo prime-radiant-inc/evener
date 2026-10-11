@@ -410,7 +410,7 @@ func TestNewWrapperDropsACacheRootItCannotCreate(t *testing.T) {
 // file) is not served by an overlaid ancestor: go would fail on it, so it
 // goes to the scratch instead.
 func TestEnvFloorRedirectsAGoCacheThatCannotBeADirectory(t *testing.T) {
-	home := t.TempDir()
+	home := hostDir(t)
 	cacheHome := filepath.Join(home, ".cache")
 	if err := os.MkdirAll(cacheHome, 0o755); err != nil {
 		t.Fatal(err)
@@ -463,7 +463,7 @@ func TestEnvFloorJudgesTheGoEnvFileAsItIsAtEachSpawn(t *testing.T) {
 // spawn to name with GOENV.
 func writeGoEnvFile(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "go.env")
+	path := filepath.Join(hostDir(t), "go.env")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestEnvFloorRedirectsACacheWhoseRootWasRemoved(t *testing.T) {
 // the overlay serves only while they exist.
 func servedHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home := hostDir(t)
 	for _, rel := range []string{".cache", "go/pkg", ".npm", ".cargo"} {
 		if err := os.MkdirAll(filepath.Join(home, rel), 0o755); err != nil {
 			t.Fatal(err)
@@ -653,4 +653,64 @@ func TestEnvFloorTurnsARelativeGoEnvOff(t *testing.T) {
 	if v, _ := envValue(ApplyEnvFloor([]string{"HOME=/home/u", "GOENV=go.env"}, policy, "/tmp/s"), "GOENV"); v != "off" {
 		t.Errorf("a relative GOENV must be turned off, got %q", v)
 	}
+}
+
+// bwrap gives the spawn a private /tmp, so a go env file under /tmp (outside
+// the session scratch) is not the file the spawn's go reads: its settings are
+// unknown, and the Go caches go to the scratch.
+func TestEnvFloorRedirectsGoCachesForAGoEnvFileInTmp(t *testing.T) {
+	home := servedHome(t)
+	dir, err := os.MkdirTemp("/tmp", "evener-goenv-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	envFile := filepath.Join(dir, "go.env")
+	if err := os.WriteFile(envFile, []byte("GOCACHE="+filepath.Join(home, ".cache", "go-build")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmp := "/tmp/evener-session-xyz"
+	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, CacheStrategy: CacheOverlay, CacheRoots: []string{filepath.Join(home, ".cache"), filepath.Join(home, "go", "pkg")}, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: home, GoEnvFile: envFile}}
+	out := ApplyEnvFloor([]string{"HOME=" + home, "GOENV=" + envFile}, policy, tmp)
+	if v, _ := envValue(out, "GOCACHE"); !strings.HasPrefix(v, tmp+"/") {
+		t.Errorf("a go env file in the host /tmp must not decide the spawn's caches, got GOCACHE=%q", v)
+	}
+}
+
+// An explicit empty GOMODCACHE is unset to go, so it is pinned to the served
+// module cache like an absent one when GOPATH moves to the scratch.
+func TestEnvFloorPinsAnEmptyGoModCacheWhenGoPathMoves(t *testing.T) {
+	home := servedHome(t)
+	sumdb := filepath.Join(home, "go", "pkg", "sumdb")
+	if err := os.MkdirAll(sumdb, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{sumdb}}, facts, MaterializeWorkspace(t, MainCheckout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := ApplyEnvFloor([]string{"HOME=" + home, "GOENV=off", "GOMODCACHE="}, rp, "/tmp/evener-session-xyz")
+	vals := []string{}
+	for _, kv := range out {
+		if v, ok := strings.CutPrefix(kv, "GOMODCACHE="); ok {
+			vals = append(vals, v)
+		}
+	}
+	if len(vals) != 1 || vals[0] != filepath.Join(home, "go", "pkg", "mod") {
+		t.Errorf("an empty GOMODCACHE must be replaced by the served module cache, got %v", vals)
+	}
+}
+
+// hostDir is a fresh directory outside /tmp: bwrap gives spawns a private
+// /tmp, so the floor treats a go env file there as unreadable to the spawn,
+// and a fixture home there would turn every go env file under it unknown.
+func hostDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/var/tmp", "evener-floor-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

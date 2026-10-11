@@ -51,7 +51,7 @@ func TestHostProbeReadsOnlyABoundedRegularGoEnvFile(t *testing.T) {
 // healthy file the spawn names instead is never turned off.
 func TestEnvFloorJudgesGoEnvFileReadabilityAtEachSpawn(t *testing.T) {
 	home := servedHome(t)
-	envFile := filepath.Join(t.TempDir(), "go.env")
+	envFile := filepath.Join(hostDir(t), "go.env")
 	write := func() {
 		t.Helper()
 		_ = os.Remove(envFile)
@@ -93,7 +93,7 @@ func TestEnvFloorJudgesGoEnvFileReadabilityAtEachSpawn(t *testing.T) {
 			t.Errorf("%v: with the go env file unreadable GOCACHE must go to the scratch, got %q", policy.CacheStrategy, v)
 		}
 	}
-	other := filepath.Join(t.TempDir(), "other.env")
+	other := filepath.Join(hostDir(t), "other.env")
 	if err := os.WriteFile(other, []byte("GOPROXY=direct\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

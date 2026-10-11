@@ -73,6 +73,9 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) [
 		if redirected[name] {
 			continue // re-added below, pointing into the session scratch
 		}
+		if _, ok := pinned[name]; ok {
+			continue // re-added below, pinned to the served cache
+		}
 		if name == envvars.GoEnv.Name && goEnvOff {
 			continue // re-added below as off
 		}
@@ -148,7 +151,8 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) (map[string]bool, 
 			}
 		}
 		if out[envvars.GoPath.Name] && !out[envvars.GoModCache.Name] && filepath.IsAbs(dirs[envvars.GoModCache.Name]) {
-			if _, set := envVars(env)[envvars.GoModCache.Name]; !set {
+			// An empty value is unset to go, so it is replaced too.
+			if envVars(env)[envvars.GoModCache.Name] == "" {
 				pins[envvars.GoModCache.Name] = dirs[envvars.GoModCache.Name]
 			}
 		}
@@ -238,8 +242,10 @@ func overlayGoCacheDirs(env []string, host HostFacts) (map[string]string, bool) 
 	file := map[string]string{}
 	if spawnFile := goEnvFileFor(vars, host.OS); spawnFile != "" {
 		// A relative file resolves against the spawn's own directory, which
-		// the floor does not know, so it may not be the probe's file.
-		if spawnFile != host.GoEnvFile || !filepath.IsAbs(spawnFile) {
+		// the floor does not know, so it may not be the probe's file. One
+		// under /tmp is hidden by bwrap's private /tmp (the overlay strategy
+		// is bwrap's), so the spawn's go does not read it at all.
+		if spawnFile != host.GoEnvFile || !filepath.IsAbs(spawnFile) || pathUnder(spawnFile, "/tmp") {
 			return out, false
 		}
 		var ok bool
