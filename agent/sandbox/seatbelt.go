@@ -293,10 +293,11 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 				}
 			}
 		}
+		gitBelow := gitBelowRootRegex(canonical)
 		for _, k := range ps.defineCanonicalBothSpellings(fmt.Sprintf("UNMASKED_%d", i), canonical) {
 			grants = append(grants, "(allow file-read* "+literalAndSubpath(k)+")")
 			if masked {
-				gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.[Gg][Ii][Tt](/|$)")))`)
+				gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+" (regex #\""+gitBelow+"\")))")
 			}
 		}
 		for j, g := range linkedGitDirs {
@@ -317,6 +318,21 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 		}
 	}
 	return strings.Join(append(grants, gitDenials...), "\n")
+}
+
+// gitBelowRootRegex returns the path-free regex matching a .git component
+// below root: one more .git component than root's own path has. Seatbelt
+// matches it against the whole path, so a root under a .git directory (a
+// config kept in a dotfiles repository's .git) must not count that one; both
+// firmlink spellings of a root have the same count.
+func gitBelowRootRegex(root string) string {
+	n := 0
+	for c := range strings.SplitSeq(root, string(filepath.Separator)) {
+		if isGitName(c) {
+			n++
+		}
+	}
+	return strings.Repeat(`/\.[Gg][Ii][Tt](/.*)?`, n) + `/\.[Gg][Ii][Tt](/|$)`
 }
 
 // symlinksOnSpelling returns the directories on path's literal spelling, path
