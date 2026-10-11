@@ -734,6 +734,12 @@ func TestCacheRootsUnavailableAtResolutionAreServedOnceAvailable(t *testing.T) {
 	if slices.Contains(live, file) || slices.Contains(live, link) {
 		t.Errorf("a file or dangling-symlink cache root must not be overlaid: %v", live)
 	}
+	out := ApplyEnvFloor([]string{"HOME=" + host.Home, "GOENV=off", "GOCACHE=" + file, "GOMODCACHE=" + link}, rp, "/tmp/s")
+	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
+		if v, _ := envValue(out, name); !strings.HasPrefix(v, "/tmp/s/") {
+			t.Errorf("a %s naming an unavailable root must move into the session scratch, got %q", name, v)
+		}
+	}
 	if err := os.MkdirAll(drive, 0o755); err != nil {
 		t.Fatal(err)
 	}

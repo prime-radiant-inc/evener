@@ -657,10 +657,9 @@ func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 // followed, dangling ones included, and any link on the write root's way
 // (physicalPlaces). An overlay there would discard writes the user granted
 // for good. Such a cache is simply not overlaid: the granted root is bound
-// writable as usual, and other writes into it fail where they happen instead
-// of vanishing. (Redirecting the Go cache variables that pointed there to the
-// session scratch is the env floor's job once it judges which cache
-// directories an overlay serves, #4303.)
+// writable as usual, the env floor sends the Go cache variables that pointed
+// there to the session scratch (ApplyEnvFloor), and other writes into it fail
+// where they happen instead of vanishing.
 //
 // This is judged at resolution, for the scratch at wrapper creation, and
 // again at each spawn (servableCacheRoot), so a granted root retargeted since

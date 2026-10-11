@@ -109,7 +109,7 @@ process environments.
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
 | `GOCACHE` | Inherited by core-only command environments; the sandbox overlays a configured value or, under the session-private cache strategy, redirects it into the session scratch directory (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
 | `GOENV` | Inherited by core-only command environments; a sandboxed session reads the go env file it names (`off` disables it) at start to find Go settings made with `go env -w` (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
-| `GOMODCACHE` | Inherited by core-only command environments; the sandbox environment floor redirects it into the session scratch directory under the session-private cache strategy (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
+| `GOMODCACHE` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor redirects it into the session scratch directory, and under the overlay strategy it overlays a served value and redirects one the overlay does not serve (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
 | `GOPATH` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor puts the session scratch directory first, keeping the ambient value after it where the spawned layer can read it (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
 | `HOME` | Home directory fallback for state/config paths and path expansion. |
 | `HOMEDRIVE` | Windows home drive fallback. |
