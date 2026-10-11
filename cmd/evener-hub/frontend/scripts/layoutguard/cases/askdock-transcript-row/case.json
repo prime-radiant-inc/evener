@@ -6,6 +6,7 @@
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css",
     "widgets/virtuallist/virtuallist.module.css",
+    "widgets/card/card.module.css",
     "panes/session/composer/askDock/askdock.module.css"
   ],
   "viewport": {
