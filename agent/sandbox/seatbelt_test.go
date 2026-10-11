@@ -566,3 +566,118 @@ func TestSeatbeltReadRootGrantsBothSymlinkSpellings(t *testing.T) {
 		t.Errorf("the write allow must not reference a link alias:\n%s", text)
 	}
 }
+
+// The plugin store is re-granted read-only AFTER the authoritative denials, for
+// both firmlink spellings, since under Seatbelt the last matching rule wins; it
+// never gets a write grant (#4171).
+func TestSeatbeltRegrantsEvenerContentAfterTheMask(t *testing.T) {
+	t.Parallel()
+	host := seatbeltHost()
+	config := filepath.Join(host.Home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	host.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, host, cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, params := SeatbeltPolicy(rp, "/evener-session-tmp", identityCanon)
+			maskRule := "(deny file-read* file-write* " + literalAndSubpath(paramKeyForPath(params, config)) + ")"
+			maskIdx := strings.Index(text, maskRule)
+			if maskIdx < 0 {
+				t.Fatalf("missing the mask of %q:\n%s", config, text)
+			}
+			for _, path := range []string{store, "/System/Volumes/Data" + store} {
+				var keys []string
+				for _, p := range params {
+					if p.Path == path {
+						keys = append(keys, p.Key)
+					}
+				}
+				regranted := false
+				for _, key := range keys {
+					if i := strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(key)+")"); i > maskIdx {
+						regranted = true
+					}
+					for rule := range strings.SplitSeq(text, "\n(") {
+						if strings.HasPrefix(rule, "allow file-write*") && strings.Contains(rule, quoteParam(key)) {
+							t.Errorf("%q must never be writable:\n%s", path, text)
+						}
+					}
+				}
+				if !regranted {
+					t.Errorf("%q must be re-granted read-only after the mask:\n%s", path, text)
+				}
+				// Any .git inside the carve-out is denied again after the re-grant.
+				for _, key := range keys {
+					gitDeny := "(deny file-read* file-write* (require-all (subpath (param " + quoteParam(key) + ")) (regex #\"/\\.[Gg][Ii][Tt](/|$)\")))"
+					if i := strings.Index(text, gitDeny); i < strings.LastIndex(text, "(allow file-read* "+literalAndSubpath(key)+")") {
+						t.Errorf("%q must deny .git after its re-grant (want %s):\n%s", path, gitDeny, text)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A carve-out that resolves elsewhere at policy-build time (swapped for a
+// symlink after resolution) gets no read grant anywhere in the policy: not as a
+// spawned read root, which never lists carve-outs, nor after the denials.
+func TestSeatbeltGrantsNothingForARedirectedCarveOut(t *testing.T) {
+	t.Parallel()
+	host := seatbeltHost()
+	store := filepath.Join(host.Home, ".config", "evener", "plugins")
+	host.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, host, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirect := func(p string) string {
+		if p == store {
+			return "/Users/tester/private"
+		}
+		return p
+	}
+	_, params := SeatbeltPolicy(rp, "/evener-session-tmp", redirect)
+	for _, p := range params {
+		if p.Path == "/Users/tester/private" || strings.HasPrefix(p.Path, "/System/Volumes/Data/Users/tester/private") {
+			t.Errorf("a redirected carve-out must get no grant, got param %+v", p)
+		}
+	}
+}
+
+// The carve-out is canonicalized once: the grant goes to exactly the path that
+// was validated, so a root redirected between validation and emission (here a
+// canonicalizer whose second answer is ~/.ssh) gets no grant for the new target.
+func TestSeatbeltGrantsTheValidatedCarveOutPath(t *testing.T) {
+	t.Parallel()
+	host := seatbeltHost()
+	store := filepath.Join(host.Home, ".config", "evener", "plugins")
+	ssh := filepath.Join(host.Home, ".ssh")
+	host.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, host, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	flipping := func(p string) string {
+		if p != store {
+			return p
+		}
+		calls++
+		if calls > 1 {
+			return ssh
+		}
+		return p
+	}
+	text, params := SeatbeltPolicy(rp, "/evener-session-tmp", flipping)
+	for _, p := range params {
+		if strings.HasPrefix(p.Key, "UNMASKED_") && (p.Path == ssh || strings.HasSuffix(p.Path, ssh)) {
+			t.Errorf("the grant must go to the validated path, got %+v in\n%s", p, text)
+		}
+	}
+}

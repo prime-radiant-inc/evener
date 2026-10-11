@@ -192,7 +192,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content (bubblewrap) + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -366,14 +366,13 @@ sit inside the masked `~/.config/evener` by default, but they hold only content
 the session itself loads, such as the skills whose `base_directory` it hands the
 model, and the hook scripts of installed plugins it runs. So in every mode
 (`restricted` included) the file tools read those directories, **read-only**,
-carved out of the mask, and so do spawned processes under bubblewrap; under
-Seatbelt they still see them masked. The rest of `~/.config/evener` stays masked: hub configuration,
+carved out of the mask, and so do spawned processes. The rest of `~/.config/evener` stays masked: hub configuration,
 credentials, and the plugin store's metadata (`known_marketplaces.json`, the
 registries and the marketplace clones), which records marketplace URLs that may
 carry a token. Inside the carve-out any `.git` stays masked too (in any letter
 case): a plugin installed by cloning keeps its remote URL, which may carry a
 token, in its installed copy's `.git/config`, and skills and hooks never need
-it. Bubblewrap masks the `.git` entries it finds, at any depth, at each spawn,
+it. Seatbelt denies `.git` there by pattern; bubblewrap masks the `.git` entries it finds, at any depth, at each spawn,
 so a copy cloned during a running command is masked from the next spawn on, and
 a carve-out it cannot inspect fully at spawn (over 50,000 entries, or with a
 directory it cannot list) stays masked for spawned processes. The
@@ -390,10 +389,12 @@ installed yet is held to where installing it would land. They also refuse a
 carve-out that a mask has since been pointed into or above (say `~/.ssh` made a
 link to the skills directory, or `~/.docker` to a directory inside it), on
 every read, and read it again once the link is gone or the directory is
-recreated in place; bubblewrap re-checks both at every spawn. In `restricted`,
-whose namespace starts empty, bubblewrap recreates a carve-out's symlinked
-spelling (a dotfile-managed `~/.config/evener`) as a link to the real
-directory, so the `base_directory` a skill advertises works in the shell. With
+recreated in place; the backends re-check both at every spawn. In
+`restricted`, whose namespace starts empty, bubblewrap recreates a carve-out's
+symlinked spelling (a dotfile-managed `~/.config/evener`) as a link to the real
+directory, and Seatbelt lets each link on that spelling be read as metadata (the
+link, never its target), so the `base_directory` a skill advertises works in
+the shell. With
 `EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
 masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
 
