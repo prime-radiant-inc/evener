@@ -21,6 +21,7 @@ function VariantRow({ variant }: { variant: IconButtonVariant }) {
       <IconButton variant={variant} size="sm" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="xs" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="md" label="Close" icon={<DotIcon />} disabled />
+      <IconButton variant={variant} size="md" label="Close (refused)" icon={<DotIcon />} aria-disabled />
     </div>
   );
 }

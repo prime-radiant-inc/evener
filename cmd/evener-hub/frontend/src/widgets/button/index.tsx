@@ -28,11 +28,17 @@ export interface ButtonProps
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   type?: "button" | "submit" | "reset";
+  /** Let a long label break across lines instead of holding one line: for a
+   * label that can be the widest thing in its column (the welcome pane's
+   * "Jump back in: <session title>"). The size's height becomes a floor.
+   * Ignored by variant="link", which already wraps with its prose. */
+  wrap?: boolean;
 }
 
 const BASE_CLASS = {
   button: requireClass(styles.button, "button.module.css", "button"),
   icon: requireClass(styles.icon, "button.module.css", "icon"),
+  wrap: requireClass(styles.wrap, "button.module.css", "wrap"),
 };
 
 const VARIANT_CLASS: Record<ButtonVariant, string> = {
@@ -72,8 +78,25 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
  * silently replace Button's variant/size/focus-ring classes - see the
  * "arriving via untyped spread" test in button.test.tsx.
  */
+/** Whether an aria-disabled value is a refusal. JSX accepts both spellings of
+ * the attribute, so both count. Shared with IconButton, which refuses the same
+ * way. */
+export function isAriaRefusal(ariaDisabled: ButtonHTMLAttributes<HTMLButtonElement>["aria-disabled"]): boolean {
+  return ariaDisabled === true || ariaDisabled === "true";
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = "primary", size = "md", icon, children, onClick, disabled = false, type = "button", ...rest },
+  {
+    variant = "primary",
+    size = "md",
+    icon,
+    children,
+    onClick,
+    disabled = false,
+    type = "button",
+    wrap = false,
+    ...rest
+  },
   ref,
 ) {
   // aria-disabled is a refusal, not a rendering hint: the control stays
@@ -81,9 +104,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   // docs above and button.module.css), so the browser still hands it the click.
   // Refusing that click HERE is what makes a caller's guarded handler
   // defense-in-depth rather than the only thing standing between a refused
-  // control and the action it refuses. JSX accepts both spellings of the
-  // attribute, so both are treated as the refusal.
-  const refused = rest["aria-disabled"] === true || rest["aria-disabled"] === "true";
+  // control and the action it refuses.
+  const refused = isAriaRefusal(rest["aria-disabled"]);
   return (
     <button
       ref={ref}
@@ -92,7 +114,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       className={
         variant === "link"
           ? `${BASE_CLASS.button} ${VARIANT_CLASS.link}`
-          : `${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`
+          : [BASE_CLASS.button, VARIANT_CLASS[variant], SIZE_CLASS[size], wrap && BASE_CLASS.wrap]
+              .filter(Boolean)
+              .join(" ")
       }
       onClick={refused ? undefined : onClick}
       disabled={disabled}

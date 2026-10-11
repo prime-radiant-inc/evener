@@ -4,7 +4,13 @@ import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { CloseIcon as FromBarrel } from "..";
+import { CloseIcon } from "./CloseIcon";
 import { Dialog } from "./index";
+
+test("its close glyph is exported from the widget barrel", () => {
+  expect(FromBarrel).toBe(CloseIcon);
+});
 
 test("renders nothing when closed", () => {
   render(

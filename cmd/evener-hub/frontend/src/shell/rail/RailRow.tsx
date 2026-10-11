@@ -52,6 +52,7 @@ import {
   Badge,
   Button,
   Chevron,
+  HoverCard,
   IconButton,
   Menu,
   type MenuItem,
@@ -61,7 +62,6 @@ import {
   type TreeRowInfo,
   VisuallyHidden,
 } from "../../widgets";
-import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";

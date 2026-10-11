@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { HoverCard as FromBarrel } from "..";
 import { HoverCard, LONG_PRESS_MS } from ".";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
 import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
@@ -9,6 +10,10 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+test("it is exported from the widget barrel", () => {
+  expect(FromBarrel).toBe(HoverCard);
 });
 
 test("the plain-node gallery child keeps the automatic description association", () => {
