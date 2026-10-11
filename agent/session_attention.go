@@ -1063,11 +1063,10 @@ func (s *Session) coversPresentedAttention(ctx context.Context) bool {
 
 // stagePresentedAttentionCoverage records one built request's candidate
 // coverage: the attention IDs among presentedTurns, the exact history the
-// request projects, whether armed before this turn began or during it: the
-// model has seen the message that would have woken it. Every request build
-// replaces the staged set, so a failed attempt's candidates never outlive it.
-// Staging is candidacy, not
-// credit — promoteStagedAttentionCoverage credits the set only when the
+// request projects. Arming time does not matter: the model has seen the
+// message that would have woken it. Every request build replaces the staged
+// set, so a failed attempt's candidates never outlive it. Staging is
+// candidacy, not credit — promoteStagedAttentionCoverage credits the set only when the
 // round's call settles, because a request that never settled (a failed
 // attempt, a content-filter retry whose compaction then folds the steering
 // turn away) presented nothing the design may consume. Only a turn that
