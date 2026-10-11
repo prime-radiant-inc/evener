@@ -7,8 +7,8 @@
 //
 // Decisions locked in the mockup pass: humanize every duration (after 300s
 // → "in 5m", progress_interval_ms 120000 → "every 2m"; absolute clock only
-// for created_at); notes render in full to ~20 lines, disclosure only
-// beyond; no watch id on single-watch surfaces (list rows, inspect
+// for created_at); notes render in full to NOTE_CLAMP_LINES, disclosure
+// only beyond; no watch id on single-watch surfaces (list rows, inspect
 // summaries, raw disclosures only); status chips only in list rows, where
 // watching vs ended varies per row; clear and terminal catch-up are quiet
 // one-liners — the summary line IS the rendering, expanded body empty.
@@ -66,11 +66,14 @@ const CLASS = {
 };
 
 // NOTE_CLAMP_LINES is the note policy, not a measurement: notes at or under
-// ~20 lines render in full with no disclosure; longer notes clamp behind
+// 100 lines render in full with no disclosure; longer notes clamp behind
 // "Show full note". The line count is a rough split on "\n" (a prose note's
 // lines are display lines, not data), so the boundary is approximate by
-// design — the mockup's "~20 lines".
-const NOTE_CLAMP_LINES = 20;
+// design — 100 lines is Jesse's 2026-10-11 call, aligned with CodeBlock's
+// fold window. The clamped view's height is the stylesheet's own
+// -webkit-line-clamp (jobWatch.module.css .noteClamped), which carries the
+// same number.
+const NOTE_CLAMP_LINES = 100;
 
 // The heartbeat phrase a condition sentence ends with, if the watch carries
 // a progress cadence ("heartbeat every 2m"). Undefined when the watch has

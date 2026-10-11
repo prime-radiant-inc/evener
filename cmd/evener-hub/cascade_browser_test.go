@@ -11,7 +11,6 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,9 +39,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("browser guard requires Chrome and real daemons")
 	}
-	if _, err := fs.ReadFile(distFS(), "index.html"); err != nil {
-		t.Fatalf("production frontend is required, run make build-web: %v", err)
-	}
+	requireFreshDist(t)
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Fatal(err)
 	}

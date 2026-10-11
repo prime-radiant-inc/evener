@@ -146,10 +146,15 @@ const parentItems: ThreadItem[] = [
     "Reading long native source evidence",
     "completed",
     { file_path: "/fixture/long-evidence.ts" },
+    // 160 lines keeps the long line (31) inside the fold's hidden head at the
+    // 100-line window ("Show 60 earlier lines"), and the short per-line
+    // payloads keep the whole sample under read_file's 8,000-char retention
+    // budget (bodies.tsx's TAIL_MAX_CHARS) so no head is elided: the
+    // click-to-reveal scenario exposes the long line whole
+    // (docs/web-ui/editorial-preview.md, scripts/editorial-preview-browser.mjs).
     Array.from(
-      { length: 120 },
-      (_, i) =>
-        `${i + 1}\tconst fixtureLine${i + 1} = "${i === 30 ? "long-path/".repeat(90) : "retained native source evidence"}";`,
+      { length: 160 },
+      (_, i) => `${i + 1}\tconst fixtureLine${i + 1} = "${i === 30 ? "long-path/".repeat(90) : `evidence ${i + 1}`}";`,
     ).join("\n"),
   ),
   tool("active", "shell", "Observing active fixture work (not live execution)", "inProgress", {
