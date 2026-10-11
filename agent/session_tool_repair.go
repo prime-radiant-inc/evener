@@ -389,11 +389,19 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	}
 	// Models with strict tool schemas must emit every key, and some write the
 	// string "null" for the ones they mean to leave out. That is the same
-	// absent-field intent as a JSON null, on every ref kind.
+	// absent-field intent as a JSON null. Two fields keep a "null" string: an
+	// artifact ref's format is judged by the handler, and on a job or artifact
+	// ref output_match is a regular expression where "null" is a real pattern.
 	for _, field := range []string{"format", "range", "expand_turn", "offset_bytes", "output_match", "context_lines"} {
-		if value, present := normalized[field]; present && isNullPlaceholder(value) && (!artifactRef || field != "format") {
-			remove(field)
+		value, present := normalized[field]
+		if !present || !isNullPlaceholder(value) {
+			continue
 		}
+		_, isText := value.(string)
+		if (field == "format" && artifactRef) || (field == "output_match" && isText && (jobRef || artifactRef)) {
+			continue
+		}
+		remove(field)
 	}
 	if !jobRef && !artifactRef {
 		// A session ref has no search, so an empty output_match and a zero

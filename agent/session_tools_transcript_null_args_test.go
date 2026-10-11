@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -113,7 +114,8 @@ func TestReadTranscriptJobRefTreatsNullStringsAsAbsent(t *testing.T) {
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
-	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+	output := "ready\nvalue is null\n"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, true, int64(len(output)), nil)
 	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
 	ref := "job:" + jobID
 	omitted, err := execReadTranscript(deps, map[string]any{"transcript_ref": ref})
@@ -122,12 +124,36 @@ func TestReadTranscriptJobRefTreatsNullStringsAsAbsent(t *testing.T) {
 	}
 	got, err := execReadTranscript(deps, map[string]any{
 		"transcript_ref": ref, "format": "null", "range": "null", "expand_turn": "null",
-		"output_match": "null", "context_lines": "null",
+		"offset_bytes": "null", "context_lines": "null",
 	})
 	if err != nil {
 		t.Fatalf("null strings: %v", err)
 	}
 	if !sameReadResult(omitted, got) {
 		t.Fatalf("null strings changed the job read:\nomitted=%#v\ngot=%#v", omitted, got)
+	}
+}
+
+// On a job or artifact ref output_match is a regular expression, and "null" is
+// a legitimate pattern that must search, with or without context.
+func TestReadTranscriptRetainedRefSearchesLiteralNull(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	output := "ready\nvalue is null\n"
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", output, maxJobOutputRetentionBytes, true, int64(len(output)), nil)
+	deps := &toolDeps{stateDir: stateDir, sessionID: owner}
+	for _, args := range []map[string]any{
+		{"transcript_ref": "job:" + jobID, "output_match": "null"},
+		{"transcript_ref": "job:" + jobID, "output_match": "NULL", "context_lines": float64(1)},
+	} {
+		got, err := execReadTranscript(deps, args)
+		if err != nil {
+			t.Fatalf("search %v: %v", args, err)
+		}
+		encoded, _ := json.Marshal(got)
+		if !strings.Contains(string(encoded), `"search_complete"`) {
+			t.Fatalf("search %v did not run a search: %s", args, encoded)
+		}
 	}
 }

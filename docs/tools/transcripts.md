@@ -183,8 +183,10 @@ stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 Registered `strict:false`, so every parameter is optional. Models whose strict
 schemas emit every key send placeholders for the ones they mean to leave out,
 and those read as absent. On any ref, the string `"null"` stands for an absent
-`format`, `range`, `expand_turn`, `offset_bytes`, `output_match`, or
-`context_lines` (an artifact ref still judges its `format`). On a session ref a
+`range`, `expand_turn`, `offset_bytes`, or `context_lines`, and for `format`
+except on an artifact ref, which judges it. `output_match` `"null"` reads as
+absent on a session ref only; on a job or artifact ref it is a regular
+expression and searches for the text null. On a session ref a
 JSON `null` does too, as do an empty `output_match`, a zero `context_lines`,
 and a zero `offset_bytes`, because a session ref has no search and an
 expansion starts at byte 0 anyway. `expand_turn` 0 stays, since Turn 0 is a
