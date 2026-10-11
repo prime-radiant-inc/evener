@@ -632,18 +632,7 @@ func (jm *jobManager) releaseWatchSendDeliveryClaim(deliveryID string) {
 	delete(jm.deliveringWatchSends, deliveryID)
 	_, superseded := jm.supersededWatchSends[deliveryID]
 	delete(jm.supersededWatchSends, deliveryID)
-	unsettled, accepted := jm.unsettledWatchSends[deliveryID]
-	delete(jm.unsettledWatchSends, deliveryID)
-	// A superseded frame the receiver already took, whose acknowledgement
-	// failed, will not be redelivered: it keeps its receipt for the
-	// settlement retry, which acknowledges it and releases the receipt.
-	handOff := superseded && accepted
-	if handOff {
-		if jm.stableWatchSettlementRetries == nil {
-			jm.stableWatchSettlementRetries = make(map[string]pendingWatchSendDelivery)
-		}
-		jm.stableWatchSettlementRetries[deliveryID] = unsettled
-	}
+	handOff := superseded && jm.retryUnsettledWatchSendLocked(deliveryID)
 	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
 	jm.mu.Unlock()
 	if handOff {
@@ -652,6 +641,23 @@ func (jm *jobManager) releaseWatchSendDeliveryClaim(deliveryID string) {
 	if superseded && !retrying {
 		jm.releaseStableWatchReceipt(deliveryID)
 	}
+}
+
+// retryUnsettledWatchSendLocked hands a replaced frame the receiver took but
+// never acknowledged to the settlement retry, which keeps its receipt until it
+// acknowledges. It reports false when the frame has no failed acknowledgement
+// noted. Caller holds jm.mu.
+func (jm *jobManager) retryUnsettledWatchSendLocked(deliveryID string) bool {
+	unsettled, accepted := jm.unsettledWatchSends[deliveryID]
+	if !accepted {
+		return false
+	}
+	delete(jm.unsettledWatchSends, deliveryID)
+	if jm.stableWatchSettlementRetries == nil {
+		jm.stableWatchSettlementRetries = make(map[string]pendingWatchSendDelivery)
+	}
+	jm.stableWatchSettlementRetries[deliveryID] = unsettled
+	return true
 }
 
 // watchSendSuperseded reports whether a coalesced frame replaced the claimed
@@ -4638,8 +4644,9 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 	}
 	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 		// While the frame stays pending, the next drain redelivers it. If a
-		// replacement coalesces over it before the claim is released, it
-		// won't be (releaseWatchSendDeliveryClaim).
+		// replacement coalesces over it, it won't be, and the note sends it
+		// to the settlement retry instead (storeWatchSendPendingRecord,
+		// releaseWatchSendDeliveryClaim).
 		jm.noteUnsettledWatchSend(cfg, state)
 		return false, err
 	}
@@ -4945,6 +4952,9 @@ func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
 	jm.mu.Lock()
 	receipt := jm.stableWatchReceipts[deliveryID]
 	delete(jm.stableWatchReceipts, deliveryID)
+	// The frame is settled, dropped or retired: its failed acknowledgement,
+	// if one was noted, no longer needs a retry.
+	delete(jm.unsettledWatchSends, deliveryID)
 	jm.mu.Unlock()
 	if receipt != nil {
 		jm.observeWatchReceiptBoundary()
@@ -5176,23 +5186,29 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 // is released here; otherwise it would fence the receiver's stop until the
 // close budget ran out.
 func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord, detached bool) {
-	if release := jm.storeWatchSendPendingRecord(record, detached); release != "" {
+	release, retry := jm.storeWatchSendPendingRecord(record, detached)
+	if release != "" {
 		jm.releaseStableWatchReceipt(release)
+	}
+	if retry {
+		jm.kick()
 	}
 }
 
 // storeWatchSendPendingRecord installs record's frame as its key's pending
 // frame and returns the delivery id of the replaced frame whose receipt the
-// caller releases, or "" when there is none to release now. A replaced frame
-// a deliverer holds the claim on is marked superseded under the same hold
-// that publishes its replacement, so that deliverer sees the mark however
-// soon the replacement settles; its receipt goes with the claim
-// (releaseWatchSendDeliveryClaim).
-func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord, detached bool) (release string) {
+// caller releases, or "" when there is none to release now, and whether it
+// queued a settlement retry. A replaced frame a deliverer holds the claim on
+// is marked superseded under the same hold that publishes its replacement, so
+// that deliverer sees the mark however soon the replacement settles; its
+// receipt goes with the claim (releaseWatchSendDeliveryClaim). An unclaimed
+// replaced frame the receiver took without an acknowledgement goes to the
+// settlement retry, which keeps its receipt.
+func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord, detached bool) (release string, retry bool) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	if record.cfg == nil || len(record.pendingEvents) == 0 {
-		return ""
+		return "", false
 	}
 	cfg := record.cfg
 	if cfg.pending == nil {
@@ -5200,7 +5216,7 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 	}
 	current := cfg.pending[record.key]
 	if current != nil && current.UpdateSeq > record.persisted.UpdateSeq {
-		return ""
+		return "", false
 	}
 	if current == nil {
 		cfg.pendingOrder = append(cfg.pendingOrder, record.key)
@@ -5210,6 +5226,8 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 				jm.supersededWatchSends = make(map[string]struct{})
 			}
 			jm.supersededWatchSends[replaced] = struct{}{}
+		} else if jm.retryUnsettledWatchSendLocked(replaced) {
+			retry = true
 		} else {
 			release = replaced
 		}
@@ -5219,7 +5237,7 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
 	}
-	return release
+	return release, retry
 }
 
 func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {

@@ -221,3 +221,40 @@ func TestSupersededAcceptedFrameRetriesItsAcknowledgement(t *testing.T) {
 		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
 	}
 }
+
+// The first frame's deliverer passed its durable check before the
+// replacement's pending append, handed the frame to the receiver, failed the
+// acknowledgement and released its claim, all before the replacement's
+// runtime commit. That commit then replaces a frame nobody claims but the
+// receiver took: it hands the frame to the settlement retry rather than
+// dropping its receipt. The deliverer's state at that point is a noted failed
+// acknowledgement and no claim.
+func TestAcceptedFrameReplacedAfterItsClaimRetriesItsAcknowledgement(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	if !jm.claimWatchSendDelivery(first.DeliveryID) {
+		t.Fatal("claim first frame")
+	}
+	jm.noteUnsettledWatchSend(cfg, first)
+	jm.releaseWatchSendDeliveryClaim(first.DeliveryID)
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
+		t.Fatalf("releasing a still-current claim dropped its receipt: %v", got)
+	}
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
+	second := fixture.requireOnePending(t).state
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
+		t.Fatalf("the accepted, unacknowledged frame lost its receipt: %v", got)
+	}
+	if _, err := jm.retryStableWatchSettlements(); err != nil {
+		t.Fatalf("settlement retry: %v", err)
+	}
+	if !jm.watchSendDelivered(first.DeliveryID) {
+		t.Fatal("the retry did not acknowledge the accepted frame")
+	}
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
+		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
+	}
+}
