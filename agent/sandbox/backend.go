@@ -97,18 +97,49 @@ func createWriteRootsInsideCaches(rp ResolvedPolicy) ResolvedPolicy {
 		if _, err := os.Stat(w); !errors.Is(err, fs.ErrNotExist) || isUnderAnyRoot(w, gitRoots) {
 			continue
 		}
-		rw := resolveExistingPrefix(w)
-		holds := func(c string) bool { return pathUnder(w, c) || pathUnder(rw, resolveExistingPrefix(c)) }
+		// Where writes to w land: its resolved spelling and, for a dangling
+		// link, its missing target, which the spawn could create.
+		landings := []string{resolveExistingPrefix(w)}
+		_, err := os.Lstat(w)
+		dangling := err == nil
+		if dangling {
+			landings = append(landings, danglingLinkTarget(w))
+		}
+		holds := func(c string) bool {
+			rc := resolveExistingPrefix(c)
+			return pathUnder(w, c) || slices.ContainsFunc(landings, func(l string) bool { return l == rc || pathUnder(l, rc) })
+		}
 		if !slices.ContainsFunc(rp.CacheRoots, holds) {
 			continue
 		}
 		// A dangling link is left as it is: creating its target could land
-		// anywhere, so the overlay over it goes instead.
-		if _, err := os.Lstat(w); err == nil || os.MkdirAll(w, 0o755) != nil {
+		// anywhere, so the overlays over it go instead.
+		if dangling || os.MkdirAll(w, 0o755) != nil {
 			rp.CacheRoots = slices.DeleteFunc(slices.Clone(rp.CacheRoots), holds)
 		}
 	}
 	return rp
+}
+
+// danglingLinkTarget follows the link chain at p to the first missing path and
+// returns it with its existing prefix resolved: where creating p's target
+// would land.
+func danglingLinkTarget(p string) string {
+	for range 40 {
+		fi, err := os.Lstat(p)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			break
+		}
+		target, err := os.Readlink(p)
+		if err != nil {
+			break
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(p), target)
+		}
+		p = target
+	}
+	return resolveExistingPrefix(p)
 }
 
 // landsInPersistentRoot reports whether c's real location (or, not created

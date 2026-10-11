@@ -255,3 +255,19 @@ func TestPrepareCacheRootsDropsAnOverlayHoldingADanglingWriteRoot(t *testing.T) 
 		t.Errorf("a cache holding a dangling write root must not be overlaid: %v", got.CacheRoots)
 	}
 }
+
+// A dangling write root's missing target can sit in another cache root; that
+// cache would take writes through the link into its discarded layer, so it is
+// not overlaid either.
+func TestPrepareCacheRootsDropsTheOverlayOverADanglingWriteRootsTarget(t *testing.T) {
+	cache, npm := t.TempDir(), t.TempDir()
+	library := filepath.Join(cache, "library")
+	if err := os.Symlink(filepath.Join(npm, "library-data"), library); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache, npm}}
+	rp.Spawned.WriteRoots = []string{library}
+	if got := prepareCacheRoots(rp); len(got.CacheRoots) != 0 {
+		t.Errorf("neither the link's cache nor its target's may stay overlaid: %v", got.CacheRoots)
+	}
+}
