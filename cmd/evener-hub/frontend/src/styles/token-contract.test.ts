@@ -541,9 +541,46 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/activitybar/activitybar.module.css",
 ]);
 
+function reachesSemanticHue(cssText: string): boolean {
+  return SEMANTIC_VAR_RE.test(cssText.replace(COMMENT_RE, " "));
+}
+
+// A grant whose stylesheet is gone, or no longer reaches for a semantic hue
+// outside comments, is a stale permission: it lets the next edit to that file
+// add a hue without anyone deciding it should.
+function unusedSemanticGrants(paths: Iterable<string>, stylesheets: Record<string, string>): string[] {
+  return [...paths].filter((path) => {
+    const text = stylesheets[path];
+    return text === undefined || !reachesSemanticHue(text);
+  });
+}
+
+test("every semantic-hue exception and allowlisted widget stylesheet still reaches for a semantic hue", () => {
+  const widgetPaths = SEMANTIC_USE_ALLOWLIST.map((name) => `widgets/${name}/${name}.module.css`);
+  expect(unusedSemanticGrants([...SEMANTIC_PATH_EXCEPTIONS, ...widgetPaths], STYLESHEETS)).toEqual([]);
+});
+
+test("unusedSemanticGrants reports a missing stylesheet and one naming a hue only in a comment", () => {
+  const stylesheets = {
+    "panes/live.module.css": ".error { color: var(--danger-ink); }",
+    "panes/commentOnly.module.css": "/* was var(--danger) */ .error { color: var(--ink-hi); }",
+  };
+  expect(
+    unusedSemanticGrants(
+      ["panes/live.module.css", "panes/commentOnly.module.css", "panes/gone.module.css"],
+      stylesheets,
+    ),
+  ).toEqual(["panes/commentOnly.module.css", "panes/gone.module.css"]);
+});
+
+test("a semantic hue named only in a comment does not count as reaching for it", () => {
+  expect(reachesSemanticHue("/* var(--alive) */ .row { color: var(--ink-mid); }")).toBe(false);
+  expect(reachesSemanticHue(".row { color: var(--alive-ink); }")).toBe(true);
+});
+
 for (const [path, text] of OTHER_STYLESHEETS) {
   test(`${path} only reaches for --attention/--alive/--danger if allowlisted`, () => {
-    if (!SEMANTIC_VAR_RE.test(text)) return;
+    if (!reachesSemanticHue(text)) return;
     if (SEMANTIC_PATH_EXCEPTIONS.has(path)) return;
     const widgetMatch = WIDGET_STYLESHEET_RE.exec(path);
     expect(widgetMatch).not.toBeNull();
