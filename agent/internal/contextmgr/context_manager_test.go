@@ -3058,7 +3058,7 @@ func TestCheckpoint_ShedOrder_MiddleTrimsAnOversizedPartnerMessage(t *testing.T)
 		},
 	}
 
-	cp := formatCheckpoint(data, nil, 1200)
+	cp := formatCheckpoint(data, persistentMeta, 1200)
 
 	entries := extractCheckpointConversation(cp)
 	if len(entries) != 1 || entries[0].Role != "user" {

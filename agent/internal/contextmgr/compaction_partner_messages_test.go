@@ -449,7 +449,7 @@ func TestFormatCheckpoint_KeepsEveryPartnerMessage(t *testing.T) {
 		},
 		workingNotes: []string{"a note " + strings.Repeat("n", 3000)},
 	}
-	cp := formatCheckpoint(data, nil, 20_000)
+	cp := formatCheckpoint(data, persistentMeta, 20_000)
 	var partner []string
 	for _, entry := range extractCheckpointConversation(cp) {
 		if entry.Role != "user" {
@@ -505,5 +505,41 @@ func TestForceCompact_CarryKeepsAStopBesideALongLog(t *testing.T) {
 	entries := extractMarkdownConversation(history[0].Message.Text())
 	if len(entries) != 2 || entries[1].Text != stop || !isMiddleTrimOf(entries[0].Text, log) {
 		t.Fatalf("summary carry = %d entries; want the trimmed log and the whole stop", len(entries))
+	}
+}
+
+// persistentMeta is a persistent session's compaction metadata: its transcript
+// holds every message in full, so a trimmed message can point there.
+var persistentMeta = &CompactionMeta{SessionID: "SESSION_ID_SENTINEL", AvailableTranscriptTools: []string{"read_transcript"}}
+
+// A partner message only just over the trim threshold is kept whole: trimming
+// it would add the note without saving anything.
+func TestFormatCheckpoint_KeepsAMessageTrimmingWouldNotShorten(t *testing.T) {
+	near := strings.Repeat("n", 2*partnerMessageEdgeChars+50)
+	data := checkpointData{
+		fileWrites:      map[string]checkpointWriteStatus{},
+		activatedSkills: map[string]bool{},
+		toolCounts:      map[string]int{},
+		conversation:    []checkpointConversationEntry{{Role: "user", Text: near}},
+	}
+	entries := extractCheckpointConversation(formatCheckpoint(data, persistentMeta, 1000))
+	if len(entries) != 1 || entries[0].Text != near {
+		t.Fatalf("a message trimming would not shorten was changed: %d chars", len(entries[0].Text))
+	}
+}
+
+// Without a transcript there is nowhere to recover a trimmed middle from, so a
+// non-persistent session keeps every partner message whole.
+func TestFormatCheckpoint_KeepsMessagesWholeWithoutATranscript(t *testing.T) {
+	log := "LOG_HEAD " + strings.Repeat("log line\n", 6000) + " LOG_TAIL"
+	data := checkpointData{
+		fileWrites:      map[string]checkpointWriteStatus{},
+		activatedSkills: map[string]bool{},
+		toolCounts:      map[string]int{},
+		conversation:    []checkpointConversationEntry{{Role: "user", Text: log}},
+	}
+	entries := extractCheckpointConversation(formatCheckpoint(data, nil, 20_000))
+	if len(entries) != 1 || entries[0].Text != log {
+		t.Fatalf("a message was trimmed with no transcript to recover it from")
 	}
 }

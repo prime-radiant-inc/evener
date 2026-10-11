@@ -48,10 +48,16 @@ type CompactionMeta struct {
 // names the artifact ("checkpoint", "summary"). Empty when the session is not
 // persistent.
 func (m *CompactionMeta) compactionPointer(artifact string) string {
-	if m == nil || m.SessionID == "" {
+	if !m.hasTranscript() {
 		return ""
 	}
 	return fmt.Sprintf("Earlier history was compacted into this %s to free context-window headroom. This session's id is %s.%s\n", artifact, m.SessionID, m.TranscriptRecoverySentence())
+}
+
+// hasTranscript reports whether the session keeps a durable transcript, which
+// holds every message in full: a persistent session (one with a session id).
+func (m *CompactionMeta) hasTranscript() bool {
+	return m != nil && m.SessionID != ""
 }
 
 // TranscriptRecoverySentence is the trailing instruction a compaction artifact
@@ -1416,7 +1422,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 		workingNotes = workingNotes[1:] // drop oldest note first
 		notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 	}
-	conversationMarkdown = renderCheckpointConversation(fitCheckpointConversation(conversation, variableBudget-len(notesMarkdown)))
+	conversationMarkdown = renderCheckpointConversation(fitCheckpointConversation(conversation, variableBudget-len(notesMarkdown), meta.hasTranscript()))
 
 	// Assemble final checkpoint.
 	var b strings.Builder
@@ -1447,12 +1453,14 @@ const partnerMessageEdgeChars = 1000
 // replies first, oldest first. If the partner's messages alone still exceed
 // the budget, it trims the middle of the longest ones (pasted logs, say), each
 // at most once and never below partnerMessageEdgeChars at each end, with a
-// note saying where the full text is. Short instructions are never touched;
-// when they alone exceed the budget, the budget yields.
+// note saying where the full text is. Short instructions are never touched,
+// nor is a message trimming would not shorten, nor any message when the
+// session keeps no transcript to recover it from (recoverable false); when
+// what is left still exceeds the budget, the budget yields.
 //
 // conversation must already be cleaned (cleanCheckpointConversation), so the
 // rendered slice and the entries line up.
-func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int) []checkpointConversationEntry {
+func fitCheckpointConversation(conversation []checkpointConversationEntry, budget int, recoverable bool) []checkpointConversationEntry {
 	// The rendering is the section heading plus one block per entry, so its
 	// length is the sum of the entries' block lengths and the heading's.
 	blockLen := func(entry checkpointConversationEntry) int {
@@ -1468,7 +1476,7 @@ func fitCheckpointConversation(conversation []checkpointConversationEntry, budge
 		}
 		kept = append(kept, entry)
 	}
-	if rendered <= budget {
+	if rendered <= budget || !recoverable {
 		return kept
 	}
 	// Only the partner's messages are left: trim the longest first, each once.
@@ -1483,11 +1491,15 @@ func fitCheckpointConversation(conversation []checkpointConversationEntry, budge
 		if rendered <= budget {
 			break
 		}
-		before := blockLen(kept[i])
 		text := kept[i].Text
 		// Keep what the budget allows, leaving room for the note.
 		keep := max(2*partnerMessageEdgeChars, len(text)-(rendered-budget)-len(trimmedMessageNote(len(text))))
-		kept[i].Text = middleTrim(text, keep/2)
+		trimmed := middleTrim(text, keep/2)
+		if len(trimmed) >= len(text) {
+			continue // the note would cost what the trim saves
+		}
+		before := blockLen(kept[i])
+		kept[i].Text = trimmed
 		rendered += blockLen(kept[i]) - before
 	}
 	return kept
@@ -1526,14 +1538,14 @@ func middleTrim(text string, edge int) string {
 // every compaction. Checkpoints written by the opt-in session-log strategy
 // keep no conversation section, so nothing is recovered from them here
 // (#4181).
-func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string) string {
+func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool) string {
 	var partner []checkpointConversationEntry
 	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
 		if entry.Role == "user" {
 			partner = append(partner, entry)
 		}
 	}
-	return renderCheckpointConversation(fitCheckpointConversation(partner, maxCheckpointChars))
+	return renderCheckpointConversation(fitCheckpointConversation(partner, maxCheckpointChars, recoverable))
 }
 
 // foldCutoff is where a compaction of history that keeps preserveRecent
@@ -2183,7 +2195,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	}
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") +
 		renderCompactionModelText(summaryModelTextHeading, resp.Text()) +
-		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName()) + summaryTurnEnd
+		partnerMessagesMarkdown(partnerSource, len(partnerSource), cm.resultToolName(), cm.metaFor(ctx).hasTranscript()) + summaryTurnEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

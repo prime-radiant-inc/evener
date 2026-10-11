@@ -252,7 +252,7 @@ Write ONLY the checkpoint content. Be specific and concise (under 500 words). Fo
 	// (renderCompactionModelText).
 	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + s.cm.metaFor(ctx).compactionPointer("checkpoint") +
 		renderCompactionModelText("## Predicted Context", resp.Text()) +
-		partnerMessagesMarkdown(history, cutoff, s.cm.resultToolName()) + "[END CHECKPOINT]"
+		partnerMessagesMarkdown(history, cutoff, s.cm.resultToolName(), s.cm.metaFor(ctx).hasTranscript()) + "[END CHECKPOINT]"
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(checkpointText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
