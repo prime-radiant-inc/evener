@@ -12,6 +12,8 @@
  * has one) right after it on the summary's line rather than inside the
  * summary - a summary is one control and must not nest another. */
 .collapsible {
+  /* The expanded card below sizes itself against this row (100cqi). */
+  container-type: inline-size;
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
@@ -27,6 +29,18 @@
 .disclosure {
   flex: 0 1 auto;
   min-width: 0;
+}
+
+/* The expanded card spans the whole row while contributing no width to the
+ * Disclosure's own sizing: width 100cqi is the row's inline size, and the
+ * equal negative margin zeroes its intrinsic contribution. The Disclosure
+ * therefore stays as wide as its summary line in both states, and the Open
+ * control after it stays beside the head text; the card overflows to the
+ * row's right edge below the summary line, where the Open control (one line
+ * tall) never reaches. */
+.expanded {
+  width: 100cqi;
+  margin-right: -100cqi;
 }
 
 /* Level with the summary's first line: the summary's own block padding, then

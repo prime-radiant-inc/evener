@@ -56,6 +56,7 @@ const CLASS = {
   disclosure: requireClass(styles.disclosure, "notificationcard.module.css", "disclosure"),
   besideOpen: requireClass(styles.besideOpen, "notificationcard.module.css", "besideOpen"),
   delegateRef: requireClass(styles.delegateRef, "notificationcard.module.css", "delegateRef"),
+  expanded: requireClass(styles.expanded, "notificationcard.module.css", "expanded"),
   root: requireClass(styles.root, "notificationcard.module.css", "root"),
   headingText: requireClass(styles.headingText, "notificationcard.module.css", "headingText"),
   title: requireClass(styles.title, "notificationcard.module.css", "title"),
@@ -536,50 +537,52 @@ export function NotificationCard({
             </>
           }
         >
-          <Card>
-            <div className={CLASS.root} data-testid="notification-card-root">
-              {/* The head's name is hover-only; here it is the same entity card
-                  as a keyboard focus stop, so a keyboard reader reaches what a
-                  pointer reader gets. */}
-              {delegateView && delegateLabel !== undefined && (
-                <div className={CLASS.delegateRef} data-testid="notification-delegate">
-                  {delegateTrigger(false)}
-                </div>
-              )}
-              <NotificationMetadata notification={notification} />
-              {notification.prose && (
-                <pre className={CLASS.prose} data-testid="notification-prose">
-                  {notification.prose}
-                </pre>
-              )}
-              {notification.message ? (
-                notification.type === "delegate" ? (
-                  <MarkdownBubble
-                    source={notification.message.slice(0, MESSAGE_MAX)}
-                    dataTestId="notification-message"
-                  />
-                ) : (
-                  <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
-                    <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+          <div className={CLASS.expanded}>
+            <Card>
+              <div className={CLASS.root} data-testid="notification-card-root">
+                {/* The head's name is hover-only; here it is the same entity card
+                    as a keyboard focus stop, so a keyboard reader reaches what a
+                    pointer reader gets. */}
+                {delegateView && delegateLabel !== undefined && (
+                  <div className={CLASS.delegateRef} data-testid="notification-delegate">
+                    {delegateTrigger(false)}
                   </div>
-                )
-              ) : (
-                <Excerpt text={notification.excerpt} ansi={notification.jobType === "shell"} />
-              )}
-              <StructuredResult notification={notification} />
-              {notification.concerns.length > 0 && (
-                <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
-              )}
-              {notification.type !== "delegate" && (
-                <details className={CLASS.raw} data-testid="notification-raw-disclosure">
-                  <summary className={CLASS.summary}>Raw notification</summary>
-                  <pre className={CLASS.rawBody} data-testid="notification-raw">
-                    {notification.rawText}
+                )}
+                <NotificationMetadata notification={notification} />
+                {notification.prose && (
+                  <pre className={CLASS.prose} data-testid="notification-prose">
+                    {notification.prose}
                   </pre>
-                </details>
-              )}
-            </div>
-          </Card>
+                )}
+                {notification.message ? (
+                  notification.type === "delegate" ? (
+                    <MarkdownBubble
+                      source={notification.message.slice(0, MESSAGE_MAX)}
+                      dataTestId="notification-message"
+                    />
+                  ) : (
+                    <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
+                      <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />
+                    </div>
+                  )
+                ) : (
+                  <Excerpt text={notification.excerpt} ansi={notification.jobType === "shell"} />
+                )}
+                <StructuredResult notification={notification} />
+                {notification.concerns.length > 0 && (
+                  <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
+                )}
+                {notification.type !== "delegate" && (
+                  <details className={CLASS.raw} data-testid="notification-raw-disclosure">
+                    <summary className={CLASS.summary}>Raw notification</summary>
+                    <pre className={CLASS.rawBody} data-testid="notification-raw">
+                      {notification.rawText}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            </Card>
+          </div>
         </Disclosure>
       </div>
       {openControl && <span className={CLASS.besideOpen}>{openControl}</span>}
