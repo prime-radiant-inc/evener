@@ -42,18 +42,19 @@ describe("AgentsSection", () => {
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   });
 
-  test("shows an error message on failure", () => {
+  test("raises an alert on failure, without leaking the raw error string", () => {
     render(<AgentsSection sectionId="agents" useOverview={fixture({ error: "network down" })} />);
-    // error is converted via friendlyErrorMessage: raw strings like "network down" become the generic message
-    expect(screen.getByText(/Failed to load: Something went wrong/)).toBeTruthy();
-    // Assert the raw string no longer appears
-    expect(screen.queryByText(/network down/)).toBeNull();
+    const alert = screen.getByRole("alert");
+    // error is converted via friendlyErrorMessage: the raw wire string never reaches the reader
+    expect(alert.textContent).not.toContain("network down");
+    expect(screen.queryByRole("list")).toBeNull();
   });
 
-  test("empty state: 'No agents discovered.'", () => {
+  test("no agents renders the empty state instead of a list", () => {
     const data: SettingsOverviewResponse = { agents: [] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
-    expect(screen.getByText("No agents discovered.")).toBeTruthy();
+    expect(screen.getByTestId("empty-state")).toBeTruthy();
+    expect(screen.queryByRole("list")).toBeNull();
   });
 
   test("an agent with an editPath renders the standard open affordance: 'open in editor', target=_blank, no opener access", () => {
@@ -70,10 +71,10 @@ describe("AgentsSection", () => {
     expect(link.rel).toContain("noreferrer");
   });
 
-  test("an agent with no editPath shows a dim 'built-in' label instead of a link", () => {
+  test("an agent with no editPath offers no link", () => {
     const data: SettingsOverviewResponse = { agents: [{ name: "evener" }] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
-    expect(screen.getByText("built-in")).toBeTruthy();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
     expect(screen.queryByRole("link")).toBeNull();
   });
 
@@ -95,7 +96,6 @@ describe("AgentsSection", () => {
     expect(within(reviewer).getByText("reviewer")).toBeTruthy();
     expect(within(reviewer).getByRole("link", { name: /open in editor/i })).toBeTruthy();
     expect(within(builtin).getByText("evener")).toBeTruthy();
-    expect(within(builtin).getByText("built-in")).toBeTruthy();
     expect(within(builtin).queryByRole("link")).toBeNull();
   });
 });
