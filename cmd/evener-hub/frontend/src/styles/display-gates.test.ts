@@ -117,7 +117,8 @@ function mediaBlocks(source: string): { prelude: string; body: string }[] {
       else if (css[end] === "}") depth--;
       end++;
     }
-    blocks.push({ prelude: (match[1] ?? "").trim(), body: css.slice(at.lastIndex, end - 1) });
+    blocks.push({ prelude: match[1]!.trim(), body: css.slice(at.lastIndex, end - 1) });
+    at.lastIndex = end;
   }
   return blocks;
 }
@@ -129,6 +130,22 @@ test("the 44px touch-target floor is declared for phones and coarse pointers (20
   expect(tapFloor!.body).toMatch(/--tap-min:\s*44px/);
   for (const block of blocks.filter((b) => b.prelude !== TAP_FLOOR_QUERY)) {
     expect(block.body, `--tap-min declared under ${block.prelude}`).not.toMatch(/--tap-min:/);
+  }
+});
+
+test("every widget tap floor applies on phones and on coarse pointers", () => {
+  const widgetsDir = join(dirname(STYLES_DIR), "widgets");
+  const consumers = walkCss(widgetsDir).filter((file) => /var\(--tap-min/.test(readFileSync(file, "utf8")));
+  expect(consumers.length).toBeGreaterThan(0);
+  for (const file of consumers) {
+    const source = readFileSync(file, "utf8");
+    const total = source.replace(/\/\*[\s\S]*?\*\//g, " ").match(/var\(--tap-min/g)!.length;
+    const gated = mediaBlocks(source)
+      .filter((block) => block.prelude === TAP_FLOOR_QUERY)
+      .reduce((sum, block) => sum + (block.body.match(/var\(--tap-min/g)?.length ?? 0), 0);
+    expect(gated, `${file.slice(widgetsDir.length + 1)}: every var(--tap-min) sits in @media ${TAP_FLOOR_QUERY}`).toBe(
+      total,
+    );
   }
 });
 

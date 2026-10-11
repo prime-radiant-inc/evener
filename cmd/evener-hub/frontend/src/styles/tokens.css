@@ -384,11 +384,11 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
 }
 
 /* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
- * decision 4): 44px per the platform HIG, on phones and on any coarse pointer
- * (touch laptops, iPad landscape - Jesse 2026-10-11), so every rule that
- * reads it under either condition has a value. Consumers apply it as
- * min-width/min-height inside their own media blocks, so desktop sizing
- * rules stay untouched. */
+ * decision 4): 44px per the platform HIG, on phones and on any coarse
+ * pointer at any width (touch laptops, iPad landscape; Jesse 2026-10-11).
+ * Only the floor widens - the phone font-size and density rules above stay
+ * phone-only. Widgets consume it under this same query as min-width/
+ * min-height, so desktop sizing rules stay untouched. */
 @media (max-width: 899px), (pointer: coarse) {
   body {
     --tap-min: 44px;

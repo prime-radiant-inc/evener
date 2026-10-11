@@ -9,7 +9,7 @@
 // share a screen; the TOOLTIP is the one word "Open" everywhere.
 //
 // The touch target never reaches the line box: the .inline wrapper is the
-// full hit size (28px, --tap-min on phones - the IconButton sm inside fills
+// full hit size (28px, --tap-min on phones and coarse pointers - the IconButton sm inside fills
 // it) and its negative margin-block hands exactly 1em back to layout, so a
 // row with the affordance is the height of a row without it.
 //

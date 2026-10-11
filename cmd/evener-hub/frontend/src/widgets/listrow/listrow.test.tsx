@@ -150,7 +150,7 @@ test("the collection meta line is mono and truncates", () => {
 });
 
 test("mobile: interactive and collection rows reach the 44px tap floor", () => {
-  const mobile = /@media \(max-width: 899px\) \{([\s\S]*?)\n\}/.exec(css())?.[1] ?? "";
+  const mobile = /@media \(max-width: 899px\), \(pointer: coarse\) \{([\s\S]*?)\n\}/.exec(css())?.[1] ?? "";
   expect(mobile).toMatch(/\.collection,\s*\.interactive\s*\{[^}]*min-height: var\(--tap-min\)/);
 });
 
