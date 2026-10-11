@@ -377,8 +377,12 @@ func (p *Profile) SeesToolResultMedia(mediaType string) bool {
 // this instance's row; a slashed ref may name another instance, or a
 // namespaced model id this instance serves under (gateways namespace rows
 // like "anthropic/claude-opus-4-5") — a genuine row on this instance wins,
-// exactly CrossProviderRef's rule. The current-instance lookup runs at
-// facts depth too, so classifying never mints.
+// exactly CrossProviderRef's rule. Disabled rows do not win the match:
+// CrossProviderRef resolves through Resolve, which refuses a row the config
+// disabled, so serving treats such a ref as naming the prefix's instance —
+// and the current-instance lookup runs at facts depth (which does not judge
+// the flag, by design for alias seeding), so the chain check applies the
+// gate itself.
 func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error) {
 	ref = strings.TrimSpace(ref)
 	prefix, rest, ok := strings.Cut(ref, "/")
@@ -389,7 +393,7 @@ func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error)
 		}
 		return p.registry.ResolveInstanceModelFacts(p.ID(), model)
 	}
-	if res, err := p.registry.ResolveInstanceModelFacts(p.ID(), ref); err == nil && !res.Synthesized {
+	if res, err := p.registry.ResolveInstanceModelFacts(p.ID(), ref); err == nil && !res.Synthesized && !registry.BoolValue(res.Model.Disabled) {
 		return res, nil
 	}
 	return p.registry.ResolveInstanceModelFacts(prefix, rest)

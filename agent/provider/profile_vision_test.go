@@ -150,6 +150,10 @@ func TestResolveModelFactsForRefClassifiesLikeWithModel(t *testing.T) {
 			Models: map[string]registry.Model{
 				"vis-1":                     {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
 				"anthropic/claude-opus-4-5": {Caps: registry.Caps{InputModalities: []string{"text"}}},
+				// Disabled rows never win the current-instance match: the
+				// runner's own classification refuses them, so the ref names
+				// the prefix's instance.
+				"anthropic/claude-3-haiku": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}, Disabled: new(true)},
 			},
 		},
 	})
@@ -166,6 +170,16 @@ func TestResolveModelFactsForRefClassifiesLikeWithModel(t *testing.T) {
 	}
 	if got := res.Caps.InputModalities; !slices.Equal(got, []string{"text"}) {
 		t.Fatalf("namespaced ref modalities = %v, want the gateway's own text-only row", got)
+	}
+
+	// A disabled namespaced row does not win the match even though its facts
+	// resolve: the ref resolves to the prefix's instance.
+	res, err = p.ResolveModelFactsForRef("anthropic/claude-3-haiku")
+	if err != nil {
+		t.Fatalf("disabled namespaced ref: err=%v", err)
+	}
+	if res.Instance != "anthropic" {
+		t.Fatalf("disabled namespaced ref instance = %q, want anthropic", res.Instance)
 	}
 
 	// A slashed ref that is not a row on this instance names the instance its

@@ -588,6 +588,74 @@ func TestDescribeImage_RouteFailureDoesNotRetryMediaOnAnInheritedRowProfile(t *t
 	}
 }
 
+// A disabled row on the gateway must not win the current-instance match: the
+func TestDescribeImage_DisabledGatewayRowDoesNotWinTheFactsMatch(t *testing.T) {
+	t.Parallel()
+	gw := &fakeErrAdapter{name: "gw", steps: []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Assistant("a png")}, nil
+		},
+	}}
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"gw": {
+				Surface:       registry.SurfaceOpenAI,
+				Protocol:      registry.ProtocolOpenAIResponses,
+				APIKey:        "k",
+				DefaultModel:  "vis-1",
+				Transport:     registry.Transport{BaseURL: "http://gw.test.invalid/v1"},
+				InheritModels: new(false),
+				Models: map[string]registry.Model{
+					"vis-1": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+					// Image-capable on a delivering protocol, but disabled —
+					// serving never uses this row.
+					"anthropic/claude-opus-4-5": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}, Disabled: new(true)},
+				},
+			},
+			// The prefix's instance serves the ref through chat completions,
+			// which strips tool-result images.
+			"anthropic": {
+				Surface:       registry.SurfaceOpenAI,
+				Protocol:      registry.ProtocolOpenAIChat,
+				APIKey:        "k",
+				DefaultModel:  "claude-opus-4-5",
+				Transport:     registry.Transport{BaseURL: "http://anthropic-gw.test.invalid/v1"},
+				InheritModels: new(false),
+				Models: map[string]registry.Model{
+					"claude-opus-4-5": {Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("fixture registry: %v", err)
+	}
+	sessionProfile, err := provider.Resolve(r, "gw/vis-1")
+	if err != nil {
+		t.Fatalf("resolve session profile: %v", err)
+	}
+	sess := newSession(t, withAdapter(gw), withProfile(sessionProfile),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"anthropic/claude-opus-4-5"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				// Validation needs a same-surface answer; the disabled row
+				// means the runner treats the ref as cross-instance.
+				return provider.Resolve(r, "openai/gpt-5.2")
+			},
+		}))
+
+	result := sess.describeImageCall(context.Background(), visionImageResult())
+	if result.outcome != visionSideChannelSuccess || result.description != "a png" {
+		t.Fatalf("disabled-gateway-row result = %+v, want the side-channel description", result)
+	}
+	if len(gw.Requests()) != 1 {
+		t.Fatalf("side-channel calls = %d, want 1", len(gw.Requests()))
+	}
+}
+
 // A document media type reaches the side-channel normalized: case and
 // surrounding whitespace must not reclassify a PDF as a raster image, which
 // would send document bytes in an image part and open the retry gate to
