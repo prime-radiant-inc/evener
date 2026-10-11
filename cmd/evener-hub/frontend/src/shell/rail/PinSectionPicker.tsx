@@ -3,7 +3,7 @@ import { errorText } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useId, useState } from "react";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
-import { Button, Dialog, Input, Sheet } from "../../widgets";
+import { Button, Dialog, FormRow, Input, Sheet, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
 import { isPinSectionNotFound, type PinSectionSummary } from "./actions";
@@ -19,8 +19,6 @@ const CLASS = {
   pickerList: requireClass(styles.pickerList, "railDialog.module.css", "pickerList"),
   pickerItem: requireClass(styles.pickerItem, "railDialog.module.css", "pickerItem"),
   pickerError: requireClass(styles.pickerError, "railDialog.module.css", "pickerError"),
-  dialogField: requireClass(styles.dialogField, "railDialog.module.css", "dialogField"),
-  dialogActions: requireClass(styles.dialogActions, "railDialog.module.css", "dialogActions"),
 };
 
 function compareSections(a: PinSectionSummary, b: PinSectionSummary): number {
@@ -33,7 +31,6 @@ function sortedPinSectionSummaries(): PinSectionSummary[] {
 
 export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPickerProps) {
   const inputID = useId();
-  const errorID = useId();
   const isMobile = useIsMobile();
   const [sections, setSections] = useState<PinSectionSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -106,28 +103,25 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
   }
 
   const footer = nameMode ? (
-    <div className={CLASS.dialogActions}>
+    <>
       <Button variant="quiet" onClick={() => setNameMode(false)} disabled={submitting}>
         Back
       </Button>
       <Button onClick={() => void assignNew()} disabled={submitting}>
         Create and pin
       </Button>
-    </div>
+    </>
   ) : (
-    <div className={CLASS.dialogActions}>
-      <Button variant="quiet" onClick={onClose} disabled={submitting}>
-        Cancel
-      </Button>
-    </div>
+    <Button variant="quiet" onClick={onClose} disabled={submitting}>
+      Cancel
+    </Button>
   );
 
   const title = `Pin ${session.title}`;
   const body = (
     <>
       {nameMode ? (
-        <label className={CLASS.dialogField} htmlFor={inputID}>
-          Section name
+        <FormRow label="Section name" htmlFor={inputID} error={error || undefined}>
           <Input
             id={inputID}
             value={name}
@@ -136,12 +130,12 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
               setError("");
             }}
             disabled={submitting}
-            aria-describedby={error ? errorID : undefined}
+            aria-describedby={error ? `${inputID}-error` : undefined}
           />
-        </label>
+        </FormRow>
       ) : (
         <>
-          {loading && <p role="status">Loading sections…</p>}
+          {loading && <Skeleton lines={2} />}
           {!loading && (
             <ul className={CLASS.pickerList} aria-label="Pin sections">
               {sections.map((section) => (
@@ -170,8 +164,8 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
           )}
         </>
       )}
-      {error && (
-        <p id={errorID} className={CLASS.pickerError} role="alert">
+      {!nameMode && error && (
+        <p className={CLASS.pickerError} role="alert">
           {error}
         </p>
       )}

@@ -4155,6 +4155,7 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   await waitFor(() => expect(window.location.pathname).toBe("/thread/local:s1"));
   expect(document.querySelector("[data-single-pane]")).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
 });
 
 // --- kata p5w9: one boot, one baseline AppWire navigation read -------------------------

@@ -48,11 +48,19 @@ import {
   selectSources,
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { Badge, Chevron, IconButton } from "../../widgets";
+import {
+  Badge,
+  Button,
+  Chevron,
+  IconButton,
+  Menu,
+  type MenuItem,
+  Skeleton,
+  type TreeRowInfo,
+  VisuallyHidden,
+} from "../../widgets";
 import { HoverCard } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Menu, type MenuItem } from "../../widgets/menu";
-import type { TreeRowInfo } from "../../widgets/tree";
 import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { CADENCE_LABEL, cadenceStateFor, SessionStatusIndicator, SIGNAL_STATES } from "../SessionStatusIndicator";
@@ -104,7 +112,6 @@ const CLASS = {
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
-  srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
 // RowGutter is the wrapper the row's signal dot renders inside. The dot is
@@ -232,7 +239,7 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
       trigger={
         <>
           <span aria-hidden="true">{"⋯"}</span>
-          <span className={CLASS.srOnly}>{`Actions for ${label}`}</span>
+          <VisuallyHidden>{`Actions for ${label}`}</VisuallyHidden>
         </>
       }
       items={items}
@@ -685,15 +692,17 @@ function ProjectRow({
             {node.displayName ?? project.name}
           </span>
           {resourceError && retry && (
-            <button
-              type="button"
+            <Button
+              variant="quiet"
+              size="xs"
+              tabIndex={-1}
               onClick={(event) => {
                 event.stopPropagation();
                 retry();
               }}
             >
               Retry
-            </button>
+            </Button>
           )}
           <TrailingChevron info={info} />
         </span>
@@ -829,13 +838,10 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
 }
 
 function LoadingRow(): ReactNode {
-  // role="status" so this is announced the same way the top-level Skeleton
-  // (widgets/skeleton) is - the visible "Loading…" text is its own
-  // accessible name via name-from-content, no separate aria-label needed.
   return (
-    <span role="status" className={CLASS.loadingRow}>
-      Loading…
-    </span>
+    <div className={CLASS.loadingRow}>
+      <Skeleton lines={1} />
+    </div>
   );
 }
 

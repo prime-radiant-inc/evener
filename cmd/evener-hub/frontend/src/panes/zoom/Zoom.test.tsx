@@ -418,7 +418,7 @@ test.each(["deleted", "missing"] as const)(
       .find((column) => column.getAttribute("data-scope-ref") === "child");
     if (!child) throw new Error("Missing child column");
     await within(child).findByText(failure === "deleted" ? "This session was deleted" : "Transcript unavailable");
-    expect(within(child).queryByText("Loading transcript…")).toBeNull();
+    expect(within(child).queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText("root content old-root")).toBeTruthy();
     if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
     act(() => fireEvent.click(within(child).getByRole("button", { name: "Open conversation" })));

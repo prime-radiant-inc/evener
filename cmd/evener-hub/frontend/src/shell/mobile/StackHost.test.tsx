@@ -558,6 +558,12 @@ test("hosts the tree drawer trigger in the top bar, regardless of which pane is 
   expect(await screen.findByRole("button", { name: "Sessions" })).toBeTruthy();
 });
 
+test("a single-pane route offers no tree drawer trigger", async () => {
+  render(<StackHost singlePane />);
+  expect(await screen.findByTestId("topbar-title")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
 // --- back navigation ---------------------------------------------------
 
 test("the back affordance is hidden while welcome (the stack's root) is focused", async () => {
