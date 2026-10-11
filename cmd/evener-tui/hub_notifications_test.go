@@ -3,7 +3,6 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -329,38 +328,13 @@ func TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField(t *te
 	}
 }
 
-// notificationWireItem returns one recorded case from the notification-frame
-// corpus, which agent.TestSteeringNotificationWireFixtures produces from the
-// real frame producers.
-func notificationWireItem(t *testing.T, name string) appwire.ThreadItem {
-	t.Helper()
-	raw, err := os.ReadFile("../../agent/testdata/notificationwire/steering.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cases []struct {
-		Case string             `json:"case"`
-		Item appwire.ThreadItem `json:"item"`
-	}
-	if err := json.Unmarshal(raw, &cases); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range cases {
-		if c.Case == name {
-			return c.Item
-		}
-	}
-	t.Fatalf("no %s case in the notification corpus", name)
-	return appwire.ThreadItem{}
-}
-
 // A delegate's recorded update stays a visible steering row in the TUI, the
 // way every delegate frame does.
 func TestTUIDelegateUpdateNotificationStaysVisible(t *testing.T) {
 	m := newTUIStableDelegateModel()
 	sendTUINotification(t, &m, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		Ref:   "local:root",
-		Items: []appwire.ThreadItem{notificationWireItem(t, "delegate-update")},
+		Items: []appwire.ThreadItem{recordedWireItem(t, "notificationwire/steering.json", "delegate-update")},
 	})
 	for _, msg := range m.session.messages {
 		if msg.Kind == transcript.MsgSteering && strings.Contains(msgrender.RenderMessage(msg, 240, false), "Which table holds the drain cursor") {
@@ -370,38 +344,12 @@ func TestTUIDelegateUpdateNotificationStaysVisible(t *testing.T) {
 	t.Fatalf("messages = %+v, want the recorded update visible", m.session.messages)
 }
 
-// systemEventWireItem returns one recorded case from the system-event corpus,
-// which agent.TestSystemEventWireFixtures produces from the real producers.
-func systemEventWireItem(t *testing.T, name string) appwire.ThreadItem {
-	t.Helper()
-	raw, err := os.ReadFile("../../agent/testdata/systemeventwire/events.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture struct {
-		Items []struct {
-			Case string             `json:"case"`
-			Item appwire.ThreadItem `json:"item"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range fixture.Items {
-		if c.Case == name {
-			return c.Item
-		}
-	}
-	t.Fatalf("no %s case in the system-event corpus", name)
-	return appwire.ThreadItem{}
-}
-
 // A parent's recorded steer into its delegate stays a visible steering row.
 func TestTUIParentSteerStaysVisible(t *testing.T) {
 	m := newTUIStableDelegateModel()
 	sendTUINotification(t, &m, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		Ref:   "local:root",
-		Items: []appwire.ThreadItem{systemEventWireItem(t, "steer-from-parent")},
+		Items: []appwire.ThreadItem{recordedWireItem(t, "systemeventwire/events.json", "steer-from-parent")},
 	})
 	for _, msg := range m.session.messages {
 		if msg.Kind == transcript.MsgSteering && strings.Contains(msgrender.RenderMessage(msg, 240, false), "Use the drain_log table") {

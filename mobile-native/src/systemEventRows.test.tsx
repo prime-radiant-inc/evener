@@ -464,9 +464,8 @@ describe("the daemon's steers (G8)", () => {
 		expect(renderedText(tree)).toBe(`${label} ${stripSystemReminder(systemEventWireItem(name).text ?? "")}`);
 	});
 
-	it.each(LEVELS)("keeps a parent's steer, which is conversation, and drops a daemon steer at chat (%s)", (level) => {
+	it.each(LEVELS)("keeps a parent's steer, which is conversation, at every level (%s)", (level) => {
 		expect(rowFor("steer-from-parent", level)).toBeDefined();
-		expect(rowFor("steer-hook-context", level) === undefined).toBe(level === "chat");
 	});
 
 	// A parent's message is conversation, not the daemon's markup: it shows

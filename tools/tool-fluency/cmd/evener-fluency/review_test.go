@@ -345,9 +345,11 @@ func TestWriteReviewPackMasksAPathInsideADelegateBrief(t *testing.T) {
 }
 
 // TestRenderPacketLabelsHarnessSteering: a steering turn is only the person's
-// own words when its source is SteeringSourceUser. The harness's own reminder
-// (such as the bare-text nudge) is recorded as steering the person never saw,
-// so the blind reader must not read it as the user speaking.
+// own words when its source is SteeringSourceUser. A delegate's parent speaks
+// under its own heading (SteeringSourceParent), never as a human. The
+// harness's own reminder (such as the bare-text nudge) is recorded as steering
+// the person never saw, so the blind reader must not read it as the user
+// speaking.
 func TestRenderPacketLabelsHarnessSteering(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -357,12 +359,17 @@ func TestRenderPacketLabelsHarnessSteering(t *testing.T) {
 	user := schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("focus on the tests")}})
 	user.SteeringKind = events.SteeringKindHumanNote
 	user.SteeringSource = events.SteeringSourceUser
-	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{harness, user})
+	parent := schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("also cover the retry path")}})
+	parent.SteeringSource = events.SteeringSourceParent
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{harness, user, parent})
 	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
 	packet := renderPacket(tr)
+	if !strings.Contains(packet, "## Parent agent\n\nalso cover the retry path") {
+		t.Errorf("packet did not render a parent's steer under its own heading:\n%s", packet)
+	}
 	if !strings.Contains(packet, "## Evener (not shown to the user)\n\nSend your report with the communicate tool.") {
 		t.Errorf("packet did not label harness steering as Evener's:\n%s", packet)
 	}
