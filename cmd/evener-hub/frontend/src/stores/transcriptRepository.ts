@@ -1029,11 +1029,14 @@ export class TranscriptRepository {
             // baseline's own page chain is intact; a reconciliation (a fresh
             // baseline after a reconnect or an unverified frontier), a newer
             // authoritative read, or a failed durable write retires that chain,
-            // yet the rows are still recorded history. Restore the bounded seeds
-            // the opening had loaded without certifying an interval or handing
-            // out a cursor, so a reopened pane is not silently truncated to the
-            // latest window (global-contracts: isolated stored seeds merge
-            // without certifying an interval).
+            // and the certified query also returns nothing when the requested
+            // boundary has no connected certificate (an intact chain that simply
+            // does not reach these positions), so the fallback fires in that case
+            // too. Either way the rows are still recorded history. Restore the
+            // bounded seeds the opening had loaded without certifying an interval
+            // or handing out a cursor, so a reopened pane is not silently
+            // truncated to the latest window (global-contracts: isolated stored
+            // seeds merge without certifying an interval).
             let olderRows: readonly TranscriptItemRow<unknown>[] = [];
             if (cut.authorityValid) {
               const older = await this.#cache.getOlderWindow(
