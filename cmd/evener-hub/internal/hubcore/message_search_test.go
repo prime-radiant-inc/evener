@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -170,6 +171,79 @@ func TestMessageSearchKeepsUserAndAgentMessagesUnderTheirReadKeys(t *testing.T) 
 	}
 	if want := []string{"The settle pass takes the tree lock first.", "Why does the settle pass race the drain?"}; !reflect.DeepEqual(texts, want) {
 		t.Fatalf("texts = %q, want %q", texts, want)
+	}
+}
+
+// A steer from the partner is a message of the conversation: the user's own
+// steer, and a parent's steer into its delegate. The daemon's own nudges are
+// not.
+func TestMessageSearchKeepsPartnerSteersAndSkipsDaemonNudges(t *testing.T) {
+	steer := func(text, source string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.SteeringSource = source
+		return turn
+	}
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1",
+		steer("quokka from the user", events.SteeringSourceUser),
+		steer("quokka from the parent", events.SteeringSourceParent),
+		steer("quokka from the daemon", ""),
+	)
+	index := openTestMessageSearch(t)
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := index.Match(context.Background(), "quokka", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts, err := index.Texts(context.Background(), matches["s1"].Hits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"quokka from the parent", "quokka from the user"}; !reflect.DeepEqual(texts, want) {
+		t.Fatalf("texts = %q, want %q", texts, want)
+	}
+}
+
+// An index built before parent steers were searchable (schema version 1) still
+// finds them once reopened: the version bump rebuilds it, since a refresh
+// skips a transcript that has not changed.
+func TestMessageSearchRebuildsAnIndexThatPredatesParentSteers(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "sessions", "s1.transcript.jsonl")
+	parent := schema.NewTurn(schema.TurnSteering, llm.User("quokka from the parent"))
+	parent.SteeringSource = events.SteeringSourceParent
+	writeTestTranscript(t, path, "s1", parent)
+	dbPath := filepath.Join(root, "search.db")
+	index, err := OpenMessageSearch(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := []MessageSearchSession{{ID: "s1", TranscriptPath: path}}
+	if _, err := index.Refresh(context.Background(), sessions); err != nil {
+		t.Fatal(err)
+	}
+	// What the version-1 index held: the transcript read, without the steer.
+	if _, err := index.db.ExecContext(context.Background(), `DELETE FROM messages`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.db.ExecContext(context.Background(), `PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenMessageSearch(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Refresh(context.Background(), sessions); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := reopened.Match(context.Background(), "quokka", 3); err != nil || matches["s1"].Count != 1 {
+		t.Fatalf("matches = %+v (%v), want the parent steer found after the rebuild", matches, err)
 	}
 }
 

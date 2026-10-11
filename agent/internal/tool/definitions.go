@@ -202,6 +202,12 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 // parameters while removing or constraining sandbox values the session cannot
 // enforce.
 func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSchema) llm.ToolDefinition {
+	return DefDelegateWithResultTool(agentTypes, sandboxSchema, DefaultResultToolName)
+}
+
+// DefDelegateWithResultTool is DefDelegateWithSandbox for a session whose
+// result tool is named resultTool.
+func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandboxSchema, resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	agentTypeSchema := map[string]any{
 		"type":        "string",
@@ -219,8 +225,8 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"`result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable " +
 			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
 			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
-			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). " + ObserverReporting + " For delegate readiness, status, findings, and final reports, ask the " +
-			"delegate to call `communicate` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
+			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). " + ObserverReporting(resultTool) + " For delegate readiness, status, findings, and final reports, ask the " +
+			"delegate to call `" + resultTool + "` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -333,10 +339,16 @@ func DelegateSandboxEnumFromModes(modes []string, parentNetwork, parentModeOff b
 // DefDelegateSend defines the delegate_send tool, the single follow-up surface
 // for your own durable delegates.
 func DefDelegateSend() llm.ToolDefinition {
+	return DefDelegateSendNamed(DefaultResultToolName)
+}
+
+// DefDelegateSendNamed is DefDelegateSend for a session whose result tool is
+// named resultTool.
+func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
-			"To reach your own parent, use communicate instead: end_turn=false for an update, end_turn=true for your final report. " +
+			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for your final report. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -376,6 +388,12 @@ func DefModelList() llm.ToolDefinition {
 // model-facing session/job event-kind names available this session; they are
 // interpolated into the description so the model can discover them (spec §5.11).
 func DefJobWatch(eventKinds []string) llm.ToolDefinition {
+	return DefJobWatchNamed(eventKinds, DefaultResultToolName)
+}
+
+// DefJobWatchNamed is DefJobWatch for a session whose result tool is named
+// resultTool.
+func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	kinds := strings.Join(eventKinds, ", ")
 	if kinds == "" {
@@ -395,7 +413,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
 		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
 		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
-		ObserverReporting + " " +
+		ObserverReporting(resultTool) + " " +
 		"A `self` watch on your own events can feed itself: when a frame responds to this watch's earlier frames, it carries a system reminder saying so and how many exchanges deep the loop runs. As the depth grows, stop acting on those frames, and clear the watch if the loop goes on; Evener drops frames past a depth limit. For sustained watching of your own work, use an observer delegate when you can start one, and use a timer for state outside Evener. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{
@@ -456,12 +474,18 @@ func DefJobStatus() llm.ToolDefinition {
 }
 
 func DefJobList() llm.ToolDefinition {
+	return DefJobListNamed(DefaultResultToolName)
+}
+
+// DefJobListNamed is DefJobList for a session whose result tool is named
+// resultTool.
+func DefJobListNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	statusEnum := []any{"running", "idle", "completed", "failed", "command_exited_nonzero", "command_killed", "exhausted", "cancelled", "stopped"}
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. " + ObserverReporting + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. " + ObserverReporting(resultTool) + " Use transcript evidence after an observer's report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -651,8 +675,13 @@ func DefWebSearch() llm.ToolDefinition {
 	}
 }
 
+// DefaultResultToolName is the result tool's name unless a session renames it
+// (SessionConfig.ResultToolName). Tool descriptions that teach the result tool
+// are built from the configured name by the Def...Named constructors.
+const DefaultResultToolName = "communicate"
+
 func DefCommunicate() llm.ToolDefinition {
-	return DefCommunicateNamed("communicate")
+	return DefCommunicateNamed(DefaultResultToolName)
 }
 
 func DefCommunicateNamed(name string) llm.ToolDefinition {
@@ -733,8 +762,11 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 }
 
 // ObserverReporting is how an observer sidecar talks to the session it
-// watches, shared by every tool description and error that teaches it.
-const ObserverReporting = "Observers send updates with `communicate(end_turn=false)` and report findings with `communicate(end_turn=true)`."
+// watches through resultTool, shared by every tool description and error that
+// teaches it.
+func ObserverReporting(resultTool string) string {
+	return "Observers send updates with `" + resultTool + "(end_turn=false)` and report findings with `" + resultTool + "(end_turn=true)`."
+}
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
 // messages go to its parent agent. It names no output fields: a delegate
@@ -1112,10 +1144,16 @@ func DefReadTranscript() llm.ToolDefinition {
 // leading "> " markers stripped); the schema is spec §4.2. Strict is false
 // because multi_select/why/if_unanswered/recommended are all optional.
 func DefAskUser() llm.ToolDefinition {
+	return DefAskUserNamed(DefaultResultToolName)
+}
+
+// DefAskUserNamed is DefAskUser for a session whose result tool is named
+// resultTool.
+func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name: "ask_user",
-		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `communicate` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
+		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `" + resultTool + "` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
 			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.\n" +
 			"- Do not add an \"Other\" or free-text option; the UI always offers one, plus \"you decide\".\n" +
 			"- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).\n\n" +

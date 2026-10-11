@@ -2086,9 +2086,15 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.mu.Lock()
 	a.finalizing = true
 	a.mu.Unlock()
-	drained, err := a.sess.DrainJobTree(ctx)
+	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
+	}
+	// The report is the latest one the session accepted, taken whole: its
+	// text and its structured output come from the same source, whatever
+	// text the drain's turns returned.
+	if reply, reported := a.sess.communicatedReply(); reported {
+		return reply, parentDriveNotify, nil
 	}
 	if drained != "" {
 		result = drained

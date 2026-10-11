@@ -1063,10 +1063,10 @@ func (s *Session) coversPresentedAttention(ctx context.Context) bool {
 
 // stagePresentedAttentionCoverage records one built request's candidate
 // coverage: the attention IDs among presentedTurns, the exact history the
-// request projects, that were not armed for the root's own notification turn
-// when this turn began. Every request build replaces the staged set, so a
-// failed attempt's candidates never outlive it. Staging is candidacy, not
-// credit — promoteStagedAttentionCoverage credits the set only when the
+// request projects. Arming time does not matter: the model has seen the
+// message that would have woken it. Every request build replaces the staged
+// set, so a failed attempt's candidates never outlive it. Staging is
+// candidacy, not credit — promoteStagedAttentionCoverage credits the set only when the
 // round's call settles, because a request that never settled (a failed
 // attempt, a content-filter retry whose compaction then folds the steering
 // turn away) presented nothing the design may consume. Only a turn that
@@ -1080,9 +1080,6 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 	var staged map[string]struct{}
 	for _, turn := range presentedTurns {
 		if turn.AttentionID == "" {
-			continue
-		}
-		if _, preTurn := s.attentionPreTurnIDs[turn.AttentionID]; preTurn {
 			continue
 		}
 		if staged == nil {
@@ -1118,17 +1115,13 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionCoveredIDs = covered
 }
 
-// resetAttentionCoverage clears the per-turn coverage at turn start and
-// snapshots the root's armed set that marking excludes, so the root credits
-// only deliveries armed after this turn began. It runs for every turn, so a
-// turn that covers nothing never inherits an earlier turn's coverage.
-// maps.Clone(nil) is nil, and the field is lookup-only, so an empty armed set
-// needs no special case.
+// resetAttentionCoverage clears the per-turn coverage at turn start. It runs
+// for every turn, so a turn that covers nothing never inherits an earlier
+// turn's coverage.
 func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
-	s.attentionPreTurnIDs = maps.Clone(s.rootAttentionWakeIDs)
 	s.attentionMu.Unlock()
 }
 

@@ -305,6 +305,18 @@
         "status": "completed",
         "steeringKind": "note-handoff"
       }
+    },
+    {
+      "case": "steer-from-parent",
+      "note": "A delegate_send message steered into a running delegate (parentSteeringTurn): source parent, no kind, the attribution line first.",
+      "item": {
+        "type": "steering",
+        "id": "item_steering_1",
+        "turnId": "turn_1",
+        "text": "Message from your parent agent:\n\nUse the drain_log table; tree_state is being retired.",
+        "status": "completed",
+        "source": "parent"
+      }
     }
   ],
   "failed_turn": {

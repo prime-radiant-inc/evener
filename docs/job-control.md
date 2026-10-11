@@ -514,6 +514,10 @@ Semantics:
 
 - If `to` identifies a running or currently-driven delegate, Evener injects the
   message into that exact generation. The return `action` is `steered`.
+  The injected steering turn has source `parent`, and the delegate's model reads
+  it after the line `Message from your parent agent:`; clients label it "From
+  parent". A message that starts an idle delegate opens its next generation as
+  user input, as the original brief does.
 - If `to` identifies an idle/resumable delegate, Evener starts its next private
   generation in the same child conversation. The return `action` is `started`.
 - If `to` is a `job_id`, `transcript_ref`, unknown/unauthorized delegate,
@@ -1405,6 +1409,13 @@ ordered queue and receiver-transcript attention as the terminal packet.
   the owner ahead of its report. Delivery never fails the call: the message is
   already in the delegate's transcript.
 - Updates never feed Activity's `reportPreview`.
+- A delegate parked in its finalization drain can run further turns: an
+  update from a delegate it owns wakes it. A turn that ends with a terminal
+  `communicate` gives a newer report, and the newer report is the one the
+  parent receives and Activity previews; the earlier report stays in the
+  delegate's transcript. A turn that ends without a terminal `communicate`,
+  including one whose model returns bare text, leaves the earlier report
+  standing as the delegate's completed report.
 - A root's `communicate(end_turn=false)` is unchanged: a checkpoint for its
   human partner.
 
@@ -1444,9 +1455,9 @@ Rules:
   settled model request of a root turn, or of a delegate turn running in its
   generation, carried an attention entry, the turn's successful end appends the
   consumed marker, so the entry starts no further turn or attention generation.
-  Attention appended after the turn's last request was built keeps its own wake,
-  and so does attention already armed for the root's own notification turn when
-  the turn began: that notification turn consumes it.
+  This holds whether the attention was armed before the turn began or during
+  it. Attention appended after the turn's last request was built keeps its own
+  wake.
 - Duplicate terminal attention is suppressed by its durable source identity.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.

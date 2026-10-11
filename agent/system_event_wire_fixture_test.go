@@ -188,6 +188,11 @@ func TestSystemEventWireFixtures(t *testing.T) {
 			Note: "The agent's note to itself, carried across a compaction (renderNoteHandoff).",
 			Item: steer(t, "steer-note-handoff", events.SteeringKindNoteHandoff, renderNoteHandoff("Next: run the race detector on tree.go.")),
 		},
+		{
+			Case: "steer-from-parent",
+			Note: "A delegate_send message steered into a running delegate (parentSteeringTurn): source parent, no kind, the attribution line first.",
+			Item: projected(t, "steer-from-parent", parentSteeringTurn("Use the drain_log table; tree_state is being retired.", "q_fixture_parent", wireFixtureStart)),
+		},
 	}
 
 	checkWireFixture(t, systemEventWireFixturePath, struct {

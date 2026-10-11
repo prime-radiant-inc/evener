@@ -3,6 +3,7 @@ package sandbox
 import (
 	_ "embed"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -94,8 +95,9 @@ func canonicalizeLongestPrefix(p string, eval func(string) (string, error)) stri
 // cannot dyld-load system frameworks without them; read-only and workspace-write
 // read the whole disk minus the denylist and never include them.
 //
-// It is a pure function (no host or environment access beyond the injected
-// canonicalizer) so its golden output and the M1 contract suite run on any host.
+// Its only host access is the injected canonicalizer and the .git walk of
+// carve-outs that exist (unmaskedSection), so its golden output and the M1
+// contract suite run on any host.
 func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (string, []DirParam) {
 	if canon == nil {
 		canon = identityCanon
@@ -130,6 +132,12 @@ func SeatbeltPolicy(rp ResolvedPolicy, sessionTmp string, canon Canonicalizer) (
 	// unreadable globs.)
 	if denials != "" {
 		sections = append(sections, "; authoritative denials (override every allow above)\n"+denials)
+	}
+	// The roots carved out of the mask (installed plugins and the user skills
+	// directory) are re-granted read-only after the denials, for the same
+	// last-match-wins reason, so they override the mask and nothing else.
+	if regrants := unmaskedSection(rp, ps); regrants != "" {
+		sections = append(sections, "; read-only roots carved out of the mask\n"+regrants)
 	}
 
 	return strings.Join(sections, "\n"), ps.params
@@ -180,7 +188,7 @@ func readRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string {
 // the converse grant, the link spelling alone, does NOT make an ungranted (or
 // masked) target readable through the link. The literal param is therefore a
 // SPELLING alias, never extra reach — the read-side counterpart of the firmlink
-// alias defineDeny emits, for the same reason.
+// alias defineBothSpellings emits, for the same reason.
 func (ps *paramSet) defineRead(key, root string) []string {
 	keys := []string{ps.define(key, root)}
 	if literal := filepath.Clean(root); ps.canon(root) != literal {
@@ -226,7 +234,8 @@ func writeRootKeys(rp ResolvedPolicy, sessionTmp string, ps *paramSet) []string 
 //     even when it falls under a broad allow (e.g. a worktree placed under /tmp,
 //     which platform-defaults would otherwise make writable).
 //
-// Each deny is emitted for BOTH firmlink spellings of its path (see defineDeny):
+// Each deny is emitted for BOTH firmlink spellings of its path (see
+// defineBothSpellings):
 // macOS firmlinks give a data-volume file a second real path that EvalSymlinks
 // does not collapse, so a deny for one spelling alone is bypassable via the other.
 func denySection(rp ResolvedPolicy, ps *paramSet) string {
@@ -236,19 +245,91 @@ func denySection(rp ResolvedPolicy, ps *paramSet) string {
 		if isDeviceFloorException(m) {
 			continue
 		}
-		for _, k := range ps.defineDeny(fmt.Sprintf("MASKED_%d", mi), m) {
+		for _, k := range ps.defineBothSpellings(fmt.Sprintf("MASKED_%d", mi), m) {
 			rules = append(rules, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
 		}
 		mi++
 	}
 	pi := 0
 	for _, p := range rp.Git.ProtectedPaths {
-		for _, k := range ps.defineDeny(fmt.Sprintf("PROTECTED_%d", pi), p) {
+		for _, k := range ps.defineBothSpellings(fmt.Sprintf("PROTECTED_%d", pi), p) {
 			rules = append(rules, "(deny file-write* "+literalAndSubpath(k)+")")
 		}
 		pi++
 	}
 	return strings.Join(rules, "\n")
+}
+
+// unmaskedSection re-grants each of rp.UnmaskedRoots for reading, under both
+// firmlink spellings, since the mask it overrides was denied under both. For a
+// root still under a mask it then denies any .git inside again (see
+// ResolvedPolicy.Masks), matching the component with a path-free regex inside
+// the root's subpath so no path text enters the policy. Seatbelt matches a file
+// by its resolved path, so a .git symlinked to another directory in the root
+// is denied at that target as well, found by the same walk bwrap uses; a tree
+// that walk cannot vouch for gets no grant. With the user's own removal of
+// Evener's config mask nothing masks the root, so no .git is denied.
+func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
+	var grants, gitDenials []string
+	for i, r := range rp.UnmaskedRoots {
+		// Canonicalized once and granted at exactly the validated path, so a
+		// root redirected in between (a symlink can appear after resolution)
+		// cannot steer the grant elsewhere.
+		canonical := ps.canon(r)
+		if !rp.CarveOutResolvesTo(r, canonical) {
+			continue
+		}
+		masked := rp.MasksWrite(r) || rp.MasksWrite(canonical)
+		var linkedGitDirs []string
+		// A root missing on the host has nothing to walk.
+		if _, err := os.Lstat(canonical); masked && err == nil {
+			found, complete := gitDirsUnder(canonical, gitWalkBudget)
+			if !complete {
+				continue
+			}
+			for _, g := range found {
+				if !isGitName(filepath.Base(g)) {
+					linkedGitDirs = append(linkedGitDirs, g)
+				}
+			}
+		}
+		for _, k := range ps.defineCanonicalBothSpellings(fmt.Sprintf("UNMASKED_%d", i), canonical) {
+			grants = append(grants, "(allow file-read* "+literalAndSubpath(k)+")")
+			if masked {
+				gitDenials = append(gitDenials, "(deny file-read* file-write* (require-all "+subpathParam(k)+` (regex #"/\.[Gg][Ii][Tt](/|$)")))`)
+			}
+		}
+		for j, g := range linkedGitDirs {
+			for _, k := range ps.defineCanonicalBothSpellings(fmt.Sprintf("UNMASKED_%d_GIT_%d", i, j), g) {
+				gitDenials = append(gitDenials, "(deny file-read* file-write* "+literalAndSubpath(k)+")")
+			}
+		}
+		// Seatbelt checks a symlink on the way by the path the process names,
+		// so reaching the root by its literal spelling (the base_directory a
+		// skill advertises, through a dotfile-managed ~/.config/evener) needs
+		// each link on that spelling readable as metadata. That exposes the
+		// link itself, never its target: the target is granted above or not
+		// at all.
+		for j, link := range ps.symlinksOnSpelling(r) {
+			key := fmt.Sprintf("UNMASKED_%d_LINK_%d", i, j)
+			ps.params = append(ps.params, DirParam{Key: key, Path: link})
+			grants = append(grants, "(allow file-read-metadata (literal (param "+quoteParam(key)+")))")
+		}
+	}
+	return strings.Join(append(grants, gitDenials...), "\n")
+}
+
+// symlinksOnSpelling returns the directories on path's literal spelling, path
+// included, that are symlinks: those whose canonical form is not their
+// parent's canonical form plus their name.
+func (ps *paramSet) symlinksOnSpelling(path string) []string {
+	var links []string
+	for p := filepath.Clean(path); filepath.Dir(p) != p; p = filepath.Dir(p) {
+		if ps.canon(p) != filepath.Join(ps.canon(filepath.Dir(p)), filepath.Base(p)) {
+			links = append(links, p)
+		}
+	}
+	return links
 }
 
 // dataVolumePrefix is the APFS data-volume mount point macOS firmlinks a file's
@@ -271,14 +352,20 @@ func firmlinkAlias(path string) string {
 	return dataVolumePrefix + path
 }
 
-// defineDeny records a deny-param KEY=canon(path) plus, when the canonical path
-// has a distinct firmlink spelling, a second KEY_ALIAS param for that spelling,
-// and returns the key(s) to reference in the deny rule. Emitting a deny for both
-// spellings closes the firmlink-alias bypass (see firmlinkAlias). It is used only
-// by the Seatbelt policy generator, so the alias transform — which is macOS
+// defineBothSpellings records a param KEY=canon(path) plus, when the canonical
+// path has a distinct firmlink spelling, a second KEY_ALIAS param for that
+// spelling, and returns the key(s) to reference in the rule. Emitting a deny for
+// both spellings closes the firmlink-alias bypass (see firmlinkAlias), and a
+// re-grant over such a deny needs both spellings to match it. It is used only by
+// the Seatbelt policy generator, so the alias transform — which is macOS
 // specific — never reaches the bwrap backend, which builds its own denials.
-func (ps *paramSet) defineDeny(key, path string) []string {
-	canonical := ps.canon(path)
+func (ps *paramSet) defineBothSpellings(key, path string) []string {
+	return ps.defineCanonicalBothSpellings(key, ps.canon(path))
+}
+
+// defineCanonicalBothSpellings is defineBothSpellings for a path already
+// canonicalized, so the param names exactly the path the caller validated.
+func (ps *paramSet) defineCanonicalBothSpellings(key, canonical string) []string {
 	ps.params = append(ps.params, DirParam{Key: key, Path: canonical})
 	keys := []string{key}
 	if alias := firmlinkAlias(canonical); alias != canonical {

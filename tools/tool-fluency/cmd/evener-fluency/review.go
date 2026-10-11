@@ -111,6 +111,10 @@ var packetSections = map[string]string{
 // SteeringSourceUser.
 const harnessSteeringSection = "Evener (not shown to the user)"
 
+// parentSteeringSection labels a delegate's parent steering it: an agent
+// instructing, which a blind reader must not take for a human.
+const parentSteeringSection = "Parent agent"
+
 // packetToolResultMax caps each tool result in a packet. The reader judges
 // the agent's work and writing, and a whole file or test log adds little.
 const packetToolResultMax = 1500
@@ -137,8 +141,15 @@ func renderPacket(tr doctor.TranscriptResult) string {
 		if !ok {
 			continue
 		}
-		if turn.Kind == string(schema.TurnSteering) && turn.SteeringSource != events.SteeringSourceUser {
-			section = harnessSteeringSection
+		if turn.Kind == string(schema.TurnSteering) {
+			switch turn.SteeringSource {
+			case events.SteeringSourceUser:
+				// The person's own words keep the steering turn's default section.
+			case events.SteeringSourceParent:
+				section = parentSteeringSection
+			default:
+				section = harnessSteeringSection
+			}
 		}
 		fmt.Fprintf(&b, "## %s\n\n", section)
 		if turn.Text != "" {

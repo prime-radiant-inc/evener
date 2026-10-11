@@ -641,6 +641,10 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// latestReport is the most recent terminal communicate this session
+	// accepted. Unlike comm it survives the next input's reset, so a drain
+	// can restore the report that input erased.
+	latestReport communicateResult
 	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
 	// emit atomic against a turn advancing restGeneration: either the turn
 	// starts first and the rest stays idle, or the announcement reaches the
@@ -1054,12 +1058,6 @@ type Session struct {
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
 	attentionStagedIDs map[string]struct{}
-	// attentionPreTurnIDs snapshots rootAttentionWakeIDs at turn start
-	// (resetAttentionCoverage). Marking consults it to separate the root's
-	// deliveries armed mid-turn from attention already owed a dedicated
-	// notification turn. A delegate session arms no root wakes, so for it
-	// the snapshot is empty.
-	attentionPreTurnIDs map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
@@ -1931,6 +1929,14 @@ func (s *Session) CommunicateStructured() any {
 	return s.comm.structured
 }
 
+// communicatedReply returns the reply of the terminal communicate the current
+// input accepted, and whether it accepted one.
+func (s *Session) communicatedReply() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.reply, s.comm.called
+}
+
 func (s *Session) communicateStructuredResult() (any, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1967,6 +1973,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		structured: structured,
 		endReason:  endReason,
 	}
+	s.latestReport = s.comm
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if stableRun && s.delegateController != nil {

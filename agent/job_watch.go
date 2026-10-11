@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/lineend"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provenance"
 )
 
@@ -317,6 +318,9 @@ type watchArgs struct {
 	SourceGeneration     uint64
 	StableReceiver       bool
 	Clear                bool
+	// ResultTool is the watcher session's result tool name, which validation
+	// errors teach; empty means the default.
+	ResultTool string
 }
 
 type watchSourceKind int
@@ -805,7 +809,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	// rather than in the shared install validator.
 	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
 		if len(a.Events) == 1 && a.Events[0] == "communicate" {
-			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, send updates with communicate(end_turn=false), and report findings with communicate(end_turn=true)`)
+			return watchResult{}, errors.New("invalid_request: output_match watches concrete job output" + parentObserverRepair(a.ResultTool))
 		}
 		return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter`)
 	}
@@ -977,6 +981,17 @@ func watchArgsIsOutputMatchOnly(a watchArgs) bool {
 		!watchArgsIsTimer(a)
 }
 
+// parentObserverRepair is the repair shape appended to a validation error when
+// a watch asks for the parent's communicate events the wrong way. The events
+// token "communicate" is the event kind; resultTool is the tool the watcher
+// calls, and empty means the default.
+func parentObserverRepair(resultTool string) string {
+	if resultTool == "" {
+		resultTool = tool.DefaultResultToolName
+	}
+	return `; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, send updates with ` + resultTool + `(end_turn=false), and report findings with ` + resultTool + `(end_turn=true)`
+}
+
 func validateWatchEventArgs(a watchArgs) error {
 	for _, name := range a.Events {
 		if name == "*" {
@@ -1006,7 +1021,7 @@ func validateWatchEventArgs(a watchArgs) error {
 		}
 		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
 			if len(a.Events) == 1 && a.Events[0] == "communicate" {
-				return errors.New(`invalid_request: event_filter matches assistant.tool events; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, send updates with communicate(end_turn=false), and report findings with communicate(end_turn=true)`)
+				return errors.New("invalid_request: event_filter matches assistant.tool events" + parentObserverRepair(a.ResultTool))
 			}
 			return errors.New(`invalid_request: event_filter matches assistant.tool events; use events ["assistant.tool"] with event_filter {"tool_name":"read_file","status":"ok"}`)
 		}

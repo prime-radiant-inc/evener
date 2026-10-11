@@ -121,7 +121,7 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	}
 	reg.Remove("delegate_send")
 	return reg.Register(tool.RegisteredTool{
-		Definition: tool.DefDelegateSend(),
+		Definition: tool.DefDelegateSendNamed(s.resultToolName()),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -244,7 +244,7 @@ func (s *Session) resultToolName() string {
 	if s.cfg.ResultToolName != "" {
 		return s.cfg.ResultToolName
 	}
-	return "communicate"
+	return tool.DefaultResultToolName
 }
 
 // RegisterTool registers a custom tool at runtime.
@@ -1371,7 +1371,7 @@ func (s *Session) delegateCapabilityRoster() string {
 func (s *Session) delegateToolDefinition() llm.ToolDefinition {
 	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 	sandboxSchema.ModelDescription = s.delegateModelDescription
-	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+	definition := tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
 	roster := s.delegateCapabilityRoster()
 	if roster == "" {
 		return definition
@@ -1435,7 +1435,7 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 		if defs[i].Name == "delegate" {
 			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 			sandboxSchema.ModelDescription = s.delegateModelDescription
-			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
+			defs[i] = tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
 		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
@@ -1468,9 +1468,9 @@ func (s *Session) rebuildToolDefsCache() {
 					}
 				}
 			}
-			if td.Name == "job_watch" {
-				td = tool.DefJobWatch(availableEventKindNames())
-			}
+			// Registration builds descriptions that name the session's result
+			// tool; the profile's copy names the default.
+			td.Description = s.reg.Get(td.Name).Definition.Description
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
 				wire.Name = mapped
