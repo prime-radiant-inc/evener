@@ -1828,8 +1828,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 
 // writeFinishJob writes EventJobFinished and updates the in-memory record but
 // does not arm owner notification. It is split out so finalizeKeptSync can
-// finalize without notification-arming (spec §6.4d).
-// writeFinishJob appends the job's terminal event. resultInline records that
+// finalize without notification-arming (spec §6.4d). resultInline records that
 // the caller already received the complete result in its tool reply, which
 // settles the job's notification in the durable fold so restore never re-arms
 // it.
