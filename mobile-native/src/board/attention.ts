@@ -10,7 +10,7 @@
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
 // session's Subagents list holds the detail.
 import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
-import { quietState } from "@evener/appwire-client";
+import { quietState, taskSettledCount } from "@evener/appwire-client";
 import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { compactDuration } from "../session/format";
 
@@ -436,7 +436,7 @@ export function usualPlace(rows: readonly NavigationSessionSummary[]): Usual {
 export function taskLine(row: NavigationSessionSummary): string | null {
 	const tasks = row.tasks;
 	if (!tasks?.current) return null;
-	const position = tasks.current_id ?? tasks.done + (tasks.cancelled ?? 0) + 1;
+	const position = tasks.current_id ?? taskSettledCount(tasks) + 1;
 	return `Task ${position} of ${tasks.total} · ${tasks.current}`;
 }
 

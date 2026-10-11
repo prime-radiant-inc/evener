@@ -12,26 +12,31 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// sharedWorkspaceBarrierAdapter parks every model request until it is released,
+// sharedWorkspaceBarrier parks every model request until it is released,
 // so a delegate launched in the background is observably RUNNING while the test
 // launches the next one. Entries are buffered and sent non-blocking: a second
 // parked child must not deadlock behind an undrained observation channel.
-type sharedWorkspaceBarrierAdapter struct {
+type sharedWorkspaceBarrier struct {
 	entered chan string
 	release chan struct{}
 	once    sync.Once
 }
 
-func newSharedWorkspaceBarrierAdapter() *sharedWorkspaceBarrierAdapter {
-	return &sharedWorkspaceBarrierAdapter{
+func newSharedWorkspaceBarrier() *sharedWorkspaceBarrier {
+	return &sharedWorkspaceBarrier{
 		entered: make(chan string, 8),
 		release: make(chan struct{}),
 	}
 }
 
-func (a *sharedWorkspaceBarrierAdapter) Name() string { return "openai" }
+// adapter answers every session's calls with park.
+func (a *sharedWorkspaceBarrier) adapter() *sessionScriptAdapter {
+	adapter := newSessionScriptAdapter("openai")
+	adapter.otherwise = a.park
+	return adapter
+}
 
-func (a *sharedWorkspaceBarrierAdapter) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
+func (a *sharedWorkspaceBarrier) park(ctx context.Context, request llm.Request) (llm.Response, error) {
 	select {
 	case a.entered <- request.SessionID:
 	default:
@@ -41,16 +46,12 @@ func (a *sharedWorkspaceBarrierAdapter) Complete(ctx context.Context, request ll
 	case <-ctx.Done():
 		return llm.Response{}, ctx.Err()
 	}
-	return llm.Response{Provider: "openai", Model: request.Model, Message: llm.Assistant("done")}, nil
+	return llm.Response{Message: llm.Assistant("done")}, nil
 }
 
-func (a *sharedWorkspaceBarrierAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
-}
+func (a *sharedWorkspaceBarrier) releaseRuns() { a.once.Do(func() { close(a.release) }) }
 
-func (a *sharedWorkspaceBarrierAdapter) releaseRuns() { a.once.Do(func() { close(a.release) }) }
-
-func (a *sharedWorkspaceBarrierAdapter) awaitRun(t *testing.T) {
+func (a *sharedWorkspaceBarrier) awaitRun(t *testing.T) {
 	t.Helper()
 	// TRIPWIRE: this is a scripted in-process adapter with no real I/O; the
 	// delegate normally reaches its first model request in well under a
@@ -141,9 +142,9 @@ func TestSharedWorkspaceDelegateWarning_ClosedDelegateIsNotRunning(t *testing.T)
 func TestCreateDelegateSharedWorkspaceAdvisory(t *testing.T) {
 	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
-	adapter := newSharedWorkspaceBarrierAdapter()
-	client.Register(adapter)
-	t.Cleanup(adapter.releaseRuns)
+	barrier := newSharedWorkspaceBarrier()
+	client.Register(barrier.adapter())
+	t.Cleanup(barrier.releaseRuns)
 
 	first := root.createDelegate(context.Background(), delegateArgs{Task: "hold the shared workspace"})
 	if first.Err != nil || first.DelegateID == "" {
@@ -152,7 +153,7 @@ func TestCreateDelegateSharedWorkspaceAdvisory(t *testing.T) {
 	if len(first.Warnings) != 0 {
 		t.Fatalf("first shared delegate warned: %q", first.Warnings)
 	}
-	adapter.awaitRun(t)
+	barrier.awaitRun(t)
 
 	second := root.createDelegate(context.Background(), delegateArgs{Task: "join the shared workspace"})
 	if second.Err != nil || second.DelegateID == "" {
@@ -166,7 +167,7 @@ func TestCreateDelegateSharedWorkspaceAdvisory(t *testing.T) {
 			t.Fatalf("warning missing %q: %q", want, second.Warnings[0])
 		}
 	}
-	adapter.awaitRun(t)
+	barrier.awaitRun(t)
 
 	// The tool projection must surface the advisory to the model, once.
 	raw, err := stableDelegateCreateTool(context.Background(), root, map[string]any{"prompt": "third in the shared workspace"}, 8192)

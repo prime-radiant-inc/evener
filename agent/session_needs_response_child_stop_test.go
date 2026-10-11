@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,48 +10,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
-
-// childStopAdapter scripts a parent and its stable child on one provider
-// without holding a lock across a model call, so the child can sit in its
-// call until it is stopped while the parent keeps taking turns. The child
-// waits for its context to end; the parent asks for a reply on its first turn
-// and answers a delegate report with reportReason.
-type childStopAdapter struct {
-	childSessionID string
-	reportReason   string
-
-	mu      sync.Mutex
-	reports []string
-}
-
-func (a *childStopAdapter) Name() string { return "openai" }
-
-func (a *childStopAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
-}
-
-func (a *childStopAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	if req.SessionID == a.childSessionID {
-		<-ctx.Done()
-		return llm.Response{}, ctx.Err()
-	}
-	resp := endReasonResponse("which?", "needs_response")
-	if last := req.Messages[len(req.Messages)-1].Text(); strings.Contains(last, "<delegate-notification") {
-		a.mu.Lock()
-		a.reports = append(a.reports, last)
-		a.mu.Unlock()
-		resp = endReasonResponse("noted", a.reportReason)
-	}
-	resp.Provider = a.Name()
-	resp.Model = req.Model
-	return resp, nil
-}
-
-func (a *childStopAdapter) reportsRead() []string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return append([]string(nil), a.reports...)
-}
 
 // "Needs you" reflects whether the parent's latest turn ended with a request
 // for its human partner. A parent that asked while its child worked rests
@@ -64,8 +21,22 @@ func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 		t.Run(reportReason, func(t *testing.T) {
 			t.Parallel()
 			fixture := newColdStableDelegateFixture(t, "")
-			adapter := &childStopAdapter{childSessionID: fixture.childID, reportReason: reportReason}
-			fixture.client.Register(adapter)
+			// The child sits in its model call until the stop cancels it; the
+			// parent asks for a reply, then answers the stop report. Any other
+			// call also waits to be cancelled, so an unexpected extra turn
+			// fails the test instead of passing with a plain "done".
+			// reports needs no lock: the parent's report turn appends to it
+			// inside ProcessInputKind, which returns before the test reads it.
+			var reports []string
+			adapter := newSessionScriptAdapter("openai")
+			adapter.otherwise = awaitCancelStep
+			fixture.client.Register(adapter.
+				script(fixture.meta.ID,
+					answerStep(endReasonResponse("which?", "needs_response")),
+					func(_ context.Context, req llm.Request) (llm.Response, error) {
+						reports = append(reports, req.Messages[len(req.Messages)-1].Text())
+						return endReasonResponse("noted", reportReason), nil
+					}))
 			fake := agenttest.NewFakeClock()
 			root := restoreSupervisionRoot(t, fixture, fake)
 			evs, mu, done := collectEvents(root)
@@ -97,7 +68,7 @@ func TestParentReadingAChildStopReportRestsByItsOwnEndReason(t *testing.T) {
 			if _, err := root.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
 				t.Fatalf("the parent's wake: %v", err)
 			}
-			if reports := adapter.reportsRead(); len(reports) != 1 || !strings.Contains(reports[0], delegateUserStopMessage) {
+			if len(reports) != 1 || !strings.Contains(reports[0], delegateUserStopMessage) {
 				t.Fatalf("the parent's report turn read %q, want the child's stop report", reports)
 			}
 

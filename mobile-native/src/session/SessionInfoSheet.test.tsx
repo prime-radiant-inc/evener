@@ -356,10 +356,12 @@ describe("what the sheet shows (spec 8.6)", () => {
 	});
 
 	it("shows the current task and the task count, which opens the Tasks sheet over this one", () => {
-		provide(conversation({ tasks: { total: 7, done: 3, current: { id: 4, description: "Wire the chip" } } }));
+		provide(
+			conversation({ tasks: { total: 7, done: 3, cancelled: 1, current: { id: 4, description: "Wire the chip" } } }),
+		);
 		const tree = sheet();
 		expect(texts(tree)).toContain("Wire the chip");
-		press(tree, "Tasks · 3 of 7");
+		press(tree, "Tasks · 4 of 7");
 		expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
 			hubId: HUB,
 			ref: REF,
