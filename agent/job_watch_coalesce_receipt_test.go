@@ -80,3 +80,51 @@ func TestInFlightSupersededStableWatchFrameStandsDown(t *testing.T) {
 		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
 	}
 }
+
+// A deliverer that claimed the first frame and then exits early, because the
+// frame stopped being the current pending one, releases the receipt with its
+// claim: the coalescing commit left the receipt to it.
+func TestSupersededStableWatchReceiptReleasesWithEarlyExitClaim(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	if !fixture.sourceJM.claimWatchSendDelivery(first.DeliveryID) {
+		t.Fatal("claim first frame")
+	}
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "second"})
+	second := fixture.requireOnePending(t).state
+	if fixture.sourceJM.isCurrentPendingWatchSend(fixture.onlyWatchConfig(t), first) {
+		t.Fatal("first frame still current after the coalesce")
+	}
+	fixture.sourceJM.releaseWatchSendDeliveryClaim(first.DeliveryID)
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Equal(got, []string{second.DeliveryID}) {
+		t.Fatalf("delivery receipts = %v, want only %s", got, second.DeliveryID)
+	}
+}
+
+// When the replacement is delivered before the superseded deliverer reaches
+// its durable check, there is no pending frame left for the key at all. The
+// superseded deliverer still stands down without a staleness error, and its
+// receipt goes with its claim, leaving none behind.
+func TestSupersededStableWatchDelivererAfterReplacementDelivered(t *testing.T) {
+	fixture := newCommunicateStableWatch(t)
+	cfg := fixture.onlyWatchConfig(t)
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	if !fixture.sourceJM.claimWatchSendDelivery(first.DeliveryID) {
+		t.Fatal("claim first frame")
+	}
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "second"})
+	second := fixture.requireOnePending(t).state
+	if delivered, err := fixture.sourceJM.deliverPendingWatchSend(cfg, second, false); !delivered || err != nil {
+		t.Fatalf("deliver replacement: delivered=%t err=%v", delivered, err)
+	}
+	delivered, err := fixture.sourceJM.deliverStableWatchSend(cfg, first)
+	fixture.sourceJM.releaseWatchSendDeliveryClaim(first.DeliveryID)
+	if delivered || err != nil {
+		t.Fatalf("superseded deliverer: delivered=%t err=%v, want a quiet stand-down", delivered, err)
+	}
+	if got := stableWatchDeliveryReceiptIDs(fixture.controller); len(got) != 0 {
+		t.Fatalf("delivery receipts outlived their frames: %v", got)
+	}
+}

@@ -630,7 +630,24 @@ func (jm *jobManager) releaseWatchSendDeliveryClaim(deliveryID string) {
 	}
 	jm.mu.Lock()
 	delete(jm.deliveringWatchSends, deliveryID)
+	_, superseded := jm.supersededWatchSends[deliveryID]
+	delete(jm.supersededWatchSends, deliveryID)
+	// A superseded frame the receiver already took, whose acknowledgement
+	// failed, keeps its receipt for the settlement retry, which releases it.
+	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
 	jm.mu.Unlock()
+	if superseded && !retrying {
+		jm.releaseStableWatchReceipt(deliveryID)
+	}
+}
+
+// watchSendSuperseded reports whether a coalesced frame replaced the claimed
+// delivery deliveryID while it was being delivered.
+func (jm *jobManager) watchSendSuperseded(deliveryID string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	_, superseded := jm.supersededWatchSends[deliveryID]
+	return superseded
 }
 
 // validateWatchConfig runs the target-independent validation a watch install must
@@ -4569,11 +4586,10 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 			return false, nil
 		}
 		// A newer frame for the same key coalesced over this one while it was
-		// being delivered: the newer frame carries this one's content forward,
-		// so stand down and release this frame's receipt, which nothing else
-		// will (releaseSupersededStableWatchReceipt skips a claimed frame).
-		if pending != nil && pending.UpdateSeq > state.UpdateSeq {
-			jm.releaseStableWatchReceipt(state.DeliveryID)
+		// being delivered, and carries its content forward (it may even have
+		// been delivered already): stand down. Releasing the claim releases
+		// this frame's receipt.
+		if jm.watchSendSuperseded(state.DeliveryID) {
 			return false, nil
 		}
 		return false, errors.New("stable watch delivery is not the durable pending head")
@@ -4901,15 +4917,21 @@ func (jm *jobManager) stableWatchReceipt(deliveryID string) *delegateWatchReceip
 // frame its own delivery id, so nothing would ever deliver, drop or settle the
 // old id again, and its receipt would fence the receiver's stop until the
 // close budget ran out. A deliverer that holds the old id's claim is mid-hand-
-// off; it settles or releases the receipt itself.
+// off, so the receipt keeps fencing the stop until that claim is released
+// (releaseWatchSendDeliveryClaim), whichever way the deliverer exits.
 func (jm *jobManager) releaseSupersededStableWatchReceipt(deliveryID string) {
 	jm.mu.Lock()
 	_, delivering := jm.deliveringWatchSends[deliveryID]
-	jm.mu.Unlock()
 	if delivering {
-		return
+		if jm.supersededWatchSends == nil {
+			jm.supersededWatchSends = make(map[string]struct{})
+		}
+		jm.supersededWatchSends[deliveryID] = struct{}{}
 	}
-	jm.releaseStableWatchReceipt(deliveryID)
+	jm.mu.Unlock()
+	if !delivering {
+		jm.releaseStableWatchReceipt(deliveryID)
+	}
 }
 
 func (jm *jobManager) releaseStableWatchReceipt(deliveryID string) {
