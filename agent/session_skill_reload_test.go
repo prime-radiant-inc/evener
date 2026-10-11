@@ -676,7 +676,7 @@ func TestSkillReload_Budget_OrderedPriority(t *testing.T) {
 	markGitRoot(t, root)
 	newactBody := strings.Repeat("NEWACT_5c31 explicit activation line\n", 50)
 	reloadABody := strings.Repeat("RELOAD_A_5c31 fits line\n", 120)
-	reloadBBody := strings.Repeat("RELOAD_B_5c31 exceeds line\n", 6000)
+	reloadBBody := strings.Repeat("RELOAD_B_5c31 exceeds line\n", 12000)
 	writeSkillMD(t, root, "newact", "---\nname: newact\ndescription: new activation\n---\n"+newactBody)
 	writeSkillMD(t, root, "skA", "---\nname: skA\ndescription: reload A\n---\n"+reloadABody)
 	writeSkillMD(t, root, "skB", "---\nname: skB\ndescription: reload B\n---\n"+reloadBBody)
@@ -685,11 +685,12 @@ func TestSkillReload_Budget_OrderedPriority(t *testing.T) {
 
 	var summarizeCalls atomic.Int32
 	calls := 0
-	// A real window with measured headroom: the session's mandatory content
-	// (tool definitions + system prompt ≈ 22K tokens by the actual estimator)
-	// plus the new activation fit, reload A fits the remainder, reload B
-	// (≈21K tokens) does not. Pressure stays below the elicitation threshold.
-	s, main, _ := newReloadSession(t, root, 40000, func(llm.Request) llm.Response {
+	// A real window with measured headroom, the smallest compaction
+	// summarizes on, rounded up: the session's mandatory content (tool
+	// definitions + system prompt ≈ 22K tokens by the actual estimator) plus
+	// the new activation fit, reload A fits the remainder, reload B (≈42K
+	// tokens) does not. Pressure stays below the elicitation threshold.
+	s, main, _ := newReloadSession(t, root, 60000, func(llm.Request) llm.Response {
 		calls++
 		switch calls {
 		case 1:
@@ -781,9 +782,10 @@ func TestSkillReload_Budget_MandatoryMetadataExceeds(t *testing.T) {
 	root := t.TempDir()
 	markGitRoot(t, root)
 	var summarizeCalls atomic.Int32
-	// The window admits the current input alone (≈23K tokens mandatory) but no
-	// possible version of the complete reminder metadata below.
-	s, main, _ := newReloadSession(t, root, 40000, func(llm.Request) llm.Response {
+	// The window (the smallest compaction summarizes on, rounded up) admits
+	// the current input alone (≈23K tokens mandatory) but no possible version
+	// of the complete reminder metadata below.
+	s, main, _ := newReloadSession(t, root, 60000, func(llm.Request) llm.Response {
 		return toolCallResponse(communicateCall("done-1", "ok"))
 	}, reloadSummaryResponder("SUMMARY_reload_8", &summarizeCalls))
 	seedNumberedSessionHistory(t, s, 12)

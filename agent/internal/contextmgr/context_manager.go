@@ -1601,36 +1601,6 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 	return renderCheckpointConversation(partner), summarized
 }
 
-// maxSummarizerHistoryChars caps the history text a summarizer request
-// carries: ~80k chars ≈ 20k tokens, room for the instruction prefix and the
-// reply in any model's window this size or larger.
-const maxSummarizerHistoryChars = 80_000
-
-// summarizerHistoryBudget sizes the history text of a summarizer request so it
-// fits every model the request may go to (the configured cheap model and the
-// session model it falls back to). For each known window it leaves the
-// client's input safety reserve (llm.SafetyReserveTokens), the request's own
-// instructions (promptChars: the summary prefix, or the caller-instruction
-// prompt with its instructions) and a quarter of the window for the reply, and converts the rest at
-// the char/4 estimate; it never exceeds maxSummarizerHistoryChars. An unknown
-// window imposes nothing (#4321).
-//
-// It never drops below minSummarizerHistoryChars, which matters only when
-// caller instructions crowd out the history on a window near
-// minSummarizingWindow.
-func summarizerHistoryBudget(prof *provider.Profile, promptChars int) int {
-	budget := maxSummarizerHistoryChars
-	if prof == nil {
-		return budget
-	}
-	prefixTokens := promptChars/4 + summarizerFramingTokens
-	for _, input := range summarizerInputLimits(prof) {
-		available := input - prefixTokens
-		budget = min(budget, available*4)
-	}
-	return max(budget, minSummarizerHistoryChars)
-}
-
 // summarizerInputLimits is summarizerInputLimit for each route a summary may
 // take whose window or input cap is known: the configured cheap model and the
 // session model it falls back to.
@@ -1648,17 +1618,12 @@ func summarizerInputLimits(prof *provider.Profile) []int {
 }
 
 // minSummarizingWindow is the smallest context window compaction summarizes
-// on. An 8,192-token window leaves a summarizer request 5,120 tokens of input
-// (a quarter of the window for the reply, then the 1,024-token safety
-// reserve); the summary instructions and framing take about 870, so about
-// 17,000 characters of history remain. That holds batches of the partner's
-// left-out messages, each part of a long message (a sixth of the history,
-// about 2,800 characters) and an earlier summary with their quoted
-// permissions and holds, and the 2,048-token reply holds a summary that
-// quotes them. At 4,096 tokens the history shrinks to about 4,700 characters
-// and a quote can straddle or fall out of what the request carries, so a
-// summary could lose a hold the checkpoint keeps (#4321).
-const minSummarizingWindow = 8192
+// on. A 50,000-token window leaves a summarizer request about 36,000 tokens
+// of input (a quarter of the window for the reply, then the client's safety
+// reserve), well above what a request carries: at most maxHistoryChars of
+// history (~20,000 tokens) plus the summary instructions. Smaller windows are
+// not worth sizing requests for; on them the checkpoint stands (#4321).
+const minSummarizingWindow = 50_000
 
 // summarizingWindowUsable reports whether every route a summary may take
 // accepts at least the input a minSummarizingWindow-token window allows. Below
@@ -1701,14 +1666,6 @@ func summarizerInputLimit(window, maxInput int) int {
 	return max(limit-llm.SafetyReserveTokens(smallest), 1)
 }
 
-// summarizerFramingTokens allows for the request text around the history that
-// the instructions do not count: the left-out messages' label and the
-// conversation label.
-const summarizerFramingTokens = 256
-
-// minSummarizerHistoryChars floors summarizerHistoryBudget: about 100 tokens.
-const minSummarizerHistoryChars = 400
-
 // condensePartnerMessages fits the partner's messages a summary will not quote
 // (each a line of text) into budget characters for the summarizer's input.
 // When they overflow it, they are summarized in batches of at most budget
@@ -1747,7 +1704,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 			}
 			// A long summary is split like a long message, so the next round's
 			// batches stay within budget.
-			parts := splitMessage(strings.TrimSpace(resp.Text()), max(budget/3, minPartnerPartChars), 400)
+			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
 			for i, part := range parts {
 				label := "Summary of earlier messages: "
 				if len(parts) > 1 {
@@ -1770,7 +1727,6 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 // else on a rune boundary, and each repeating the last overlap bytes of the
 // part before it, so an instruction that crosses a cut is whole in one part.
 func splitMessage(text string, size, overlap int) []string {
-	overlap = min(overlap, size/2) // each part must still advance through text
 	var parts []string
 	for len(text) > size {
 		part := runetrim.Cut(text, size)
@@ -1792,12 +1748,6 @@ func splitMessage(text string, size, overlap int) []string {
 	}
 	return append(parts, text)
 }
-
-// minPartnerPartChars is the least a part of a long partner message or batch
-// summary holds, however small the summarizer's budget: big enough that the
-// overlap between parts keeps an instruction whole across a cut, and small
-// enough that a part and the batch prompt fit a 2,048-token window.
-const minPartnerPartChars = 1000
 
 // partnerBatchPrompt asks the summarizer to condense a batch of the human
 // partner's messages that a compaction will not quote.
@@ -2382,14 +2332,19 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		return history, nil
 	}
 
-	// One profile serves the whole fold: sizing and every request it sends,
-	// so a model switch mid-fold cannot pair one model's budget with another.
+	// One profile serves the whole fold: the window check and every request
+	// it sends, so a model switch mid-fold cannot redirect its requests to a
+	// model the check never saw.
 	sumProfile := cm.currentProfile()
 	if !summarizingWindowUsable(sumProfile) {
 		// The checkpoint already at history[0] stands in place of a summary.
 		return history, nil
 	}
-	maxHistoryChars := summarizerHistoryBudget(sumProfile, len(buildSummaryPrompt("", instructions)))
+
+	// Cap the history text: ~80k chars ≈ 20k tokens, which with the
+	// instruction prefix and the reply fits every route summarizingWindowUsable
+	// admits.
+	const maxHistoryChars = 80_000
 
 	truncText := func(s string, limit int) string {
 		if len(s) > limit {
@@ -2418,7 +2373,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		// two share a batch.
 		var lines []string
 		for _, entry := range summarized {
-			parts := splitMessage(entry.Text, max(maxHistoryChars/6, minPartnerPartChars), 400)
+			parts := splitMessage(entry.Text, maxHistoryChars/6, 400)
 			for i, part := range parts {
 				label := "User: "
 				if len(parts) > 1 {

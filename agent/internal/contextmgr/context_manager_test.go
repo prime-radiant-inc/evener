@@ -2455,12 +2455,12 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	cm.PreserveRecentTurns = 1
 
 	// After checkpoint, result = [checkpoint_msg, recent_turn].
-	// The recent turn alone needs to be ~90% of 8,192 tokens = ~7,400 tokens
-	// = ~29,500 chars.
+	// The recent turn alone needs to be ~90% of 50,000 tokens = ~45,000
+	// tokens = ~180,000 chars; this is a little over.
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User(strings.Repeat("task ", 50))},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("work ", 30))},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 2100))},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 14_000))},
 	}
 
 	var layers []string
