@@ -110,13 +110,13 @@ func fuzzExactState(t *testing.T) {
 		stmToolResultsTurn(stmCommunicateResult("c1", "needs_response")),
 	}
 	restored := &Session{state: SessionIdle, history: needsResponse}
-	restored.recomputeRestoredState(0)
+	restored.recomputeRestoredState(0, nil)
 	if restored.state != SessionAwaiting {
 		t.Fatalf("restored state = %q", restored.state)
 	}
 	restored = &Session{state: SessionIdle, history: needsResponse}
 	restored.enqueueJobNotification(jobNotification{JobID: "pending"})
-	restored.recomputeRestoredState(0)
+	restored.recomputeRestoredState(0, nil)
 	if restored.state != SessionIdle {
 		t.Fatalf("autonomous restored state = %q", restored.state)
 	}
