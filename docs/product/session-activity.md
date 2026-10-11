@@ -676,6 +676,8 @@ activity controls. The pane footer's status bar and scope crumbs are
 desktop-only on the cascade: the column's own controls below the transcript
 carry the activity, so the phone never stacks a second chips row at the pane
 bottom.
+The column's own activity controls reserve the home-indicator band on the
+phone, with the same safe-area clearance the composer dock uses.
 
 The [real-stack cascade guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md)
 and [design-system geometry](../web-ui/design-system.md#agent-cascade)

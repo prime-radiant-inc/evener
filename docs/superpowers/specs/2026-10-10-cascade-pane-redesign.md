@@ -138,6 +138,10 @@ unchanged:
   desktop-only for the cascade pane: the column's own controls below the
   transcript carry the activity, so the phone no longer stacks two chip
   rows plus crumbs at the pane bottom.
+- The phone column's activity controls own the home-indicator clearance the
+  composer dock owns elsewhere (the same space + safe-area-inset minus
+  keyboard-inset formula), since with the pane footer gone they are the
+  pane's last tappable row. Found by the #4336 review round.
 
 ## Proof
 
