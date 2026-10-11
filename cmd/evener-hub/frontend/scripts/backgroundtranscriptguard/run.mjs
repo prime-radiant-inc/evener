@@ -878,7 +878,7 @@ async function main() {
       // the Vite origin (same hostname, cookies are port-agnostic), then load the
       // guard's own nested HTML through Vite.
       await navigateTo(page, AUTH_URL, { retryDelayMs: 250 });
-      const harnessUrl = `http://127.0.0.1:${vitePort}/scripts/backgroundtranscriptguard/index.html`;
+      const harnessUrl = `http://127.0.0.1:${vitePort}/scripts/backgroundtranscriptguard/index.html${ENTRY_PRODUCTION ? "?entry-production=true" : ""}`;
       try {
         await navigateTo(page, harnessUrl, BOOT);
       } catch (error) {

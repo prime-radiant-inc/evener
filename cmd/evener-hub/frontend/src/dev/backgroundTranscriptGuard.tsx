@@ -4,7 +4,13 @@
 import { installBackgroundTranscriptOptionsForTests } from "../stores/backgroundTranscriptOptions";
 import { SESSION_CACHE_DATABASE_NAME, SESSION_CACHE_DATABASE_VERSION } from "../stores/sessionCacheSchema";
 
-installBackgroundTranscriptOptionsForTests({ residentBytes: 64 * 1024, pendingBytes: 32 * 1024 });
+const entryProduction = new URLSearchParams(window.location.search).get("entry-production") === "true";
+// Entry reads need 23,810 payload bytes plus 27,708 competing bytes. Reserve a
+// second full envelope, rounded up to a KiB, without changing sustained pressure.
+installBackgroundTranscriptOptionsForTests({
+  residentBytes: 64 * 1024,
+  pendingBytes: entryProduction ? 101 * 1024 : 32 * 1024,
+});
 (window as Window & { backgroundTranscriptBooted?: boolean }).backgroundTranscriptBooted = true;
 
 // This harness document is already loaded. Put the ordinary app on its home
