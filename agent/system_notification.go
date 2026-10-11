@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/llm"
 )
 
@@ -45,14 +46,7 @@ func systemReminderf(format string, args ...any) string {
 // interrupt marker. The content is written between the opening and closing
 // tags with newline separators.
 func systemReminderBlock(inner string) string {
-	var b strings.Builder
-	b.WriteString("<SYSTEM-REMINDER>\n")
-	b.WriteString(inner)
-	if !strings.HasSuffix(inner, "\n") {
-		b.WriteString("\n")
-	}
-	b.WriteString("</SYSTEM-REMINDER>")
-	return b.String()
+	return sysmsg.ReminderBlock(inner)
 }
 
 // systemReminderBlockBuilder returns a strings.Builder pre-seeded with the
