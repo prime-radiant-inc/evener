@@ -70,7 +70,6 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
-import selectStyles from "../../widgets/select/select.module.css";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -216,7 +215,6 @@ const CLASS = {
   // class: the widget renders a native <select> too, but its SelectOption has no
   // per-option disabled flag, and an offline host must be RENDERED yet not
   // selectable (Component 06b). The class only borrows the visual treatment.
-  hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
   // The Connect affordance beside the picker: one button per offline remote
   // host, an enabled control so a never-attached host is reachable rather
   // than dead UI (component 06 §"Connecting a configured host").
@@ -2423,9 +2421,8 @@ function SpawnForm({
                 : "Where the session runs."
             }
           >
-            <select
+            <Select
               id="spawn-host"
-              className={CLASS.hostSelect}
               value={displayHostChoice}
               // A submit snapshots this choice (handleSpawn's closure carries
               // the submittedSource/remoteLaunch that thread/start and
@@ -2445,13 +2442,12 @@ function SpawnForm({
                 // name it — the Connect affordance below is the single path that
                 // reaches an offline host.
               }}
-            >
-              {displaySources.map((candidate) => (
-                <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
-                  {candidate.online ? candidate.label : `${candidate.label} (offline)`}
-                </option>
-              ))}
-            </select>
+              options={displaySources.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.online ? candidate.label : `${candidate.label} (offline)`,
+                disabled: !candidate.online,
+              }))}
+            />
             {displayRemoteHosts.some((candidate) => !candidate.online) && (
               <div className={CLASS.hostConnectRow}>
                 {displayRemoteHosts

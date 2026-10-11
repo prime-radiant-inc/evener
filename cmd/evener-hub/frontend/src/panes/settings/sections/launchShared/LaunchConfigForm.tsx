@@ -44,7 +44,7 @@ import {
   schemaPathKind,
 } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, useToasts } from "../../../../widgets";
+import { Button, Eyebrow, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
@@ -405,7 +405,9 @@ export function LaunchConfigForm({
       {groups.map((group, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: group.group repeats when the legacy header-per-change rule re-opens the same name non-contiguously (see groupOptions) - the segment's position is the only stable identity.
         <div key={`${group.group}-${index}`} className={CLASS.group}>
-          <div className={CLASS.groupHeader}>{group.group}</div>
+          <div className={CLASS.groupHeader}>
+            <Eyebrow>{group.group}</Eyebrow>
+          </div>
           {group.options.map((opt) => (
             <div key={opt.field} className={CLASS.field}>
               {renderOption(opt)}

@@ -17,7 +17,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { agentsDocStoreForHost, useAgentsDocStoreForHost } from "../../../stores/agentsDoc";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
-import { Button, Skeleton, Textarea, useToasts } from "../../../widgets";
+import { Button, InlineNotice, Skeleton, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agentsDoc.module.css";
 import { HostScopedSurface } from "./hostScopedSurface";
@@ -27,9 +27,6 @@ import { useHostScopedLoad } from "./useConnectedEffect";
 const CLASS = {
   root: requireClass(styles.root, "agentsDoc.module.css", "root"),
   help: requireClass(styles.help, "agentsDoc.module.css", "help"),
-  error: requireClass(styles.error, "agentsDoc.module.css", "error"),
-  editor: requireClass(styles.editor, "agentsDoc.module.css", "editor"),
-  note: requireClass(styles.note, "agentsDoc.module.css", "note"),
   actions: requireClass(styles.actions, "agentsDoc.module.css", "actions"),
 };
 
@@ -159,12 +156,7 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
   // The store has already flattened the rejection to text, and for a file
   // editor that text IS the fix - "permission denied", "is a directory" -
   // so it goes to the user as it stands (inrepo.tsx does the same).
-  if (doc === null && error)
-    return (
-      <p className={CLASS.error} role="alert">
-        Failed to load: {error}
-      </p>
-    );
+  if (doc === null && error) return <InlineNotice tone="danger">Failed to load: {error}</InlineNotice>;
   if (doc === null) return null; // not yet fetched: the connected effect hasn't run
 
   return (
@@ -174,24 +166,26 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
         Personal instructions loaded into every session, ahead of the repo's own AGENTS.md. Stored at{" "}
         <Code>{doc.path}</Code>.
       </p>
-      <div className={CLASS.editor}>
-        <Textarea
-          aria-label="AGENTS.md contents"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          minLines={16}
-          autoGrow
-          disabled={saving}
-          placeholder="# Instructions for every session"
-        />
-      </div>
+      <Textarea
+        aria-label="AGENTS.md contents"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        minLines={16}
+        autoGrow
+        monospace
+        disabled={saving}
+        placeholder="# Instructions for every session"
+      />
       {stale && (
-        <p className={CLASS.note} role="status">
+        <InlineNotice
+          action={
+            <Button size="sm" variant="quiet" onClick={handleLoadCurrent}>
+              Load current
+            </Button>
+          }
+        >
           AGENTS.md changed on disk while you were editing.
-          <Button size="sm" variant="quiet" onClick={handleLoadCurrent}>
-            Load current
-          </Button>
-        </p>
+        </InlineNotice>
       )}
       {/* A refetch that failed leaves `doc` where it was, so the editor is
           showing a copy it can no longer confirm. Save stays enabled: a
@@ -200,30 +194,30 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
           rides the notice, as "Load current" does above: the next read often
           succeeds, and waiting for a reconnect to fire one is not a fix. */}
       {error !== null && (
-        <p className={CLASS.error} role="alert">
+        <InlineNotice
+          tone="danger"
+          action={
+            // The store lands its own failure in `error` above; the rejection is
+            // caught only so it never surfaces as an unhandled one.
+            <Button
+              size="sm"
+              variant="quiet"
+              onClick={() =>
+                void store
+                  .getState()
+                  .fetch()
+                  .catch(() => {})
+              }
+            >
+              Reload
+            </Button>
+          }
+        >
           Couldn't reload AGENTS.md: {error}. The editor shows the last copy it loaded; saving would overwrite anything
           changed on disk since.
-          {/* The store lands its own failure in `error` above; the rejection is
-              caught only so it never surfaces as an unhandled one. */}
-          <Button
-            size="sm"
-            variant="quiet"
-            onClick={() =>
-              void store
-                .getState()
-                .fetch()
-                .catch(() => {})
-            }
-          >
-            Reload
-          </Button>
-        </p>
+        </InlineNotice>
       )}
-      {saveError !== null && (
-        <p className={CLASS.error} role="alert">
-          Save failed: {saveError}
-        </p>
-      )}
+      {saveError !== null && <InlineNotice tone="danger">Save failed: {saveError}</InlineNotice>}
       <div className={CLASS.actions}>
         <Button onClick={() => void handleSave()} disabled={!dirty || saving}>
           Save

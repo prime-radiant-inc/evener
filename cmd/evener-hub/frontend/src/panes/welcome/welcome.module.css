@@ -7,10 +7,9 @@
   flex-direction: column;
   align-items: center;
   gap: var(--space-2);
-  /* Issue #197: an unbreakable child (the resume-candidate button's
-   * server-truncated-but-still-200-rune title, forced to white-space:nowrap
-   * by button.module.css) sizes this flex column to its min-content width
-   * instead of the viewport's, which then propagates to .hints (its
+  /* Issue #197: an unbreakable child (a long resume-candidate title) sizes
+   * this flex column to its min-content width instead of the viewport's,
+   * which then propagates to .hints (its
    * width:min(100%,36rem) resolves 100% against this inflated width) and is
    * clipped mid-string by PaneScaffold's .body overflow-x:clip. Cap the
    * column's width and let long words wrap so a wide child wraps instead of
@@ -19,30 +18,6 @@
   max-width: 36rem;
   overflow-wrap: break-word;
   word-break: break-word;
-}
-
-/* Issue #197: the resume-candidate "Jump back in: {title}" button is a primary
- * Button whose 200-rune title is forced to white-space:nowrap by
- * button.module.css (correct for most buttons - catastrophic here, where the
- * label is the widest thing in the column, not the narrowest). Override that
- * LOCALLY for buttons in this welcome .actions column so the long title wraps
- * instead of inflating the flex layout past the viewport. Wrapping reopens
- * the bug .button's nowrap exists to prevent (button.module.css pins height:
- * 32px on .md, so a wrapped label spills out of the box - 19px of clipped
- * text at 390px in the layoutguard probe), so the box also gets height: auto
- * with the desktop height kept as a floor. The phone tap floor is re-declared
- * in the media block because this rule's higher specificity would otherwise
- * beat button.module.css's own @media min-height. */
-.actions button {
-  white-space: normal;
-  height: auto;
-  min-height: 32px;
-}
-
-@media (max-width: 899px) {
-  .actions button {
-    min-height: var(--tap-min);
-  }
 }
 
 /* T6: a quiet hint row teaching the chords, below the task suggestions -
@@ -54,34 +29,6 @@
   width: min(100%, 36rem);
   gap: var(--space-1);
   margin-top: var(--space-4);
-}
-
-/* The chords as a two-column list: keys right-aligned in one column, what
- * they do in the next, so the three rows line up instead of centring each
- * on its own width. `display: contents` on each row hands its dt/dd to the
- * grid. */
-.hintList {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  column-gap: var(--space-3);
-  row-gap: var(--space-2);
-  align-items: center;
-  margin: 0;
-}
-
-.hintRow {
-  display: contents;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-}
-
-.hintRow > dt {
-  justify-self: end;
-}
-
-.hintRow > dd {
-  margin: 0;
 }
 
 .hintFooter {
