@@ -185,7 +185,7 @@ test("an inline server entry without a command is refused before validating", as
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No inline MCP servers. Add one below.");
   await addInlineServer(user, "search");
-  expect(await screen.findByText("Use: name command [args...]")).toBeTruthy();
+  expect(await screen.findByRole("alert")).toBeTruthy();
   expect(validateSpy).not.toHaveBeenCalled();
 });
 

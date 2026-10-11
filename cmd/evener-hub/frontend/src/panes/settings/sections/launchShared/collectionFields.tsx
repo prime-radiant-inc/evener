@@ -462,14 +462,29 @@ export function mcpServerLabel(spec: MCPServerSpec): string {
   return `${spec.name} → ${spec.command}${args}`;
 }
 
-export const MCP_SERVER_ENTRY_USAGE = "Use: name command [args...]";
+export const MCP_SERVER_ENTRY_USAGE = "Use: name command [args...], quoting any part with spaces";
 
 /** Splits a "name command [args...]" add entry on whitespace; null when the
  * name or command is missing. */
 export function parseMcpServerEntry(entry: string): { name: string; command: string; args: string[] } | null {
-  const [name, command, ...args] = entry.split(/\s+/).filter(Boolean);
+  const tokens = splitEntryTokens(entry);
+  if (tokens === null) return null;
+  const [name, command, ...args] = tokens;
   if (!name || !command) return null;
   return { name, command, args };
+}
+
+// Whitespace-separated tokens, where a '...' or "..." run is one token with
+// its spaces kept (a command path like "/opt/My Tools/server"). null for an
+// unterminated quote, so the caller shows usage instead of guessing.
+function splitEntryTokens(entry: string): string[] | null {
+  const tokens: string[] = [];
+  for (const match of entry.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
+    const bare = match[3];
+    if (bare !== undefined && (bare.includes('"') || bare.includes("'"))) return null;
+    tokens.push(match[1] ?? match[2] ?? bare ?? "");
+  }
+  return tokens;
 }
 
 /** mcpServerList kind: `mcps`. Add syntax is "name command [args...]"

@@ -98,6 +98,19 @@ function RemoveIcon() {
  * arrow-key list navigation isn't part of this widget's contract (unlike
  * RadioGroup/Tree/Menu, nothing here cycles a fixed set of peer actions).
  */
+// Persisted lists can hold identical entries, so a row's key is its item key
+// plus which occurrence of that key it is: removing one duplicate then leaves
+// the remaining rows matched to the remaining items.
+function rowKeys<T>(items: readonly T[], getKey: (item: T) => string): [T, string][] {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const key = getKey(item);
+    const occurrence = seen.get(key) ?? 0;
+    seen.set(key, occurrence + 1);
+    return [item, occurrence === 0 ? key : `${key}#${occurrence}`];
+  });
+}
+
 export function CollectionEditor<T>({
   label,
   items,
@@ -139,8 +152,8 @@ export function CollectionEditor<T>({
           <li className={CLASS.empty}>{emptyMessage}</li>
         ) : (
           <>
-            {items.map((item) => (
-              <li key={getKey(item)} className={CLASS.row}>
+            {rowKeys(items, getKey).map(([item, key]) => (
+              <li key={key} className={CLASS.row}>
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <IconButton
                   label={removeLabel(item)}

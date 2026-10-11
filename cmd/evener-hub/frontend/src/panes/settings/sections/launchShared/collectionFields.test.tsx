@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
-import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
+import {
+  EnvMapField,
+  McpServerListField,
+  ModelListField,
+  PathListField,
+  parseMcpServerEntry,
+} from "./collectionFields";
 
 // modelList adds come from the shared searchable ModelCatalog picker, which
 // calls model/list; the wire loader is mocked so these stay hermetic.
@@ -728,5 +734,27 @@ describe("McpServerListField", () => {
     const list = screen.getByRole("list", { name: "MCP servers" });
     expect(within(list).getByText("docs → npx docs-mcp")).toBeTruthy();
     expect(within(list).queryByText(/No MCP servers configured/i)).toBeNull();
+  });
+});
+
+describe("parseMcpServerEntry", () => {
+  test("a quoted token keeps its spaces, so a command path may contain them", () => {
+    expect(parseMcpServerEntry("fs \"/opt/My Tools/server\" --root '/srv/a b'")).toEqual({
+      name: "fs",
+      command: "/opt/My Tools/server",
+      args: ["--root", "/srv/a b"],
+    });
+  });
+
+  test("unquoted entries still split on whitespace", () => {
+    expect(parseMcpServerEntry("fs  /usr/bin/fs-mcp --ro")).toEqual({
+      name: "fs",
+      command: "/usr/bin/fs-mcp",
+      args: ["--ro"],
+    });
+  });
+
+  test("an unterminated quote is a usage error, not a guess", () => {
+    expect(parseMcpServerEntry('fs "/opt/My Tools/server')).toBeNull();
   });
 });
