@@ -170,6 +170,7 @@ test("post-cut exhaustion cannot let the read overwrite the repository's latest 
   const fake = connectClient();
   const background = acquireBackgroundThread(ref);
   const source = deferred<ThreadReadResponse>();
+  let unsubscribeStore: (() => void) | undefined;
   try {
     await background.ready;
     const repository = productionEntryTranscriptForTests(ref).repository;
@@ -203,12 +204,27 @@ test("post-cut exhaustion cannot let the read overwrite the repository's latest 
     expect(cut.reached).toBe(true);
     expect(pendingThreadHydrationUpdatesForTests()).toHaveLength(0);
     expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(1);
+    const banksBefore = threadsStore.getState().frameTimes.get(ref)?.length ?? 0;
+    const acceptance = vi.spyOn(repository, "accept");
+    const banking: Array<{ banked: number; buffered: number; storeFolds: number }> = [];
+    let storeFolds = 0;
+    unsubscribeStore = threadsStore.subscribe((state, previous) => {
+      if (state.threads.get(ref) === previous.threads.get(ref)) return;
+      const stack = new Error().stack ?? "";
+      if (stack.includes("handleNotification") && !stack.includes("publishEntryTranscriptModel")) storeFolds++;
+    });
     let objective = "";
     for (let index = 0; index < 5; index++) {
+      const beforeFolds = storeFolds;
       objective = `${index}:`.padEnd(1024 * 1024, "g");
       fake.emitNotification({
         method: "evener/goal/updated",
         params: { ref, threadId: `thr_${ref}`, goal: { objective, status: "active", iterations: index } },
+      });
+      banking.push({
+        banked: threadsStore.getState().frameTimes.get(ref)?.length ?? 0,
+        buffered: pendingThreadHydrationUpdatesForTests().length,
+        storeFolds: storeFolds - beforeFolds,
       });
     }
     expect(repository.getSnapshot()?.goal?.objective === objective, "the repository has the exact fifth goal").toBe(
@@ -224,7 +240,14 @@ test("post-cut exhaustion cannot let the read overwrite the repository's latest 
     );
     expect(productionEntryTranscriptForTests(ref).repository).toBe(repository);
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    expect(acceptance).toHaveBeenCalledTimes(5);
+    expect(acceptance.mock.results.map((result) => result.value)).toEqual([true, true, true, true, true]);
+    expect(banking.map((row) => row.buffered)).toEqual([1, 2, 3, 0, 0]);
+    expect(banking.map((row) => row.banked)).toEqual([1, 2, 3, 4, 5].map((count) => banksBefore + count));
+    expect(threadsStore.getState().frameTimes.get(ref)).toHaveLength(banksBefore + 5);
+    expect(banking.map((row) => row.storeFolds)).toEqual([0, 0, 0, 1, 1]);
   } finally {
+    unsubscribeStore?.();
     source.resolve(currentRead(ref));
     await background.release();
   }
@@ -317,6 +340,8 @@ test("entry buffer exhaustion retires only that read, preserving durable bodies 
     expect(backgroundTranscriptSnapshotForTests().pendingBytes).toBe(0);
     await expectDurableFrames(ref, frames);
     expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
+    // Five recorded arrivals, one pre-cut goal, one post-cut goal, no replay double-bank.
+    expect(threadsStore.getState().frameTimes.get(ref)).toHaveLength(7);
   } finally {
     restoreObserver();
     source.resolve(currentResponse(ref, frames));

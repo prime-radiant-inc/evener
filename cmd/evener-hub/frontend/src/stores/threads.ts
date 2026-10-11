@@ -1476,8 +1476,8 @@ type PendingHydrationRouting = {
   threadId?: string;
 };
 type PendingTranscriptUpdate = ReceivedTranscriptUpdate & {
-  // A live acceptance can make the later history replay a no-op. Its banking
-  // still belongs to this buffered arrival, under the same repository owner.
+  // Live acceptance already banked this arrival. The captured owner also
+  // identifies an unchanged replay whose canonical snapshot remains current.
   acceptedEntry?: { repository: TranscriptRepository; lifetime: number };
 };
 type PendingThreadHydration = {
@@ -4180,6 +4180,9 @@ function collectPendingRefs(
         pendingHydrations,
         entry?.repository ? { repository: entry.repository, lifetime: entry.lifetime } : undefined,
       );
+      // Admission may retire this read. It no longer retains the frame or
+      // owns a future publication, so it must not withhold the store fold.
+      if (pendingHydrations.get(pendingRef) !== pending) continue;
       refs.add(pendingRef);
       targetedRefs?.add(pendingRef);
     } else if (ref === pendingRef) {
@@ -4431,9 +4434,9 @@ function replayEntryHydrationNotifications(
     const acceptedLive = update.acceptedEntry?.repository === repository && update.acceptedEntry.lifetime === lifetime;
     if (!accepted && !acceptedLive) continue;
     hydrated = repository.getSnapshot() ?? hydrated;
-    // One update is one arrival, even when both live ingestion and replay
-    // accept it. A receipt never transfers across a repository lifetime.
-    appliedAt.push(update.now);
+    // The live path already counted this physical arrival. Replay banks only
+    // frames first accepted here, regardless of whether it accepts again.
+    if (!update.acceptedEntry) appliedAt.push(update.now);
   }
   return { model: hydrated, appliedAt };
 }
@@ -5029,12 +5032,10 @@ function handleNotification(n: AnyNotification): void {
   // subscription, leaving no diff for the store fold. Account those accepted
   // refs too, once each even when the store also publishes the same frame.
   // This includes recorded and overlay input whose store ingestion is skipped.
-  // Pending hydration carries a live acceptance receipt and banks each tail
-  // arrival once at publication, including an unchanged history replay.
+  // Acceptance banks now, independently of replay-copy admission or retirement.
+  // A retained receipt prevents tail replay from counting the same arrival again.
   const acceptedFrameRefs = new Set(publishableChangedThreads);
-  for (const ref of entryAcceptedRefs) {
-    if (!pendingRefs.has(ref)) acceptedFrameRefs.add(ref);
-  }
+  for (const ref of entryAcceptedRefs) acceptedFrameRefs.add(ref);
   if (!nextThreads && !nextWatchedThreads && acceptedFrameRefs.size === 0) return;
 
   // history.invalidatedAtGeneration becoming set - or moving to a newer

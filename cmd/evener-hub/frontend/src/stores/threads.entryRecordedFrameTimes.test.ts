@@ -158,7 +158,7 @@ test("repository acceptance and a reached store publication bank the same frame 
 });
 
 test.each(["history", "overlay", "metadata"] as const)(
-  "pending %s tail banks at publication, not at synchronous acceptance",
+  "pending %s acceptance banks live and replay cannot bank it twice",
   async (kind) => {
     const { fake, repository } = await acquire();
     const banks = observeBanks();
@@ -198,8 +198,8 @@ test.each(["history", "overlay", "metadata"] as const)(
       fake.emitNotification(notification);
       expect(accept.mock.results.at(-1)?.value).toBe(true);
       expectContent(kind);
-      expect(threadsStore.getState().frameTimes.has(ref)).toBe(false);
-      expect(banks).toEqual([]);
+      expect(threadsStore.getState().frameTimes.get(ref)).toHaveLength(1);
+      expect(banks).toEqual([{ count: 1, handleNotification: true, hydrationPublication: false }]);
       await refreshing;
       // This real retirement observation, not the getter, proves the frame remained in the post-cut tail.
       expect(retired.at(-1)?.retainedNotificationCount).toBe(1);
@@ -210,7 +210,7 @@ test.each(["history", "overlay", "metadata"] as const)(
       if (kind === "history") expect(acceptance.map((call) => call.historyChanged)).toEqual([true, false]);
       expectContent(kind, false);
       expect(threadsStore.getState().frameTimes.get(ref)).toHaveLength(1);
-      expect(banks).toEqual([{ count: 1, handleNotification: false, hydrationPublication: true }]);
+      expect(banks).toEqual([{ count: 1, handleNotification: true, hydrationPublication: false }]);
     } finally {
       unsubscribe();
     }
