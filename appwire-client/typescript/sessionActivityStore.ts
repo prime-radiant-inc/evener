@@ -906,11 +906,17 @@ export class SessionActivityStore {
    * its displayed boundary. Read once for the id instead, and let the settled set
    * place the frame on the row it names or drop it when the id turns out to name
    * two. The read cannot settle the id on its own, so a strictly newer frame asks
-   * for one more rather than staying silent for the id's life. */
+   * for one more rather than staying silent for the id's life. A fresh walk in
+   * flight is already the read that settles it: asking again per frame would
+   * restart that walk forever and never settle the promise it is carrying. */
   private noteUnattributableDelegate(frame: EvenerDelegateInfo): void {
     const read = this.reads.delegates;
     if (read.observers === 0 && !read.oneShot) return;
     this.bufferDelegateFrame(frame);
+    // A walk in flight reaches the displayed boundary and settles the buffered
+    // frames itself, so it is left to finish; a later frame asks again once it is
+    // over, and a walk that fails leaves no promise behind to wait on.
+    if (read.inFlight !== null && read.refresh !== null) return;
     const revision = revisionOf(frame.projectionRevision);
     const asked = this.unattributableDelegateRevisions.get(frame.delegateId);
     if (asked !== undefined && asked >= revision) return;

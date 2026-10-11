@@ -4077,6 +4077,40 @@ test("a superseded announcement cannot be reclaimed by a delayed response", asyn
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(settledReads);
 });
 
+test("frames arriving during a multi-page refresh do not restart it", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: cursor ? { complete: true, issues: [] } : { complete: false, issues: [], nextCursor: "second" },
+    delegates: cursor
+      ? [delegateRow({ delegateId: "delegate-2", childRef: "remote:second", projectionRevision: 1 })]
+      : [delegateRow({ projectionRevision: 1 })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  await store.loadMore("delegates");
+  expect(store.getSnapshot().delegates.rows).toHaveLength(2);
+  // A refresh walks the collection in pages, and frames for the loaded row
+  // arrive throughout that walk.
+  const refreshed = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  const duringWalk = callsTo(client, "evener/thread/delegates/list");
+  for (let revision = 2; revision <= 7; revision += 1) {
+    client.emitNotification(pushedFrame(frameInfo({ projectionRevision: revision, status: "running" })));
+  }
+  await vi.advanceTimersByTimeAsync(0);
+  // The walk in flight will reach the displayed boundary and settle them, so it
+  // is not restarted: no read is asked for.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(duringWalk);
+  await vi.advanceTimersByTimeAsync(100);
+  await refreshed;
+  expect(store.getSnapshot().delegates.loading).toBe(false);
+  expect(store.getSnapshot().delegates.rows).toHaveLength(2);
+  expect(store.getSnapshot().delegates.rows[0]).toMatchObject({ projectionRevision: 7, status: "running" });
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({
