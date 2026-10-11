@@ -641,6 +641,10 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// latestReport is the most recent terminal communicate this session
+	// accepted. Unlike comm it survives the next input's reset, so a drain
+	// can restore the report that input erased.
+	latestReport communicateResult
 	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
 	// emit atomic against a turn advancing restGeneration: either the turn
 	// starts first and the rest stays idle, or the announcement reaches the
@@ -1967,6 +1971,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		structured: structured,
 		endReason:  endReason,
 	}
+	s.latestReport = s.comm
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if stableRun && s.delegateController != nil {

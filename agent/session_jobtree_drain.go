@@ -952,7 +952,7 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 // reported: a drain turn that ends with a terminal communicate replaces the
 // report, and a drain turn that ends without one leaves the report standing.
 func (s *Session) DrainJobTreeKeepingReport(ctx context.Context) (string, error) {
-	return s.drainJobTreeUsing(ctx, s.processKeepingReport)
+	return s.drainJobTreeUsing(ctx, s.keepingReport(s.ProcessInputKind))
 }
 
 func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {
@@ -964,27 +964,52 @@ func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Co
 	return s.drainJobTreeWith(ctx, ticker.C(), s.kickDriveTree, process)
 }
 
-// processKeepingReport runs one drain turn. Every input starts with a fresh
+// keepingReport wraps a drain turn. Every input starts with a fresh
 // communicate result, so a turn that ends without a terminal communicate would
-// erase the report the delegate already gave. That turn restores the report
-// and returns no text; its bare-text or empty-response failure is the reply
-// of a housekeeping turn, not a failure of the run that already reported.
-func (s *Session) processKeepingReport(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
-	s.mu.Lock()
-	report := s.comm
-	s.mu.Unlock()
-	res, err := s.ProcessInputKind(ctx, input, images, kind)
-	s.mu.Lock()
-	if !report.called || s.comm.called {
+// erase the report the delegate already gave. That turn restores the latest
+// report the session accepted, which may have come from an earlier input of
+// the same call, and returns its text. Its bare-text or empty-response
+// failure is the reply of a housekeeping turn, not a failure of the run that
+// already reported; any other error still propagates.
+func (s *Session) keepingReport(process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+	return func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+		reported := s.Communicated()
+		res, err := process(ctx, input, images, kind)
+		s.mu.Lock()
+		if !reported || s.comm.called {
+			s.mu.Unlock()
+			return res, err
+		}
+		s.comm = s.latestReport
+		restored := s.comm.reply
 		s.mu.Unlock()
-		return res, err
+		if isNoReportFailure(err) {
+			err = nil
+		}
+		return restored, err
 	}
-	s.comm = report
-	s.mu.Unlock()
-	if errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted) {
-		err = nil
+}
+
+// isNoReportFailure reports whether err consists only of the failures of a
+// turn that ended without a terminal communicate. errors.Is alone would also
+// match a joined error that carries an unrelated failure beside one of them.
+func isNoReportFailure(err error) bool {
+	if err == nil {
+		return false
 	}
-	return "", err
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		parts := joined.Unwrap()
+		for _, part := range parts {
+			if !isNoReportFailure(part) {
+				return false
+			}
+		}
+		return len(parts) > 0
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return isNoReportFailure(wrapped.Unwrap())
+	}
+	return errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)
 }
 
 // drainJobTree contains the drain loop behind an injectable recheck channel.

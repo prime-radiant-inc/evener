@@ -1233,15 +1233,22 @@ func drainingCoordinatorReport(t *testing.T, drainTurns ...func(llm.Request) llm
 	fold := rootAttentionFold(t, root)
 	reportAt := slices.IndexFunc(fold.order, func(id string) bool { return !isDelegateUpdateAttentionID(id) })
 	frame = fold.content[fold.order[reportAt]].Text()
-	page, err := root.ListActivityDelegates(ctx, appwire.SessionActivityListParams{Ref: encodeRef("", root.ID())})
-	if err != nil || len(page.Delegates) != 1 {
-		t.Fatalf("list the root's delegates: %d rows, err=%v", len(page.Delegates), err)
-	}
+	// The preview follows the settled run, which can land just after the
+	// report reaches the root's transcript.
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	waitForCondition(t, 30*time.Second, "the report preview to settle", func() bool {
+		page, err := root.ListActivityDelegates(ctx, appwire.SessionActivityListParams{Ref: encodeRef("", root.ID())})
+		if err != nil || len(page.Delegates) != 1 {
+			return false
+		}
+		preview = page.Delegates[0].ReportPreview
+		return preview != ""
+	})
 	transcriptRaw, err := os.ReadFile(transcriptPath(coordinator.stateDir, coordinator.ID()))
 	if err != nil {
 		t.Fatalf("read the coordinator's transcript: %v", err)
 	}
-	return frame, page.Delegates[0].ReportPreview, string(transcriptRaw)
+	return frame, preview, string(transcriptRaw)
 }
 
 // bareTextDrainTurn is a drain turn whose model never calls communicate.
