@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1272,4 +1273,119 @@ func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, del
 	if err != nil {
 		t.Fatalf("seed delivery: %v", err)
 	}
+}
+
+// A steer whose transcript fsync landed under a covering stop is recorded as an
+// admission that carries across the generation being released. The successor's
+// first model claim binds it, clears it from pendingSteers, and returns its
+// text exactly once. The two orderings are
+// the two legal interleavings of the steer's completion and the stop's
+// FinishGeneration.
+func TestDelegateControllerStopFencedSteerReachesSuccessorWhenCompletedAfterFinish(t *testing.T) {
+	assertStopFencedSteerReachesSuccessor(t, false)
+}
+
+// completedBeforeFinish: releaseGenerationLocked drops the generation's own
+// admissions, and only the carry marking keeps this one.
+func TestDelegateControllerStopFencedSteerReachesSuccessorWhenCompletedBeforeFinish(t *testing.T) {
+	assertStopFencedSteerReachesSuccessor(t, true)
+}
+
+func assertStopFencedSteerReachesSuccessor(t *testing.T, completedBeforeFinish bool) {
+	t.Helper()
+	const text = "stop-fenced steer"
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+
+	steeringClaim, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("BeginSteerPersistence: %v", err)
+	}
+	steeringEntry, err := steeringClaim.runtime.appendDelegateSteeringDurably(text, steeringClaim.entryID)
+	if err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+
+	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	complete := func() {
+		t.Helper()
+		if _, err := c.CompleteSteerPersistence(steeringClaim, steeringEntry); err != nil {
+			t.Fatalf("CompleteSteerPersistence for fsynced pre-stop steer: %v", err)
+		}
+	}
+	finish := func() {
+		t.Helper()
+		if _, err := c.FinishGeneration(lease, delegateFinish{}); err != nil {
+			t.Fatalf("FinishGeneration: %v", err)
+		}
+		reportFinalizeTailDone(t, c, lease, steeringClaim.runtime)
+	}
+	if completedBeforeFinish {
+		complete()
+		finish()
+	} else {
+		finish()
+		complete()
+	}
+	c.mu.Lock()
+	carried := append([]delegateSteeringAdmission(nil), c.live[lease.delegateID].pendingSteers...)
+	c.mu.Unlock()
+	if len(carried) != 1 || carried[0].entryID != steeringClaim.entryID || !carried[0].carriesAcrossGeneration {
+		t.Fatalf("pending admissions after the stop released the generation = %#v, want the carried steer %s", carried, steeringClaim.entryID)
+	}
+	if _, err := c.Reconcile(emptyDelegateReconcileEvidence(c)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	<-result.done
+
+	successor := startDelegateSuccessorGeneration(t, c, lease.delegateID, steeringClaim.runtime)
+	history, err := completeDelegateModelRequest(c, successor)
+	if err != nil {
+		t.Fatalf("successor model request: %v", err)
+	}
+	seen := 0
+	for _, message := range history {
+		if strings.Contains(message.Text(), text) {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("successor history carries the stop-fenced steer %d times, want once", seen)
+	}
+	c.mu.Lock()
+	remaining := c.live[lease.delegateID].pendingSteers
+	c.mu.Unlock()
+	if len(remaining) != 0 {
+		t.Fatalf("pending admissions after the successor bound the steer = %#v", remaining)
+	}
+}
+
+// startDelegateSuccessorGeneration drives a fresh generation for delegateID onto
+// runtime and returns its lease.
+func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, delegateID string, runtime *Session) delegateLease {
+	t.Helper()
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart successor: %v", err)
+	}
+	started, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart successor: %v", err)
+	}
+	if err := c.AttachRuntime(started.lease, runtime); err != nil {
+		t.Fatalf("AttachRuntime successor: %v", err)
+	}
+	inputClaim, err := c.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput successor: %v", err)
+	}
+	if _, err := c.CompleteStartInput(inputClaim, true, delegateFinish{}); err != nil {
+		t.Fatalf("CompleteStartInput successor: %v", err)
+	}
+	return started.lease
 }
