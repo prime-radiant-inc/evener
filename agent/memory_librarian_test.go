@@ -214,10 +214,18 @@ func TestLibrarianTurnPassCoversEachTurnOnce(t *testing.T) {
 	workspace, project := memoryGitFixture(t)
 	memRoot := t.TempDir()
 	script := &librarianScript{}
-	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: memRoot, MemoryProjectID: project.ID, Project: project, MemoryLibrarian: "turn", MaxSubagentDepth: 1, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(script.steps()...))
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: memRoot, MemoryProjectID: project.ID, Project: project, MemoryLibrarian: "turn", MaxSubagentDepth: 1, TurnEndsProcess: true, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(script.steps()...))
 
 	if _, err := s.ProcessInput(context.Background(), "remember: prices are integer cents", nil); err != nil {
 		t.Fatal(err)
+	}
+	// A one-shot run's drain returns only once the pass has reported, even
+	// though the root's terminal message already ended the run.
+	if _, err := s.DrainJobTree(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.loadLibrarianCursor().ProcessedThrough; got == 0 {
+		t.Fatal("the drain returned before the librarian pass reported")
 	}
 	first := waitLibrarianIdle(t, s, 1)
 	if _, err := s.ProcessInput(context.Background(), "now add a total", nil); err != nil {
@@ -335,7 +343,7 @@ func TestLibrarianSidecarStartsOnceAndWakesOnTurnEnd(t *testing.T) {
 	for i := range steps {
 		steps[i] = script.step
 	}
-	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: project.ID, Project: project, MemoryLibrarian: "sidecar", MaxSubagentDepth: 1, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(steps...))
+	s := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: t.TempDir(), MemoryProjectID: project.ID, Project: project, MemoryLibrarian: "sidecar", MaxSubagentDepth: 1, TurnEndsProcess: true, testOnly: testConfig{sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}}), withSteps(steps...))
 
 	waitFor := func(what string, cond func() bool) {
 		t.Helper()
@@ -369,7 +377,17 @@ func TestLibrarianSidecarStartsOnceAndWakesOnTurnEnd(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "now add a total", nil); err != nil {
 		t.Fatal(err)
 	}
-	waitFor("sidecar never woke on turn.end", func() bool { return script.sawTurnEnd && script.generations >= 2 })
+	// One one-shot drain delivers the turn.end frame and waits for the pass
+	// it wakes, though the root's terminal message already ended the run.
+	if _, err := s.DrainJobTree(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	script.mu.Lock()
+	woke := script.sawTurnEnd && script.generations >= 2
+	script.mu.Unlock()
+	if !woke {
+		t.Fatalf("the drain returned before the sidecar's turn.end pass: %+v", script)
+	}
 	if got := s.loadLibrarianCursor().SidecarDelegateID; got != sidecar {
 		t.Fatalf("sidecar changed from %s to %s", sidecar, got)
 	}

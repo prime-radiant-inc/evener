@@ -103,6 +103,9 @@ func (s *Session) hasAcceptedTerminalCommunicate() bool {
 // skipping stop-gated, fatally failed, and drain-abandoned children
 // identically: they are never driven, so nothing they hold can convert.
 func (s *Session) subtreeHasLiveTerminalDrainWork() (bool, error) {
+	if s.librarianDrainWorkLive() {
+		return true, nil
+	}
 	if s.jobManager != nil {
 		n, err := s.jobManager.outstandingDrainJobCount()
 		if err != nil {

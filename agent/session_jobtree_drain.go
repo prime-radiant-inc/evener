@@ -563,6 +563,9 @@ func (s *Session) subagentActive(sub *subagent) (bool, *Session) {
 // component (see drainSubtreeIsStalled) exists in this session or any live,
 // non-gated descendant.
 func (s *Session) subtreeHasLiveComponent() (bool, error) {
+	if s.librarianDrainWorkLive() {
+		return true, nil
+	}
 	if s.jobManager != nil {
 		if s.jobManager.hasRunningDrainJob() || s.jobManager.hasPendingWatchSends() {
 			return true, nil

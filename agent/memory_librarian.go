@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -120,7 +121,15 @@ type librarianState struct {
 	// sidecarNudged is set once this process has started or re-briefed the
 	// sidecar.
 	sidecarNudged bool
+	// sidecarFramesOwedUntil bounds how long after a human turn's end the
+	// one-shot drain keeps delivering the sidecar's pending watch frames.
+	sidecarFramesOwedUntil time.Time
 }
+
+// librarianSidecarFrameWait bounds the one-shot drain's wait for the
+// sidecar's turn-end frame, so a frame that can never land doesn't hold the
+// process open.
+const librarianSidecarFrameWait = 5 * time.Minute
 
 func (s *Session) librarianCursorPath() string {
 	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".memory-librarian.json")
@@ -173,6 +182,9 @@ func (s *Session) observeLibrarianEvent(kind events.EventKind) {
 			st.launching = true
 			go s.ensureLibrarianSidecar()
 		}
+	case mode == librarianSidecar && st.humanTurn:
+		st.humanTurn = false
+		st.sidecarFramesOwedUntil = s.sclock().Now().Add(librarianSidecarFrameWait)
 	case mode == librarianTurn && st.humanTurn:
 		st.humanTurn = false
 		if st.inFlight != nil || st.launching {
@@ -190,6 +202,23 @@ func (s *Session) librarianLaunchPending() bool {
 	s.librarian.mu.Lock()
 	defer s.librarian.mu.Unlock()
 	return s.librarian.launching
+}
+
+// librarianDrainWorkLive reports librarian work the one-shot drain must treat
+// as live even after the root's terminal message: a start not yet made, and,
+// under the sidecar arm, the watch frames from the human turn that just ended
+// (the sidecar reads that turn when its turn.end frame lands). Without it the
+// drain would abandon those frames as residue and the process would exit
+// before the librarian's pass.
+func (s *Session) librarianDrainWorkLive() bool {
+	s.librarian.mu.Lock()
+	launching := s.librarian.launching
+	owed := s.sclock().Now().Before(s.librarian.sidecarFramesOwedUntil)
+	s.librarian.mu.Unlock()
+	if launching {
+		return true
+	}
+	return owed && s.jobManager != nil && s.jobManager.hasPendingWatchSends()
 }
 
 // publicTranscriptTurns counts the root transcript's public turns: the turn
