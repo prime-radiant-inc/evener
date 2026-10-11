@@ -81,8 +81,7 @@ import {
 } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
-import { Button, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
-import { Disclosure } from "../../../widgets/disclosure";
+import { Button, Disclosure, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "../transcript/tools/taskCheck";
