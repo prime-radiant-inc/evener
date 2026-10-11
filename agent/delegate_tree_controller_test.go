@@ -452,7 +452,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "dormant function", symbol: "openDelegateTreeController"}:                                            1,
 	{filename: "delegate_runtime.go", function: "reconcileDelegateResourcesForBootstrap", kind: "lifecycle method", symbol: "ReconcileRequirements"}:                                                1,
 	{filename: "delegate_runtime.go", function: "reconcileDelegateResourcesForBootstrap", kind: "lifecycle method", symbol: "Reconcile"}:                                                            1,
-	{filename: "session_tools_communicate.go", function: "(*Session).postDelegateUpdate", kind: "lifecycle method", symbol: "PostUpdate"}:                                              1,
+	{filename: "session_tools_communicate.go", function: "(*Session).postDelegateUpdate", kind: "lifecycle method", symbol: "PostUpdate"}:                                                           1,
 	{filename: "delegate_runtime.go", function: "(*Session).bootstrapDelegateResources", kind: "lifecycle method", symbol: "ReplayDeliveries"}:                                                      1,
 	{filename: "delegate_tree_controller.go", function: "openDelegateTreeController", kind: "composite literal", symbol: "delegateTreeController"}:                                                  1,
 	{filename: "delegate_tree_steer.go", function: "(*delegateTreeController).Steer", kind: "session steering method", symbol: "appendDelegateSteeringDurably"}:                                     1,
