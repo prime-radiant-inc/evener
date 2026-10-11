@@ -1126,3 +1126,21 @@ func TestForceCompact_SummarizerRequestsFitASmallWindow(t *testing.T) {
 		t.Fatalf("the left-out hold never reached a summarizer request that fit")
 	}
 }
+
+// The summarizer's history budget leaves a request room for the client's
+// safety reserve, the summary prefix and a reply in the smallest window it may
+// go to, and keeps the old cap for large or unknown windows.
+func TestSummarizerHistoryBudget(t *testing.T) {
+	if got := summarizerHistoryBudget(testProfile("openai", "test", 1_000_000)); got != maxSummarizerHistoryChars {
+		t.Fatalf("large window: budget = %d, want the %d cap", got, maxSummarizerHistoryChars)
+	}
+	if got := summarizerHistoryBudget(testProfile("openai", "test", 0)); got != maxSummarizerHistoryChars {
+		t.Fatalf("unknown window: budget = %d, want the %d cap", got, maxSummarizerHistoryChars)
+	}
+	const window = 8192
+	got := summarizerHistoryBudget(testProfile("openai", "test", window))
+	room := window - llm.SafetyReserveTokens(window) - len(defaultSummaryPrefix)/4
+	if got/4 >= room || got < minSummarizerHistoryChars {
+		t.Fatalf("8192-token window: budget = %d chars, want under the %d tokens left after the reserve and prefix", got, room)
+	}
+}

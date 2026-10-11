@@ -1608,26 +1608,38 @@ const maxSummarizerHistoryChars = 80_000
 
 // summarizerHistoryBudget sizes the history text of a summarizer request so it
 // fits every model the request may go to (the configured cheap model and the
-// session model it falls back to): half the smallest known window, at the
-// char/4 estimate, leaving the other half for the instruction prefix and the
-// reply, and never more than maxSummarizerHistoryChars nor less than
-// minSummarizerHistoryChars, below which no summary is useful. An unknown
+// session model it falls back to). For each known window it leaves the
+// client's input safety reserve (llm.SafetyReserveTokens), the instruction
+// prefix and a quarter of the window for the reply, and converts the rest at
+// the char/4 estimate; it never exceeds maxSummarizerHistoryChars. An unknown
 // window imposes nothing (#4321).
+//
+// It never drops below minSummarizerHistoryChars either. A window that small
+// cannot hold the summary prefix and the safety reserve alone, so no budget
+// would make the request fit: the request is sent, the client refuses it, and
+// the summary fails like any other, leaving the checkpoint in place.
 func summarizerHistoryBudget(prof *provider.Profile) int {
 	budget := maxSummarizerHistoryChars
 	if prof == nil {
 		return budget
 	}
+	prefixTokens := len(defaultSummaryPrefix)/4 + summarizerFramingTokens
 	for _, window := range []int{prof.ContextWindowSize(), prof.CheapContextWindowSize()} {
 		if window > 0 {
-			budget = min(budget, window*4/2)
+			available := window - llm.SafetyReserveTokens(window) - prefixTokens - window/4
+			budget = min(budget, available*4)
 		}
 	}
 	return max(budget, minSummarizerHistoryChars)
 }
 
-// minSummarizerHistoryChars floors summarizerHistoryBudget: about 1k tokens.
-const minSummarizerHistoryChars = 4000
+// summarizerFramingTokens allows for the request text around the history that
+// the summary prefix does not count: caller instructions' framing, the
+// left-out messages' label and the conversation label.
+const summarizerFramingTokens = 256
+
+// minSummarizerHistoryChars floors summarizerHistoryBudget: about 500 tokens.
+const minSummarizerHistoryChars = 2000
 
 // condensePartnerMessages fits the partner's messages a summary will not quote
 // (each a line of text) into budget characters for the summarizer's input.
