@@ -2120,3 +2120,263 @@ test("reset retires a ready scan before it can pin refs in the next runtime", as
 
   expect(newClient.calls.filter((call) => call.method === "thread/read")).toEqual([]);
 });
+
+test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
+  const fake = new FakeClient();
+  connectionStore.setState({ client: fake, state: "ready" });
+  const recover = vi.spyOn(fake, "forceStop").mockRejectedValueOnce(new Error("exit unconfirmed"));
+  await expect(threadsStore.getState().forceStop("local:owner")).rejects.toThrow("exit unconfirmed");
+  expect(threadsStore.getState().restartBlockingObligations.has("local:owner")).toBe(true);
+  recover.mockResolvedValueOnce(undefined);
+  await threadsStore.getState().forceStop("local:owner");
+  expect(recover).toHaveBeenNthCalledWith(2, "local:owner");
+  expect(threadsStore.getState().restartBlockingObligations.has("local:owner")).toBe(true);
+  expect(fake.calls.some((call) => call.method === "evener/thread/forceStop")).toBe(false);
+});
+
+test.each([false, true])(
+  "failed force stop reconciles without hiding the original error (read fails: %s)",
+  async (readFails) => {
+    const ref = "local:owner";
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse(ref));
+    await threadsStore.getState().ensureThread(ref);
+    const record = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/queue",
+      payload: { ref, expectedInstanceId: `thr_${ref}`, input: [{ type: "text", text: "uncertain input" }] },
+      attachments: [],
+      optimisticDisplay: { text: "uncertain input" },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+    const read = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => read.promise);
+    const original = new Error("exit confirmation failed");
+    vi.spyOn(fake, "forceStop").mockRejectedValueOnce(original);
+    const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+    await expect(threadsStore.getState().forceStop(ref)).rejects.toBe(original);
+    expect(refresh).toHaveBeenCalledWith(ref);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    const refreshing = refresh.mock.results[0]?.value as Promise<void>;
+    if (readFails) {
+      read.reject(new Error("read unavailable"));
+      await expect(refreshing).rejects.toThrow("read unavailable");
+      expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    } else {
+      const saved = readResponse(ref, { status: { type: "notLoaded" } });
+      saved.thread.evener.resumeRequired = true;
+      saved.thread.evener.mutationStateAuthoritative = false;
+      saved.thread.evener.capabilities = {} as ThreadCapabilities;
+      read.resolve(saved);
+      await refreshing;
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+      expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    }
+    expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+    expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/queue")).toHaveLength(
+      0,
+    );
+  },
+);
+
+test("a healthy authoritative refresh releases the fence after refused force stop", async () => {
+  const ref = "local:healthy-owner";
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const read = deferred<ThreadReadResponse>();
+  fake.on("thread/read", () => read.promise);
+  vi.spyOn(fake, "forceStop").mockRejectedValueOnce(new Error("termination refused"));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("termination refused");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  read.resolve(readResponse(ref));
+  await refresh.mock.results[0]?.value;
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
+});
+
+// RoboRev Medium (PR 2862, round 9): stoppingRefs is a boolean Set with no
+// ownership or generation. Two overlapping forceStop calls therefore cleared
+// the fence when the FIRST completed, while the second stop was still
+// draining - and a stale thread/read refresh could then clear the restart
+// obligation too, reopening mutation dispatch for the rest of the stop
+// window. A per-ref in-flight count keeps the fence armed until the last stop
+// returns, whichever order they finish in.
+test("an earlier forceStop completion cannot clear the fence while a second stop still drains", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const stops = [deferred<void>(), deferred<void>()];
+  let stopCalls = 0;
+  fake.on("evener/thread/forceStop", () => stops[stopCalls++]?.promise ?? Promise.resolve());
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // The first stop resolves while the second is still in flight.
+  stops[0]?.resolve();
+  await first;
+  // The fence must stay armed: the second stop has not returned.
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // A stale refresh clearing the obligation must not reopen dispatch while
+  // the second stop still drains: stoppingRefs is the independent fence.
+  threadsStore.setState((state) => {
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    restartBlockingObligations.delete(ref);
+    return { restartBlockingObligations };
+  });
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // Only when the last stop returns does the fence clear.
+  stops[1]?.resolve();
+  await second;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Low (PR 2862, round 9, a regression from the round's own Stop
+// fence): the restart obligation forceStop arms is restored only when the
+// cancellation write fails. A requireClient() lookup failure (offline, no
+// ready client) throws before any signal reaches a daemon, so the armed
+// obligation must be restored exactly as the storage failure does - and
+// refreshThread must NOT be kicked, since while offline it cannot clear the
+// fence and only leaves a live session's recovery fenced.
+test("forceStop with no connected client leaves the obligation untouched and does not refresh", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("forceStop with no connected client restores a pre-existing obligation exactly", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+// RoboRev Medium (PR 2862, round 11): each forceStop captured the obligation
+// map's value and restored it unconditionally when it aborted, so overlapping
+// stops clobbered the one shared recovery obligation. The obligation now lives
+// in the refcounted stop group: captured once on the 0 -> 1 transition and
+// restored on the 1 -> 0 transition only when no member ever signalled a
+// daemon. An aborting member never writes back its own captured value over an
+// entry another still-active member owns.
+test("an aborted forceStop cannot clear the obligation a second stop owns", async () => {
+  // Only the first stop's cancellation write fails; the second proceeds.
+  let cancels = 0;
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation === "cancelUnattempted" && ++cancels === 1) throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("storage unavailable");
+  await second;
+
+  // The second stop reached the daemon, so the fence must stay armed even
+  // though the aborted first stop's restore ran while it was still draining.
+  expect(forceStopRpc).toHaveBeenCalledTimes(1);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 12): endStop restored the group's captured obligation
+// on the no-signal 1 -> 0 transition unconditionally, so an aborting stop
+// deleted (or overwrote) a recovery fence a CONCURRENT hydration had armed
+// during its cancellation await. publishAndReconcileThreadHydration arms a fresh
+// Symbol() on any read reporting resumeRequired, and such a read can resolve
+// while the stop is still in that await; the abort then clobbered the newer
+// fence, leaving the client unfenced while the hub still held ResumeRequired.
+// The group now owns the exact symbol it armed and settles the ref's obligation
+// only while the ref still holds it, so the hydration's fence survives.
+test("an aborted forceStop leaves a concurrently armed recovery fence in place", async () => {
+  const ref = "local:abort-hydration";
+  const freshFence = Symbol("hydrated-fence");
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation !== "cancelUnattempted") return;
+      // A hydration arms a fresh obligation while the stop's cancellation write
+      // is still in flight (publishAndReconcileThreadHydration's own setState),
+      // then the write fails and aborts the stop before it signals a daemon.
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, freshFence),
+      }));
+      throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("storage unavailable");
+
+  // The aborted stop must not delete the hydration's newer fence.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(freshFence);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+test("two overlapping aborted forceStops leave the obligation at its pre-group value", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+
+  // Neither stop reached a daemon: the obligation is exactly the pre-group
+  // value, never a sibling stop's arming symbol.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(threadsStore.getState().restartBlockingObligations.size).toBe(1);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("two overlapping aborted forceStops leave no stale obligation when none existed", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+});
