@@ -652,3 +652,39 @@ func TestGitDirsUnderStopsReadingAHugeDirectoryAtTheBudget(t *testing.T) {
 		t.Errorf("the walk must stop reading once the budget is spent, read %d chunks", reads)
 	}
 }
+
+// In a read-anywhere mode a carve-out's symlinked spelling under /tmp is
+// hidden by the private /tmp, so it is recreated as a link too.
+func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderTmp(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "evener-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := filepath.EvalSymlinks(skills)
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--symlink", resolved, skills) {
+		t.Errorf("a carve-out spelled under /tmp must be recreated as a link in read-anywhere modes: %v", args)
+	}
+}

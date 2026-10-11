@@ -906,6 +906,12 @@ func onDiskSpelling(p string) string {
 // (docs/sandboxing.md, "Known residuals"); the sandboxed session cannot create
 // one, since it can neither write the carve-out nor see the masked file.
 func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, home, worktree string, darwin bool) ([]string, map[string]string) {
+	// With no config mask in force (the user removed it, or denied the root
+	// themselves) there is nothing to carve out of, and listing carve-outs
+	// would only have the layers mask their .git against the user's choice.
+	if len(configMasks) == 0 {
+		return nil, map[string]string{}
+	}
 	// A writable root can alias a content root through a symlink, so overlap is
 	// judged by resolved location as well as by spelling.
 	for _, w := range slices.Clone(writeRoots) {

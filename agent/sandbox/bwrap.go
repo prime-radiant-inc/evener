@@ -217,7 +217,8 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// The restricted namespace starts empty, so a root named through a symlink
 	// gets that spelling recreated as a link to the real path: skill discovery
 	// advertises the literal spelling, and the link reaches only the bind and
-	// its masks. A read-anywhere namespace already has the host's link.
+	// its masks. A read-anywhere namespace already has the host's link,
+	// except under its private /tmp.
 	granted := make(map[string]bool)
 	var carvedGitDirs []string
 	for _, r := range rp.UnmaskedRoots {
@@ -242,7 +243,11 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 				carvedGitDirs = append(carvedGitDirs, gitDirs...)
 			}
 		}
-		if ok && r != resolved && sp.Read != ReadAnywhere && !isUnderAnyRoot(r, sp.ReadRoots) {
+		// The host's link is missing where the namespace has no host view:
+		// everywhere in restricted mode, and under the private /tmp in the
+		// read-anywhere modes.
+		hidden := sp.Read != ReadAnywhere || pathUnder(r, "/tmp")
+		if ok && r != resolved && hidden && !isUnderAnyRoot(r, sp.ReadRoots) {
 			add("--symlink", resolved, r)
 		}
 	}
