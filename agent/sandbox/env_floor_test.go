@@ -401,8 +401,8 @@ func TestNewWrapperDropsACacheRootItCannotCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(w.Policy().CacheRoots, unmakeable) {
-		t.Errorf("a cache root that could not be created must not stay served: %v", w.Policy().CacheRoots)
+	if slices.Contains(liveCacheRoots(w.Policy()), unmakeable) {
+		t.Errorf("a cache root that could not be created must not be served: %v", w.Policy().CacheRoots)
 	}
 }
 

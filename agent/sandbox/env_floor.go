@@ -148,11 +148,8 @@ func redirectedCacheVars(env []string, policy ResolvedPolicy) map[string]bool {
 // (following any symlink on the way, existing or not yet created) still lies
 // under one, so a link from a served root into the worktree does not count.
 func overlayServes(policy ResolvedPolicy, dir string) bool {
-	// Only a root bwrap overlays at this spawn serves (servableCacheRoot: an
-	// existing directory still outside the persistent roots).
-	roots := slices.DeleteFunc(slices.Clone(policy.CacheRoots), func(r string) bool {
-		return !servableCacheRoot(policy, r)
-	})
+	// Only a root bwrap overlays at this spawn serves (liveCacheRoots).
+	roots := liveCacheRoots(policy)
 	if !isUnderAnyRoot(dir, roots) || !canBeDirectory(dir) {
 		return false
 	}
