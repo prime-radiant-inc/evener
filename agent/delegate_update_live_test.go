@@ -8,6 +8,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -85,10 +86,7 @@ wait:
 		}
 	}
 
-	sawUpdate := false
-	for _, id := range rootAttentionFold(t, root).order {
-		sawUpdate = sawUpdate || strings.Contains(id, "/update/")
-	}
+	sawUpdate := slices.ContainsFunc(rootAttentionFold(t, root).order, func(id string) bool { return strings.Contains(id, "/update/") })
 	answer := classifyParentAnswer(rootToolCalls(t, root), codename)
 	t.Logf("RESULT model=%s update_reached_root=%v parent_answer=%s child_received=%v", *delegateUpdateEvalModel, sawUpdate, answer, childReceived)
 }

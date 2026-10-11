@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,19 +62,10 @@ func TestCommunicatePointsToDelegateSendOnlyWhereOffered(t *testing.T) {
 			t.Fatalf("%s: request offers no communicate tool", tc.name)
 		}
 		if offersDelegateSend != tc.wantPointer {
-			t.Fatalf("%s: offers delegate_send = %v, want %v (tools %v)", tc.name, offersDelegateSend, tc.wantPointer, toolNames(req.Tools))
+			t.Fatalf("%s: offers delegate_send = %v, want %v (tools %v)", tc.name, offersDelegateSend, tc.wantPointer, toolNamesFromDefinitions(req.Tools))
 		}
 		if got := strings.HasSuffix(communicate.Description, pointer); got != tc.wantPointer {
 			t.Errorf("%s: communicate description ends with the delegate_send pointer = %v, want %v:\n%s", tc.name, got, tc.wantPointer, communicate.Description)
 		}
 	}
-}
-
-func toolNames(defs []llm.ToolDefinition) []string {
-	names := make([]string, len(defs))
-	for i, def := range defs {
-		names[i] = def.Name
-	}
-	slices.Sort(names)
-	return names
 }
