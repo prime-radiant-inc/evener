@@ -671,6 +671,11 @@ export class SessionActivityStore {
           this.change(resource, update);
         }
         if (stale()) continue;
+        // A read that was standing in for the delegates failed for good: the
+        // invalidation suppressed the delegate read because this one would carry
+        // the capability back, and nothing else would now reveal that the
+        // ancestor released its runtime.
+        if (permanent && resource !== "delegates") this.reconcileDelegates();
         if (!permanent) this.retry(resource, cursor ? "page" : "root");
       }
     }
@@ -1327,14 +1332,17 @@ function joinDelegateState<T extends { latestActivityAt?: string | undefined }>(
 function revisionOf(value: number | undefined): number {
   return typeof value === "number" && !Number.isNaN(value) ? value : 0;
 }
-/** The frame fields a row merge can apply. The raw report payload and its
- * companions are not part of the row, and a buffered frame waits for a read to
- * admit the row, so keeping them would let 128 buffered entries hold unbounded
- * bytes -- the entry cap bounds ids, not memory. */
+/** The frame fields a row merge can apply. The raw report payload and the model
+ * preferences a row does not carry are not part of the row, and a buffered frame
+ * waits for a read to admit the row, so keeping them would let 128 buffered
+ * entries hold unbounded bytes -- the entry cap bounds ids, not memory. */
 function boundedDelegateFrame(frame: EvenerDelegateInfo): EvenerDelegateInfo {
   const {
     message: _message,
     structuredResult: _structuredResult,
+    structuredResultReason: _structuredResultReason,
+    resolvedModel: _resolvedModel,
+    requestedModel: _requestedModel,
     warnings: _warnings,
     diagnostics: _diagnostics,
     ...bounded

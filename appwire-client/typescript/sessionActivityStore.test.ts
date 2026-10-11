@@ -3929,6 +3929,32 @@ test("a late sibling response from a retired epoch cannot reactivate the orderin
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(settledReads);
 });
 
+test("a permanent summary failure reconciles the delegates its read stood in for", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.start();
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().summary !== null && store.getSnapshot().delegates.complete);
+  expect(store.getSnapshot().context?.availability).toBe("live");
+  const before = callsTo(client, "evener/thread/delegates/list");
+  // The invalidation's summary read is the only other read it would make, and it
+  // refuses for good, so nothing else would carry the released runtime back.
+  client.on("evener/thread/activity/read", () => {
+    throw new WireError("thread not found: session", -32012, { evenerErrorInfo: "sessionUnavailable" });
+  });
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext({ availability: "retained" }),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "failed" })],
+  }));
+  activityChanged(client, ["summary", "delegates"]);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBeGreaterThan(before);
+  await activityState(store, () => store.getSnapshot().delegates.rows[0]?.status === "failed");
+  expect(store.getSnapshot().context?.availability).toBe("retained");
+});
+
 test("a comma fraction does not order against the projector's timestamps", async () => {
   const client = pushClient();
   client.on("evener/thread/delegates/list", ({ scope }) => ({

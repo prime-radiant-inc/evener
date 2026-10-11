@@ -225,7 +225,10 @@ under-invalidating a count. Revisit only against a measured win.
    observed delegates with one read. Eligibility is cached: an ancestor can
    release its runtime (`agent/delegate_tree_reclaim.go`) and then receive
    post-release invalidations with no delegate frame before a response reveals
-   the change, so without this the first suppressed update is permanent.
+   the change, so without this the first suppressed update is permanent. A read
+   that was carrying the capability back can also fail for good: a permanent
+   failure of another observed resource reconciles the observed delegates, since
+   the invalidation suppressed their read on the strength of that one.
 
 **Web.** The Agents tab, the Activity sheet, the transcript entity view, the
 status bar, and the session chrome consume the store unchanged; the merge makes
@@ -359,6 +362,9 @@ on `availability`. A negative-path test must pin the fallback.
 - **Eligibility loss.** A store that was push-eligible, then whose ancestor
   releases its runtime and receives post-release invalidations before the
   retained summary reply, reconciles the observed delegates (no stale rows).
+- **Permanent carrier failure.** The read this invalidation made in place of the
+  delegate read fails permanently, and the observed delegates are read instead,
+  so a released ancestor still lands as a retained context with refreshed rows.
 - **Epoch retires the buffer.** An old-epoch buffered unknown-id frame cannot win
   over a replacement-epoch row admitted at a lower revision.
 - **Announced epoch fences a frame.** A frame that arrives after a sibling
@@ -429,6 +435,7 @@ on `availability`. A negative-path test must pin the fallback.
 | Retained old-epoch row rejects its replacement | record only rows the response served; a row it did not serve is first sight for the new epoch. |
 | Settlement lost when a read first reveals its replacement | queue one reconciliation read after an unannounced epoch crossing, since the clear retires the frames merged under the retired epoch. |
 | Late sibling response names a retired epoch | keep the epochs the ordering has left: such a response neither announces nor retires, and a settling read clears an announcement naming one. |
+| The read carrying the capability fails for good | reconcile the observed delegates on a permanent failure, since the invalidation suppressed their read for it. |
 | Delegate settles across a resync | turn the push gate off and clear the merge state on resync; the invalidation's read carries the settle into the refreshed row set. |
 | Provisional page takes a frame for another child | patch a loaded row only while the row set is final; otherwise buffer the frame and read. |
 | Removed read hides a source error | Recovery paths (resync, reconnect, stale cursor, epoch change on any response) unchanged; the collection still reads on observe and paging. |

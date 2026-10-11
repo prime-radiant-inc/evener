@@ -322,7 +322,9 @@ does not advertise the capability, a retained context
 whose released runtime receives invalidations but no frames, or an invalidation
 that refreshes no other observed resource (the store observes none, the
 notification omits it, or its read has permanently failed) keeps the
-invalidation read. Delegate membership is append-only within a source epoch;
+invalidation read. A read that was carrying that capability can also fail for
+good, and the delegates it stood in for are read then.
+Delegate membership is append-only within a source epoch;
 jobs and watches are unchanged. Legacy job lifecycle and tree-update
 notifications remain available to other consumers but do not trigger these
 reads. The domain APIs and scoped invalidations form one contract; resync and
