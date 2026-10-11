@@ -142,15 +142,11 @@ func TestCloneDaemonLifecycleKeepsEmptyAttemptBlockers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded struct {
-		LastAttempt struct {
-			Blockers json.RawMessage `json:"blockers"`
-		} `json:"lastAttempt"`
-	}
+	var decoded map[string]map[string]json.RawMessage
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if got := string(decoded.LastAttempt.Blockers); got != "[]" {
+	if got := string(decoded["lastAttempt"]["blockers"]); got != "[]" {
 		t.Fatalf("cloned attempt blockers encode as %s, want []", got)
 	}
 }
