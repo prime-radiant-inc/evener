@@ -11,6 +11,7 @@ import (
 // escape-heavy expansion fallback path (lines 1163-1187) where the expansion
 // itself exceeds the serialized hard cap after content bounding.
 func TestBoundReadMarkdownEnvelopeWithHint_EscapeHeavyExpansion(t *testing.T) {
+	t.Parallel()
 	// Create raw bytes that are non-UTF8 so the expansion is base64-encoded,
 	// which expands 3 bytes -> 4 chars, making it easier to exceed the cap.
 	raw := make([]byte, 300000)
@@ -48,6 +49,7 @@ func TestBoundReadMarkdownEnvelopeWithHint_EscapeHeavyExpansion(t *testing.T) {
 // TestBoundReadMarkdownEnvelopeWithHint_ExpansionDecodeError covers the
 // decode error path (lines 1150-1152).
 func TestBoundReadMarkdownEnvelopeWithHint_ExpansionDecodeError(t *testing.T) {
+	t.Parallel()
 	envelope := readMarkdownEnvelope{
 		TranscriptRef: "local:abc",
 		Format:        "markdown",
@@ -73,6 +75,7 @@ func TestBoundReadMarkdownEnvelopeWithHint_ExpansionDecodeError(t *testing.T) {
 // TestBoundReadMarkdownEnvelopeWithHint_LargeContentNoExpansion covers the
 // path where content exceeds the cap and there's no expansion (line 1146).
 func TestBoundReadMarkdownEnvelopeWithHint_LargeContentNoExpansion(t *testing.T) {
+	t.Parallel()
 	envelope := readMarkdownEnvelope{
 		TranscriptRef: "local:abc",
 		Format:        "markdown",
@@ -96,6 +99,7 @@ func TestBoundReadMarkdownEnvelopeWithHint_LargeContentNoExpansion(t *testing.T)
 // TestBoundReadMarkdownEnvelopeWithHint_FitsAsIs covers the path where
 // the envelope fits without any bounding (line 1142-1144).
 func TestBoundReadMarkdownEnvelopeWithHint_FitsAsIs(t *testing.T) {
+	t.Parallel()
 	envelope := readMarkdownEnvelope{
 		TranscriptRef: "local:abc",
 		Format:        "markdown",
@@ -118,6 +122,7 @@ func TestBoundReadMarkdownEnvelopeWithHint_FitsAsIs(t *testing.T) {
 // TestBoundReadMarkdownEnvelopeWithHint_BoundedExpansion covers the path
 // where content is bounded and expansion fits (lines 1156-1158).
 func TestBoundReadMarkdownEnvelopeWithHint_BoundedExpansion(t *testing.T) {
+	t.Parallel()
 	// Content is large but can be bounded; expansion is small and fits.
 	raw := []byte("small expansion data")
 	envelope := readMarkdownEnvelope{
@@ -149,6 +154,7 @@ func TestBoundReadMarkdownEnvelopeWithHint_BoundedExpansion(t *testing.T) {
 // TestTranscriptEnvelopeWithExpansionBytes_NoContinuation covers the
 // nil-continuation path when the data reaches the end (line 1314).
 func TestTranscriptEnvelopeWithExpansionBytes_NoContinuation(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{
 		Expansion: &transcriptTurnExpansion{
 			ExpandTurn:  1,
@@ -165,6 +171,7 @@ func TestTranscriptEnvelopeWithExpansionBytes_NoContinuation(t *testing.T) {
 // TestTranscriptEnvelopeWithExpansionBytes_WithContinuation covers the
 // continuation path (line 1312).
 func TestTranscriptEnvelopeWithExpansionBytes_WithContinuation(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{
 		Expansion: &transcriptTurnExpansion{
 			ExpandTurn:  1,
@@ -184,6 +191,7 @@ func TestTranscriptEnvelopeWithExpansionBytes_WithContinuation(t *testing.T) {
 // TestTranscriptEnvelopeWithExpansionBytes_NonUTF8 covers the base64 path
 // (lines 1305-1308).
 func TestTranscriptEnvelopeWithExpansionBytes_NonUTF8(t *testing.T) {
+	t.Parallel()
 	env := readMarkdownEnvelope{
 		Expansion: &transcriptTurnExpansion{
 			ExpandTurn:  1,

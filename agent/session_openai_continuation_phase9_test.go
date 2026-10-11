@@ -17,6 +17,7 @@ import (
 )
 
 func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
 		"error": map[string]any{
@@ -218,6 +219,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 }
 
 func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAfterRejection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
 		"error": map[string]any{
@@ -317,6 +319,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAf
 }
 
 func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
 		"error": map[string]any{
@@ -378,6 +381,7 @@ func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewS
 }
 
 func TestSession_OpenAIResponsesContinuationPhase9OrphanedToolResultGateUsesFullHistory(t *testing.T) {
+	t.Parallel()
 	anchor := phase9MatchingAnchor("resp_phase9_orphan")
 	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 		Kind: llm.ContentToolCall,
@@ -484,6 +488,7 @@ func (a *phase9PlanningOpenAIAdapter) PlanResponsesContinuation(req llm.Request)
 }
 
 func TestSession_OpenAIResponsesContinuationPhase9MediaGateUsesFullHistory(t *testing.T) {
+	t.Parallel()
 	req := runPhase9GateSession(t, []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("phase9 prior user marker")),
 		phase9MatchingAnchor("resp_phase9_media"),
@@ -496,6 +501,7 @@ func TestSession_OpenAIResponsesContinuationPhase9MediaGateUsesFullHistory(t *te
 }
 
 func TestSession_OpenAIResponsesContinuationPhase9InterveningAssistantGateUsesFullHistory(t *testing.T) {
+	t.Parallel()
 	req := runPhase9GateSession(t, []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("phase9 prior user marker")),
 		phase9MatchingAnchor("resp_phase9_intervening"),

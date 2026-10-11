@@ -18,6 +18,7 @@ import (
 )
 
 func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	for _, tc := range []struct {
 		name      string
@@ -70,6 +71,7 @@ func TestStableDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 }
 
 func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	id := "dlg_status_metadata"
 	seedStableToolDelegate(t, s, id, "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
@@ -118,6 +120,7 @@ func TestStableDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T)
 }
 
 func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	settlingID := "dlg_public_settling"
 	seedStableToolRunningDelegate(t, s, settlingID, "", time.Unix(10, 0).UTC())
@@ -205,6 +208,7 @@ func TestStableDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 }
 
 func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	started := time.Unix(10, 0).UTC()
 	if err := s.jobManager.appendEvent(jobstore.Event{
@@ -219,6 +223,7 @@ func TestStableDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 }
 
 func TestStableDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	c := s.delegateController
 	seedStableToolRunningDelegate(t, s, "dlg_stop_parent", "", time.Unix(10, 0).UTC())
@@ -261,6 +266,7 @@ func TestStableDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *te
 }
 
 func TestStableDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
+	t.Parallel()
 	value, err := marshalDelegateSendResult(sendMessageResult{
 		DelegateID: "dlg_live", Type: "delegate", Status: jobstore.StatusRunning, Action: "steered",
 		WaitIgnoredReason: "live steer returns on delivery",
@@ -305,6 +311,7 @@ func TestStableDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 }
 
 func TestStableDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_list", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolShell(t, s.jobManager, "job_shell", time.Unix(30, 0).UTC(), jobstore.StatusRunning)
@@ -319,6 +326,7 @@ func TestStableDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T)
 }
 
 func TestStableDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_direct_idle", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_direct_running", "", time.Unix(30, 0).UTC())
@@ -362,6 +370,7 @@ func TestStableDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.
 }
 
 func TestStableDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	seedStableToolDelegate(t, s, "dlg_page_1", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolDelegate(t, s, "dlg_page_2", "", time.Unix(30, 0).UTC(), time.Unix(40, 0).UTC())
@@ -378,6 +387,7 @@ func TestStableDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 }
 
 func TestStableDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	s.treeCounter = newTreeCounter(7)
 	s.driveCounter = newTreeCounter(3)
@@ -546,4 +556,61 @@ func seedStableToolShell(t *testing.T, jm *jobManager, id string, startedAt time
 			t.Fatal(err)
 		}
 	}
+}
+
+// A delegate_send reply carrying an earlier result its caller was holding
+// keeps the newest result in its own fields and adds the earlier one, in the
+// same shape, under earlier_results; its text shows the earlier one first
+// (#3906).
+func TestStableDelegateTools_SendReplyCarriesEarlierResults(t *testing.T) {
+	t.Parallel()
+	valid := false
+	value, err := marshalDelegateSendResult(sendMessageResult{
+		DelegateID: "dlg_held", Type: "delegate", Status: jobstore.StatusCompleted, Action: "completed",
+		TranscriptRef: "local:child", Output: "SECOND",
+		Earlier: []delegatestore.TerminalPacket{{
+			Kind:                   delegatestore.PacketReported,
+			Message:                json.RawMessage(`"FIRST"`),
+			StructuredResult:       json.RawMessage(`{"ok":false}`),
+			StructuredResultValid:  &valid,
+			StructuredResultReason: "schema mismatch",
+			Warnings:               []string{"w1"},
+		}},
+	}, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := stableToolStateMap(t, value)
+	earlier, ok := state["earlier_results"].([]any)
+	if !ok || len(earlier) != 1 || state["output"] != "SECOND" {
+		t.Fatalf("delegate_send state = %#v, want SECOND in its own fields and one earlier result", state)
+	}
+	first, _ := earlier[0].(map[string]any)
+	if first["output"] != "FIRST" || first["delegate_id"] != "dlg_held" || first["transcript_ref"] != "local:child" ||
+		first["structured_result_valid"] != false || first["structured_result_reason"] != "schema mismatch" ||
+		!reflect.DeepEqual(first["structured_result"], map[string]any{"ok": false}) || !reflect.DeepEqual(first["warnings"], []any{"w1"}) {
+		t.Fatalf("earlier result = %#v, want FIRST with its ref, structured result and warnings", earlier[0])
+	}
+	text := value.(toolpkg.StateResult).Output
+	if !strings.HasPrefix(text, "earlier result 1 of 1, not delivered before:\nFIRST\n") || !strings.Contains(text, "\nlatest result:\nSECOND\n") {
+		t.Fatalf("delegate_send text = %q, want the numbered earlier result, then the latest", text)
+	}
+}
+
+// Several earlier results in a reply are numbered oldest first, ahead of the
+// labelled latest result.
+func TestStableDelegateTools_SendReplyNumbersSeveralEarlierResults(t *testing.T) {
+	t.Parallel()
+	packet := func(message string) delegatestore.TerminalPacket {
+		return delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: json.RawMessage(`"` + message + `"`)}
+	}
+	value, err := marshalDelegateSendResult(sendMessageResult{
+		DelegateID: "dlg_held", Type: "delegate", Status: jobstore.StatusCompleted, Action: "completed",
+		Output: "THIRD", Earlier: []delegatestore.TerminalPacket{packet("FIRST"), packet("SECOND")},
+	}, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOrdered(t, "delegate_send text", value.(toolpkg.StateResult).Output,
+		"earlier result 1 of 2", "FIRST", "earlier result 2 of 2", "SECOND", "latest result:", "THIRD")
 }

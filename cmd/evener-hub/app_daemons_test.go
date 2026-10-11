@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -833,6 +834,87 @@ func TestDaemonActionRetireReturnsFreshBlockers(t *testing.T) {
 	}
 	if retireCalls != 1 || gotIdentity != list.Daemons[0].Identity {
 		t.Fatalf("retire forwarded identity=%+v calls=%d", gotIdentity, retireCalls)
+	}
+}
+
+// A retire forwarded to the daemon can wait there, up to the session namer's
+// timeout (#3921). The hub releases the session's alias locks before it
+// forwards, so a read of that session and a relayed frame, which take the
+// same locks, proceed while the daemon's answer is pending (#4052).
+func TestDaemonRetireInFlightHoldsNoSessionLock(t *testing.T) {
+	runDir := t.TempDir()
+	entry := residentEntryForTest(t, 4202)
+	// A resumed session has a session id of its own, so the retire locks
+	// more than one alias.
+	entry.SessionID = hubtest.SessionID(t)
+	entered, answer := make(chan struct{}), make(chan struct{})
+	answerRetire := sync.OnceFunc(func() { close(answer) })
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonRetire, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
+		close(entered)
+		<-answer // the daemon waits on its session namer
+		return appwire.DaemonRetireResponse{Accepted: true, Lifecycle: appwire.DaemonLifecycle{Phase: "retiring", Blockers: []appwire.DaemonBlocker{}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
+	writeRendezvous(t, runDir, entry)
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: "idle", Lifecycle: residentLifecycleForTest(), LifecycleFresh: true}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster, DaemonIdleTimeout: time.Hour}
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	// Deferred last so it runs first: a failed check still answers the
+	// daemon before the hub and client close.
+	defer answerRetire()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := client.DaemonList(t.Context(), appwire.DaemonListParams{})
+	if err != nil || len(list.Daemons) != 1 {
+		t.Fatalf("daemon list = %+v, %v", list, err)
+	}
+	retired := make(chan error, 1)
+	go func() {
+		_, err := client.DaemonRetire(t.Context(), appwire.DaemonRetireParams{Identity: list.Daemons[0].Identity})
+		retired <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-retired:
+		t.Fatalf("the retire answered before reaching the daemon: %v", err)
+	}
+	ref := "local:" + entry.ThreadID
+	unlock, ok := tryLockDeletionTarget(cfg, ref, entry.ThreadID) // a relayed frame's guard
+	if !ok {
+		t.Fatal("a relayed frame's lock was held while the retire waited on the daemon")
+	}
+	unlock()
+	aliases := forceStopAliases(entry)
+	if len(aliases) < 2 {
+		t.Fatalf("fixture aliases = %v, want the session and thread ids apart", aliases)
+	}
+	for _, alias := range aliases {
+		lock := cfg.ResumeLocks.For(alias)
+		if !lock.TryLock() {
+			t.Fatalf("alias %q was held while the retire waited on the daemon", alias)
+		}
+		lock.Unlock()
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	read, err := withSessionActionOwnership(ctx, cfg, ref, entry.ThreadID, func() (string, error) { return "read", nil })
+	if err != nil || read != "read" {
+		t.Fatalf("a session read while the retire waited = %q, %v; want it to proceed", read, err)
+	}
+	answerRetire()
+	if err := <-retired; err != nil {
+		t.Fatalf("retire: %v", err)
 	}
 }
 

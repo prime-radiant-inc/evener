@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -68,7 +69,7 @@ func TestPackShardsBalancesLongestProcessingTimeFirst(t *testing.T) {
 	costs := []testCost{
 		{"a", 5}, {"b", 4}, {"c", 3}, {"d", 3}, {"e", 3},
 	}
-	bins, loads, err := packShards(costs, 2)
+	bins, loads, err := packShards(costs, 2, "AGENT")
 	if err != nil {
 		t.Fatalf("packShards: %v", err)
 	}
@@ -82,9 +83,38 @@ func TestPackShardsBalancesLongestProcessingTimeFirst(t *testing.T) {
 	}
 }
 
+// TestPackShardsSpreadsTestsTheSurveyCalledFree is the long-pole regression:
+// -test.v reports 10ms steps, so most tests survey as 0.00s, and greedy packing
+// never raised the least-loaded shard's load for them — every one of them
+// landed in the same shard (1500 of evener-hub's 2129, 3561 of agent's). Each
+// test is charged at least half a reporting step, so they spread.
+func TestPackShardsSpreadsTestsTheSurveyCalledFree(t *testing.T) {
+	costs := []testCost{{"slow", 1}}
+	for i := range 400 {
+		costs = append(costs, testCost{fmt.Sprintf("free%d", i), 0})
+	}
+	bins, _, err := packShards(costs, 4, "AGENT")
+	if err != nil {
+		t.Fatalf("packShards: %v", err)
+	}
+	for i, bin := range bins {
+		if len(bin) > 200 {
+			t.Fatalf("shard %d holds %d of 401 tests; zero-cost tests piled into one shard: %v", i, len(bin), lens(bins))
+		}
+	}
+}
+
+func lens(bins [][]string) []int {
+	out := make([]int, len(bins))
+	for i, bin := range bins {
+		out[i] = len(bin)
+	}
+	return out
+}
+
 func TestPackShardsTiesKeepInputOrder(t *testing.T) {
 	costs := []testCost{{"first", 1}, {"second", 1}, {"third", 1}}
-	bins, _, err := packShards(costs, 3)
+	bins, _, err := packShards(costs, 3, "AGENT")
 	if err != nil {
 		t.Fatalf("packShards: %v", err)
 	}
@@ -95,7 +125,7 @@ func TestPackShardsTiesKeepInputOrder(t *testing.T) {
 }
 
 func TestPackShardsRefusesEmptyTestSet(t *testing.T) {
-	_, _, err := packShards(nil, 4)
+	_, _, err := packShards(nil, 4, "AGENT")
 	if err == nil || !strings.Contains(err.Error(), "found no tests to shard") {
 		t.Fatalf("packShards(nil) err = %v, want found-no-tests refusal", err)
 	}
@@ -103,7 +133,7 @@ func TestPackShardsRefusesEmptyTestSet(t *testing.T) {
 
 func TestPackShardsRefusesEmptyBins(t *testing.T) {
 	costs := []testCost{{"a", 1}, {"b", 1}, {"c", 1}}
-	_, _, err := packShards(costs, 5)
+	_, _, err := packShards(costs, 5, "AGENT")
 	want := "asked for 5 shards but only 3 are non-empty; lower AGENT_SHARD_COUNT"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("packShards err = %v, want %q", err, want)
@@ -112,7 +142,7 @@ func TestPackShardsRefusesEmptyBins(t *testing.T) {
 
 func TestPackShardsProvesBijection(t *testing.T) {
 	costs := []testCost{{"dup", 1}, {"dup", 2}}
-	_, _, err := packShards(costs, 1)
+	_, _, err := packShards(costs, 1, "AGENT")
 	if err == nil || !strings.Contains(err.Error(), "partition is not a bijection over the test set") {
 		t.Fatalf("packShards with duplicate names err = %v, want bijection refusal", err)
 	}
@@ -156,7 +186,7 @@ func TestParseFlagsReadsShortInEverySpelling(t *testing.T) {
 		{flags: []string{"-tags", "-short"}, want: false},
 		{flags: nil, want: false},
 	} {
-		parsed, err := parseFlags(tc.flags)
+		parsed, err := parseFlags(tc.flags, "AGENT")
 		if err != nil {
 			t.Fatalf("parseFlags(%v) = %v", tc.flags, err)
 		}
@@ -207,12 +237,12 @@ func TestParseFlagsRefusesWhatItCannotHonour(t *testing.T) {
 		// -n prints the build instead of running it: no binary, no shards.
 		{"-n"},
 	} {
-		if _, err := parseFlags(flags); err == nil {
+		if _, err := parseFlags(flags, "AGENT"); err == nil {
 			t.Fatalf("parseFlags(%v) = no error, want one", flags)
 		}
 	}
 	// A -C that is another flag's value is a value.
-	parsed, err := parseFlags([]string{"-tags", "-C", "-short"})
+	parsed, err := parseFlags([]string{"-tags", "-C", "-short"}, "AGENT")
 	if err != nil {
 		t.Fatalf("parseFlags(-tags -C -short) = %v", err)
 	}
@@ -437,7 +467,7 @@ func TestParseFlagsSendsBuildFlagsToTheBuild(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			parsed, err := parseFlags(tc.flags)
+			parsed, err := parseFlags(tc.flags, "AGENT")
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) {
 					t.Fatalf("parseFlags(%v) = %v, want a refusal naming %q", tc.flags, err, tc.err)
@@ -529,7 +559,7 @@ func TestCheckGoflagsRefusesWhatTheShardsWouldNeverSee(t *testing.T) {
 		{name: "-C through GOFLAGS", goflags: "-C /tmp", err: "-C is not supported here", advice: "built and tested from its own directory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkGoflags(tc.goflags)
+			err := checkGoflags(tc.goflags, "AGENT")
 			if tc.err == "" {
 				if err != nil {
 					t.Fatalf("checkGoflags(%q) = %v, want nothing", tc.goflags, err)

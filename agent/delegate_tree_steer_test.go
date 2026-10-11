@@ -459,7 +459,7 @@ func TestDelegateControllerSteerDuringContextManagementEntersNextRequestOnce(t *
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	cfg := SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}
+	cfg := SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}
 	cfg.testOnly.contextStrategyOverride = strategy
 	runtime := newSession(t, withConfig(cfg), withoutGitSnapshot())
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)

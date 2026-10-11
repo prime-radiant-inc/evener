@@ -231,7 +231,7 @@ func TestAgentShardsSIGKILLLeftoverIsReclaimedByNextRun(t *testing.T) {
 	isolateToolchainEnv(t)
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", envPrefix: "AGENT", pkgDir: fixtureModule(t),
 		count:    2,
 		parallel: 1,
 		noSurvey: true,

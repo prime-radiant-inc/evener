@@ -12,24 +12,28 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestDelegateIDInSetEmptyID(t *testing.T) {
+	t.Parallel()
 	if delegateIDInSet("", map[string]struct{}{"dlg_1": {}}) {
 		t.Fatalf("expected false for empty ID")
 	}
 }
 
 func TestDelegateIDInSetFound(t *testing.T) {
+	t.Parallel()
 	if !delegateIDInSet("dlg_1", map[string]struct{}{"dlg_1": {}}) {
 		t.Fatalf("expected true for found ID")
 	}
 }
 
 func TestDelegateIDInSetNotFound(t *testing.T) {
+	t.Parallel()
 	if delegateIDInSet("dlg_2", map[string]struct{}{"dlg_1": {}}) {
 		t.Fatalf("expected false for not found")
 	}
 }
 
 func TestDelegateIDInSetEmptyMap(t *testing.T) {
+	t.Parallel()
 	if delegateIDInSet("dlg_1", map[string]struct{}{}) {
 		t.Fatalf("expected false for empty map")
 	}
@@ -40,6 +44,7 @@ func TestDelegateIDInSetEmptyMap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReclamationCoversLockedEmptyID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{reclaiming: map[string]uint64{}}
 	if c.reclamationCoversLocked("") {
 		t.Fatalf("expected false for empty ID")
@@ -47,6 +52,7 @@ func TestReclamationCoversLockedEmptyID(t *testing.T) {
 }
 
 func TestReclamationCoversLockedDirect(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reclaiming: map[string]uint64{"dlg_1": 1},
 	}
@@ -56,6 +62,7 @@ func TestReclamationCoversLockedDirect(t *testing.T) {
 }
 
 func TestReclamationCoversLockedAncestor(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reclaiming: map[string]uint64{"dlg_parent": 1},
 		durable: map[string]*delegatestore.Aggregate{
@@ -69,6 +76,7 @@ func TestReclamationCoversLockedAncestor(t *testing.T) {
 }
 
 func TestReclamationCoversLockedNotCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reclaiming: map[string]uint64{"dlg_other": 1},
 		durable: map[string]*delegatestore.Aggregate{
@@ -81,6 +89,7 @@ func TestReclamationCoversLockedNotCovered(t *testing.T) {
 }
 
 func TestReclamationCoversLockedNilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reclaiming: map[string]uint64{},
 		durable: map[string]*delegatestore.Aggregate{
@@ -97,6 +106,7 @@ func TestReclamationCoversLockedNilAggregate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsResidentTerminalRuntimeLockedNilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if c.isResidentTerminalRuntimeLocked("dlg_1", nil) {
 		t.Fatalf("expected false for nil aggregate")
@@ -104,6 +114,7 @@ func TestIsResidentTerminalRuntimeLockedNilAggregate(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedCurrentRunOpen(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	agg := &delegatestore.Aggregate{CurrentRunOpen: true, LatestOutcome: &delegatestore.Outcome{}, Phase: delegatestore.PhaseIdle}
 	if c.isResidentTerminalRuntimeLocked("dlg_1", agg) {
@@ -112,6 +123,7 @@ func TestIsResidentTerminalRuntimeLockedCurrentRunOpen(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedNoOutcome(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	agg := &delegatestore.Aggregate{CurrentRunOpen: false, LatestOutcome: nil, Phase: delegatestore.PhaseIdle}
 	if c.isResidentTerminalRuntimeLocked("dlg_1", agg) {
@@ -120,6 +132,7 @@ func TestIsResidentTerminalRuntimeLockedNoOutcome(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedWrongPhase(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	agg := &delegatestore.Aggregate{CurrentRunOpen: false, LatestOutcome: &delegatestore.Outcome{}, Phase: delegatestore.PhaseRunning}
 	if c.isResidentTerminalRuntimeLocked("dlg_1", agg) {
@@ -128,6 +141,7 @@ func TestIsResidentTerminalRuntimeLockedWrongPhase(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedNoLive(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{live: map[string]*delegateLiveState{}}
 	agg := &delegatestore.Aggregate{CurrentRunOpen: false, LatestOutcome: &delegatestore.Outcome{}, Phase: delegatestore.PhaseIdle}
 	if c.isResidentTerminalRuntimeLocked("dlg_1", agg) {
@@ -136,6 +150,7 @@ func TestIsResidentTerminalRuntimeLockedNoLive(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedWithBinding(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		live: map[string]*delegateLiveState{
 			"dlg_1": {binding: &delegateRuntimeBinding{}, runtime: &Session{}},
@@ -148,6 +163,7 @@ func TestIsResidentTerminalRuntimeLockedWithBinding(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedNoRuntime(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		live: map[string]*delegateLiveState{
 			"dlg_1": {binding: nil, runtime: nil},
@@ -160,6 +176,7 @@ func TestIsResidentTerminalRuntimeLockedNoRuntime(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedEligible(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		live: map[string]*delegateLiveState{
 			"dlg_1": {binding: nil, runtime: &Session{}},
@@ -172,6 +189,7 @@ func TestIsResidentTerminalRuntimeLockedEligible(t *testing.T) {
 }
 
 func TestIsResidentTerminalRuntimeLockedClosedPhase(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		live: map[string]*delegateLiveState{
 			"dlg_1": {binding: nil, runtime: &Session{}},
@@ -188,6 +206,7 @@ func TestIsResidentTerminalRuntimeLockedClosedPhase(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRuntimeReclamationIntersectsProcessWorkLockedNoStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reclaiming:   map[string]uint64{},
 		reservations: map[uint64]*delegateStartRecord{},
@@ -199,6 +218,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLockedNoStop(t *testing.T) {
 }
 
 func TestRuntimeReclamationIntersectsProcessWorkLockedWithStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop:       &delegateStopState{members: map[string]struct{}{"dlg_1": {}}},
 		reclaiming: map[string]uint64{},
@@ -209,6 +229,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLockedWithStop(t *testing.T) {
 }
 
 func TestRuntimeReclamationIntersectsProcessWorkLockedWithReclaiming(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reclaiming: map[string]uint64{"dlg_1": 1},
 	}
@@ -222,6 +243,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLockedWithReclaiming(t *testing.
 // ---------------------------------------------------------------------------
 
 func TestReclaimDelegateRuntimeCapacityNil(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	err := s.reclaimDelegateRuntimeCapacity(1)
 	if err == nil {
@@ -230,6 +252,7 @@ func TestReclaimDelegateRuntimeCapacityNil(t *testing.T) {
 }
 
 func TestReclaimDelegateRuntimeCapacityNilController(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	err := s.reclaimDelegateRuntimeCapacity(1)
 	if err == nil || !errors.Is(err, errors.New("delegate controller is unavailable")) {
@@ -245,6 +268,7 @@ func TestReclaimDelegateRuntimeCapacityNilController(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateRuntimeReclamationEntryStruct(t *testing.T) {
+	t.Parallel()
 	e := delegateRuntimeReclamationEntry{
 		delegateID:     "dlg_1",
 		childSessionID: "sess_1",
@@ -259,6 +283,7 @@ func TestDelegateRuntimeReclamationEntryStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateRuntimeReclamationClaimStruct(t *testing.T) {
+	t.Parallel()
 	c := &delegateRuntimeReclamationClaim{
 		token:   42,
 		entries: []delegateRuntimeReclamationEntry{{delegateID: "dlg_1"}},
@@ -273,6 +298,7 @@ func TestDelegateRuntimeReclamationClaimStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReleaseRuntimeReclamationLocked(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reclamations: map[uint64]*delegateRuntimeReclamationClaim{
 			1: {

@@ -30,7 +30,6 @@ func newSubagentSessionForAvailability(t *testing.T, isolation string, allowance
 	c.Register(&fakeAdapter{name: "openai"})
 	cfg := SessionConfig{
 		MaxSubagentDepth: 3,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
 	cfg.spawn.parentSessionID = "parent-session-id"
@@ -154,7 +153,6 @@ func TestWorktreeAvailability_IsolatedCoordinatorDisposeOnlyAfterRestore(t *test
 	cfg := SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 3,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
 	cfg.spawn.parentSessionID = "parent-session-id"

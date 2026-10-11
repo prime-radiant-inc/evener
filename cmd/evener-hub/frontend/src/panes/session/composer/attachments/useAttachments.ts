@@ -8,7 +8,7 @@
 // encode continuations across remounts. Image bytes never go through
 // localStorage.
 import { insertMarker, markerText, rejectionReason, stripMarker } from "@evener/appwire-client";
-import { type SetStateAction, useCallback, useState } from "react";
+import { type SetStateAction, useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
@@ -53,10 +53,12 @@ export interface PendingAttachment {
 // (see useAttachments.test.ts's makeFakeEditor), which is always-current
 // by construction and therefore can't reproduce that specific staleness
 // class - Composer.test.tsx's own regression test is what has to.
+export type TextEditSource = "edit" | "submission" | "cleanup";
+
 export interface TextEditor {
   /** Selection is the UTF-16 range replaced by an accepted attachment marker. */
   read(): { text: string; cursor: number; selection: { start: number; end: number } };
-  write(text: string, cursor: number, source?: "edit" | "submission"): void;
+  write(text: string, cursor: number, source?: TextEditSource): void;
 }
 
 export interface UseAttachmentsResult {
@@ -121,16 +123,10 @@ export function createAttachmentStore() {
 
 export type AttachmentStore = ReturnType<typeof createAttachmentStore>;
 
-export function useAttachments(editor: TextEditor, backingStore?: AttachmentStore): UseAttachmentsResult {
-  const [localStore] = useState(() => backingStore ?? createAttachmentStore());
-  const store = backingStore ?? localStore;
-  const items = useStore(store, (state) => state.items);
-  const setItems = useCallback(
-    (next: SetStateAction<PendingAttachment[]>) => {
-      store.setState((state) => ({ items: typeof next === "function" ? next(state.items) : next }));
-    },
-    [store],
-  );
+export function createAttachmentOperations(editor: TextEditor, store: AttachmentStore): UseAttachmentsResult {
+  const setItems = (next: SetStateAction<PendingAttachment[]>) => {
+    store.setState((state) => ({ items: typeof next === "function" ? next(state.items) : next }));
+  };
   // The marker high-water mark is deliberately NOT derived from items.length
   // (which shrinks on removal) - a plain ref persists across renders without
   // re-triggering one, exactly mirroring composer-attachments.js's own
@@ -153,166 +149,165 @@ export function useAttachments(editor: TextEditor, backingStore?: AttachmentStor
   // continuation captures this generation and becomes a no-op if replacement
   // increments it before the encode settles.
 
-  const replaceWithSettled = useCallback(
-    (nextItems: PendingAttachment[]) => {
-      nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
-      // A recovery merge carries existing staged objects alongside new items.
-      // Preserve those identities so an in-flight send can still retire them.
-      setItems((previous) => nextItems.map((item) => (previous.includes(item) ? item : { ...item })));
-    },
-    [nextMarkerRef, setItems],
-  );
+  const replaceWithSettled = (nextItems: PendingAttachment[]) => {
+    nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
+    // A recovery merge carries existing staged objects alongside new items.
+    // Preserve those identities so an in-flight send can still retire them.
+    setItems((previous) => nextItems.map((item) => (previous.includes(item) ? item : { ...item })));
+  };
 
-  const reset = useCallback(() => {
+  const reset = () => {
     generationRef.current += 1;
     removedWhilePendingRef.current.clear();
     nextMarkerRef.current = 0;
     setItems([]);
-  }, [generationRef, removedWhilePendingRef, nextMarkerRef, setItems]);
+  };
 
-  const ingestFiles = useCallback(
-    (files: File[], onRejected: (message: string) => void) => {
-      const generation = generationRef.current;
-      const rejections: string[] = [];
-      const accepted: { file: File; marker: number }[] = [];
-      // Reserved count starts at the CURRENT pending total and increments
-      // per accepted file within this same batch (matching
-      // reserveAttachmentItems's own running `reserved` counter) - a drop
-      // of 8 files at once must reject the 9th within that single batch,
-      // not just across separate gestures.
-      let reservedCount = store.getState().items.length;
-      for (const file of files) {
-        const reason = rejectionReason({ type: file.type, size: file.size, name: file.name }, reservedCount);
-        if (reason) {
-          rejections.push(reason);
-          continue;
-        }
-        reservedCount++;
-        nextMarkerRef.current += 1;
-        accepted.push({ file, marker: nextMarkerRef.current });
+  const ingestFiles = (files: File[], onRejected: (message: string) => void) => {
+    const generation = generationRef.current;
+    const rejections: string[] = [];
+    const accepted: { file: File; marker: number }[] = [];
+    // Reserved count starts at the CURRENT pending total and increments
+    // per accepted file within this same batch (matching
+    // reserveAttachmentItems's own running `reserved` counter) - a drop
+    // of 8 files at once must reject the 9th within that single batch,
+    // not just across separate gestures.
+    let reservedCount = store.getState().items.length;
+    for (const file of files) {
+      const reason = rejectionReason({ type: file.type, size: file.size, name: file.name }, reservedCount);
+      if (reason) {
+        rejections.push(reason);
+        continue;
       }
+      reservedCount++;
+      nextMarkerRef.current += 1;
+      accepted.push({ file, marker: nextMarkerRef.current });
+    }
 
-      if (accepted.length > 0) {
-        // Spliced synchronously, in order, before any async decode - each
-        // sibling marker in the SAME batch chains off the cursor position
-        // the previous insertMarker call already advanced to.
-        let {
-          text,
-          selection: { start, end },
-        } = editor.read();
-        const newItems: PendingAttachment[] = accepted.map(({ file, marker }) => {
-          const edit = insertMarker(text, start, end, markerText(marker));
-          text = edit.value;
-          start = end = edit.cursor;
-          return { marker, name: file.name, mediaType: "image/png", pending: true };
-        });
-        editor.write(text, start);
-        setItems((prev) => [...prev, ...newItems]);
+    if (accepted.length > 0) {
+      // Spliced synchronously, in order, before any async decode - each
+      // sibling marker in the SAME batch chains off the cursor position
+      // the previous insertMarker call already advanced to.
+      let {
+        text,
+        selection: { start, end },
+      } = editor.read();
+      const newItems: PendingAttachment[] = accepted.map(({ file, marker }) => {
+        const edit = insertMarker(text, start, end, markerText(marker));
+        text = edit.value;
+        start = end = edit.cursor;
+        return { marker, name: file.name, mediaType: "image/png", pending: true };
+      });
+      editor.write(text, start);
+      setItems((prev) => [...prev, ...newItems]);
 
-        for (const { file, marker } of accepted) {
-          reencodeToPng(file)
-            .then(({ data, width, height }) => {
-              if (generationRef.current !== generation) return;
-              // Discarded before it settled (kata kt4j) - nothing left to update.
-              if (removedWhilePendingRef.current.delete(marker)) return;
-              setItems((prev) =>
-                prev.map((item) => (item.marker === marker ? { ...item, data, width, height, pending: false } : item)),
-              );
-            })
-            .catch(() => {
-              if (generationRef.current !== generation) return;
-              // Same discard check as above - the user already removed this
-              // attachment, so its eventual decode failure is nothing to
-              // strip from the editor or tell them about.
-              if (removedWhilePendingRef.current.delete(marker)) return;
-              const current = editor.read();
-              const stripped = stripMarker(current.text, current.cursor, marker);
-              editor.write(stripped.value, stripped.cursor ?? current.cursor);
-              setItems((prev) => prev.filter((item) => item.marker !== marker));
-              onRejected(`${file.name || "unknown"} (image decode failed)`);
-            });
-        }
+      for (const { file, marker } of accepted) {
+        reencodeToPng(file)
+          .then(({ data, width, height }) => {
+            if (generationRef.current !== generation) return;
+            // Discarded before it settled (kata kt4j) - nothing left to update.
+            if (removedWhilePendingRef.current.delete(marker)) return;
+            setItems((prev) =>
+              prev.map((item) => (item.marker === marker ? { ...item, data, width, height, pending: false } : item)),
+            );
+          })
+          .catch(() => {
+            if (generationRef.current !== generation) return;
+            // Same discard check as above - the user already removed this
+            // attachment, so its eventual decode failure is nothing to
+            // strip from the editor or tell them about.
+            if (removedWhilePendingRef.current.delete(marker)) return;
+            const current = editor.read();
+            const stripped = stripMarker(current.text, current.cursor, marker);
+            editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
+            setItems((prev) => prev.filter((item) => item.marker !== marker));
+            onRejected(`${file.name || "unknown"} (image decode failed)`);
+          });
       }
+    }
 
-      if (rejections.length > 0) {
-        onRejected(
-          rejections.length === 1
-            ? `Couldn't attach ${rejections[0]}`
-            : `Couldn't attach ${rejections.length} files: ${rejections.join(", ")}`,
-        );
-      }
-    },
-    [store, editor, generationRef, nextMarkerRef, removedWhilePendingRef, setItems],
-  );
+    if (rejections.length > 0) {
+      onRejected(
+        rejections.length === 1
+          ? `Couldn't attach ${rejections[0]}`
+          : `Couldn't attach ${rejections.length} files: ${rejections.join(", ")}`,
+      );
+    }
+  };
 
-  const removeItem = useCallback(
-    (marker: number) => {
-      // Recorded unconditionally, whether or not this item is still pending
-      // (kata kt4j) - cheap and self-cleaning either way: a pending item's
-      // own decode drains this entry the instant it settles (see
-      // ingestFiles' .then/.catch above), and an already-settled item's
-      // removal adds an entry no in-flight decode will ever consult again.
-      removedWhilePendingRef.current.add(marker);
-      const current = editor.read();
-      const stripped = stripMarker(current.text, current.cursor, marker);
-      editor.write(stripped.value, stripped.cursor ?? current.cursor);
-      setItems((prev) => prev.filter((item) => item.marker !== marker));
-    },
-    [editor, removedWhilePendingRef, setItems],
-  );
+  const removeItem = (marker: number) => {
+    // Recorded unconditionally, whether or not this item is still pending
+    // (kata kt4j) - cheap and self-cleaning either way: a pending item's
+    // own decode drains this entry the instant it settles (see
+    // ingestFiles' .then/.catch above), and an already-settled item's
+    // removal adds an entry no in-flight decode will ever consult again.
+    removedWhilePendingRef.current.add(marker);
+    const current = editor.read();
+    const stripped = stripMarker(current.text, current.cursor, marker);
+    editor.write(stripped.value, stripped.cursor ?? current.cursor);
+    setItems((prev) => prev.filter((item) => item.marker !== marker));
+  };
 
-  const clearSubmitted = useCallback(
-    (submittedMarkers: Set<number>) => {
-      if (submittedMarkers.size > 0) {
-        // Same per-marker strip removeItem uses, threaded across every
-        // submitted marker in one editor.write() - stripMarker is a safe
-        // no-op (returns its input unchanged) for any marker no longer
-        // present in the CURRENT text, so this never fights a concurrent
-        // edit that already removed one itself.
-        let { text, cursor } = editor.read();
-        for (const marker of submittedMarkers) {
-          const stripped = stripMarker(text, cursor, marker);
-          text = stripped.value;
-          cursor = stripped.cursor ?? cursor;
-        }
+  const clearSubmitted = (submittedMarkers: Set<number>) => {
+    if (submittedMarkers.size > 0) {
+      // Each write describes one exact splice, so atoms between removed
+      // markers retain their identities. Live editor refs update synchronously.
+      // A marker already removed by a concurrent edit remains a safe no-op.
+      let { text, cursor } = editor.read();
+      for (const marker of submittedMarkers) {
+        const stripped = stripMarker(text, cursor, marker);
+        text = stripped.value;
+        cursor = stripped.cursor ?? cursor;
         editor.write(text, cursor, "submission");
       }
-      setItems((prev) => {
-        const next = prev.filter((item) => !submittedMarkers.has(item.marker));
-        if (next.length === 0) {
-          // Restarting numbering at 1 lets a later attachment reuse marker 1.
-          // Any retired marker still recorded in removedWhilePendingRef must not
-          // survive that reuse: removeItem records EVERY removed marker (a
-          // settled one's entry is never drained by a continuation), so a reused
-          // marker's successful encode would be discarded as "already removed"
-          // and the item would stay pending forever. Clear the retired set, and
-          // retire the continuations that referenced it by advancing the
-          // generation, so neither an old removal nor an old settle can touch
-          // the reused marker. Older invalidation (reset) does the same.
-          nextMarkerRef.current = 0;
-          removedWhilePendingRef.current.clear();
-          generationRef.current += 1;
-        }
-        return next;
-      });
-    },
-    [editor, nextMarkerRef, removedWhilePendingRef, generationRef, setItems],
-  );
+    }
+    setItems((prev) => {
+      const next = prev.filter((item) => !submittedMarkers.has(item.marker));
+      if (next.length === 0) {
+        // Restarting numbering at 1 lets a later attachment reuse marker 1.
+        // Any retired marker still recorded in removedWhilePendingRef must not
+        // survive that reuse: removeItem records EVERY removed marker (a
+        // settled one's entry is never drained by a continuation), so a reused
+        // marker's successful encode would be discarded as "already removed"
+        // and the item would stay pending forever. Clear the retired set, and
+        // retire the continuations that referenced it by advancing the
+        // generation, so neither an old removal nor an old settle can touch
+        // the reused marker. Older invalidation (reset) does the same.
+        nextMarkerRef.current = 0;
+        removedWhilePendingRef.current.clear();
+        generationRef.current += 1;
+      }
+      return next;
+    });
+  };
 
-  const toInputAttachments = useCallback((): InputAttachment[] => {
-    return items
-      .filter((item): item is PendingAttachment & { data: string } => item.data !== undefined)
+  const toInputAttachments = (): InputAttachment[] => {
+    return store
+      .getState()
+      .items.filter((item): item is PendingAttachment & { data: string } => item.data !== undefined)
       .map((item) => ({ marker: item.marker, mediaType: item.mediaType, data: item.data, name: item.name }));
-  }, [items]);
+  };
 
   return {
-    items,
+    get items() {
+      return store.getState().items;
+    },
     replaceWithSettled,
     reset,
-    hasPending: items.some((item) => item.pending),
+    get hasPending() {
+      return store.getState().items.some((item) => item.pending);
+    },
     ingestFiles,
     removeItem,
     toInputAttachments,
     clearSubmitted,
   };
+}
+
+export function useAttachments(editor: TextEditor, backingStore?: AttachmentStore): UseAttachmentsResult {
+  const [localStore] = useState(() => backingStore ?? createAttachmentStore());
+  const store = backingStore ?? localStore;
+  const items = useStore(store, (state) => state.items);
+  const operations = useMemo(() => createAttachmentOperations(editor, store), [editor, store]);
+  return { ...operations, items, hasPending: items.some((item) => item.pending) };
 }

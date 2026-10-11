@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { render } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { StreamingText } from "./StreamingText";
 import rawStyles from "./streamingtext.module.css";
-
-afterEach(cleanup);
 
 const styles = {
   live: requireClass(rawStyles.live, "streamingtext.module.css", "live"),

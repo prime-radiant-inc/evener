@@ -15,6 +15,7 @@ import (
 // absent (empty/null) vs valid (including an explicit empty array) vs invalid
 // (malformed or unknown name), with ordered deduplication.
 func TestSkillReloadSelection_Presence(t *testing.T) {
+	t.Parallel()
 	inventory := map[string]schema.SkillInventoryEntry{"pkg:probe": {}}
 	for _, tc := range []struct {
 		raw, state string
@@ -34,6 +35,7 @@ func TestSkillReloadSelection_Presence(t *testing.T) {
 // TestSkillReloadSelection_ErrorCodes pins the machine error codes that
 // distinguish a malformed selection from an unknown skill name.
 func TestSkillReloadSelection_ErrorCodes(t *testing.T) {
+	t.Parallel()
 	inventory := map[string]schema.SkillInventoryEntry{"pkg:probe": {}}
 	for _, tc := range []struct {
 		raw, errCode string
@@ -56,6 +58,7 @@ func TestSkillReloadSelection_ErrorCodes(t *testing.T) {
 // Only a valid block is removed from the handed-forward note; missing,
 // multiple, or malformed blocks authorize no body load and preserve the note.
 func TestSkillReloadElicitation_Blocks(t *testing.T) {
+	t.Parallel()
 	inventory := map[string]schema.SkillInventoryEntry{"pkg:probe": {}}
 	block := func(inner string) string {
 		return "<skill-reload-selection>" + inner + "</skill-reload-selection>"

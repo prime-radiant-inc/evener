@@ -288,7 +288,7 @@ func sltcNewToolSession(t *testing.T) *Session {
 			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "task", Name: "task_list", Arguments: args, Type: "function"})
 		},
 	})
-	cfg := SessionConfig{NoProjectPrompts: true, StateDir: root, MaxToolRoundsPerInput: 1, clock: agenttest.NewFakeClock()}
+	cfg := SessionConfig{StateDir: root, MaxToolRoundsPerInput: 1, clock: agenttest.NewFakeClock()}
 	cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
 	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), &agenttest.DenyEnv{WorkDir: root, Seed: 101}, cfg)
 	if err != nil {
@@ -312,9 +312,8 @@ func sltcNewSession(t *testing.T, bare, maxTurns bool) *Session {
 		},
 	})
 	cfg := SessionConfig{
-		NoProjectPrompts: true,
-		StateDir:         root,
-		clock:            agenttest.NewFakeClock(),
+		StateDir: root,
+		clock:    agenttest.NewFakeClock(),
 	}
 	if maxTurns {
 		cfg.MaxTurns = 1

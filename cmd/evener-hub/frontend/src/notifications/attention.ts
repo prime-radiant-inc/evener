@@ -1,4 +1,4 @@
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { approvalWaiting, type NavigationSessionSummary, needsResponseRest } from "@evener/appwire-client";
 import type { NotificationsLoudScopePref } from "../stores/prefs";
 
 export type AttentionLevel = "working" | "needs_you" | "error" | "idle";
@@ -23,15 +23,30 @@ export interface AttentionEntry {
   title: string;
   level: "needs_you" | "error";
   askPending: boolean;
+  approvalPending: boolean;
+  // The session rests awaiting with no question: its turn ended asking for a
+  // reply (end_reason needs_response). A plain reply rests idle instead.
+  needsResponse: boolean;
 }
 
 export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[] | null): Map<string, AttentionEntry> {
   const snapshot = new Map<string, AttentionEntry>();
   if (!rows) return snapshot;
   for (const row of rows) {
-    const level = levelFromState(row.state);
+    const approvalPending = row.approval_pending === true;
+    // An approval blocks its turn mid-tool, so the row still reports
+    // "active"; like the hub's promotedAttentionLevel, a pending approval
+    // makes any row short of a failure need you.
+    const level = approvalWaiting(row.state, approvalPending) ? "needs_you" : levelFromState(row.state);
     if (level !== "needs_you" && level !== "error") continue;
-    snapshot.set(row.ref, { ref: row.ref, title: row.title, level, askPending: row.ask_pending === true });
+    snapshot.set(row.ref, {
+      ref: row.ref,
+      title: row.title,
+      level,
+      askPending: row.ask_pending === true,
+      approvalPending,
+      needsResponse: needsResponseRest(row.state, row.ask_pending === true),
+    });
   }
   return snapshot;
 }
@@ -46,6 +61,15 @@ export function snapshotFromTree(input: unknown): Map<string, AttentionEntry> {
   return new Map();
 }
 
+function isLoud(entry: AttentionEntry, loudScope: NotificationsLoudScopePref): boolean {
+  return (
+    loudScope === "all" || entry.askPending || entry.approvalPending || entry.needsResponse || entry.level === "error"
+  );
+}
+
+// A session fires when it becomes loud: on entering the tier, or when a row
+// already in it turns into something the scope alerts for (a warning that
+// settles into a reply request). A row that stays loud never re-fires.
 export function detectFires(
   prev: Map<string, AttentionEntry>,
   next: Map<string, AttentionEntry>,
@@ -53,8 +77,10 @@ export function detectFires(
 ): AttentionEntry[] {
   const fires: AttentionEntry[] = [];
   for (const [ref, entry] of next) {
-    if (prev.has(ref)) continue;
-    if (loudScope === "all" || entry.askPending || entry.level === "error") fires.push(entry);
+    if (!isLoud(entry, loudScope)) continue;
+    const before = prev.get(ref);
+    if (before && isLoud(before, loudScope)) continue;
+    fires.push(entry);
   }
   return fires;
 }

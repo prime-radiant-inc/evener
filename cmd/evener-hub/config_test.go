@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,61 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			name:    "empty root",
 			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"h\"\nroots = [\"ok\", \" \"]\n",
 			wantErr: hostreg.ErrEmptyRoot,
+		},
+		{
+			name:    "config_path without addr",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\n",
+			wantErr: ErrHostAddrPair,
+		},
+		{
+			name:    "addr without config_path",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\naddr = \"127.0.0.1:9180\"\n",
+			wantErr: ErrHostAddrPair,
+		},
+		{
+			name:    "non-loopback addr",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"10.0.0.5:9180\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			name:    "non-loopback named addr",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"hub.example:9180\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			name:    "addr without a port",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			name:    "addr with an out-of-range port",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:70000\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			// addr reaches an SSH-side curl probe and the restart identity
+			// check, so it must be loopback or a wildcard that normalizes to
+			// loopback: every spelling the shipped probe accepts
+			// (sshconn.validateHubAddr) must load, including other loopback
+			// literals such as 127.0.0.2 and the empty host of ":port".
+			name: "loopback and wildcard addrs load",
+			toml: "[[hosts]]\nname = \"a\"\nssh = \"a.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:9180\"\n\n" +
+				"[[hosts]]\nname = \"b\"\nssh = \"b.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.2:9180\"\n\n" +
+				"[[hosts]]\nname = \"c\"\nssh = \"c.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"[::1]:9180\"\n\n" +
+				"[[hosts]]\nname = \"d\"\nssh = \"d.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"localhost:9180\"\n\n" +
+				"[[hosts]]\nname = \"e\"\nssh = \"e.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"0.0.0.0:9180\"\n\n" +
+				"[[hosts]]\nname = \"f\"\nssh = \"f.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"[::]:9180\"\n\n" +
+				"[[hosts]]\nname = \"g\"\nssh = \"g.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \":9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 7 {
+					t.Fatalf("Hosts = %+v, want 7", cfg.Hosts)
+				}
+				for i, want := range []string{"127.0.0.1:9180", "127.0.0.2:9180", "[::1]:9180", "localhost:9180", "0.0.0.0:9180", "[::]:9180", ":9180"} {
+					if cfg.Hosts[i].Addr != want {
+						t.Fatalf("host %d addr = %q, want %q", i, cfg.Hosts[i].Addr, want)
+					}
+				}
+			},
 		},
 		{
 			name: "multiple hosts preserve order",
@@ -397,6 +453,35 @@ models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 	}
 }
 
+// TestLoadConfig_MachineRoots pins hub.toml's top-level `roots` — the hub's own
+// machine's project roots, reported in ServerInfo: entries are trimmed, blank
+// ones dropped, and an absent key leaves no roots.
+func TestLoadConfig_MachineRoots(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	body := `
+roots = ["  /Users/jesse/git  ", "", "   ", "/srv/work"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if want := []string{"/Users/jesse/git", "/srv/work"}; !slices.Equal(cfg.Roots, want) {
+		t.Fatalf("Roots = %v, want %v", cfg.Roots, want)
+	}
+
+	absent, err := LoadConfig(filepath.Join(t.TempDir(), "hub.toml"))
+	if err != nil {
+		t.Fatalf("LoadConfig (missing): %v", err)
+	}
+	if absent.Roots != nil {
+		t.Fatalf("Roots = %v, want nil for an absent key", absent.Roots)
+	}
+}
+
 func TestLoadConfig_RejectsRemovedCodexSections(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -603,7 +688,7 @@ func TestHubSpawnResumePassDaemonIdleTimeout(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
+  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -664,4 +749,118 @@ exit 2
 			t.Errorf("launch %d --daemon-idle-timeout = %q, want %q (argv %v)", i, got, (7 * time.Minute).String(), args)
 		}
 	}
+}
+
+// TestHubTOMLRefusesUnknownFieldsInReservedRecordTables pins roborev round 6's
+// second finding: the reserved [host_records] and [generations] tables are
+// decoded into typed structs and reconstructed on every rewrite, so a field this
+// build does not decode would be silently dropped by the next write. Spec 08 §6
+// is explicit that forward preservation is not offered for a reserved record
+// this build does not recognize: "a reserved value whose shape this build cannot
+// decode is refused loudly before any rewrite". Unknown keys outside the
+// reserved set stay the operator's data and still load.
+func TestHubTOMLRefusesUnknownFieldsInReservedRecordTables(t *testing.T) {
+	const host = "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n"
+	refusals := map[string]string{
+		"unknown field in a live record": host +
+			"\n[host_records.alpha]\nincarnation_id = \"inc-alpha\"\npresence_epoch = 1\nnewer_field = \"from a newer build\"\n",
+		"unknown field in a high-water mark": host +
+			"\n[generations.alpha]\ngeneration = 1\nincarnation_id = \"inc-alpha\"\npresence_epoch = 1\nnewer_field = 2\n",
+		"unknown subtable inside a mark": host +
+			"\n[generations.alpha]\ngeneration = 1\nincarnation_id = \"inc-alpha\"\npresence_epoch = 1\n\n[generations.alpha.extra]\nfield = true\n",
+	}
+	for name, doc := range refusals {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.toml")
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatal("a reserved record carrying a field this build does not decode loaded, want a refusal")
+			}
+			if !strings.Contains(err.Error(), "newer_field") && !strings.Contains(err.Error(), "extra") {
+				t.Fatalf("the refusal does not name the unknown field: %v", err)
+			}
+		})
+	}
+	// Unknown keys outside the reserved set are operator data, not refusals.
+	path := filepath.Join(t.TempDir(), "hub.toml")
+	doc := host + "\n[operator_notes]\nnote = \"mine\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("an unknown key outside the reserved set refused: %v", err)
+	}
+}
+
+// TestLoadConfig_HostProbeAndFreeSpaceKnobs pins the two owner-adjustable
+// deploy-pipeline knobs (deploy pipeline 08b §6 step 2's probe timeout, §10's
+// minimum-free-space floor): the documented defaults ship when the file does
+// not mention them, explicit values stick, and a non-positive value floors back
+// to the default rather than disarming the check.
+func TestLoadConfig_HostProbeAndFreeSpaceKnobs(t *testing.T) {
+	t.Run("defaults when omitted", func(t *testing.T) {
+		cfg, err := LoadConfig(filepath.Join(t.TempDir(), "nope.toml"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.HostProbeTimeout != DefaultHostProbeTimeout {
+			t.Errorf("HostProbeTimeout default: got %v, want %v", cfg.HostProbeTimeout, DefaultHostProbeTimeout)
+		}
+		if cfg.HostMinFreeSpaceBytes != DefaultHostMinFreeSpaceBytes {
+			t.Errorf("HostMinFreeSpaceBytes default: got %d, want %d", cfg.HostMinFreeSpaceBytes, DefaultHostMinFreeSpaceBytes)
+		}
+	})
+
+	t.Run("explicit values stick", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "hub.toml")
+		doc := "host_probe_timeout = \"30s\"\nhost_min_free_space_bytes = 1048576\n"
+		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.HostProbeTimeout != 30*time.Second {
+			t.Errorf("HostProbeTimeout = %v, want 30s", cfg.HostProbeTimeout)
+		}
+		if cfg.HostMinFreeSpaceBytes != 1048576 {
+			t.Errorf("HostMinFreeSpaceBytes = %d, want 1048576", cfg.HostMinFreeSpaceBytes)
+		}
+	})
+
+	t.Run("non-positive values floor back to the defaults", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "hub.toml")
+		doc := "host_probe_timeout = \"0s\"\nhost_min_free_space_bytes = 0\n"
+		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.HostProbeTimeout != DefaultHostProbeTimeout {
+			t.Errorf("HostProbeTimeout = %v, want the default %v", cfg.HostProbeTimeout, DefaultHostProbeTimeout)
+		}
+		if cfg.HostMinFreeSpaceBytes != DefaultHostMinFreeSpaceBytes {
+			t.Errorf("HostMinFreeSpaceBytes = %d, want the default %d", cfg.HostMinFreeSpaceBytes, DefaultHostMinFreeSpaceBytes)
+		}
+	})
+
+	t.Run("a bare integer probe timeout is refused, never read as nanoseconds", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "hub.toml")
+		if err := os.WriteFile(path, []byte("host_probe_timeout = 10\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadConfig(path)
+		if err == nil {
+			t.Fatal("a bare integer host_probe_timeout loaded, want the duration-string refusal")
+		}
+		if !strings.Contains(err.Error(), "host_probe_timeout must be a duration string") {
+			t.Fatalf("refusal %q does not name the duration-string rule", err)
+		}
+	})
 }

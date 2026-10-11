@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -33,6 +34,16 @@ type WebServer struct {
 	// the sshconn attach-event path so an EventAttached rebinds a
 	// backoff-sleeping fan-out immediately.
 	hostAdmin *hubHostAdminController
+	// hostManage is the host-management controller (add/list/status/remove/
+	// update). main.go binds its event recorder to the same sshconn lifecycle
+	// path, so host rows retain attach state from the manager's events.
+	hostManage *hubHostManager
+	// notices derives the Board's notices (S11); main.go runs its watcher.
+	notices *hubNotices
+	// auth is the hub's credential controller, for the live listings this
+	// server runs outside an RPC (the picker's, the background prefetch):
+	// they record what a provider said about a credential (#3539).
+	auth *hubAuthController
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -45,6 +56,28 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
+	// launchModels caches the evener launch model list per working dir, so a
+	// picker open does not re-run `evener launch-check --models` (a live
+	// provider listing that takes seconds) every time.
+	launchModels *launchModelsCache
+	// launchModelsChanged, when set, is told that a background refresh of a
+	// cached launch model list landed with a different list, so clients can
+	// update a picker that is already showing the old one.
+	launchModelsChanged func()
+	// launchRefreshes tracks request-triggered launch-model refreshes so the
+	// shutdown path can await them; otherwise their `evener launch-check` child
+	// outlives the hub. launchRefreshesClosed, guarded by launchRefreshMu, is
+	// the gate that keeps a still-open AppWire request from Adding while that
+	// group is Waited on.
+	launchRefreshes       sync.WaitGroup
+	launchRefreshMu       sync.Mutex
+	launchRefreshesClosed bool
+	// lifetime is the hub run's context. Background work a request triggers —
+	// the launch-model refresh — hangs off it rather than off the request, so
+	// shutdown cancels it instead of leaving the child to outlive the hub.
+	// runMain overrides the Background default; a WebServer built elsewhere
+	// (tests) keeps it.
+	lifetime context.Context
 	// treeCache memoizes the shared tree projection used by the remaining
 	// mutation handlers. NavigationService owns AppWire navigation generations
 	// and captures its source directly rather than using this cache.
@@ -88,6 +121,12 @@ func (s *WebServer) sourceOnline(id string) bool {
 	if !ok || source == nil {
 		return true
 	}
+	return sourceIsOnline(source)
+}
+
+// sourceIsOnline reports whether a registered source can serve requests now: a
+// source that reports no online state (the controller's own) always can.
+func sourceIsOnline(source appsource.Source) bool {
 	if online, ok := source.(appsource.OnlineSource); ok {
 		return online.Online()
 	}
@@ -111,6 +150,15 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	keybindingsStoreErr := cfg.KeybindingsStoreErr
 	if cfg.KeybindingsStore == nil {
 		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
+	}
+	// One live host registry shared by every host-dependent surface. An
+	// embedder or test that threads none gets a fallback built once here —
+	// the same instance the attach, host-management, and admin handlers
+	// validate against, so a host added at runtime is never "unknown" to a
+	// sibling handler that built its own copy from the configured entries.
+	// main.go always threads the live one.
+	if cfg.RemoteHostRegistry == nil {
+		cfg.RemoteHostRegistry = hostRegistryFromConfig(cfg)
 	}
 	sources := newHubSourceRegistry(cfg)
 	// One resume-lock registry backs both the REST send path (lockForSession)
@@ -141,6 +189,8 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		startedAt:                 time.Now().UTC(),
 		lastGoodThreads:           map[string][]appwire.Thread{},
 		liveModels:                &modelsCache{},
+		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
+		lifetime:                  context.Background(),
 		treeCache:                 &hubcore.TreeCache{},
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
@@ -152,15 +202,36 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if web.cfg.LiveModels == nil {
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
-	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	server, hostAdmin := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	if web.cfg.LaunchModels == nil {
+		web.cfg.LaunchModels = web.fetchLaunchModels
+	}
+	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, SubagentParent: web.navigationSubagentParent, Logf: navigationStatsLogfFor(web.cfg)})
+	server, hostAdmin, hostManage, notices, auth := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
+	// A launch model list a picker was served stale has been refreshed with a
+	// different one. evener/auth/updated's no-data form is the broadcast the
+	// hub sends when a model listing changes what clients show, and every
+	// client re-reads its model list on it.
+	web.launchModelsChanged = func() { notifyInstanceUpdated(server, "") }
+	web.auth = auth
 	web.hostAdmin = hostAdmin
+	web.hostManage = hostManage
+	web.notices = notices
+	// The manager's remove finish phase prunes every per-name store the
+	// removal touches; lastGoodThreads lives here, on the web server, so its
+	// prune crosses the boundary as a callback wired the same way hostManage
+	// itself is: after construction, before the server can serve a remove.
+	hostManage.cfg.forgetLastGoodThreads = web.forgetLastGoodThreads
+	// The remove commit phase's capture of the rows a tombstone retains reads
+	// the same map through its getter: the finish phase's forget drops the
+	// rows, so the commit must capture them first, and both seams live here
+	// where the map does.
+	hostManage.cfg.lastGoodThreads = web.lastGoodThreadsForSource
 	// Wired here, after the server exists, rather than inside the
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.
 	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
-	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
+	registerArchiveHandler(web.appRPC, web.cfg, web.sources, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil && recoveryStoreErr == nil {

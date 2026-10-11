@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>rail-organize-row-inset layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 24px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  /* The rail's own column width at the sidebar's SIDEBAR_WIDTH_MIN (200px)
+     and SIDEBAR_WIDTH_DEFAULT (280px, stores/prefs.ts) - the same simplification
+     rail-row-chevron-actions-overlap's harness uses: whatever wrapper insets
+     the rail applies sit equally on the heading row and the organize row, so
+     only the column width matters for whether the two right edges line up. */
+  .railBox { box-sizing: border-box; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces Rail.tsx's own markup against the REAL classes from
+     Rail.module.css: a section heading that carries a trailing action
+     (SectionHeading's optional `action` - the pinned-section shape, whose
+     .sectionHeadingAction right inset is the family the organize row claims
+     to match), and the organize-by switcher row the rail renders between
+     the Live section and the Hosts/Projects tier. The switcher is
+     OrganizeByControl minus the Tooltip and Popover (both are overlays with
+     no rest-state geometry): the quiet sm IconButton (button.module.css's
+     base + quiet with iconbutton.module.css's sm square, the classes the
+     real IconButton computes) carrying the real TuneIcon SVG
+     (railIcons.tsx). The heading action uses the same button so the two
+     right edges differ by INSET ONLY - a different-width button would make
+     the comparison measure padding twice. -->
+<div class="fixtures"></div>
+<script>
+const TUNE_SVG = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false" style="display:block"><path d="M2.25 4.25h11.5M2.25 8h11.5M2.25 11.75h11.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M10.75 4.25h.01M5.25 8h.01M9.25 11.75h.01" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+
+function fixtureHtml(key, width) {
+  const button = (id, label) =>
+    `<button type="button" class="button quiet sm" id="${id}" aria-label="${label}" tabindex="-1"><span class="icon" aria-hidden="true">${TUNE_SVG}</span></button>`;
+  return `
+    <div class="fixtureLabel">${width}px</div>
+    <div class="railBox" id="box-${key}" style="width: ${width}px">
+      <div class="section">
+        <div class="sectionHeadingRow">
+          <h3 class="sectionTitle">
+            <button type="button" class="sectionDisclosure" aria-expanded="true" tabindex="-1">Hosts</button>
+          </h3>
+          <div class="sectionHeadingAction">${button(`heading-${key}`, "Section actions")}</div>
+        </div>
+      </div>
+      <div class="organizeRow">${button(`organize-${key}`, "Organize by")}</div>
+      <div class="section">
+        <div class="sectionHeadingRow">
+          <h3 class="sectionTitle">
+            <button type="button" class="sectionDisclosure" aria-expanded="true" tabindex="-1">Projects</button>
+          </h3>
+        </div>
+      </div>
+    </div>`;
+}
+
+document.querySelector(".fixtures").innerHTML =
+  fixtureHtml("w200", 200) + fixtureHtml("w280", 280);
+
+window.measure = () => {
+  const rect = (id) => {
+    const r = document.getElementById(id).getBoundingClientRect();
+    return { left: r.left, right: r.right };
+  };
+  return {
+    w200: {
+      box: rect("box-w200"),
+      headingButton: rect("heading-w200"),
+      organizeButton: rect("organize-w200"),
+    },
+    w280: {
+      box: rect("box-w280"),
+      headingButton: rect("heading-w280"),
+      organizeButton: rect("organize-w280"),
+    },
+  };
+};
+</script>
+</body>
+</html>

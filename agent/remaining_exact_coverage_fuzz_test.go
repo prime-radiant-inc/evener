@@ -3,10 +3,7 @@
 package agent
 
 import (
-	"embed"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -83,33 +80,15 @@ func remainingManagerCoverage(t *testing.T) {
 
 func remainingPromptCoverage(t *testing.T) {
 	t.Helper()
-	root := t.TempDir()
-	projectRoot := filepath.Join(root, "project")
-	globalRoot := filepath.Join(root, "global")
-	projectSections := filepath.Join(projectRoot, "sections")
-	globalSections := filepath.Join(globalRoot, "sections")
-	for _, dir := range []string{projectSections, globalSections} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
 	s := &Session{
 		profile: NewOpenAIProfile("gpt-5.2"),
 		reg:     tool.NewRegistry(),
 	}
-	oldRender := renderEmbeddedSystemPrompt
-	oldProjectDir := projectPromptDir
-	oldGlobalDir := globalPromptDir
-	projectPromptDir = func(execenv.ExecutionEnvironment, string) string { return projectRoot }
-	globalPromptDir = func() string { return globalRoot }
-	renderEmbeddedSystemPrompt = func(*sectionResolver, embed.FS, string, string, promptData) (string, []promptSource, error) {
-		return "", nil, errors.New("forced render failure")
+	oldExecute := executeSystemPromptTemplate
+	executeSystemPromptTemplate = func(promptData) (string, error) {
+		return "", errors.New("forced render failure")
 	}
-	t.Cleanup(func() {
-		renderEmbeddedSystemPrompt = oldRender
-		projectPromptDir = oldProjectDir
-		globalPromptDir = oldGlobalDir
-	})
+	t.Cleanup(func() { executeSystemPromptTemplate = oldExecute })
 	got, warning := s.renderSystemPrompt(execenv.NewLocalExecutionEnvironment(t.TempDir()))
 	if !strings.Contains(got, "forced render failure") {
 		t.Fatalf("render failure prompt = %q", got)

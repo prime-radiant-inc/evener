@@ -3,6 +3,8 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"strconv"
 
@@ -35,6 +37,9 @@ func (id ID) MarshalJSON() ([]byte, error) {
 	}
 	return id.raw, nil
 }
+
+// IsZero reports an id that was never set, which omitzero frames leave out.
+func (id ID) IsZero() bool { return len(id.raw) == 0 }
 
 func (id *ID) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
@@ -73,46 +78,17 @@ type Notification struct {
 	Params json.RawMessage `json:"params,omitempty"`
 }
 
+// Response and ErrorResponse omit an empty id (omitzero, via ID.IsZero) so an
+// id-less frame received off the wire round-trips faithfully: ID.MarshalJSON
+// would otherwise render it as `null`, which ID.UnmarshalJSON rejects.
 type Response struct {
-	ID     ID  `json:"id"`
+	ID     ID  `json:"id,omitzero"`
 	Result any `json:"result"`
 }
 
-// MarshalJSON omits the id field when the id is empty so an id-less frame
-// received off the wire round-trips faithfully. ID.MarshalJSON would otherwise
-// render an empty id as `null`, which ID.UnmarshalJSON rejects — leaving the
-// codec unable to re-read its own output. A frame built with a real id is
-// unaffected (identical bytes and field order).
-func (r Response) MarshalJSON() ([]byte, error) {
-	if len(r.ID.raw) == 0 {
-		return json.Marshal(struct {
-			Result any `json:"result"`
-		}{r.Result})
-	}
-	return json.Marshal(struct {
-		ID     ID  `json:"id"`
-		Result any `json:"result"`
-	}{r.ID, r.Result})
-}
-
 type ErrorResponse struct {
-	ID    ID        `json:"id"`
+	ID    ID        `json:"id,omitzero"`
 	Error WireError `json:"error"`
-}
-
-// MarshalJSON omits the id field when the id is empty, mirroring Response: an
-// id-less error frame must round-trip rather than re-encode to an unreadable
-// `null` id.
-func (e ErrorResponse) MarshalJSON() ([]byte, error) {
-	if len(e.ID.raw) == 0 {
-		return json.Marshal(struct {
-			Error WireError `json:"error"`
-		}{e.Error})
-	}
-	return json.Marshal(struct {
-		ID    ID        `json:"id"`
-		Error WireError `json:"error"`
-	}{e.ID, e.Error})
 }
 
 type Message struct {
@@ -153,7 +129,7 @@ func (m Message) IDString() string {
 func (m *Message) UnmarshalJSON(data []byte) error {
 	var probe struct {
 		JSONRPC *json.RawMessage `json:"jsonrpc"`
-		ID      *json.RawMessage `json:"id"`
+		ID      json.RawMessage  `json:"id"`
 		Method  string           `json:"method"`
 		Result  json.RawMessage  `json:"result"`
 		Error   json.RawMessage  `json:"error"`
@@ -164,6 +140,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	if probe.JSONRPC != nil {
 		return errors.New("jsonrpc field is not part of AppWire")
 	}
+	hasID := len(probe.ID) > 0 && string(probe.ID) != "null"
 	// A frame decoded into a reused Message must replace whatever it held, or a
 	// stale pointer survives alongside the new one and Kind() picks the wrong one.
 	*m = Message{}
@@ -175,12 +152,18 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		}
 		m.Error = &resp
 	case len(probe.Result) > 0:
-		var resp Response
-		if err := unmarshalMessageFrame(data, &resp); err != nil {
-			return err
+		// The result stays the bytes the peer sent, taken from the probe rather
+		// than a second pass over the frame: a caller decodes it straight into
+		// its typed response, where a generic any tree would cost two more
+		// passes over the payload and round integers past 2^53.
+		resp := Response{Result: probe.Result}
+		if len(probe.ID) > 0 {
+			if err := resp.ID.UnmarshalJSON(probe.ID); err != nil {
+				return err
+			}
 		}
 		m.Response = &resp
-	case probe.Method != "" && probe.ID != nil:
+	case probe.Method != "" && hasID:
 		var req Request
 		if err := unmarshalMessageFrame(data, &req); err != nil {
 			return err
@@ -217,18 +200,22 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (m Message) MarshalJSON() ([]byte, error) {
+// MarshalJSONTo writes the frame straight into the enclosing encoder. A
+// MarshalJSON here would hand back separately encoded bytes that the caller
+// then copies and re-validates, a second pass over every thread snapshot the
+// daemon sends.
+func (m Message) MarshalJSONTo(enc *jsontext.Encoder) error {
 	switch {
 	case m.Request != nil:
-		return json.Marshal(m.Request)
+		return jsonv2.MarshalEncode(enc, m.Request)
 	case m.Notification != nil:
-		return json.Marshal(m.Notification)
+		return jsonv2.MarshalEncode(enc, m.Notification)
 	case m.Response != nil:
-		return json.Marshal(m.Response)
+		return jsonv2.MarshalEncode(enc, m.Response)
 	case m.Error != nil:
-		return json.Marshal(m.Error)
+		return jsonv2.MarshalEncode(enc, m.Error)
 	default:
-		return nil, errors.New("invalid JSON-RPC message")
+		return errors.New("invalid JSON-RPC message")
 	}
 }
 

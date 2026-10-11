@@ -8,9 +8,9 @@ import type { ComponentType, LazyExoticComponent } from "react";
 export type PaneTypeId =
   | "session"
   | "transcript"
+  | "sessionZoom"
   | "doc"
   | "sessionTasks"
-  | "sessionActivity"
   | "sessionDetails"
   | "spawn"
   | "settings"
@@ -41,6 +41,7 @@ export interface PaneDescriptor<P = unknown> {
   title(params: P, ctx: PaneTitleCtx): string;
   component: LazyExoticComponent<ComponentType<PaneProps<P>>>;
   singleton?: boolean; // settings/spawn: focus existing instead of second copy
+  parseParams?(value: unknown): P | null;
 }
 
 // Keyed by PaneTypeId; values are erased to PaneDescriptor<unknown> because
@@ -62,13 +63,11 @@ export function paneFor(id: PaneTypeId): PaneDescriptor<unknown> {
 }
 
 // registerPaneForTests installs a stub descriptor and returns a restorer
-// that reinstates whatever was registered for that id beforehand. registry
-// is a module singleton with no per-file reset - real pane modules only
-// self-register once, the first time anything imports them, so a test file
-// that overwrites an id with a lighter stub (rather than importing the real,
-// heavier pane module) must put the real registration back afterward, or
-// every later test file sharing this module's registry (no production code
-// ever calls this) inherits the stub instead. No production code should
+// that reinstates whatever was registered for that id beforehand. Real pane
+// modules only self-register once, the first time anything imports them, so
+// a test that overwrites an id with a lighter stub for only part of a file
+// (one test, one describe block) calls the restorer to hand the previous
+// registration back to the rest of that file. No production code should
 // call this - use registerPane, whose registration is meant to be
 // permanent.
 export function registerPaneForTests<P>(descriptor: PaneDescriptor<P>): () => void {

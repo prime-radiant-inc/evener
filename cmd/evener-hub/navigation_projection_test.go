@@ -1,11 +1,17 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/bits"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +23,9 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-func TestNavigationSectionAppliesRecursiveBounds(t *testing.T) {
+func TestNavigationSectionFlattensDeepTrees(t *testing.T) {
+	// A 40-deep subagent chain no longer costs the list anything: the row is
+	// flat, and the tree arrives through the per-session location instead.
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation",
 		Revision:     7,
@@ -27,15 +35,16 @@ func TestNavigationSectionAppliesRecursiveBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	section := projection.LivePage(0, 50)
-	if !section.Truncated {
-		t.Fatal("deep section must report truncation")
+	if section.Truncated {
+		t.Fatal("a deep tree is one flat row; nothing truncates")
 	}
-	if got := countNavigationNodes(section.Sessions); got > maxNavigationNodes {
-		t.Fatalf("nodes=%d, max=%d", got, maxNavigationNodes)
+	if got, want := len(section.Sessions), 1; got != want {
+		t.Fatalf("rows=%d, want %d", got, want)
 	}
-	if got := navigationDepth(section.Sessions); got > maxNavigationDepth {
-		t.Fatalf("depth=%d, max=%d", got, maxNavigationDepth)
+	if got := len(section.Sessions[0].Children); got != 0 {
+		t.Fatalf("list row carries %d children, want none", got)
 	}
+
 }
 
 func TestNavigationProjectPagePreservesOrderAndUint32Offset(t *testing.T) {
@@ -88,411 +97,29 @@ func TestNavigationManifestHasNoRowsAndLocationHasSummary(t *testing.T) {
 	}
 }
 
-func TestNavigationProjectionCarriesActiveAndCompletedJobs(t *testing.T) {
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID:    "session-parent",
-			Title: "parent",
-			Kind:  "session",
-			State: "idle",
-			RunningJobs: []appwire.EvenerJobInfo{{
-				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...", Intent: "Running the package tests to find the failure",
-			}},
-			CompletedJobs: []appwire.EvenerJobInfo{{
-				JobID: "job-completed", JobType: "shell", Status: "completed", Command: "go fmt ./...",
-			}},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+// The flat-lists contract: rows in the section, pin, and project lists carry
+// no children. Deep links resolve each selected session independently.
+func TestNavigationListsCarryNoChildren(t *testing.T) {
+	parent := hubcore.TreeNode{ID: "session-parent", Title: "parent", Kind: "session", State: "idle", Children: []hubcore.TreeNode{
+		{ID: "session-sub", Title: "sub", Kind: "subagent", State: "active"},
+		{ID: "session-original", Title: "original", Kind: "fork", State: "ended"},
+	}}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation", Revision: 2,
+		Tree: hubcore.Tree{Live: []hubcore.TreeNode{parent}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
+	section := projection.LivePage(0, 50)
+	if got, want := len(section.Sessions), 1; got != want {
+		t.Fatalf("rows=%d, want %d", got, want)
 	}
-	row := resource.Current.Sessions[0]
-	if len(row.RunningJobs) != 1 || row.RunningJobs[0].JobID != "job-running" || row.RunningJobs[0].Command != "go test ./..." {
-		t.Fatalf("running jobs = %+v", row.RunningJobs)
-	}
-	if got := row.RunningJobs[0].Intent; got != "Running the package tests to find the failure" {
-		t.Fatalf("running job intent = %q", got)
-	}
-	if len(row.CompletedJobs) != 1 || row.CompletedJobs[0].JobID != "job-completed" || row.CompletedJobs[0].Status != "completed" {
-		t.Fatalf("completed jobs = %+v", row.CompletedJobs)
+	if got := len(section.Sessions[0].Children); got != 0 {
+		t.Fatalf("list row carries %d children, want none", got)
 	}
 }
 
-// An old daemon (or a past-index entry) carries no watch rows. The summary
-// must still build, with an empty watch list and no error.
-func TestNavigationWatchProjectionAbsentWatchesYieldsEmptyList(t *testing.T) {
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-parent", Title: "parent", Kind: "session", State: "idle",
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatalf("projection with absent watches failed: %v", err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	row := resource.Current.Sessions[0]
-	if len(row.Watches) != 0 {
-		t.Fatalf("row.Watches = %+v, want empty when the tree node carries none", row.Watches)
-	}
-}
-
-// A receiver watch is visible to two sessions, but each summary carries only
-// its own daemon's rows. Carrying one session's rows onto another here would
-// double count the watch in a subtree rollup.
-func TestNavigationSummaryDoesNotAggregateWatchesAcrossSessions(t *testing.T) {
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{
-			{
-				ID: "session-a", Title: "a", Kind: "session", State: "idle",
-				Watches: []appwire.EvenerWatchInfo{{
-					ID: "watch-a", Source: "timer", Target: "session-b", SendTo: "session-b",
-					Note: "owner watch", Cadence: []appwire.EvenerWatchCadence{{Kind: "every", Seconds: 600}},
-					Deliveries: 2, CreatedAt: "2026-09-12T10:00:00Z", Active: true,
-					DeliveryTimes: []string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"},
-				}},
-			},
-			{
-				ID: "session-b", Title: "b", Kind: "session", State: "idle",
-				Watches: []appwire.EvenerWatchInfo{{ID: "watch-b", Source: "output", Note: "receiver watch", CreatedAt: "2026-09-12T10:00:00Z"}},
-			},
-		},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	rows := make(map[string]hubapi.NavigationSessionSummary, len(resource.Current.Sessions))
-	for _, row := range resource.Current.Sessions {
-		rows[row.SessionID] = row
-	}
-	rowA, okA := rows["session-a"]
-	rowB, okB := rows["session-b"]
-	if !okA || !okB {
-		t.Fatalf("sessions = %+v, want session-a and session-b", rows)
-	}
-	if len(rowA.Watches) != 1 || rowA.Watches[0].ID != "watch-a" {
-		t.Fatalf("session-a watches = %+v, want only watch-a", rowA.Watches)
-	}
-	watch := rowA.Watches[0]
-	if watch.Source != "timer" || watch.Note != "owner watch" || watch.SendTo != "session-b" ||
-		len(watch.Cadence) != 1 || watch.Cadence[0].Kind != "every" || watch.Cadence[0].Seconds != 600 ||
-		watch.Deliveries != 2 || !watch.Active {
-		t.Fatalf("session-a projected watch = %+v, want the carried fields", watch)
-	}
-	wantDeliveryTimes := []string{"2026-09-12T10:00:01Z", "2026-09-12T10:00:02Z"}
-	if !reflect.DeepEqual(watch.DeliveryTimes, wantDeliveryTimes) {
-		t.Fatalf("session-a DeliveryTimes = %+v, want %+v", watch.DeliveryTimes, wantDeliveryTimes)
-	}
-	if len(rowB.Watches) != 1 || rowB.Watches[0].ID != "watch-b" {
-		t.Fatalf("session-b watches = %+v, want only watch-b", rowB.Watches)
-	}
-	if rowB.Watches[0].DeliveryTimes == nil || len(rowB.Watches[0].DeliveryTimes) != 0 {
-		t.Fatalf("session-b DeliveryTimes = %#v, want an empty non-nil list when the source row carries none", rowB.Watches[0].DeliveryTimes)
-	}
-	for _, carried := range rowB.Watches {
-		if carried.ID == "watch-a" {
-			t.Fatalf("session-b aggregates session-a's watch: %+v", rowB.Watches)
-		}
-	}
-}
-
-// TestNavigationWatchDeliveryTimesDropsUnrepresentableInstants pins the fix for
-// the codec-break found in review: the web codec validates every delivery_times
-// entry as strict RFC3339, so TRUNCATING an over-long value with an ellipsis made
-// the whole watch-carrying snapshot fail to decode. An instant the codec cannot
-// represent is dropped instead; a normal RFC3339 instant passes through unchanged.
-func TestNavigationWatchDeliveryTimesDropsUnrepresentableInstants(t *testing.T) {
-	long := strings.Repeat("a", maxNavigationLabelRunes+64)
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-a", Title: "a", Kind: "session", State: "idle",
-			Watches: []appwire.EvenerWatchInfo{{
-				ID: "watch-a", Source: "output", CreatedAt: "2026-09-12T10:00:00Z",
-				DeliveryTimes: []string{"2026-09-12T10:00:00Z", long},
-			}},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
-		t.Fatalf("projected rows = %+v, want one session with one watch", resource.Current.Sessions)
-	}
-	got := resource.Current.Sessions[0].Watches[0].DeliveryTimes
-	if !reflect.DeepEqual(got, []string{"2026-09-12T10:00:00Z"}) {
-		t.Fatalf("DeliveryTimes = %+v, want only the representable instant", got)
-	}
-}
-
-// A watch whose required created_at cannot be represented is dropped entirely:
-// created_at has no absent form in the codec, so carrying an ellipsized value
-// would reject the whole resource, and carrying a fabricated one would lie.
-func TestNavigationWatchProjectionDropsWatchWithUnrepresentableCreatedAt(t *testing.T) {
-	long := strings.Repeat("x", maxNavigationLabelRunes+64)
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-a", Title: "a", Kind: "session", State: "idle",
-			Watches: []appwire.EvenerWatchInfo{
-				{ID: "watch-ok", Source: "output", CreatedAt: "2026-09-12T10:00:00Z"},
-				{ID: "watch-bad", Source: "output", CreatedAt: long},
-			},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	rows := resource.Current.Sessions
-	if len(rows) != 1 {
-		t.Fatalf("sessions = %+v, want one", rows)
-	}
-	if len(rows[0].Watches) != 1 || rows[0].Watches[0].ID != "watch-ok" {
-		t.Fatalf("watches = %+v, want only watch-ok", rows[0].Watches)
-	}
-	if rows[0].Watches[0].CreatedAt != "2026-09-12T10:00:00Z" {
-		t.Fatalf("CreatedAt = %q, want the valid instant unchanged", rows[0].Watches[0].CreatedAt)
-	}
-}
-
-// TestNavigationWatchProjectionDropsSchemaInvalidRows pins the review fix for
-// the projector's last unchecked path: navigationWatches byte-bounded and
-// clamped representable values but never ran the hub schema's own watch
-// predicate, so a row with an empty ID, a negative deliveries count, or a
-// negative cadence seconds reached the wire and failed
-// navigationSessionValueValid for the WHOLE session -- and through it every
-// other session in the resource. Each such row is dropped and counted as
-// omitted, exactly like an unrepresentable created_at.
-func TestNavigationWatchProjectionDropsSchemaInvalidRows(t *testing.T) {
-	valid := func(id string) appwire.EvenerWatchInfo {
-		return appwire.EvenerWatchInfo{ID: id, Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}
-	}
-	negativeDeliveries := valid("watch-bad")
-	negativeDeliveries.Deliveries = -1
-	negativeSeconds := valid("watch-bad")
-	negativeSeconds.Cadence = []appwire.EvenerWatchCadence{{Kind: "every", Seconds: -1}}
-	tests := []struct {
-		name string
-		bad  appwire.EvenerWatchInfo
-	}{
-		{name: "empty id", bad: appwire.EvenerWatchInfo{Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true}},
-		{name: "negative deliveries", bad: negativeDeliveries},
-		{name: "negative cadence seconds", bad: negativeSeconds},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			row := projectSessionWithWatches(t, []appwire.EvenerWatchInfo{valid("watch-ok"), tc.bad})
-			if len(row.Watches) != 1 || row.Watches[0].ID != "watch-ok" {
-				t.Fatalf("kept watches = %+v, want only the surviving watch-ok", row.Watches)
-			}
-			if row.OmittedWatches != 1 {
-				t.Fatalf("OmittedWatches = %d, want 1 for the schema-invalid row", row.OmittedWatches)
-			}
-			// The projected summary is what reaches the client, so it must pass
-			// the very predicate the malformed row would have failed.
-			if !navigationSessionValueValid(row) {
-				t.Fatalf("projected summary rejected by the hub schema: %+v", row)
-			}
-		})
-	}
-}
-
-// The point of dropping the bad row rather than failing the resource: the OTHER
-// sessions in the same resource stay listed and readable.
-func TestNavigationWatchProjectionInvalidRowKeepsOtherSessions(t *testing.T) {
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{
-			{
-				ID: "session-bad", Title: "bad", Kind: "session", State: "idle",
-				Watches: []appwire.EvenerWatchInfo{{Source: "self", CreatedAt: "2026-09-12T10:00:00Z"}},
-			},
-			{
-				ID: "session-ok", Title: "ok", Kind: "session", State: "idle",
-				Watches: []appwire.EvenerWatchInfo{{ID: "watch-ok", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"}},
-			},
-		},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	if len(resource.Current.Sessions) != 2 {
-		t.Fatalf("sessions = %+v, want both sessions still listed", resource.Current.Sessions)
-	}
-	rows := make(map[string]hubapi.NavigationSessionSummary, len(resource.Current.Sessions))
-	for _, row := range resource.Current.Sessions {
-		rows[row.SessionID] = row
-		if !navigationSessionValueValid(row) {
-			t.Fatalf("session %q rejected by the hub schema: %+v", row.SessionID, row)
-		}
-	}
-	if len(rows["session-bad"].Watches) != 0 || rows["session-bad"].OmittedWatches != 1 {
-		t.Fatalf("session-bad watches = %+v / omitted %d, want none kept and the drop counted", rows["session-bad"].Watches, rows["session-bad"].OmittedWatches)
-	}
-	if len(rows["session-ok"].Watches) != 1 || rows["session-ok"].Watches[0].ID != "watch-ok" {
-		t.Fatalf("session-ok watches = %+v, want the valid row untouched", rows["session-ok"].Watches)
-	}
-}
-
-// TestNavigationWatchCadenceCarriesEventEveryAndFilter proves the events
-// cadence's every-Nth count and filter summary reach the hub's wire summary,
-// so the rail and session panel can distinguish a throttled or filtered event
-// watch. The filter is a caller-supplied string, so it is bounded like every
-// other rendered watch label.
-func TestNavigationWatchCadenceCarriesEventEveryAndFilter(t *testing.T) {
-	longFilter := strings.Repeat("f", maxNavigationLabelRunes+64)
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-a", Title: "a", Kind: "session", State: "idle",
-			Watches: []appwire.EvenerWatchInfo{{
-				ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z",
-				Cadence: []appwire.EvenerWatchCadence{
-					{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"},
-					{Kind: "events", Filter: longFilter},
-				},
-			}},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
-		t.Fatalf("projected rows = %+v, want one session with one watch", resource.Current.Sessions)
-	}
-	got := resource.Current.Sessions[0].Watches[0].Cadence
-	want := []hubapi.NavigationWatchCadence{
-		{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"},
-		{Kind: "events", Filter: truncateNavigationRunes(longFilter, maxNavigationLabelRunes)},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Cadence = %+v, want %+v", got, want)
-	}
-}
-
-// A watch's id and source are identity, not display text: the rail and the
-// panel derive row keys from watch.id. Truncating either with an ellipsis let
-// two distinct long ids collapse to the same label and collide, so both pass
-// through untouched while the display fields keep their label bound.
-func TestNavigationWatchProjectionKeepsIdentityUntruncated(t *testing.T) {
-	longID := "watch-" + strings.Repeat("a", maxNavigationLabelRunes) + "-alpha"
-	siblingID := "watch-" + strings.Repeat("a", maxNavigationLabelRunes) + "-bravo"
-	longSource := "source-" + strings.Repeat("s", maxNavigationLabelRunes) + "-end"
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-a", Title: "a", Kind: "session", State: "idle",
-			Watches: []appwire.EvenerWatchInfo{
-				{ID: longID, Source: longSource, CreatedAt: "2026-09-12T10:00:00Z"},
-				{ID: siblingID, Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
-			},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	watches := resource.Current.Sessions[0].Watches
-	if len(watches) != 2 {
-		t.Fatalf("watches = %+v, want two rows", watches)
-	}
-	if watches[0].ID != longID || watches[1].ID != siblingID {
-		t.Fatalf("watch ids = %q, %q, want both untruncated and distinct", watches[0].ID, watches[1].ID)
-	}
-	if watches[0].Source != longSource {
-		t.Fatalf("watch source = %q, want the untruncated source", watches[0].Source)
-	}
-}
-
-// An identity OVER the bound is dropped, not cut. Two ids that share their first
-// maxNavigationIdentityBytes bytes would truncate to the same value, and the rail
-// and the panel key their rows by watch.id -- so cutting would show one row where
-// the session holds two. The dropped row is counted as omitted instead, like a
-// row whose created_at cannot be represented.
-func TestNavigationWatchProjectionDropsOversizedIdentities(t *testing.T) {
-	prefix := "watch-" + strings.Repeat("a", maxNavigationIdentityBytes) + "-"
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-a", Title: "a", Kind: "session", State: "idle",
-			Watches: []appwire.EvenerWatchInfo{
-				{ID: prefix + "alpha", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true},
-				{ID: prefix + "bravo", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
-				{ID: "watch-kept", Source: strings.Repeat("s", maxNavigationIdentityBytes+1), CreatedAt: "2026-09-12T10:00:00Z"},
-				{ID: "watch-ok", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
-			},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	session := resource.Current.Sessions[0]
-	if len(session.Watches) != 1 || session.Watches[0].ID != "watch-ok" {
-		t.Fatalf("watches = %+v, want only the representable row", session.Watches)
-	}
-	if session.OmittedWatches != 3 || session.OmittedArmedWatches != 1 {
-		t.Fatalf("omitted = %d (%d armed), want 3 (1 armed): every dropped row is counted",
-			session.OmittedWatches, session.OmittedArmedWatches)
-	}
-}
-
-// validNavigationTimestamp must accept exactly what the web codec accepts. Both
-// read the same shared fixture list so the Go check cannot drift from the
-// codec's rfc3339Timestamp grammar.
 func TestValidNavigationTimestampMatchesCodecFixture(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "navigation", "timestamps.json"))
 	if err != nil {
@@ -515,125 +142,6 @@ func TestValidNavigationTimestampMatchesCodecFixture(t *testing.T) {
 	}
 }
 
-// A cadence kind is an IDENTITY on the wire: the web codec's watchCadenceValue
-// validates it with identity(value.kind), which caps it at 1024 BYTES, and the
-// hub's navigationSessionValueValid mirrors that. The projector bounded it with
-// truncateNavigationRunes at 512 runes, which is up to ~2 KiB for non-ASCII
-// text, so an over-long multibyte kind produced a summary the codec rejected --
-// and because the codec validates watch rows as part of the session entity, one
-// bad kind failed the entire navigation response. This test mirrors the codec's
-// identity bound the way TestValidNavigationTimestampMatchesCodecFixture mirrors
-// its rfc3339Timestamp grammar.
-func TestNavigationWatchCadenceKindMatchesCodecIdentityBytes(t *testing.T) {
-	// 300 four-byte runes = 1200 bytes: past the 1024-byte identity cap while
-	// still only ~300 runes, so the rune bound alone left it over budget.
-	overLong := strings.Repeat("😀", 300)
-	if len(overLong) <= maxNavigationIdentityBytes {
-		t.Fatalf("fixture kind = %d bytes, want it over the %d-byte identity cap", len(overLong), maxNavigationIdentityBytes)
-	}
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-a", Title: "a", Kind: "session", State: "idle",
-			Watches: []appwire.EvenerWatchInfo{{
-				ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z",
-				Cadence: []appwire.EvenerWatchCadence{{Kind: overLong, Seconds: 1}},
-			}},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	if len(resource.Current.Sessions) != 1 || len(resource.Current.Sessions[0].Watches) != 1 {
-		t.Fatalf("sessions = %+v, want one session with one watch", resource.Current.Sessions)
-	}
-	cadence := resource.Current.Sessions[0].Watches[0].Cadence
-	if len(cadence) != 1 {
-		t.Fatalf("cadence = %+v, want one step", cadence)
-	}
-	kind := cadence[0].Kind
-	// The codec's identity(): non-empty and at most 1024 bytes.
-	if kind == "" {
-		t.Fatal("projected kind is empty; the codec requires a non-empty identity")
-	}
-	if len(kind) > maxNavigationIdentityBytes {
-		t.Fatalf("projected kind = %d bytes, want at most %d; the codec rejects the whole response otherwise", len(kind), maxNavigationIdentityBytes)
-	}
-	if kind == overLong {
-		t.Fatal("projected kind was not cut; the codec would reject it")
-	}
-	// The hub schema mirrors the codec, so the projected summary must pass it --
-	// this is the value that reaches the client.
-	if !navigationSessionValueValid(resource.Current.Sessions[0]) {
-		t.Fatalf("projected summary rejected by the hub schema: %+v", resource.Current.Sessions[0])
-	}
-}
-
-// The events cadence's every-Nth throttle is caller-supplied and the daemon
-// bounds it only to the platform int range, so on 64-bit it can sit above the
-// codec's safe integer range (2^53-1). Projecting it verbatim failed
-// navigationSessionValueValid and made the whole resource -- every session in
-// it -- unreadable. The projector must clamp it. Clamping, not dropping: the
-// wire spells an absent/zero every as "no throttle" (the codec reads every > 0
-// as a throttle), so dropping would misstate a throttled watch as firing on
-// every matching event. This mirrors the codec's safe-integer bound the way
-// TestValidNavigationTimestampMatchesCodecFixture mirrors its timestamp grammar.
-func TestNavigationWatchCadenceEveryClampedToSafeInteger(t *testing.T) {
-	oversized := int(maxNavigationSafeInteger) + 1
-	node := hubcore.TreeNode{
-		ID: "session-a", Title: "a", Kind: "session", State: "idle",
-		Watches: []appwire.EvenerWatchInfo{{
-			ID: "watch-a", Source: "self", CreatedAt: "2026-09-12T10:00:00Z",
-			Events:  []string{"assistant.tool"},
-			Cadence: []appwire.EvenerWatchCadence{{Kind: "events", Every: oversized}},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource := projection.LivePage(0, maxNavigationSectionRows)
-	if len(resource.Sessions) != 1 || len(resource.Sessions[0].Watches) != 1 {
-		t.Fatalf("live sessions = %+v, want one session with one watch", resource.Sessions)
-	}
-	cadence := resource.Sessions[0].Watches[0].Cadence
-	if len(cadence) != 1 {
-		t.Fatalf("cadence = %+v, want one step", cadence)
-	}
-	got := cadence[0].Every
-	// 0 means "no throttle" on the wire, so a clamped throttle must stay
-	// positive: dropping the field would misstate the watch's behaviour.
-	if got <= 0 {
-		t.Fatalf("projected every = %d, want a positive clamped throttle", got)
-	}
-	if uint64(got) > maxNavigationSafeInteger {
-		t.Fatalf("projected every = %d, want at most %d; the codec rejects the whole response otherwise", got, maxNavigationSafeInteger)
-	}
-	if got == oversized {
-		t.Fatal("projected every was not clamped; the codec would reject it")
-	}
-	// The hub schema mirrors the codec, so the projected summary must pass it --
-	// this is the value that reaches the client.
-	if !navigationSessionValueValid(resource.Sessions[0]) {
-		t.Fatalf("projected summary rejected by the hub schema: %+v", resource.Sessions[0])
-	}
-}
-
-// A session's project is an IDENTITY on the wire, not a rendered label: the web
-// codec validates it with identity(value.project, true), which caps it at 1024
-// BYTES, and the hub's navigationSessionValueValid mirrors that with a byte
-// length check. The projector bounded it with truncateNavigationRunes at 512
-// runes, which is up to ~2 KiB of multibyte text, so a multibyte-heavy project
-// name produced a summary the codec rejects -- failing the whole navigation
-// response for one field. This test mirrors the codec's identity bound the same
-// way TestValidNavigationTimestampMatchesCodecFixture mirrors its timestamp
-// grammar.
 func TestNavigationSessionProjectMatchesCodecIdentityBytes(t *testing.T) {
 	// 300 four-byte runes = 1200 bytes: past the 1024-byte identity cap while
 	// still only ~300 runes, so the rune bound alone left it over budget.
@@ -671,11 +179,7 @@ func TestNavigationSessionProjectMatchesCodecIdentityBytes(t *testing.T) {
 	}
 }
 
-// A location fit that dropped its session is not a fit. The deep link renders
-// the session summary and nothing else, so serving the envelope without it would
-// answer 200 with nothing to show -- where an irreducible overflow used to be
-// reported -- and a deep link to a job-heavy session that cannot fit (with the
-// watch payload already shed) is exactly how that happens.
+// A deep link requires a session summary, even when its envelope fits the cap.
 func TestValidateNavigationPageProgressRejectsSessionlessLocation(t *testing.T) {
 	if err := validateNavigationPageProgress(navigationResourceLocation, hubapi.NavigationSessionLocation{}); err == nil {
 		t.Fatal("session-less location passed validation: the deep link would render nothing")
@@ -685,134 +189,6 @@ func TestValidateNavigationPageProgressRejectsSessionlessLocation(t *testing.T) 
 	}
 	if err := validateNavigationPageProgress(navigationResourceLocation, location); err != nil {
 		t.Fatalf("location carrying its session rejected: %v", err)
-	}
-}
-
-// The nested job and watch rows carry their own identities, and the codec
-// validates every one of them with identity() at 1024 bytes. Only job_id is
-// guarded by the build's own validation, so job_type, status, watch id and
-// watch source can otherwise reach the wire unbounded and poison the whole
-// session entity exactly as an over-long cadence kind did.
-//
-// The two kinds of identity are treated differently on purpose: a DISPLAY
-// identity (job_type, job status) is cut to the cap, while an identity the rail
-// and the panel key their rows by (watch id, watch source) is DROPPED and
-// counted -- cutting it would map two distinct long ids onto one row key.
-func TestNavigationNestedIdentityFieldsMatchCodecIdentityBytes(t *testing.T) {
-	overLong := strings.Repeat("😀", 300) // 1200 bytes, 300 runes
-	if len(overLong) <= maxNavigationIdentityBytes {
-		t.Fatalf("fixture identity = %d bytes, want it over the %d-byte identity cap", len(overLong), maxNavigationIdentityBytes)
-	}
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID: "session-a", Title: "a", Kind: "session", State: "idle",
-			RunningJobs:   []appwire.EvenerJobInfo{{JobID: "job-running", JobType: overLong, Status: "running"}},
-			CompletedJobs: []appwire.EvenerJobInfo{{JobID: "job-done", JobType: "shell", Status: overLong}},
-			Watches: []appwire.EvenerWatchInfo{
-				{ID: overLong, Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
-				{ID: "watch-b", Source: overLong, CreatedAt: "2026-09-12T10:00:00Z"},
-			},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	if len(resource.Current.Sessions) != 1 {
-		t.Fatalf("sessions = %+v, want one session", resource.Current.Sessions)
-	}
-	summary := resource.Current.Sessions[0]
-	if len(summary.RunningJobs) != 1 || len(summary.CompletedJobs) != 1 || len(summary.Watches) != 0 {
-		t.Fatalf("projected rows = %+v / %+v / %+v, want one running job, one completed job and no watch rows", summary.RunningJobs, summary.CompletedJobs, summary.Watches)
-	}
-	if summary.OmittedWatches != 2 || summary.OmittedArmedWatches != 0 {
-		t.Fatalf("omitted watches = %d (%d armed), want both unrepresentable rows counted",
-			summary.OmittedWatches, summary.OmittedArmedWatches)
-	}
-	fields := map[string]string{
-		"job_type":   summary.RunningJobs[0].JobType,
-		"job_status": summary.CompletedJobs[0].Status,
-	}
-	for name, value := range fields {
-		if value == overLong {
-			t.Errorf("projected %s = %d bytes, want it cut to the %d-byte identity cap", name, len(value), maxNavigationIdentityBytes)
-			continue
-		}
-		if value == "" || len(value) > maxNavigationIdentityBytes {
-			t.Errorf("projected %s = %q (%d bytes), want a non-empty value within %d bytes", name, value, len(value), maxNavigationIdentityBytes)
-		}
-	}
-	if !navigationSessionValueValid(summary) {
-		t.Fatalf("projected summary rejected by the hub schema: %+v", summary)
-	}
-}
-
-func TestNavigationJobSummaryKeepsFullCommandForTooltip(t *testing.T) {
-	long := strings.Repeat("a", 600)
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID:    "session-parent",
-			Title: "parent",
-			Kind:  "session",
-			State: "idle",
-			RunningJobs: []appwire.EvenerJobInfo{{
-				JobID: "job-running", JobType: "shell", Status: "running", Command: long, Intent: "intent text",
-			}},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	job := resource.Current.Sessions[0].RunningJobs[0]
-	if job.Command == long {
-		t.Fatal("command must be truncated for the row label")
-	}
-	if got, want := len([]rune(job.Command)), maxNavigationLabelRunes; got != want {
-		t.Fatalf("truncated command runes=%d, want %d", got, want)
-	}
-	if job.FullCommand != long {
-		t.Fatalf("full_command = %q, want the untruncated command", job.FullCommand)
-	}
-}
-
-func TestNavigationJobSummaryOmitsFullCommandWhenLabelFits(t *testing.T) {
-	project := hubcore.TreeProject{
-		Key:  "project",
-		Name: "project",
-		Current: []hubcore.TreeNode{{
-			ID:    "session-parent",
-			Title: "parent",
-			Kind:  "session",
-			State: "idle",
-			RunningJobs: []appwire.EvenerJobInfo{{
-				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...",
-			}},
-		}},
-	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resource, ok := projection.Project("project")
-	if !ok {
-		t.Fatal("project missing")
-	}
-	job := resource.Current.Sessions[0].RunningJobs[0]
-	if job.FullCommand != "" {
-		t.Fatalf("full_command = %q, want empty when the command fits the label bound", job.FullCommand)
 	}
 }
 
@@ -927,8 +303,12 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 			"session-a":        true,
 			"session-dangling": true,
 		},
-		PinSections:    []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
-		PinAssignments: map[string]hubcore.SessionPin{"session-a": {SectionID: "pin"}, "session-z": {SectionID: "pin"}, "session-dangling": {SectionID: "missing"}},
+		PinSections: []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
+		PinAssignments: map[hubcore.ArchiveKey]hubcore.SessionPin{
+			hubcore.SessionPinKey("", "session-a"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-z"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-dangling"): {SectionID: "missing"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1007,8 +387,18 @@ func TestNavigationProjectionEnforcesExactEncodedCeilings(t *testing.T) {
 	}
 	section := projection.LivePage(0, 50)
 	encoded, _ := json.Marshal(section)
-	if len(encoded) > maxNavigationResponseBytes || !section.Truncated || countNavigationNodes(section.Sessions) > maxNavigationNodes {
-		t.Fatalf("section bytes=%d truncated=%v nodes=%d", len(encoded), section.Truncated, countNavigationNodes(section.Sessions))
+	// List rows are flat now: the page holds every root untruncated under the
+	// byte ceiling, and the fixture's children never ride the list.
+	if len(encoded) > maxNavigationResponseBytes || section.Truncated {
+		t.Fatalf("section bytes=%d truncated=%v, want the flat page complete under %d bytes", len(encoded), section.Truncated, maxNavigationResponseBytes)
+	}
+	if len(section.Sessions) != len(roots) {
+		t.Fatalf("flat page rows=%d, want all %d roots", len(section.Sessions), len(roots))
+	}
+	for index, row := range section.Sessions {
+		if len(row.Children) != 0 {
+			t.Fatalf("row %d carries %d children, want a flat list row", index, len(row.Children))
+		}
 	}
 	catalog, err := projection.CatalogPage(navigationResourceProjects, 0, 100)
 	if err != nil {
@@ -1077,32 +467,9 @@ func TestNavigationByteTruncatedCatalogContinuationIsContiguous(t *testing.T) {
 	}
 }
 
-func TestNavigationByteTruncatedProjectPageContinuationIsContiguous(t *testing.T) {
-	rows := make([]hubcore.TreeNode, 50)
-	for root := range rows {
-		// Forty roots of fifty total nodes exactly reach the node ceiling, so
-		// any missing top-level root below is caused by the byte envelope.
-		children := make([]hubcore.TreeNode, 49)
-		for child := range children {
-			children[child] = hubcore.TreeNode{
-				ID:      fmt.Sprintf("session-%03d-%03d", root, child),
-				Title:   strings.Repeat("t", maxNavigationTitleRunes),
-				Project: strings.Repeat("p", maxNavigationLabelRunes),
-				Branch:  strings.Repeat("b", maxNavigationLabelRunes),
-				Kind:    "subagent",
-				State:   "idle",
-			}
-		}
-		rows[root] = hubcore.TreeNode{
-			ID:       fmt.Sprintf("session-root-%03d", root),
-			Title:    strings.Repeat("t", maxNavigationTitleRunes),
-			Project:  strings.Repeat("p", maxNavigationLabelRunes),
-			Branch:   strings.Repeat("b", maxNavigationLabelRunes),
-			Kind:     "session",
-			State:    "idle",
-			Children: children,
-		}
-	}
+func TestNavigationCompactProjectPageContinuationIsContiguous(t *testing.T) {
+	// Compact flat rows page by requested offsets without skipping identities.
+	rows := navigationMaxFieldSectionNodes(time.Unix(1_700_000_000, 0).UTC())
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation",
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{
@@ -1115,14 +482,14 @@ func TestNavigationByteTruncatedProjectPageContinuationIsContiguous(t *testing.T
 		t.Fatal(err)
 	}
 
-	const offset, limit = uint32(0), uint32(40)
+	const offset, limit = uint32(0), uint32(20)
 	first, err := projection.ProjectPage("project", "current", offset, int(limit))
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstRows := first.Sessions
-	if got := len(firstRows); got == 0 || got >= int(limit) {
-		t.Fatalf("fixture did not force byte truncation: got %d of %d", got, limit)
+	if got := len(firstRows); got != int(limit) {
+		t.Fatalf("compact page did not retain its bounded rows: got %d of %d", got, limit)
 	}
 	nextOffset := offset + uint32(len(firstRows))
 	second, err := projection.ProjectPage("project", "current", nextOffset, int(limit))
@@ -1177,24 +544,34 @@ func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testin
 	}
 }
 
-func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
+func TestNavigationProjectionPreservesRowFieldsAndCapsTheLocationTree(t *testing.T) {
 	children := make([]hubcore.TreeNode, maxNavigationChildren+1)
 	for index := range children {
-		children[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-child-%03d", index), Title: "child", Kind: "subagent", State: "ended"}
+		children[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-child-%03d", index), Title: "child", Kind: "fork", State: "ended"}
 	}
 	updated := time.Unix(123, 0).UTC()
-	root := hubcore.TreeNode{ID: "session-root", Title: "title", Project: "project", Branch: "branch", State: "awaiting", Kind: "session", ClusterCount: 2, AskPending: true, Dormant: true, UpdatedAt: updated, MoreSubagents: 3, Children: children}
+	root := hubcore.TreeNode{ID: "session-root", Title: "title", Project: "project", Branch: "branch", State: "awaiting", Kind: "session", AskPending: true, ApprovalPending: true, Dormant: true, UpdatedAt: updated, Children: children}
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{root}}, Live: map[string]bool{"session-root": true}, Renameable: map[string]bool{"session-root": true}, SessionFavorite: map[string]bool{"session-root": true}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	row := projection.LivePage(0, 50).Sessions[0]
-	if len(row.Children) != maxNavigationChildren || row.OmittedDescendants != 1 {
-		t.Fatalf("children=%d omitted=%d", len(row.Children), row.OmittedDescendants)
+	// The list row is flat: every field rides the row itself, children nowhere.
+	if len(row.Children) != 0 {
+		t.Fatalf("list row carries %d children, want none", len(row.Children))
 	}
-	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || row.ClusterCount != root.ClusterCount || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) || row.MoreSubagents != root.MoreSubagents {
+	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.ApprovalPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) {
 		t.Fatalf("row fields diverged: %#v", row)
 	}
+	// Deep links retain a shallow selected-session summary.
+	location, ok := projection.Location("local:session-root")
+	if !ok || location.Session == nil {
+		t.Fatalf("location missing: %#v", location)
+	}
+	if len(location.Session.Children) != 0 {
+		t.Fatalf("location carries %d children, want none", len(location.Session.Children))
+	}
+
 }
 
 func TestNavigationProjectionSnapshotsAuthoritativeTierRows(t *testing.T) {
@@ -1226,7 +603,7 @@ func TestNavigationProjectionSnapshotsAuthoritativeTierRows(t *testing.T) {
 }
 
 func TestNavigationProjectionFittingUsesLogarithmicEnvelopeProbes(t *testing.T) {
-	roots := oversizeNavigationRoots()
+	roots := navigationLargeDetailRoots()
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots}})
 	if err != nil {
 		t.Fatal(err)
@@ -1240,7 +617,7 @@ func TestNavigationProjectionFittingUsesLogarithmicEnvelopeProbes(t *testing.T) 
 	defer func() { navigationEnvelopeMarshal = originalMarshal }()
 	section := projection.LivePage(0, 50)
 	encoded, err := json.Marshal(section)
-	if err != nil || len(encoded) > maxNavigationResponseBytes || !section.Truncated {
+	if err != nil || len(encoded) > maxNavigationResponseBytes || section.Truncated {
 		t.Fatalf("invalid bounded section bytes=%d truncated=%v err=%v", len(encoded), section.Truncated, err)
 	}
 	if probes > 14 {
@@ -1248,23 +625,127 @@ func TestNavigationProjectionFittingUsesLogarithmicEnvelopeProbes(t *testing.T) 
 	}
 }
 
-func TestNavigationProjectionCutsTwoThousandNodesBeforeByteLimit(t *testing.T) {
-	roots := make([]hubcore.TreeNode, 40)
-	for root := range roots {
-		children := make([]hubcore.TreeNode, 50)
-		for child := range children {
-			children[child] = hubcore.TreeNode{ID: fmt.Sprintf("session-node-%03d-%03d", root, child), Title: "small", Kind: "subagent", State: "idle"}
+// bisectNavigationFittingBudget is the plain bisection from zero that
+// navigationFittingBudget must agree with on every size function that never
+// shrinks as the budget grows.
+func bisectNavigationFittingBudget(nodes, maxBytes int, size func(int) int) int {
+	low, high := 0, nodes+1
+	for high-low > 1 {
+		middle := low + (high-low)/2
+		if size(middle) <= maxBytes {
+			low = middle
+		} else {
+			high = middle
 		}
-		roots[root] = hubcore.TreeNode{ID: fmt.Sprintf("session-node-root-%03d", root), Title: "small", Kind: "session", State: "idle", Children: children}
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots}})
-	if err != nil {
-		t.Fatal(err)
+	return low
+}
+
+func TestNavigationFittingBudgetMatchesBisection(t *testing.T) {
+	random := rand.New(rand.NewPCG(20260927, 1))
+	for trial := range 5_000 {
+		nodes := random.IntN(300)
+		// Prefix sums of random row sizes, occasionally with one huge row or a
+		// run of zero-size steps (the location fitter's candidate stops growing
+		// after its single session).
+		prefix := make([]int, nodes+1)
+		prefix[0] = random.IntN(2_000)
+		for budget := 1; budget <= nodes; budget++ {
+			row := 50 + random.IntN(3_000)
+			switch random.IntN(20) {
+			case 0:
+				row = 200_000 + random.IntN(2_000_000)
+			case 1:
+				row = 0
+			}
+			prefix[budget] = prefix[budget-1] + row
+		}
+		maxBytes := prefix[0] + random.IntN(prefix[nodes]-prefix[0]+1)
+		fullBytes := prefix[nodes]
+		if random.IntN(4) == 0 {
+			// The estimate only picks where the search starts; any seed must
+			// still land on the same answer.
+			fullBytes = random.IntN(4 * (prefix[nodes] + 1))
+		}
+		probes := 0
+		got, err := navigationFittingBudget(nodes, maxBytes, fullBytes, func(budget int) (int, error) {
+			if budget <= 0 || budget > nodes {
+				t.Fatalf("trial %d probed budget %d outside [1, %d]", trial, budget, nodes)
+			}
+			probes++
+			return prefix[budget], nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := bisectNavigationFittingBudget(nodes, maxBytes, func(budget int) int { return prefix[budget] })
+		if got != want {
+			t.Fatalf("trial %d: nodes=%d maxBytes=%d fullBytes=%d budget=%d, bisection=%d", trial, nodes, maxBytes, fullBytes, got, want)
+		}
+		if limit := 2*bits.Len(uint(nodes)) + 1; probes > limit {
+			t.Fatalf("trial %d: %d probes for %d nodes, want at most %d", trial, probes, nodes, limit)
+		}
 	}
-	section := projection.LivePage(0, 50)
-	encoded, _ := json.Marshal(section)
-	if got := countNavigationNodes(section.Sessions); got != maxNavigationNodes || !section.Truncated || len(encoded) >= maxNavigationResponseBytes {
-		t.Fatalf("nodes=%d truncated=%v bytes=%d", got, section.Truncated, len(encoded))
+}
+
+func TestNavigationFittingBudgetFindsUniformRowsInFewProbes(t *testing.T) {
+	const rowBytes, envelopeBytes = 1_437, 120
+	for _, nodes := range []int{2, 50, 2_000, 20_000} {
+		for _, maxBytes := range []int{envelopeBytes + rowBytes, maxNavigationCatalogBytes, maxNavigationResponseBytes} {
+			size := func(budget int) int { return envelopeBytes + budget*rowBytes }
+			if size(nodes) <= maxBytes {
+				continue
+			}
+			probes := 0
+			got, err := navigationFittingBudget(nodes, maxBytes, size(nodes), func(budget int) (int, error) {
+				probes++
+				return size(budget), nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := (maxBytes - envelopeBytes) / rowBytes; got != want {
+				t.Fatalf("nodes=%d maxBytes=%d: budget %d, want %d", nodes, maxBytes, got, want)
+			}
+			if probes > 3 {
+				t.Fatalf("nodes=%d maxBytes=%d: %d probes, want at most 3", nodes, maxBytes, probes)
+			}
+		}
+	}
+}
+
+func TestNavigationFittingBudgetReturnsProbeErrors(t *testing.T) {
+	failure := errors.New("probe failed")
+	if _, err := navigationFittingBudget(100, 1_000, 10_000, func(int) (int, error) { return 0, failure }); !errors.Is(err, failure) {
+		t.Fatalf("error = %v, want the probe's error", err)
+	}
+}
+
+// TestNavigationFittingRowOutweighsTheCountsItShrinks pins the premise that
+// lets navigationFittingBudget start its search anywhere: one more unit of
+// fitting budget adds a whole row, and the only bytes the same step can remove
+// are one digit of a remaining count and, for a session row, its parent's
+// omitted_descendants field (when that count drops to zero). Every row, even
+// an empty one, is larger, so a candidate never gets smaller as its budget
+// grows.
+func TestNavigationFittingRowOutweighsTheCountsItShrinks(t *testing.T) {
+	remainingDigit := 1
+	omittedField := len(`,"omitted_descendants":`) + len(strconv.FormatUint(maxNavigationSafeInteger, 10))
+	for name, row := range map[string]struct {
+		value     any
+		removable int
+	}{
+		"session":     {hubapi.NavigationSessionSummary{}, omittedField + remainingDigit},
+		"pin section": {hubapi.NavigationPinSectionDescriptor{}, remainingDigit},
+		"project":     {hubapi.NavigationProjectSummary{}, remainingDigit},
+	} {
+		encoded, err := json.Marshal(row.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) <= row.removable {
+			t.Fatalf("an empty %s row encodes to %d bytes, no more than the %d bytes one fitting step can remove: %s", name, len(encoded), row.removable, encoded)
+		}
 	}
 }
 
@@ -1284,14 +765,12 @@ func TestNavigationProjectionFingerprintSurvivesReturnedOutputMutation(t *testin
 	}
 }
 
-func oversizeNavigationRoots() []hubcore.TreeNode {
+func navigationLargeDetailRoots() []hubcore.TreeNode {
 	roots := make([]hubcore.TreeNode, 40)
 	for root := range roots {
-		children := make([]hubcore.TreeNode, 50)
-		for child := range children {
-			children[child] = hubcore.TreeNode{ID: fmt.Sprintf("session-log-%03d-%03d", root, child), Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "subagent", State: "idle"}
-		}
-		roots[root] = hubcore.TreeNode{ID: fmt.Sprintf("session-log-root-%03d", root), Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "session", State: "idle", Children: children}
+		// Each flat root has many source jobs but only compact navigation facts.
+		id := fmt.Sprintf("session-log-root-%03d", root)
+		roots[root] = hubcore.TreeNode{ID: id, Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "session", State: "idle", RunningJobs: navigationFatRunningJobs(id, 12)}
 	}
 	return roots
 }
@@ -1302,34 +781,6 @@ func deepNavigationNode(depth int) hubcore.TreeNode {
 		node.Children = []hubcore.TreeNode{deepNavigationNode(depth - 1)}
 	}
 	return node
-}
-
-func countNavigationNodes(rows []hubapi.NavigationSessionSummary) int {
-	count := 0
-	var visit func([]hubapi.NavigationSessionSummary)
-	visit = func(nodes []hubapi.NavigationSessionSummary) {
-		for _, node := range nodes {
-			count++
-			visit(node.Children)
-		}
-	}
-	visit(rows)
-	return count
-}
-
-func navigationDepth(rows []hubapi.NavigationSessionSummary) int {
-	maxDepth := 0
-	var visit func([]hubapi.NavigationSessionSummary, int)
-	visit = func(nodes []hubapi.NavigationSessionSummary, depth int) {
-		for _, node := range nodes {
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-			visit(node.Children, depth+1)
-		}
-	}
-	visit(rows, 1)
-	return maxDepth
 }
 
 // TestCloneNavigationLiveEntriesOwnsWatches proves the navigation-input clone
@@ -1366,5 +817,388 @@ func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
 	}
 	if cloneNavigationLiveEntries(nil) != nil {
 		t.Fatal("cloneNavigationLiveEntries(nil) must stay nil")
+	}
+}
+
+// TestCloneNavigationLiveEntriesOwnsPendingEscalations: the navigation inputs
+// own their escalation cards, so a roster refresh that edits its copy cannot
+// change a projection built from the earlier one.
+func TestCloneNavigationLiveEntriesOwnsPendingEscalations(t *testing.T) {
+	original := []hubcore.LiveEntry{{
+		PendingEscalation:  true,
+		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "write_file", DeniedPath: "/srv/docs/a.md"}},
+	}}
+	clone := cloneNavigationLiveEntries(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, original)
+	}
+	original[0].PendingEscalations[0].DeniedPath = "mutated"
+	if clone[0].PendingEscalations[0].DeniedPath != "/srv/docs/a.md" {
+		t.Fatalf("clone card changed through the original: %+v", clone[0].PendingEscalations)
+	}
+}
+
+// The navigation inputs own their live entries' task progress too: a shared
+// aggregate would let the roster's next probe rewrite a built projection's
+// current task.
+func TestCloneNavigationLiveEntriesOwnsTasks(t *testing.T) {
+	original := []hubcore.LiveEntry{{Tasks: &appwire.TaskAggregate{
+		Total: 2, Remaining: 2, Current: &appwire.TaskSummary{ID: 1, Description: "first"},
+	}}}
+	clone := cloneNavigationLiveEntries(original)
+	original[0].Tasks.Total = 9
+	original[0].Tasks.Current.Description = "mutated"
+	if clone[0].Tasks.Total != 2 || clone[0].Tasks.Current.Description != "first" {
+		t.Fatalf("clone task progress changed through the original: %+v %+v", clone[0].Tasks, clone[0].Tasks.Current)
+	}
+}
+
+// The projection build must honor cancellation inside the duplicate-Key merge,
+// not only around it. navigationMergeProjectBucketsContext folds every tree
+// group that collides on a wire Key into one catalog row, and a tree whose
+// groups all present the shared "no-project" Key - the shape one attached host
+// produces - makes that merge the largest walk in the build. A context that
+// goes away mid-merge must surface there, instead of letting the merge fold
+// every group to completion first.
+//
+// The flip point is calibrated the way the sibling tombstone test's is
+// (TestNavigationNextStatesChecksContextWhileCreatingTombstones): on this
+// fixture the pre-merge walks (validate, clone, pin candidates) make 525
+// ctx.Err() calls and the post-merge walks (catalog map, pin sections, location
+// index) make 129, while the merge region between them contributes none of its
+// own - so a limit of 690 can only be reached by checks the merge itself makes.
+// The arithmetic is fixture-coupled on purpose: it pins that the merge carries
+// its own loop-boundary checks rather than leaning on the walks around it.
+func TestNavigationProjectionChecksContextWhileMergingDuplicateKeys(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	const groups = 40
+	projects := make([]hubcore.TreeProject, 0, groups)
+	for index := range groups {
+		updated := now.Add(-time.Duration(index) * time.Minute)
+		projects = append(projects, hubcore.TreeProject{
+			Key:  "no-project",
+			Name: fmt.Sprintf("unresolved-%02d", index),
+			Current: []hubcore.TreeNode{{
+				ID:        fmt.Sprintf("session-merge-cancel-%02d", index),
+				Title:     "row",
+				Project:   "no-project",
+				Kind:      "session",
+				State:     "idle",
+				CreatedAt: updated,
+				UpdatedAt: updated,
+			}},
+		})
+	}
+	inputs := navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Projects: projects}}
+	projection, err := buildNavigationProjection(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged := projection.projects["no-project"]; len(merged.Current) != groups {
+		t.Fatalf("merged project holds %d current rows, want all %d groups folded into one row", len(merged.Current), groups)
+	}
+
+	ctx := &cancelAfterChecksContext{Context: context.Background(), limit: 690}
+	if _, err := buildNavigationProjectionContext(ctx, inputs); !errors.Is(err, context.Canceled) {
+		t.Fatalf("projection error = %v, want cancellation while merging duplicate keys", err)
+	}
+	if got := ctx.checks.Load(); got > ctx.limit+2 {
+		t.Fatalf("projection continued after cancellation: %d checks", got)
+	}
+}
+
+// The three functions below are the merge this file used before the single-pass
+// rewrite, copied verbatim: each later group that collides on a Key folded into
+// the accumulated row one pair at a time. They are the equivalence reference
+// for navigationMergeProjectGroupsContext - production now folds all of a Key's
+// groups in one pass, and
+// TestNavigationMergeProjectGroupsSinglePassMatchesPairwiseFold holds the
+// two to identical output. Keep them in sync with the merge's semantics or
+// delete them together with that test.
+func navigationMergeProjectGroupsPairwiseReference(projects []hubcore.TreeProject) []hubcore.TreeProject {
+	at := make(map[string]int, len(projects))
+	out := make([]hubcore.TreeProject, 0, len(projects))
+	for _, project := range projects {
+		if index, ok := at[project.Key]; ok {
+			out[index] = navigationMergeProjectPairwiseReference(out[index], project)
+			continue
+		}
+		at[project.Key] = len(out)
+		out = append(out, project)
+	}
+	return out
+}
+
+func navigationMergeProjectPairwiseReference(first, next hubcore.TreeProject) hubcore.TreeProject {
+	lastActivity, age := first.LastActivity, first.Age
+	if next.LastActivity.After(lastActivity) {
+		lastActivity, age = next.LastActivity, next.Age
+	}
+	rollupState := first.RollupState
+	if hubapi.RollupRank(next.RollupState) > hubapi.RollupRank(rollupState) {
+		rollupState = next.RollupState
+	}
+	current := navigationMergeProjectTierPairwiseReference(first, next, "current")
+	recent := navigationMergeProjectTierPairwiseReference(first, next, "recent")
+	archived := navigationMergeProjectTierPairwiseReference(first, next, "archived")
+	return hubcore.TreeProject{
+		Name:         first.Name,
+		Key:          first.Key,
+		WorkingDir:   first.WorkingDir,
+		Current:      current,
+		Recent:       recent,
+		Archived:     archived,
+		IsArchived:   first.IsArchived,
+		IsTestRun:    first.IsTestRun,
+		LastActivity: lastActivity,
+		RollupState:  rollupState,
+		RollupLive:   first.RollupLive + next.RollupLive,
+		RollupAttn:   first.RollupAttn + next.RollupAttn,
+		Sources:      navigationMergeProjectSources(first.Sources, next.Sources),
+		Expanded:     first.Expanded || next.Expanded,
+		MoreCurrent:  navigationTierOverflow(len(current), hubcore.SidebarSessionPageSize),
+		MoreRecent:   navigationTierOverflow(len(recent), hubcore.SidebarSessionPageSize),
+		MoreArchived: navigationTierOverflow(len(archived), hubcore.SidebarSessionPageSize),
+		Age:          age,
+		Worktrees:    first.Worktrees + next.Worktrees,
+	}
+}
+
+func navigationMergeProjectTierPairwiseReference(first, next hubcore.TreeProject, tier string) []hubcore.TreeNode {
+	firstRows, _ := first.TierRows(tier)
+	nextRows, _ := next.TierRows(tier)
+	rows := make([]hubcore.TreeNode, 0, len(firstRows)+len(nextRows))
+	rows = append(rows, firstRows...)
+	rows = append(rows, nextRows...)
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
+	return rows
+}
+
+// The single-pass merge must produce exactly the value the pairwise fold did:
+// the rewrite changed the merge's shape - every colliding group now reaches
+// one navigationMergeProjectContext call, so each tier is concatenated and
+// sorted once instead of re-sorted after every fold - but not its output. The
+// fixture covers the shapes where the two could drift apart: session rows whose
+// comparator keys tie exactly (so only the stable sort's input order - the
+// tree's own group order - fixes their merged position), a tier that overflows
+// the sidebar cap, scalar folds with LastActivity ties, and a bucket whose
+// Keys are unique (the untouched fast path).
+func TestNavigationMergeProjectGroupsSinglePassMatchesPairwiseFold(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	row := func(id string, age time.Duration) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Project: "no-project", Kind: "session", State: "idle", CreatedAt: now.Add(-age), UpdatedAt: now.Add(-age)}
+	}
+	overflow := make([]hubcore.TreeNode, 0, hubcore.SidebarSessionPageSize+10)
+	for index := range hubcore.SidebarSessionPageSize + 10 {
+		overflow = append(overflow, row(fmt.Sprintf("r-%03d", index), time.Duration(25+index)*time.Minute))
+	}
+	buckets := navigationProjectBucket{
+		active: []hubcore.TreeProject{
+			{
+				Key: "no-project", Name: "one", Sources: []string{"b", "a"},
+				RollupState: "idle", RollupLive: 2, RollupAttn: 1, Worktrees: 1,
+				LastActivity: now.Add(-time.Hour), Age: "1h",
+				Current: []hubcore.TreeNode{
+					row("c1-a", 7*time.Minute),
+					row("tied-row", 10*time.Minute),
+				},
+				Recent: []hubcore.TreeNode{row("a-r0", 26*time.Hour)},
+			},
+			{
+				Key: "no-project", Name: "two", Sources: []string{"a", "c"},
+				RollupState: "warning", RollupLive: 1, RollupAttn: 3, Worktrees: 2, Expanded: true,
+				LastActivity: now.Add(-2 * time.Hour), Age: "2h",
+				Current: []hubcore.TreeNode{
+					row("c2-a", 9*time.Minute),
+					row("tied-row", 10*time.Minute),
+					row("b-0", 10*time.Minute),
+				},
+				Recent:   overflow,
+				Archived: []hubcore.TreeNode{row("c2-ax", 3*time.Hour), row("b-ax", 4*time.Hour)},
+			},
+			{
+				Key: "no-project", Name: "three", Sources: []string{"b"},
+				// LastActivity ties group one's, so the merged Age must stay
+				// group one's, not this group's.
+				RollupState: "errored", LastActivity: now.Add(-time.Hour), Age: "3h",
+				Current: []hubcore.TreeNode{
+					row("c3-m", 12*time.Minute),
+					row("c-0", 10*time.Minute),
+				},
+				Recent:   []hubcore.TreeNode{row("c3-r", 2*time.Hour)},
+				Archived: []hubcore.TreeNode{row("c3-a0", 3*time.Hour)},
+			},
+			{Key: "solo", Name: "solo", Current: []hubcore.TreeNode{row("s-0", time.Minute)}},
+		},
+		archived: []hubcore.TreeProject{
+			{Key: "dupe", Name: "one", IsArchived: true, Current: []hubcore.TreeNode{row("z-0", time.Hour)}},
+			{Key: "dupe", Name: "two", IsArchived: true, Current: []hubcore.TreeNode{row("z-1", 30*time.Minute), row("z-2", 45*time.Minute)}},
+		},
+		testRuns: []hubcore.TreeProject{
+			{Key: "test", Name: "only", IsTestRun: true, Current: []hubcore.TreeNode{row("t-0", time.Minute)}},
+		},
+	}
+
+	merged, err := navigationMergeProjectBucketsContext(context.Background(), buckets)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The fixture is not vacuous: colliding Keys actually collapsed, the recent
+	// tier overflowed the cap, and the tied rows kept group order.
+	if len(merged.active) != 2 || len(merged.archived) != 1 || len(merged.testRuns) != 1 {
+		t.Fatalf("bucket sizes = %d/%d/%d, want 2/1/1", len(merged.active), len(merged.archived), len(merged.testRuns))
+	}
+	collapsed := merged.active[0]
+	if collapsed.Key != "no-project" || collapsed.MoreRecent == 0 {
+		t.Fatalf("collapsed row = Key %q MoreRecent %d, want the overflowed no-project union", collapsed.Key, collapsed.MoreRecent)
+	}
+	tied := 0
+	for _, row := range collapsed.Current {
+		if row.ID == "tied-row" {
+			tied++
+		}
+	}
+	if tied != 2 {
+		t.Errorf("tied rows = %d, want both retained", tied)
+	}
+	if collapsed.Age != "1h" {
+		t.Errorf("merged Age = %s, want group one's (LastActivity ties keep the first-seen Age)", collapsed.Age)
+	}
+
+	reference := navigationProjectBucket{
+		active:   navigationMergeProjectGroupsPairwiseReference(buckets.active),
+		archived: navigationMergeProjectGroupsPairwiseReference(buckets.archived),
+		testRuns: navigationMergeProjectGroupsPairwiseReference(buckets.testRuns),
+	}
+	for _, bucket := range []struct {
+		name   string
+		merged []hubcore.TreeProject
+		want   []hubcore.TreeProject
+	}{
+		{"active", merged.active, reference.active},
+		{"archived", merged.archived, reference.archived},
+		{"testRuns", merged.testRuns, reference.testRuns},
+	} {
+		if len(bucket.merged) != len(bucket.want) {
+			t.Fatalf("%s bucket = %d rows, reference fold = %d", bucket.name, len(bucket.merged), len(bucket.want))
+		}
+		for index := range bucket.want {
+			if !reflect.DeepEqual(bucket.merged[index], bucket.want[index]) {
+				t.Fatalf("%s bucket project %d (%q) diverged from the pairwise fold:\nmerged:    %#v\nreference: %#v", bucket.name, index, bucket.want[index].Key, bucket.merged[index], bucket.want[index])
+			}
+		}
+	}
+}
+
+func TestTreeNodeOrderBreaksTiesByCreatedThenRawTitleThenID(t *testing.T) {
+	at := func(s int64) time.Time { return time.Unix(s, 0).UTC() }
+	rows := []hubcore.TreeNode{
+		{ID: "b", Title: "alpha", UpdatedAt: at(10), CreatedAt: at(5)},
+		{ID: "a", Title: "Alpha", UpdatedAt: at(10), CreatedAt: at(5)},
+		{ID: "c", Title: "alpha", UpdatedAt: at(10), CreatedAt: at(5)},
+		{ID: "z", Title: "zero"},
+		{ID: "d", Title: "beta", CreatedAt: at(10)},
+		{ID: "e", Title: "gamma", UpdatedAt: at(11), CreatedAt: at(1)},
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return hubcore.TreeNodeLess(rows[i], rows[j]) })
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.ID)
+	}
+	// e is newest. d has no update time, so its creation time (10) stands in
+	// and ties a, b and c, then wins on creation time. "Alpha" sorts before
+	// "alpha" on the raw text, then the IDs break the remaining tie. z has no
+	// times at all and sorts last.
+	if want := []string{"e", "d", "a", "b", "c", "z"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// A merged row must sit where its recency says it belongs. The merge keeps a
+// Key's first-appearance position while its LastActivity becomes the max across
+// the merged groups, so a collision can raise the merged row above a later
+// row's instant. The test-runs bucket is the live shape: it concatenates the
+// active and archived test-run projects, each LastActivity-ordered on its own,
+// so the bucket is not globally ordered and an archived test run newer than an
+// active one lifts the merged row past rows it should precede. Re-sorting the
+// bucket by LastActivity desc restores hubcore's own project order.
+func TestNavigationMergeProjectBucketsOrdersMergedRowByLastActivity(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	session := func(id string) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Project: "x", Kind: "session", State: "idle"}
+	}
+	tree := hubcore.Tree{
+		Projects: []hubcore.TreeProject{
+			{Key: "other", Name: "other", IsTestRun: true, LastActivity: now.Add(-time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAV")}},
+			{Key: "dup", Name: "dup", IsTestRun: true, LastActivity: now.Add(-2 * time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAW")}},
+		},
+		ArchivedProjects: []hubcore.TreeProject{
+			{Key: "dup", Name: "dup archived", IsTestRun: true, IsArchived: true, LastActivity: now,
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAX")}},
+		},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := projection.CatalogPage(navigationResourceTestRuns, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, project := range resource.Projects {
+		got = append(got, project.Key)
+	}
+	// The merged dup row's LastActivity is now (the archived group's instant),
+	// newer than other's (now-1h), so dup must lead the bucket.
+	if want := []string{"dup", "other"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("test-runs catalog order = %v, want %v (merged row must follow its LastActivity)", got, want)
+	}
+}
+
+// A merged test-run row keeps the first group's IsArchived flag. IsTestRun is
+// uniform inside every bucket (navigationProjectBuckets routes on it), but
+// IsArchived is not uniform in the test-runs bucket, which holds both archived
+// and unarchived test runs. The merge's first group owns the row's identity,
+// flags included, so the flag is the first group's and does not depend on
+// which other groups folded in. This pins that deliberate rule.
+func TestNavigationMergeProjectKeepsFirstGroupArchivedFlag(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	session := func(id string) hubcore.TreeNode {
+		return hubcore.TreeNode{ID: id, Title: id, Project: "x", Kind: "session", State: "idle"}
+	}
+	tree := hubcore.Tree{
+		Projects: []hubcore.TreeProject{
+			{Key: "dup", Name: "active run", IsTestRun: true, LastActivity: now.Add(-time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAV")}},
+		},
+		ArchivedProjects: []hubcore.TreeProject{
+			{Key: "dup", Name: "archived run", IsTestRun: true, IsArchived: true, LastActivity: now.Add(-2 * time.Hour),
+				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAW")}},
+		},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := projection.CatalogPage(navigationResourceTestRuns, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resource.Projects) != 1 {
+		t.Fatalf("test-runs catalog rows = %d, want the merged dup row alone", len(resource.Projects))
+	}
+	merged, ok := projection.projects["dup"]
+	if !ok {
+		t.Fatal("merged dup row has no project entry")
+	}
+	if !merged.IsTestRun {
+		t.Errorf("merged test-run row IsTestRun = false, want true (uniform inside the bucket)")
+	}
+	if merged.IsArchived {
+		t.Errorf("merged test-run row IsArchived = true, want the first group's false flag")
 	}
 }

@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import type { ModelListResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, describe, expect, test } from "vitest";

@@ -156,6 +156,55 @@ func TestAuth_InstanceApiKeySet_WritesNamedKey(t *testing.T) {
 	}
 }
 
+// A command expression typed into the stored-key form is a trap, not a key:
+// the store never expands one, so it would be sent as the literal text and
+// fail at the server with no local hint. The write is refused with a pointer
+// at the credential-header field, and nothing is stored.
+func TestAuth_InstanceApiKeySet_RefusesCommandExpression(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	_, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "$(get-gateway-token)"})
+	if err == nil || !strings.Contains(err.Error(), "credential header") {
+		t.Fatalf("err = %v; want a refusal pointing at the credential header field", err)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if _, ok := store.Get("work-ant"); ok {
+		t.Fatal("a refused expression must not be stored")
+	}
+}
+
+// A literal key whose odd $ bytes merely look like a mistyped expression is
+// still a literal key: the store holds it verbatim. The guard refuses only a
+// well-formed command expression, never a secret on the strength of odd bytes.
+func TestAuth_InstanceApiKeySet_StoresLiteralKeyWithOddDollarBytes(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	const odd = "sk-live-${oops"
+	got, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: odd})
+	if err != nil {
+		t.Fatalf("ApiKeySet(work-ant): %v", err)
+	}
+	if !got.SignedIn || !got.HasStoredFile {
+		t.Errorf("status = %+v, want the odd-$ key stored", got)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if v, ok := store.Get("work-ant"); !ok || v != odd {
+		t.Errorf("credentials.toml[work-ant] = %q/%v, want the literal odd-$ key", v, ok)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. OAuth ops on a named Codex instance target auth/<name>.json
 // ─────────────────────────────────────────────────────────────────────────────
@@ -482,7 +531,7 @@ func TestAuth_NonCodexLogout_ClearsTheStoredKeyAndReloads(t *testing.T) {
 			case !tt.staysAnInstance && stillAnInstance:
 				t.Fatalf("%s is still an instance after its only credential was cleared — the registry was not reloaded", tt.instance)
 			}
-			if err := validateProviderCredentials(tt.instance, ctrl.reg); err == nil {
+			if err := validateProviderCredentials(tt.instance, "", ctrl.reg); err == nil {
 				t.Error("the spawn gate still accepts an instance whose key was just cleared")
 			}
 		})
@@ -507,7 +556,7 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 	t.Run("unset variables", func(t *testing.T) {
 		// No ADC (an empty HOME) and none of the base-URL variables set.
 		ctrl := newController(t, map[string]string{"HOME": t.TempDir()})
-		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		err := validateProviderCredentials("google-vertex", "", ctrl.reg)
 		if err == nil {
 			t.Fatal("the spawn gate accepted an unconfigured google-vertex provider")
 		}
@@ -525,7 +574,7 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 
 	t.Run("no credential", func(t *testing.T) {
 		ctrl := newController(t, map[string]string{"HOME": t.TempDir(), "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global"})
-		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		err := validateProviderCredentials("google-vertex", "", ctrl.reg)
 		if err == nil {
 			t.Fatal("the spawn gate accepted a google-vertex provider with no credential")
 		}
@@ -551,7 +600,7 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 		// The location is set, so telling the user to set it is no help:
 		// say what is wrong with the value instead (round 8, F2).
 		ctrl := newController(t, map[string]string{"HOME": t.TempDir(), "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "bad.host"})
-		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		err := validateProviderCredentials("google-vertex", "", ctrl.reg)
 		if err == nil {
 			t.Fatal("the spawn gate accepted a google-vertex provider with an invalid location")
 		}
@@ -563,4 +612,150 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 			t.Fatalf("err = %q, must not tell the user to set a variable that is already set", msg)
 		}
 	})
+}
+
+// The spawn gate's advice must follow the launch's own scheme — the
+// default row's merged transport — not the provider's model-less shape:
+// a row override that flips the scheme flips the remedy with it, or the
+// gate sends the user to configure a credential the launch never reads.
+func TestAuth_ImplicitProviderRemediationFollowsRowScheme(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"gcp-adc\"\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1", "HOME": t.TempDir()})
+	err := validateProviderCredentials("amazon-bedrock", "", ctrl.reg)
+	if err == nil {
+		t.Fatal("the spawn gate accepted an unconfigured bedrock whose default row needs ADC")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "application-default credentials") {
+		t.Fatalf("err = %q, want the ADC remedy the default row's scheme asks for", msg)
+	}
+	if strings.Contains(msg, "apiKey/set") {
+		t.Fatalf("err = %q, must not offer the api-key flow a gcp-adc row cannot read", msg)
+	}
+}
+
+// The row's scheme decides the gate itself, not just the message: a
+// default row pinned to none launches with no credential at all — the
+// same judgment the instance path's gate makes.
+func TestAuth_ImplicitProviderRowSchemeNeedsNoCredential(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"none\"\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
+	if err := validateProviderCredentials("amazon-bedrock", "", ctrl.reg); err != nil {
+		t.Fatalf("the spawn gate demanded a credential for a launch whose default row scheme is none: %v", err)
+	}
+}
+
+// The gate judges the launch it was asked about: a named model's row
+// can pin a scheme neither the provider nor its default row carries,
+// and demanding the default's credential for a launch whose own row
+// needs none is the same divergence the default-row fix closed.
+func TestAuth_ImplicitProviderModelRowSchemeNeedsNoCredential(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-haiku*\"]\nauth = \"none\"\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
+	if err := validateProviderCredentials("amazon-bedrock", "anthropic.claude-haiku-4-5", ctrl.reg); err != nil {
+		t.Fatalf("the spawn gate demanded a credential for a launch whose named row's scheme is none: %v", err)
+	}
+}
+
+// A configured instance is refused the same way before the spawn: a
+// persisted session whose model row the config disabled must fail the
+// gate with the model's own verdict, not pass on the default transport's
+// credential.
+func TestAuth_InstanceGateRefusesADisabledNamedModel(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[providers.gw]\nbase = \"openai-compatible\"\n"+
+		"base_url = \"https://gw.example/v1\"\napi_key = \"sk\"\n"+
+		"[providers.gw.models.\"house-model\"]\ndisabled = true\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{})
+	err := validateProviderCredentials("gw", "house-model", ctrl.reg)
+	if err == nil {
+		t.Fatal("the spawn gate accepted a launch the child always refuses")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "disabled") {
+		t.Fatalf("err = %q, want the model's disabled verdict", msg)
+	}
+}
+
+// A named model the child refuses — here an alias following its disabled
+// target — is refused before the spawn: the gate propagates the model's
+// own verdict, instead of silently judging the default row's scheme and
+// offering a credential remedy for a launch that never happens.
+func TestAuth_ImplicitProviderGateRefusesADisabledNamedModel(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"gcp-adc\"\n"+
+		"[models.\"*claude-haiku*\"]\ndisabled = true\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
+	err := validateProviderCredentials("amazon-bedrock", "anthropic.claude-haiku-4-5", ctrl.reg)
+	if err == nil {
+		t.Fatal("the spawn gate accepted a launch the child always refuses")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "disabled") {
+		t.Fatalf("err = %q, want the model's own disabled verdict", msg)
+	}
+	if strings.Contains(msg, "application-default credentials") || strings.Contains(msg, "apiKey/set") {
+		t.Fatalf("err = %q, must refuse the launch, not offer a credential remedy it will never read", msg)
+	}
+}
+
+// The status fallback for an implicit provider (env unset, so no
+// credential and no instance of its own) resolves at presence depth and
+// still answers with the full resolve's shape.
+func TestAuthStatusImplicitProviderResolvesPresence(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "")
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath)
+	key, _ := resolveEndpointFingerprintKey(ctrl.stateDir)
+	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "amazon-bedrock" || !resp.Supported {
+		t.Fatalf("implicit-provider status = %+v; want a supported answer", resp)
+	}
+	// The truth the status pane must agree with is the launch the
+	// bare name makes — the listing resolve — not the model-less
+	// probe, which signs its own request.
+	launch, err := ctrl.registry().ResolveInstanceListing("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ActiveSource != launch.Credential.Source {
+		t.Fatalf("status ActiveSource = %q, want the launch's %q", resp.ActiveSource, launch.Credential.Source)
+	}
+	if resp.SignedIn != (launch.Credential.Source != "none") {
+		t.Fatal("SignedIn drifted from the resolved credential source")
+	}
+}
+
+// The auth-status pane and the scheme gate behind instanceIsCodex and
+// instanceUsesGCPADC must judge an implicit provider through the launch
+// its bare name makes — the default row's merged transport — not the
+// provider's model-less shape: a top-level glob can repin the row's
+// scheme, and a pane that says "none" while the gate says "header" is
+// exactly the divergence the views must not have.
+func TestAuthStatusImplicitProviderMatchesLaunchScheme(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"none\"\n")
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath)
+	key, _ := resolveEndpointFingerprintKey(ctrl.stateDir)
+	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.AuthModes) != 1 || resp.AuthModes[0] != "none" {
+		t.Fatalf("implicit-provider AuthModes = %v; want [none], the default row's scheme under the glob", resp.AuthModes)
+	}
+	scheme, ok := ctrl.instanceAuthScheme("amazon-bedrock")
+	if !ok || scheme != registry.AuthNone {
+		t.Fatalf("instanceAuthScheme = %q ok = %v; want the default row's none", scheme, ok)
+	}
 }

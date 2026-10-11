@@ -19,8 +19,7 @@ func TestSetModel_EmitsModelChangedEvent(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			testOnly: testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -68,9 +67,8 @@ func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   unknownInstanceResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: unknownInstanceResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -96,8 +94,7 @@ func TestSetReasoningEffort_EmitsReasoningEffortChangedEvent(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			testOnly: testConfig{skipGitSnapshot: true},
 		}),
 	)
 

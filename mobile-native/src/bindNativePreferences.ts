@@ -2,14 +2,11 @@ import type {
 	AppwireClient,
 	InitializeResponse,
 	KeybindingDraftStorage,
+	TranscriptDraftStorage,
 } from "@evener/appwire-client";
 import { NativePreferences } from "./nativePreferences";
-import type { TranscriptDraftStorage } from "./preferenceDraftRepository";
 
-export type PreferencesClient = Pick<
-	AppwireClient,
-	"connect" | "onReady" | "request" | "onNotification"
->;
+export type PreferencesClient = Pick<AppwireClient, "connect" | "onReady" | "request" | "onNotification">;
 
 // One model owns each negotiated connection. Reconnects restore the persisted proposal.
 export function bindNativePreferences(
@@ -23,12 +20,7 @@ export function bindNativePreferences(
 	const ready = (hello: InitializeResponse) => {
 		if (disposed) return;
 		model?.dispose();
-		model = new NativePreferences(
-			client,
-			hello.features,
-			storage,
-			keybindingStorage,
-		);
+		model = new NativePreferences(client, hello.features, storage, keybindingStorage);
 		publish(model);
 		void model.refresh();
 	};

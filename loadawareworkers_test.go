@@ -72,6 +72,50 @@ func TestLoadAwareWorkersSizesToSpareCapacity(t *testing.T) {
 	}
 }
 
+// TestLoadAwareLoad1HonorsAnOverride pins LOAD_AWARE_LOAD1, which stands in for
+// the measured load average. A dedicated CI runner sets it to 0: its own
+// checkout and cache restore are still in the one-minute average when a gate
+// starts, and sizing against that load halved every budget. A malformed value
+// is not a load average, so it reads as unknown, like an unreadable one.
+func TestLoadAwareLoad1HonorsAnOverride(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ override, want string }{
+		{"0", "0"},
+		{"2.5", "2.5"},
+		{"busy", ""},
+		{".", ""},
+	} {
+		t.Run(tc.override, func(t *testing.T) {
+			t.Parallel()
+			cmd := exec.Command("sh", "-c", `. "$1" && load_aware_load1`, "--", loadAwareHelper)
+			cmd.Env = envOverride(os.Environ(), "LOAD_AWARE_LOAD1="+tc.override)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("load_aware_load1: %v\n%s", err, out)
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Errorf("load_aware_load1 with LOAD_AWARE_LOAD1=%s = %q, want %q", tc.override, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadAwareWorkersSizesToTheMachineWhenLoadIsOverriddenToZero pins the
+// end-to-end effect: with the measured load replaced by 0, the budget is the
+// ceiling clamped to the core count, whatever the machine's real load.
+func TestLoadAwareWorkersSizesToTheMachineWhenLoadIsOverriddenToZero(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("sh", "-c", `. "$1" && load_aware_workers 64 3`, "--", loadAwareHelper)
+	cmd.Env = envOverride(os.Environ(), "LOAD_AWARE_LOAD1=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("load_aware_workers: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "3" {
+		t.Errorf("load_aware_workers 64 3 with LOAD_AWARE_LOAD1=0 = %q, want 3", got)
+	}
+}
+
 // TestLoadAwareWorkersRejectsMalformedCeiling keeps a bad argument loud: a
 // caller that passes a non-numeric ceiling has a bug, and silently printing a
 // worker count would hide it behind a test run that just looks slow.

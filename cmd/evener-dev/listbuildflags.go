@@ -51,59 +51,48 @@ var packageSelectionValueFlags = map[string]bool{
 // by setting a build tag of its own name.
 var packageSelectionBareFlags = map[string]bool{"-race": true, "-msan": true, "-asan": true}
 
-// consumesValue reports whether name's value is the next argument, and so must
-// be skipped over rather than read as a flag. -tags is a selection flag this
-// walker forwards, not a skip, and -args/-- terminate the flags; all three are
-// handled by the walker itself.
-func consumesValue(name string) bool {
-	if name == "-tags" || name == "-args" || name == "--" {
-		return false
-	}
-	return buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name]
-}
+// errAfterArgs stops the walk at -args and at the build-level --. Everything
+// after either belongs to the test binary, not to `go test`: a word spelled
+// -race there is an argument whose text is -race, and enumerating under it
+// would build a tree nobody asked for.
+var errAfterArgs = errors.New("after -args")
 
 // packageSelectionFlags is the answer, in the spelling `go list` will be given,
 // or an error for a flag that cannot be applied to both commands. Every value
 // is emitted in the `name=value` form, so a value is never a line of its own
 // that a line-oriented reader could drop.
+//
+// The walk is shardplan.go's walkFlags, so a value is consumed with its flag
+// from the one value-taking table the shard runner also reads: `-run -race` is
+// a regex on this side too, and there is no second answer to "is the next word
+// a value" that can drift from it.
 func packageSelectionFlags(args []string) ([]string, error) {
 	var out []string
-	for i := 0; i < len(args); i++ {
-		whole := goFlag(args[i])
-		name, value, inline := strings.Cut(whole, "=")
-		if name == "-C" {
-			return nil, errors.New("-C is not supported here: the gate enumerates each module from its own directory, so a -C would make go list describe a different tree than go test builds")
-		}
-		if name == "-args" || name == "--" {
-			return out, nil
-		}
+	err := walkFlags(args, func(tok flagToken) error {
 		switch {
-		case packageSelectionValueFlags[name]:
-			if !inline {
-				if i+1 >= len(args) {
-					return nil, fmt.Errorf("%s was given with nothing after it, and its value decides which packages exist", name)
-				}
-				i++
-				value = args[i]
+		case tok.name == "-args" || tok.name == "--":
+			return errAfterArgs
+		case tok.name == "-C":
+			// The shard runner's own refusal: the gate enumerates and tests each
+			// module from its own directory, so a -C would move one of them
+			// somewhere the other is not.
+			return errUnsupportedC()
+		case packageSelectionValueFlags[tok.name]:
+			if err := checkValue(tok.name, tok.value); err != nil {
+				return err
 			}
-			if err := checkValue(name, value); err != nil {
-				return nil, err
+			if tok.inline {
+				out = append(out, tok.whole)
+				return nil
 			}
-			out = append(out, name+"="+value)
-		case packageSelectionBareFlags[name]:
-			out = append(out, whole)
-		case consumesValue(name):
-			// A value-taking flag this walker does not forward is consumed so
-			// its value is not read as a flag, but its value is not emitted, so
-			// it needs no representability check: the gate hands the original
-			// argv to go test as a quoted array, newlines and all.
-			if !inline {
-				if i+1 >= len(args) {
-					return nil, fmt.Errorf("%s was given with nothing after it, and its value decides what runs", name)
-				}
-				i++
-			}
+			out = append(out, tok.name+"="+tok.value)
+		case packageSelectionBareFlags[tok.name]:
+			out = append(out, tok.whole)
 		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errAfterArgs) {
+		return nil, err
 	}
 	return out, nil
 }

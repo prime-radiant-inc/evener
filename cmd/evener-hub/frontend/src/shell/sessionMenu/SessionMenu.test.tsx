@@ -36,21 +36,22 @@ function seedPinCatalog(): void {
     generationID: generation,
   };
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     resources: new Map([[keyID(resource.key), resource]]),
   });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 
-function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
+function renderMenu(overrides: Partial<SessionMenuProps> = {}, actionOverrides: Partial<SessionMenuActions> = {}) {
   const actions: SessionMenuActions = {
-    onOpenPane: vi.fn(),
+    onOpenOverview: vi.fn(),
     onRename: vi.fn().mockResolvedValue(undefined),
     onShutdown: vi.fn().mockResolvedValue(undefined),
     onPin: vi.fn().mockResolvedValue(undefined),
     onUnpin: vi.fn().mockResolvedValue(undefined),
     onToggleArchive: vi.fn().mockResolvedValue(undefined),
     onDelete: vi.fn().mockResolvedValue(undefined),
+    ...actionOverrides,
   };
   render(
     <SessionMenu
@@ -59,8 +60,8 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
       triggerLabel="Session actions"
       canRename
       canShutdown
-      canReadNotes
-      panesOpen={{ details: false, tasks: true, activity: false, notes: false }}
+      stopped
+      overviewOpen={false}
       actions={actions}
       {...overrides}
     />,
@@ -83,18 +84,18 @@ afterEach(() => {
   resetNavigationStoreForTests();
 });
 
-test("panes group leads with open-state checkmarks and dispatches onOpenPane", async () => {
+test("inspection group offers Overview without Details", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu();
+  renderMenu();
   await openMenu(user);
-  expect(screen.getByRole("menuitem", { name: "Details" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Activity" })).toBeTruthy();
-  await user.click(screen.getByRole("menuitem", { name: "Tasks ✓" }));
-  expect(actions.onOpenPane).toHaveBeenCalledWith("tasks");
+  expect(screen.getByRole("menuitem", { name: "Overview" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Activity" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Tasks/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Notes/ })).toBeNull();
 });
 
-test("pane-only Verbosity follows Activity, precedes the first separator, and dispatches its callback", async () => {
+test("pane-only Verbosity follows Overview, precedes the first separator, and dispatches its callback", async () => {
   const user = userEvent.setup();
   const onOpenVerbosity = vi.fn();
   renderMenu({ onOpenVerbosity });
@@ -102,10 +103,10 @@ test("pane-only Verbosity follows Activity, precedes the first separator, and di
 
   const menu = screen.getByRole("menu");
   const verbosity = within(menu).getByRole("menuitem", { name: "Verbosity…" });
-  const activity = within(menu).getByRole("menuitem", { name: "Activity" });
+  const overview = within(menu).getByRole("menuitem", { name: "Overview" });
   const firstSeparator = within(menu).getAllByRole("separator")[0];
   if (!firstSeparator) throw new Error("Session menu is missing its first separator");
-  expect(activity.compareDocumentPosition(verbosity) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(overview.compareDocumentPosition(verbosity) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   expect(verbosity.compareDocumentPosition(firstSeparator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
   await user.click(verbosity);
@@ -119,12 +120,11 @@ test("rail-style callers that omit the pane-only callback do not get Verbosity",
   expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
 });
 
-test("live labels replace the plain pane names", async () => {
+test("live labels replace the plain Overview name", async () => {
   const user = userEvent.setup();
-  renderMenu({ taskLabel: "Tasks", activityLabel: "Activity · 2" });
+  renderMenu({ overviewLabel: "Overview · 2" });
   await openMenu(user);
-  expect(screen.getByRole("menuitem", { name: "Tasks ✓" })).toBeTruthy();
-  expect(screen.getByRole("menuitem", { name: "Activity · 2" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Overview · 2" })).toBeTruthy();
 });
 
 test("Rename opens its dialog; saving calls onRename and closes", async () => {
@@ -146,7 +146,7 @@ test("a rejected onRename keeps the dialog open (adapter toasted)", async () => 
   const user = userEvent.setup();
   const actions = renderMenu({
     actions: {
-      onOpenPane: vi.fn(),
+      onOpenOverview: vi.fn(),
       onRename: vi.fn().mockRejectedValue(new Error("boom")),
       onShutdown: vi.fn().mockResolvedValue(undefined),
       onPin: vi.fn().mockResolvedValue(undefined),
@@ -206,18 +206,23 @@ test("full menu: organize group between separators, delete last", async () => {
   renderMenu({ session: navigationSession() });
   await openMenu(user);
   const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
-  expect(items).toEqual([
-    "Details",
-    "Tasks ✓",
-    "Activity",
-    "Notes",
-    "Rename",
-    "Pin this session…",
-    "Archive",
-    "Shut down",
-    "Delete…",
-  ]);
+  expect(items).toEqual(["Overview", "Rename", "Pin this session…", "Archive", "Shut down", "Delete…"]);
   expect(screen.getAllByRole("separator")).toHaveLength(2);
+});
+
+test("Delete is hidden until the session is stopped", async () => {
+  const user = userEvent.setup();
+  renderMenu({ session: navigationSession(), stopped: false });
+  await openMenu(user);
+  expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("force-stop action is labeled Force shutdown", async () => {
+  const user = userEvent.setup();
+  renderMenu({}, { onForceStop: vi.fn().mockResolvedValue(undefined) });
+  await openMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Force stop…" })).toBeNull();
 });
 
 test("nested kinds and remote hosts lose organization/delete items", async () => {
@@ -266,4 +271,45 @@ test("Delete… confirms before calling onDelete", async () => {
   await user.click(within(dialog).getByRole("button", { name: "Delete" }));
   await waitFor(() => expect(actions.onDelete).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("turn verbs lead the menu in their own group, ahead of the pane group, and dispatch", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  const onSteer = vi.fn();
+  renderMenu({ turnVerbs: { stop: { onSelect: onStop }, steer: { onSelect: onSteer } } });
+  await openMenu(user);
+  const menu = screen.getByRole("menu");
+  const stopItem = within(menu).getByRole("menuitem", { name: "Stop" });
+  const steerItem = within(menu).getByRole("menuitem", { name: "Steer" });
+  const overview = within(menu).getByRole("menuitem", { name: "Overview" });
+  // Stop before Steer, both before the pane group, and their group separated
+  // from it (the menu's other two separators are the organize/destructive ones).
+  expect(stopItem.compareDocumentPosition(steerItem) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(steerItem.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(screen.getAllByRole("separator")).toHaveLength(3);
+  await user.click(stopItem);
+  expect(onStop).toHaveBeenCalledOnce();
+  await openMenu(user);
+  await user.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Steer" }));
+  expect(onSteer).toHaveBeenCalledOnce();
+});
+
+test("a disabled turn verb stays put when clicked", async () => {
+  const user = userEvent.setup();
+  const onSteer = vi.fn();
+  renderMenu({ turnVerbs: { steer: { onSelect: onSteer, disabled: true } } });
+  await openMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Steer" }).getAttribute("aria-disabled")).toBe("true");
+  await user.click(screen.getByRole("menuitem", { name: "Steer" }));
+  expect(onSteer).not.toHaveBeenCalled();
+});
+
+test("a caller that passes only one turn verb gets only that item", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  renderMenu({ turnVerbs: { stop: { onSelect: onStop } } });
+  await openMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
 });

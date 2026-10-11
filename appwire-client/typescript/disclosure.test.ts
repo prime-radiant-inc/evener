@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test, vi } from "vitest";
 import {
   createDisclosureStore,
@@ -80,6 +82,24 @@ describe("store shape", () => {
       isDisclosureOpenIn(snapshot, scopedDisclosureId("live", "thought"), store.defaultFor("live", "thought", true)),
     ).toBe(false);
     expect(isDisclosureOpenIn(snapshot, scopedDisclosureId("live", "unlisted"), true)).toBe(true);
+  });
+});
+
+describe("baseline-skipping reads", () => {
+  test("ignoreBaseline resolves explicit first, then the fallback, never the scope baseline", () => {
+    const store = createDisclosureStore();
+    const key = scopedDisclosureId("live", "tool");
+    store.beginBaseline("live", ["tool"], true);
+    // Without the option the open baseline wins over any fallback.
+    expect(store.isOpen(key, false)).toBe(true);
+    // With it, the baseline is skipped: an explicit choice still outranks
+    // everything, and only then does the fallback answer.
+    expect(isDisclosureOpenIn(store.getState(), key, false, { ignoreBaseline: true })).toBe(false);
+    expect(isDisclosureOpenIn(store.getState(), key, true, { ignoreBaseline: true })).toBe(true);
+    store.setOpen(key, true);
+    expect(isDisclosureOpenIn(store.getState(), key, false, { ignoreBaseline: true })).toBe(true);
+    store.setOpen(key, false);
+    expect(isDisclosureOpenIn(store.getState(), key, true, { ignoreBaseline: true })).toBe(false);
   });
 });
 

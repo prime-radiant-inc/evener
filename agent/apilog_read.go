@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/llm/apilog"
 )
 
@@ -31,8 +32,14 @@ const (
 	apiLogUnknownOutsideRange apiLogSettlementState = "unknown_outside_range"
 )
 
-var openAPILogFile = func(path string) (io.ReadCloser, error) {
-	return os.Open(path)
+var openAPILogFile = func(path, root string) (io.ReadCloser, error) {
+	// When root is provided, OpenRegularBeneathRoot walks every intermediate
+	// component via openat(O_NOFOLLOW), closing the intermediate-component
+	// TOCTOU window. See openTranscriptFile for the full rationale.
+	if root != "" {
+		return execenv.OpenRegularBeneathRoot(path, root)
+	}
+	return execenv.OpenRegularNoFollow(path)
 }
 
 type apiLogBodyEvidence struct {
@@ -83,7 +90,7 @@ type apiLogReadMeta struct {
 }
 
 type apiLogReadEnvelope struct {
-	TranscriptRef            string                `json:"transcript_ref"`
+	TranscriptRef            string                `json:"transcript_ref,omitempty"`
 	Source                   string                `json:"source"`
 	CredentialValuesExcluded bool                  `json:"credential_values_excluded"`
 	Records                  []apiLogRecordSummary `json:"records"`
@@ -91,7 +98,7 @@ type apiLogReadEnvelope struct {
 }
 
 type apiLogAttemptEnvelope struct {
-	TranscriptRef            string                  `json:"transcript_ref"`
+	TranscriptRef            string                  `json:"transcript_ref,omitempty"`
 	Source                   string                  `json:"source"`
 	CredentialValuesExcluded bool                    `json:"credential_values_excluded"`
 	Attempt                  apiLogRecordSummary     `json:"attempt"`
@@ -137,8 +144,8 @@ func apiLogPathForTranscript(path string) string {
 	return strings.TrimSuffix(path, ".transcript.jsonl") + ".api.jsonl"
 }
 
-func readAPILogSummary(ctx context.Context, path, ref, rangeArg string) (any, error) {
-	retained, totalRecords, partialTail, err := decodeAPILogSummaries(ctx, path, rangeArg)
+func readAPILogSummary(ctx context.Context, path, root, ref, rangeArg string) (any, error) {
+	retained, totalRecords, partialTail, err := decodeAPILogSummaries(ctx, path, root, rangeArg)
 	if err != nil {
 		return nil, err
 	}
@@ -316,8 +323,8 @@ func apiLogIndentedSize(value any, prefix string) (int, error) {
 	return len(encoded), nil
 }
 
-func readAPILogAttempt(ctx context.Context, path, ref, attemptID, body string, offsetBytes, maxBytes int) (any, error) {
-	attempt, summary, partialTail, settlement, err := findAPILogAttempt(ctx, path, attemptID)
+func readAPILogAttempt(ctx context.Context, path, root, ref, attemptID, body string, offsetBytes, maxBytes int) (any, error) {
+	attempt, summary, partialTail, settlement, err := findAPILogAttempt(ctx, path, root, attemptID)
 	if err != nil {
 		return nil, err
 	}
@@ -517,11 +524,11 @@ func (r apiLogContextReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-func findAPILogAttempt(ctx context.Context, path, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, *apilog.APIAttemptGroupSettlement, error) {
+func findAPILogAttempt(ctx context.Context, path, root, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, *apilog.APIAttemptGroupSettlement, error) {
 	if err := ctx.Err(); err != nil {
 		return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, err
 	}
-	f, err := openAPILogFile(path)
+	f, err := openAPILogFile(path, root)
 	if err != nil {
 		return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, fmt.Errorf("open API log: %w", err)
 	}
@@ -593,13 +600,13 @@ func newAPILogSummaryRetention(rangeArg string) *apiLogSummaryRetention {
 	}
 	switch {
 	case strings.HasPrefix(rangeArg, "start:"):
-		if _, ok := parsePositiveInt(strings.TrimPrefix(rangeArg, "start:")); ok {
+		if _, ok := turnwindow.ParsePositiveInt(strings.TrimPrefix(rangeArg, "start:")); ok {
 			retention.mode = apiLogRetainStart
 			retention.start = 0
 			retention.end = maxAPILogRecords - 1
 		}
 	case strings.Contains(rangeArg, "-"):
-		lo, hi, ok := parseDashRange(rangeArg)
+		lo, hi, ok := turnwindow.ParseDash(rangeArg)
 		if ok {
 			retention.mode = apiLogRetainExact
 			retention.start = lo
@@ -651,11 +658,11 @@ func (r *apiLogSummaryRetention) result() []apiLogRecordSummary {
 	return result
 }
 
-func decodeAPILogSummaries(ctx context.Context, path, rangeArg string) ([]apiLogRecordSummary, int, bool, error) {
+func decodeAPILogSummaries(ctx context.Context, path, root, rangeArg string) ([]apiLogRecordSummary, int, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, 0, false, err
 	}
-	f, err := openAPILogFile(path)
+	f, err := openAPILogFile(path, root)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("open API log: %w", err)
 	}
@@ -753,7 +760,7 @@ func selectAPILogRange(spec string, recordCount int) (start, end int, normalized
 	}
 	start, end, err := parseRangeErr(normalized, recordCount)
 	if err != nil {
-		warning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", spec, rangeAcceptedGrammar)
+		warning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", spec, turnwindow.Grammar)
 		normalized = fmt.Sprintf("last:%d", defaultAPILogRecords)
 		start, end, _ = parseRangeErr(normalized, recordCount)
 	}

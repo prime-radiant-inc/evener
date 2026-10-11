@@ -340,7 +340,6 @@ func runVerboseE2EChild(t *testing.T) {
 		"--dir", t.TempDir(),
 		"--state-dir", t.TempDir(),
 		"--run-dir", t.TempDir(),
-		"--no-project-prompts",
 		"--verbose",
 	}
 	if err := runServeWithDeps(args, deps); err != nil {

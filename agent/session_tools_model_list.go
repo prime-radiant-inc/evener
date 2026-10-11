@@ -15,8 +15,9 @@ func registerModelListTool(reg *tool.Registry, s *Session) error {
 		Definition: tool.DefModelList(), ReadOnly: true,
 		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			cursor, _ := args["cursor"].(string)
-			count := modelavailability.DefaultInlineMaxCount
-			bytes := modelavailability.DefaultInlineMaxBytes
+			// Zero leaves a bound unspecified, for Page to fill from the
+			// cursor or the defaults.
+			count, bytes := 0, 0
 			if n, ok := args["max_count"].(float64); ok && n > 0 {
 				count = int(n)
 			}
@@ -26,7 +27,13 @@ func registerModelListTool(reg *tool.Registry, s *Session) error {
 			if count > modelavailability.DefaultInlineMaxCount || bytes > modelavailability.DefaultInlineMaxBytes {
 				return nil, errors.New("page bounds exceed contract")
 			}
-			return s.modelSnapshot.Page(cursor, count, bytes)
+			page, err := s.modelSnapshot.Page(cursor, count, bytes)
+			if err != nil {
+				// A non-nil value beside an error is rendered instead of the
+				// error, so the model would see an empty page.
+				return nil, err
+			}
+			return page, nil
 		},
 	})
 }

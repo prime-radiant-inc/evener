@@ -94,6 +94,37 @@ fixture mode disturbs nothing else.
 
 **Verified:** 2026-09-08. **Expect:** fail.
 
+## Trailing held-steer stack column (`verifyHeldSteerColumn()` /
+`inspectHeldSteerColumn()`, the `?heldtail=1` fixture)
+
+Asserts the pending-ghost column regression: HeldSteerStack renders every
+held steer/drain/promote entry as the transcript's trailing virtual-list row
+(Session's `trailingRow`), outside TurnBlock's `.turn` column, so without a
+measure rule of its own the ghosts start at the pane's raw left edge while
+every delivered message above sits clamped and centered - the same
+trailing-row rule `.intentGroup` and AskDock's `.dock` already carry. The
+horizontal-overflow scan cannot see this (nothing escapes a scroller), so
+this compares the `[data-testid="held-steer-stack"]` box against a
+`[data-testid="turn-block"]` box directly at 1024px. The fixture seeds its
+one ghost through the real durable outbox path (`enqueueIntent` + the shared
+projection refresh), never a direct store write.
+
+**Mutation performed:** removed `max-width: var(--session-measure)` and
+`margin-inline: auto` from `.stack` in
+`panes/session/transcript/messages/heldsteerstack.module.css` (i.e. the
+pre-fix state - this guard was written red-first against exactly that CSS).
+
+**Result before restore:** FAIL -
+`held steer column ... FAIL - {"stackFound":true,"stackLeft":24,"stackRight":985,"turnLeft":152.5,"turnRight":856.5}`
+(the stack spanned the full 961px pane content box; the turn column held its
+704px measure at 152.5-856.5). Every other assertion group stayed PASS, so
+the fixture mode disturbs nothing else.
+
+**Result after restore:** PASS -
+`held steer column ... PASS - trailing held-steer stack shares the turn content column`.
+
+**Verified:** 2026-09-27. **Expect:** fail.
+
 ## Footer visibility predicate (`isElementVisible` in `src/dev/guardVisibility.ts`) — kata bsq9
 
 `footer.effortVisible` / `contextVisible` / `queueVisible` all rest on one

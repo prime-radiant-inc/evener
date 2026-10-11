@@ -1,8 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { EmptyState } from "./index";
-
-afterEach(cleanup);
 
 test("renders the title", () => {
   render(<EmptyState title="No sessions yet" />);

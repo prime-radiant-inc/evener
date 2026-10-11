@@ -112,7 +112,7 @@ the area they exercise.
 - `web-thread-clear-replaces-session.md` — web command-palette clear replaces
   the live instance while preserving the stable session ref and keeping the
   pane usable for a new turn (issue `#139`).
-- `status-vocabulary-roundtrip.md` — the attainable your-move and
+- `status-vocabulary-roundtrip.md` — the attainable needs-you and
   question-waiting states read the same across the web rail, the TUI
   dashboard row, and the TUI session header; a deterministic gate pins
   the whole `hubapi.StateWord` vocabulary (Track A §1-2).
@@ -615,6 +615,17 @@ model to do the right thing, so they are also where model tiers separate.
   not substring) on evener's shell tool (Claude name `Bash`), runs
   in exec-form (`args`, no shell), and exits 0 without blocking; a
   `"Bas"` matcher does NOT fire (commits `a4685d3d`, `28bd828e`).
+
+## Native app (device only)
+
+- `native-mermaid-on-device.md` — the manual on-device runbook for
+  inline mermaid diagrams: the bundled page renders under its
+  `default-src 'none'` CSP on iOS and Android, theme switches re-render
+  mounted diagrams, invalid mermaid shows source + note, tap-to-open
+  reaches the fullscreen viewer, VoiceOver/TalkBack expose the message
+  actions plus "Open fullscreen", FlatList recycling keeps the
+  height-cached placeholder, and the fullscreen viewer's zoom/source/copy
+  work. Needs a physical iPhone and a physical Android phone.
 
 ## Open katas surfaced while writing scenarios
 

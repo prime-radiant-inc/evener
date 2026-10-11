@@ -11,6 +11,7 @@ export interface SegmentedControlOption<T extends string = string> {
 
 export interface SegmentedControlProps<T extends string = string> {
   label: string;
+  hideLabel?: boolean;
   value: T;
   options: readonly SegmentedControlOption<T>[];
   onChange(value: T): void;
@@ -78,6 +79,7 @@ function stepEnabledIndex<T extends string>(
 
 export function SegmentedControl<T extends string = string>({
   label,
+  hideLabel = false,
   value,
   options,
   onChange,
@@ -143,13 +145,16 @@ export function SegmentedControl<T extends string = string>({
 
   return (
     <div className={CLASS.root}>
-      <div id={labelId} className={CLASS.label}>
-        {label}
-      </div>
+      {hideLabel ? null : (
+        <div id={labelId} className={CLASS.label}>
+          {label}
+        </div>
+      )}
       <div
         id={id ?? generatedGroupId}
         role="radiogroup"
-        aria-labelledby={labelId}
+        aria-label={hideLabel ? label : undefined}
+        aria-labelledby={hideLabel ? undefined : labelId}
         aria-describedby={ariaDescribedby}
         aria-orientation="horizontal"
         aria-disabled={disabled ? "true" : undefined}

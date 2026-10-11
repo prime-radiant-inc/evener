@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -10,6 +12,161 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 )
 
+func TestMemoryGenericDelivery(t *testing.T) {
+	// The fixture is produced and checked by agent.TestMemoryGenericDelivery,
+	// using real session memory tools, retention, recovery and ProjectTurn.
+	raw, err := os.ReadFile("../../agent/testdata/toolwire/memory.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Items []appwire.ThreadItem `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	m := newSessionHubModel(nil)
+	m.detail.Ref = "local:memory-fixture"
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "memory-fixture", Ref: m.detail.Ref, Items: fixture.Items,
+	}).Notification})
+	got := updated.(hubModel)
+	for _, name := range []string{"memory_read", "memory_search"} {
+		found := false
+		for _, msg := range got.session.messages {
+			if msg.Tool == nil || msg.Tool.Name != name {
+				continue
+			}
+			found = true
+			ref := "artifact:memoryFixture1"
+			if name == "memory_search" {
+				ref = "artifact:memoryFixture2"
+			}
+			msg.Tool.Expanded = true
+			rendered := msgrender.RenderToolCall(*msg.Tool, 180, false)
+			if !strings.Contains(rendered, "opaque-delivery-001-") || !strings.Contains(rendered, ref) {
+				t.Fatalf("%s lost evidence: %s", name, rendered)
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s in generic TUI adapter", name)
+		}
+	}
+}
+
+// memoryContextWireItem returns one recorded case from the memory-context
+// corpus, which agent.TestMemoryContextWireFixtures produces from the real
+// refresh producer and projector.
+func memoryContextWireItem(t *testing.T, name string) appwire.ThreadItem {
+	t.Helper()
+	raw, err := os.ReadFile("../../agent/testdata/memorycontextwire/events.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Case string             `json:"case"`
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if c.Case == name {
+			return c.Item
+		}
+	}
+	t.Fatalf("no %s case in the memory-context corpus", name)
+	return appwire.ThreadItem{}
+}
+
+// renderDeliveredSystemItem delivers item to a session hub model the way a
+// history update does and renders the system message it becomes.
+func renderDeliveredSystemItem(t *testing.T, item appwire.ThreadItem) string {
+	t.Helper()
+	rendered := renderDeliveredSystemItems(t, item)
+	if len(rendered) != 1 {
+		t.Fatalf("delivered item became %d system messages, want 1", len(rendered))
+	}
+	return rendered[0]
+}
+
+// renderDeliveredSystemItems delivers items in one history update and renders
+// the system messages they become, in order.
+func renderDeliveredSystemItems(t *testing.T, items ...appwire.ThreadItem) []string {
+	t.Helper()
+	m := newSessionHubModel(nil)
+	m.detail.Ref = "local:memory-context-fixture"
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: "memory-context-fixture", Ref: m.detail.Ref, Items: items,
+	}).Notification})
+	var rendered []string
+	for _, msg := range updated.(hubModel).session.messages {
+		if msg.Kind == transcript.MsgSystem {
+			rendered = append(rendered, msgrender.RenderMessage(msg, 120, false))
+		}
+	}
+	return rendered
+}
+
+// An index change section reads as the changed lines it carries, not as a full
+// index: the unchanged line it leaves out stays out.
+func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "index-change-project"))
+	if !strings.Contains(rendered, "opaque-change-added") || !strings.Contains(rendered, "opaque-change-removed") {
+		t.Fatalf("index change lost its changed lines: %s", rendered)
+	}
+	if strings.Contains(rendered, "opaque-change-kept") {
+		t.Fatalf("index change rendered the unchanged line, as a full index would: %s", rendered)
+	}
+}
+
+// A truncated index refresh renders its quoted index.
+func TestMemoryContextTruncatedIndexRendersItsIndex(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "truncated-project"))
+	if !strings.Contains(rendered, strings.Repeat("x", 64)) {
+		t.Fatalf("truncated-project lost its quoted index: %.200s", rendered)
+	}
+}
+
+// One message carrying both scopes' changes and a page notice reaches the
+// TUI as one system message per section, each reading as its own scope's news.
+func TestMemoryContextCombinedMessageRendersEverySection(t *testing.T) {
+	cases := []struct{ name, want string }{
+		{"index-change-personal", "opaque-personal-added"},
+		{"index-change-project", "opaque-change-added"},
+		{"page-notice-project", "opaque-notice-changed.md"},
+	}
+	var items []appwire.ThreadItem
+	for _, c := range cases {
+		items = append(items, memoryContextWireItem(t, c.name))
+	}
+	rendered := renderDeliveredSystemItems(t, items...)
+	if len(rendered) != len(cases) {
+		t.Fatalf("combined message became %d system messages, want %d", len(rendered), len(cases))
+	}
+	for i, c := range cases {
+		if !strings.Contains(rendered[i], c.want) {
+			t.Fatalf("%s lost %s: %s", c.name, c.want, rendered[i])
+		}
+	}
+}
+
+// A partial index refresh shows the line counting the pages it leaves out.
+func TestMemoryContextPartialIndexRendersNotShownLine(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "truncated-project"))
+	if !strings.Contains(rendered, "Not shown: ") || !strings.Contains(rendered, "untagged") {
+		t.Fatalf("partial index lost its Not shown line: %.400s", rendered)
+	}
+}
+
+// A read-page notice reads as the pages it names.
+func TestMemoryContextPageNoticeRendersPageNames(t *testing.T) {
+	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "page-notice-project"))
+	if !strings.Contains(rendered, "opaque-notice-changed.md") || !strings.Contains(rendered, "opaque-notice-removed.md") {
+		t.Fatalf("page notice lost a page name: %s", rendered)
+	}
+}
+
 func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
@@ -17,42 +174,41 @@ func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 
 	updated, _ := m.Update(hubNotificationMsg{
 		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: "th_1",
-			Ref:      "local:th_1",
-			TurnID:   "turn_1",
-			ItemID:   "agent_1",
-			Delta:    "partial **markdown",
-		}).Notification,
-	})
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item": appwire.ThreadItem{
-				Type:          "commandExecution",
-				ID:            "tool_1",
-				CallID:        "call_1",
-				TurnID:        "turn_1",
-				ToolName:      "shell",
-				ArgumentsJSON: `{"command":"pwd"}`,
-				Status:        appwire.TurnStatusInProgress,
+		notification: *appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+			ThreadID: "th_1", Ref: "local:th_1",
+			Item: appwire.OverlayItem{
+				Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+				TurnID: "turn_1", RoundID: "round_1", StreamID: "round_1/0",
+				Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "partial **markdown"},
 			},
 		}).Notification,
 	})
 	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
 		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item": appwire.ThreadItem{
-				Type:   "agentMessage",
-				ID:     "agent_1",
-				TurnID: "turn_1",
-				Text:   "partial **markdown** final",
-				Status: "completed",
+		notification: *appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+			ThreadID: "th_1", Ref: "local:th_1",
+			Item: appwire.OverlayItem{
+				Key: "tool:call_1", Kind: appwire.OverlayTool, RoundID: "round_1", CallID: "call_1",
+				Item: appwire.ThreadItem{
+					Type:          "commandExecution",
+					ID:            "tool_1",
+					CallID:        "call_1",
+					TurnID:        "turn_1",
+					ToolName:      "shell",
+					ArgumentsJSON: `{"command":"pwd"}`,
+					Status:        appwire.TurnStatusInProgress,
+				},
 			},
+		}).Notification,
+	})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+			ThreadID: "th_1", Ref: "local:th_1",
+			Items: []appwire.ThreadItem{{
+				Type: "agentMessage", ID: "agent_1", TurnID: "turn_1", RoundID: "round_1",
+				Text: "partial **markdown** final", Status: "completed", Version: 1,
+			}},
 		}).Notification,
 	})
 

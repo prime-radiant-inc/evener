@@ -28,6 +28,7 @@ import { threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
+import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
 import { navigate } from "../routing";
@@ -206,13 +207,8 @@ export function splitModelId(id: string): { provider: string; model: string } {
   return { provider: id.slice(0, slash), model: id.slice(slash + 1) };
 }
 
-// /tasks and /status used to branch on isMobileViewport(): desktop toggled the
-// workspace pane, mobile synthesized a click on the session chrome's trigger
-// button (search.js:511-514's `if (btn) btn.click()`). The unified SessionMenu
-// now owns Details/Tasks/Activity at every width, so those triggers never
-// render and the mobile path was a guaranteed no-op. Like the rail adapter,
-// both commands now toggle the workspace pane on ALL viewports.
-function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails"): void {
+// Tasks retains its workspace-pane toggle at every viewport.
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks"): void {
   if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
@@ -628,11 +624,14 @@ export function buildCommands(): Command[] {
     },
     {
       id: "status",
-      title: "Toggle session details",
+      title: "Show session details in Overview",
       hint: "",
       keywords: ["details", "info"],
       scope: "session",
-      run: (ctx) => toggleSessionPane(ctx, "sessionDetails"),
+      run: (ctx) => {
+        if (!ctx.sessionRef) return;
+        activitySidebarStore.getState().openFor(ctx.sessionRef, "about");
+      },
     },
     {
       id: "notes",

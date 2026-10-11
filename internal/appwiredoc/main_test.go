@@ -253,3 +253,108 @@ func TestBuildIncludesInstanceModelEntry(t *testing.T) {
 	}
 	t.Fatal("build() missing InstanceModelEntry")
 }
+
+// TestBuildIncludesHostCredentialPushResult guards the same gap in the push
+// report: HostCredentialPushResult is only ever the element type of
+// HostPushCredentialsResponse.Results — never a method's own Params/Result — so
+// without an explicit registration the protocol reference has no field table
+// for the instance/action/reason a push reports, while
+// appwire-client/typescript/types.gen.ts still emits the interface from the same
+// catalog (roborev review of the 07c push).
+func TestBuildIncludesHostCredentialPushResult(t *testing.T) {
+	d := build()
+	for _, tv := range d.Types {
+		if tv.Name != "HostCredentialPushResult" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"instance", "action", "reason"} {
+			if !fields[name] {
+				t.Fatalf("HostCredentialPushResult missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing HostCredentialPushResult")
+}
+
+// TestBuildIncludesHubNotice guards the same gap RoboRev found on PR 22:
+// HubNotice is only ever the element type of NoticesListResponse.Notices (a
+// method result and a notification payload), never a method's own
+// Params/Result, so without an explicit registration the reference names
+// []appwire.HubNotice with no field table of its own while types.gen.ts
+// still emits the interface.
+func TestBuildIncludesHubNotice(t *testing.T) {
+	d := build()
+	for _, tv := range d.Types {
+		if tv.Name != "HubNotice" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"id", "kind", "subject", "marketplace", "affectedSessions"} {
+			if !fields[name] {
+				t.Fatalf("HubNotice missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing HubNotice")
+}
+
+func TestBuildIncludesSessionActivityResources(t *testing.T) {
+	want := map[string][]string{
+		"SessionActivityAncestor": {"ref", "sessionId", "title"},
+		"SessionActivityContext":  {"ref", "sessionId", "rootRef", "ancestors", "ancestryKnown", "epoch"},
+		"SessionActivityCounts":   {"known", "total", "active", "failed", "completed"},
+		"SessionActivityIssue":    {"ref", "code"},
+		"SessionActivityPage":     {"nextCursor", "complete", "issues"},
+		"SessionDelegate":         {"runGeneration", "reportPreview", "reportPreviewTruncated", "ownerRef", "childRef"},
+		"SessionWatch":            {"ownerRef", "receiverRef", "state", "watch"},
+	}
+	got := make(map[string]typeView)
+	for _, resource := range build().Types {
+		got[resource.Name] = resource
+	}
+	for name, fields := range want {
+		t.Run(name, func(t *testing.T) {
+			resource, ok := got[name]
+			if !ok {
+				t.Fatalf("build() missing nested resource %s", name)
+			}
+			present := make(map[string]bool)
+			for _, field := range resource.Fields {
+				present[field.JSON] = true
+			}
+			for _, field := range fields {
+				if !present[field] {
+					t.Errorf("%s missing wire field %s", name, field)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildIncludesJobOutputPage(t *testing.T) {
+	for _, tv := range build().Types {
+		if tv.Name != "JobOutputPage" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"offsetBytes", "bytesReturned", "totalBytes", "retainedStartBytes", "encoding", "data"} {
+			if !fields[name] {
+				t.Fatalf("JobOutputPage missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing JobOutputPage")
+}

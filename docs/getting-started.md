@@ -43,6 +43,21 @@ curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/insta
   | sudo env PREFIX=/usr/local sh
 ```
 
+To install Evener on another Linux or macOS host from an existing Evener
+installation, use SSH:
+
+```bash
+evener install user@host
+evener install --version snapshot user@host
+```
+
+This sends the reviewed installer over a non-interactive SSH connection. The
+remote host must have `sh`, `curl`, `tar`, `install`, and either `sha256sum` or
+`shasum`, plus outbound HTTPS access to the Evener GitHub release. SSH keys
+should be configured in advance; the command uses `BatchMode=yes` and will not
+prompt for a password. `--prefix`, `--bin-dir`, and `--share-bin-dir` are
+forwarded to the remote installer.
+
 From a source checkout, `make install` builds and installs the same layout;
 `sudo make install-system` uses `/usr/local`. Runtime and config directories
 appear on first run, not at install time.

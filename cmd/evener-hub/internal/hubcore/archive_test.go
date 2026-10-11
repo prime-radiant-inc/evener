@@ -153,9 +153,9 @@ func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
 
 	// Interleave a competing migrator between the caller's schema pre-check and
 	// its write lock: it upgrades the table and writes a source-qualified row.
-	previous := decisionMigrationInterleave
-	decisionMigrationInterleave = func() {
-		decisionMigrationInterleave = nil // the competing migration is one-shot
+	previous := indexMigrationInterleave
+	indexMigrationInterleave = func() {
+		indexMigrationInterleave = nil // the competing migration is one-shot
 		competing := NewArchiveStore(dbPath)
 		if _, err := competing.Decisions(); err != nil {
 			t.Errorf("competing migration: %v", err)
@@ -164,7 +164,7 @@ func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
 			t.Errorf("competing set: %v", err)
 		}
 	}
-	t.Cleanup(func() { decisionMigrationInterleave = previous })
+	t.Cleanup(func() { indexMigrationInterleave = previous })
 
 	store := NewArchiveStore(dbPath)
 	got, err := store.Decisions()
@@ -277,5 +277,56 @@ func fuzzScenarioArchiveStoreDelete(t *testing.T) {
 	got, _ := store.Decisions()
 	if _, present := got[ArchiveKey{Kind: "project", ID: "/a/foo"}]; present {
 		t.Fatalf("archive row should be gone: %v", got)
+	}
+}
+
+// The attention watcher reads Decisions every few seconds, so an unchanged
+// table must not reopen the database, and every write must show in the next
+// read.
+func TestArchiveStoreDecisionsAreCachedUntilAWrite(t *testing.T) {
+	s := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	opens := 0
+	realOpen := s.openDB
+	s.openDB = func(driver, dsn string) (*sql.DB, error) {
+		opens++
+		return realOpen(driver, dsn)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	if err := s.Set("", "session", "s1", true, now); err != nil {
+		t.Fatal(err)
+	}
+	read := func() map[ArchiveKey]bool {
+		t.Helper()
+		got, err := s.Decisions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	key := ArchiveKey{Kind: "session", ID: "s1"}
+	if !read()[key] {
+		t.Fatal("decision missing after Set")
+	}
+	afterFirstRead := opens
+	// A caller that edits its copy must not corrupt the cache.
+	first := read()
+	first[ArchiveKey{Kind: "session", ID: "scribble"}] = true
+	if got := read(); len(got) != 1 || !got[key] {
+		t.Fatalf("cached decisions = %v, want only s1", got)
+	}
+	if opens != afterFirstRead {
+		t.Fatalf("unchanged table reopened the database %d times", opens-afterFirstRead)
+	}
+	if err := s.Set("", "session", "s2", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); len(got) != 2 {
+		t.Fatalf("decisions after Set = %v, want s1 and s2", got)
+	}
+	if err := s.Delete("", "session", "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); len(got) != 1 || got[key] {
+		t.Fatalf("decisions after Delete = %v, want only s2", got)
 	}
 }

@@ -1,10 +1,51 @@
 package tool
 
 import (
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
 )
+
+// MemoryIndexGenerated is the refusal of a write, edit or delete of MEMORY.md
+// at a memory scope's root, which Evener generates from the pages.
+const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
+
+// MemoryDefinition preserves the ordinary tool schema and adds trusted-scope
+// selection. Its path parameter is described as relative to the scope root,
+// since the ordinary tool's description invites a workspace or absolute path.
+func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
+	base.Name = name
+	base.Parameters = CloneSchemaMap(base.Parameters)
+	props := base.Parameters["properties"].(map[string]any)
+	props["scope"] = map[string]any{"type": "string", "enum": []any{"personal", "project"}, "description": "Which memory to use: personal or project."}
+	if param, ok := props["file_path"].(map[string]any); ok {
+		param["description"] = "Path of the memory file, relative to the scope root, such as topic.md or tools/vitest.md; never an absolute path or a file outside memory."
+	}
+	if param, ok := props["path"].(map[string]any); ok {
+		param["description"] = "File or directory to search, relative to the scope root; blank searches the whole scope."
+	}
+	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
+	return base
+}
+
+func DefMemoryRead() llm.ToolDefinition {
+	read := DefReadFile()
+	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	return MemoryDefinition(read, "memory_read")
+}
+
+func DefMemoryDelete() llm.ToolDefinition {
+	return MemoryDefinition(llm.ToolDefinition{
+		Description: "Remove one memory file, not a directory; directories it leaves empty go too. Missing files are a no-op. Its index line goes away on its own; read first, and repair links from other pages separately if needed.",
+		Parameters: map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": map[string]any{"file_path": map[string]any{"type": "string"}},
+			"required":   []string{"file_path"},
+		},
+	}, "memory_delete")
+}
 
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
@@ -14,7 +55,7 @@ func DefReadFile() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path":     map[string]any{"type": "string"},
+				"file_path":     map[string]any{"type": "string", "description": "Path of the file to read."},
 				"offset":        map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
 				"limit":         map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
 				"vision_prompt": map[string]any{"type": "string", "description": "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
@@ -32,8 +73,8 @@ func DefWriteFile() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string"},
-				"content":   map[string]any{"type": "string"},
+				"file_path": map[string]any{"type": "string", "description": "Path of the file to write; parent directories are created."},
+				"content":   map[string]any{"type": "string", "description": "Complete new contents; replaces an existing file entirely."},
 			},
 			"required": []string{"file_path", "content"},
 		},
@@ -48,10 +89,10 @@ func DefListDir() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"path":   map[string]any{"type": "string"},
-				"depth":  map[string]any{"type": "integer"},
+				"path":   map[string]any{"type": "string", "description": "Directory to list; blank means the working root."},
+				"depth":  map[string]any{"type": "integer", "description": "Recursion depth; 1 lists only this directory (default)."},
 				"offset": map[string]any{"type": "integer", "description": "Index of the first entry to return (default 0). Use with limit to page a large directory."},
-				"limit":  map[string]any{"type": "integer", "description": "Maximum entries to return (default 500)."},
+				"limit":  map[string]any{"type": "integer", "description": "Maximum entries to return (default 1000; a page-size budget may return fewer)."},
 			},
 		},
 	}
@@ -65,10 +106,10 @@ func DefEditFile() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path":   map[string]any{"type": "string"},
-				"old_string":  map[string]any{"type": "string"},
-				"new_string":  map[string]any{"type": "string"},
-				"replace_all": map[string]any{"type": "boolean"},
+				"file_path":   map[string]any{"type": "string", "description": "Path of the existing file to edit."},
+				"old_string":  map[string]any{"type": "string", "description": "Exact text to replace; must be unique unless replace_all is true."},
+				"new_string":  map[string]any{"type": "string", "description": "The replacement text."},
+				"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match."},
 			},
 			"required": []string{"file_path", "old_string", "new_string"},
 		},
@@ -77,20 +118,24 @@ func DefEditFile() llm.ToolDefinition {
 
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name:        "shell",
-		Description: "Run a shell command and report stdout, stderr, and exit status.",
+		Name: "shell",
+		Description: "Run a shell command and report stdout, stderr, and exit status. " +
+			"The command runs in Bash with pipefail, so a failed stage fails the whole command; check the exit code. " +
+			"Small foreground output comes back in full. Larger or background output is bounded: a finished command with large output returns a head-and-tail digest and a job_id under which the full output is kept, so there is no need to pipe through head or tail. " +
+			"A background job reports a launch failure at once; once it is running you get its job_id and a notification when it finishes, so it needs no completion marker or redirect. " +
+			"To keep a complete log beyond the retained output, tee inside the command, for example `( make test ) 2>&1 | tee \"$EVENER_SCRATCH_DIR/test.log\"` when EVENER_SCRATCH_DIR is set: pipefail keeps the command's exit status, and tee overwrites the file.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":     map[string]any{"type": "string"},
-				"description": map[string]any{"type": "string"},
+				"command":     map[string]any{"type": "string", "description": "The shell command to run (POSIX: Bash with pipefail)."},
+				"description": map[string]any{"type": "string", "description": "Optional human-facing summary of the command, shown on job surfaces."},
 				"mode": map[string]any{
 					"type":        "string",
 					"enum":        []any{"foreground", "background", "detached"},
 					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect to a file if you need it) and it sends no completion notification.",
 				},
-				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory; absolute paths must stay inside it. Must already exist. Default: your current working directory."},
+				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
 			},
 			"required": []string{"command"},
 		},
@@ -119,6 +164,12 @@ type DelegateSandboxSchema struct {
 }
 
 const delegateModelOverrideDescription = "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."
+
+// shortTaskTitleDescription is the shared "<10 words" contract for a task
+// item's short title, used by both task surfaces: the delegate brief's
+// seeded task_list items (field `title`) and the task_list tool's add items
+// (field `description`).
+const shortTaskTitleDescription = "Short task title, under 10 words."
 
 // DelegateModelDescriptionAdditionBudget reports how many bytes may be
 // appended to the model parameter's fixed description without exceeding the
@@ -177,7 +228,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here.",
+					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here. Each delegation also has its own durable artifacts directory, returned as artifacts_dir on creation — reference it in briefs and later seats, and file a seat's report there yourself, or let a seat with an unconfined shell write to it; a confined (sandboxed) seat can write only inside its workspace and its scratch directory, and its scratch is deleted when the session is archived, so have such a seat return its report in the result instead. Route by role: keep a read-only / non-writing seat scouting rather than mandating changes; when two or more writers would collide in your checkout, give the delegate isolation=\"worktree\"; the default (one writer, no conflict) keeps sharing your tree.",
 				},
 				"task_list": map[string]any{
 					"type":        "array",
@@ -186,7 +237,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
-							"title":            map[string]any{"type": "string", "description": "Short task title, under 10 words."},
+							"title":            map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
 							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
 							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
@@ -207,6 +258,10 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 					"type":        "string",
 					"enum":        []string{"worktree"},
 					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot create, switch, or remove worktrees itself; if it also carries a delegation_allowance it gets a dispose-only manage_worktree to retire its own sub-delegates' isolation lanes.",
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Short mnemonic name for the delegate (e.g. \"parser-rename\"), surfaced in job_list rows, job_status, and completion notifications so siblings read apart. Accepted for every delegate; addressing never uses it — delegate_send and every other surface stay keyed to the delegate id. With isolation:\"worktree\" it also names the lane's git branch, so `git branch` and merges read clearly; that spawn is refused if the name is invalid or the branch already exists, and an absent name branches with the opaque delegate id.",
 				},
 				"sandbox": map[string]any{
 					"type":        "string",
@@ -290,8 +345,8 @@ func DefDelegateSend() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"to":          map[string]any{"type": "string", "description": "A child delegate_id (`dlg_...`) owned by this session, or `caller` from within a delegate to steer its controlling caller."},
-				"message":     map[string]any{"type": "string"},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; delivery to a running delegate or caller returns once delivered."},
+				"message":     map[string]any{"type": "string", "description": "The message to deliver to the addressed delegate or caller."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; the reply also carries, under earlier_results, any earlier result of that delegate you had not yet received; delivery to a running delegate or caller returns once delivered."},
 			},
 			"required": []string{"to", "message"},
 		},
@@ -308,9 +363,9 @@ func DefModelList() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor; omit for the first page."},
-				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128},
-				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096},
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor from the previous page; omit for the first page. A cursor is bound to the max_count and max_bytes of the page that returned it: omit them or repeat those values with it."},
+				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},
 		},
 	}
@@ -341,6 +396,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
 		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
 		"Observers report findings with `communicate(end_turn=true)`. " +
+		"A `self` watch on your own events can feed itself: when a frame responds to this watch's earlier frames, it carries a system reminder saying so and how many exchanges deep the loop runs. As the depth grows, stop acting on those frames, and clear the watch if the loop goes on; Evener drops frames past a depth limit. For sustained watching of your own work, use an observer delegate when you can start one, and use a timer for state outside Evener. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
@@ -401,27 +457,29 @@ func DefJobStatus() llm.ToolDefinition {
 
 func DefJobList() llm.ToolDefinition {
 	strictFalse := false
-	statusEnum := []any{"running", "idle", "completed", "failed", "exhausted", "cancelled", "stopped"}
+	statusEnum := []any{"running", "idle", "completed", "failed", "command_exited_nonzero", "command_killed", "exhausted", "cancelled", "stopped"}
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. Observer sidecars report findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. Observer sidecars report findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"status": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string", "enum": statusEnum},
+					"type":        "array",
+					"items":       map[string]any{"type": "string", "enum": statusEnum},
+					"description": "Keep only rows in these statuses (any listed value matches).",
 				},
 				"type": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string", "enum": typeEnum},
+					"type":        "array",
+					"items":       map[string]any{"type": "string", "enum": typeEnum},
+					"description": "Keep only rows of these types (any listed value matches).",
 				},
-				"include_nested":      map[string]any{"type": "boolean", "default": false},
+				"include_nested":      map[string]any{"type": "boolean", "default": false, "description": "Include nested rows owned by child sessions (spawned under this session's tree)."},
 				"include_descendants": map[string]any{"type": "boolean", "default": false, "description": "Walk the live descendant tree: include visible stable delegates and every live descendant's shell jobs, each annotated with owner_session_id and depth. A dead descendant contributes only retained durable state."},
-				"limit":               map[string]any{"type": "integer", "default": 50, "maximum": 100},
+				"limit":               map[string]any{"type": "integer", "default": 50, "maximum": 100, "description": "Maximum rows to return (default 50, at most 100)."},
 				"offset":              map[string]any{"type": "integer", "default": 0, "description": "Window start into the newest-first listing; use with limit to page (footer reports 'showing A-B of N jobs')."},
 			},
 			"required": []any{},
@@ -439,7 +497,7 @@ func DefJobStop() llm.ToolDefinition {
 			"properties": map[string]any{
 				"target":           map[string]any{"type": "string", "description": "A shell job_id (`job_...`) or stable delegate_id (`dlg_...`)."},
 				"max_wait_ms":      map[string]any{"type": "integer", "description": "0 (default): request the stop and return. >0: wait up to this many ms for shell termination or stable delegate subtree-stop settlement."},
-				"include_children": map[string]any{"type": "boolean", "default": false},
+				"include_children": map[string]any{"type": "boolean", "default": false, "description": "For a shell target, also stop its nested child jobs."},
 			},
 			"required": []string{"target"},
 		},
@@ -454,11 +512,14 @@ func DefGrep() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern":          map[string]any{"type": "string"},
-				"path":             map[string]any{"type": "string"},
-				"glob_filter":      map[string]any{"type": "string"},
-				"case_insensitive": map[string]any{"type": "boolean"},
-				"max_results":      map[string]any{"type": "integer"},
+				"pattern":          map[string]any{"type": "string", "description": "Regex pattern to match in file contents."},
+				"path":             map[string]any{"type": "string", "description": "File or directory to search; blank searches from the working root."},
+				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter for searched files, e.g. *.go; dotfiles and gitignored paths are always excluded."},
+				"case_insensitive": map[string]any{"type": "boolean", "description": "Match the pattern case-insensitively."},
+				"max_results": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of results to return: lines, file paths, or count entries by output mode. Defaults to 100.",
+				},
 				"context_lines": map[string]any{
 					"type":        "integer",
 					"description": "Lines of context to include before and after each match, 0-10 (default 0).",
@@ -482,8 +543,8 @@ func DefGlob() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern":         map[string]any{"type": "string"},
-				"path":            map[string]any{"type": "string"},
+				"pattern":         map[string]any{"type": "string", "description": "Glob pattern for file paths, e.g. **/*.go or *.{ts,tsx}."},
+				"path":            map[string]any{"type": "string", "description": "Base directory to match in; blank means the working root."},
 				"include_ignored": map[string]any{"type": "boolean", "description": "Include dotfiles/dirs and gitignored paths in results (excluded by default)."},
 			},
 			"required": []string{"pattern"},
@@ -638,8 +699,41 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
+// Why a root session's communicate call ends its turn: done (nothing waits
+// on the human partner), needs_response (the agent cannot go on until its
+// human partner answers or acts), or waiting_on_work (work the agent started
+// will wake it). Offered only where someone can answer the session; only
+// needs_response rests the session awaiting.
+const (
+	CommunicateEndReasonDone          = "done"
+	CommunicateEndReasonNeedsResponse = "needs_response"
+	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
+)
+
+// CommunicateEndReasons lists the end_reason values in the order the
+// parameter advertises them.
+var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
+
+// WithCommunicateEndReason returns a copy of a communicate definition that
+// also offers end_reason. Only a root someone can answer gets it: nobody
+// responds to a delegate's or a headless root's resting state.
+func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(def.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		return def
+	}
+	props["end_reason"] = map[string]any{
+		"type":        "string",
+		"enum":        slices.Clone(CommunicateEndReasons),
+		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.",
+	}
+	def.Parameters = params
+	return def
+}
+
 func DefTaskList(effortLevels []string) llm.ToolDefinition {
-	reasoningDesc := "Raise or lower the reasoning budget for this task. Use \"inherit\" (or omit) to keep the session's configured effort."
+	reasoningDesc := "Raise or lower the reasoning budget for this task. On create, \"inherit\" or omitting it uses the session's configured effort. On update, \"inherit\" or omitting it leaves the task's effort unchanged."
 	reasoningSchema := map[string]any{
 		"type":        "string",
 		"description": reasoningDesc,
@@ -656,8 +750,10 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 		// Strict is explicitly false: the OpenAI Responses adapter defaults
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
-		// violation) or "depends_on": [] (which clears deps) on every update
-		// item. Opting out keeps optional fields genuinely omittable.
+		// violation) or "depends_on": [] on every update item. Opting out keeps
+		// optional fields genuinely omittable; task_list's NormalizeArgs still
+		// drops update values that mean no change (its updatePlaceholders
+		// table), since some models send them anyway.
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -675,8 +771,8 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 								"enum":        []string{"research", "implement", "verify", "fix"},
 								"description": "Task type. Use 'fix' for targeted remediation after a specific failure or review finding.",
 							},
-							"description": map[string]any{"type": "string"},
-							"prompt":      map[string]any{"type": "string"},
+							"description": map[string]any{"type": "string", "description": shortTaskTitleDescription},
+							"prompt":      map[string]any{"type": "string", "description": "Full, self-contained instruction for the task."},
 							"depends_on": map[string]any{
 								"type":        "array",
 								"items":       map[string]any{"type": "integer"},
@@ -694,13 +790,13 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
-							"id":     map[string]any{"type": "integer"},
-							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
-							"notes":  map[string]any{"type": "string", "description": "Document what you tried and why it failed or succeeded. Appended to the task's notes log."},
+							"id":     map[string]any{"type": "integer", "description": "ID of the existing task to change."},
+							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}, "description": "New status; omit to leave unchanged. Marking done auto-starts the next task."},
+							"notes":  map[string]any{"type": "string", "description": "Only when something happened that a later step needs: a failure and why, a decision, a surprise. Leave it out when you only change status. Appended to the task's notes log."},
 							"depends_on": map[string]any{
-								"type":        "array",
+								"type":        []string{"array", "null"},
 								"items":       map[string]any{"type": "integer"},
-								"description": "Set dependencies. [] clears them. Omit to leave unchanged.",
+								"description": "Replace the dependencies with these task IDs. Omit it, or send [] or null, to leave them unchanged. [0] on its own clears them.",
 							},
 							"reasoning_effort": reasoningSchema,
 						},
@@ -733,7 +829,7 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "find_session_transcripts",
-		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
+		Description: "Find archived prior sessions (your own and others on this machine) by content or lineage for audit, forensics, prior-session search, or recovering compacted context. Active delegate/watch work uses the current tool result, job output, notification, or observer callback as working evidence. With no arguments, return the catalog of recent sessions, newest first. With query, search session content. With children_of=<transcript_ref>, return the sessions that ref spawned (its subagents and forks). Returns session records carrying a transcript_ref; hand a transcript_ref to read_transcript when you need the archived conversation. A metadata-only hit (title or original prompt) may carry a snippet whose seq is -1; that is a display marker, not a turn address — do not pass it to read_transcript. Treat returned content as archived evidence.\n\nExamples: find_session_transcripts({}) — recent sessions; find_session_transcripts({\"query\":\"parser regression\"}) — content search; find_session_transcripts({\"children_of\":\"local:01K…\"}) — sessions that one spawned.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -741,8 +837,20 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 			"properties": map[string]any{
 				"query":       map[string]any{"type": "string", "description": "Case-insensitive substring to match against session content (no regex/boolean). Omit for the plain catalog."},
 				"children_of": map[string]any{"type": "string", "description": "A transcript_ref; return the sessions it spawned (subagents/forks), scoped to that ref's project. Takes precedence over query."},
-				"scope":       map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
-				"limit":       map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
+				"kind":        map[string]any{"type": "string", "enum": []string{"root", "subagent", "fork", "any"}, "description": "Keep only sessions of this lineage kind. \"any\" or omitted applies no kind filter."},
+				"has_children": map[string]any{
+					"type":        "boolean",
+					"description": "Keep only sessions that spawned children (true) or that spawned none (false). Omit for no filter.",
+				},
+				"min_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at least this many turns."},
+				"max_turns":     map[string]any{"type": "integer", "description": "Keep only sessions with at most this many turns."},
+				"updated_after": map[string]any{"type": "string", "description": "RFC3339 timestamp; keep only sessions updated at or after it."},
+				"updated_before": map[string]any{
+					"type":        "string",
+					"description": "RFC3339 timestamp; keep only sessions updated at or before it.",
+				},
+				"scope": map[string]any{"type": "string", "enum": []string{"current_project", "all_projects"}, "description": "Search scope. Defaults to current_project."},
+				"limit": map[string]any{"type": "integer", "description": "Max matches. Defaults to 10, hard max 50."},
 			},
 		},
 	}
@@ -760,11 +868,16 @@ func DoctorEvenerCommands() []string {
 	return []string{"locate", "transcript", "apilog", "jobs", "mutations", "watches", "tree", "turnids", "sessions", "audit", "plugins"}
 }
 
+// DoctorEvenerSelectorDialect is the selector grammar phrase shared by the
+// definition's prose and the agent-layer dispatcher's usage errors, so the
+// schema and the errors cannot drift apart.
+const DoctorEvenerSelectorDialect = "local:<id>, proj:<project-id>:<id>, or bare <id>"
+
 func DefDoctorEvener() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "doctor_evener",
-		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur>, bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health). First positional in the CLI is the `selector` argument here: local:<id>, proj:<hash>:<id>, or a bare <id> searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
+		Description: "Read-only forensic inspection of evener durable state — the in-process equivalent of the `evener doctor` CLI, run against this session's own state root by default (no shell, no PATH, no cwd dependence). Commands: locate (resolve a selector to its file paths), transcript (render turns; count=<tool> for the structural invocation count; health=true for mechanical per-session metrics), apilog (API-call diagnostics: empties, errors, cache spikes, summary, validate, recompute, health), jobs (job records for a session, or one --job), mutations (client-mutation journal and queue), watches (distinct deliveries, provenance, breaker telemetry; self_loops=true for runaway-only), tree (parent/delegate/observer tree; observers=true), turnids (reserved-turn-id sweep), sessions (enumerate sessions; since=<dur>, bucket=<id>), audit (run a runbook's mechanical checks over a session set; runbook required, sessions xor since), plugins (plugin-store health). First positional in the CLI is the `selector` argument here: " + DoctorEvenerSelectorDialect + ", searched across buckets. Results are the CLI's --json struct shapes. Read-only: it never mutates state (the plugins command's store-writability probe creates and removes one temp file, mirroring the CLI).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -775,11 +888,11 @@ func DefDoctorEvener() llm.ToolDefinition {
 					"enum":        DoctorEvenerCommands(),
 					"description": "Doctor subcommand, matching `evener doctor <cmd>`.",
 				},
-				"selector":  map[string]any{"type": "string", "description": "Session selector: local:<id>, proj:<hash>:<id>, or bare <id>. Required by selector-taking commands; rejected by sessions/audit/turnids/plugins."},
+				"selector":  map[string]any{"type": "string", "description": "Session selector: " + DoctorEvenerSelectorDialect + ". Required by selector-taking commands; rejected by sessions/audit/turnids/plugins."},
 				"state_dir": map[string]any{"type": "string", "description": "State root override. Defaults to this session's own state root. Rejected by plugins (the plugin store lives in the config root, not a state root)."},
 				"count":     map[string]any{"type": "string", "description": "transcript: print the structural invocation count of this tool name."},
 				"health":    map[string]any{"type": "boolean", "description": "transcript/apilog: mechanical health metrics / one-line API-health verdict."},
-				"range":     map[string]any{"type": "string", "description": "transcript: turn window: last:N | start:N | A-B."},
+				"range":     map[string]any{"type": "string", "description": "transcript: window of read_transcript turn numbers, with read_transcript's grammar: last:N | start:N | N-M. Omit for the whole transcript; a malformed range also renders it, with range_warning. Entries read_transcript omits carry no turn number and render with the turn before them."},
 				"text_max":  map[string]any{"type": "integer", "description": "transcript: byte cap on each turn's rendered text and tool-result previews."},
 				"full_text": map[string]any{"type": "boolean", "description": "transcript: render turns whole, with no byte cap."},
 				"empty":     map[string]any{"type": "boolean", "description": "apilog: only empty responses."},
@@ -946,8 +1059,8 @@ func DefReadTranscript() llm.ToolDefinition {
 			"properties": map[string]any{
 				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
 				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
-				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
-				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
+				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". doctor_evener transcript uses the same turn numbers. Omit for the default last 40, or for just the expanded turn with expand_turn."},
+				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Without range the markdown shows only Turn N and its paired tool results; with range it shows that window plus Turn N. Continue with offset_bytes from the returned handle."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
 				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
 				"context_lines": map[string]any{
@@ -998,8 +1111,8 @@ func DefAskUser() llm.ToolDefinition {
 								"items": map[string]any{
 									"type": "object",
 									"properties": map[string]any{
-										"label":       map[string]any{"type": "string"},
-										"detail":      map[string]any{"type": "string"},
+										"label":       map[string]any{"type": "string", "description": "Unique option label within the question."},
+										"detail":      map[string]any{"type": "string", "description": "Explanatory text shown with the option."},
 										"recommended": map[string]any{"type": "boolean", "description": "At most one per question; marks the model's suggestion, shown first."},
 									},
 									"required": []string{"label", "detail"},
@@ -1035,8 +1148,9 @@ func DefUpdateGoal() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"status": map[string]any{
-					"type": "string",
-					"enum": []string{"complete", "blocked"},
+					"type":        "string",
+					"enum":        []string{"complete", "blocked"},
+					"description": "complete: genuinely achieved and verified; blocked: truly stuck.",
 				},
 			},
 			"required": []string{"status"},
@@ -1045,23 +1159,38 @@ func DefUpdateGoal() llm.ToolDefinition {
 }
 
 // DefNotesAgentSet returns the tool definition for notes_agent_set.
-// The model calls this to record its one-paragraph session whiteboard.
+// The model calls this to keep its session whiteboard current: a short capsule
+// of the session for a manager (mission and progress, "Now:", "Next:").
 // (Agent tool, not a hub RPC: the daemon handles notes/agent/set in session.
 // Tool names cannot contain slashes — see llm.ValidateToolName — so the agent
 // tool uses snake_case.)
 func DefNotesAgentSet() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "notes_agent_set",
-		Description: `Record your one-paragraph session whiteboard. ` +
-			`Whitespace is collapsed and the note is clamped to 1000 characters. ` +
-			`Setting the same text again is a no-op.`,
+		Description: `Keep your session whiteboard current. ` +
+			`It is a capsule a manager checking on this session reads in ten seconds ` +
+			`to learn what the session is for and where it stands. ` +
+			`Use plain words, with no file paths, ids or jargon. ` +
+			`Write three parts, each on its own line: ` +
+			`a short paragraph with the mission and what is done so far; ` +
+			`one line starting "Now:" with what you are doing; ` +
+			`one or two lines starting "Next:" with what is left. ` +
+			`Set it once you understand the task, update it when a phase finishes, the plan changes, ` +
+			`or you are blocked, and bring it up to date before your final report; ` +
+			`for a job you finish in one go, one update before the report is enough. ` +
+			`Each update replaces the whole whiteboard. ` +
+			`Keep it under 600 characters. Example:` + "\n" +
+			`Fixing the importer's rejected timestamps for the reporting team. ` +
+			`The parser required seconds; I made them optional and added tests, which pass.` + "\n" +
+			`Now: checking the exporter, which uses the same parser.` + "\n" +
+			`Next: fix the exporter the same way, then report back.`,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"note": map[string]any{
 					"type":        "string",
-					"description": "The agent's session note. Empty clears it.",
+					"description": "The whole whiteboard, in the three parts above. Line breaks are kept. Empty clears it.",
 				},
 			},
 			"required": []string{"note"},

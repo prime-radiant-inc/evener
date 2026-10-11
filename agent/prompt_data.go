@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"io/fs"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -12,10 +14,33 @@ import (
 type promptData struct {
 	// Resolution context
 	NonInteractive           bool
-	Provider                 string // the provider INSTANCE name, e.g. "openai-codex", "work-ant" (session_prompts.go assigns s.profile.ID())
-	Agent                    string // public agent name, e.g. "default", "explorer", "coordinator"
 	BaseInstructionsOverride string
-	RolePromptOverride       string
+	// IsSubagent is true for a delegate session (isSubagentSession: a live
+	// spawn, or a session whose persisted meta marks it a subagent, never a
+	// forked root): delegates get their own delegation guidance and none of
+	// the root-only sections.
+	IsSubagent bool
+	// Surface is the provider surface the session's profile speaks
+	// ("openai", "anthropic", ...), for surface-specific guidance.
+	Surface string
+	// Role is the resolved role body: the role prompt override, or the bundled
+	// agent definition's body without its frontmatter.
+	Role string
+	// TurnEndsProcess is true in a one-shot run (`evener run`, and every
+	// delegate under it): the process exits once the turn's work drains, so a
+	// background shell job still running then is stopped instead of waking the
+	// session later.
+	TurnEndsProcess bool
+	// MemoryRead gates the memory guidance section: memory is enabled, bound,
+	// and memory_read is callable. MemorySearch additionally requires
+	// memory_search.
+	MemoryRead   bool
+	MemorySearch bool
+	// MemorySaves is true when the session may be told to save memory (the
+	// memory save tools are callable).
+	MemorySaves bool
+	// ProjectMemory is true when memory is readable and a project id is set.
+	ProjectMemory bool
 
 	// Environment
 	WorkingDir      string
@@ -56,11 +81,6 @@ type promptData struct {
 	HasUseSkill          bool
 	ActivatedSkillBodies []string
 
-	// Tools (three tiers)
-	ProfileTools []toolEntry
-	MCPTools     []toolEntry
-	CustomTools  []toolEntry
-
 	// Tool availability for the current role/session
 	CallableToolNames           []string
 	UnavailableProfileToolNames []string
@@ -74,6 +94,10 @@ type promptData struct {
 	// HasAskUser gates the ask-user prompt section (spec §4.5): true exactly
 	// when ask_user is registered, i.e. an interactive root session (spec §7).
 	HasAskUser bool
+
+	// HasEndReason gates the end_reason guidance: true exactly when the
+	// session's communicate takes end_reason, i.e. a root someone can answer.
+	HasEndReason bool
 
 	// Delegation capability (spec §1, §5): CanDelegate is true when this session
 	// has a grantable allowance (> 0) and the delegation tools are actually
@@ -114,12 +138,6 @@ func (s skillEntry) CatalogNameOrName() string {
 	return s.Name
 }
 
-// toolEntry is a tool for template rendering.
-type toolEntry struct {
-	Name        string
-	Description string
-}
-
 // agentTaskEntry is a summarized default task in a spawnable agent workflow.
 type agentTaskEntry struct {
 	Title                 string
@@ -133,18 +151,6 @@ type agentEntry struct {
 	Description  string
 	DefaultTools string
 	TaskList     []agentTaskEntry
-}
-
-func toolEntriesFromDefinitions(defs []llm.ToolDefinition) []toolEntry {
-	entries := make([]toolEntry, 0, len(defs))
-	for _, td := range defs {
-		desc := strings.TrimSpace(td.Description)
-		if desc == "" {
-			desc = "(no description)"
-		}
-		entries = append(entries, toolEntry{Name: td.Name, Description: desc})
-	}
-	return entries
 }
 
 func toolNamesFromDefinitions(defs []llm.ToolDefinition) []string {
@@ -230,4 +236,25 @@ func formatToolNamesForPrompt(names []string) string {
 // deleted tools is a page the model can only fail.
 func (d promptData) HasTool(name string) bool {
 	return d.CallableTools[name]
+}
+
+// resolveRolePrompt returns the role body and its PROMPT_LOADED source: the
+// role prompt override when one is set, otherwise the bundled agent
+// definition's body with its frontmatter stripped. A bundled definition
+// reports its source even when its body is empty; an agent with no
+// definition, or one that does not parse, has no role and no source.
+func resolveRolePrompt(override, agentName string, agents fs.FS) (string, *promptSource) {
+	if body := strings.TrimSpace(override); body != "" {
+		return body, &promptSource{Label: "config:role_prompt_override", Size: len(body)}
+	}
+	raw, err := fs.ReadFile(agents, agentName+".md")
+	if err != nil {
+		return "", nil
+	}
+	doc, err := frontmatter.Parse(string(raw))
+	if err != nil {
+		return "", nil
+	}
+	body := strings.TrimSpace(doc.Body)
+	return body, &promptSource{Label: "agent:" + agentName, Size: len(body)}
 }

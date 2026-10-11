@@ -1,18 +1,20 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import type { Task, TaskListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { STATUS_TONE, TasksPanel, TasksPanelBody } from "./TasksPanel";
+import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
+import { TasksPanel, TasksPanelBody } from "./TasksPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -73,7 +75,7 @@ function connectFakeClient(): FakeClient {
 
 // Wire-true fixture: the real daemon Task shape (agent/task/task_store.go:
 // 54-79), same fixture family as the package's taskListData.test.ts.
-const TASKS_DATA = [
+const TASKS_DATA: [Task, Task, Task] = [
   { id: 1, type: "implement", description: "Wire up the status row", prompt: "", status: "done" },
   { id: 2, type: "implement", description: "Wire up session actions", prompt: "", status: "in_progress" },
   { id: 3, type: "verify", description: "Gate green", prompt: "", status: "open" },
@@ -81,7 +83,7 @@ const TASKS_DATA = [
 
 const DATED_TASK_CREATED_AT = new Date(2026, 7, 8, 22, 3, 48).toISOString();
 
-const DATED_TASKS = [
+const DATED_TASKS: [Task, Task, Task, Task] = [
   {
     id: 1,
     type: "implement",
@@ -140,10 +142,6 @@ beforeEach(() => {
   resetDisclosureStoreForTests();
 });
 
-afterEach(() => {
-  cleanup();
-});
-
 // --- trigger badge: unchanged, still driven by the live-pushed aggregate ---
 // (model.tasks stays the live signal per the plan's push-driven-plus-fetch-
 // on-open model - it's cheap and already-live without opening anything.)
@@ -194,24 +192,22 @@ test("outcome aggregates infer an omitted remaining for labels", async () => {
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
-// --- STATUS_TONE: pinning test (review finding) --------------------------
-// The mapping shipped entirely untested, which is how `cancelled: "danger"`
-// slipped through: the legacy comment cited for that choice
-// (renderer-format.js's planGlyphForStatus, "a plan item that will not
-// happen reads the same as a failure") governs only the GLYPH shape, not
-// color - the legacy's actual rendering chain (renderer-format.js:496-506
-// planStateClass + style.css:3324-3329) colors a cancelled task's glyph
-// `--ink-3` (the SAME dim neutral as pending's glyph) and its label
-// `--ink-2` with a strikethrough - neutral/receding, never danger-red. In
-// this design system's color-is-attention rule, danger-tinting a routine
-// cancellation would make reprioritized work indistinguishable from a real
-// failure. The ✕ glyph alone carries the "won't happen" distinction.
-test("pins each task status's Chip tone - cancelled reads as neutral/receding, not danger", () => {
-  expect(STATUS_TONE).toEqual({
-    open: "neutral",
-    in_progress: "alive",
-    done: "neutral",
-    cancelled: "neutral",
+// --- STATUS_TOUCH: pinning test (review finding) -------------------------
+// The panel shares the transcript card's TaskCheck glyph family (the
+// 2026-09 task-rendering unification), so the status-to-glyph mapping is the
+// one place the two surfaces could drift. The mapping keeps the cancellation
+// rule the legacy chain already settled (renderer-format.js:496-506 +
+// style.css:3324-3329): a cancelled task's glyph reads as the same dim
+// neutral as pending's, never danger - in this design system's
+// color-is-attention rule, danger-tinting a routine cancellation would make
+// reprioritized work indistinguishable from a real failure. The ✕ mark
+// alone carries the "won't happen" distinction.
+test("pins each task status's TaskCheck touch - open renders the pending box, cancelled stays neutral", () => {
+  expect(STATUS_TOUCH).toEqual({
+    open: "pending",
+    in_progress: "started",
+    done: "done",
+    cancelled: "cancelled",
   });
 });
 
@@ -220,7 +216,7 @@ test("pins each task status's Chip tone - cancelled reads as neutral/receding, n
 test("opening the panel fetches via listTasks(ref) and shows a loading state until it resolves", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
-  const box: { resolve: ((r: { data: unknown }) => void) | null } = { resolve: null };
+  const box: { resolve: ((r: TaskListResponse) => void) | null } = { resolve: null };
   fake.on("evener/tasks/list", () => new Promise((resolve) => (box.resolve = resolve)));
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
@@ -280,7 +276,8 @@ test("an all-settled list shows only the collapsed settled disclosure line", asy
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
   const settled = await screen.findByTestId("task-settled-group");
-  expect(settled.textContent).toContain("Done · settled 2");
+  expect(settled.textContent).toContain("1 completed task");
+  expect(settled.textContent).toContain("1 cancelled task");
   expect(screen.queryByTestId("task-group-live")).toBeNull();
   expect(screen.queryByTestId("task-row")).toBeNull();
 });
@@ -295,6 +292,9 @@ test("a live row shows its latest note inline; a settled row does not", async ()
   expect((await screen.findByTestId("task-latest")).textContent).toContain(
     "Captured the compatibility changes for the release notes.",
   );
+  // The note hangs bare in the prose face, like the card's fresh note - the
+  // old "latest" label chip is gone.
+  expect(screen.queryByText("latest")).toBeNull();
 
   await user.click(screen.getByTestId("task-settled-group-summary"));
   const settledRow = screen
@@ -314,7 +314,54 @@ test("a cancelled row renders struck-through inside the settled group", async ()
 
   const cancelled = screen.getByText("Transition to implementation plan");
   expect(cancelled.getAttribute("data-struck")).toBe("true");
-  expect(cancelled.closest("[data-testid='task-row']")?.textContent).toContain("✕");
+  expect(
+    cancelled
+      .closest("[data-testid='task-row']")
+      ?.querySelector('[data-testid="task-check"]')
+      ?.getAttribute("data-touch"),
+  ).toBe("cancelled");
+});
+
+test("every row leads with the shared TaskCheck glyph matching its task's status", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+
+  const expectTouch = async (description: string, touch: string) => {
+    const row = (await screen.findByText(description)).closest("[data-testid='task-row']");
+    expect(row?.querySelector('[data-testid="task-check"]')?.getAttribute("data-touch")).toBe(touch);
+  };
+  await expectTouch("Implement artifact store", "done");
+  await expectTouch("Transition to implementation plan", "cancelled");
+  await expectTouch("Extend transcript API", "started");
+  await expectTouch("Prepare release notes", "pending");
+});
+
+test("every row carries a visually hidden status word beside its aria-hidden glyph", async () => {
+  // TaskCheck is a picture of state, deliberately aria-hidden; the row's
+  // status rides along visually hidden instead (the same word the card's
+  // rows carry), or a screen reader cannot tell done from cancelled.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+
+  const expectWord = async (description: string, word: string) => {
+    const row = (await screen.findByText(description)).closest("[data-testid='task-row']");
+    const srWord = row?.querySelector("span[class*='srOnly']");
+    expect(srWord?.textContent).toBe(word);
+  };
+  await expectWord("Implement artifact store", "done");
+  await expectWord("Transition to implementation plan", "cancelled");
+  await expectWord("Extend transcript API", "started");
+  await expectWord("Prepare release notes", "pending");
 });
 
 test("a live row shows a relative updated time", async () => {
@@ -437,6 +484,24 @@ test("the prompt disclosure summary reaches the tap floor on a coarse pointer", 
   const rule = coarse![1]!.match(/\.promptSummary\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .promptSummary").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
+
+// jsdom computes no cascade, so the caption step is asserted against the
+// stylesheet's own source - readModuleCss/topRuleBlock from styles/cssBlock,
+// the technique the tap-floor test above uses - comments stripped once up
+// front so an in-rule comment can never satisfy or defeat an assertion. The
+// sizing rationale lives in the .promptDetails rule comment in
+// taskspanel.module.css; this pins BODY text - headings and tables keep the
+// widget's fixed ramp (see widgets/markdown).
+test("the prompt disclosure renders its markdown body text at the caption step, not prose size", () => {
+  const uncommented = readModuleCss(import.meta.url, "taskspanel.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(uncommented).not.toContain("--prose-font-size");
+  const details = topRuleBlock(uncommented, ".promptDetails");
+  expect(details).toContain("font-size: var(--font-size-caption)");
+  const body = topRuleBlock(uncommented, ".promptBody");
+  expect(body, "the caption step comes from .promptDetails; the body wrapper re-declares nothing").not.toMatch(
+    /(^|[;{\s])font-size\s*:/m,
+  );
 });
 
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
@@ -725,11 +790,11 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
 // failure banner over a list that is on screen and current.
 test("a stale overlapping failure does not toast after a newer fetch succeeded", async () => {
   const fake = connectFakeClient();
-  const calls: Array<{ resolve: (value: { data: unknown }) => void; reject: (err: unknown) => void }> = [];
+  const calls: Array<{ resolve: (value: TaskListResponse) => void; reject: (err: unknown) => void }> = [];
   fake.on(
     "evener/tasks/list",
     () =>
-      new Promise<{ data: unknown }>((resolve, reject) => {
+      new Promise<TaskListResponse>((resolve, reject) => {
         calls.push({ resolve, reject });
       }),
   );
@@ -815,7 +880,7 @@ test("a rejection with no text of its own shows the headline alone, with no empt
 
 // Scripts evener/tasks/list to answer `first` once and to reject every later
 // call: the exact shape of a live re-fetch blipping under a reader.
-function failAfterFirstFetch(fake: FakeClient, first: unknown, err: unknown): void {
+function failAfterFirstFetch(fake: FakeClient, first: TaskListResponse["data"], err: unknown): void {
   let calls = 0;
   fake.on("evener/tasks/list", () => {
     calls += 1;
@@ -1048,4 +1113,30 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
   expect(await screen.findAllByTestId("task-row")).toHaveLength(2);
   expect(screen.getByTestId("task-settled-group").textContent).toContain("1");
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+});
+
+test("cancelled history never claims completion and preserves every current and remaining task", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({
+    data: [
+      { id: 1, type: "implement", description: "cancelled work", prompt: "", status: "cancelled" },
+      { id: 2, type: "implement", description: "current first", prompt: "", status: "in_progress" },
+      { id: 3, type: "implement", description: "remaining first", prompt: "", status: "open" },
+      { id: 4, type: "implement", description: "current second", prompt: "", status: "in_progress" },
+      { id: 5, type: "implement", description: "remaining second", prompt: "", status: "open" },
+    ],
+  }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
+  const summary = await screen.findByTestId("task-settled-group-summary");
+  expect(summary.textContent).toBe("1 cancelled task");
+  expect(screen.queryByText("cancelled work")).toBeNull();
+  expect(screen.getAllByTestId("task-row").map((row) => row.textContent)).toEqual([
+    expect.stringContaining("current first"),
+    expect.stringContaining("current second"),
+    expect.stringContaining("remaining first"),
+    expect.stringContaining("remaining second"),
+  ]);
+  await user.click(summary);
+  expect(screen.getByText("cancelled work").getAttribute("data-struck")).toBe("true");
 });

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ErrorMarketplaceRemoveApplied, WireError } from "../../errors";
 import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
+import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
+import { createHubWriteGate, HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import {
   createMarketplacesStore,
   MARKETPLACE_REFETCH_DEBOUNCE_MS,
@@ -17,10 +19,14 @@ const BROWSE = "evener/marketplace/browse";
 
 type BrowseResult = { name: string; description?: string; plugins: MarketplaceCatalogPlugin[] };
 
-function storeWithFake() {
+function storeWithFake(gate: HubWriteGate = createHubWriteGate()) {
   const fake = new FakeClient("ready");
-  return { fake, store: createMarketplacesStore(fake) };
+  return { fake, store: createMarketplacesStore(fake, gate) };
 }
+
+// The revision fence's ordering cases issue two writes at once; see
+// testing/hubWriteGate.ts for why they use a permissive gate double.
+const permissiveGate = permissiveHubWriteGate();
 
 function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> = {}): WireError {
   return new WireError("clone could not be removed", -32603, {
@@ -73,6 +79,44 @@ describe("marketplaceRemovalOutcome", () => {
     ).toEqual({ kind: "unavailable" });
   });
 
+  test("keeps a malformed applied member applied-but-unconfirmed, never miscast", () => {
+    // Each member must match appwire.MarketplaceEntry's wire shape
+    // (types.gen.ts) before its list can be published as authoritative: a
+    // malformed member is the malformed-applied-data case the doc comment on
+    // MarketplaceRemovalOutcome names, not a row to cast blindly.
+    for (const row of [
+      { name: 42, source: { kind: "github" }, lastUpdated: 1 }, // non-string name
+      { name: "acme", source: { kind: "github" } }, // missing lastUpdated
+      { name: "acme", lastUpdated: 1 }, // missing source
+      { name: "acme", source: "github", lastUpdated: 1 }, // source not an object
+      { name: "acme", source: null, lastUpdated: 1 },
+      { name: "acme", source: { repo: "acme/plugins" }, lastUpdated: 1 }, // source missing kind
+      { name: "acme", source: { kind: 7 }, lastUpdated: 1 }, // non-string kind
+      { name: "acme", source: { kind: "github" }, lastUpdated: "recent" }, // non-number lastUpdated
+      { name: "acme", source: { kind: "github", repo: 42 }, lastUpdated: 1 }, // non-string optional
+      { name: "acme", source: { kind: "github" }, installLocation: 7, lastUpdated: 1 },
+    ]) {
+      expect(marketplaceRemovalOutcome(cloneLitterError([row]))).toEqual({ kind: "unavailable" });
+    }
+    expect(marketplaceRemovalOutcome(cloneLitterError(["acme"]))).toEqual({ kind: "unavailable" });
+    // One malformed member rejects the whole list, not only its own slot.
+    expect(marketplaceRemovalOutcome(cloneLitterError([LOCAL, { name: "acme", lastUpdated: 1 }]))).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  test("still accepts a minimal well-formed member and an empty applied list", () => {
+    // Every source field but kind is optional on the wire (appwire/types.go
+    // omitempty) and an empty list is a legitimate empty registry, so member
+    // validation must not reject payloads the hub really sends.
+    const minimal = { name: "acme", source: { kind: "url" }, lastUpdated: 0 };
+    expect(marketplaceRemovalOutcome(cloneLitterError([minimal]))).toEqual({
+      kind: "applied",
+      marketplaces: [minimal],
+    });
+    expect(marketplaceRemovalOutcome(cloneLitterError([]))).toEqual({ kind: "applied", marketplaces: [] });
+  });
+
   test("keeps truly ordinary failures retryable", () => {
     expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
   });
@@ -122,6 +166,30 @@ describe("store shape", () => {
     first.store.reset();
     expect(first.store.getState().marketplaces).toBeNull();
     expect(second.store.getState().marketplacesError).toBe("boom");
+  });
+});
+
+describe("the shared hub write gate serializes marketplace writes", () => {
+  test("a marketplace mutation is refused while another write already holds the gate", async () => {
+    const fake = new FakeClient("ready");
+    const gate = createHubWriteGate();
+    const store = createMarketplacesStore(fake, gate);
+    let settle!: () => void;
+    const held = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const holding = gate.run(() => held);
+
+    await expect(store.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } })).rejects.toBeInstanceOf(
+      HubWriteBusyError,
+    );
+    expect(fake.calls).toEqual([]);
+
+    settle();
+    await holding;
+    fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME] }));
+    await store.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } });
+    expect(store.getState().marketplaces).toEqual([ACME]);
   });
 });
 
@@ -265,6 +333,12 @@ describe("removeMarketplace clone litter", () => {
     ["null list", cloneLitterError(null)],
     ["object list", cloneLitterError({ name: "not-a-list" })],
     ["unavailable list", cloneLitterError(null, { appliedUnavailable: true })],
+    ["row missing a field", cloneLitterError([{ name: "local" }])],
+    [
+      "row with an incorrectly-typed field",
+      cloneLitterError([{ name: 42, source: { kind: "github" }, lastUpdated: 1 }]),
+    ],
+    ["non-object row", cloneLitterError(["local"])],
   ])("does not publish a %s payload", async (_label, error) => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
@@ -478,7 +552,7 @@ describe("reconnect", () => {
 
 describe("list ordering", () => {
   test("an accepted newer list retires a catalog omitted by an older applied failure", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     await store.getState().browseMarketplace("acme");
@@ -514,7 +588,7 @@ describe("list ordering", () => {
   });
 
   test("a newer successful write wins over an older applied clone-litter failure", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     await store.getState().browseMarketplace("acme");
@@ -533,7 +607,7 @@ describe("list ordering", () => {
   });
 
   test("a newer failed write releases an older applied clone-litter outcome", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     await store.getState().browseMarketplace("acme");
@@ -608,7 +682,7 @@ describe("marketplace publication version", () => {
   });
 
   test("a held applied failure advances only when a newer failed write releases it", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake, store } = storeWithFake(permissiveGate);
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
     await store.getState().fetchMarketplaces();
     const settlements = gateSettlements(fake, "evener/marketplace/remove");

@@ -47,10 +47,30 @@ func TestSessionRowsHaveNoTreeConnectors(t *testing.T) {
 	}
 }
 
-func TestDashboardRowLess_AskPendingBandsAboveYourMove(t *testing.T) {
-	yourMove := hubRow{kind: hubRowSession, state: "awaiting", askPending: false, updatedAt: 3000}
+// A question and a turn that ended on needs_response share one band (#4093),
+// so recency orders them, not the question.
+func TestDashboardRowLess_AskPendingSharesTheNeedsYouBand(t *testing.T) {
+	needsYou := hubRow{kind: hubRowSession, state: "awaiting", askPending: false, updatedAt: 3000}
 	askPending := hubRow{kind: hubRowSession, state: "awaiting", askPending: true, updatedAt: 1000}
-	if !dashboardRowLess(askPending, yourMove) {
-		t.Fatal("an ask-pending row must sort above a your-move row even though it is older")
+	if dashboardRowLess(askPending, needsYou) || !dashboardRowLess(needsYou, askPending) {
+		t.Fatal("within the shared band the newer row must sort first, question or not")
+	}
+}
+
+// TestDashboardRowLess_ProjectRollupOrdering: issue #2569. A project row's
+// state and its sort order must agree. A project row is a rollup decision
+// (hubapi.RollupRank: warning above active); a session row is a live-row sort
+// decision (hubapi.AttentionRank: active above warning).
+func TestDashboardRowLess_ProjectRollupOrdering(t *testing.T) {
+	warnProject := hubRow{kind: hubRowProject, state: "warning"}
+	activeProject := hubRow{kind: hubRowProject, state: "active"}
+	if !dashboardRowLess(warnProject, activeProject) || dashboardRowLess(activeProject, warnProject) {
+		t.Fatal("a warning project row must sort above an active project row (RollupRank)")
+	}
+
+	activeSession := hubRow{kind: hubRowSession, state: "active"}
+	warnSession := hubRow{kind: hubRowSession, state: "warning"}
+	if !dashboardRowLess(activeSession, warnSession) || dashboardRowLess(warnSession, activeSession) {
+		t.Fatal("an active session row must still sort above a warning session row (AttentionRank)")
 	}
 }

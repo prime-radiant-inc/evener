@@ -3,33 +3,35 @@ import type { AnsiLine } from "../../cmd/evener-hub/frontend/src/widgets/codeblo
 import { ansiRunTextStyle } from "./ansiOutputStyles";
 import { useColors } from "./ui";
 
+/** One output line from parseOutputLines, drawn as parsed: its tabs are
+ * already expanded there, since a native Text draws a tab with no width. */
 export function AnsiOutputLine({ line }: { line: AnsiLine }) {
-  const colors = useColors();
-  const dark = useColorScheme() === "dark";
-  let offset = 0;
-  return (
-    <Text
-      selectable
-      accessibilityLabel={line
-        .filter((run) => !run.hidden)
-        .map((run) => run.text)
-        .join("")}
-      style={{
-        color: colors.text,
-        fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-        fontSize: 13,
-        lineHeight: 16,
-      }}
-    >
-      {line.map((run) => {
-        const key = `${offset}`;
-        offset += run.text.length;
-        return (
-          <Text key={key} style={ansiRunTextStyle(run, dark)}>
-            {run.text}
-          </Text>
-        );
-      })}
-    </Text>
-  );
+	const colors = useColors();
+	const dark = useColorScheme() === "dark";
+	let offset = 0;
+	return (
+		<Text
+			selectable
+			accessibilityLabel={line
+				.filter((run) => !run.hidden)
+				.map((run) => run.text)
+				.join("")}
+			style={{
+				color: colors.text,
+				fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+				fontSize: 13,
+				lineHeight: 16,
+			}}
+		>
+			{line.map((run) => {
+				const key = `${offset}`;
+				offset += run.text.length;
+				return (
+					<Text key={key} style={ansiRunTextStyle(run, dark)}>
+						{run.text}
+					</Text>
+				);
+			})}
+		</Text>
+	);
 }

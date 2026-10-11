@@ -1,0 +1,50 @@
+schema: 1
+id: prose.git-greeting-asked
+tool: prompt-eval
+prompt: |
+  Create a branch named add-greeting. On it, add a function Greet(name string) string to greet.go that returns "Hello, <name>!", and commit that change. Then merge add-greeting into main with a merge commit, and keep the add-greeting branch. Leave everything else in the working tree as it is.
+person:
+  model: lunarouter/glm-5.3
+  brief: |
+    You are the developer who asked for this. Everything you need is already in your request; you have nothing to add. If asked anything, say briefly that the request has everything and they should go ahead.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/greet
+
+      go 1.22
+    greet.go: |
+      package greet
+    README.md: |
+      # greet
+
+      Greetings for the front desk.
+  untracked:
+    notes-local.txt: |
+      my scratch notes, not for the repository
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: main has Greet
+      run: git show main:greet.go | grep -q 'func Greet(name string) string'
+    - name: merge commit on main
+      run: test "$(git rev-list --merges --count main)" -ge 1
+    - name: branch exists
+      run: git rev-parse --verify -q add-greeting
+    - name: notes left untracked
+      run: test -f notes-local.txt && test -z "$(git ls-files notes-local.txt)"
+    - name: nothing else left over
+      run: test "$(git status --porcelain)" = "?? notes-local.txt"
+reference: |
+  git switch -q -c add-greeting
+  cat >> greet.go <<'EOF'
+
+  // Greet returns a greeting for name.
+  func Greet(name string) string {
+  	return "Hello, " + name + "!"
+  }
+  EOF
+  git commit -q -am "Add Greet"
+  git switch -q main
+  git merge -q --no-ff --no-edit add-greeting

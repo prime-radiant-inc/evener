@@ -1,7 +1,8 @@
-import { ActivityIndicator, FlatList, View } from "react-native";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
+import { ActivityIndicator, FlatList, View } from "react-native";
 import { updating } from "./navigationPages";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function PinCatalogList({
 	sections,
@@ -13,6 +14,7 @@ export function PinCatalogList({
 	remaining,
 	pending,
 	uncertain,
+	previousChange,
 	error,
 	refresh,
 	more,
@@ -27,6 +29,7 @@ export function PinCatalogList({
 	remaining: number;
 	pending: boolean;
 	uncertain: boolean;
+	previousChange: boolean;
 	error: string | null;
 	refresh(): void;
 	more(): void;
@@ -34,14 +37,7 @@ export function PinCatalogList({
 }) {
 	const colors = useColors();
 	const isUpdating = updating({ loading, error, stale, remaining });
-	const showEmpty =
-		connected &&
-		loaded &&
-		!loading &&
-		!pending &&
-		!uncertain &&
-		!error &&
-		sections.length === 0;
+	const showEmpty = connected && loaded && !loading && !pending && !uncertain && !error && sections.length === 0;
 	return (
 		<FlatList
 			data={sections}
@@ -50,32 +46,22 @@ export function PinCatalogList({
 			ListHeaderComponent={
 				<View style={{ gap: 8, paddingBottom: 8 }}>
 					<Copy>{hubName}</Copy>
-					{loading || pending ? (
-						<ActivityIndicator accessibilityLabel="Checking pinned sections" />
-					) : null}
+					{loading || pending ? <ActivityIndicator accessibilityLabel="Checking pinned sections" /> : null}
 					{!connected ? (
-						<Copy muted>Reconnect to view pinned sections.</Copy>
+						<Copy muted>You can see pinned sections once the hub is back.</Copy>
 					) : uncertain ? (
-						<Copy muted>Refresh to confirm the previous pin change.</Copy>
+						<Copy muted>{previousChange ? "Check the previous pin change." : "Check the pinned sections again."}</Copy>
 					) : isUpdating ? (
 						<Copy muted>Updating…</Copy>
 					) : null}
 					<ErrorMessage message={error} />
-					{!connected || uncertain || error ? (
-						<Action
-							disabled={loading || pending}
-							onPress={refresh}
-							tone="quiet"
-						>
-							{connected ? "Refresh sections" : "Reconnect"}
-						</Action>
+					{connected && (uncertain || error) ? (
+						<Button text quiet label="Check again" disabled={loading || pending} onPress={refresh} />
 					) : null}
 					{showEmpty ? (
 						<View style={{ gap: 8 }}>
 							<Copy>No pinned sections yet.</Copy>
-							<Copy muted>
-								Pin a session from its actions menu to create a section.
-							</Copy>
+							<Copy muted>Pin a session from its actions menu to create a section.</Copy>
 						</View>
 					) : null}
 				</View>
@@ -91,13 +77,13 @@ export function PinCatalogList({
 						},
 					]}
 				>
-					<Action
-						tone="quiet"
+					<Button
+						text
+						quiet
+						label={section.name}
 						onPress={() => open(section)}
-						label={`Open ${section.name}`}
-					>
-						{section.name}
-					</Action>
+						accessibilityLabel={`Open ${section.name}`}
+					/>
 					<Copy muted>
 						{section.count} {section.count === 1 ? "session" : "sessions"}
 					</Copy>
@@ -105,12 +91,12 @@ export function PinCatalogList({
 			)}
 			ListFooterComponent={
 				remaining > 0 ? (
-					<Action
+					<Button
+						text
+						label={`Load more sections (${remaining} remaining)`}
 						disabled={!connected || !loaded || loading || uncertain || pending}
 						onPress={more}
-					>
-						{`Load more sections (${remaining} remaining)`}
-					</Action>
+					/>
 				) : null
 			}
 		/>

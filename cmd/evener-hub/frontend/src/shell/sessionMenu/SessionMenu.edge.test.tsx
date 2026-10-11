@@ -5,9 +5,9 @@
 // - Rename confirm button disabled with empty input (line 184)
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
@@ -28,7 +28,7 @@ function treeNode(overrides: Partial<NavigationSessionSummary> = {}): Navigation
 
 function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
   const actions: SessionMenuActions = {
-    onOpenPane: vi.fn(),
+    onOpenOverview: vi.fn(),
     onRename: vi.fn().mockResolvedValue(undefined),
     onShutdown: vi.fn().mockResolvedValue(undefined),
     onPin: vi.fn().mockResolvedValue(undefined),
@@ -43,8 +43,8 @@ function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
       triggerLabel="Session actions"
       canRename
       canShutdown
-      canReadNotes
-      panesOpen={{ details: false, tasks: true, activity: false, notes: false }}
+      stopped
+      overviewOpen={false}
       actions={actions}
       {...overrides}
     />,
@@ -58,10 +58,6 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   resetToastStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // Line 169: rename dialog onClose

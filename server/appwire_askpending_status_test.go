@@ -58,7 +58,7 @@ func TestStatusChangeCarriesAskPendingClearedByTheAnswer(t *testing.T) {
 // the two stampers beside this one.
 func TestStampAskPendingLeavesEverythingElseAlone(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	other := appwire.AgentMessageDeltaParams{ThreadID: "th_1"}
+	other := appwire.OverlayDeltaParams{ThreadID: "th_1"}
 	if got := srv.stampAskPendingOnStatusChange("some.other.method", other); got != other {
 		t.Fatal("a notification that is not a status change must pass through")
 	}
@@ -78,11 +78,7 @@ func TestRecordedStatusFrameCarriesAskPending(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 
-	srv.RecordAppEvent(events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "th_1",
-		Data:      events.UserInputData{Text: "go"},
-	})
+	startExecution(srv, "th_1", "t_go")
 
 	statuses := statusNotifications(t, srv, "th_1")
 	if len(statuses) == 0 {

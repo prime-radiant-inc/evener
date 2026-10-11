@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"reflect"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/diagnostic"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -63,9 +67,19 @@ func readDelegateAttentionFoldConsuming(path, expectedSessionID string) (delegat
 		return delegateAttentionFold{}, 0, fmt.Errorf("open delegate attention transcript: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	reader := bufio.NewReaderSize(f, 64*1024)
-	headerRead := false
-	consumed := int64(0)
+	return extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), expectedSessionID)
+}
+
+// extendDelegateAttentionFoldFrom folds the complete lines r yields onto
+// prior, where r is positioned at byte offset from of the transcript. From
+// byte zero it reads and checks the header first; from anywhere else the
+// header was checked by the read that produced prior. It reports the offset
+// through the last complete line, the contract readDelegateAttentionFoldConsuming
+// documents.
+func extendDelegateAttentionFoldFrom(r io.Reader, from int64, prior delegateAttentionFold, expectedSessionID string) (delegateAttentionFold, int64, error) {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	headerRead := from > 0
+	consumed := from
 	entries := make([]transcript.Entry, 0)
 	for {
 		line, complete, read, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
@@ -102,7 +116,7 @@ func readDelegateAttentionFoldConsuming(path, expectedSessionID string) (delegat
 	if !headerRead {
 		return delegateAttentionFold{}, 0, errors.New("delegate attention transcript has no header")
 	}
-	fold, err := foldDelegateAttention(entries)
+	fold, err := extendDelegateAttention(prior, entries)
 	if err != nil {
 		return delegateAttentionFold{}, 0, err
 	}
@@ -147,14 +161,12 @@ type delegateAttentionFoldMemo struct {
 var delegateAttentionFoldCache = foldcache.New[delegateAttentionFoldMemo](delegateAttentionFoldCacheEntries)
 
 // extendDelegateAttentionFold is the Extend delegateAttentionFoldCache reads a
-// transcript through. The attention fold is a whole-file reduction — a later
-// resolution turn re-resolves an earlier steering turn, so appended entries
-// can change what earlier entries meant — so every call refolds from byte
-// zero and fromOffset/prior go unused; the cache still pays for itself by
-// skipping the read entirely while a transcript is unchanged, which is the
-// hot case in the per-click status sweeps. The ctx an Extend call runs with
-// is detached from every caller by foldcache.Get, so there is no
-// cancellation to check mid-read.
+// transcript through. Every call refolds from byte zero and fromOffset/prior go
+// unused, although the fold itself could resume (extendDelegateAttention is a
+// left fold); the cache pays for itself by skipping the read entirely while a
+// transcript is unchanged, the hot case in the per-click status sweeps. The
+// ctx an Extend call runs with is detached from every caller by
+// foldcache.Get, so there is no cancellation to check mid-read.
 func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[delegateAttentionFoldMemo] {
 	return func(_ context.Context, path string, _ int64, _ delegateAttentionFoldMemo) (delegateAttentionFoldMemo, int64, error) {
 		// toOffset is the byte count the reader itself consumed, through the
@@ -199,7 +211,20 @@ type delegateAttentionFold struct {
 }
 
 func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
-	fold := newDelegateAttentionFold()
+	return extendDelegateAttention(newDelegateAttentionFold(), entries)
+}
+
+// extendDelegateAttention continues the fold prior with entries. The fold is a
+// strict left fold: each entry is checked and applied against the state the
+// entries before it built, and nothing an entry does reaches back to change an
+// earlier decision, so folding a transcript's prefix and then extending with
+// the rest decides exactly what one fold over the whole transcript decides.
+// prior is never modified; a caller may still hold it.
+func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.Entry) (delegateAttentionFold, error) {
+	if len(entries) == 0 {
+		return prior, nil
+	}
+	fold := prior.clone()
 	for _, entry := range entries {
 		turn := entry.Turn
 		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
@@ -271,6 +296,13 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 			resultIDs[part.ToolResult.ToolCallID] = struct{}{}
 		}
 	}
+	// A tool call may commit several deliveries, all in its own turn (a
+	// delegate_send wait carries earlier results ahead of its own, #3906); a
+	// call an earlier turn committed takes no more.
+	earlierCalls := make(map[string]struct{}, len(fold.deliveryCommits))
+	for _, toolCallID := range fold.deliveryCommits {
+		earlierCalls[toolCallID] = struct{}{}
+	}
 	for _, commit := range turn.DelegateDeliveryCommits {
 		if commit.ToolCallID == "" || commit.DeliveryID == "" {
 			return errors.New("delegate delivery commit identity is incomplete")
@@ -278,13 +310,12 @@ func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) 
 		if _, exists := resultIDs[commit.ToolCallID]; !exists {
 			return fmt.Errorf("delegate delivery %q references absent tool call %q", commit.DeliveryID, commit.ToolCallID)
 		}
-		if previous, exists := fold.deliveryCommits[commit.DeliveryID]; exists && previous != commit.ToolCallID {
+		previous, exists := fold.deliveryCommits[commit.DeliveryID]
+		if exists && previous != commit.ToolCallID {
 			return fmt.Errorf("delegate delivery %q has conflicting tool calls", commit.DeliveryID)
 		}
-		for deliveryID, toolCallID := range fold.deliveryCommits {
-			if toolCallID == commit.ToolCallID && deliveryID != commit.DeliveryID {
-				return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
-			}
+		if _, committed := earlierCalls[commit.ToolCallID]; committed && !exists {
+			return fmt.Errorf("delegate tool call %q has conflicting deliveries", commit.ToolCallID)
 		}
 		fold.deliveryCommits[commit.DeliveryID] = commit.ToolCallID
 	}
@@ -298,6 +329,17 @@ func newDelegateAttentionFold() delegateAttentionFold {
 		resolutions:       make(map[string]delegateAttentionResolution),
 		resumeGenerations: make(map[string]uint64),
 		deliveryCommits:   make(map[string]string),
+	}
+}
+
+func (f delegateAttentionFold) clone() delegateAttentionFold {
+	return delegateAttentionFold{
+		order:             slices.Clone(f.order),
+		content:           maps.Clone(f.content),
+		turns:             maps.Clone(f.turns),
+		resolutions:       maps.Clone(f.resolutions),
+		resumeGenerations: maps.Clone(f.resumeGenerations),
+		deliveryCommits:   maps.Clone(f.deliveryCommits),
 	}
 }
 
@@ -356,11 +398,12 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	turn.Timestamp = now.UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
-	// AppendSynced is the durability owner's door: it records AND syncs, or
-	// errors. A read-back would find a retained (recorded but unsynced) line
-	// and wrongly call it durable, so this side of delegate attention asks the
-	// writer, through AppendSynced, rather than the file.
-	if err := writer.AppendSynced(turn); err != nil {
+	// The synced door is the durability owner's door: it records AND syncs,
+	// or errors. A read-back would find a retained (recorded but unsynced)
+	// line and wrongly call it durable, so this side of delegate attention asks
+	// the writer rather than the file. A cold writer has no session, so the
+	// entry is a delivery turn of its own.
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorSynced, Place: transcript.PlaceDelivery}); err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	verified, err := readDelegateAttentionFold(path, expectedSessionID)
@@ -418,7 +461,8 @@ func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID 
 	if allResolved {
 		return writer.EstablishDurability()
 	}
-	return appendDelegateAttentionResolutions(writer, fold, ids, disposition, resumeGeneration)
+	// A cold writer has no session: each resolution is a delivery turn.
+	return appendDelegateAttentionResolutions(writer, transcript.PlaceDelivery, "", fold, ids, disposition, resumeGeneration)
 }
 
 func delegateAttentionResolutionTurn(attentionID string, disposition delegateAttentionResolution) schema.Turn {
@@ -440,6 +484,18 @@ func delegateAttentionResolutionTurnForGeneration(attentionID string, dispositio
 // for different content is corruption.
 func (s *Session) appendDelegateNotificationDurably(attentionID, content string) (appended bool, err error) {
 	return s.appendDelegateAttentionMessageDurably(attentionID, llm.User(content))
+}
+
+// delegateAttentionTurn is the steering turn an attention message appends
+// as: a subagent's report or quiet watchdog, or a stable shell job's
+// completion. It carries its attention identity and a fresh stable turn id,
+// and no steering kind.
+func delegateAttentionTurn(attentionID string, message llm.Message, now time.Time) schema.Turn {
+	turn := schema.NewTurn(schema.TurnSteering, message)
+	turn.Timestamp = now.UTC()
+	turn.AttentionID = attentionID
+	turn.StableTurnID = newQueueEntryID()
+	return turn
 }
 
 // appendDelegateAttentionMessageDurably is the message-preserving core of
@@ -500,15 +556,17 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 		}
 		return false, nil
 	}
-	turn := schema.NewTurn(schema.TurnSteering, message)
-	turn.Timestamp = s.sclock().Now().UTC()
-	turn.AttentionID = attentionID
-	turn.StableTurnID = newQueueEntryID()
-	// AppendSynced records AND syncs, or errors; a retained (recorded but
-	// unsynced) line the read-back would find is not durable.
-	if err := writer.AppendSynced(turn); err != nil {
+	turn := delegateAttentionTurn(attentionID, message, s.sclock().Now())
+	// The synced door records AND syncs, or errors; a retained (recorded but
+	// unsynced) line the read-back would find is not durable. Attention
+	// arrives from delivery goroutines at any time, so it joins the running
+	// execution or takes a delivery turn of its own.
+	rec, err := writer.Record(s.withEntryModel(turn), transcript.RecordOptions{Door: transcript.DoorSynced, Place: transcript.PlaceAsync})
+	if err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
+	// The resident turn is the one the file holds, identity included.
+	turn = rec.Turn
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
 		return false, err
 	}
@@ -677,12 +735,17 @@ func (s *Session) armRootDelegateAttention(attentionID string) {
 	if attentionID == "" || !s.isRootDelegateAttentionReceiver() {
 		return
 	}
+	// The parked rail derives from the durable holds
+	// (rootAttentionRailParked); read it before attentionMu so the store's
+	// state mutex never nests inside it. A fresh arm on a parked rail caches
+	// silently — the IDs wait for the re-engagement that clears the holds.
+	parked := s.rootAttentionRailParked()
 	s.attentionMu.Lock()
 	if s.rootAttentionWakeIDs == nil {
 		s.rootAttentionWakeIDs = make(map[string]struct{})
 	}
 	s.rootAttentionWakeIDs[attentionID] = struct{}{}
-	shouldWake := !s.rootAttentionWake
+	shouldWake := !s.rootAttentionWake && !parked
 	if shouldWake {
 		s.rootAttentionWake = true
 	}
@@ -700,6 +763,16 @@ func (s *Session) hasPendingRootDelegateAttention() bool {
 	pending := len(s.rootAttentionWakeIDs) != 0
 	s.attentionMu.Unlock()
 	return pending
+}
+
+// pendingRootDelegateAttention is hasPendingRootDelegateAttention for "is
+// this session working" reads: attention a Stop parked is not autonomous
+// work — nothing delivers it until the user re-engages — so it reads false
+// while the rail is parked, the way pendingQueueDepth reads zero for a held
+// queue (kata wms7). The raw signal stays for the rail's own machinery,
+// which must see the cached IDs to re-arm them on release.
+func (s *Session) pendingRootDelegateAttention() bool {
+	return s.hasPendingRootDelegateAttention() && !s.rootAttentionRailParked()
 }
 
 // beginRootDelegateAttentionTurn snapshots the exact durable IDs selected for
@@ -725,6 +798,30 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 	return ids
 }
 
+// finishAttentionTurn consumes, at the end of a turn, the attention the turn
+// owes: the root runs its notification rail (finishRootDelegateAttentionTurn).
+// Any other session consumes only what its settled requests presented
+// (coversPresentedAttention), and only when the turn succeeded; a failed
+// delegate turn leaves the items pending for a later generation, and the
+// paced retry and the paused notice stay the root's.
+func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
+	if s.isRootDelegateAttentionReceiver() {
+		return s.finishRootDelegateAttentionTurn(ids, turnErr)
+	}
+	var covered []string
+	if turnErr == nil {
+		covered = s.unionCoveredAttention(ids)
+	}
+	if len(covered) == 0 {
+		return nil
+	}
+	// The delegate's noted wakes stay: they are the retry obligation until a
+	// clear reconciles them against the transcript (the finalize tail, or the
+	// root's attention drive if that fails), and a stop discards only what the
+	// transcript still owes.
+	return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
+}
+
 // finishRootDelegateAttentionTurn consumes the exact selected IDs only after a
 // successful model turn and durable resolution markers — plus any still-pending
 // attention this turn's built requests already presented to the model, which
@@ -743,7 +840,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 	// the serve loop's parked EntryNotification), not the retry scheduler the
 	// flag suppresses.
 	if turnErr == nil || len(ids) == 0 {
-		ids = s.unionCoveredRootDelegateAttention(ids)
+		ids = s.unionCoveredAttention(ids)
 	}
 	if len(ids) == 0 {
 		return nil
@@ -753,6 +850,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		err := s.resolveAttentionDurably(ids, delegateAttentionConsumed)
 		if err == nil {
 			s.attentionMu.Lock()
+			s.rootAttentionPaused = false
 			for _, id := range ids {
 				delete(s.rootAttentionWakeIDs, id)
 			}
@@ -765,46 +863,158 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 		}
 		resolutionErr = err
 	}
+	// A PERMANENT provider failure — a 401 from a dead credential, a
+	// request the provider will refuse every time — cannot be retried into
+	// success, and the paced retry never gives up on its own: re-arming it
+	// against one is the livelock, every firing another doomed turn on the
+	// wire. The IDs stay pending and cached; they ride the next genuine
+	// wake — a user message, a fresh delegate event, re-engagement after a
+	// Stop.
+	//
+	// A cancelled or user-aborted turn keeps the retry (roundWasCancelled,
+	// the package's "the context went away, not the provider" predicate).
+	// The rail's wake is not a re-request of the same call, it is the
+	// delivery-liveness chain the retirement machinery pins: a cancelled
+	// attention turn still owes its delivery. A user's Stop needs no help
+	// from this branch either — the park the accepted Stop takes cancels
+	// whatever the unwinding turn armed. llm.Classify answers the
+	// transport's question (must the same request be re-issued?); the
+	// carve-out is the rail's own.
+	//
+	// Transient failures keep the retry, which is their delivery
+	// guarantee, and a resolution failure with no turn error is a storage
+	// flap, retryable by nature.
+	permanent := turnErr != nil && !roundWasCancelled(turnErr) && llm.Classify(turnErr) == llm.ErrorClassPermanent
 	s.attentionMu.Lock()
 	// Clear the flag even while a wake is pending. This turn may have honored
 	// that wake and then declined — its resolution failed — and the drain
 	// skips the notification rung right after a notification turn, so the
 	// flagged wake alone can strand the item. The retry owns the next wake.
 	s.rootAttentionWake = false
-	s.scheduleRootAttentionRetryLocked()
+	announce := false
+	if permanent {
+		s.resetRootAttentionRetryLocked()
+		announce = !s.rootAttentionPaused
+		s.rootAttentionPaused = true
+	} else {
+		s.scheduleRootAttentionRetryLocked()
+	}
 	s.attentionMu.Unlock()
+	if announce {
+		s.announceRootAttentionPaused(turnErr)
+	}
 	return resolutionErr
 }
 
-// stageRootDelegateAttentionCoverage records one built request's candidate
-// coverage: the attention IDs the request presents that were not armed when
-// this turn began. Staging is candidacy, not credit — the round loop promotes
-// the staged set into rootAttentionCoveredIDs only when the round's call
-// settles, because a request that never settled (a failed attempt, a
-// content-filter retry whose compaction then folds the steering turn away)
-// presented nothing the design may consume. Only the root receiver stages:
-// this session marks only deliveries it owns, and a child's consumption is
-// governed by the controller's generation markers, which a generation-less
-// consumption marker would conflict with.
+// announceRootAttentionPaused says, once per deferral episode, that a
+// permanent provider failure has paused background updates, which provider
+// and how to resume. Without it the updates just stop arriving. It is
+// visible at every level (its code is not informational) and goes to the
+// daemon log too. Nothing a provider said reaches the warning: a provider's
+// error body can carry anything, so the hint and the log line are the
+// failure's kind and status only; the serve loop's own turn-failure line
+// already records the failed turn.
+func (s *Session) announceRootAttentionPaused(turnErr error) {
+	summary := llm.ProviderFailureSummary(turnErr)
+	slog.Warn("background updates paused", "session", s.ID(), "failure", summary)
+	s.emit(events.EventWarning, events.WarningData{
+		Message: rootAttentionPausedMessage(turnErr),
+		Source:  string(diagnostic.SourceEvener),
+		Title:   "Background updates paused",
+		Hint:    summary,
+		Code:    events.WarningCodeAttentionPaused,
+	})
+}
+
+// rootAttentionPausedMessage names the provider instance that refused (the
+// name in Evener's own configuration) and what would resume delivery, by
+// the failure's kind as llm classifies it.
+func rootAttentionPausedMessage(turnErr error) string {
+	instance := "the provider"
+	var providerErr interface{ Provider() string }
+	if errors.As(turnErr, &providerErr) {
+		if name := strings.TrimSpace(providerErr.Provider()); name != "" {
+			instance = name
+		}
+	}
+	const paused = "Background updates from subagents and jobs are paused: "
+	kind := llm.Kind(turnErr)
+	switch {
+	case errors.Is(turnErr, llm.ErrSignInRequired) || kind == llm.KindAuthentication:
+		return paused + instance + " rejected the credential. Sign in to " + instance + ", then send a message to continue."
+	case kind == llm.KindAccessDenied:
+		return paused + instance + " refused access. Check your access to " + instance + ", then send a message to continue."
+	case kind == llm.KindQuotaExceeded:
+		// UTC: the daemon may run in another zone than the person reading.
+		if resetAt, ok := llm.UsageLimitResetAt(turnErr); ok {
+			return paused + instance + "'s usage limit is reached until " + resetAt.UTC().Format("Jan 2 15:04 UTC") + ". Send a message after that, or switch models, to continue."
+		}
+		return paused + instance + "'s usage limit is reached. Switch models, or send a message once it resets, to continue."
+	default:
+		return paused + instance + " refused the request. Switch models or send a message to continue."
+	}
+}
+
+// resumeRootAttentionAfterModelSwitch re-arms attention a permanent failure
+// deferred: a new model is a change that can make it deliverable. A Stop's
+// park still wins; its re-engagement re-arms instead.
 //
-// A responses-continuation delta request carries only new items; any older
-// steering turn lives in server-side state this session cannot verify. Nothing
-// stages, and the items keep their wake for a full-history turn.
-func (s *Session) stageRootDelegateAttentionCoverage(req llm.Request, historyTurns []schema.Turn) {
-	if !s.isRootDelegateAttentionReceiver() {
+// Only a permanent failure's deferral is resumed: attention waiting out a
+// transient failure keeps its paced backoff. The parked read comes before
+// attentionMu, the rail's lock order; a Stop that lands after it still wins,
+// since its park stands a straggler wake down before any model turn.
+func (s *Session) resumeRootAttentionAfterModelSwitch() {
+	if s.rootAttentionRailParked() {
 		return
 	}
-	if req.HistoryMode == llm.HistoryModeResponsesDelta {
+	s.attentionMu.Lock()
+	paused := s.rootAttentionPaused
+	s.rootAttentionPaused = false
+	s.attentionMu.Unlock()
+	if paused {
+		s.unparkRootDelegateAttention()
+	}
+}
+
+// coversPresentedAttention reports whether this turn consumes the attention
+// its settled requests present. The root receiver's turns do. So does a
+// stable delegate's turn running under its generation's lease: the lease is
+// the delegate's only start claim, since a delegate holds one reservation at
+// a time and no attention reservation is admitted while its generation holds
+// a live binding (delegateAttentionWakeEligibleLocked). The generation-less
+// consumed marker written at the turn's end therefore cannot conflict with a
+// reserved attention generation. An unleased turn on a child session covers
+// nothing.
+func (s *Session) coversPresentedAttention(ctx context.Context) bool {
+	if s.isRootDelegateAttentionReceiver() {
+		return true
+	}
+	_, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	return leased
+}
+
+// stagePresentedAttentionCoverage records one built request's candidate
+// coverage: the attention IDs among presentedTurns, the exact history the
+// request projects, that were not armed for the root's own notification turn
+// when this turn began. Every request build replaces the staged set, so a
+// failed attempt's candidates never outlive it. Staging is candidacy, not
+// credit — promoteStagedAttentionCoverage credits the set only when the
+// round's call settles, because a request that never settled (a failed
+// attempt, a content-filter retry whose compaction then folds the steering
+// turn away) presented nothing the design may consume. Only a turn that
+// coversPresentedAttention stages.
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn) {
+	if !s.coversPresentedAttention(ctx) {
 		return
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var staged map[string]struct{}
-	for _, turn := range historyTurns {
+	for _, turn := range presentedTurns {
 		if turn.AttentionID == "" {
 			continue
 		}
-		if _, preTurn := s.rootAttentionPreTurnArmIDs[turn.AttentionID]; preTurn {
+		if _, preTurn := s.attentionPreTurnIDs[turn.AttentionID]; preTurn {
 			continue
 		}
 		if staged == nil {
@@ -812,44 +1022,49 @@ func (s *Session) stageRootDelegateAttentionCoverage(req llm.Request, historyTur
 		}
 		staged[turn.AttentionID] = struct{}{}
 	}
-	s.rootAttentionStagedIDs = staged
+	s.attentionStagedIDs = staged
 }
 
-// promoteStagedRootDelegateAttention credits the staged set of a round whose
-// call settled. Called by the round loop on the success path only.
-func (s *Session) promoteStagedRootDelegateAttention() {
+// promoteStagedAttentionCoverage credits the staged set of a round whose
+// call settled as settled, the request that actually answered. Called by the
+// round loop on the success path only.
+//
+// A responses-continuation delta carries only new items; any older steering
+// turn lives in server-side state this session cannot verify, so a round that
+// settled as a delta credits nothing and the items keep their wake for a
+// full-history turn. A delta whose call fell back to a full-history request
+// settled as that request, which carried every staged turn.
+func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if len(s.rootAttentionStagedIDs) == 0 {
+	staged := s.attentionStagedIDs
+	s.attentionStagedIDs = nil
+	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
 		return
 	}
-	covered := s.rootAttentionCoveredIDs
+	covered := s.attentionCoveredIDs
 	if covered == nil {
-		covered = make(map[string]struct{}, len(s.rootAttentionStagedIDs))
+		covered = make(map[string]struct{}, len(staged))
 	}
-	maps.Copy(covered, s.rootAttentionStagedIDs)
-	s.rootAttentionCoveredIDs = covered
-	s.rootAttentionStagedIDs = nil
+	maps.Copy(covered, staged)
+	s.attentionCoveredIDs = covered
 }
 
-// resetRootDelegateAttentionCoverage clears the per-turn coverage at turn
-// start and snapshots the armed set that marking excludes, so consumption
-// credits only deliveries armed after this turn began. Guarded like the
-// staging it pairs with: a child session tracks no root coverage, and the
-// early return skips its per-turn lock and clone. maps.Clone(nil) is nil, and
-// the field is lookup-only, so an empty armed set needs no special case.
-func (s *Session) resetRootDelegateAttentionCoverage() {
-	if !s.isRootDelegateAttentionReceiver() {
-		return
-	}
+// resetAttentionCoverage clears the per-turn coverage at turn start and
+// snapshots the root's armed set that marking excludes, so the root credits
+// only deliveries armed after this turn began. It runs for every turn, so a
+// turn that covers nothing never inherits an earlier turn's coverage.
+// maps.Clone(nil) is nil, and the field is lookup-only, so an empty armed set
+// needs no special case.
+func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
-	s.rootAttentionCoveredIDs = nil
-	s.rootAttentionStagedIDs = nil
-	s.rootAttentionPreTurnArmIDs = maps.Clone(s.rootAttentionWakeIDs)
+	s.attentionCoveredIDs = nil
+	s.attentionStagedIDs = nil
+	s.attentionPreTurnIDs = maps.Clone(s.rootAttentionWakeIDs)
 	s.attentionMu.Unlock()
 }
 
-// unionCoveredRootDelegateAttention adds to the selected IDs the covered
+// unionCoveredAttention adds to the selected IDs the covered
 // deliveries still pending in the durable fold. A successful turn settles only
 // when every round's call settled, so each covered item reached the model in
 // a settled call of this very turn; an item appended after the final request
@@ -861,10 +1076,10 @@ func (s *Session) resetRootDelegateAttentionCoverage() {
 // rejects the whole resolve atomically, and the wake would retry the item
 // forever. A fold read failure degrades to the selected IDs alone; the wake
 // path retries.
-func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
+func (s *Session) unionCoveredAttention(ids []string) []string {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if len(s.rootAttentionCoveredIDs) == 0 {
+	if len(s.attentionCoveredIDs) == 0 {
 		return ids
 	}
 	pending, err := s.pendingDelegateAttentionIDsLocked()
@@ -873,7 +1088,7 @@ func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
 	}
 	out := slices.Clone(ids)
 	for _, id := range pending {
-		if _, ok := s.rootAttentionCoveredIDs[id]; ok {
+		if _, ok := s.attentionCoveredIDs[id]; ok {
 			out = appendUniqueStrings(out, id)
 		}
 	}
@@ -911,6 +1126,10 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	generation := s.rootAttentionRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		// The rail parks with the durable holds, so read them before any
+		// lock: a firing under a standing hold disarms without a wake, and
+		// the cached IDs wait for the re-engagement that clears the holds.
+		parkedAtFire := s.rootAttentionRailParked()
 		release, err := s.beginAttentionCallback()
 		if err != nil {
 			// Admission was refused for this one-shot firing (a real TryClaim
@@ -936,6 +1155,10 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			return
 		}
 		s.rootAttentionRetry.active = false
+		if parkedAtFire {
+			s.attentionMu.Unlock()
+			return
+		}
 		pending := len(s.rootAttentionWakeIDs) != 0
 		shouldWake := pending && !s.rootAttentionWake
 		if shouldWake {
@@ -947,6 +1170,14 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
 		}
 		s.attentionMu.Unlock()
+		// The seam fires for a callback that passed every early return above --
+		// live generation, rail not parked -- whether or not it then notifies. It
+		// is the ownership lease, not the notify, that projects the notification
+		// blocker, so a stale or parked timer must never reach it and a test's
+		// pause can only belong to the live retry.
+		if observe := s.cfg.testOnly.rootAttentionRetryCallback; observe != nil {
+			observe()
+		}
 		if shouldWake {
 			s.notify()
 		}
@@ -957,6 +1188,62 @@ func (s *Session) resetRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	s.rootAttentionRetry.active = false
 	s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
+}
+
+// parkRootDelegateAttention silences the root attention rail when a Stop is
+// accepted, mirroring the queue and steering holds that Stop parks. The park
+// itself lives in those durable holds (rootAttentionRailParked derives from
+// them), so this is the rail's side of the Stop: the wake is cleared and any
+// paced retry cancelled; until the user re-engages, nothing on this rail may
+// wake the session. Pending IDs are never dropped — they stay cached for
+// unparkRootDelegateAttention to re-arm.
+// The stable-delegate drive rail is deliberately outside this park: its
+// wakes stand down at the notification admission gate, so they cost a no-op
+// cycle, never a turn.
+func (s *Session) parkRootDelegateAttention() {
+	s.attentionMu.Lock()
+	s.rootAttentionWake = false
+	s.resetRootAttentionRetryLocked()
+	s.attentionMu.Unlock()
+}
+
+// unparkRootDelegateAttention releases the rail a Stop parked, at the same
+// re-engagement that releases QueueHeld (turn/start, turn/queue, drain,
+// promote). The re-engagement's commit cleared the holds the park lives in;
+// what remains is the rail's side of the release: deferred, not dropped,
+// pending IDs re-arm the wake so a notification turn delivers them after the
+// user's own.
+func (s *Session) unparkRootDelegateAttention() {
+	s.attentionMu.Lock()
+	shouldWake := len(s.rootAttentionWakeIDs) != 0 && !s.rootAttentionWake
+	if shouldWake {
+		s.rootAttentionWake = true
+	}
+	s.attentionMu.Unlock()
+	if shouldWake {
+		s.notify()
+	}
+}
+
+// rootAttentionRailParked reports whether an accepted Stop has parked the
+// attention rail. The rail has no stored park of its own: parked is a
+// projection of the durable holds a Stop sets (QueueHeld, SteeringHeld),
+// read at evaluation time the same way pendingQueueDepth reads the held
+// queue. Deriving the read keeps the rail consistent with the holds by
+// construction — no interleaving of a Stop's park and a re-engagement's
+// unpark can leave a stale in-memory copy disagreeing with what the user
+// stopped, which is exactly the race the in-memory flag this replaced had.
+// While a hold stands, fresh arms cache their IDs but neither set the wake
+// flag nor notify, the paced retry stands down at fire, and an
+// attention-only notification turn stands down — the deliveries the user
+// stopped wait for the user, not the clock. The store's state mutex is read
+// without attentionMu held, per the lock order the live Stop path
+// established.
+func (s *Session) rootAttentionRailParked() bool {
+	if s == nil || s.clientMutations == nil {
+		return false
+	}
+	return s.clientMutations.queueHeld() || s.clientMutations.steeringHeld()
 }
 
 func (s *Session) scheduleDelegateAttentionArmRetryLocked() {
@@ -1023,6 +1310,7 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 	if delay <= 0 {
 		delay = jobNotificationRetryInitialDelay
 	}
+	s.stableAttentionRetry.delay = delay
 	s.stableAttentionRetry.active = true
 	s.stableAttentionRetry.generation++
 	generation := s.stableAttentionRetry.generation
@@ -1042,8 +1330,14 @@ func (s *Session) scheduleStableDelegateAttentionRetry() {
 		}
 		pending := s.delegateController != nil && s.delegateController.hasPendingDelegateAttention()
 		s.attentionMu.Lock()
-		if pending {
-			s.stableAttentionRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		// Runnable work the drive retries (a parked delegate's fenced
+		// escalation is runnable without being pending) backs the next retry
+		// off too: resetting here would re-run a persistent failure at the
+		// initial delay forever. The backoff doubles the current delay, not
+		// the one this retry was armed with, so a reset that landed while it
+		// was armed holds.
+		if pending || runnable {
+			s.stableAttentionRetry.delay = min(s.stableAttentionRetry.delay*2, jobNotificationRetryMaxDelay)
 		} else {
 			s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
 		}
@@ -1065,6 +1359,17 @@ func (s *Session) resetStableDelegateAttentionRetry() {
 	s.attentionMu.Unlock()
 }
 
+// resetStableDelegateAttentionRetryDelay ends a backoff episode whose work
+// succeeded, so the next failure retries from the initial delay. It leaves an
+// armed retry in place, since other delegates' work may still need it; that
+// retry fires at the delay it was armed with and backs off from the reset
+// delay.
+func (s *Session) resetStableDelegateAttentionRetryDelay() {
+	s.attentionMu.Lock()
+	s.stableAttentionRetry.delay = jobNotificationRetryInitialDelay
+	s.attentionMu.Unlock()
+}
+
 // rearmRootDelegateAttentionFromTranscript reconstructs the root wake cache
 // from the only durable attention authority. It performs no provider or Session
 // construction and is called after the root transcript is attached/replayed.
@@ -1079,6 +1384,15 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
 	}
+	// Read the durable holds before attentionMu — the order the live Stop
+	// path established, where the store's state mutex never nests inside
+	// attentionMu. A hold that survived the restart is a Stop the user has
+	// not re-engaged; the rebuilt rail reads parked from those holds at
+	// every gate, so it must come up unarmed while they stand, or a
+	// transient provider failure re-opens the paced retry over a queue the
+	// user parked.
+	holdsStand := s.clientMutations != nil &&
+		(s.clientMutations.queueHeld() || s.clientMutations.steeringHeld())
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	ready := s.transcriptReady
@@ -1127,7 +1441,7 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	for _, id := range ids {
 		s.rootAttentionWakeIDs[id] = struct{}{}
 	}
-	shouldWake := len(ids) != 0 && !s.rootAttentionWake
+	shouldWake := len(ids) != 0 && !s.rootAttentionWake && !holdsStand
 	if shouldWake {
 		s.rootAttentionWake = true
 	}
@@ -1200,7 +1514,108 @@ func (s *Session) readDelegateAttentionFold(path, sessionID string) (delegateAtt
 	if readFold := s.cfg.testOnly.delegateAttentionReadFold; readFold != nil {
 		return readFold(path, sessionID)
 	}
-	return readDelegateAttentionFold(path, sessionID)
+	return s.attentionFoldCursor.read(path, sessionID)
+}
+
+// delegateAttentionFoldTailBytes is how much of the folded prefix, ending at
+// the cursor's offset, a resumed read re-reads and compares. One page costs
+// the same read as a few bytes and covers the whole of most trailing records.
+const delegateAttentionFoldTailBytes = 4096
+
+// delegateAttentionFoldCursor keeps a resident Session's attention fold of its
+// own transcript, so the check-append-verify reads of every delivery and
+// resolution decode only what was appended since the last read instead of the
+// whole transcript (a long root's runs to ~100MB, and it is read about five
+// times per delegate report). The zero value is an empty cursor, and the
+// Session's attentionMu guards it.
+//
+// Every read still reads the file: a resumed read decodes the bytes past the
+// offset, so the verify after an append sees the appended record on disk
+// exactly as a full read would. What a resumed read trusts is the prefix, and
+// it trusts it only while the file is provably the one that was folded, grown
+// by appends: the same session, the same file (device and inode, so a
+// replacement renamed over the path refolds), at least as long as the offset
+// (a truncation refolds), and the recorded trailing bytes still at the offset
+// (a truncation that regrew past it refolds). Any other outcome, and any
+// error, folds from byte zero.
+//
+// Those checks cover every change the transcript's writers make. The resident
+// writer appends, and rolls back only its own failed append, all under
+// attentionMu — which every read here also holds, so a read never sees a record
+// that is later taken back. A cold writer appends, and on open trims an
+// unterminated tail, which a fold never consumes. What the checks cannot see is
+// an in-place rewrite before the tail window that keeps the file's identity,
+// its length, and its last delegateAttentionFoldTailBytes; nothing writes a
+// transcript that way.
+//
+// This is not delegateAttentionFoldCache (foldcache) for three reasons. It
+// resumes only when a grown file's mtime moved, and a delivery's appends can
+// land within one coarse mtime tick of the previous write, so the verify
+// after an append would refold from zero; it has no file-identity check; and
+// its shared LRU can evict the root's entry during a hub-wide sweep.
+type delegateAttentionFoldCursor struct {
+	sessionID string
+	file      os.FileInfo
+	offset    int64
+	tail      []byte
+	fold      delegateAttentionFold
+}
+
+// read returns the fold of the transcript at path, with readDelegateAttentionFold's
+// decisions: the same fold, the same errors, and the empty fold for a missing
+// file. The cursor is left empty unless this read succeeds on a regular file.
+// The returned fold is the one the next read resumes from, so callers must not
+// change it.
+func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAttentionFold, error) {
+	previous := *c
+	*c = delegateAttentionFoldCursor{}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return newDelegateAttentionFold(), nil
+		}
+		return delegateAttentionFold{}, fmt.Errorf("open delegate attention transcript: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		// Only a regular file has offsets to resume from; anything else is
+		// folded as a stream, from its start, every time.
+		fold, _, err := extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), sessionID)
+		return fold, err
+	}
+	from, prior := int64(0), newDelegateAttentionFold()
+	if previous.resumes(f, info, sessionID) {
+		from, prior = previous.offset, previous.fold
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return delegateAttentionFold{}, fmt.Errorf("seek delegate attention transcript: %w", err)
+		}
+	}
+	fold, consumed, err := extendDelegateAttentionFoldFrom(f, from, prior, sessionID)
+	if err != nil {
+		return delegateAttentionFold{}, err
+	}
+	tail := make([]byte, min(consumed, delegateAttentionFoldTailBytes))
+	if _, err := f.ReadAt(tail, consumed-int64(len(tail))); err != nil {
+		return delegateAttentionFold{}, fmt.Errorf("read delegate attention transcript tail: %w", err)
+	}
+	*c = delegateAttentionFoldCursor{sessionID: sessionID, file: info, offset: consumed, tail: tail, fold: fold}
+	return fold, nil
+}
+
+// resumes reports whether f is the file c folded, grown only by appends since.
+func (c delegateAttentionFoldCursor) resumes(f *os.File, info os.FileInfo, sessionID string) bool {
+	if c.file == nil || c.sessionID != sessionID || !os.SameFile(c.file, info) || info.Size() < c.offset {
+		return false
+	}
+	tail := make([]byte, len(c.tail))
+	if _, err := f.ReadAt(tail, c.offset-int64(len(tail))); err != nil {
+		return false
+	}
+	return bytes.Equal(tail, c.tail)
 }
 
 // resolveAttentionDurably appends attention markers through the one writer
@@ -1228,7 +1643,7 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 		return errors.New("attention resolution requires an attached transcript writer")
 	}
 	path := transcriptPath(stateDir, sessionID)
-	fold, err := readDelegateAttentionFold(path, sessionID)
+	fold, err := s.attentionFoldCursor.read(path, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1245,10 +1660,12 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 		}
 		break
 	}
-	if err := appendDelegateAttentionResolutions(writer, fold, ids, disposition, resumeGeneration); err != nil {
+	// Resolutions reach the session's own transcript from delivery and stop
+	// goroutines at any time: the running execution's, or a delivery turn.
+	if err := appendDelegateAttentionResolutions(writer, transcript.PlaceAsync, s.withEntryModel(schema.Turn{}).Model, fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
-	verified, err := readDelegateAttentionFold(path, sessionID)
+	verified, err := s.attentionFoldCursor.read(path, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1260,8 +1677,9 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	return nil
 }
 
-// reopenAttentionTranscriptDurably rebuilds the writer sequence from complete
-// records, establishes a fresh filesystem barrier, and preserves the session's
+// reopenAttentionTranscriptDurably reopens the writer from complete records
+// (its sequence continues the file's shared tail, which the old writer still
+// holds open), establishes a fresh filesystem barrier, and preserves the session's
 // live failure accounting before publishing the replacement handle. The caller
 // holds attentionMu, which serializes this lifecycle with every transcript use.
 func (s *Session) reopenAttentionTranscriptDurably(writer *transcript.Writer, path, sessionID string) (*transcript.Writer, delegateAttentionFold, error) {
@@ -1297,7 +1715,7 @@ func (s *Session) reopenAttentionTranscriptDurably(writer *transcript.Writer, pa
 		s.mu.Unlock()
 		return nil, delegateAttentionFold{}, errors.New("attention transcript changed during durability recovery")
 	}
-	s.transcript = reopened
+	s.setTranscriptLocked(reopened)
 	s.mu.Unlock()
 	adopted = true
 	if err := writer.Close(); err != nil {
@@ -1308,7 +1726,7 @@ func (s *Session) reopenAttentionTranscriptDurably(writer *transcript.Writer, pa
 
 // stabilizeAttentionForStop repairs a writer whose failed durable append also
 // failed rollback. Closing and reopening establishes a durability boundary and
-// restores the writer's sequence from the transcript before stop can release
+// continues the writer's sequence from the file's shared tail before stop can release
 // the generation. If rollback removed the marker, the stop records a discard.
 func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 	if s == nil || attentionID == "" {
@@ -1352,13 +1770,13 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		disposition = delegateAttentionDiscarded
 	}
 	if !resolved {
-		if err := reopened.AppendSynced(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+		if _, err := reopened.Record(s.withEntryModel(delegateAttentionResolutionTurn(attentionID, disposition)), transcript.RecordOptions{Door: transcript.DoorSynced, Place: transcript.PlaceAsync}); err != nil {
 			return fmt.Errorf("attention %q was not durably stabilized: %w", attentionID, err)
 		}
 	} else if err := reopened.EstablishDurability(); err != nil {
 		return err
 	}
-	verified, err := readDelegateAttentionFold(path, sessionID)
+	verified, err := s.attentionFoldCursor.read(path, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1372,25 +1790,37 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		s.mu.Unlock()
 		return errors.New("attention stabilization transcript changed")
 	}
-	s.transcript = reopened
+	s.setTranscriptLocked(reopened)
 	s.mu.Unlock()
 	adopted = true
 	return writer.Close()
 }
 
-func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
+// appendDelegateAttentionResolutions appends a resolution for each of ids that
+// fold does not already record, once per ID however often ids repeats it. It
+// leaves fold unchanged: a resident Session's fold is its attention cursor's,
+// which must hold only what the file holds, or the verify read after this
+// append would confirm it from memory.
+// model is the resident session's model, "" for a cold writer, which has no
+// session.
+func appendDelegateAttentionResolutions(writer *transcript.Writer, place transcript.Placement, model string, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if err := validateDelegateAttentionResolutions(fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
+	appended := make(map[string]bool, len(ids))
 	for _, attentionID := range ids {
+		if appended[attentionID] {
+			continue
+		}
 		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
-		if err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
+		turn := delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)
+		turn.Model = model
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorSynced, Place: place}); err != nil {
 			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, err)
 		}
-		fold.resolutions[attentionID] = disposition
-		fold.resumeGenerations[attentionID] = resumeGeneration
+		appended[attentionID] = true
 	}
 	return nil
 }

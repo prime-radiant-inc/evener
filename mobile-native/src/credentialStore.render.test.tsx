@@ -7,18 +7,17 @@ import { useEffect } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { InstanceListResponse } from "@evener/appwire-client";
-import type {
-	CredentialInstancesClient,
-	CredentialInstancesStore,
-} from "@evener/appwire-client/state/credentials";
+import type { CredentialInstancesClient, CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useCredentialStore } from "./credentialStore";
-import { render, renderHook, scriptedClient } from "./renderNative.testkit";
+import { recordClientReadyHub } from "./connectionIdentity";
+import { render, renderHook, scriptedClient, unmountMountedTrees } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 
 afterEach(() => {
+	unmountMountedTrees();
 	vi.restoreAllMocks();
 });
 
@@ -30,10 +29,13 @@ it("binds the store before a child's mount effect reads through it", async () =>
 	const applied: boolean[] = [];
 	function Child({ store }: { store: CredentialInstancesStore }) {
 		useEffect(() => {
-			store.getState().fetch().then(
-				(landed) => applied.push(landed),
-				() => applied.push(false),
-			);
+			store
+				.getState()
+				.fetch()
+				.then(
+					(landed) => applied.push(landed),
+					() => applied.push(false),
+				);
 		}, [store]);
 		return null;
 	}
@@ -83,4 +85,37 @@ it("rebinds to a replacement client without closing the store in between", async
 		expect(await store.getState().fetch()).toBe(true);
 	});
 	expect(second.methods).toEqual(["evener/instance/list"]);
+});
+
+it("refuses a previous hub's adopted client after a re-key, then binds the re-point", async () => {
+	const stale = scriptedClient(rows);
+	// The re-key's stale client: it proved ready under hub-1, and the
+	// connection still reports it as ready after the store's selection has
+	// already re-keyed the route to hub-2 (connectionIdentity's record is
+	// the one memory that survives the remount).
+	recordClientReadyHub(stale.client, "hub-1");
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "New hub" },
+		client: stale.client,
+		state: "ready",
+	};
+	const hook = renderHook(() => useCredentialStore());
+	// The store must not bind the previous hub's client: its listing read
+	// would fetch hub-1's provider rows under hub-2.
+	await expect(hook.result.current.getState().fetch()).rejects.toThrow(/no client connected/);
+	expect(stale.methods).toEqual([]);
+
+	// The connection re-points to hub-2's own client - a new object the
+	// record has never seen - and the store binds it exactly as before.
+	const replacement = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "New hub" },
+		client: replacement.client,
+		state: "ready",
+	};
+	hook.rerender();
+	await act(async () => {
+		expect(await hook.result.current.getState().fetch()).toBe(true);
+	});
+	expect(replacement.methods).toEqual(["evener/instance/list"]);
 });

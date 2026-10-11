@@ -7,9 +7,9 @@ package agent
 // the composer and warn about dropped attachments. Like promote (issue
 // #22, review F1), a non-empty expectedID must match the entry at index so
 // a queue that shifted under the client's snapshot is rejected instead of
-// removing the wrong message. Unlike promote, cancel does NOT require an
-// active turn: a queued entry is cancellable whenever it is still queued,
-// including entries buffered on an idle session.
+// removing the wrong message. Neither promote nor cancel requires an active
+// turn: a queued entry is cancellable whenever it is still queued, including
+// entries buffered on an idle session.
 
 import (
 	"context"
@@ -54,8 +54,8 @@ func TestSession_CancelQueued_WorksWhileIdle(t *testing.T) {
 	if err := sess.Enqueue(context.Background(), "buffered on idle session"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	// No turn in flight: cancel is still valid — unlike promote, nothing
-	// about removal needs an in-flight turn to inject into.
+	// No turn in flight: cancel is still valid — removal needs no in-flight
+	// turn to inject into.
 	text, _, err := sess.CancelQueued(context.Background(), 0, "")
 	if err != nil {
 		t.Fatalf("CancelQueued idle: %v", err)

@@ -54,7 +54,16 @@ type Client struct {
 
 type pendingRequest struct {
 	id ID
-	ch chan Message
+	ch chan pendingResult
+}
+
+// pendingResult is one delivery to a waiting request: the response or error
+// frame to hand back plus whether the client synthesized it because its read
+// loop is gone. The flag is what lets request wrap a synthesized failure as a
+// TransportFailureError without putting local provenance on the wire type.
+type pendingResult struct {
+	msg   Message
+	local bool
 }
 
 func NewClient(transport Transport) *Client {
@@ -133,7 +142,7 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 				if c.orderedFrames != nil {
 					c.orderedFrames(msg, nil)
 				}
-				pending.ch <- msg
+				pending.ch <- pendingResult{msg: msg}
 			}
 		}
 	}()
@@ -319,7 +328,7 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	if observe := requestIDObserverFrom(ctx); observe != nil {
 		observe(id)
 	}
-	ch := make(chan Message, 1)
+	ch := make(chan pendingResult, 1)
 
 	c.pendingMu.Lock()
 	c.pending[id.String()] = pendingRequest{id: id, ch: ch}
@@ -351,9 +360,9 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	}
 	c.releaseSendSlot()
 
-	var msg Message
+	var res pendingResult
 	select {
-	case msg = <-ch:
+	case res = <-ch:
 	case <-ctx.Done():
 		c.removePending(id)
 		return ctx.Err()
@@ -362,16 +371,26 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		// before the exit still wins; otherwise synthesize the same error frame
 		// failPending would have delivered, so callers see one failure shape.
 		select {
-		case msg = <-ch:
+		case res = <-ch:
 		default:
 			c.removePending(id)
-			msg = ErrorMessage(id, InternalError(c.closedError().Error()))
+			res = pendingResult{
+				msg:   ErrorMessage(id, InternalError(c.closedError().Error())),
+				local: true,
+			}
 		}
 	}
 
+	msg := res.msg
 	if msg.Error != nil {
 		wire := msg.Error.Error
 		wire.Message = fmt.Sprintf("appwire %s: %s", method, wire.Message)
+		if res.local {
+			// The client made this failure; the peer never answered. Wrap it so
+			// adapters can tell a lost response from an InternalError that
+			// arrived intact (see TransportFailureError).
+			return TransportFailureError{WireError: wire}
+		}
 		return wire
 	}
 	if msg.Response == nil {
@@ -379,6 +398,9 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	}
 	if out == nil {
 		return nil
+	}
+	if raw, ok := msg.Response.Result.(json.RawMessage); ok {
+		return json.Unmarshal(raw, out)
 	}
 	data, err := json.Marshal(msg.Response.Result)
 	if err != nil {
@@ -436,7 +458,10 @@ func (c *Client) failPending(err error) {
 	defer c.pendingMu.Unlock()
 	for id, pending := range c.pending {
 		delete(c.pending, id)
-		pending.ch <- ErrorMessage(pending.id, InternalError(err.Error()))
+		pending.ch <- pendingResult{
+			msg:   ErrorMessage(pending.id, InternalError(err.Error())),
+			local: true,
+		}
 	}
 }
 
@@ -513,6 +538,30 @@ func (c *Client) ThreadTranscriptList(ctx context.Context, params ThreadTranscri
 	return out, err
 }
 
+func (c *Client) ThreadActivityRead(ctx context.Context, params SessionActivityReadParams) (SessionActivitySummary, error) {
+	var out SessionActivitySummary
+	err := c.request(ctx, MethodEvenerThreadActivityRead, params, &out)
+	return out, err
+}
+
+func (c *Client) ThreadDelegatesList(ctx context.Context, params SessionActivityListParams) (SessionDelegatesResponse, error) {
+	var out SessionDelegatesResponse
+	err := c.request(ctx, MethodEvenerThreadDelegatesList, params, &out)
+	return out, err
+}
+
+func (c *Client) ThreadJobsList(ctx context.Context, params SessionActivityListParams) (SessionJobsResponse, error) {
+	var out SessionJobsResponse
+	err := c.request(ctx, MethodEvenerThreadJobsList, params, &out)
+	return out, err
+}
+
+func (c *Client) ThreadWatchesList(ctx context.Context, params SessionActivityListParams) (SessionWatchesResponse, error) {
+	var out SessionWatchesResponse
+	err := c.request(ctx, MethodEvenerThreadWatchesList, params, &out)
+	return out, err
+}
+
 func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (ThreadStartResponse, error) {
 	var out ThreadStartResponse
 	err := c.request(ctx, MethodThreadStart, params, &out)
@@ -561,6 +610,10 @@ func (c *Client) ThreadShutdown(ctx context.Context, params ThreadShutdownParams
 	return c.request(ctx, MethodThreadShutdown, params, nil)
 }
 
+// TurnStart deliberately does not register with the pending coordinator
+// (TestTurnStart_DoesNotRegisterPending): the caller renders its own local
+// echo of the opening message before the RPC even goes out, so there is no
+// gap for a coordinator-drawn placeholder to fill.
 func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnStartResponse, error) {
 	var out TurnStartResponse
 	err := c.request(ctx, MethodTurnStart, params, &out)
@@ -570,7 +623,7 @@ func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnSta
 func (c *Client) TurnSteer(ctx context.Context, params TurnSteerParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input), pendingTargetRef(params.Ref, params.ThreadID))
+		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input), pendingTargetRef(params.Ref, params.ThreadID), params.ClientMutationID)
 	}
 	err := c.request(ctx, MethodTurnSteer, params, nil)
 	if err != nil && handle != nil {
@@ -630,7 +683,7 @@ func (c *Client) UrlsRemove(ctx context.Context, params UrlsRemoveParams) (UrlsR
 func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "", params.Ref)
+		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "", params.Ref, params.ClientMutationID)
 	}
 	err := c.request(ctx, MethodTurnDrainAsSteer, params, nil)
 	if err != nil && handle != nil {
@@ -641,9 +694,11 @@ func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerPa
 
 // TurnPromoteQueuedAsSteer calls turn/promoteQueuedAsSteer (issue #22) to
 // remove the queued message at params.Index and inject it as a user-sourced
-// STEERING message into the in-flight turn, leaving the rest of the queue
-// in place. The daemon returns Conflict when no turn is active or the index
-// no longer resolves against the live queue.
+// STEERING message into the in-flight turn (or the next turn when none is
+// running), leaving the rest of the queue in place. Unlike TurnSteer, no
+// turn needs to be active: a queue a Stop parked is promoteable. The daemon
+// returns Conflict when the index no longer resolves against the live queue
+// or the expected entry id mismatches.
 func (c *Client) TurnPromoteQueuedAsSteer(ctx context.Context, params TurnPromoteQueuedAsSteerParams) error {
 	return c.request(ctx, MethodTurnPromoteQueuedAsSteer, params, nil)
 }
@@ -653,7 +708,7 @@ func (c *Client) TurnPromoteQueuedAsSteer(ctx context.Context, params TurnPromot
 // removed entry's full text and image count. The daemon returns Conflict
 // when the index no longer resolves against the live queue or the expected
 // entry id mismatches (the queue shifted under the client's snapshot,
-// review F1) — unlike promote, no active turn is required.
+// review F1) — as with promote, no active turn is required.
 func (c *Client) TurnCancelQueued(ctx context.Context, params TurnCancelQueuedParams) (TurnCancelQueuedResponse, error) {
 	var resp TurnCancelQueuedResponse
 	if err := c.request(ctx, MethodTurnCancelQueued, params, &resp); err != nil {
@@ -684,6 +739,12 @@ func (c *Client) JobsList(ctx context.Context, params JobsListParams) (JobsListR
 func (c *Client) JobOutput(ctx context.Context, params JobsOutputParams) (JobsOutputResponse, error) {
 	var out JobsOutputResponse
 	err := c.request(ctx, MethodEvenerJobsOutput, params, &out)
+	return out, err
+}
+
+func (c *Client) JobsGet(ctx context.Context, params JobsGetParams) (JobsGetResponse, error) {
+	var out JobsGetResponse
+	err := c.request(ctx, MethodEvenerJobsGet, params, &out)
 	return out, err
 }
 
@@ -750,6 +811,12 @@ func (c *Client) SessionDelete(ctx context.Context, params SessionDeleteParams) 
 func (c *Client) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	var out SearchResponse
 	err := c.request(ctx, MethodEvenerSearch, params, &out)
+	return out, err
+}
+
+func (c *Client) ArchivedList(ctx context.Context, params ArchivedListParams) (ArchivedListResponse, error) {
+	var out ArchivedListResponse
+	err := c.request(ctx, MethodEvenerArchivedList, params, &out)
 	return out, err
 }
 
@@ -852,6 +919,12 @@ func (c *Client) MarketplaceBrowse(ctx context.Context, params MarketplaceBrowse
 func (c *Client) PluginList(ctx context.Context) (PluginListResponse, error) {
 	var out PluginListResponse
 	err := c.request(ctx, MethodEvenerPluginList, EmptyParams{}, &out)
+	return out, err
+}
+
+func (c *Client) PluginCheckUpdates(ctx context.Context) (PluginListResponse, error) {
+	var out PluginListResponse
+	err := c.request(ctx, MethodEvenerPluginCheckUpdates, EmptyParams{}, &out)
 	return out, err
 }
 

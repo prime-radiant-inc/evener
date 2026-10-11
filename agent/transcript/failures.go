@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
 
@@ -25,7 +26,9 @@ func IsShellTool(name string) bool {
 // opaque tool state. Absent state, unreadable state, or state without the field
 // all report nil — "no exit code recorded", which is not a failure.
 func ExitCodeFromToolState(raw json.RawMessage) *int64 {
-	if len(raw) == 0 {
+	// Only an object can hold the field. Other state (task_list's is a large
+	// array) would cost a whole decode just to fail.
+	if trimmed := bytes.TrimLeft(raw, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
 		return nil
 	}
 	var v struct {

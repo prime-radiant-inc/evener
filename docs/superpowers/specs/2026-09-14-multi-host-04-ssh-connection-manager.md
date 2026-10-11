@@ -9,10 +9,26 @@ Spikes: `2026-09-14-multi-host-spikes-findings.md` (Spikes A and C).
 **Citation convention.** Symbols (package, type, method, constant, file) are
 authoritative and were verified on the implementation branches
 (`multi-host-pr04a-ssh-channel`, `multi-host-pr04b-deploy-restart`,
-`multi-host-pr05a..d`, `multi-host-pr06a-fleet-view-go`). Line numbers are not
-used for Go or TypeScript sources; where a non-Go line reference survives
-(docs, `install.sh`, Makefiles) treat it as a hint from the `multi-host-specs`
-working tree, not as pinning — the reviewer's base is `origin/main`.
+`multi-host-pr05a..d`, `multi-host-pr06a-fleet-view-go`), all since landed on
+`origin/main`. Line numbers are not used for Go or TypeScript sources; where
+a non-Go line reference survives (docs, `install.sh`, Makefiles) treat it as a
+hint, not as pinning; the reviewer's base is `origin/main`.
+
+> **Restored 2026-09-26 (shipped by #2450, reversing #2410).** The 2026-09-26
+> ruling *"Keep the ad hoc path — restore the capability"* is applied
+> throughout this spec. A hub with **no supervisor**, and a detected launchd
+> supervisor whose restart command **cannot be built safely** (no numeric uid,
+> or a label outside the bare-safe set), restart through the **guarded ad hoc
+> path** — recover the listening pid, its argv, and its log, `kill`, wait for
+> the port to clear and the process to exit, then relaunch detached
+> (`restartBare` → `waitHealthy` → `clearPendingRestart`, `sshconn/version.go`)
+> — instead of refusing with `ErrRestart`. The label is still never
+> interpolated into the remote shell, and a detected supervisor is still
+> preferred whenever its restart command can be built. The identification/signal
+> PID-reuse window ("Limit: identification and signal are separate host
+> commands") is **accepted**: the shipped path validates at identification time
+> only, and neither a compare-and-kill nor any signal-time re-read is
+> implemented. The cold-bootstrap **start** (`bootstrapHub`) is unchanged.
 
 ## Purpose
 
@@ -27,10 +43,10 @@ component is the only place that runs `ssh`. It
    evener `version`/`protocol`/`launch_flags`);
 4. deploys a matching `evener` binary for the host's `GOOS`/`GOARCH` and/or runs
    the installer;
-5. on attach, compares the controller's build with the host's and, when they
-   differ, deploys the matching build, restarts the host hub, and verifies the
-   restarted hub's build identity **by running the health probe on the host**
-   (never from the controller's own loopback) before attaching.
+5. on attach, compares the controller's build with the host's and, where a deploy
+   path is configured, deploys the matching build, restarts the host hub, and
+   verifies the restarted hub's build identity **by running the health probe on
+   the host**; with no deploy path the host keeps its build and reports the skew.
 
 It produces a connected AppWire transport + initialized client per host; it does
 **not** map that client onto `appsource.Source` (component 05) or render hosts
@@ -59,12 +75,15 @@ register/unregister path anywhere in this component or in 05.
 - Deploy: obtain the matching controller build for the host's `GOOS`/`GOARCH`
   (cross-compile, mirroring `make build-linux`) and push it (`scp`/`ssh cat`) or
   run `install.sh` on the host; `chmod +x`.
-- Version auto-match on attach: compare controller `buildinfo.Version()` with the
-  host's **running** hub `version` (`/api/health`) and its on-disk
-  `launch-check` `version`; deploy when the on-disk binary differs and restart
-  the host hub when the running version differs, then verify the **restarted**
-  hub reports the expected `version` through `/api/health`, probed on the host,
-  before re-attaching.
+- Version auto-match on attach, where a deploy path is configured: compare
+  controller `buildinfo.Version()` with the host's **running** hub `version`
+  (`/api/health`) and its on-disk `launch-check` `version`; deploy when the
+  on-disk binary differs and restart the host hub when the running version
+  differs, then verify the **restarted** hub reports the expected `version`
+  through `/api/health`, probed on the host, before re-attaching. With no
+  deploy path there is nothing to converge: a protocol-compatible host on
+  another build is attached and the difference is reported rather than refused
+  (§5).
 - Client handoff: publish the current client per host so component 05 can rebind
   after a reconnect without ever caching a dead client (§"Client handoff").
 
@@ -234,7 +253,7 @@ the single place that turns `(dest, remote argv)` into local `ssh` argv.
 
 ```
 ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
-    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio \
+    -o ServerAliveCountMax=<n> [-i <key_path>] -- <dest> <evener_path> hub attach --stdio \
     [--config <config_path>] [--addr <addr>]
 ```
 
@@ -244,9 +263,9 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   pseudo-terminal for the bridge. A PTY rewrites newlines and folds remote
   diagnostics into the framed stream; `-T` keeps stdout the raw AppWire byte
   stream and stderr the diagnostic channel (component 02's stdout discipline).
-  **Implementation status:** `-T` is on the 04a component branch
-  (`multi-host-pr04a-ssh-channel`), **pending merge**; the 04b branch predates
-  it.
+  **Implementation status:** shipped — `sshBaseArgv` passes `-T` on every ssh
+  invocation (`sshconn/runner.go`), so a user's `ssh_config` cannot allocate a
+  PTY for the bridge.
 - **`--` ends ssh's own option parsing.** The destination is emitted as
   `-- <dest>` (shipped: `sshDest` in `sshconn/runner.go`). A registry `ssh`
   value that begins with `-` must be read as a hostname and never as an ssh
@@ -344,14 +363,15 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   and refuses a restart it cannot match to the configured address (§5) rather
   than restarting whatever holds the default port; it cannot read the host's
   file to detect the mismatch before probing, which is why the operator sets
-  `addr` for a custom-address host. **Implementation
-  status:** the shipped `hostreg` stores `ConfigPath` and `Addr` as independent
-  optional fields and `channelArgv` passes whichever is present. The
-  restart/health path now consumes the per-host `addr` through `Manager.hostAddr`
-  (per-host `Addr`, else manager-wide `Options.HubAddr`, else the default) on
-  the 04b component branch (`multi-host-pr04b-deploy-restart`), **pending merge,
-  not on `main`**. The paired `config_path`/`addr` validation remains a
-  requirement for the implementing PR rather than a present fact.
+  `addr` for a custom-address host. **Implementation status:** shipped. The
+  `hostreg` entry stores `ConfigPath` and `Addr` as independent optional fields
+  and `channelArgv` passes whichever is present; the restart, port, and health
+  probes resolve the address through `Manager.hostAddr` (`sshconn/version.go`,
+  `hostAddrFor`; per-host `Addr`, else `Options.HubAddr`, else
+  `127.0.0.1:9180`), and `checkHostAddr` (`sshconn/version.go`) refuses a
+  non-loopback or malformed address — and a `config_path` with no address —
+  before any ssh command runs. The paired `config_path`/`addr` validation
+  remains a requirement for the implementing PR.
 - `BatchMode=yes` and a connect timeout make the channel strictly
   non-interactive, so a credential prompt fails fast instead of hanging; mirrors
   the spike invocation `spike/client/main.go`
@@ -372,16 +392,22 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   verified; a first attach to an unknown host therefore fails with that
   actionable error rather than hanging, and the remedy is documented instead of
   inviting `StrictHostKeyChecking=no`.
-- **Port, identity file, and jump hosts go through the user's `ssh_config`.**
-  The argv pins the destination as `-- <dest>` (`dest` is a bare host or
-  `user@host`, component 03), which deliberately makes `-p`/`-i`/`ProxyJump`
-  inexpressible as direct arguments: a value starting with `-` after `--` would
-  be read as the destination, and injecting such options before `--` would
-  reopen the option-injection hole `--` closes. The supported way to reach a
-  non-default port, key, or jump host is therefore the user's `ssh_config`
-  (matching `<dest>` or a `Host` alias the operator puts in the `ssh` field),
-  which ssh applies itself. This is documented as the supported path, not left
-  as an escape hatch, and no `[[hosts]]` field (nor a `dest` spelling) may
+- **The one direct identity option is `key_path`; ports and jump hosts go
+  through the user's `ssh_config`.** The argv pins the destination as
+  `-- <dest>` (`dest` is a bare host or `user@host`, component 03), which
+  deliberately makes `-p` and `ProxyJump` inexpressible as direct arguments: a
+  value starting with `-` after `--` would be read as the destination, and
+  injecting such options before `--` would reopen the option-injection hole
+  `--` closes. The one exception is the entry's `key_path` (component 03's
+  optional field, component 08 §6's stored schema field): it is emitted as the
+  paired argument `["-i", key_path]` before the `--` terminator — the value
+  travels as `-i`'s argument, never as a bare option, so a key path that begins
+  with `-` cannot smuggle one (`sshIdentityArgv`,
+  `cmd/evener-hub/internal/sshconn/runner.go`). Every other non-default port,
+  key, or jump host is reached through the user's `ssh_config` (matching
+  `<dest>` or a `Host` alias the operator puts in the `ssh` field), which ssh
+  applies itself. This is documented as the supported path, not left as an
+  escape hatch, and no other `[[hosts]]` field (nor a `dest` spelling) may
   reintroduce raw ssh options.
 - stdin/stdout are the framed AppWire stream; stderr is diagnostics
   (spike `spike/client/main.go`, `cmd.Stderr = os.Stderr`).
@@ -678,13 +704,13 @@ Run over non-interactive SSH (no login shell, no TTY):
   `ErrPreflightDecode`, `ErrLaunchContract`) and never run the installer,
   because an unreachable host would otherwise be treated as an empty one and the
   deploy ladder would push a binary at a host that never answered.
-  **Implementation status:** the shipped 04a preflight surfaces the missing
-  binary as `ErrSSHStart` from the failed `launch-check` run
-  (`sshconn/preflight.go`) by recognizing the remote shell's `127`/not-found
-  text; that text-based recognition is the fragile form this requirement
-  supersedes. The dedicated probe, the ssh-diagnostic separation it relies on,
-  and the routed deploy/install branch are the 04b/round-19 requirement (keystone
-  follow-ups), not a present fact.
+  **Implementation status:** shipped for the classification and the route: a
+  `launch-check` whose shell reports a missing command is classified
+  `errExecutableMissing` (`sshconn/preflight.go`), and with a deploy path
+  configured `preflight` defers it into deploy/install, while an unreachable
+  host, an auth refusal, an unparseable answer, or a protocol/launch-contract
+  refusal never runs the installer (`sshconn/preflight.go`'s deploy deferral). The
+  dedicated `test -x` probe and its ssh-diagnostic separation remain round 19.
 - **Roots (probed).** Preflight resolves the host's config root and state root
   from the probed environment with the same chain the host binary uses
   (`resolveRoots`, `cmdutil.StateRootFromLookup`, `envvars/userdirs.ConfigRoot`)
@@ -709,11 +735,12 @@ Run over non-interactive SSH (no login shell, no TTY):
   `127.0.0.1:9180`, so a host whose config names a non-default address must set
   both; a restart the manager cannot match to the configured address is refused
   (§5) rather than guessed.
-  **Implementation status:** `Manager.hostAddr` and its use on the
-  restart/health path are implemented on the 04b component branch
-  (`multi-host-pr04b-deploy-restart`), **pending merge, not on `main`**; the
-  paired `config_path`/`addr` validation remains a requirement for the
-  implementing PR.
+  **Implementation status:** shipped — `Manager.hostAddr`
+  (`sshconn/version.go`'s `hostAddr`) resolves the per-host `addr` for the restart,
+  port probe, and health probe, and `checkHostAddr` refuses a non-loopback or
+  malformed address — and a `config_path` with no address — before any ssh
+  command runs; the paired `config_path`/`addr` validation remains a
+  requirement for the implementing PR.
   `hub.lock` lives at `<hub_state_root>/hub.lock` (`cmd/evener-hub/main.go`)
   and names no address or PID — it cannot be used to find the listener.
 - **Target support.** Only `linux/amd64` and `darwin/arm64` ship
@@ -751,11 +778,12 @@ Two paths, chosen per host (open question: which wins when both are viable):
 
   **Dev builds must not auto-match.** `buildinfo.Version()` returns `"dev"`
   whenever `GitSHA` is empty (`buildinfo/buildinfo.go`), so an unstamped
-  controller has no identity to deploy. Rule: when the controller's own
-  `buildinfo.Version()` is `"dev"`, auto-match is *disabled* — attach only to a
-  host reporting exactly `"dev"`, and refuse a mismatch with `ErrDeploy`
-  (message: the controller build carries no identity to deploy) instead of
-  pushing a binary that cannot be distinguished from what is already there.
+  controller has no identity to deploy: pushing its own tree would produce a
+  binary that cannot be distinguished from what is already on the host. Rule:
+  when the controller's own `buildinfo.Version()` is `"dev"`, auto-match is
+  *disabled*. With a deploy path the forced deploy still runs and both sides end
+  up on the same unstamped build; with no deploy path the host keeps its own
+  build and is attached, because a build version is not an attach gate (§5).
   Operators who want auto-match on a dev controller must supply the identity
   (e.g. `-X buildinfo.GitSHA=…`, or a configured binary via `Options.BuildBinary`).
 
@@ -785,36 +813,50 @@ Two paths, chosen per host (open question: which wins when both are viable):
   driven by the controller's own build channel, `buildinfo.BuildChannel()`
   (`buildinfo/buildinfo.go`):
 
-  - **release** (`Channel == "release"`): pass the release tag. `buildinfo` does
-    not carry it today, so the controller build must stamp it
-    (`-X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}` in
-    `.goreleaser.yml`, a new `ReleaseTag` var), and the installer is invoked
-    with `EVENER_INSTALL_VERSION=<buildinfo.ReleaseTag>`.
-  - **snapshot** (`Channel == "snapshot"`): the `snapshot` tag is **mutable** —
+  - **release** (`Channel == "release"`): pass the stamped release tag. The
+    controller build stamps it (`buildinfo.ReleaseTag`, set by `.goreleaser.yml`
+    as `-X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}`), and the
+    installer is invoked with `EVENER_INSTALL_VERSION=<buildinfo.ReleaseTag>`. A
+    release build carrying **no** stamped tag is refused (`ErrDeploy`) rather
+    than passed `buildinfo.Version()`: a Git SHA is never a release tag.
+  - **snapshot** (`Channel == "snapshot"`): pass the **mutable** `snapshot` tag,
+    accepted as a **best-effort pin**. It is not a provable pin:
     `.github/workflows/binaries.yml` force-moves the tag *and* re-uploads
-    `checksums.txt` with `--clobber` on every green `main` build — so neither
-    the tag nor the checksum it publishes pins the controller's commit. The
-    checksum proves only that the downloaded archive is the one that release
-    published *now*; it says nothing about which commit that is. The installer
-    fallback is therefore **refused for a snapshot controller** with `ErrDeploy`
-    ("the installer fallback needs an immutable artifact reference; use the
-    atomic push path or an explicit `Options.BuildBinary`"), exactly as the
-    dev/dirty rule below refuses it. Running `install.sh` first and discovering
-    the mismatch afterwards is **not** an acceptable substitute: `install.sh`
-    has no commit-pinned mode, so it has already replaced the installed
-    `evener`, and the after-the-fact identity probe (`deployInstaller`'s
-    `probeLaunchCheck` → terminal `ErrVersionMismatch`, `deploy.go`) leaves the
-    host holding a build from a commit the controller never intended while the
-    deploy reports failure. A future snapshot-like channel may re-enable the
-    fallback only together with a **per-commit immutable artifact reference** (a
-    tag that names the commit, e.g. `snapshot-<sha>`, published once and never
-    re-pointed) whose bytes `install.sh` verifies against that reference's
-    `checksums.txt` before it replaces anything.
+    `checksums.txt` with `--clobber` on every green `main` build, so neither the
+    tag nor the checksum it publishes names the controller's commit. The install
+    is verified *afterwards* by the same on-host identity check
+    (`deployInstaller`'s `probeLaunchCheck`), and once the tag has moved past
+    this controller's commit that check refuses **terminally**
+    (`ErrVersionMismatch`, "a moved channel tag cannot be resolved by retrying")
+    instead of re-fetching the same artifact forever.
+
+    The trade this accepts is real and is stated here because the earlier text
+    in this section rejected exactly it. For a snapshot controller the installer
+    writes a binary whose commit is **not provable from the artifact
+    reference**, and the proof arrives only *after* the write. So the failure
+    mode the old text named remains: once the tag moves past the controller's
+    commit, `install.sh` has already replaced the host's `evener`, and the
+    deploy reports failure while the host holds a snapshot build from an
+    unknown — possibly **newer** — commit. What makes it acceptable is the path
+    that does carry a provable identity, and that it is now actually reachable:
+    the atomic push path (§4, "Cross-compile + push") installs the controller's
+    own build — by default its own running executable, or a `-deploy-binary`
+    artifact, or a `-build-source` cross-compile that stamps the build in
+    process — so it is reachable from a production hub with no flags at all, and
+    the terminal refusal names it as the remedy in the terms the embedder
+    supplied (`Options.DeployHelp`): a hub names its own state and flags, while
+    an embedder with no flags to name keeps the library's sentence ("use the
+    atomic push path or `Options.BuildBinary`").
+    The `snapshot` tag is not an immutability to lean on; it is a movable
+    default whose cost the operator is told how to avoid.
   - **dev / dirty** (`Channel == ""`/"dev", or `GitDirty == "true"`): there is
     no publishable identity to pin, so the installer fallback is **refused**
     (`ErrDeploy`, the same rule as §"Dev builds must not auto-match"); the
-    operator must use the atomic push path (§"Push target resolution") or an
-    explicit `Options.BuildBinary`.
+    operator must use the atomic push path (§"Push target resolution") — wired
+    by default to the hub's own executable, whose bytes are the build, and
+    otherwise an explicit `Options.BuildBinary` — while a `-build-source`
+    cross-compile from a dirty controller stays refused, since no checkout can
+    be proven to reproduce that build.
 
   `latest` is never passed. After the installer runs, the same on-host
   `/api/health` probe and identity check below must confirm the *pinned* build —
@@ -823,11 +865,13 @@ Two paths, chosen per host (open question: which wins when both are viable):
   attachment; a host that cannot be pinned or resolves the wrong build is a
   **failed verification** (`ErrDeploy`), never an attach.
 
-  **No deploy path may replace the installed binary before the artifact's
-  identity is pinned to the controller's build.** The atomic push path already
-  has this property: the binary is cross-compiled by the controller from a
-  source revision it verified (`verifyBuildRevision` refuses a dirty tree and an
-  ignored-but-compiled `.go` file), stamped with the controller's own buildinfo
+  **The atomic push path cannot replace the installed binary before the
+  artifact's identity is pinned to the controller's build; the installer
+  fallback has no such property, and for a snapshot controller it trades it
+  away deliberately.** The push path already has this property: the binary is
+  cross-compiled by the controller from a source revision it verified
+  (`verifyBuildRevision` refuses a dirty tree and an ignored-but-compiled `.go`
+  file), stamped with the controller's own buildinfo
   (`-X buildinfo.GitSHA`/`BuildTime`/`ReleaseTag`), streamed into a `mktemp`
   temp file whose byte count must equal the staged file's length before
   `chmod +x` and a single `mv` onto the resolved run target
@@ -838,14 +882,17 @@ Two paths, chosen per host (open question: which wins when both are viable):
   `install.sh` copies the archive's binaries into `share_bindir` and re-points
   the `bindir` symlinks (`install.sh:140-152`), which is neither an atomic swap
   nor an identity check — the `checksums.txt` it verifies belongs to whatever
-  the tag resolves to at that moment. It is therefore admitted only for a
-  channel whose artifact reference is **immutable and checksum-verified before
-  unpacking** — today `release` alone: an immutable tag, plus
-  `install.sh:88-130`'s sha256 verification of the archive against that
-  release's `checksums.txt`, which fails closed and installs nothing on any
-  mismatch — and is refused for every other channel (`snapshot`, `dev`,
-  dirty). The post-install `/api/health` identity probe stays as the last
-  verification, but it checks an already-replaced file; it is never the pin.
+  the tag resolves to at that moment. It is therefore admitted for `release` —
+  an immutable tag, plus `install.sh:88-130`'s sha256 verification of the
+  archive against that release's `checksums.txt`, which fails closed and
+  installs nothing on any mismatch — and for `snapshot` only as the best-effort
+  pin §"Installer (fallback)" describes, where the post-install identity check
+  is the whole verification and a tag that has moved past the controller's
+  commit is refused terminally. It is refused for `dev` and dirty, which have no
+  publishable identity to pin. The post-install `/api/health` identity probe
+  stays as the last verification either way, but for a release pin it checks an
+  already-replaced file and is never the pin; for a snapshot pin it is the only
+  verification there is, which is the trade §"Installer (fallback)" states.
 
 - **Push target resolution (shipped).** A push must install to the absolute path
   of the executable the host will *run*, or version auto-match deploys the new
@@ -918,10 +965,10 @@ Two paths, chosen per host (open question: which wins when both are viable):
     hub-capable development artifact in this series: a dev build reaches a host
     only through the atomic push path (§"Push target resolution",
     `Options.BuildBinary`) at an `evener`-named target.
-    **Implementation status:** the shipped `installableEvenerBasename`
-    (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`) accepts both
-    `evener` and `evener-dev`, so the narrowing is the implementing PR's
-    requirement, not a present fact.
+    **Implementation status:** shipped — `installableEvenerBasename`
+    (`sshconn/version.go`) accepts only `evener`, and `checkRunTarget`
+    (`sshconn/deploy.go`) refuses any other run-target basename terminally
+    (`ErrRunTargetUnservable`) before any probe, push, or install.
   - When `evener_path` is empty, the installer targets the host's resolved
     `run_path` (`BINDIR=dirname(run_path)`, the same value the push path
     resolves): when `command -v evener` resolved, that is its directory, and
@@ -942,25 +989,38 @@ the file it already had. The push writes a temp name and `mv`s it into place
 (`pushBinaryRemote`/`pushBinary` in `deploy.go`), so an interrupted push never
 leaves a truncated `evener`. The installer path's own copy is **not** atomic
 (`install -m 0755` into `share_bindir`, then `ln -sfn`, `install.sh:140-152`),
-which is precisely why it is admitted only for the immutable, checksum-verified
-release reference above — there, re-running the same pinned install converges
-the same verified bytes idempotently, so a torn install is recoverable rather
-than silently different. Record the binary's source (`git SHA`) so the
-version-match can verify the deploy landed.
+so its admission is tied to what the reference can prove: for a release
+reference, re-running the same pinned install converges the same
+checksum-verified bytes idempotently, so a torn install is recoverable rather
+than silently different, while the `snapshot` reference above is admitted only
+as the best-effort pin §4 states, where the post-install check refuses a moved
+tag terminally and a torn install is a failed verification. Record the
+binary's source (`git SHA`) so the version-match can verify the deploy landed.
 
 ### 5. Version auto-match + restart — `version.go`
 
 - **On-disk identity (deploy decision).** Compare controller
   `buildinfo.Version()` (`buildinfo.go`) with the host's `launch-check`
   `version`. `launch-check` reports the binary at `evener_path`/`PATH`, which is
-  exactly what a deploy replaces: equal → attach directly; different → the
-  controller is the version authority (design §2) and deploys the matching
-  build (§4), restarts, then re-attaches. The deploy stamps the controller's own
-  buildinfo (`-X buildinfo.GitSHA=…`, `-X buildinfo.BuildTime=…`) into the
-  pushed binary, so a deployed binary's `launch-check` version equals the
-  controller's `buildinfo.Version()`. A `"dev"` controller does not auto-match
-  (§4): an unstamped build has no identity to deploy, so a mismatching host is
-  refused rather than "matched" by pushing another `dev` binary.
+  exactly what a deploy replaces: equal → attach directly; different **and a
+  deploy path is configured** → the controller is the version authority
+  (design §2) and deploys the matching build (§4), restarts, then re-attaches.
+  The deploy stamps the controller's own buildinfo (`-X buildinfo.GitSHA=…`,
+  `-X buildinfo.BuildTime=…`) into the pushed binary, so a deployed binary's
+  `launch-check` version equals the controller's `buildinfo.Version()`.
+  A different version with **no** deploy path is not an attach gate: the host
+  answered the controller's `launch-check`, so it speaks the same protocol, and
+  it keeps its own build and is attached. The difference is reported
+  (`ensureOnce`'s skew notice) rather than refused, and no snapshot pin applies
+  to a build this controller did not install. Gating on the version label
+  instead refused working hosts — an unstamped `"dev"` host against a stamped
+  controller, a host built from another checkout — and told the operator to
+  configure a deploy path they did not need. `launch-check` itself refuses any
+  protocol but its own (`launchcheck.go:72-74`) and
+  `appwire.Client.Initialize` enforces the protocol again at the wire, so the
+  protocol is the compatibility contract and the build label is not. A `"dev"`
+  controller does not auto-match (§4): an unstamped build has no identity to
+  deploy, so a mismatching host is not "matched" by pushing another `dev` binary.
 - **Running-hub identity (the restart trigger and the verification).** The
   binary on disk is *not* proof of what the running process executes: a running
   hub keeps executing the copy it was started from until it is restarted. The
@@ -974,13 +1034,18 @@ version-match can verify the deploy landed.
   - it reads the on-disk `launch-check` `version` (`facts.Version`) and the
     running hub's `/api/health` `version` (`running`, with `runningKnown == false`
     when nothing answered);
-  - it enters the deploy/restart branch when **either** differs from the
-    controller's `buildinfo.Version()` (`expected`), and deploys (§4) **only**
-    when the on-disk `facts.Version` differs — a restart left pending by an
-    earlier failed attempt already installed the build, so re-cross-compiling on
-    every reconnect would be a needless build;
+  - it enters the deploy/restart branch when the running hub's `version` differs
+    from the controller's `buildinfo.Version()` (`expected`) while the on-disk
+    build already matches — a stale process to replace — or when the on-disk
+    `facts.Version` differs **and a deploy path is configured** (§4) to install
+    the controller's build; the deploy replaces the binary and the restart brings
+    up what the deploy wrote, so re-cross-compiling on every reconnect for a
+    mismatch a deploy already resolved would be a needless build;
+  - an on-disk difference with **no** deploy path attaches instead: the protocol
+    decides compatibility (§5, "On-disk identity"), so the host keeps the build it
+    has and `ensureOnce` reports the difference as it attaches;
   - when nothing answers the probe (`runningKnown == false`) there is no running
-    hub to judge. An on-disk mismatch still drives its own deploy/restart. Half
+    hub to judge, and the deploy-path condition above is the whole test. Half
     of the remaining case — a host that is merely **not started** — is closed by
     the first-attach bootstrap below; a reconnect never silently restarts a
     process it cannot identify (the rule unchanged by this round).
@@ -1062,13 +1127,11 @@ version-match can verify the deploy landed.
   (`version.go`): it polls the host's `/api/health` until the response reports
   the *expected build identity*, or the bound is exhausted (`ErrRestart`). That
   identity is **passed into** `waitHealthy` as an argument — the expected
-  `version` always, and, for a controller on the **snapshot build channel** (a
-  build the installer fallback can no longer produce, since it is release-only,
-  but which the atomic push path still deploys), the expected `backend_git_sha`
-  from `buildinfo.GitSHA` — because a version-only probe cannot tell two snapshot
-  builds that share a `version` apart. A bare 200 — or any non-empty body — is
-  not sufficient, and a body that is not a `hubapi.HealthResponse` is not usable
-  evidence (`parseHealthVersion`).
+  `version` always, and, for a controller on the **snapshot build channel**, the
+  expected `backend_git_sha` from `buildinfo.GitSHA` — because a version-only
+  probe cannot tell two snapshot builds that share a `version` apart. A bare
+  200 — or any non-empty body — is not sufficient, and a body that is not a
+  `hubapi.HealthResponse` is not usable evidence (`parseHealthVersion`).
 
   **Version equality is the fresh-process marker; there is no clock
   comparison.** Because the restart is entered only when the running version
@@ -1082,16 +1145,22 @@ version-match can verify the deploy landed.
   `started_at`, so it cannot distinguish processes, and comparing host-stamped
   `started_at` to the controller's clock adds skew for no benefit. No host-side
   timestamp and no skew tolerance is used or needed. **For a snapshot pin the
-  probe must reject a missing or mismatched `backend_git_sha`.** The response
-  carries `backend_git_sha`, but the shipped `waitHealthy` consults only
-  `version`; a snapshot that shares the controller's `version` but not its commit
-  would therefore pass. The implementing PR passes the expected Git SHA into
-  `waitHealthy` and treats a response whose `backend_git_sha` is empty or not
-  equal to `buildinfo.GitSHA` as **not yet healthy** for a snapshot pin — it
-  keeps polling and fails with `ErrRestart` on exhaustion — which is the stricter
-  *build*-identity check the earlier rule anticipated, and without changing the
-  version-equality rule above. This is a tracked code follow-up ([04], round 15),
-  not a present fact.
+  probe rejects a missing or mismatched `backend_git_sha`.** The response carries
+  `backend_git_sha`, and `waitHealthy` takes the expected Git SHA alongside the
+  expected version (`snapshotPinGitSHA` returns `buildinfo.GitSHA` for a
+  snapshot channel and "" otherwise, `version.go`). A response whose
+  `backend_git_sha` is empty or not equal to that pin is **not yet healthy** for
+  a snapshot pin — the probe keeps polling and fails with `ErrRestart` on
+  exhaustion, naming the version that answered against the commit that was
+  deployed (`version.go`) — which is the stricter *build*-identity check the
+  earlier rule anticipated, with the version-equality rule above unchanged. The
+  start path passes the same pin (`waitStartedHealthy`, `version.go`): the
+  binary it launches is the one on disk, but "on disk" was accepted by the
+  version-equality rule, and a snapshot version cannot tell two builds apart, so
+  a start on a stopped host would otherwise attach to a commit this controller
+  did not install. What a start deliberately lacks is a predecessor identity to
+  compare, not the pin: `bootstrapHub` refuses to start while a listener holds
+  the address, so there is no process whose survival could satisfy the wait.
 
   **What the version check proves — and what it does not.** `waitHealthy`
   proves that *a* process of the expected build is answering on the configured
@@ -1170,8 +1239,7 @@ version-match can verify the deploy landed.
     reachable on this path. `appwire.ServerInfo` carries only `Name`/`Version`,
     where `Version` is the static `"0.1.0"` hub constant, so it must never be
     used for this comparison.) There is no `evener hub health` subcommand today.
-  - **Implementation status:** this is the shipped 04b contract
-    (`multi-host-pr04b-deploy-restart`, **pending merge, not on `main`**):
+  - **Implementation status:** this is the shipped 04b contract (on `main`):
     `ensureOnce` probes the running version to drive the restart,
     `waitHealthy`/`parseHealthVersion` parse `/api/health` and require the
     expected `version`, and the probe URL is built from the configured host
@@ -1182,7 +1250,7 @@ version-match can verify the deploy landed.
   not a PID file**: the lock cannot be read to find or signal the process, and
   breaking it is never allowed. **Identify before killing:** the port alone is
   not identity, so a restart refuses unless all of these hold **and the signal
-  re-validates the same identity in the same remote command that signals**, and
+  re-validates the same identity immediately before signaling**, and
   refusal is `ErrRestart` naming the mismatch with no kill and no relaunch:
 
   1. exactly **one** process is listening on the configured address (two or more
@@ -1197,11 +1265,10 @@ version-match can verify the deploy landed.
      `HostConfig`, so it is empty for hosts written as `ssh = "jesse@m4.local"`
      or resolved through ambient `~/.ssh/config`; comparing the process user
      against `""` would refuse legitimate hubs with `ErrRestart` and block
-     automated restarts. **Implementation status:** the shipped 04b path
-     (`multi-host-pr04b-deploy-restart`, pending merge) identifies by executable,
-     hub-subcommand position, and `--addr` agreement and does not yet compare
-     users; the effective-user rule above is the required contract for that
-     check.
+     automated restarts. **Implementation status:** the shipped 04b path (on
+     `main`) identifies by executable, hub-subcommand position, and `--addr`
+     agreement and does not yet compare users; the effective-user rule above is
+     the required contract for that check.
   4. the listening socket matches the configured `addr` (host and port)
      **after the same wildcard→loopback normalization the bridge applies**
      (component 02, `loopbackAddr`): `0.0.0.0:<port>` and `:<port>` are compared
@@ -1212,61 +1279,50 @@ version-match can verify the deploy landed.
      already replaced. The same normalization applies to the supervisor "owns the
      configured address" check below.
   5. the identity is **re-validated at signal time**: the pid, argv, effective
-     user, and socket from checks 1–4 are re-read in the *same* remote command
-     that issues the signal (a guarded compare-and-kill), and the signal goes out
-     only on a full match. A mismatch — including any field that cannot be
-     re-read — refuses with `ErrRestart`, no kill, no relaunch. This shrinks the
+     user, and socket from checks 1–4 are re-read at signal time, in the step
+     immediately before the signal, and the signal goes out only on a full
+     match. A mismatch — including any field that cannot be re-read — refuses
+     with `ErrRestart`, no kill, no relaunch. **Implementation status:** shipped
+     and restored — `restartHub` (`sshconn/version.go`) runs the guarded ad hoc
+     path for the supervisorless branch (`restartBare` → `waitHealthy` →
+     `clearPendingRestart`, shipped by #2450 reversing #2410); where it runs, the
+     identity checks cover the single listener, the recovered argv shape, and the
+     bound-address match, at identification time. The effective-user comparison
+     (check 3) and the at-signal re-read are both still pending, and the residual
+     identification/signal window is the one the 2026-09-26 decision accepts. This shrinks the
      PID-reuse window but does **not** close it: it is still check-then-act, so
      the process can exit and its PID be reused between the re-read and the
-     signal. The identity must therefore be **pinned atomically across the
-     signal**: the signal is issued through an atomic process handle — a `pidfd`
-     opened for the identified process and used as the target of
-     `pidfd_send_signal` — or through a host-side helper that holds an equivalent
-     identity pin on the process for the whole signal. **Re-reading the start
-     time (or any other identity field) immediately before the signal is not
-     sufficient** — that is the same check-then-act with a narrower window.
-     Where neither an atomic handle nor such a helper is available for the
-     identified process, the manager **refuses with `ErrRestart` and emits no
-     signal** rather than falling back to a check-then-act kill; the bare
-     unguarded `kill` is never acceptable (see the limit below).
+     signal. **Decided by Jesse, 2026-09-26** (design §2 "Restart identity pin:
+     verify-then-signal accepted"): this verify-then-signal form is the accepted
+     answer, and the atomic `pidfd` pin this check previously demanded — a
+     `pidfd` opened for the identified process as the target of
+     `pidfd_send_signal`, or a host-side helper holding an equivalent pin — is
+     **withdrawn**. The residual window is acknowledged, not closed. The bare
+     unguarded `kill` remains unacceptable: a target whose identity cannot be
+     verified is refused rather than signaled.
      **Platform reality: no atomic-handle form is reachable today, on any
-     platform.** This is stronger than "Darwin has no `pidfd`" and it is what
-     the design actually supports: a `pidfd` must be **opened and signaled by a
-     process running on the host**, and this component's only host interface is
-     `ssh <dest> <command>` shell execution (`Runner`, §"SSH channel argv") —
-     the controller cannot call `pidfd_open` on a remote PID from a shell
-     command, and there is no host-side helper it could invoke. `pidfd_open`/
-     `pidfd_send_signal` are Linux-only, and this series specifies **no**
-     host-side pin helper, the installer provisions none (it installs `evener`
-     and `evener-dev`, both of which are evener binaries, not signal helpers),
-     and nothing in the invocation surface invokes one. The shipped ad hoc path
-     is the opposite of the requirement: `restartBare` runs an unguarded
-     `kill <pid>` (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`).
-     **Consequence — supervisorless (ad hoc) restart is unsupported on every
-     platform in this series, Linux included.** Where the manager cannot pin the
-     identified process it **refuses with `ErrRestart`, emits no signal, and
-     performs no relaunch**; it never falls back to a check-then-act `kill`. A
-     **restart-capable deployment must be supervised**, because the supervised
-     paths name a unit/label rather than a PID and need no `pidfd`:
-     `launchctl kickstart -k gui/<uid>/<label>` on darwin,
-     `systemctl [--user] restart <unit>` on linux. A supervisorless host whose
-     binary must be replaced can
-     still be deployed to (the push path is unaffected), but it cannot be
-     restarted by the controller: the restart refuses, attach fails with
-     `ErrRestart`, and the operator must supervise the hub or restart it out of
-     band (the documented recipe in
-     `docs/evener-hub-remote-operations.md`) before reconnecting. Supervisorless
-     restart becomes automated only once a host-side atomic-signal helper is
-     specified, provisioned by the installer, and invoked over the channel —
-     that helper is a tracked code follow-up (keystone §"Tracked code
-     follow-ups"), not a present fact, and until it lands no pidfd path may be
-     promised.
+     platform.** A `pidfd` must be opened and signaled by a process running on
+     the host, and this component's only host interface is `ssh <dest>
+     <command>` shell execution (`Runner`, §"SSH channel argv"); this series
+     specifies, provisions, and invokes no host-side restart-identity pin
+     helper (the crash-fencing `evener-fence` lease wrapper an earlier revision
+     named here was withdrawn with that program, Jesse, 2026-09-29; comp08
+     passes 1–2). Under the
+     withdrawn pin that is no longer a refusal: a **supervisorless** host
+     restarts through the guarded verify-then-signal ad hoc path
+     (shipped by #2450; implementation status, check 5). A
+     **restart-capable deployment still prefers a supervisor** — the supervised
+     paths name a unit/label rather than a PID: `launchctl kickstart -k
+     gui/<uid>/<label>` on darwin, `systemctl [--user] restart <unit>` on linux
+     — and a supervisorless host whose binary must be replaced is deployed to
+     (the push path is unaffected) and restarted by the same ad hoc path, not
+     left refusing.
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
   it names owns the configured address. The three outcomes are distinct:
-  **exactly one ⇒ use it**; **none ⇒ the supervisorless branch, which refuses
-  `ErrRestart` with no signal and no relaunch** (a stopped host's cold bootstrap
+  **exactly one ⇒ use it**; **none ⇒ the supervisorless branch, which runs the
+  guarded verify-then-signal ad hoc restart** (a stopped host's cold bootstrap
   is start-only — it has no PID to pin, §"First attach to a stopped host must be
   able to start the hub"); **several ⇒ refuse
   `ErrRestart` with no kill and no relaunch**. An ambiguous match means at
@@ -1279,8 +1335,8 @@ version-match can verify the deploy landed.
   names by substring in `isEvenerHubName`, and `pickSupervisor` already
   refuses ambiguity rather than taking the first match — it returns
   `ErrRestart` for more than one match, "an ambiguous listing is fatal, not a
-  fallback" (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`, pending
-  merge) — while `findHubPID` requires exactly one pid from
+  fallback" (`sshconn/version.go`, shipped with
+  `multi-host-pr04b-deploy-restart`) — while `findHubPID` requires exactly one pid from
   `lsof -ti :<port> -sTCP:LISTEN`; what it does not do is check that the named
   hub *owns the configured address*, and the bare path does not compare the
   effective user. The contract above is stricter, and the definition-matching
@@ -1313,10 +1369,10 @@ version-match can verify the deploy landed.
   facts it can select and start an unrelated service. The exactly-one-candidate
   rule still applies, with the same three outcomes: **several matches refuse
   `ErrRestart` and start nothing** (no ad hoc launch chosen on top of an
-  ambiguity), and **only no match at all** is the supervisorless branch: it
-  refuses the restart (`ErrRestart`, no signal, no relaunch) and its only
-  no-supervisor launch is the cold-bootstrap **start** (§"Stop/restart
-  mechanics" check 5).
+  ambiguity), and **only no match at all** is the supervisorless branch: its
+  restart runs the guarded verify-then-signal ad hoc path (check 5, and the ad
+  hoc branch below); the cold-bootstrap **start** is the only no-supervisor
+  launch that does not first signal an identified listener.
   **When a candidate hub definition exists but its effective address
   cannot be resolved** (no explicit `--addr` and the `--config` is unreadable or
   carries no address), the cold bootstrap **refuses with `ErrRestart` and
@@ -1329,32 +1385,29 @@ version-match can verify the deploy landed.
   plus the "refuse to start when a hub already owns the address" pre-check
   (`runningKnown`) is the substitute.
 
-  **Limit: identification and signal are separate host commands, so there is a
-  PID-reuse window.** Every check above is its own command over the ssh seam —
+  **Limit (accepted 2026-09-26 — see the restored-path note at the top of
+  this spec): identification and signal are separate host commands, so there is
+  a PID-reuse window.** Every check above is its own command over the ssh seam —
   `lsof` for the listener, `ps` for the argv, further probes for user and
   socket — and the `kill` is one more command issued after them. Nothing binds
   the identified process to the signal atomically: between the `ps` read and
   the `kill`, the hub can exit and its PID can be reused by an unrelated
   process, which then receives the SIGTERM. The argv and address checks narrow
   the window but cannot close it, because they describe the process at
-  *identification* time, not at *signal* time. Re-checking identity in the same
-  remote command immediately before signaling (a guarded compare-and-kill
-     shell expression) shrinks the race but is still check-then-act — re-reading
-     the start time at signal time is no better, because the process can still
-     exit and its PID be reused between that read and the signal. Only signaling
-     through an atomic handle that pins the process identity — a `pidfd` opened
-     for the identified process, or a host-side helper holding an equivalent pin
-     — closes it, and **neither form is reachable through this component's `ssh
-     <dest> <command>` interface** (a `pidfd` must be opened by a process on the
-     host; no helper is specified, installed, or invoked): a supervisorless
-     restart therefore refuses rather than signaling, on every platform
-     (check 5, and the supervisorless branch below). The
-  shipped `restartBare` (`sshconn/version.go`) is the unguarded form: it runs
-  `kill <pid>` with no re-validation at all. **Consequence:** on a host where
-  the hub exits during identification and the PID is reused, the restart can
-  terminate an unrelated process. A refusal (`ErrRestart`, no kill, no
-     relaunch) is the safe failure: a restart that cannot pin the
-  process must prefer it to an unguarded signal.
+  *identification* time, not at *signal* time. Re-checking identity immediately
+  before signaling (a guarded compare-and-kill) shrinks the race but is still
+  check-then-act — re-reading the start time at signal time is no better,
+  because the process can still exit and its PID be reused between that read
+  and the signal; the earlier same-remote-command variant was considered and is
+  not required. **This residual window is accepted** (design §2 "Restart
+  identity pin: verify-then-signal accepted", Jesse 2026-09-26): the shutdown
+  preference is a supervisor restart by unit/label, and a supervisorless hub
+  uses the guarded verify-then-signal path, which refuses a target it cannot
+  verify rather than signaling it. The shipped `restartBare`
+  (`sshconn/version.go`) validates the target at identification time — it
+  recovers the listener's argv and bound address and refuses `ErrRestart` on
+  mismatch before signaling — and never issues a bare `kill` on an unverified
+  target.
 
   The restart path is then:
   1. **Supervised hub** — restart it the way its supervisor expects:
@@ -1366,10 +1419,10 @@ version-match can verify the deploy landed.
      `gui/$(id -u)/<label>` would reach `launchctl` as the literal string
      `gui/$(id -u)/<label>` with no expansion and never restart the unit. With
      the numeric uid and a `<label>` validated against the bare-safe set
-     (`[A-Za-z0-9_.-]`, no `/`; a label that fails it **refuses the restart
-     with `ErrRestart`, no signal and no relaunch**, rather than injecting into
-     the remote shell — an identified supervisor is never bypassed for an
-     unmanaged launch, and a Darwin ad hoc launch is unavailable anyway), the
+     (`[A-Za-z0-9_.-]`, no `/`; a label that fails it is never interpolated into
+     the remote shell, and the restart **falls through to the guarded ad hoc
+     path instead of refusing** — the accepted outcome, design §2 "Restart
+     identity pin: verify-then-signal accepted", Jesse 2026-09-26), the
      whole `gui/<uid>/<label>` argument is one bare-safe word
      passed verbatim. Adding `gui/$(id -u)/<label>` to the raw exception list is
      rejected: the label is host-derived data, so passing it raw is exactly the
@@ -1387,19 +1440,19 @@ version-match can verify the deploy landed.
      clear**, then relaunch detached, appending to the recovered log
      (`nohup <quoted argv…> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
      local-only, which is why the host-side detach is a remote shell idiom.
-     **This signal path is unavailable on every platform in this series.** No
-     atomic process handle is reachable through this component's interfaces: a
-     `pidfd` must be opened and signaled by a process on the host, the only
-     host interface here is `ssh <dest> <command>`, and no host-side pin helper
-     is specified, installed, or invoked (check 5). So on a host with no
-     supervisor the manager **refuses the restart (`ErrRestart`, no signal, no
-     relaunch) on Linux exactly as on Darwin** and the operator must supervise
-     the hub, restart it out of band with the recipe above, and reconnect; it
-     never issues the bare unguarded `kill`, because signaling an unpinned PID
-     can terminate an unrelated process after PID reuse (check 5; the limit
-     above). The recipe above is the *operator's* documented procedure, not a
-     manager-automated path, until the host-side helper is specified and
-     provisioned (keystone §"Tracked code follow-ups"). The **start** of a
+     **This ad hoc path is the manager-automated restart for a supervisorless
+     hub** (design §2 "Restart identity pin: verify-then-signal accepted",
+     Jesse 2026-09-26): the manager identifies the listener through the checks
+     above, refuses `ErrRestart` on any mismatch, and only then signals and
+     relaunches. No atomic process handle is reachable through this component's
+     interfaces — a `pidfd` must be opened and signaled by a process on the
+     host, the only host interface here is `ssh <dest> <command>`, and no
+     host-side restart-identity pin helper is specified, installed, or invoked
+     (check 5) — so the
+     residual identification/signal window is accepted, and the manager never
+     issues a bare unguarded `kill` on an unverified target (check 5 and its
+     implementation status; the limit above). The recipe above remains the *operator's* documented procedure for
+     a restart out of band. The **start** of a
      stopped hub (the first-attach bootstrap, where no process exists to
      identify or signal) is unaffected: it has no PID to pin, so it keeps the
      detached `nohup` launch.
@@ -1468,12 +1521,17 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                         │     → protocol? launch_flags? version? (preflight)
                         ├─ verified missing executable? (fresh host)
                         │     └─ deploy/install (creates the missing run target:
-                        │          push, else the release-only installer) → re-run preflight
-                        ├─ protocol/version != controller?
+                        │          push, else the installer fallback) → re-run preflight
+                        ├─ protocol != controller?    → cannot attach: no deploy
+                        │     changes the protocol a binary speaks
+                        ├─ version != controller, and a deploy path can fix it?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
-                        │     └─ restart host hub (identify → supervisor, else refuse ErrRestart)
+                        │     └─ restart host hub (identify → supervisor, else guarded ad hoc restart)
                         │          → Runner.Run on the host: curl /api/health
-                        │            → answer + running version == deployed build
+                        │            → answer + running version == the expected build
+                        ├─ version != controller with nothing to deploy?
+                        │     → attach on the host's own build: the protocol is the
+                        │       compatibility contract, so the difference is reported
                         ├─ Runner.Start: ssh <dest> <evener_path> hub attach --stdio
                         │     ├─ stdin  ← StreamTransport.Send
                         │     ├─ stdout → StreamTransport.Recv
@@ -1543,18 +1601,18 @@ with the remote hub and its daemons still running.
   An `Initialize` mismatch on a channel whose preflight matched means the
   *running* hub is stale while the on-disk binary is right: restart once and
   re-attach. Only a mismatch that survives the restart becomes terminal
-  `ErrProtocolIncompatible`. (Implementation status: `ensureOnce` compares
-  versions only after a successful preflight, and `preflight` returns
-  `ErrProtocolIncompatible` on a protocol refusal, so this routing is the
-  corrective contract for the implementing PR, not a description of the shipped
-  code.)
+  `ErrProtocolIncompatible`. (Implementation status: shipped. `probeLaunchCheck`
+  classifies a protocol refusal (`sshconn/preflight.go`); with a deploy
+  path configured, `preflight` lets the ladder deploy, re-probe, restart, and
+  refuse terminally only when the protocol still mismatches
+  (`sshconn/preflight.go`'s deploy deferral; `sshconn/manager.go`, after the restart).)
 - **Missing `api-log` launch flag** (`spawn.go`) → `ErrLaunchContract`. A
   too-old host binary cannot be launched, and the version-match deploy is
   exactly its fix, so this is an auto-match trigger first (deploy, restart,
   re-preflight) and terminal only if it survives that. (Implementation status:
-  `isTerminal` lists `ErrLaunchContract` and `preflight` returns it before the
-  version comparison, so the shipped code stops instead of auto-matching; the
-  contract above is the corrective one.)
+  shipped — `preflight` no longer judges the launch flags; `ensureOnce` refuses
+  `ErrLaunchContract` only after the deploy/restart path has had its chance
+  (`sshconn/manager.go`), and `isTerminal` then stops the retry loop.)
 - **Unsupported host os/arch** → terminal `ErrUnsupportedHost`; no build exists
   (`install.sh:39-45`).
 - **`launch-check` output unparseable** (`launchcheck.go` JSON; local
@@ -1623,8 +1681,12 @@ with the remote hub and its daemons still running.
   Supervisor cases: exactly one evener-named unit → restarted; two candidates →
   `ErrRestart` with no `kill` and no relaunch argv (the ambiguity refusal, never
   "first match" and never an ad hoc launch); zero candidates → the
-  supervisorless refusal: `ErrRestart` with no `kill` and no relaunch argv, and
-  the cold-bootstrap **start** is the only no-supervisor launch.
+  supervisorless guarded ad hoc restart (restored 2026-09-26): the identified
+  listener is killed and the recovered argv relaunched, refusing `ErrRestart`
+  with no `kill` and no relaunch argv only for a listener whose identity does
+  not verify; the cold-bootstrap **start** (no process to identify or signal) is
+  the only no-supervisor launch that does not first signal an identified
+  listener.
 - **Health-verification tests.** Fake runner returns a body reporting the
   previous build's `version` → not accepted; a body reporting the expected
   `version` → accepted; no answer within the bound, or a missing HTTP client →
@@ -1640,14 +1702,18 @@ with the remote hub and its daemons still running.
   `launch-check` version, and that a probe that answers nothing invents no
   restart.
 - **Channel argv tests.** Assert `ssh -T -o BatchMode=yes -o ConnectTimeout=…,
-  ServerAliveInterval=…, ServerAliveCountMax=… -- <dest> <evener_path> hub attach
+  ServerAliveInterval=…, ServerAliveCountMax=… [-i <key_path>] -- <dest>
+  <evener_path> hub attach
   --stdio`; assert stderr is wired to the diagnostic sink and stdout is not
   touched outside `StreamTransport`. With a per-host `config_path`/`addr` set,
   assert `--config`/`--addr` appear in that order (each value shell-quoted) and
   that the restart/health path uses the same address. Assert `--` precedes the
   destination so a `dest` beginning with `-` is never read as an ssh option.
+  When the entry sets `key_path`, assert the `["-i", key_path]` pair appears
+  before `--`; when it does not, assert no `-i` is emitted.
   Assert **no** ssh invocation carries `StrictHostKeyChecking=no`/`accept-new`
-  or any raw `-p`/`-i`/`ProxyJump` option, and that an unknown host key is
+  or any raw `-p`/`ProxyJump` option, and no `-i` beyond the entry's own
+  permitted pair, and that an unknown host key is
   surfaced with the named operator hint (add the key out of band —
   §"Contract", "Host-key verification is the user's `known_hosts`") in the
   **retryable** `ErrSSHStart` class rather than asserted terminal: a completed
@@ -1699,9 +1765,11 @@ with the remote hub and its daemons still running.
 2. Default `make test` performs no SSH: the live test skips unless
    `EVENER_SSH_E2E=1` is set (verify with `go test -v` output showing `SKIP`,
    and by no test importing `os/exec` reachable without the env gate).
-3. `Ensure` on a host whose `version` differs deploys the matching
-   `GOOS`/`GOARCH` build and restarts the host hub before attaching; on a
-   matching version it attaches with no deploy (`Runner.Run` argv log asserted).
+3. `Ensure` on a host whose `version` differs **and with a deploy path configured**
+   deploys the matching
+   `GOOS`/`GOARCH` build and restarts the host hub before attaching; on a matching
+   version, or with no deploy path to converge it, it attaches without deploying
+   (`Runner.Run` argv log asserted).
    The deploy argv stamps the controller's buildinfo (`-ldflags`), and a `"dev"`
    controller does not auto-match. The restart is verified **on the host** by
    `curl …/api/health` run through `Runner.Run` — the running hub must report
@@ -1737,9 +1805,12 @@ with the remote hub and its daemons still running.
     link-down, and there is no receive-inactivity deadline). Link-down is
     detected from the ssh child's exit or a `Recv` error/`EOF`, and either
     enters `reconnecting`.
-12. The restart is entered when either the on-disk or the running `version`
-    differs from the controller's build, and the post-restart verification
-    requires the running hub to report the expected `version`; no host-side
+12. The restart is entered when a deploy replaced a present hub, or when the
+    running `version` differs while the on-disk build already matches — an on-disk
+    difference with nothing to deploy attaches instead of restarting — and the
+    post-restart verification requires the running hub to report the build the host
+    is expected to serve (`expectedServedBuild`: the controller's own when the host
+    carries it, the host's own otherwise); no host-side
     timestamp and no clock comparison is used.
 13. A wildcard-bound hub (`0.0.0.0:<port>` / `::`) is restart-eligible:
     identification normalizes the configured `addr` to loopback exactly as the
@@ -1759,8 +1830,10 @@ with the remote hub and its daemons still running.
     (`Preflight.Home`), so no relative or unexpanded-`~` path reaches install,
     launch, health, or restart.
 15. A first attach to a host whose hub is not running starts the identified
-    supervisor (or the detached ad hoc launch), waits for `/api/health`
-    `version == expected`, and attaches only after it matches; an address a hub
+    supervisor (or the detached ad hoc launch), waits for `/api/health` to report
+    the build the started binary actually carries — the controller's when a deploy
+    converged the host, the host's own otherwise (`expectedServedBuild`) — and attaches
+    only after it matches; an address a hub
     already owns starts nothing, and a hub that never becomes healthy attaches
     nothing and fails with `ErrRestart`. An **ambiguous** unit-definition match
     starts nothing and fails with `ErrRestart` (never an ad hoc duplicate, and
@@ -1769,21 +1842,22 @@ with the remote hub and its daemons still running.
     log under `<stateRoot>`), so a host on a non-default port becomes healthy
     rather than failing on the default address.
 16. The installer fallback passes an artifact reference derived from
-    `buildinfo.BuildChannel()` and is admitted only for an **immutable,
-    checksum-verified-before-unpacking** one: the stamped release tag for
-    `release`, whose archive `install.sh` verifies by sha256 against that
-    release's `checksums.txt` before extracting it. It is `ErrDeploy` for
-    `snapshot` — the tag is force-moved and its `checksums.txt` re-uploaded with
-    `--clobber`, so neither pins the controller's commit, and the fallback is
-    refused **before** `install.sh` replaces anything rather than
-    install-then-verify — and for a `dev`/`dirty` controller;
-    `buildinfo.Version()` (a short SHA, possibly `-dirty`) is never passed as
-    the tag. No deploy path replaces the installed binary before the artifact's
-    identity is pinned to the controller's build (the atomic push path pins it
-    by construction: locally cross-compiled from a verified revision, stamped,
-    byte-count-verified, then `mv`). The post-install `/api/health` identity
-    probe stays as the final verification, never as the pin; a future
-    snapshot-like channel needs a per-commit immutable reference.
+    `buildinfo.BuildChannel()`: the stamped release tag for `release` (whose
+    archive `install.sh` verifies by sha256 against that release's
+    `checksums.txt` before extracting it; a release build carrying no stamped
+    tag is `ErrDeploy`), the mutable `snapshot` tag for `snapshot` (a
+    best-effort pin: the post-install version probe refuses terminally,
+    `ErrVersionMismatch`, once the tag has moved past this controller's commit,
+    rather than re-fetching the same artifact), and `ErrDeploy` for a
+    `dev`/`dirty` controller; `buildinfo.Version()` (a short SHA, possibly
+    `-dirty`) is never passed as the tag. For a `snapshot` controller the
+    installer therefore replaces the installed binary before its commit is
+    proven, and the proof arrives only afterwards — the trade §"Installer
+    (fallback)" states, and the reason a `snapshot` controller with no build
+    source still has a deploy path. The atomic push path keeps the stronger
+    property (pinned by construction: locally cross-compiled from a verified
+    revision, stamped, byte-count-verified, then `mv`), which is why the
+    terminal refusal names it as the remedy.
 17. The installer fallback installs to the run target: with `evener_path` set
     it passes `BINDIR=<dirname(evener_path)>` (refusing any basename other than
     `evener` — `evener-dev` is the development tooling binary with no `hub`
@@ -1799,33 +1873,35 @@ with the remote hub and its daemons still running.
     resolved `run_path` / unit `ExecStart`, so a valid custom `evener_path`
     basename restarts; a non-hub executable still refuses.
 19. The supervised darwin restart passes `gui/<numeric-uid>/<label>` as one
-    bare-safe word (uid from preflight), and a label outside the bare-safe set
-    **refuses with `ErrRestart` (no signal, no relaunch)** instead of falling
-    through to an unmanaged ad hoc launch; no `$(id -u)` reaches the remote
-    shell.
+    bare-safe word (uid from preflight); no `$(id -u)` reaches the remote
+    shell. A label outside the bare-safe set is never interpolated into the
+    remote shell and **falls through to the guarded ad hoc restart instead of
+    refusing** — the accepted outcome (design §2 "Restart identity pin:
+    verify-then-signal accepted", Jesse 2026-09-26). Shipped and restored:
+    `restartHub` falls through this label case to the guarded ad hoc path
+    (`sshconn/version.go`, shipped by #2450 reversing #2410).
 20. Restart safety is hardened against the identification/signal PID-reuse
-    window. The signal is a **guarded compare-and-kill**: the pid, recovered
-    argv (with `--config`/`--addr` agreeing with the entry's configured
-    `config_path`/`addr` after loopback normalization), effective user, and
-    listening socket are re-read in the *same* remote command that issues the
-    signal, and the signal goes out only on a full match; any mismatch — or any
-    field that cannot be re-read — refuses with `ErrRestart`, emitting no signal
-    and no relaunch. The bare `restartBare` (`kill <pid>`, `sshconn/version.go`)
-    is not acceptable. Because even a guarded compare-and-kill is still
-    check-then-act, the PID-reuse window is closed only by a host-side
-    **atomic process handle** — a `pidfd` for the identified process, or a
-    host-side helper holding an equivalent identity pin across the signal — and
-    re-reading the start time (or any other identity field) at signal time is
-    **not** sufficient. When neither form is available for the identified
-    process the manager refuses with `ErrRestart` and emits no signal. This
-    criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to
-    end, and its refusal is **every supervisorless host on every platform**: no
-    atomic handle is reachable through this component's `ssh <dest> <command>`
-    interface, so a supervisorless Linux hub refuses exactly as a
-    supervisorless Darwin one does, rather than signaling. A restart-capable
-    deployment must therefore be supervised (the supervised paths pin by
-    systemd unit / launchd label, not by PID), or wait for the tracked
-    host-side atomic-signal helper.
+    window by a **guarded verify-then-signal**: the pid, recovered argv (with
+    `--config`/`--addr` agreeing with the entry's configured `config_path`/
+    `addr` after loopback normalization), effective user, and listening socket
+    are re-read before the signal is issued, and the signal goes out only on a
+    full match; any mismatch — or any field that cannot be re-read — refuses
+    with `ErrRestart`, emitting no signal and no relaunch. A target whose
+    identity cannot be verified is refused rather than signaled; a bare `kill
+    <pid>` on an unverified target is never acceptable. **Decided by Jesse,
+    2026-09-26** (design §2 "Restart identity pin: verify-then-signal
+    accepted"): this is the accepted answer, and the host-side **atomic process
+    handle** (a `pidfd`, or an equivalent pin helper) is **withdrawn**; the
+    residual check-then-act window is acknowledged, not closed. The restart
+    still prefers a supervisor (the supervised paths pin by systemd unit /
+    launchd label, not by PID), and a supervisorless host restarts through the
+    guarded ad hoc path, which must re-read the target at signal time per check
+    5. Shipped and restored: `restartHub` runs the guarded ad hoc path for the
+    supervisorless branch (`restartBare` → `waitHealthy` →
+    `clearPendingRestart`, shipped by #2450 reversing #2410); it validates at
+    identification time, the at-signal re-read is not implemented, and the
+    residual window is the accepted one. This criterion makes checks 1–5 of
+    §"Stop/restart mechanics" testable end to end.
 21. A fresh host whose `run_path` does not exist is a **verified missing
     executable** preflight result (`ErrExecutableMissing`), recognized from the
     **dedicated executable probe's stable sentinel** — `test -x <run_path>`
@@ -1836,9 +1912,9 @@ with the remote hub and its daemons still running.
     directory created when absent), and the installer fallback installs that
     default when it is the deploy path — followed by a re-preflight before
     version-match/attach; it is not surfaced as `ErrSSHStart` and does not
-    dead-end preflight. Where no deploy path exists (a `snapshot`/`dev`
-    controller with no build source/`Options.BuildBinary`, and an installer
-    fallback that is not admitted) the missing executable is refused
+    dead-end preflight. Where no deploy path exists (a `dev`/dirty controller,
+    or a `release` build with no stamped tag, whose installer fallback
+    `canDeploy()` refuses) the missing executable is refused
     `ErrDeploy`: there is nothing that controller can install, so that
     bootstrap is not a supported path.
     An unreachable host (`ErrSSHStart`), an ssh-level
@@ -1870,16 +1946,22 @@ from the component-03 registry.
   `.goreleaser.yml:24-30`); installer runs on the host but needs host network and
   a release archive. Decide precedence and whether `evener_path` implies
   "already correct, skip deploy".
-- **How the host hub is stopped for restart (resolved, with identification).**
+- **How the host hub is stopped for restart (resolved, with identification;
+  restored 2026-09-26).**
   No new host-side RPC is needed in v1: restart through the host's supervisor
   when one is identified unambiguously; when **none** is identified the manager
-  refuses the restart (`ErrRestart`, no signal, no relaunch) — it never runs the
-  ops doc's recipe itself. That recipe — find the listener by port with `lsof`,
+  runs the guarded verify-then-signal ad hoc restart itself (shipped by #2450),
+  refusing
+  `ErrRestart` (no signal, no relaunch) only for a listener whose identity does
+  not verify. The ops doc's recipe — find the listener by port with `lsof`,
   verify *what it is* (single listener, evener hub argv, effective SSH user,
   matching address), recover argv/log, `kill` it, wait for the port to clear,
-  relaunch detached — is the **operator's** out-of-band procedure for a
-  supervisorless host, and the cold-bootstrap **start** (no process to identify
-  or signal) is the manager's only no-supervisor launch. See §5. `hub.lock`
+  relaunch detached — is the guarded ad hoc path the manager runs for a
+  supervisorless host, and remains the operator's out-of-band procedure; it
+  refuses rather than restarting wrong when the listener cannot be matched to
+  the configured address. The cold-bootstrap **start** (no process to identify
+  or signal) is the manager's only no-supervisor launch that does not first
+  signal an identified listener. See §5. `hub.lock`
   stays a pure mutual-exclusion `flock` (`main.go`; `hostlock.go`); it is never
   read for a PID and never broken. Residual risk: that recipe calls `lsof`/`ps` on
   the host, so a host without those tools (or a hub the controller cannot match
@@ -1888,9 +1970,9 @@ from the component-03 registry.
 - **Per-host config path and address (corrected contract, coupled fields).**
   `hostreg.Host` carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and
   `channelArgv` passes whichever is present. `Manager.hostAddr`
-  (`multi-host-pr04b-deploy-restart`, pending merge) now reads the per-host
-  `addr` on the restart/health path, falling back to `Options.HubAddr` and then
-  the default. The contract (component 03, §"`config_path` / `addr`") is that
+  (`sshconn/version.go`, shipped on `main`) reads the per-host `addr` on
+  the restart/health path, falling back to `Options.HubAddr` and then the
+  default. The contract (component 03, §"`config_path` / `addr`") is that
   the two fields are set together; the remaining implementation choice is how an
   omitted pair resolves —
   "use the config's own `addr` by having the bridge report it" (an extra round
@@ -1907,15 +1989,18 @@ from the component-03 registry.
   the post-restart check (`waitHealthy`) requires the running `version` to equal
   the deployed build — no `started_at`/clock comparison is used (see §5). The
   `backend_git_sha` field is carried by the response and the hub's own
-  self-update flow polls it; the shipped `waitHealthy` does not consult it, and
-  it may be added as a stricter identity check. The AppWire `ServerInfo.Version`
-  is the static `"0.1.0"` constant (`cmd/evener-hub/main.go`, wired at
-  `cmd/evener-hub/app_rpc.go`, surfaced at `appwire/types.go`)
+  self-update flow polls it; `waitHealthy` consults it as the snapshot pin (§5),
+  and for every other channel the version-equality check stands. The AppWire
+  `ServerInfo.Version` is the static `"0.1.0"` constant
+  (`cmd/evener-hub/main.go`, wired at `cmd/evener-hub/app_rpc.go`, surfaced at
+  `appwire/types.go`)
   and must **not** be used to compare builds.
 - **Detach idiom on the host (partly resolved).** Supervised hubs restart
   through their supervisor (`launchctl kickstart -k`, `systemctl restart`); a
-  supervisorless **restart** is refused, not relaunched (§"Stop/restart
-  mechanics" check 5). An operator relaunches an ad hoc hub with `nohup <argv>
+  supervisorless **restart** is the guarded verify-then-signal ad hoc restart,
+  which relaunches the hub itself (restored 2026-09-26, shipped by #2450;
+  §"Stop/restart mechanics" check 5). An operator relaunches an ad hoc hub out
+  of band with `nohup <argv>
   >> <log> 2>&1 </dev/null &`, preserving the recovered log (ops doc
   §"Restarting an ad hoc Hub"), or discards output (`</dev/null >/dev/null
   2>&1`) when no regular-file log was recovered; the manager's cold-bootstrap

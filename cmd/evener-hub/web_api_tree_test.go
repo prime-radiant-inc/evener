@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -278,6 +279,123 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 	}
 	if meta.ID != "remote:child" || meta.ParentSessionID != "remote:parent" || !meta.IsSubagent {
 		t.Fatalf("remote subagent metadata = %+v", meta)
+	}
+}
+
+// A remote host's session carries its unanswered question and its blocked
+// escalation cards into the live entry, as a local session's probe does, so
+// its rows show them and the approval promotes it into NeedsYou.
+func TestAppThreadTreeEntriesCarryRemoteAskAndApproval(t *testing.T) {
+	cards := []appwire.SandboxEscalationRequested{
+		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/srv/docs/a.md"},
+		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/srv/docs/b.md"},
+	}
+	_, entry, ok := appThreadTreeEntries(appwire.Thread{
+		ID:     "thread-remote",
+		Source: "remote",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Evener: appwire.EvenerThread{Ref: "remote:thread-remote", AskPending: true, PendingEscalations: cards},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected a valid remote thread")
+	}
+	if !entry.PendingAsk {
+		t.Fatalf("entry = %+v, want the remote question carried", entry)
+	}
+	if !entry.PendingEscalation || !slices.Equal(entry.PendingEscalations, cards) {
+		t.Fatalf("entry flag %v, cards %+v; want the flag and both cards in raise order", entry.PendingEscalation, entry.PendingEscalations)
+	}
+
+	_, quiet, ok := appThreadTreeEntries(appwire.Thread{
+		ID:     "thread-quiet",
+		Source: "remote",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Evener: appwire.EvenerThread{Ref: "remote:thread-quiet"},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected a valid remote thread")
+	}
+	if quiet.PendingAsk || quiet.PendingEscalation || len(quiet.PendingEscalations) != 0 {
+		t.Fatalf("entry = %+v, want no question and no approval on a working remote row", quiet)
+	}
+}
+
+// A remote row's live entry carries the same thread-row facts a local probe
+// does — the ask flag, cards, jobs, watches, turn end and tasks, and the row
+// summary fields beside them — because both read the one shared reader (#2638).
+// Before that reader, the remote tree built these fields by hand and dropped
+// the ones below it did not list.
+func TestAppThreadTreeEntriesCarryTheSharedThreadRowFacts(t *testing.T) {
+	ended := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+	tally := appwire.SubagentTally{Running: 1, Failed: 1, Done: 2}
+	activity := &appwire.ThreadActivity{Minutes: []int{1, 2, 3}, LastActivityAt: ended.UnixMilli()}
+	tasks := &appwire.TaskAggregate{Total: 3, Done: 1, Current: &appwire.TaskSummary{ID: 2, Description: "Resume the migration"}}
+	question := &appwire.PendingQuestion{Question: "keep or drop?", Options: []string{"keep", "drop"}, Count: 1}
+	failure := &appwire.ThreadFailure{Title: "Provider error"}
+	thread := appwire.Thread{
+		ID: "thread-remote", Source: "remote", ModelProvider: "gpt-5.6",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting, ActiveFlags: []string{"resumeRequired"}},
+		Evener: appwire.EvenerThread{
+			Ref:             "remote:thread-remote",
+			AskPending:      true,
+			PendingQuestion: question,
+			Failure:         failure,
+			Profile:         "codex-jesse-fsck.com",
+			LastMessage:     "the opening line",
+			Tasks:           tasks,
+			Activity:        activity,
+			Subagents:       &tally,
+			LastTurnEndedAt: ended.UnixMilli(),
+			Diagnostics: &appwire.EvenerDiagnostics{
+				Jobs: []appwire.EvenerJobInfo{
+					{JobID: "job-live", JobType: "shell", Status: "running"},
+					{JobID: "job-done", JobType: "shell", Status: "completed"},
+				},
+				Watches: []appwire.EvenerWatchInfo{{ID: "watch-a", Source: "timer"}},
+			},
+		},
+	}
+	_, entry, ok := appThreadTreeEntries(thread)
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected a valid remote thread")
+	}
+	if entry.Status != appwire.ThreadStatusAwaiting {
+		t.Errorf("entry status = %q, want %q", entry.Status, appwire.ThreadStatusAwaiting)
+	}
+	if !entry.PendingAsk || entry.PendingQuestion == nil || entry.PendingQuestion.Question != "keep or drop?" {
+		t.Errorf("entry ask = %v/%+v, want the row's pending question", entry.PendingAsk, entry.PendingQuestion)
+	}
+	if entry.Failure == nil || entry.Failure.Title != "Provider error" {
+		t.Errorf("entry failure = %+v, want the row's failure", entry.Failure)
+	}
+	if got := entry.RunningJobs; len(got) != 1 || got[0].JobID != "job-live" {
+		t.Errorf("entry running jobs = %+v, want only job-live", got)
+	}
+	if got := entry.CompletedJobs; len(got) != 1 || got[0].JobID != "job-done" {
+		t.Errorf("entry completed jobs = %+v, want only job-done", got)
+	}
+	if len(entry.Watches) != 1 || entry.Watches[0].ID != "watch-a" {
+		t.Errorf("entry watches = %+v, want watch-a", entry.Watches)
+	}
+	if entry.Subagents != tally {
+		t.Errorf("entry subagents = %+v, want %+v", entry.Subagents, tally)
+	}
+	if !entry.LastTurnEndedAt.Equal(ended) {
+		t.Errorf("entry turn end = %v, want %v", entry.LastTurnEndedAt, ended)
+	}
+	if entry.Tasks == nil || entry.Tasks.Total != 3 {
+		t.Errorf("entry tasks = %+v, want the row's task progress", entry.Tasks)
+	}
+	if entry.Activity == nil || len(entry.Activity.Minutes) != 3 {
+		t.Errorf("entry activity = %+v, want the row's sample", entry.Activity)
+	}
+	if entry.Profile != "codex-jesse-fsck.com" || entry.LastMessage != "the opening line" || entry.CurrentModel != "gpt-5.6" {
+		t.Errorf("entry profile/model/message = %q/%q/%q, want the row's", entry.Profile, entry.CurrentModel, entry.LastMessage)
+	}
+	// Only a local probe reads capabilities and status flags; the remote row
+	// keeps the tree's own projection for those.
+	if entry.CapabilitiesKnown || entry.ActiveFlags != nil {
+		t.Errorf("entry capabilities/flags = %v/%v, want the remote row's own (none)", entry.CapabilitiesKnown, entry.ActiveFlags)
 	}
 }
 

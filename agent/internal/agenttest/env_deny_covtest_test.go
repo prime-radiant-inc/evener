@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestDenyEnvBoundedText covers boundedText for empty and non-empty cases
@@ -47,6 +48,23 @@ func TestDenyEnvBoundedDenyResult(t *testing.T) {
 	long := strings.Repeat("x", denyMaxBytes+100)
 	if got := boundedDenyResult(long); len(got) != denyMaxBytes {
 		t.Fatalf("boundedDenyResult length = %d, want %d", len(got), denyMaxBytes)
+	}
+}
+
+// TestDenyEnvBoundedDenyResultNeverSplitsRune pins that the 512-byte cap lands
+// on a rune boundary instead of emitting invalid UTF-8.
+func TestDenyEnvBoundedDenyResultNeverSplitsRune(t *testing.T) {
+	// 3-byte runes: 512 is not a multiple of 3, so the cap would fall mid-rune.
+	long := strings.Repeat("€", denyMaxBytes)
+	if len(long) <= denyMaxBytes {
+		t.Fatalf("fixture is %d bytes, must exceed denyMaxBytes=%d", len(long), denyMaxBytes)
+	}
+	got := boundedDenyResult(long)
+	if !utf8.ValidString(got) {
+		t.Fatalf("boundedDenyResult emitted invalid UTF-8: the cap split a rune")
+	}
+	if len(got) > denyMaxBytes {
+		t.Fatalf("boundedDenyResult returned %d bytes, want <= %d", len(got), denyMaxBytes)
 	}
 }
 

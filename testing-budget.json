@@ -1,5 +1,5 @@
 {
- "_": "Per-package test-duration budget for the CI timing gate (kata b6rv, see docs/developing-evener/testing.md). Sums are seconds of go test -json output (top-level Test/Example results only, on the same non-fuzz gate surface run-module-tests.sh proves) and, for the frontend, the vitest JSON reporter's assertion durations rolled up under the single key \"web\". scripts/gate/test-timing-budget.sh compares a fresh measurement against these numbers: fail at 1.5x the budget, warn at 1.1x (strict in CI, warn-only on a local run) plus a flat per-test ceiling regardless of package. Raise a budget by editing this file in the same commit as the change that earned the increase, or run `make test-rebaseline` to reset every listed package to what a clean-host run just measured. The numbers below are the first blessed clean-host baseline (kata b6rv). Emptying \"packages\" puts the ratchet back in its no-baseline state, where every package reads as having no budget yet and the gate stays warn-only everywhere, CI included.",
+ "_": "Per-package test-duration budget for the CI timing gate (kata b6rv, see docs/developing-evener/testing.md). A Go package's value is its own wall time, read from the package-level terminal event of go test -json (issue #172) on the same non-fuzz gate surface run-module-tests.sh proves; for the frontend, the vitest JSON reporter's assertion durations rolled up under the single key \"web\". scripts/gate/test-timing-budget.sh compares a fresh measurement against these numbers: fail at 1.5x the budget, warn at 1.1x (strict in CI, warn-only on a local run) plus a flat per-test ceiling regardless of package. Raise a budget by editing this file in the same commit as the change that earned the increase, or run `make test-rebaseline` to reset every listed package to what a clean-host run just measured. The numbers below are the first blessed clean-host baseline (kata b6rv) and predate issue #172's switch to package wall time, so a rebaseline regenerates them under the new metric (#141). Emptying \"packages\" puts the ratchet back in its no-baseline state, where every package reads as having no budget yet and the gate stays warn-only everywhere, CI included.",
  "perTestCeilingSeconds": 3,
  "packages": {
   "primeradiant.com/evener": 68.73,
@@ -16,6 +16,7 @@
   "primeradiant.com/evener/cmd/evener-hub": 67.09,
   "primeradiant.com/evener/cmd/evener-hub/internal/appsource": 0.1,
   "primeradiant.com/evener/cmd/evener-hub/internal/hostlock": 0.01,
+  "primeradiant.com/evener/cmd/evener-hub/internal/hostops": 2.54,
   "primeradiant.com/evener/cmd/evener-hub/internal/httpsec": 0.0,
   "primeradiant.com/evener/cmd/evener-hub/internal/hubcore": 4.67,
   "primeradiant.com/evener/cmd/evener-hub/internal/hubtest": 0.2,
@@ -52,6 +53,7 @@
   "primeradiant.com/evener/internal/credentials": 0.11,
   "primeradiant.com/evener/internal/plugins": 31.94,
   "primeradiant.com/evener/internal/selfupdate": 0.56,
+  "primeradiant.com/evener/internal/transcriptindex": 9.41,
   "primeradiant.com/evener/rendezvous": 0.22,
   "primeradiant.com/evener/server": 9.31,
   "primeradiant.com/evener/test/e2e/fake429": 0.0,
@@ -119,6 +121,11 @@
   "primeradiant.com/evener/envvars": 0.0,
   "primeradiant.com/evener/invariant": 0.0,
   "primeradiant.com/evener/identifier": 0.45,
-  "web": 90.77
+  "web": 90.77,
+  "primeradiant.com/evener/execsupport/orphanpipe": 2.0,
+  "primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest": 0.0,
+  "primeradiant.com/evener/execsupport/procgroup": 0.0,
+  "primeradiant.com/evener/execsupport/shellquote": 0.02,
+  "primeradiant.com/evener/execsupport/valueexpr": 3.05
  }
 }

@@ -50,7 +50,7 @@ func TestGoalContinuationPersistsDisplayAndModelInput(t *testing.T) {
 	if notice.Text == "" || notice.StableTurnID != turnID {
 		t.Fatal("continuation event lost its notice or reserved turn identity")
 	}
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestGoalContinuationPersistsDisplayAndModelInput(t *testing.T) {
 		t.Fatalf("persisted %d entries, want one continuation", len(entries))
 	}
 	persisted := entries[0].Turn
-	if !reflect.DeepEqual(live, persisted) {
+	if !reflect.DeepEqual(live, withoutRecordedIdentity(persisted)) {
 		t.Fatal("persisted continuation differs from live model history")
 	}
 	if persisted.Kind != schema.TurnSteering || persisted.Message.Text() != input {

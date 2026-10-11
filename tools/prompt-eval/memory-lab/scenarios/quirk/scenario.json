@@ -1,0 +1,18 @@
+{
+  "arms": ["on"],
+  "stages": [
+    {
+      "name": "A",
+      "prompt": "The stock value on the warehouse dashboard comes out lower than it should. Find and fix the cause, and make sure the test suite really exercises the fix before you call it done.",
+      "checks": [{"name": "value fixed", "run": "INVENTORY_FIXTURES=testdata go test -count=1 -run TestStockValue ./..."}],
+      "trace": [{"name": "ran real suite", "tool": "shell", "regex": "INVENTORY_FIXTURES"}],
+      "memory": [{"name": "saved fixture quirk", "regex": "INVENTORY_FIXTURES"}]
+    },
+    {
+      "name": "B",
+      "prompt": "washer-8 sits exactly at its reorder level but the reorder report doesn't list it. Fix that, and make sure the test suite really exercises the fix before you call it done.",
+      "checks": [{"name": "reorder fixed", "run": "INVENTORY_FIXTURES=testdata go test -count=1 ./..."}],
+      "trace": [{"name": "ran real suite", "tool": "shell", "regex": "INVENTORY_FIXTURES"}]
+    }
+  ]
+}

@@ -20,8 +20,13 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("open API-log target %q", path)
 	}
+	locked := false
 	closeOnError := func(err error) (*os.File, error) {
-		_ = file.Close()
+		if locked {
+			_ = closePrivateAPILogFile(file)
+		} else {
+			_ = file.Close()
+		}
 		return nil, err
 	}
 
@@ -38,6 +43,7 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 		}
 		return closeOnError(fmt.Errorf("lock API-log target %q: %w", path, err))
 	}
+	locked = true
 	if err := file.Chmod(0o600); err != nil {
 		return closeOnError(err)
 	}
@@ -45,4 +51,16 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 		return closeOnError(err)
 	}
 	return file, nil
+}
+
+func closePrivateAPILogFile(file *os.File) error {
+	unlockErr := unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	closeErr := file.Close()
+	if unlockErr != nil {
+		unlockErr = fmt.Errorf("unlock API log: %w", unlockErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close API log: %w", closeErr)
+	}
+	return errors.Join(unlockErr, closeErr)
 }

@@ -1,7 +1,8 @@
 # Working in the Go workspace
 
-evener is a `go.work` workspace of eight modules: the root plus `agent`,
-`llm`, `auth`, `envvars`, `invariant`, `identifier`, and `fuzz`. Most of
+evener is a `go.work` workspace of nine modules: the root plus `agent`,
+`llm`, `auth`, `envvars`, `invariant`, `identifier`, `execsupport`, and `fuzz`.
+Most of
 what is surprising about working here follows from that one fact.
 
 ## `./...` covers one module, not the repo
@@ -163,10 +164,11 @@ Verify a seam with the compiler, not the editor:
 GOOS=windows go vet ./...   # per module; silent means the port is whole
 ```
 
-The cross-vet covers `windows`, where the `!unix` fallback is the source
-in scope. A `//go:build unix` source is outside that port, so a syscall
-that exists on only some Unix GOOS is not caught by CI — by design, given
-the supported set above.
+The cross-vet covers `windows`: a package's `windows` seam source is what
+is in scope (for example `agent/schema/snapshot_flock_windows.go`), or its
+`!unix` fallback when the package has no `windows` file. A `//go:build
+unix` source is outside that port, so a syscall that exists on only some
+Unix GOOS is not caught by CI — by design, given the supported set above.
 
 ## Some diagnostics are deliberate. Check before "fixing" them.
 

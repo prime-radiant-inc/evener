@@ -133,8 +133,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	profile := provider.NewOpenAIProfile("gpt-5.2")
 	environment := execenv.NewLocalExecutionEnvironment(workDir)
 	sess, err := agent.NewSession(client, profile, environment, agent.SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
+		StateDir: stateDir,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -202,7 +201,6 @@ func (s sessionTaskEnvelopeSource) ContextMetrics() server.ContextMetrics {
 func (s sessionTaskEnvelopeSource) DetailedStatus() server.DetailedStatus {
 	return server.DetailedStatus{}
 }
-func (s sessionTaskEnvelopeSource) AskPending() bool                        { return false }
 func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
 func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)            { return 0, false }
 func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
@@ -211,6 +209,12 @@ func (s sessionTaskEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, i
 	return 0, nil, 0
 }
 func (s sessionTaskEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
+	return nil
+}
+func (s sessionTaskEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	return nil
+}
+func (s sessionTaskEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
 	return nil
 }
 func (s sessionTaskEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {

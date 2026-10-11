@@ -7,6 +7,7 @@ import (
 // TestRuntimeReclamationIntersectsProcessWorkLocked_SteeringClaims covers the
 // steeringClaims branch (lines 274-278).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_SteeringClaims(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		steeringClaims: map[uint64]*delegateSteeringClaim{
 			1: {delegateID: "dlg_1"},
@@ -20,6 +21,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_SteeringClaims(t *testing
 // TestRuntimeReclamationIntersectsProcessWorkLocked_SteeringClaimsNil covers the
 // nil-claim skip within the steeringClaims loop.
 func TestRuntimeReclamationIntersectsProcessWorkLocked_SteeringClaimsNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		steeringClaims: map[uint64]*delegateSteeringClaim{
 			1: nil,
@@ -33,6 +35,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_SteeringClaimsNil(t *test
 // TestRuntimeReclamationIntersectsProcessWorkLocked_ModelClaims covers the
 // modelClaims branch (lines 279-283).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_ModelClaims(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		modelClaims: map[uint64]*delegateModelRequestClaim{
 			1: {lease: delegateLease{delegateID: "dlg_1"}},
@@ -44,6 +47,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_ModelClaims(t *testing.T)
 }
 
 func TestRuntimeReclamationIntersectsProcessWorkLocked_ModelClaimsNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		modelClaims: map[uint64]*delegateModelRequestClaim{
 			1: nil,
@@ -57,6 +61,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_ModelClaimsNil(t *testing
 // TestRuntimeReclamationIntersectsProcessWorkLocked_SettlementClaims covers the
 // settlementClaims branch (lines 284-288).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_SettlementClaims(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{
 			1: {lease: delegateLease{delegateID: "dlg_1"}},
@@ -68,6 +73,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_SettlementClaims(t *testi
 }
 
 func TestRuntimeReclamationIntersectsProcessWorkLocked_SettlementClaimsNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{
 			1: nil,
@@ -81,6 +87,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_SettlementClaimsNil(t *te
 // TestRuntimeReclamationIntersectsProcessWorkLocked_Work covers the work
 // branch (lines 289-293).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_Work(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		work: map[uint64]*delegateShellWork{
 			1: {owner: delegateLease{delegateID: "dlg_1"}},
@@ -92,6 +99,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_Work(t *testing.T) {
 }
 
 func TestRuntimeReclamationIntersectsProcessWorkLocked_WorkNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		work: map[uint64]*delegateShellWork{
 			1: nil,
@@ -105,6 +113,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_WorkNil(t *testing.T) {
 // TestRuntimeReclamationIntersectsProcessWorkLocked_Deliveries covers the
 // deliveries branch (lines 294-298), testing both delegateID and ownerID.
 func TestRuntimeReclamationIntersectsProcessWorkLocked_Deliveries(t *testing.T) {
+	t.Parallel()
 	t.Run("delegateID match", func(t *testing.T) {
 		c := &delegateTreeController{
 			deliveries: map[uint64]*delegateDeliveryAdmission{
@@ -140,6 +149,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_Deliveries(t *testing.T) 
 // TestRuntimeReclamationIntersectsProcessWorkLocked_DeliveryClaims covers the
 // deliveryClaims branch (lines 299-303), testing both delegateID and ownerID.
 func TestRuntimeReclamationIntersectsProcessWorkLocked_DeliveryClaims(t *testing.T) {
+	t.Parallel()
 	t.Run("delegateID match", func(t *testing.T) {
 		c := &delegateTreeController{
 			deliveryClaims: map[string]*delegateDeliveryClaim{
@@ -175,6 +185,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_DeliveryClaims(t *testing
 // TestRuntimeReclamationIntersectsProcessWorkLocked_QuietClaims covers the
 // quietClaims branch (lines 304-308).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_QuietClaims(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		quietClaims: map[uint64]*delegateQuietAttentionClaim{
 			1: {lease: delegateLease{delegateID: "dlg_1"}},
@@ -186,6 +197,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_QuietClaims(t *testing.T)
 }
 
 func TestRuntimeReclamationIntersectsProcessWorkLocked_QuietClaimsNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		quietClaims: map[uint64]*delegateQuietAttentionClaim{
 			1: nil,
@@ -199,6 +211,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_QuietClaimsNil(t *testing
 // TestRuntimeReclamationIntersectsProcessWorkLocked_WatchEnqueues covers the
 // watchEnqueues branch (lines 309-313), testing both source and receiver.
 func TestRuntimeReclamationIntersectsProcessWorkLocked_WatchEnqueues(t *testing.T) {
+	t.Parallel()
 	t.Run("source match", func(t *testing.T) {
 		c := &delegateTreeController{
 			watchEnqueues: map[uint64]*delegateWatchReceipt{
@@ -234,6 +247,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_WatchEnqueues(t *testing.
 // TestRuntimeReclamationIntersectsProcessWorkLocked_WatchDeliveries covers the
 // watchDeliveries branch (lines 314-318).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_WatchDeliveries(t *testing.T) {
+	t.Parallel()
 	t.Run("source match", func(t *testing.T) {
 		c := &delegateTreeController{
 			watchDeliveries: map[uint64]*delegateWatchReceipt{
@@ -269,6 +283,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_WatchDeliveries(t *testin
 // TestRuntimeReclamationIntersectsProcessWorkLocked_ReconcileOrder covers the
 // reconcileOrder branch (lines 319-323).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_ReconcileOrder(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reconcileOrder: []delegateLease{
 			{delegateID: "dlg_other"},
@@ -283,6 +298,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_ReconcileOrder(t *testing
 // TestRuntimeReclamationIntersectsProcessWorkLocked_Reservations covers the
 // reservations branch (lines 264-268).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_Reservations(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reservations: map[uint64]*delegateStartRecord{
 			1: {delegateID: "dlg_1"},
@@ -294,6 +310,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_Reservations(t *testing.T
 }
 
 func TestRuntimeReclamationIntersectsProcessWorkLocked_ReservationsNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reservations: map[uint64]*delegateStartRecord{
 			1: nil,
@@ -307,6 +324,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_ReservationsNil(t *testin
 // TestRuntimeReclamationIntersectsProcessWorkLocked_InputClaims covers the
 // inputClaims branch (lines 269-273).
 func TestRuntimeReclamationIntersectsProcessWorkLocked_InputClaims(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		inputClaims: map[uint64]delegateLease{
 			1: {delegateID: "dlg_1"},
@@ -320,6 +338,7 @@ func TestRuntimeReclamationIntersectsProcessWorkLocked_InputClaims(t *testing.T)
 // TestRuntimeReclamationIntersectsProcessWorkLocked_StopNoMatch covers the
 // stop branch with non-matching members.
 func TestRuntimeReclamationIntersectsProcessWorkLocked_StopNoMatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{members: map[string]struct{}{"dlg_other": {}}},
 	}

@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, within } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, within } from "@testing-library/react";
+import { expect, test } from "vitest";
 import SegmentedControlGallerySection from "./segmentedcontrol";
-
-afterEach(cleanup);
 
 function galleryCssSource() {
   const here = dirname(fileURLToPath(import.meta.url));

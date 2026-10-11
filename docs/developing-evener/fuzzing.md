@@ -181,6 +181,15 @@ invariant panics, so the existing never-panic oracle reports it for free. The wh
 fuzz path (`make fuzz`, `run-fuzz.sh`, `fuzz-triage`) builds with
 that tag automatically; `make test` and `go build` stay tag-free.
 
+The agent module's ordinary (non-Fuzz) tests do **not** run under the tag in
+`make fuzz` — that suite is ~14k tests and costs more than the entire `make
+test` budget. That is a deliberate choice, not a gap: every agent-side
+`invariant.Hold` site is reached under the tag by a registered fuzz or rapid
+target the gate already replays (`TestJobstoreSeqFuzz` for the jobstore fold
+monotonicity, `FuzzFc1RepairOrphanedToolResults` for the history-repair rescan).
+A new agent invariant must be reached by a registered tagged target too, exactly
+as "prove it's reached" below requires.
+
 To add one: import the module and assert a load-bearing assumption where it must
 hold (e.g. a folded job status never leaves a terminal state; an emitted item
 carries its turn id). Conditions and args must be **side-effect-free** (they don't
@@ -366,9 +375,10 @@ seconds wherever the encoding is RFC 3339, and floats must be integral to
 survive widening through `any`. The last gotcha is the structural one: an
 unhandled `reflect.Kind` must fail loudly rather than skip, because a
 builder that silently skips a kind is a test that silently stops covering
-it. `fillEveryField` has no `reflect.Interface` case, so an `any` field
-added to the snapshot tomorrow stops the test rather than going quietly
-untested.
+it. `reflectfill.Fill` (`fuzz/reflectfill`, the shared filler both this test
+and the hub's whole-struct comparison use) reports an unhandled kind through
+`Fatalf`, so a field of a kind it does not yet handle stops the test rather
+than going quietly untested.
 
 Two corollaries:
 
@@ -398,7 +408,7 @@ Two corollaries:
 
 | Command | Summary |
 | --- | --- |
-| `make fuzz-goldens` | Regenerate the decode SNAPSHOT goldens from the current decoders, and the hub credential-wire fixtures its clients decode. Run ONLY after an intended change, then commit the diff. |
+| `make fuzz-goldens` | Regenerate the decode SNAPSHOT goldens from the current decoders, the hub credential-wire, notification-frame and tool-call fixtures its clients decode, and the memory and summary prompt goldens. Run ONLY after an intended change, then commit the diff. |
 | `make fuzz-nightly` | Run the unbounded coverage-guided search per target, bounded by a per-target time budget. Manual/nightly only — never in the gate. |
 | `make fuzz-triage` | The local, on-demand campaign + auto-triage tool: search each surface, flake-guard and dedup any crasher, and open one reviewable PR per distinct deterministic bug via the developer's local gh. |
 | `make fuzz-continuous` | The local, on-demand continuous loop: rotate over every native target with a bounded search turn per round, routing any new crasher through fuzz-triage. Runs until Ctrl-C or --total. |

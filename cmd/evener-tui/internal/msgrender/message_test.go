@@ -1,132 +1,16 @@
 package msgrender
 
 import (
-	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/schema"
+	"github.com/charmbracelet/x/ansi"
+
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
-	"primeradiant.com/evener/llm"
 )
-
-func TestHistoryToMessages_UserAndCommunicate(t *testing.T) {
-	turns := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("what is 2+2?")},
-		{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "call_1",
-					Name:      "communicate",
-					Arguments: json.RawMessage(`{"message":"The answer is 4."}`),
-				}},
-			},
-		}},
-		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call_1", "ok", false)},
-	}
-
-	msgs := historyToMessages(turns)
-
-	// Should have: user message + communicate message.
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d: %+v", len(msgs), msgs)
-	}
-	if msgs[0].Kind != transcript.MsgUser || msgs[0].Text != "what is 2+2?" {
-		t.Errorf("msg[0] = %+v, want user 'what is 2+2?'", msgs[0])
-	}
-	if msgs[1].Kind != transcript.MsgCommunicate || msgs[1].Text != "The answer is 4." {
-		t.Errorf("msg[1] = %+v, want communicate 'The answer is 4.'", msgs[1])
-	}
-}
-
-func TestHistoryToMessages_ToolCalls(t *testing.T) {
-	turns := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("list files")},
-		{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "call_1",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"ls -la"}`),
-				}},
-			},
-		}},
-		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call_1", "file1.go\nfile2.go", false)},
-		{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "call_2",
-					Name:      "communicate",
-					Arguments: json.RawMessage(`{"message":"Found 2 files."}`),
-				}},
-			},
-		}},
-		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call_2", "ok", false)},
-	}
-
-	msgs := historyToMessages(turns)
-
-	// Should have: user + tool + communicate.
-	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages, got %d: %+v", len(msgs), msgs)
-	}
-	if msgs[0].Kind != transcript.MsgUser {
-		t.Errorf("msg[0].Kind = %v, want transcript.MsgUser", msgs[0].Kind)
-	}
-	if msgs[1].Kind != transcript.MsgTool || msgs[1].Tool == nil {
-		t.Fatalf("msg[1] should be a tool call, got %+v", msgs[1])
-	}
-	if msgs[1].Tool.Name != "shell" {
-		t.Errorf("tool name = %q, want 'shell'", msgs[1].Tool.Name)
-	}
-	if msgs[1].Tool.Output != "file1.go\nfile2.go" {
-		t.Errorf("tool output = %q, want file listing", msgs[1].Tool.Output)
-	}
-	if msgs[2].Kind != transcript.MsgCommunicate || msgs[2].Text != "Found 2 files." {
-		t.Errorf("msg[2] = %+v, want communicate 'Found 2 files.'", msgs[2])
-	}
-}
-
-func TestHistoryToMessages_ThinkingText(t *testing.T) {
-	turns := []schema.Turn{
-		{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentText, Text: "Let me think about this..."},
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "call_1",
-					Name:      "communicate",
-					Arguments: json.RawMessage(`{"message":"Done."}`),
-				}},
-			},
-		}},
-	}
-
-	msgs := historyToMessages(turns)
-
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d: %+v", len(msgs), msgs)
-	}
-	if msgs[0].Kind != transcript.MsgAssistant || msgs[0].Text != "Let me think about this..." {
-		t.Errorf("msg[0] = %+v, want assistant thinking", msgs[0])
-	}
-	if msgs[1].Kind != transcript.MsgCommunicate {
-		t.Errorf("msg[1].Kind = %v, want transcript.MsgCommunicate", msgs[1].Kind)
-	}
-}
-
-func TestHistoryToMessages_Empty(t *testing.T) {
-	msgs := historyToMessages(nil)
-	if len(msgs) != 0 {
-		t.Fatalf("expected 0 messages for nil history, got %d", len(msgs))
-	}
-}
 
 func TestRenderMessage_RendersAssistantMarkdown(t *testing.T) {
 	previous := markdownRenderer
@@ -470,28 +354,6 @@ func TestFormatDur(t *testing.T) {
 	}
 }
 
-func TestExtractCommunicate(t *testing.T) {
-	tests := []struct {
-		name string
-		args string
-		want string
-	}{
-		{"message field", `{"message":"hello"}`, "hello"},
-		{"output nested", `{"output":{"message":"nested"}}`, "nested"},
-		{"message beats nested", `{"message":"direct","output":{"message":"nested"}}`, "direct"},
-		{"empty object", `{}`, ""},
-		{"invalid json", `not json`, ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := extractCommunicate(&llm.ToolCallData{Arguments: json.RawMessage(tc.args)})
-			if got != tc.want {
-				t.Errorf("extractCommunicate(%q) = %q, want %q", tc.args, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestJSONBody(t *testing.T) {
 	// Empty output returns empty.
 	if got := jsonBody(ToolArgs{}, "", 80); got != "" {
@@ -518,3 +380,150 @@ func TestJSONBody(t *testing.T) {
 // ansiPattern matches terminal SGR escape sequences so tests can compare the
 // underlying text without syntax-highlighting color codes.
 var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func delegateSendToolCall(raw, output string) transcript.ToolCallInfo {
+	return transcript.ToolCallInfo{
+		Name:     "delegate_send",
+		RawArgs:  `{"to":"dlg_ABCDEFGH1234","message":"do the next part","max_wait_ms":60000}`,
+		Raw:      raw,
+		Output:   output,
+		Done:     true,
+		Expanded: true,
+		Subagent: &transcript.SubagentRunInfo{DelegateID: "dlg_ABCDEFGH1234", Status: "idle", Outcome: "completed", Terminal: true},
+	}
+}
+
+// A delegate_send that waited shows the delegate's reply under its run row,
+// after any earlier results the wait carried, oldest first, each headed as
+// the web and phone head them (#3956).
+func TestRenderToolCallShowsDelegateSendReplyAndEarlierResults(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"LATEST REPLY",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"FIRST REPLY"},` +
+		`{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"failed","reason":"it broke"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, "printed text"), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 2", "FIRST REPLY", "earlier reply 2 of 2 · failed", "it broke", "reply", "LATEST REPLY")
+}
+
+// assertRenderedLinesInOrder requires each of want, in order, as a whole
+// rendered line once its indentation is trimmed; the first may be a prefix.
+func assertRenderedLinesInOrder(t *testing.T, got string, want ...string) {
+	t.Helper()
+	at := 0
+	for line := range strings.SplitSeq(got, "\n") {
+		line = strings.TrimSpace(line)
+		if at < len(want) && (line == want[at] || at == 0 && strings.HasPrefix(line, want[at])) {
+			at++
+		}
+	}
+	if at != len(want) {
+		t.Fatalf("render matched %d of %q as lines in order; got:\n%s", at, want, got)
+	}
+}
+
+// An earlier result with no text or reason still shows, as "(no reply)";
+// with an empty output of its own and no earlier results, the reply is what
+// was printed above the footer, and lines printed after the footer are not
+// part of it.
+func TestRenderToolCallDelegateSendEdgeCases(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":"LATEST",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1", "(no reply)", "reply", "LATEST")
+
+	raw = `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":""}`
+	got = ansi.Strip(RenderToolCall(delegateSendToolCall(raw, "printed reply\n[delegate_id dlg_ABCDEFGH1234 · started · completed]\nstructured_result: {}"), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "reply", "printed reply")
+	if strings.Contains(got, "structured_result") {
+		t.Fatalf("render = %q, want lines after the footer kept out of the reply", got)
+	}
+
+	steer := ansi.Strip(RenderToolCall(delegateSendToolCall("", "[delegate_id dlg_ABCDEFGH1234 · delivered]"), 100, false))
+	if strings.Contains(steer, "reply") {
+		t.Fatalf("render of a steer = %q, want no reply", steer)
+	}
+}
+
+// Without a raw state the reply is what the tool printed above its footer.
+func TestRenderToolCallShowsDelegateSendReplyFromPrintedOutput(t *testing.T) {
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall("", "the printed reply\n[delegate_id dlg_ABCDEFGH1234 · started · completed]"), 100, false))
+	if !strings.Contains(got, "the printed reply") {
+		t.Fatalf("render = %q, want the printed reply", got)
+	}
+	if strings.Contains(got, "[delegate_id") {
+		t.Fatalf("render = %q, want the footer kept out of the reply", got)
+	}
+}
+
+// A reply that carried earlier results but has no text of its own shows no
+// reply: what it printed is the earlier results, never its reply.
+func TestRenderToolCallShowsNoDelegateSendReplyWhenOnlyEarlierResultsHaveText(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"FIRST REPLY"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, "earlier result 1 of 1, not delivered before:\nFIRST REPLY\n[delegate_id dlg_ABCDEFGH1234 · started]"), 100, false))
+	if !strings.Contains(got, "earlier reply 1 of 1") || strings.Count(got, "FIRST REPLY") != 1 || strings.Contains(got, "not delivered before") {
+		t.Fatalf("render = %q, want the one earlier reply and no reply of its own", got)
+	}
+}
+
+// As the shared reader does, an earlier entry that isn't an object is
+// dropped on its own: the reply and the other entries still show.
+func TestRenderToolCallDelegateSendKeepsValidEntriesBesideAMalformedOne(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":"LATEST",` +
+		`"earlier_results":[42,{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":"completed","output":"FIRST"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1", "FIRST", "reply", "LATEST")
+}
+
+// Only a valid footer ends the printed reply, as the shared reader's
+// delegateSendFooter decides: a bracketed line that isn't one (here with no
+// action) is part of the reply. The reply keeps its own indentation.
+func TestRenderToolCallDelegateSendFindsOnlyARealFooter(t *testing.T) {
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall("", "answer\n[delegate_id dlg_ABCDEFGH1234]"), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "reply", "answer", "[delegate_id dlg_ABCDEFGH1234]")
+
+	got = ansi.Strip(RenderToolCall(delegateSendToolCall("", "  indented answer\n[delegate_id dlg_ABCDEFGH1234 · started · completed]"), 100, false))
+	heading, body := -1, -1
+	for line := range strings.SplitSeq(got, "\n") {
+		switch strings.TrimSpace(line) {
+		case "reply":
+			heading = len(line) - len(strings.TrimLeft(line, " "))
+		case "indented answer":
+			body = len(line) - len(strings.TrimLeft(line, " "))
+		}
+	}
+	if heading < 0 || body != heading+2 {
+		t.Fatalf("render = %q, want the reply indented two spaces past its heading", got)
+	}
+}
+
+// A raw state that isn't a delegate_send result, as the shared reader's
+// isDelegateSendResult decides (here missing action and
+// running_in_background), is not trusted: the reply is the printed one.
+func TestRenderToolCallDelegateSendIgnoresARawStateThatIsNotASendResult(t *testing.T) {
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(`{"output":"raw text"}`, "printed reply\n[delegate_id dlg_ABCDEFGH1234 · started · completed]"), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "reply", "printed reply")
+	if strings.Contains(got, "raw text") {
+		t.Fatalf("render = %q, want the unvalidated raw output ignored", got)
+	}
+}
+
+// A padded status is shown as the shared reader's delegateSendEarlierLabel
+// shows it: only a status that is exactly "completed" is left off.
+func TestRenderToolCallDelegateSendShowsAPaddedEarlierStatus(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"output":"LATEST",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","action":"started","running_in_background":false,"status":" completed ","output":"FIRST"}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1 ·  completed", "FIRST")
+	blank := strings.Replace(raw, `" completed "`, `"   "`, 1)
+	got = ansi.Strip(RenderToolCall(delegateSendToolCall(blank, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier reply 1 of 1", "FIRST")
+}
+
+// An update the wait carried (action "update", no status) is headed as an
+// update, as the shared reader's delegateSendEarlierLabel heads it.
+func TestRenderToolCallDelegateSendHeadsAnEarlierUpdateAsAnUpdate(t *testing.T) {
+	raw := `{"delegate_id":"dlg_ABCDEFGH1234","action":"completed","running_in_background":false,"status":"completed","output":"LATEST",` +
+		`"earlier_results":[{"delegate_id":"dlg_ABCDEFGH1234","type":"delegate","action":"update","running_in_background":false,"output":"Which table?","truncated":false}]}`
+	got := ansi.Strip(RenderToolCall(delegateSendToolCall(raw, ""), 100, false))
+	assertRenderedLinesInOrder(t, got, "Delegate dlg_ABCD", "earlier update 1 of 1", "Which table?", "reply", "LATEST")
+}

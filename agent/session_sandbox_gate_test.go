@@ -25,7 +25,7 @@ func restoreWithSandbox(t *testing.T, mode string, prober sandbox.Prober) (*exec
 		ID:        "restored-sandbox-session",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{Sandbox: mode, NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{Sandbox: mode}).toSnapshot(),
 	}
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), env, meta, RestoreSessionConfig{
@@ -50,6 +50,7 @@ func bwrapCapableProber(home string) sandbox.Prober {
 // refusal. A persisted "sandbox":"restricted" now resumes genuinely sandboxed, not
 // claiming a mode with nothing enforced.
 func TestRestoreProvisionsPersistedSandbox(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"read-only", "workspace-write", "restricted"} {
 		t.Run(mode, func(t *testing.T) {
 			env, err := restoreWithSandbox(t, mode, bwrapCapableProber(t.TempDir()))
@@ -74,6 +75,7 @@ func TestRestoreProvisionsPersistedSandbox(t *testing.T) {
 // it refuses the restore with the resolver's typed *sandbox.RefusalError, rather
 // than resuming unconfined.
 func TestRestoreFailsClosedWhenHostCannotEnforce(t *testing.T) {
+	t.Parallel()
 	bare := sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: t.TempDir()}} // no bwrap
 	_, err := restoreWithSandbox(t, "restricted", bare)
 	if err == nil {
@@ -88,6 +90,7 @@ func TestRestoreFailsClosedWhenHostCannotEnforce(t *testing.T) {
 // an off or empty persisted mode restores byte-identically — no host probe, no
 // enforced env.
 func TestRestoreOffSandboxUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"", "off"} {
 		env, err := restoreWithSandbox(t, mode, nil)
 		if err != nil {

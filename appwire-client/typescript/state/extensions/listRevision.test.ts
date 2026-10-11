@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 // One case per row of listRevision.ts's table, driven through the fence
 // itself. The stores that wrap it assert that their reads and writes go
 // through it; what the orderings mean is decided here, once.

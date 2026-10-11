@@ -3,35 +3,14 @@ import { ACTIONS, CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } fr
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { installCharacterKeyTriggerReconcile, reconcileCharacterKeyTrigger } from "./cheatsheetController";
 
-// Node 26 shadows jsdom's real window.localStorage with its own
-// (non-functional under vitest) global - the same in-memory stand-in
-// stores/keybindings.test.ts carries, needed here because the prefs store
-// (the characterKeyTriggers pref this controller reconciles against) reads
-// and writes localStorage.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function resetRegistryToDefaults(): void {

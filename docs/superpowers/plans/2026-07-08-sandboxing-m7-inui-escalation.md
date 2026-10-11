@@ -127,7 +127,7 @@ land):
 - `cmd/evener-hub/app_rpc.go:429` the `MethodTurnSteer` hub relay (copy its shape);
   `cmd/evener-hub/internal/appsource/source.go:9` `Source` interface, `:18`
   `SteerTurn`; impls `local_daemon.go:127`, `codex_source.go:292`.
-- `cmd/evener-hub/assets/appwire.js:811` `eventsFromNotification`;
+- `cmd/serf-hub/assets/appwire.js:811` `eventsFromNotification`;
   `cmd/evener-hub/assets/renderer.js:~4372` the `ask_user` card (surfacing template
   to adapt — **not** the control flow).
 
@@ -226,7 +226,7 @@ bool)` so the session layer never type-switches on internals.
   `client.Request`; Codex returns method-not-supported.
 - `cmd/evener-hub/app_rpc.go` (modify) — hub relay handler for the resolve method
   (copy the `MethodTurnSteer` block at `:429`).
-- `cmd/evener-hub/assets/appwire.js` (modify) — map the notification in
+- `cmd/serf-hub/assets/appwire.js` (modify) — map the notification in
   `eventsFromNotification`.
 - `cmd/evener-hub/assets/renderer.js` (+ `renderer-tools.js`/`style.css` as needed)
   (modify) — render the escalation card (two shapes) and post the decision via the
@@ -342,7 +342,7 @@ needed (see "consumed contract").
 ## Task 5 — Hub relay + web card
 
 **Files:** `cmd/evener-hub/internal/appsource/{source.go,local_daemon.go,codex_source.go}`,
-`cmd/evener-hub/app_rpc.go`, `cmd/evener-hub/assets/appwire.js`,
+`cmd/evener-hub/app_rpc.go`, `cmd/serf-hub/assets/appwire.js`,
 `cmd/evener-hub/assets/renderer.js` (+ `renderer-tools.js`/`style.css` as needed);
 package + jstest tests.
 

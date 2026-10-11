@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/identifier"
 )
@@ -16,16 +17,29 @@ import (
 type ToolArgs map[string]any
 
 // toolArgsFromJSON decodes a JSON object string into ToolArgs.
-// Returns an empty map on any error or empty input.
+// Returns an empty map on any error or empty input; never nil.
 func toolArgsFromJSON(s string) ToolArgs {
-	if s == "" {
-		return ToolArgs{}
-	}
-	var args ToolArgs
-	if err := json.Unmarshal([]byte(s), &args); err != nil {
-		return ToolArgs{}
-	}
+	args, _ := toolArgsFromJSONObject(s)
 	return args
+}
+
+// toolArgsFromJSONObject decodes s into ToolArgs in a single pass and reports
+// whether s was a non-nil JSON object. False covers empty input, invalid JSON,
+// null, and valid non-object JSON (arrays, strings, numbers). RenderToolCall
+// uses the boolean to choose the bounded raw fallback without unmarshaling a
+// second time; the returned map is always non-nil.
+func toolArgsFromJSONObject(s string) (ToolArgs, bool) {
+	if s == "" {
+		return ToolArgs{}, false
+	}
+	var m map[string]any
+	// json.Unmarshal([]byte("null"), &m) succeeds with m == nil, so a bare null
+	// is not a JSON object — require m != nil, mirroring the hub's parseArgs
+	// which returns nil for null.
+	if err := json.Unmarshal([]byte(s), &m); err != nil || m == nil {
+		return ToolArgs{}, false
+	}
+	return m, true
 }
 
 // Str returns the string value for key, or "" if absent or not a string.
@@ -310,11 +324,7 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			if output == "" {
-				return "0 hits"
-			}
-			hits := strings.Count(output, "\n") + 1
-			return strconv.Itoa(hits) + " hits"
+			return strconv.Itoa(searchresult.EntryCount(output)) + " hits"
 		},
 	}
 	toolRenderers["grep"] = grepRenderer
@@ -329,16 +339,7 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			// glob returns newline-joined matches without a trailing newline,
-			// so counting newlines under-counts by 1. Split and filter empty.
-			parts := strings.Split(strings.TrimSpace(output), "\n")
-			n := 0
-			for _, p := range parts {
-				if strings.TrimSpace(p) != "" {
-					n++
-				}
-			}
-			return strconv.Itoa(n) + " matches"
+			return strconv.Itoa(searchresult.EntryCount(output)) + " matches"
 		},
 	}
 	toolRenderers["glob"] = globRenderer

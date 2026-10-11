@@ -3,10 +3,12 @@ import {
   AT_BOTTOM_THRESHOLD_PX,
   contentGrewBelowViewport,
   isAtBottom,
+  isEndBelowFold,
   isNearTop,
   NEAR_TOP_THRESHOLD_PX,
   readScrollMetrics,
   type ScrollMetrics,
+  shouldAutoLoadOlder,
 } from "./scrollMetrics";
 
 // isAtBottom: "at the bottom" means the reader is at the TRUE end of the
@@ -39,9 +41,9 @@ test("isAtBottom: accepts a custom threshold, overriding the 4px default", () =>
   expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 4)).toBe(false);
 });
 
-// contentGrewBelowViewport: the geometry half of the bottom-hold correction,
-// shared by the scroll listener and the no-scroll-event re-anchor paths so the
-// two cannot drift.
+// contentGrewBelowViewport: the geometry half of the scroll listener's
+// bottom-hold correction, which has to show a change was not the reader's own
+// scroll. The no-scroll-event re-anchor uses isEndBelowFold instead.
 const AT_BOTTOM_BEFORE: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 
 test("contentGrewBelowViewport: true when content grew below a pinned offset in the same box", () => {
@@ -123,4 +125,73 @@ test("readScrollMetrics reads scrollTop/scrollHeight/clientHeight straight off t
   Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
 
   expect(readScrollMetrics(el)).toEqual({ scrollTop: 120, scrollHeight: 2000, clientHeight: 400 });
+});
+
+// isEndBelowFold: the exact true end, with none of isAtBottom's tolerance - a
+// reader following the bottom is re-pinned even for a 4px shortfall.
+test("isEndBelowFold: false at the exact bottom", () => {
+  expect(isEndBelowFold({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 })).toBe(false);
+});
+
+test("isEndBelowFold: true for a shortfall inside isAtBottom's tolerance", () => {
+  const shortByFour: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 46 };
+  expect(isAtBottom(shortByFour)).toBe(true);
+  expect(isEndBelowFold(shortByFour)).toBe(true);
+});
+
+// shouldAutoLoadOlder: the geometry fill, which covers the one case the
+// near-top trigger cannot see - a page too short to scroll, so no scroll event
+// ever fires.
+test("shouldAutoLoadOlder: false once the content overflows its port", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
+test("shouldAutoLoadOlder: true while the content does not fill the port (nothing to scroll)", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+// A port with no rendered box has not been laid out yet (or is hidden):
+// "nothing overflows" is vacuously true there, and reading that as "the page
+// is too short" would load older history before the transcript is visible.
+test("shouldAutoLoadOlder: false for a port with no rendered box", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "offsetHeight", { configurable: true, value: 0 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
+// Laid out but with no content height yet: an empty transcript (this is also
+// the shape jsdom's fixed zeros present, which is why the box check reads
+// offsetHeight as well as clientHeight).
+test("shouldAutoLoadOlder: true for a laid-out port with no content height", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 0 });
+  Object.defineProperty(el, "offsetHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+test("shouldAutoLoadOlder: true when the content exactly fills the port (still unscrollable)", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 500 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+test("shouldAutoLoadOlder: false once the content exceeds the port by a single pixel", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 501 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
+test("isEndBelowFold: false for content that does not scroll at all", () => {
+  expect(isEndBelowFold({ scrollTop: 0, scrollHeight: 100, clientHeight: 200 })).toBe(false);
 });

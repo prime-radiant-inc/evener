@@ -1,0 +1,44 @@
+schema: 1
+id: prose.customer-rename
+tool: prompt-eval
+prompt: |
+  Acme changed their name. Update our records.
+person:
+  model: lunarouter/glm-5.3
+  brief: |
+    You are Sam, Acme's account manager, and you asked for this. What you know:
+    - Acme's new legal name is "Acme Robotics Ltd".
+    - Only the customer list (data/customers.csv) should change.
+    - Past invoices are legal records: they must keep the name that was on them when they were issued, so leave every invoice as it is.
+    Answer only from these facts, briefly and in your own voice. If you are asked about anything else, say you don't know.
+fixture:
+  git: true
+  files:
+    data/customers.csv: |
+      id,name
+      C-101,Birch Labs
+      C-104,Acme Corp
+      C-107,Cobalt Freight
+    data/invoices/2026-07.csv: |
+      invoice,customer_id,customer_name,amount
+      INV-7001,C-104,Acme Corp,1200.00
+      INV-7002,C-101,Birch Labs,450.00
+    data/invoices/2026-08.csv: |
+      invoice,customer_id,customer_name,amount
+      INV-8001,C-104,Acme Corp,980.00
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: customer renamed
+      run: grep -qE '^C-104,"?Acme Robotics Ltd\.?"?$' data/customers.csv
+    - name: invoices unchanged
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- data/invoices
+    - name: the rest of the customer list is kept
+      run: |
+        set -e
+        test "$(wc -l < data/customers.csv | tr -d ' ')" = 4
+        grep -qx 'id,name' data/customers.csv
+        grep -qx 'C-101,Birch Labs' data/customers.csv
+        grep -qx 'C-107,Cobalt Freight' data/customers.csv
+reference: |
+  sed -i.bak 's/^C-104,Acme Corp$/C-104,Acme Robotics Ltd/' data/customers.csv && rm data/customers.csv.bak

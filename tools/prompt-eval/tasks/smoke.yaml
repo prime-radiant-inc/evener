@@ -1,0 +1,7 @@
+schema: 1
+id: prose.smoke
+tool: prompt-eval
+prompt: |
+  Reply with exactly SMOKE_OK and finish.
+expect:
+  final_contains: ["SMOKE_OK"]

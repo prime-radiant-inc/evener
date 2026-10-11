@@ -15,12 +15,7 @@ let evictionScheduled = false;
 let evictionGeneration = 0;
 
 function paneRef(pane: { type: string; params: unknown }): string | undefined {
-  if (
-    pane.type !== "session" &&
-    pane.type !== "sessionTasks" &&
-    pane.type !== "sessionActivity" &&
-    pane.type !== "sessionDetails"
-  ) {
+  if (pane.type !== "session" && pane.type !== "sessionTasks" && pane.type !== "sessionDetails") {
     return undefined;
   }
   const params = pane.params;

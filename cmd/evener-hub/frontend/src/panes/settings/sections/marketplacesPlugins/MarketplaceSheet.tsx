@@ -23,13 +23,13 @@
 
 import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
-import { marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
+import { HUB_WRITE_BUSY, isHubWriteBusy, marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { connectionStore } from "../../../../stores/connection";
-import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, Sheet, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import {
   MARKETPLACE_SOURCE_OPTIONS,
   type MarketplaceDraft,
@@ -91,7 +91,10 @@ export function MarketplaceSheet({
   connectionClient,
   onAppliedRemoval,
 }: MarketplaceSheetProps) {
-  const marketplaces = useExtensionsStore((s) => s.marketplaces);
+  const store = useExtensionsHostStore();
+  const directory = useHostDirectoryActions();
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces);
+  const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const isMobile = useIsMobile();
   const toasts = useToasts();
   const ids = useId();
@@ -100,10 +103,7 @@ export function MarketplaceSheet({
 
   const [draft, setDraft] = useState<MarketplaceDraft | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(false);
-  const [removeBusy, setRemoveBusy] = useState(false);
   // Set for the span of a rename request: the old name vanishes from the
   // store when the response lands, and that vanish must not close the sheet.
   const pendingRename = useRef<string | null>(null);
@@ -136,10 +136,8 @@ export function MarketplaceSheet({
   useEffect(() => {
     // A Remove confirmation is about the marketplace it was opened for - it
     // names that one and its Confirm removes it - so it goes with the draft
-    // rather than retargeting itself at whatever the page selects next. Its
-    // busy flag belongs to the request that set it, for the same reason.
+    // rather than retargeting itself at whatever the page selects next.
     setPendingRemove(false);
-    setRemoveBusy(false);
     if (entry === undefined) {
       setDraft(null);
       setFormError(null);
@@ -178,9 +176,10 @@ export function MarketplaceSheet({
   const incomplete = draft !== null && marketplaceDraftIncomplete(draft);
   // The sheet's three mutations all name the marketplace as the sheet found
   // it, so only one may be in flight: a second sent while the first is
-  // changing that name refreshes a marketplace that no longer answers to it,
-  // or races the rename for the store lock.
-  const busy = saving || refreshing || removeBusy;
+  // changing that name refreshes a marketplace that no longer answers to it.
+  // The stores serialize every write behind this host's one hub write gate,
+  // so any write in flight is what disables this sheet.
+  const busy = hubWriteBusy;
   const removeDisabled = busy || (entry !== undefined && appliedRemovalNames.has(entry.name));
   const canSave = dirty && !busy && !(sourceTouched && incomplete);
 
@@ -191,10 +190,9 @@ export function MarketplaceSheet({
   async function handleSave(): Promise<void> {
     if (entry === undefined || params === null || !canSave) return;
     setFormError(null);
-    setSaving(true);
     if (params.newName !== undefined) pendingRename.current = params.newName;
     try {
-      await extensionsStore.getState().editMarketplace(params);
+      await store.getState().editMarketplace(params);
       // Reported wherever the user has navigated to: the write landed, and a
       // sheet that moved on is no reason to leave a completed save unreported.
       toasts.push("success", `Saved ${params.newName ?? entry.name}`);
@@ -219,7 +217,7 @@ export function MarketplaceSheet({
       // expanded. Unconditional, like Refresh's: the tree is the page's, not
       // this sheet's, so a user who has moved on still owes it a catalog.
       if (liveExpanded.current.has(entry.name)) {
-        void extensionsStore.getState().browseMarketplace(params.newName ?? entry.name);
+        void store.getState().browseMarketplace(params.newName ?? entry.name);
       }
       if (params.newName === undefined) {
         // The rename branch's guard applies here too: seeding is cosmetic - it
@@ -227,7 +225,7 @@ export function MarketplaceSheet({
         // would show this marketplace's name and source under another one's
         // title, with Save armed to rename that one to this.
         if (liveName.current === entry.name) {
-          const refreshed = extensionsStore.getState().marketplaces?.find((m) => m.name === entry.name);
+          const refreshed = store.getState().marketplaces?.find((m) => m.name === entry.name);
           if (refreshed !== undefined) seed(refreshed);
         }
       } else if (liveName.current === entry.name) {
@@ -241,27 +239,23 @@ export function MarketplaceSheet({
       }
     } catch (err) {
       pendingRename.current = null;
-      const message = errorText(err);
+      const wasBusyRefused = isHubWriteBusy(err);
+      const message = wasBusyRefused ? HUB_WRITE_BUSY : errorText(err);
       // Inline only while this sheet still shows the form that caused it; the
       // toast carries the failure either way.
       if (liveName.current === entry.name) setFormError(message);
-      toasts.push("error", `Save failed: ${message}`);
-    } finally {
-      setSaving(false);
+      toasts.push("error", wasBusyRefused ? HUB_WRITE_BUSY : `Save failed: ${message}`);
     }
   }
 
   async function handleRefresh(): Promise<void> {
     if (entry === undefined) return;
-    setRefreshing(true);
     try {
-      await extensionsStore.getState().refreshMarketplace(entry.name);
-      if (liveExpanded.current.has(entry.name)) void extensionsStore.getState().browseMarketplace(entry.name);
+      await store.getState().refreshMarketplace(entry.name);
+      if (liveExpanded.current.has(entry.name)) void store.getState().browseMarketplace(entry.name);
       toasts.push("success", `Refreshed ${entry.name}`);
     } catch (err) {
-      toasts.push("error", `Refresh failed: ${errorText(err)}`);
-    } finally {
-      setRefreshing(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Refresh failed: ${errorText(err)}`);
     }
   }
 
@@ -269,9 +263,8 @@ export function MarketplaceSheet({
     if (entry === undefined) return;
     const removalName = entry.name;
     const removalClient = connectionClient;
-    setRemoveBusy(true);
     try {
-      await extensionsStore.getState().removeMarketplace(removalName);
+      await store.getState().removeMarketplace(removalName);
       // Reported wherever the user has navigated to, like a save's: the
       // removal landed, and a sheet that moved on is no reason to leave it
       // unreported.
@@ -295,11 +288,11 @@ export function MarketplaceSheet({
         // snapshot that already omits the target is the reconciliation, so a
         // retry guard is only needed while the target remains or the list is
         // unavailable.
-        const current = extensionsStore.getState();
+        const current = store.getState();
         const targetPresent = current.marketplaces?.some((marketplace) => marketplace.name === removalName) ?? false;
         if (current.marketplaces === null || targetPresent) {
           onAppliedRemoval(removalName, removalClient, current.marketplacesPublicationVersion);
-          void extensionsStore.getState().fetchMarketplaces();
+          void store.getState().fetchMarketplaces();
         }
         if (liveName.current === removalName) setPendingRemove(false);
         if (outcome.kind === "removed") {
@@ -316,10 +309,8 @@ export function MarketplaceSheet({
         }
       } else {
         // Ordinary failures keep the existing retryable error behavior.
-        toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
+        toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Remove marketplace failed: ${errorText(err)}`);
       }
-    } finally {
-      if (liveName.current === removalName) setRemoveBusy(false);
     }
   }
 
@@ -357,7 +348,7 @@ export function MarketplaceSheet({
                   id={`${ids}-name`}
                   value={draft.name}
                   onChange={(event) => update({ name: event.target.value })}
-                  disabled={saving}
+                  disabled={hubWriteBusy}
                 />
               </FormRow>
               <RadioGroup
@@ -365,7 +356,7 @@ export function MarketplaceSheet({
                 value={draft.kind}
                 onChange={(value) => update({ kind: value as MarketplaceSourceKind })}
                 options={MARKETPLACE_SOURCE_OPTIONS}
-                disabled={saving}
+                disabled={hubWriteBusy}
               />
               {draft.kind === "url" && (
                 <FormRow label="Git URL" htmlFor={`${ids}-url`}>
@@ -374,7 +365,7 @@ export function MarketplaceSheet({
                     value={draft.url}
                     onChange={(event) => update({ url: event.target.value })}
                     placeholder="https://github.com/owner/repo.git"
-                    disabled={saving}
+                    disabled={hubWriteBusy}
                   />
                 </FormRow>
               )}
@@ -385,7 +376,7 @@ export function MarketplaceSheet({
                     value={draft.repo}
                     onChange={(event) => update({ repo: event.target.value })}
                     placeholder="owner/repo"
-                    disabled={saving}
+                    disabled={hubWriteBusy}
                   />
                 </FormRow>
               )}
@@ -393,14 +384,14 @@ export function MarketplaceSheet({
                 <FormRow label="Local path" htmlFor={`${ids}-path`}>
                   <PathField
                     ariaLabel="Local path"
-                    directory={directoryActions}
+                    directory={directory}
                     id={`${ids}-path`}
                     value={draft.path}
                     onChange={(value) => update({ path: value })}
                     kind="dir"
-                    complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+                    complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
                     placeholder="/absolute/path"
-                    disabled={saving}
+                    disabled={hubWriteBusy}
                   />
                 </FormRow>
               )}
@@ -445,7 +436,7 @@ export function MarketplaceSheet({
         open={pendingRemove && entry !== undefined}
         title="Remove marketplace"
         confirmLabel="Remove"
-        busy={removeBusy}
+        busy={hubWriteBusy}
         onConfirm={() => void handleConfirmRemove()}
         onCancel={() => setPendingRemove(false)}
       >

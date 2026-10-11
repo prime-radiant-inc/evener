@@ -32,6 +32,7 @@ import (
 // returned budgetExhaustionError before the turn ever appended anything or
 // drained the steer, leaving the Applied mutation pending forever.
 func TestSteeringOnlyCarrierDeliversAtMaxTurnsCeilingWithoutAnEmptyUserTurn(t *testing.T) {
+	t.Parallel()
 	sess, adapter, _ := newBudgetSession(t, SessionConfig{MaxTurns: 1}, nil)
 	sess.mu.Lock()
 	sess.turns = 1 // already at the ceiling
@@ -106,6 +107,7 @@ func TestSteeringOnlyCarrierDeliversAtMaxTurnsCeilingWithoutAnEmptyUserTurn(t *t
 // InterruptClientMutation, and checks the id ProcessPendingUserInput reports
 // is the same id the steer's own Applied receipt already promised the client.
 func TestSteeringOnlyCarrierInterruptCancelsTheModelRequestAndMatchesTurnAuthority(t *testing.T) {
+	t.Parallel()
 	blocked := make(chan struct{})
 	sess := newSession(t, withAdapter(&blockingAdapter{name: "openai", blocked: blocked}))
 	if err := sess.ensureClientMutationStore(); err != nil {
@@ -182,6 +184,7 @@ func TestSteeringOnlyCarrierInterruptCancelsTheModelRequestAndMatchesTurnAuthori
 // turn/start with "turn is already active" -- across restarts, for the life of
 // the session.
 func TestSteeringOnlyCarrierHandsBackAClaimTheTurnNeverUsed(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		// arrange makes the wake fail before processOneInput registers its
@@ -235,6 +238,7 @@ func TestSteeringOnlyCarrierHandsBackAClaimTheTurnNeverUsed(t *testing.T) {
 // session is still open enough to prove it: a stranded claim is not a bookkeeping
 // wart, it is a session that can never start another turn.
 func TestSteeringOnlyCarrierStrandedClaimWouldRefuseTheNextTurnStart(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	if err := sess.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)

@@ -16,14 +16,14 @@ import (
 )
 
 func TestSessionCanceledAPILogReadStaysOutOfSemanticTranscript(t *testing.T) {
+	t.Parallel()
 	const bodySentinel = "PRIVATE_CANCELED_API_BODY_SENTINEL"
 	stateDir := newBucket(t)
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
-		clock:            agenttest.NewFakeClock(),
+		StateDir: stateDir,
+		clock:    agenttest.NewFakeClock(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -60,7 +60,7 @@ func TestSessionCanceledAPILogReadStaysOutOfSemanticTranscript(t *testing.T) {
 	if strings.Contains(string(transcriptBytes), bodySentinel) {
 		t.Fatalf("semantic transcript persisted canceled private API evidence:\n%s", transcriptBytes)
 	}
-	_, entries, _, err := readTranscript(transcriptPath)
+	_, entries, _, err := readTranscript(transcriptPath, "")
 	if err != nil {
 		t.Fatalf("decode semantic transcript: %v", err)
 	}

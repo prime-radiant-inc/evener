@@ -6,6 +6,7 @@ import (
 )
 
 func TestAPILogSummarySizerMatchesTrimmedEnvelope(t *testing.T) {
+	t.Parallel()
 	envelope := apiLogReadEnvelope{TranscriptRef: "session", Source: "api-log", Records: []apiLogRecordSummary{
 		{RecordNumber: 1, Kind: "request", RequestModel: "model"},
 		{RecordNumber: 2, Kind: "response", ErrorClass: "multi\nline"},

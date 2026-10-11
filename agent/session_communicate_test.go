@@ -55,6 +55,9 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	normalized["message"] = message
 	normalized["end_turn"] = endTurn
 	normalized["output"] = output
+	if reason, ok := args["end_reason"]; ok {
+		normalized["end_reason"] = reason
+	}
 
 	raw, _ := json.Marshal(normalized)
 	return llm.ToolCallData{
@@ -477,7 +480,8 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	t.Parallel()
 	var captured any
 	deps := &toolDeps{
-		emit: func(events.EventKind, events.EventData) {},
+		emit:               func(events.EventKind, events.EventData) {},
+		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort: func(context.Context) error {
 			return nil
 		},
@@ -488,7 +492,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
 			captured = raw
 			return true
 		},
@@ -523,7 +527,8 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 	t.Parallel()
 	var captured any
 	deps := &toolDeps{
-		emit: func(events.EventKind, events.EventData) {},
+		emit:               func(events.EventKind, events.EventData) {},
+		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort: func(context.Context) error {
 			return nil
 		},
@@ -534,7 +539,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
 			captured = raw
 			return true
 		},
@@ -664,7 +669,7 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 
 	// Parse the JSON to verify inbox is present but empty.
 	var resp2 map[string]any
-	if err := json.Unmarshal(toolResultJSON(res2), &resp2); err != nil {
+	if err := json.Unmarshal([]byte(res2.Output), &resp2); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if _, exists := resp2["inbox"]; !exists {
@@ -1258,7 +1263,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 			t.Fatalf("communicate error: %s", res.Output)
 		}
 		var resp map[string]any
-		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		if err := json.Unmarshal([]byte(res.Output), &resp); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if _, exists := resp["warning"]; exists {
@@ -1275,7 +1280,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 			t.Fatalf("communicate error: %s", res.Output)
 		}
 		var resp map[string]any
-		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		if err := json.Unmarshal([]byte(res.Output), &resp); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		warning, ok := resp["warning"].(string)
@@ -1304,7 +1309,7 @@ func TestCommunicate_EndTurnWarnsAboutRunningJobs(t *testing.T) {
 			t.Fatalf("communicate error: %s", res.Output)
 		}
 		var resp map[string]any
-		if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		if err := json.Unmarshal([]byte(res.Output), &resp); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if _, exists := resp["warning"]; exists {

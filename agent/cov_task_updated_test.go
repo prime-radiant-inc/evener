@@ -222,6 +222,7 @@ func TestTaskTool_MixedAddFailingUpdateIsAtomic(t *testing.T) {
 }
 
 func TestTaskUpdatedDataUsesFirstInProgressTask(t *testing.T) {
+	t.Parallel()
 	data := taskUpdatedData(taskpkg.Summarize([]taskpkg.Task{
 		{ID: 1, Status: taskpkg.TaskDone},
 		{ID: 2, Status: taskpkg.TaskInProgress, Description: "first current task"},

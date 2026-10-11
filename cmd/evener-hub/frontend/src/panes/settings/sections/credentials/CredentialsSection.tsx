@@ -31,12 +31,12 @@ import {
   fingerprintUnavailable,
   friendlyErrorMessage,
   fromEnvironment,
-  groupByProvider,
   isEndpointConflict,
   isInstanceRemoveApplied,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useAuthStatusesStore } from "../../../../stores/authStatuses";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import {
   Button,
@@ -52,21 +52,17 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
-import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
   headerRow: requireClass(styles.headerRow, "CredentialsSection.module.css", "headerRow"),
   error: requireClass(styles.error, "CredentialsSection.module.css", "error"),
-  groups: requireClass(styles.groups, "CredentialsSection.module.css", "groups"),
-  group: requireClass(styles.group, "CredentialsSection.module.css", "group"),
-  groupHeader: requireClass(styles.groupHeader, "CredentialsSection.module.css", "groupHeader"),
-  list: requireClass(styles.list, "CredentialsSection.module.css", "list"),
   diagnostics: requireClass(styles.diagnostics, "CredentialsSection.module.css", "diagnostics"),
   diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
@@ -107,7 +103,7 @@ const ENDPOINT_CHANGED_CONFIRM_ERROR =
 // diagnostics, spec §11.3) - mirrors launchServer.tsx's own Diagnostics
 // component (this pane's sibling settings section), a flat unordered list
 // with no stable per-entry identity of its own.
-function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
+export function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
   if (diagnostics.length === 0) return null;
   return (
     <div className={CLASS.diagnostics} role="status" aria-live="polite">
@@ -172,6 +168,7 @@ export function CredentialsSection({
     error,
     fetch,
     listingFromPreviousConnection,
+    refreshingInstances,
   } = useCredentialsStore();
   const [connecting, setConnecting] = useState(false);
   // The connector is a dynamic-only import (see connectDialogChunk.ts): loading
@@ -192,12 +189,12 @@ export function CredentialsSection({
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
   // Live-model refresh for the sheet is manual: the hub prefetches every
-  // instance's listing at startup and every few minutes after, so the
+  // instance's listing once at startup and never polls after, so the
   // Models toggles read cached inventory. The Refresh button below
-  // re-fetches on demand; failures toast and keep the cached rows. The
-  // pending set holds every in-flight instance, so concurrent refreshes
-  // for A and B each disable only their own sheet.
-  const [refreshingInstances, setRefreshingInstances] = useState<ReadonlySet<string>>(new Set());
+  // re-fetches on demand; failures toast and keep the cached rows. The store
+  // publishes which instances have a refresh out, so concurrent refreshes
+  // for A and B each disable only their own sheet without this section
+  // tracking them again.
   // Pending model toggles by `instance/model`: switches stay enabled
   // only when no write for their row is in flight, so rapid clicks
   // cannot submit duplicate or reordered writes against a stale
@@ -210,13 +207,10 @@ export function CredentialsSection({
   const pendingToggleKeys = useRef(new Set<string>());
 
   async function handleRefreshModels(name: string): Promise<void> {
-    setRefreshingInstances((current) => new Set(current).add(name));
     try {
       await credentialsStore.getState().refreshModels(name);
     } catch (err) {
       toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
-    } finally {
-      setRefreshingInstances((current) => withoutKey(current, name));
     }
   }
   const previousInstances = useRef(instances);
@@ -261,6 +255,16 @@ export function CredentialsSection({
   // handshake finishes, and credentialsStore.fetch() requires a connected
   // client (throws otherwise) - see that hook's own doc comment.
   useConnectedEffect(fetch, [fetch]);
+  // The hub's credential statuses, for a provider whose credential it found an
+  // error with (#3539); the store follows evener/auth/updated from here on.
+  // The statuses store drops a replaced hub's statuses itself; this gate covers
+  // the other half: a listing kept from a replaced connection is the previous
+  // hub's until this one reads its own, so the new hub's statuses are not shown
+  // against it either.
+  const readAuthStatuses = useAuthStatusesStore((state) => state.authStatuses);
+  const authStatuses = listingFromPreviousConnection ? null : readAuthStatuses;
+  const fetchAuthStatuses = useAuthStatusesStore((state) => state.fetchAuthStatuses);
+  useConnectedEffect(fetchAuthStatuses, [fetchAuthStatuses]);
 
   // handleOAuthStart is shared by the sheet's "Sign in…"/"Refresh OAuth"
   // action and the device editor's "Start again" - always begins with
@@ -507,7 +511,6 @@ export function CredentialsSection({
     if (name !== null) editor(name);
   }
 
-  const groups = groupByProvider(instances);
   // useCallback'd (not a plain inline arrow) so its identity stays stable
   // across CredentialsSection re-renders - DeviceCodeDialog's own poll
   // effect depends on the onSuccess it's given, and an unstable reference
@@ -579,32 +582,22 @@ export function CredentialsSection({
       {loading && instances.length === 0 && <Skeleton />}
       {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
       {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
+      {/* The provider-grouped listing is shared with the host-scoped view of a
+          remote host's own listing (ProviderInstanceGroups); this surface's
+          rows are the interactive variant. */}
       {instances.length > 0 && (
-        <div className={CLASS.groups}>
-          {groups.map((group) => (
-            <div key={group.providerId} className={CLASS.group}>
-              {/* `name || id`, the same label the Add dialog gives a
-                  provider - one pane must not name a provider two ways. */}
-              <div className={CLASS.groupHeader}>
-                {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
-              </div>
-              <ul className={CLASS.list}>
-                {group.instances.map((instance) => (
-                  <InstanceRow
-                    key={instance.name}
-                    instance={instance}
-                    onSelect={() => setSelectedInstance(instance.name)}
-                  />
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
+        <ProviderInstanceGroups
+          instances={instances}
+          availableProviders={availableProviders}
+          onSelect={setSelectedInstance}
+          authStatuses={authStatuses}
+        />
       )}
 
       <InstanceSheet
         name={selectedInstance}
         writesRefused={writesRefused}
+        authError={selectedInstance === null ? undefined : authStatuses?.get(selectedInstance)?.error}
         onClose={() => setSelectedInstance(null)}
         onSetApiKey={() =>
           openEditorFromSheet((name) =>

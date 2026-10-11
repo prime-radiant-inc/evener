@@ -2,12 +2,15 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/execsupport/orphanpipe"
 )
 
 var (
@@ -29,7 +32,9 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	// On cancellation, terminate git gracefully where the platform allows
 	// (SIGTERM — see terminateGit) instead of exec's default SIGKILL, which
 	// strands git's lock files. WaitDelay hard-kills a git that has not
-	// exited a few seconds later.
+	// exited a few seconds later. It also bounds the output wait after git
+	// exits, when something git ran (a hook from the user's core.hooksPath,
+	// an ssh ProxyCommand) left a process holding the pipe (see orphanpipe).
 	cmd.Cancel = func() error { return terminateGit(cmd.Process) }
 	cmd.WaitDelay = 5 * time.Second
 	if dir != "" {
@@ -37,7 +42,7 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if err = orphanpipe.ChildErr(cmd, err); err != nil {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out), nil
@@ -118,10 +123,109 @@ func gitPull(ctx context.Context, dir string) error {
 	return err
 }
 
+// gitFetch downloads what the remote of the clone at dir has, without
+// touching its checked-out files.
+func gitFetch(ctx context.Context, dir string) error {
+	_, err := gitRun(ctx, dir, "fetch", "--quiet")
+	return err
+}
+
+// gitFastForward moves the branch checked out in the clone at dir to its
+// upstream as last fetched. It needs no network, except that a blobless
+// clone downloads the contents of the files it changes.
+func gitFastForward(ctx context.Context, dir string) error {
+	_, err := gitRun(ctx, dir, "merge", "--ff-only", "--quiet", "@{upstream}")
+	return err
+}
+
+// gitRefNamesBranch reports whether name, checked out in the clone at dir,
+// names a branch rather than a tag or a commit: whether checkout left a local
+// branch of that name. A fresh clone has one only for its remote's default
+// branch; checkout makes one for any other branch unless a tag of the same
+// name shadows it, and detaches at the tag instead.
+func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
+	if err := guardGitArg("ref", name); err != nil {
+		return false, err
+	}
+	return gitRefExists(ctx, dir, "refs/heads/"+name)
+}
+
+// gitRefExists reports whether ref exists in the clone at dir. Git's exit
+// status 1 says it does not; any other failure is an error.
+func gitRefExists(ctx context.Context, dir, ref string) (bool, error) {
+	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
+	if exitErr := (*exec.ExitError)(nil); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// gitResolveCommit answers the commit rev names in the clone at dir.
+func gitResolveCommit(ctx context.Context, dir, rev string) (string, error) {
+	if err := guardGitArg("ref", rev); err != nil {
+		return "", err
+	}
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 func gitHeadSHA(ctx context.Context, dir string) (string, error) {
 	out, err := gitRun(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// gitPathTree returns the id of the tree path (relative to dir) holds at the
+// checked-out commit of the repository at dir. It changes exactly when the
+// folder's contents do, whatever else the repository's history does: unlike
+// the last commit touching the folder, it does not move when a shallow
+// clone's root does (a reclone), so a reclone flags nothing.
+func gitPathTree(ctx context.Context, dir, path string) (string, error) {
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--end-of-options", "HEAD:./"+strings.TrimPrefix(filepath.ToSlash(path), "./"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// gitRemoteHead asks url, without cloning, for the commit a clone that then
+// checks out ref lands on; an empty ref means the remote's HEAD. An annotated
+// tag answers with its peeled commit. A tag wins over a branch of the same
+// name, as git checkout resolves a name in a fresh clone. The one exception
+// is not handled: checkout prefers the remote's default branch, which the
+// clone already has locally, over a tag of the same name, and this still
+// answers with the tag. A tag named like the default branch is too rare to be
+// worth a second query.
+func gitRemoteHead(ctx context.Context, url, ref string) (string, error) {
+	for _, g := range []struct{ n, v string }{{"url", url}, {"ref", ref}} {
+		if err := guardGitArg(g.n, g.v); err != nil {
+			return "", err
+		}
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+	out, err := gitRun(ctx, "", "ls-remote", "--", url, ref, ref+"^{}")
+	if err != nil {
+		return "", err
+	}
+	shas := map[string]string{}
+	for line := range strings.SplitSeq(out, "\n") {
+		if sha, name, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok {
+			shas[name] = sha
+		}
+	}
+	// A short name is looked up as a tag, then a branch; a full refname (or
+	// HEAD) matches itself. Either way a peeled line beats the tag object.
+	for _, name := range []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref + "^{}", ref} {
+		if sha := shas[name]; sha != "" {
+			return sha, nil
+		}
+	}
+	return "", fmt.Errorf("git ls-remote: %s has no ref %q", url, ref)
 }

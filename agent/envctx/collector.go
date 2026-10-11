@@ -28,6 +28,7 @@ type Probes struct {
 
 type cachedProbe struct {
 	value  string
+	key    string
 	probed time.Time
 	hasRun bool
 }
@@ -45,12 +46,15 @@ func NewCollector(p Probes) *Collector {
 	return &Collector{p: p}
 }
 
-func (c *Collector) refresh(cp *cachedProbe, now time.Time, probe func() string) string {
+// refresh serves cp's cached value until its key changes or probeInterval
+// elapses. key names the subject the observation depends on: host-wide probes
+// pass "" (never invalidated), disk passes the cwd whose filesystem it reads.
+func (c *Collector) refresh(cp *cachedProbe, now time.Time, key string, probe func() string) string {
 	if probe == nil {
 		return ""
 	}
-	if !cp.hasRun || now.Sub(cp.probed) >= probeInterval {
-		*cp = cachedProbe{value: probe(), probed: now, hasRun: true}
+	if !cp.hasRun || cp.key != key || now.Sub(cp.probed) >= probeInterval {
+		*cp = cachedProbe{value: probe(), key: key, probed: now, hasRun: true}
 	}
 	return cp.value
 }
@@ -80,9 +84,9 @@ func (c *Collector) Collect(in Inputs) Snapshot {
 		Sandbox:       sandbox,
 		GitBranch:     branch,
 		Pressure: Pressure{
-			Load:   c.refresh(&c.load, now, c.p.Load),
-			Memory: c.refresh(&c.mem, now, c.p.Memory),
-			Disk:   c.refresh(&c.disk, now, diskProbe),
+			Load:   c.refresh(&c.load, now, "", c.p.Load),
+			Memory: c.refresh(&c.mem, now, "", c.p.Memory),
+			Disk:   c.refresh(&c.disk, now, in.Cwd, diskProbe),
 		},
 	}
 }

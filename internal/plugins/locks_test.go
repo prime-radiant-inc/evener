@@ -1,13 +1,16 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -30,6 +33,131 @@ func TestLockStore_ACorruptMarketplacesFileFailsARegistryOnlyMutation(t *testing
 	}
 	if !strings.Contains(err.Error(), marketplacesFileName) {
 		t.Fatalf("error = %v, want it to name %s", err, marketplacesFileName)
+	}
+}
+
+// Every marketplace verb takes the store lock first thing, and acquireLock's
+// own error text names the absolute lock file. A lock file that cannot be
+// opened (a permission problem, or a directory in its place) must not leak that
+// path to the RPC caller: lockStore scrubs it and logs the raw error
+// server-side, the way saveFailed does for a failed write (#1883).
+func TestRemoveMarketplace_LockFailureCarriesNoPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	var logged strings.Builder
+	m.Stderr = &logged
+	// A directory where the lock file would be makes the open fail, naming the
+	// path the same way a permission problem would.
+	if err := os.Mkdir(m.lockPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := m.RemoveMarketplace(context.Background(), "acme")
+	if err == nil {
+		t.Fatal("expected the unopenable lock file to fail the removal")
+	}
+	if strings.Contains(err.Error(), m.lockPath()) || strings.Contains(err.Error(), m.Root) {
+		t.Fatalf("err = %v, want no absolute store or lock path in the client-facing error", err)
+	}
+	if !strings.Contains(logged.String(), m.lockPath()) {
+		t.Fatalf("stderr = %q, want the raw lock error with its path logged server-side", logged.String())
+	}
+}
+
+// EditMarketplace wraps every failure it returns with the marketplace name, so
+// a caller can correlate it. Scrubbing the lock path in lockStore must not
+// short-circuit that wrap and hand back a message with no name (#1883 review).
+func TestEditMarketplace_LockFailureNamesTheMarketplaceWithoutThePath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	if err := os.Mkdir(m.lockPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.EditMarketplace(context.Background(), "acme", "", &Source{Kind: SourceURL, URL: "https://example.invalid/repo.git"})
+	if err == nil {
+		t.Fatal("expected the unopenable lock file to fail the edit")
+	}
+	if !strings.Contains(err.Error(), "acme") {
+		t.Fatalf("err = %v, want it to name the marketplace", err)
+	}
+	if strings.Contains(err.Error(), m.lockPath()) {
+		t.Fatalf("err = %v, want no lock path", err)
+	}
+}
+
+// The bundled-cache lock is reached from plugin/preview (PreviewForLaunch ->
+// prepareBundledStore), whose failure message is copied onto the wire
+// diagnostic, so its own unopenable lock file must not leak its path either
+// (#1883 review).
+func TestAcquireBundledLock_FailureCarriesNoPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	var logged strings.Builder
+	m.Stderr = &logged
+	if err := os.MkdirAll(m.bundledLockPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.acquireBundledLock(context.Background(), time.Second)
+	if err == nil {
+		t.Fatal("expected the unopenable bundled lock file to fail the acquisition")
+	}
+	if strings.Contains(err.Error(), m.bundledLockPath()) || strings.Contains(err.Error(), m.Root) {
+		t.Fatalf("err = %v, want no absolute store or lock path in the client-facing error", err)
+	}
+	if !strings.Contains(logged.String(), m.bundledLockPath()) {
+		t.Fatalf("stderr = %q, want the raw lock error with its path logged server-side", logged.String())
+	}
+}
+
+// Scrubbing a lock failure must not cost the caller the reason it acts on: a
+// cancellation, a deadline, a store root that cannot be used, and lock
+// contention all have to survive path-free through lockStore, which every
+// writer reaches before it does anything else (#1883).
+func TestLockStore_LockFailureKeepsItsReasonWithoutThePath(t *testing.T) {
+	injected := errors.New("injected lock failure")
+	cases := []struct {
+		name  string
+		build func(m *Manager) error
+		want  error
+	}{
+		{"an unrecognized error", func(m *Manager) error {
+			return injected // the acquirer's own error, carrying no known sentinel
+		}, injected},
+		{"lock contention", func(m *Manager) error {
+			return fmt.Errorf("%w (locked: %s)", errLockContention, m.lockPath())
+		}, errLockContention},
+		{"a canceled request", func(m *Manager) error {
+			return fmt.Errorf("waiting for plugin lock %s: %w", m.lockPath(), context.Canceled)
+		}, context.Canceled},
+		{"a deadline", func(m *Manager) error {
+			return fmt.Errorf("waiting for plugin lock %s: %w", m.lockPath(), context.DeadlineExceeded)
+		}, context.DeadlineExceeded},
+		{"an unusable store root", func(m *Manager) error {
+			return m.storeRootError()
+		}, errStoreRootNotAbsolute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Manager{Root: t.TempDir(), Stderr: io.Discard}
+			if errors.Is(tc.want, errStoreRootNotAbsolute) {
+				m.Root = "relative/store" // storeRootError refuses the root and names it
+			}
+			acquireErr := tc.build(m)
+			acquire := func(context.Context, string, time.Duration) (func(), error) {
+				return nil, acquireErr
+			}
+
+			_, err := m.lockStore(context.Background(), acquire, time.Second)
+			if err == nil {
+				t.Fatal("expected the acquisition to fail")
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want errors.Is(..., %v)", err, tc.want)
+			}
+			if strings.Contains(err.Error(), m.lockPath()) {
+				t.Fatalf("err = %v, want no lock path", err)
+			}
+		})
 	}
 }
 
@@ -209,5 +337,84 @@ func TestResolveForLaunch_RefusesAnUnresolvedRootWithoutTakingTheLock(t *testing
 	}
 	if len(entries) != 0 {
 		t.Errorf("the refused launch wrote %v into the working directory", entries)
+	}
+}
+
+// A clone lock taken while its holder removes the lock file (as removing a
+// marketplace does) is taken on the file at the path, not on the removed one,
+// so a later taker still waits for it.
+func TestLockClone_AWaiterOutlivesTheLockFilesRemoval(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := m.marketplaceDir("acme")
+	release, err := m.lockClone(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	// The file is removed only once the waiter is contending on it, so the
+	// waiter is granted the lock on the removed file, not on a new one.
+	contending := make(chan struct{})
+	var once sync.Once
+	realFlock := lockFlock
+	t.Cleanup(func() { lockFlock = realFlock })
+	lockFlock = func(fd int, how int) error {
+		err := realFlock(fd, how)
+		if isLockContended(err) {
+			once.Do(func() { close(contending) })
+		}
+		return err
+	}
+	acquired := make(chan func())
+	go func() {
+		next, err := NewManager(m.Root).lockClone(context.Background(), dir)
+		if err != nil {
+			t.Errorf("waiting lockClone: %v", err)
+			close(acquired)
+			return
+		}
+		acquired <- next
+	}()
+	<-contending
+	m.removeCloneLock(dir)
+	release()
+	next := <-acquired
+	if next == nil {
+		return
+	}
+	defer next()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	third := NewManager(m.Root)
+	stderr := &bytes.Buffer{}
+	third.Stderr = stderr
+	if release, err := third.lockClone(ctx, dir); err == nil {
+		release()
+		t.Fatal("a third taker got the clone lock while the waiter held it on the removed file")
+	}
+	if !strings.Contains(stderr.String(), "taking the lock on marketplace clone") {
+		t.Fatalf("the third taker's wait was not logged: %q", stderr.String())
+	}
+}
+
+// A clone lock taken for the first time is taken once: the lock file is made
+// before the wait, so the first grant is on the file at the path.
+func TestLockClone_AFirstLockIsTakenOnce(t *testing.T) {
+	m := NewManager(t.TempDir())
+	realFlock := lockFlock
+	t.Cleanup(func() { lockFlock = realFlock })
+	grants := 0
+	lockFlock = func(fd int, how int) error {
+		err := realFlock(fd, how)
+		if err == nil && how == lockOpExclusiveNB {
+			grants++
+		}
+		return err
+	}
+	release, err := m.lockClone(context.Background(), m.marketplaceDir("acme"))
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	release()
+	if grants != 1 {
+		t.Fatalf("a first clone lock was granted %d times, want once", grants)
 	}
 }

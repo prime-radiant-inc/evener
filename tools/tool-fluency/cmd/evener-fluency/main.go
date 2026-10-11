@@ -7,7 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 	"primeradiant.com/evener/agent"
@@ -26,14 +29,46 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var exitProcess = os.Exit
+
+// configureHermeticRunEnv hides the operator's user-global sources from every
+// run: it sets EVENER_NO_USER_SKILLS so neither an in-process live session
+// nor a spawned evener child advertises the operator's home skills, user
+// config skills, global MCP config, or evener-wide commands. A round that
+// measures tool or skill use then depends only on the revision under test,
+// not on who runs it (#3227, #3487). This is still only half of
+// hermeticity: the operator's installed, enabled plugins (hooks, agents,
+// commands, and plugin-sourced skills) load in full whenever plugin
+// resolution reaches its default root, which EVENER_NO_USER_SKILLS does not
+// touch; cliProbeArgs closes that gap for the CLI harness by passing
+// --enabled-plugins with an explicit empty selection.
+//
+// inheritOperatorEnv (--inherit-operator-env, default false) restores
+// today's pre-#3227 behavior for debugging: it clears the variable instead
+// of setting it, so a run sees the operator's real skills again.
+//
+// run sets the hermetic default before dispatching any subcommand, so every
+// session evener-fluency builds (catalog's too) hides the operator's skills.
+// runSuite and runMatrixCommand then apply their own flag once, after
+// parsing and before running any probe, so concurrent matrix cells share one
+// setting instead of racing on a per-cell set/restore.
+func configureHermeticRunEnv(inheritOperatorEnv bool) {
+	if inheritOperatorEnv {
+		_ = envvars.EVENERNoUserSkills.Unsetenv()
+		return
+	}
+	_ = envvars.EVENERNoUserSkills.Setenv("1")
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -47,11 +82,26 @@ func run(args []string) error {
 		usage()
 		return flag.ErrHelp
 	}
+	configureHermeticRunEnv(false)
 	switch args[0] {
 	case "catalog":
 		return runCatalog(args[1:])
 	case "run":
 		return runSuite(args[1:])
+	case "prose-stats":
+		return runProseStats(args[1:])
+	case "prose-count":
+		return runProseCount(args[1:])
+	case "review-pack":
+		return runReviewPack(args[1:])
+	case "rank-sets":
+		return runRankSets(args[1:])
+	case "rank-score":
+		return runRankScore(args[1:])
+	case "matrix":
+		return runMatrixCommand(args[1:])
+	case "respond":
+		return runRespond(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -67,6 +117,14 @@ func usage() {
 USAGE
   evener-fluency catalog [--model provider/model] [--json]
   evener-fluency run [--model provider/model] [--probe id] [--build]
+  evener-fluency prose-stats --results LABEL=DIR [--results LABEL=DIR ...] [--channel to_user|all] [--json]
+  evener-fluency prose-count FILE...
+  evener-fluency review-pack --results LABEL=DIR [...] --mask-root DIR --packets DIR --key FILE [--seed N]
+  evener-fluency rank-sets --review-pack-key FILE --packets DIR --out FILE --key FILE [--skip-task ID ...] [--seed N]
+  evener-fluency rank-score --key FILE --reviews FILE [...] [--detail] [--json]
+  evener-fluency matrix --version LABEL=BIN [...] --models M1,M2 --out DIR [--max-concurrent N] [run flags]
+  evener-fluency matrix --version-manifest FILE --version-cache DIR --models M1,M2 --out DIR [run flags]
+  evener-fluency respond --brief-file FILE --model provider/model [--log FILE]
 
 `)
 }
@@ -86,7 +144,11 @@ func runCatalog(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	tools, err := catalogTools(*model)
+	reg, err := runnerLoadRegistry()
+	if err != nil {
+		return fmt.Errorf("provider registry: %w", err)
+	}
+	tools, err := catalogTools(reg, *model)
 	if err != nil {
 		return err
 	}
@@ -101,15 +163,23 @@ func runCatalog(args []string) error {
 	return nil
 }
 
-func catalogTools(modelRef string) ([]catalogTool, error) {
+// runnerLoadRegistry loads the provider registry a run resolves its model on:
+// the one evener itself loads, with the user's configured providers, so the
+// runner reads a run the way evener ran it. TestMain replaces it with the
+// embedded registry, so default tests never read a developer's configuration.
+var runnerLoadRegistry = func() (*registry.Registry, error) {
+	r, _, err := cmdutil.LoadRegistry()
+	return r, err
+}
+
+// catalogTools lists the tools evener offers the model, resolved on reg. The
+// catalog needs only the model's profile: no credentials and no network.
+func catalogTools(reg *registry.Registry, modelRef string) ([]catalogTool, error) {
 	providerName, modelName, err := splitModelRef(modelRef)
 	if err != nil {
 		return nil, err
 	}
-	// The catalog is what a model of this shape is offered, so it resolves on
-	// the embedded registry: no credentials, no network, and no dependence on
-	// whatever the developer happens to have configured.
-	profile, err := provider.Resolve(provider.EmbeddedRegistry(), providerName+"/"+modelName)
+	profile, err := provider.Resolve(reg, providerName+"/"+modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -122,14 +192,13 @@ func catalogTools(modelRef string) ([]catalogTool, error) {
 	}()
 	client := llm.NewClient()
 	sess, err := runnerNewSession(client, profile, execenv.NewLocalExecutionEnvironment(tmp), agent.SessionConfig{
-		StateDir:         filepath.Join(tmp, "state"),
-		NoProjectPrompts: true,
-		NonInteractive:   true,
+		StateDir:       filepath.Join(tmp, "state"),
+		NonInteractive: true,
 	})
 	if err != nil {
 		return nil, err
 	}
-	defer sess.Close()
+	defer sess.CloseDiscardingScratch()
 	defs := sess.ToolDefinitions()
 	out := make([]catalogTool, 0, len(defs))
 	for _, def := range defs {
@@ -156,6 +225,27 @@ type probeFile struct {
 	Expect  expectSpec        `yaml:"expect"`
 	Metrics metricsSpec       `yaml:"metrics"`
 	Skip    map[string]string `yaml:"skip,omitempty"`
+	// Reference is a shell script that solves the task. Only the offline
+	// task test runs it, to prove the checks can pass; the runner ignores it.
+	Reference string `yaml:"reference,omitempty"`
+	// Person, when set, makes the CLI harness point the probe's evener run at
+	// --ask-responder: an evener-fluency respond invocation that plays this
+	// person's part when the agent calls ask_user.
+	Person *personSpec `yaml:"person,omitempty"`
+}
+
+// personSpec is a task manifest's optional "person:" block. When present,
+// cliProbeArgs wires the probe's evener run to --ask-responder, pointed at
+// this same binary's own "respond" subcommand: the model plays Person from
+// Brief alone, in its own voice, and says "I don't know" for anything the
+// brief does not cover (see respond in respond.go).
+type personSpec struct {
+	// Brief is who the person is and the facts only they know, passed to
+	// `respond --brief-file` verbatim.
+	Brief string `yaml:"brief"`
+	// Model is the provider/model that plays the person; empty defaults to
+	// the run's --fast-cheap-model.
+	Model string `yaml:"model,omitempty"`
 }
 
 // metricsSpec is the validated form of a probe manifest's `metrics:` block
@@ -204,6 +294,12 @@ func (m *metricsSpec) UnmarshalYAML(node *yaml.Node) error {
 
 type fixtureSpec struct {
 	Files map[string]string `yaml:"files"`
+	// Git makes the work directory a repository on branch main whose first
+	// commit holds Files, so a task can check what the agent changed.
+	Git bool `yaml:"git,omitempty"`
+	// Untracked files are written after that commit, so a task can check
+	// that the agent leaves unrelated work alone.
+	Untracked map[string]string `yaml:"untracked,omitempty"`
 }
 
 type expectSpec struct {
@@ -211,6 +307,20 @@ type expectSpec struct {
 	ForbiddenCalls []string         `yaml:"forbidden_calls"`
 	Artifacts      []artifactExpect `yaml:"artifacts"`
 	FinalContains  []string         `yaml:"final_contains"`
+	// MaxCalls caps how many times a tool may be called, by canonical name.
+	MaxCalls map[string]int `yaml:"max_calls,omitempty"`
+	// Checks are shell commands run in the work directory after the agent
+	// finishes. Each must exit zero. They judge the outcome of the work.
+	Checks []checkSpec `yaml:"checks,omitempty"`
+	// AllowToolErrors keeps tool errors from failing the run. A realistic
+	// task meets missing files and failing commands on its way to the outcome.
+	AllowToolErrors bool `yaml:"allow_tool_errors,omitempty"`
+}
+
+// checkSpec is one outcome check: a named shell command.
+type checkSpec struct {
+	Name string `yaml:"name"`
+	Run  string `yaml:"run"`
 }
 
 type expectedCall struct {
@@ -240,6 +350,17 @@ type runConfig struct {
 	postTurnWait       time.Duration
 	reasoningEffort    string
 	clearOpenAIAPIKey  bool
+	sandbox            string
+	sandboxNet         string
+	inheritOperatorEnv bool // --inherit-operator-env: debugging escape hatch, restores the operator's real skills and plugins (#3227)
+}
+
+// holdsResults reports whether dir exists with anything in it. A run reuses
+// its directories, so a second run into one that holds results would mix the
+// two: the old work tree, the old sessions, and the old counts.
+func holdsResults(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
 }
 
 // defaultMaxRounds is the runner's round cap when --max-rounds is not given.
@@ -258,6 +379,9 @@ func runSuite(args []string) error {
 		return err
 	}
 	cfg.systemPromptAppend = []string(systemPromptAppend)
+	// Decide the process-wide hermetic setting once, right after parsing and
+	// before any probe runs (#3227). See configureHermeticRunEnv.
+	configureHermeticRunEnv(cfg.inheritOperatorEnv)
 	return runSuiteWithConfig(cfg)
 }
 
@@ -277,6 +401,45 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmduti
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
+	fs.StringVar(&cfg.sandbox, "sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted (applies to both harnesses)")
+	fs.StringVar(&cfg.sandboxNet, "sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	fs.BoolVar(&cfg.inheritOperatorEnv, "inherit-operator-env", false, "debugging only: restore the operator's real skills and plugins instead of running hermetic (#3227)")
+}
+
+// enabledPluginsFlagLine matches the flag's own definition line in evener's
+// --help output, not a mention of it in another flag's description.
+var enabledPluginsFlagLine = regexp.MustCompile(`(?m)^\s+--enabled-plugins(\s|$)`)
+
+// evenerHelpListsEnabledPlugins reports whether the evener at bin accepts
+// --enabled-plugins, which a hermetic CLI run needs to hide the operator's
+// plugins (#3227). Evener gained the flag on 2026-08-25, so a matrix version
+// older than that lacks it. A --help that fails or times out proves nothing
+// either way, so it is an error.
+func evenerHelpListsEnabledPlugins(bin string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--help").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("run %s --help: %w", bin, err)
+	}
+	return enabledPluginsFlagLine.Match(out), nil
+}
+
+// evenerSupportsEnabledPlugins is evenerHelpListsEnabledPlugins behind a seam:
+// the tests' fake evener scripts print one line for every invocation.
+var evenerSupportsEnabledPlugins = evenerHelpListsEnabledPlugins
+
+// requireHermeticEvener refuses an evener that cannot run hermetic, and names
+// the way to run it anyway.
+func requireHermeticEvener(bin string) error {
+	ok, err := evenerSupportsEnabledPlugins(bin)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s predates --enabled-plugins, so a hermetic run cannot hide the operator's plugins from it; pass --inherit-operator-env to run it with them", bin)
+	}
+	return nil
 }
 
 func runSuiteWithConfig(cfg runConfig) error {
@@ -289,8 +452,16 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.harness != "cli" && cfg.harness != "live" {
 		return errors.New("--harness must be cli or live")
 	}
+	// Validate the sandbox flags once, up front, so a typo fails before any
+	// probe launches instead of surfacing late from the spawned evener.
+	if _, _, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err != nil {
+		return err
+	}
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
+	}
+	if holdsResults(cfg.outDir) {
+		return fmt.Errorf("--out %s already holds results; a second run there would mix with them, so name a new directory", cfg.outDir)
 	}
 	if err := os.MkdirAll(cfg.outDir, 0o755); err != nil {
 		return err
@@ -302,6 +473,11 @@ func runSuiteWithConfig(cfg runConfig) error {
 		}
 		cfg.evenerBin = bin
 	}
+	if cfg.harness == "cli" && !cfg.inheritOperatorEnv {
+		if err := requireHermeticEvener(cfg.evenerBin); err != nil {
+			return err
+		}
+	}
 	probes, err := loadProbes(cfg.probesDir, cfg.probeFilter)
 	if err != nil {
 		return err
@@ -309,17 +485,30 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if len(probes) == 0 {
 		return errors.New("no probes selected")
 	}
+	// Only the CLI harness's cliProbeArgs wires --ask-responder from a
+	// person: block; the live harness (runLiveProbe) never does, so a
+	// person-carrying task under --harness live would silently never ask.
+	// Fail up front rather than run the whole suite for nothing to answer.
+	for _, probe := range probes {
+		if cfg.harness == "live" && probe.Person != nil {
+			return fmt.Errorf("probe %q has a person: block, which --harness live does not support (it never asks); use --harness cli", probe.ID)
+		}
+	}
 	// Report the actual selected set, honestly, before any live request is
 	// launched (including the catalog session below). "--probe all" always
 	// selects every probe under --probes-dir; this makes that scope visible
 	// so a scoped request never silently balloons into the full set without
 	// the caller seeing it named. See kata 73cb(a).
 	fmt.Fprint(os.Stderr, selectionSummary(cfg, probes))
-	wireNames, err := wireNameToCanonicalForModel(cfg.model)
+	reg, err := runnerLoadRegistry()
+	if err != nil {
+		return fmt.Errorf("provider registry: %w", err)
+	}
+	wireNames, err := wireNameToCanonicalForModel(reg, cfg.model)
 	if err != nil {
 		return err
 	}
-	catalog, err := catalogTools(cfg.model)
+	catalog, err := catalogTools(reg, cfg.model)
 	if err != nil {
 		return err
 	}
@@ -367,6 +556,19 @@ func buildEvener(outDir string) (string, error) {
 	return bin, nil
 }
 
+// decodeProbe decodes one probe manifest strictly: an unknown field is an
+// error, so a misspelled field cannot silently turn a check off. An empty
+// manifest decodes to an empty probe, which loadProbes reports as missing its id.
+func decodeProbe(data []byte) (probeFile, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var probe probeFile
+	if err := dec.Decode(&probe); err != nil && !errors.Is(err, io.EOF) {
+		return probeFile{}, err
+	}
+	return probe, nil
+}
+
 func loadProbes(dir, filter string) ([]probeFile, error) {
 	var probes []probeFile
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -380,12 +582,18 @@ func loadProbes(dir, filter string) ([]probeFile, error) {
 		if err != nil {
 			return err
 		}
-		var probe probeFile
-		if err := yaml.Unmarshal(data, &probe); err != nil {
+		probe, err := decodeProbe(data)
+		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		if probe.ID == "" {
 			return fmt.Errorf("%s: missing id", path)
+		}
+		// A person: block with no brief cannot play anyone: respond would
+		// answer "I don't know." to everything, silently. Reject it at load
+		// time, naming the task.
+		if probe.Person != nil && strings.TrimSpace(probe.Person.Brief) == "" {
+			return fmt.Errorf("%s: task %s: person.brief must not be empty", path, probe.ID)
 		}
 		if filter == "all" || filter == probe.ID {
 			probes = append(probes, probe)
@@ -422,6 +630,7 @@ type probeResult struct {
 	FastCheapModel      string         `json:"fast_cheap_model,omitempty"`
 	Repetition          int            `json:"repetition"`
 	Status              string         `json:"status"`
+	EnvMode             string         `json:"env_mode"`
 	SessionID           string         `json:"session_id,omitempty"`
 	WorkDir             string         `json:"work_dir"`
 	StateDir            string         `json:"state_dir"`
@@ -436,6 +645,11 @@ type probeResult struct {
 	Findings            []finding      `json:"findings"`
 	DurationMS          int64          `json:"duration_ms"`
 	Error               string         `json:"error,omitempty"`
+	// AskUserCalls is how many times the session called ask_user (only set
+	// for a task with a person: block); Asks is every question/answer pair
+	// the --ask-responder logged (readAskLog, applyAskExchanges).
+	AskUserCalls int           `json:"ask_user_calls,omitempty"`
+	Asks         []askExchange `json:"asks,omitempty"`
 }
 
 // probeMetrics holds the phase-discipline metrics the runner computes from
@@ -459,10 +673,8 @@ type probeMetrics struct {
 // source of truth the renderer renamed tools with. A hand-maintained copy
 // here would silently misclassify metrics the day a profile gains or
 // changes a rename (roborev Medium on f5e1017).
-func wireNameToCanonicalForModel(modelRef string) (map[string]string, error) {
-	// Resolve on the embedded registry, like catalogTools: no credentials,
-	// no network, and no dependence on developer configuration.
-	profile, err := provider.Resolve(provider.EmbeddedRegistry(), modelRef)
+func wireNameToCanonicalForModel(reg *registry.Registry, modelRef string) (map[string]string, error) {
+	profile, err := provider.Resolve(reg, modelRef)
 	if err != nil {
 		return nil, err
 	}
@@ -692,6 +904,16 @@ type finding struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
+// envModeLabel names, for result.json, which environment mode a probe ran
+// under (#3227): "hermetic" (today's default, operator skills and plugins
+// hidden) or "inherit_operator_env" (--inherit-operator-env, debugging only).
+func envModeLabel(inheritOperatorEnv bool) string {
+	if inheritOperatorEnv {
+		return "inherit_operator_env"
+	}
+	return "hermetic"
+}
+
 func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool, wireNames map[string]string) probeResult {
 	start := time.Now()
 	slug := safeName(probe.ID)
@@ -708,6 +930,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 		FastCheapModel:      strings.TrimSpace(cfg.fastCheapModel),
 		Repetition:          rep,
 		Status:              "failed",
+		EnvMode:             envModeLabel(cfg.inheritOperatorEnv),
 		WorkDir:             workDir,
 		StateDir:            stateDir,
 		StdoutPath:          stdoutPath,
@@ -752,6 +975,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	res.CanonicalToolCounts, res.ToolErrors, res.CommunicateMessages = parseEvents(stderr.Bytes())
 	if id, err := rootSessionID(stateDir); err == nil {
 		res.SessionID = id
+		// The probe session's scratch outlives it, and no hub ever archives a
+		// probe, so the harness removes the session's tree once it is done.
+		_ = sandbox.RemoveSessionScratchTree(id)
 	}
 	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
 		res.ModelToolCounts = counts
@@ -760,6 +986,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	// rather than through the enumeration the counts above walk, and reported
 	// per the probe's metrics block.
 	applyProbeMetrics(&res, probe, stateDir, wireNames)
+	applyAskExchanges(&res, probe)
 	if err != nil {
 		res.Error = err.Error()
 		category, status := classifyProbeError(err, ctx.Err(), stderr.String())
@@ -779,8 +1006,12 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 }
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
-	cmd := exec.CommandContext(ctx, cfg.evenerBin, cliProbeArgs(cfg, probe, res)...)
-	cmd.Env = os.Environ()
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
+	cmd.Env = fixtureEnv(res.WorkDir)
 	if cfg.clearOpenAIAPIKey {
 		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
 	}
@@ -789,7 +1020,7 @@ func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeR
 	return cmd.Run()
 }
 
-func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
+func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, error) {
 	args := []string{"--model", cfg.model}
 	if strings.TrimSpace(cfg.fastCheapModel) != "" {
 		args = append(args, "--fast-cheap-model", cfg.fastCheapModel)
@@ -799,17 +1030,51 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 			args = append(args, "--system-prompt-append", path)
 		}
 	}
+	// A declared sandbox mode reaches the spawned evener too, so the CLI harness
+	// confines its worker exactly as the live harness does. Off forwards nothing,
+	// leaving today's CLI runs byte-identical. An invalid mode/net returns the
+	// error rather than silently dropping the flags and running the worker
+	// unsandboxed, so a caller that bypasses runSuiteWithConfig fails closed.
+	mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet)
+	if err != nil {
+		return nil, err
+	}
+	if mode != sandbox.ModeOff {
+		netName := "on"
+		if !net {
+			netName = "off"
+		}
+		args = append(args, "--sandbox", mode.String(), "--sandbox-net", netName)
+	}
+	if probe.Person != nil {
+		askResponder, err := personAskResponderCommand(cfg, probe, res)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--ask-responder", askResponder)
+	}
+	// EVENER_NO_USER_SKILLS (configureHermeticRunEnv) hides the operator's
+	// user-global sources — home/user-config skills, global MCP config, and
+	// evener-wide commands. Their installed, enabled plugins would still
+	// load in full — hooks, agents, commands, and plugin-sourced skills —
+	// because a bare `evener run` resolves plugins against its default root
+	// (internal/plugins.ResolveForLaunch with no explicit selection). An
+	// explicit empty selection makes that resolution pick nothing, whatever the
+	// operator has installed (#3227). --inherit-operator-env restores today's
+	// behavior for debugging by omitting the flag entirely.
+	if !cfg.inheritOperatorEnv {
+		args = append(args, "--enabled-plugins", "")
+	}
 	args = append(args,
 		"--dir", res.WorkDir,
 		"--state-dir", res.StateDir,
 		"--reasoning-effort", cfg.reasoningEffort,
 		"--context-strategy", "compact",
 		"--max-rounds", strconv.Itoa(cfg.maxRounds),
-		"--no-project-prompts",
 		"--verbose",
 		probe.Prompt,
 	)
-	return args
+	return args, nil
 }
 
 type liveKick struct {
@@ -820,6 +1085,88 @@ type liveKick struct {
 var runnerLoadClient = cmdutil.LoadClient
 var runnerAttachAPILogger = cmdutil.AttachAPILogger
 var runnerMarshalEvent = json.Marshal
+var runnerProbeSandboxHost = func() sandbox.HostFacts { return sandbox.RealProber{}.Probe() }
+
+// parseSandboxFlags validates the runner's --sandbox / --sandbox-net values once,
+// for both harnesses, and returns the normalized wire mode and the resolved
+// network decision. Off (empty or "off") is mode off; the net value parses with
+// empty defaulting to on. An unknown mode or net value is a legible error rather
+// than a silent native run.
+//
+// --sandbox-net is validated even when the mode is off, matching the production
+// CLI (cmd/evener configureSandbox parses the net flag before its off
+// short-circuit); the net decision is only APPLIED when the mode is non-off.
+func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
+	name := strings.TrimSpace(modeName)
+	if name == "" {
+		name = sandbox.ModeOff.String()
+	}
+	mode, err := sandbox.ParseMode(name)
+	if err != nil {
+		return sandbox.ModeOff, false, err
+	}
+	net, err := parseLiveSandboxNet(netName)
+	if err != nil {
+		return sandbox.ModeOff, false, err
+	}
+	return mode, net, nil
+}
+
+// configureLiveSandbox records the validated --sandbox / --sandbox-net decision
+// on the session config's carrier fields. Off (the flag default) leaves the
+// carrier zero, so a default live run is byte-identical to today; a non-off mode
+// records the mode + network so provisionLiveSandbox can enforce it.
+func configureLiveSandbox(cfg runConfig, sessCfg *agent.SessionConfig) error {
+	mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet)
+	if err != nil {
+		return err
+	}
+	if mode == sandbox.ModeOff {
+		return nil
+	}
+	sessCfg.Sandbox = mode.String()
+	sessCfg.SandboxNet = &net
+	return nil
+}
+
+// parseLiveSandboxNet maps the --sandbox-net value to a boolean (on = egress
+// allowed). Empty defaults to on, matching the CLI's flag default.
+func parseLiveSandboxNet(v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "on", "":
+		return true, nil
+	case "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid --sandbox-net %q (want on or off)", v)
+	}
+}
+
+// provisionLiveSandbox engages enforcement on a fresh live run's execution
+// environment from its configured mode. Off returns immediately WITHOUT probing
+// the host, so an unsandboxed run stays byte-identical to today. It reuses the
+// existing sandbox capability (resolve against freshly-probed host facts, then
+// EnableSandbox) exactly as the production CLI does.
+func provisionLiveSandbox(env *execenv.LocalExecutionEnvironment, sessCfg *agent.SessionConfig, cwd string) error {
+	if sandbox.ModeIsOff(sessCfg.Sandbox) {
+		return nil
+	}
+	return provisionLiveSandboxWithHost(env, sessCfg, cwd, runnerProbeSandboxHost())
+}
+
+// provisionLiveSandboxWithHost is provisionLiveSandbox with the host facts
+// supplied by the caller, so a test can drive the exact resolve+enforce path
+// without a live backend. It fails closed: a mode the host cannot enforce
+// surfaces the resolver's *sandbox.RefusalError BEFORE any session or provider
+// call, and EnableSandbox leaves the env unsandboxed on every failure path.
+func provisionLiveSandboxWithHost(env *execenv.LocalExecutionEnvironment, sessCfg *agent.SessionConfig, cwd string, host sandbox.HostFacts) error {
+	infra := agent.SessionInfraRoots(*sessCfg, env)
+	rp, err := sandbox.ResolveNamed(sessCfg.Sandbox, sessCfg.SandboxNet, host, cwd, infra)
+	if err != nil {
+		return err
+	}
+	return env.EnableSandbox(rp)
+}
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
 	restoreEnv := maybeClearOpenAIAPIKey(cfg.clearOpenAIAPIKey)
@@ -860,8 +1207,26 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if effort.Set {
 		sessCfg.ReasoningEffort = effort.Value
 	}
-	sess, err := runnerNewSession(client, profile, execenv.NewLocalExecutionEnvironment(res.WorkDir), sessCfg)
+	if err := configureLiveSandbox(cfg, &sessCfg); err != nil {
+		return err
+	}
+	env := execenv.NewLocalExecutionEnvironment(res.WorkDir)
+	// The session's ID names its scratch tree, so it is picked before the
+	// sandbox mints the scratch; runProbe removes the tree after the probe.
+	if err := agent.PickFreshSessionID(env, &sessCfg); err != nil {
+		return err
+	}
+	// Engage enforcement before the session exists so a declared mode the host
+	// cannot serve fails closed here, before any provider call, rather than
+	// silently running the worker native and unsandboxed.
+	if err := provisionLiveSandbox(env, &sessCfg, res.WorkDir); err != nil {
+		return err
+	}
+	sess, err := runnerNewSession(client, profile, env, sessCfg)
 	if err != nil {
+		// The session that would have owned whatever this env provisioned was
+		// never built, so its scratch goes here, as on the production launch path.
+		_ = env.DisposeSessionScratch()
 		return err
 	}
 	res.SessionID = sess.ID()
@@ -913,7 +1278,6 @@ func buildLiveSessionConfig(cfg runConfig, stateDir string) agent.SessionConfig 
 	return agent.SessionConfig{
 		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		StateDir:              stateDir,
-		NoProjectPrompts:      true,
 		SystemPromptAppend:    cfg.systemPromptAppend,
 		NonInteractive:        true,
 		ContextStrategy:       "compact",
@@ -1020,10 +1384,11 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 }
 
 // walkTranscripts calls fn with every session transcript under stateDir in
-// session-file order. It returns the first error from fn or from reading a
-// transcript. The tool-count aggregation walks every transcript through this
-// enumeration; the phase metrics read the root session's transcript directly.
-func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) error {
+// session-file order, rendered with opts. It returns the first error from fn
+// or from reading a transcript. The tool-count aggregation walks every
+// transcript through this enumeration; the phase metrics read the root
+// session's transcript directly.
+func walkTranscripts(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
 	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
 	if err != nil {
 		return err
@@ -1034,7 +1399,7 @@ func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) er
 		if !ok || id == "" {
 			continue
 		}
-		tr, err := runnerReadTranscript(stateDir, id, doctor.TranscriptOpts{})
+		tr, err := runnerReadTranscript(stateDir, id, opts)
 		if err != nil {
 			return err
 		}
@@ -1049,7 +1414,21 @@ func materializeFixture(workDir string, fixture fixtureSpec) error {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return err
 	}
-	for rel, content := range fixture.Files {
+	if err := writeFixtureFiles(workDir, fixture.Files); err != nil {
+		return err
+	}
+	if fixture.Git {
+		if err := commitFixture(workDir); err != nil {
+			return err
+		}
+	}
+	return writeFixtureFiles(workDir, fixture.Untracked)
+}
+
+// writeFixtureFiles writes each file under workDir and refuses a path that
+// escapes it.
+func writeFixtureFiles(workDir string, files map[string]string) error {
+	for rel, content := range files {
 		path := filepath.Join(workDir, filepath.Clean(rel))
 		within, err := filepath.Rel(workDir, path)
 		if err != nil || strings.HasPrefix(within, "..") || filepath.IsAbs(within) {
@@ -1063,6 +1442,55 @@ func materializeFixture(workDir string, fixture fixtureSpec) error {
 		}
 	}
 	return nil
+}
+
+// commitFixture makes workDir a repository on main with one commit holding
+// everything written so far. The identity lives in the repository, so the
+// agent's own commits work on a machine with no global identity. The user's
+// global git setup belongs to their own work and stays out: the repository
+// starts from no template, so no template hooks land in it; it never signs;
+// it uses its own empty hooks directory; and it reads no global ignore file.
+//
+// maintenance.auto=false keeps the commit from leaving a detached writer
+// behind. Since git 2.5x, `git commit` runs `git maintenance run --auto
+// --detach` (run-command.c:prepare_auto_maintenance), and that background
+// process outlives the commit and writes into .git — recreating it if
+// t.TempDir() cleanup already removed it, which makes cleanup fail with
+// "directory not empty". The same quiescent-commit rule the worktree tools
+// use keeps the fixture's commits from racing a cleanup.
+func commitFixture(workDir string) error {
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", "--template="},
+		{"config", "user.name", "Evener Fixture"},
+		{"config", "user.email", "fixture@evener.test"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgSign", "false"},
+		{"config", "tag.forceSignAnnotated", "false"},
+		{"config", "core.hooksPath", ".git/hooks"},
+		{"config", "core.excludesFile", os.DevNull},
+		{"config", "maintenance.auto", "false"},
+		{"add", "-A"},
+		{"commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = workDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// fixtureEnv is the environment for anything that acts on a fixture: the
+// agent's evener process and the task checks. It cuts the fixture off from any
+// Go workspace or git repository above it, so results that land inside a
+// repository, such as evener's own, still run each fixture as its own project.
+func fixtureEnv(workDir string) []string {
+	env := append(os.Environ(), "GOWORK=off")
+	if parent, err := filepath.Abs(filepath.Dir(workDir)); err == nil {
+		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
+	}
+	return env
 }
 
 func parseEvents(data []byte) (map[string]int, map[string]int, []string) {
@@ -1115,7 +1543,7 @@ func transcriptToolCounts(tr doctor.TranscriptResult) map[string]int {
 
 func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 	counts := map[string]int{}
-	err := walkTranscripts(stateDir, func(tr doctor.TranscriptResult) error {
+	err := walkTranscripts(stateDir, doctor.TranscriptOpts{}, func(tr doctor.TranscriptResult) error {
 		for tool, n := range transcriptToolCounts(tr) {
 			counts[tool] += n
 		}
@@ -1159,6 +1587,13 @@ func rootSessionID(stateDir string) (string, error) {
 	return selected.ID, nil
 }
 
+// callCount is how many times the run called a tool. A manifest may name a
+// tool by its canonical name or by the name the model saw, so the count is the
+// larger of the two.
+func callCount(res probeResult, name string) int {
+	return max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+}
+
 func evaluateExpectations(workDir string, probe probeFile, res probeResult) []finding {
 	var out []finding
 	for _, call := range probe.Expect.Calls {
@@ -1166,7 +1601,7 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 		if minCalls == 0 {
 			minCalls = 1
 		}
-		got := max(res.CanonicalToolCounts[call.Tool], res.ModelToolCounts[call.Tool])
+		got := callCount(res, call.Tool)
 		if got < minCalls {
 			out = append(out, finding{
 				Category: "selection",
@@ -1176,12 +1611,23 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 		}
 	}
 	for _, name := range probe.Expect.ForbiddenCalls {
-		got := max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+		got := callCount(res, name)
 		if got > 0 {
 			out = append(out, finding{
 				Category: "churn",
 				Title:    "forbidden tool was called",
 				Detail:   fmt.Sprintf("%s calls=%d", name, got),
+			})
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(probe.Expect.MaxCalls)) {
+		limit := probe.Expect.MaxCalls[name]
+		got := callCount(res, name)
+		if got > limit {
+			out = append(out, finding{
+				Category: "churn",
+				Title:    "tool called more often than the task allows",
+				Detail:   fmt.Sprintf("%s calls=%d max=%d", name, got, limit),
 			})
 		}
 	}
@@ -1208,6 +1654,15 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 			}
 		}
 	}
+	for _, check := range probe.Expect.Checks {
+		if ok, detail := runCheck(workDir, check, checkTimeout); !ok {
+			out = append(out, finding{
+				Category: "outcome",
+				Title:    "check failed: " + check.Name,
+				Detail:   detail,
+			})
+		}
+	}
 	for _, want := range probe.Expect.FinalContains {
 		if !resultContains(res, want) {
 			out = append(out, finding{
@@ -1217,13 +1672,15 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 			})
 		}
 	}
-	for toolName, n := range res.ToolErrors {
-		if n > 0 {
-			out = append(out, finding{
-				Category: "arguments",
-				Title:    "tool returned validation/runtime errors",
-				Detail:   fmt.Sprintf("%s errors=%d", toolName, n),
-			})
+	if !probe.Expect.AllowToolErrors {
+		for toolName, n := range res.ToolErrors {
+			if n > 0 {
+				out = append(out, finding{
+					Category: "arguments",
+					Title:    "tool returned validation/runtime errors",
+					Detail:   fmt.Sprintf("%s errors=%d", toolName, n),
+				})
+			}
 		}
 	}
 	return out
@@ -1239,6 +1696,56 @@ func resultContains(res probeResult, want string) bool {
 		}
 	}
 	return false
+}
+
+// checkTimeout bounds one outcome check, so a command that waits on a
+// terminal or on a child process cannot stall a run.
+const checkTimeout = 2 * time.Minute
+
+// runCheck runs one check in workDir with no stdin. It reports whether the
+// check passed and, when it failed, why.
+func runCheck(workDir string, check checkSpec, timeout time.Duration) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", check.Run)
+	cmd.Dir = workDir
+	cmd.Env = fixtureEnv(workDir)
+	// The check runs in its own process group, so the kill at the deadline
+	// reaches everything it started, such as a go test binary stuck in a loop.
+	// The cost: a Ctrl-C of the runner no longer reaches a running check.
+	cmd.SysProcAttr = procgroup.SysProcAttr()
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			procgroup.Kill(cmd.Process.Pid)
+		}
+		return nil
+	}
+	// A descendant that left the group can still hold the output pipe; stop
+	// waiting for it shortly after the kill.
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, ""
+	}
+	if ctx.Err() != nil {
+		return false, fmt.Sprintf("timed out after %s", timeout)
+	}
+	return false, fmt.Sprintf("%v: %s", err, lastBytes(strings.TrimSpace(string(out)), 1500))
+}
+
+// lastBytes keeps the end of s, where a failing command says why it failed.
+// The cut point advances forward, never landing inside a multi-byte UTF-8
+// rune (keeping at most n bytes, never more), the same rune-boundary
+// technique agent/doctor.Truncate uses when it cuts from the front.
+func lastBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := len(s) - n
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "..." + s[cut:]
 }
 
 // classifyProbeError decides whether a probe command failure reflects the

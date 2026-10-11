@@ -7,7 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -20,24 +20,6 @@ import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../com
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDockTestUtils";
-
-afterEach(() => {
-  cleanup();
-  // Every test here calls ensureThread(ref) directly for setup - AskDock
-  // takes its ref as a prop and never calls ensureThread/releaseThread
-  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
-  // test. Under isolate:false that is what a later file's own
-  // connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach below only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
-});
 
 // --- fixtures (mirrors askDockStore.test.ts's own harness) ---------------
 
@@ -75,7 +57,12 @@ function testThread(ref: string): Thread {
 }
 
 function readResponse(ref: string): ThreadReadResponse {
-  return { thread: testThread(ref) };
+  return {
+    thread: testThread(ref),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
 }
 
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
@@ -97,8 +84,15 @@ function nextMutationPersistence(targetRef: string): Promise<void> {
 
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
-    method: "turn/started",
-    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${ref}`,
+      ref: "ref-1",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+    },
   });
 }
 
@@ -539,7 +533,12 @@ test("the primary button sends once the last unanswered question is answered - t
 
   const persisted = nextMutationPersistence("ref_a");
   await user.click(screen.getByRole("button", { name: /send answers/i }));
-  await persisted;
+  // Persistence is announced before sendBatch settles the batch, a few
+  // microtasks later, so the wait runs inside act, as the Mod+Enter sends'
+  // below do.
+  await act(async () => {
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });

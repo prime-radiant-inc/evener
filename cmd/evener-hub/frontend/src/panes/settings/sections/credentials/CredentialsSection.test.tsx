@@ -1,4 +1,10 @@
-import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
+import type {
+  AuthLogoutResponse,
+  AuthStatusResponse,
+  AuthTestResponse,
+  InstanceEntry,
+  InstanceListResponse,
+} from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
@@ -13,6 +19,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
+import { resetAuthStatusesStoreForTests } from "../../../../stores/authStatuses";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
@@ -86,6 +93,7 @@ async function openSheet(user: ReturnType<typeof userEvent.setup>, name: string)
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  resetAuthStatusesStoreForTests();
   resetToastStoreForTests();
   // The auth mutations carry the page's identity on the wire now, so the
   // assertions that pin their exact params need one that cannot vary.
@@ -96,6 +104,7 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("Settings Connect provider opens discovery and retains management on cancel", async () => {
@@ -108,6 +117,47 @@ test("Settings Connect provider opens discovery and retains management on cancel
   await user.keyboard("{Escape}");
   expect(await screen.findByText("work")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+});
+
+// The hub reports a credential the provider rejected on evener/auth/list
+// (#3539): the row reads Error and the sheet says why, and both follow the
+// hub when it announces the credential fixed.
+test("shows a rejected credential as Error until the hub reports it fixed", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
+  fake.on("evener/instance/list", () => LIST);
+  let statuses: AuthStatusResponse[] = [
+    { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false, error },
+  ];
+  fake.on("evener/auth/list", () => ({ providers: statuses }));
+  render(<CredentialsSection sectionId="credentials" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
+  const sheet = await openSheet(user, "work");
+  expect(within(sheet).getByRole("status", { name: "Credential error" }).textContent).toBe(error);
+
+  statuses = [{ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false }];
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await waitFor(() => expect(within(sheet).queryByRole("status", { name: "Credential error" })).toBeNull());
+  // The open sheet hides the listing from the accessibility tree.
+  expect(screen.getByRole("button", { name: /work/, hidden: true }).textContent).not.toContain("Error");
+});
+
+// A listing kept from a replaced connection is another hub's until this one
+// reads its own: the errors read beside it are not shown against it.
+test("shows no credential errors against a listing from a previous connection", async () => {
+  const fake = connectFakeClient();
+  const error = "The provider rejected this credential (HTTP 401). Replace the key or sign in again.";
+  fake.on("evener/instance/list", () => LIST);
+  fake.on("evener/auth/list", () => ({
+    providers: [
+      { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false, error },
+    ],
+  }));
+  render(<CredentialsSection sectionId="credentials" />);
+  await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
+  act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
+  expect(screen.getByRole("button", { name: /work/ }).textContent).not.toContain("Error");
 });
 
 describe("initial load", () => {
@@ -779,14 +829,9 @@ describe("credential verification", () => {
     expect(isRefused(within(workAgain).getByRole("button", { name: "Test credentials" }))).toBe(false);
   });
 
-  test.each([
-    ["success", "Credentials verified."],
-    ["missing", "No credentials are configured for this instance. Add a key or sign in first."],
-    ["auth_rejected", "The provider rejected these credentials. Replace the key or sign in again."],
-    ["endpoint_failure", "The provider endpoint could not be reached. Check the endpoint and network connection."],
-    ["configuration_failure", "Provider configuration could not be loaded. Check the instance settings."],
-    ["unsupported", "This provider does not support harmless credential verification."],
-  ] as const)("renders the safe %s status and message", async (status, message) => {
+  // The status-to-message table itself is pinned in credentialLabels.test.ts;
+  // this is the wiring that renders its result.
+  test("renders the safe status and message", async () => {
     const fake = connectFakeClient();
     const response = deferred<AuthTestResponse>();
     fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
@@ -795,10 +840,12 @@ describe("credential verification", () => {
     await screen.findByText(WORK.name);
     const inspector = await openSheet(userEvent.setup(), WORK.name);
     await userEvent.setup().click(within(inspector).getByRole("button", { name: "Test credentials" }));
-    response.resolve({ provider: WORK.name, status, message });
+    response.resolve({ provider: WORK.name, status: "missing", message: "raw provider message" });
 
     const statusNode = await screen.findByRole("status");
-    expect(statusNode.textContent).toBe(`${status}: ${message}`);
+    expect(statusNode.textContent).toBe(
+      "missing: No credentials are configured for this instance. Add a key or sign in first.",
+    );
   });
 
   test("does not render a supplied secret from a response message", async () => {
@@ -1191,6 +1238,22 @@ describe("single-open-editor invariant", () => {
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
   });
+
+  // An open API-key editor stops rendering if its instance disappears.
+  test("an API key dialog closes when a refreshed list removes its instance", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: /replace key/i }));
+    await screen.findByRole("dialog", { name: "Set API key for work" });
+
+    act(() => credentialsStore.setState({ instances: [PERSONAL] }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Set API key for work" })).toBeNull());
+  });
 });
 
 describe("OAuth start branches", () => {
@@ -1313,6 +1376,9 @@ describe("OAuth start branches", () => {
     await screen.findByText("personal");
     const user = userEvent.setup();
     const inspector = await openSheet(user, "personal");
+    // The stubbed `jest` global lets Testing Library's waitFor advance the fake
+    // clock instead of polling on real time.
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
     vi.useFakeTimers();
     const request = vi.spyOn(fake, "request");
     await act(async () => {
@@ -1323,7 +1389,7 @@ describe("OAuth start branches", () => {
       expect(request.mock.calls[requestIndex]?.[0]).toBe("evener/auth/device/start");
       await started.value;
     });
-    await vi.waitFor(() => expect(screen.getByText("AAAA-1111")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("AAAA-1111")).toBeTruthy());
 
     // Flow A expires.
     await advanceTime(1000);
@@ -1338,7 +1404,7 @@ describe("OAuth start branches", () => {
     });
 
     // Flow B starts fresh: its own code, NOT flow A's leftover expired state.
-    await vi.waitFor(() => expect(screen.getByText("BBBB-2222")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("BBBB-2222")).toBeTruthy());
     expect(screen.queryByText(/Code expired/)).toBeNull();
     expect(screen.getByRole("button", { name: /copy code/i })).toBeTruthy();
 
@@ -2254,6 +2320,82 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     expect(removeCalls).toEqual([]);
     expect(screen.getByRole("dialog", { name: "personal" })).toBeTruthy();
   });
+
+  test("clear failure shows error toast", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/logout", () => {
+      throw new Error("logout denied");
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    // WORK has a stored key → its sheet offers Clear.
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Clear" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Clear failed: Something went wrong.");
+    expect(screen.getByRole("dialog", { name: "Clear credentials" })).toBeTruthy();
+  });
+
+  test("clear stored key failure shows error toast", async () => {
+    const fake = connectFakeClient();
+    const SHADOWED = instance({
+      name: "shadowed",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      hasStoredFile: true,
+    });
+    fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/clear", () => {
+      throw new Error("clear denied");
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("shadowed");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "shadowed");
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Clear stored key failed: Something went wrong.");
+    expect(screen.getByRole("dialog", { name: "Clear stored key" })).toBeTruthy();
+  });
+
+  test("remove failure shows error toast", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", () => {
+      throw new Error("remove denied");
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await screen.findByText("Remove failed: Something went wrong.");
+    expect(screen.getByRole("dialog", { name: "Remove instance" })).toBeTruthy();
+  });
 });
 
 describe("credential dialogs against a moving endpoint", () => {
@@ -2756,4 +2898,34 @@ describe("rename from the sheet", () => {
     expect(screen.queryByRole("dialog", { name: "work2" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "work" })).toBeTruthy();
   });
+});
+
+test("open settings adopt provider-file repair and retain rows during invalid edits", async () => {
+  const fake = connectFakeClient();
+  const error = "providers.toml: invalid fixture edit; active configuration retained";
+  let listing: InstanceListResponse = {
+    instances: [],
+    availableProviders: [],
+    writesRefused: true,
+    diagnostics: [error],
+  };
+  fake.on("evener/instance/list", () => listing);
+  render(<CredentialsSection sectionId="credentials" fullEditor />);
+  await screen.findByText(error);
+  const add = () => screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement;
+  expect(add().disabled).toBe(true);
+  listing = LIST;
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await screen.findByText("work");
+  await waitFor(() => expect(add().disabled).toBe(false));
+  expect(screen.queryByText(error)).toBeNull();
+  listing = { ...LIST, writesRefused: true, diagnostics: [error] };
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await screen.findByText(error);
+  expect(screen.getByText("work")).toBeTruthy();
+  expect(add().disabled).toBe(true);
+  listing = LIST;
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await waitFor(() => expect(add().disabled).toBe(false));
+  expect(screen.queryByText(error)).toBeNull();
 });

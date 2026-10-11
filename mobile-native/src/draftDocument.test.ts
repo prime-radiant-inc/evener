@@ -40,25 +40,14 @@ describe("durable draft lifecycle", () => {
 		expect(repository.read(destination).unconfirmed).toBe("/goal objective");
 		expect(repository.read(destination).draft).toBe("");
 	});
-	it("checkpoints queue-only submission before dispatch and retains uncertainty across remount", async () => {
+	it("sends nothing for an empty draft", async () => {
 		const { document, repository, destination } = setup();
 		let calls = 0;
-		const operation = async (text: string) => {
+		await document.submit(async () => {
 			calls++;
-			expect(text).toBe("");
-			expect(repository.read(destination).unconfirmed).toBe("");
-			throw new Error("Connection closed before acknowledgement");
-		};
-		await document.submit(operation);
+			return true;
+		});
 		expect(calls).toBe(0);
-		await expect(document.submitWithQueue(operation)).rejects.toThrow();
-		expect(calls).toBe(1);
-		const restored = new DraftDocument(() => repository, destination);
-		expect(restored.getSnapshot().record.unconfirmed).toBe("");
-		await restored.submitWithQueue(operation);
-		expect(calls).toBe(1);
-		restored.dismiss();
-		await restored.submitWithQueue(async () => true);
 		expect(repository.read(destination).unconfirmed).toBeNull();
 	});
 	it("rejects a duplicate image identity without changing the existing draft", () => {
@@ -97,9 +86,7 @@ describe("durable draft lifecycle", () => {
 			document.addImage(second);
 			return true;
 		});
-		expect(
-			repository.read(destination).images?.map((image) => image.id),
-		).toEqual(["second"]);
+		expect(repository.read(destination).images?.map((image) => image.id)).toEqual(["second"]);
 		expect(() => repository.imageInputs(destination, [first])).toThrow();
 		document.removeImage("second");
 		expect(repository.read(destination)).toEqual({
@@ -129,30 +116,19 @@ describe("durable draft lifecycle", () => {
 		db.exec("PRAGMA query_only = OFF");
 		document.retry();
 		expect(document.getSnapshot().error).toBeNull();
-		expect(
-			repository.imageInputs(
-				destination,
-				repository.read(destination).images ?? [],
-			)[0]?.data,
-		).toBe("AQID");
+		expect(repository.imageInputs(destination, repository.read(destination).images ?? [])[0]?.data).toBe("AQID");
 	});
 
 	it("checkpoints image-only input before dispatch and retains it through uncertain recovery", async () => {
 		const { repository, destination } = setup();
 		const image = { id: "photo", marker: 1, mediaType: "image/png" };
-		repository.write(
-			destination,
-			{ draft: "", unconfirmed: null, images: [image] },
-			[{ ...image, data: "AQID" }],
-		);
+		repository.write(destination, { draft: "", unconfirmed: null, images: [image] }, [{ ...image, data: "AQID" }]);
 		const document = new DraftDocument(() => repository, destination);
 		let sent = false;
 		await document.submit(async (text, images) => {
 			sent = true;
 			expect(text).toBe("");
-			expect(images).toEqual([
-				{ marker: 1, mediaType: "image/png", data: "AQID" },
-			]);
+			expect(images).toEqual([{ marker: 1, mediaType: "image/png", data: "AQID" }]);
 			expect(repository.read(destination).unconfirmedImages).toEqual([image]);
 			return false;
 		});
@@ -172,11 +148,7 @@ describe("durable draft lifecycle", () => {
 	it("a structured answer preserves ordinary images and manual restore does not replace newer images", async () => {
 		const { repository, destination } = setup();
 		const image = { id: "photo", marker: 1, mediaType: "image/png" };
-		repository.write(
-			destination,
-			{ draft: "", unconfirmed: null, images: [image] },
-			[{ ...image, data: "AQID" }],
-		);
+		repository.write(destination, { draft: "", unconfirmed: null, images: [image] }, [{ ...image, data: "AQID" }]);
 		const document = new DraftDocument(() => repository, destination);
 		await document.submitText("answer", async () => false);
 		expect(repository.read(destination).images).toEqual([image]);
@@ -191,10 +163,7 @@ describe("durable draft lifecycle", () => {
 		const { document, repository, destination } = setup();
 		const input = "  draft\nwith unicode 🦋  ";
 		document.edit(input);
-		expect(
-			new DraftDocument(() => repository, destination).getSnapshot().record
-				.draft,
-		).toBe(input);
+		expect(new DraftDocument(() => repository, destination).getSnapshot().record.draft).toBe(input);
 	});
 
 	it("checkpoints before sending and preserves newer text when accepted", async () => {

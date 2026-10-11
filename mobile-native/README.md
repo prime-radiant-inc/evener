@@ -1,6 +1,9 @@
 # Evener native mobile
 
-**Scope update — 8 September 2026:** Jesse paused iPad and accessibility work. The immediate milestone is full iPhone functionality; preserve paused requirements and historical evidence. The [active checklist](../docs/design/mobile/ios-v1-remaining.md) governs current work and supersedes broader device/accessibility gates below.
+The delivery scope is full iPhone functionality. iPad and dedicated accessibility
+work are paused; preserve their requirements and historical evidence. The
+[active checklist](../docs/design/mobile/ios-v1-remaining.md) governs current work
+and supersedes broader device and accessibility gates below.
 
 A shared Expo / React Native client whose current release scope is iPhone v1.
 iPad work is paused. Android sources, build instructions and historical evidence
@@ -9,9 +12,24 @@ AppWire client and selected services/state modules. The native UI is in this
 directory; the old Tauri UI is not loaded or used as feature authority. Current
 web/server behavior defines scope.
 
+Shell-job output uses the shared lossless byte-page decoder for the existing
+latest-output screen. Its focused two-second rereads preserve prior successful
+output through transport failures. The displayed start and byte count come from
+the raw page; the server retention floor is a separate fact. This view requires
+the current AppWire protocol and adds no native history-paging UI. See the
+[job output contract](../docs/product/session-activity.md#job-output-pages).
+Its fixtures use the six raw-page fields: `offsetBytes`, `bytesReturned`,
+`totalBytes`, `retainedStartBytes`, `encoding` and `data`.
+
 The [current status](../docs/design/mobile/status.md), [remaining work](../docs/design/mobile/ios-v1-remaining.md) and [acceptance index](../docs/design/mobile/acceptance.md) distinguish implementation from current-artifact qualification. The full development plan and dated evidence remain on branch `live-concepts-plan2-integrate` at checkpoint `04ae937af`.
 
-Run `make test-native` from the repository root after installing native dependencies. It covers the app tests, shared-session tests and native TypeScript checks. The [build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS project generation and distribution prerequisites.
+Run `make test-native` from the repository root after installing native dependencies.
+It bundles the real iOS entry point through Metro, then runs app and shared-session
+tests, native TypeScript checks, script import checks and Biome. The
+[testing guide](../docs/developing-evener/testing.md#the-native-gate-bundles-the-app)
+explains why the bundle is required alongside tests and type checking. The
+[build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS
+project generation and distribution prerequisites.
 
 ## Run on simulators
 
@@ -51,9 +69,13 @@ npx expo export --platform ios
 ```
 
 The type check resolves shared headless sources against this app's installed
-dependencies, matching Metro's dependency ownership. Its aliases live in
-`tsconfig.check.json` because the React alias points to declarations only;
-Expo reads the main `tsconfig.json` when resolving runtime imports.
+dependencies, matching Metro's dependency ownership. AppWire package aliases
+live in both `tsconfig.json` and `tsconfig.check.json`: `tsx` scripts read the
+main configuration, while `npm run check` selects the latter explicitly. The
+check configuration also supplies type-check-only aliases, including React's
+declarations. Metro's runtime package resolution lives in `metro.config.js`.
+`npm run check:scripts` checks the script import graph without opening a hub
+connection; the iOS bundle gate checks the runtime resolver.
 
 The Android export remains available for deferred platform work with
 `npx expo export --platform android`.
@@ -67,16 +89,84 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+## Memory-refresh transcript updates
+
+Automatic index observations appear as standalone **Refreshed my memory** rows.
+They start folded at every detail level, including Full, with System events
+either on or off. General expansion defaults do not open them. Tapping shows
+scope, state, truncation and formatted content through the native Markdown
+renderer. Unavailable and revoked states stay visible while folded. A separate
+**Source** disclosure exposes the complete original text, including content the
+formatted view omits; malformed observations open as that text directly and do
+not block later valid observations.
+
+Explicit open and closed choices for the refresh and Source are independent.
+Both survive remounts and detail-level changes, scoped by hub, session and item;
+folding the refresh preserves its Source choice. Live and reloaded history use
+this same presentation. Web and native share payload validation. Memory tools
+and model context retain their separate owners. See the [memory guide](../docs/product/memory.md).
+The JavaScript tests and iOS Metro bundle check do not establish installed-iPhone
+touch behavior or narrow-layout wrapping; those require a current-source device
+or simulator smoke check.
+
+## Shared-notes transcript updates
+
+Internal snapshots fold under **Shared notes updated**. Chat hides them even
+with System events enabled; other levels follow that setting. Activity and Full
+keep snapshots folded until tapped. Expansion shows the complete literal text
+and is remembered per hub, session and item. Saved human-note rows remain visible
+at every level. See the [shared-notes guide](../docs/web-ui/shared-notes.md).
+
 The dated 8 September execution checkpoint remains in the development archive. Its simulator and controller results identify earlier artifacts; use the current acceptance index for the joined checkpoint journey.
 
+## Older-history recovery
+
+[`useOlderHistory`](src/session/useOlderHistory.ts) shares browse and Find demand
+through [`HistoryPaging`](../appwire-client/typescript/historyPaging.ts). Transient
+failures and unresolved reads use capped backoff without an attempt limit.
+[`historyMemory`](src/session/historyMemory.ts) retains pending intent per hub and
+session while a route is disposed; it holds no closed screen's store or service.
+Reopening the same binding resumes demand against the committed reader, including
+the query and saved match boundary needed to continue an older search. Find stays
+incomplete until a match or authoritative history end, with accurate permanent
+failure explanations.
+
+When several readers have left pending intent for the same session, committed
+reopening selects the latest detached intent and retires its detached predecessors.
+Readers that remain mounted keep their own demand and Find state.
+
+Closing Find and jumping live cancel only their corresponding consumer. Hub
+removal and confirmed new bindings retire old demand; settled or cancelled
+unobserved sessions are reclaimed. Existing conversation stores and reader-position
+restoration still own loaded rows, merging and reading anchors. This intent memory
+lasts for the app lifetime and adds no disk persistence.
+
 ## Current scope
+
+Assistant filename actions and document chips share the file-reference grammar.
+Authored HTML tags are literal text, so they do not suppress otherwise eligible
+filenames, including across paragraphs and table cells. Actual Markdown link
+destinations, opaque labels, fenced/indented code and Mermaid keep native Markdown
+rules even inside HTML-shaped blocks; inline-code filenames remain eligible.
+Web may instead display that block's Markdown syntax as literal text.
+Prose filenames use once-resolved Markdown entities: `docs/a&amp;b.md` opens
+`docs/a&b.md`, including in HTML-shaped prose. Backticked filenames stay literal,
+while explicit Markdown destinations keep their once-decoded entity/URI meaning
+and opaque labels. Prose and code never percent-decode filenames. Generated prose
+labels preserve that resolved meaning in the installed native parser.
+Recognition preserves the original response and binds actions to the owning
+conversation's current cwd, without reading files. Automated adapter/parser checks
+do not establish installed-device rendering or touch behavior.
 
 - The recent-session roster is bounded and has server-side search. Project
   navigation has paged catalogs, archived views, favorites and archive actions.
   Complete organization/pinning and management acceptance remain open.
 - Conversations render native Markdown and expandable tool/activity details,
-  images and a gallery. Image selection and durable draft attachments exist.
-  Rich-content, authenticated-image and accessibility qualification remain open.
+  images and a gallery. While a turn runs, the status line above the composer
+  shows its most recent nonblank tool-call intent; until one arrives, it keeps
+  the existing progress and status fallbacks. Image selection and durable draft
+  attachments exist. Rich-content, authenticated-image and accessibility
+  qualification remain open.
 - New session opens on the selected hub with recent project directories,
   harnesses, searchable models and compatible reasoning effort. Defaults defer
   to hub configuration. Opening text is preserved exactly; uncertain creation
@@ -93,14 +183,33 @@ The dated 8 September execution checkpoint remains in the development archive. I
   configuration/trust. These advertised operations are wired in source and await
   current-artifact workflow qualification. Full parity, upgrade/recovery and
   failure/lifecycle acceptance are unfinished; see the [acceptance ledger](../docs/design/mobile/acceptance.md).
+- Activity separates current work from independent Done delegate and Completed
+  background-job histories. All starts both histories closed; Done reveals every
+  terminal outcome, including failures, with neutral rows and truthful reasons.
+  Active descendants retain navigation and stop controls. Search narrows loaded
+  rows while chips keep authoritative counts, including unknown counts. The
+  binding carries loaded membership into its replacement shared store after
+  reconnect, so its existing paging owner restores later rows without a phone
+  retry loop. Visible end demand survives same-height closed-history pages;
+  changed rows/geometry, scrolling away and focus gate further demand, while
+  errors retain the shared backoff. Tests execute the installed native edge
+  latch with real paging and rendering. They cover identity and view intent; device geometry,
+  keyboard and VoiceOver remain separate qualification.
+- Board, project/location and pinned session rows show only running delegates
+  in their subagent chips. Settled failures have no visual or spoken count.
+  The session header keeps neutral Subagents access with the authoritative total,
+  or “count unknown” when only a delegate roster is available. A session's own
+  errors, current questions and approvals retain their attention and priority;
+  offline and stale-input rules remain unchanged.
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
   production responsiveness. Voice/barge-in is outside v1.
 
-The current candidate gate passes 718 native tests across 76 files and 673
-shared-session tests across seven files, plus strict TypeScript checks. These
-source checks do not establish a passing installed-app journey. See the current
-acceptance index for the required artifact, recovery and distribution checks.
+Run the native gate against the exact candidate being qualified and record its
+result with that revision. Passing automated tests, type checking and the Metro
+bundle establishes source and resolver coverage; installed-app journeys require
+separate evidence. See the current acceptance index for the required artifact,
+recovery and distribution checks.
 
 Earlier simulator screenshots and reader-restoration receipts, including source
 `7944778e0`, remain historical evidence in the preserved development branch.
@@ -121,6 +230,16 @@ and independent new sessions. Sessions with an opening prompt reply with explici
 labeled demonstration text and remain active until Stop. This is a scripted WebSocket boundary, not
 an Evener daemon or a model run. Its integration tests exercise the real shared
 client, services, stores, and notification handling.
+
+Typed activity pages retain at most 128 continuation snapshots in the playground.
+An evicted continuation reports a stale cursor, so the shared activity store
+refreshes only that collection and retains useful rows while it loads. Malformed
+cursors and requests for a different session, scope or resource remain invalid.
+
+With `EVENER_DEMO_FLEET`, the same hub answers the Board's pulse read
+(`evener/activity/read`, S5): one entry per live top-level session with its
+per-minute counts, running-subagent tally, quiet time and latest tool intent, so
+the demo Board draws real meters, subagent tallies and Quiet/May-be-stuck labels.
 
 ## Standalone simulator builds
 

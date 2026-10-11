@@ -31,7 +31,7 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 floors_file="${EVENER_COVFLOORS:-$repo_root/scripts/coverage/coverage-floors.txt}"
-modules=". agent llm auth envvars invariant identifier fuzz"
+modules=". agent llm auth envvars invariant identifier execsupport fuzz"
 tolerance="0.5"
 check=false
 bless=false

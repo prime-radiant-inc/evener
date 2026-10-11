@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -323,6 +324,9 @@ func validateProvider(ps providerSchema, where string) error {
 	if err := checkEnvRefs(ps.APIKey, where+".api_key"); err != nil {
 		return err
 	}
+	if err := checkCredentialHeaderNames(ps.CredentialHeaders, where); err != nil {
+		return err
+	}
 	for k, v := range ps.CredentialHeaders {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.credential_headers.%q", where, k)); err != nil {
 			return err
@@ -332,11 +336,34 @@ func validateProvider(ps providerSchema, where string) error {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
 			return err
 		}
+		if err := checkNoCommands(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
+			return err
+		}
 	}
 	if err := validateTransport(ps.transportSchema, where); err != nil {
 		return err
 	}
 	return validateCaps(ps.Caps, where)
+}
+
+// checkCredentialHeaderNames refuses two credential-header names that differ
+// only by case: header names are case-insensitive on the wire, so the
+// variants would collide into one header, while resolution picks a single
+// entry for the credential — one name, in one case, is the only consistent
+// shape.
+func checkCredentialHeaderNames(headers map[string]string, where string) error {
+	// Keyed on the folded name: byte order puts case variants apart when
+	// an unrelated name sorts between them, so adjacency cannot be the
+	// check. Sorted iteration keeps the refusal's two names deterministic.
+	seen := map[string]string{}
+	for _, k := range slices.Sorted(maps.Keys(headers)) {
+		folded := strings.ToLower(k)
+		if first, dup := seen[folded]; dup {
+			return fmt.Errorf("%s.credential_headers: %q and %q differ only by case; header names are case-insensitive, so one of them must go", where, first, k)
+		}
+		seen[folded] = k
+	}
+	return nil
 }
 
 func validateModel(ms modelSchema, where string) error {
@@ -348,6 +375,9 @@ func validateModel(ms modelSchema, where string) error {
 	}
 	for k, v := range ms.Headers {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
+			return err
+		}
+		if err := checkNoCommands(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
 			return err
 		}
 	}
@@ -366,6 +396,9 @@ func validateTransport(ts transportSchema, where string) error {
 	}
 	for k, v := range ts.Vars {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.vars.%s", where, k)); err != nil {
+			return err
+		}
+		if err := checkNoCommands(v, fmt.Sprintf("%s.vars.%s", where, k)); err != nil {
 			return err
 		}
 	}

@@ -37,19 +37,20 @@ func isLifecycleRetiringError(err error) bool {
 	return data.EvenerErrorInfo == appwire.ErrorActionUnavailable && data.LifecycleReason == "retiring"
 }
 
-// retirementAdmissionRecoveryError re-checks the per-action recovery fences
-// for a request that was already admitted and is now in flight: the
-// connection-sequence fence guards fresh actions on a fenced connection,
-// while an admitted action's own authority is its admission epoch.
-func retirementAdmissionRecoveryError(cfg hubcore.WebConfig, id string, epoch uint64) error {
-	state := sessionRecoveryState(cfg, "", id)
-	if state.Stopping > 0 || state.ResumeRequired {
-		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
-	}
-	if state.Epoch != epoch {
-		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery canceled this pending action; submit it again")}
-	}
-	return nil
+// retirementAdmissionRecoveryError re-checks the per-action recovery fences for
+// a request that was already admitted and is now in flight. The state fence is
+// sessionActionRecoveryError's, read with the SAME request context: an admitted
+// turn/start whose foldable resume this retirement path is completing is
+// admitted by the send-side carve-out (sessionAdmitsResumeRequired), so this
+// re-check must not refuse it on ResumeRequired alone. The request context and
+// its (ref, threadID) carry both the marker the carve-out reads and the identity
+// it matches against. What it deliberately leaves out is the connection-sequence
+// fence, which guards fresh actions on a fenced connection rather than one
+// already in flight. Every other refusal is unchanged: a Stop drain, an
+// unconfirmed force-stop exit, a stale admission epoch, and a request without
+// the turn/start marker all keep their fence.
+func retirementAdmissionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
+	return sessionStateRecoveryError(ctx, cfg, ref, threadID, epoch)
 }
 
 // sameDaemonIdentity compares the process identity of two rendezvous entries
@@ -67,7 +68,9 @@ func sameDaemonIdentity(a, b rendezvous.Entry) bool {
 // unreachability — is the only success: an open failure, a wait failure, an
 // incomplete roster scan, or an owner the roster still confirms all yield the
 // retryable lifecycle error (or the caller's context error), and no spawn is
-// attempted on this path.
+// attempted on this path. The owner is opened as a Retiring target: it
+// releases its session API log before it exits, and that window is exactly
+// when a refused turn/start lands here.
 func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezvous.Entry) error {
 	controller := cfg.DaemonProcesses
 	if controller == nil {
@@ -86,6 +89,7 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 		SessionID: sessionID,
 		StateDir:  entry.StateDir,
 		StartedAt: entry.StartedAt,
+		Retiring:  true,
 	})
 	if err != nil && !errors.Is(err, daemonprocess.ErrExited) {
 		if ctx.Err() != nil {
@@ -141,7 +145,7 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 		return appwire.LifecycleUnavailable("retiring")
 	}
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, params.ThreadID)
-	if err := retirementAdmissionRecoveryError(cfg, sessionID, epoch); err != nil {
+	if err := retirementAdmissionRecoveryError(ctx, cfg, params.Ref, params.ThreadID, epoch); err != nil {
 		return err
 	}
 	if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
@@ -214,7 +218,7 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 		return err
 	}
 	for _, id := range aliases {
-		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
+		if err := retirementAdmissionRecoveryError(ctx, cfg, "", id, epochs[id]); err != nil {
 			return err
 		}
 	}

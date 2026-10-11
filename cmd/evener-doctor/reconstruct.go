@@ -421,6 +421,11 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			return fail(err)
 		}
 		turn := schema.Turn{Kind: schema.TurnKind(m.Kind), Timestamp: stamp}
+		if turn.Kind.TranscriptOnly() {
+			// Written for the history projection, never conversation: the
+			// source snapshot keeps the record and the transcript omits it.
+			continue
+		}
 		if turn.Kind == schema.TurnSteering {
 			turn.SteeringSource = m.PromptSource
 		}
@@ -436,7 +441,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			toolRoundOrdinal = m.Ordinal
 		}
 		switch turn.Kind {
-		case schema.TurnUserInput, schema.TurnSteering, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext:
+		case schema.TurnUserInput, schema.TurnSteering, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext, schema.TurnMemoryContext:
 			turn.Message.Role = llm.RoleUser
 			if turn.Kind == schema.TurnUserInput || (turn.Kind == schema.TurnSteering && m.PromptSource == "user") {
 				turn.ClientMutationID = mutations[m.StableID]
@@ -554,13 +559,13 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		for _, c := range calls[m.ID] {
 			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: c.ID, Name: c.Name, Arguments: json.RawMessage(c.Arguments)}})
 		}
-		entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: turn})
+		entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: turn, MachineryFlagged: true})
 	}
 	if len(entries) == 0 || h.SystemPrompt == "" {
 		return fail(errors.New("archive lacks conversation entries or initial system prompt"))
 	}
 	note := fmt.Sprintf("[SESSION RECONSTRUCTION]\nThis session was reconstructed from the AgentsView archive through %s. Later conversation may be missing; metadata was last updated %s. %d tool-result bodies were not retained and carry explicit unavailable notices. The original live processes were interrupted; archived claims about running processes, jobs, delegates, or test status are historical evidence only. Recheck the working tree and current state before continuing. Media and provider replay signatures were not retained. Full recovery provenance is in the staged report.json.", source.EndedAt, meta.UpdatedAt.Format(time.RFC3339Nano), report.MissingToolOutputs)
-	entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User(note), Timestamp: time.Now().UTC()}})
+	entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), MachineryFlagged: true, Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.UserMachinery(note), Timestamp: time.Now().UTC()}})
 	return h, entries, nil
 }
 
@@ -572,6 +577,12 @@ func validArchivedResultStatus(toolName, status string) bool {
 		// AgentsView uses delegate lifecycle as the status of successful calls
 		// to these tools. A failed delegate is not a failed status query.
 		return toolName == "delegate" || toolName == "delegate_send" || toolName == "job_status"
+	case "command_exited_nonzero", "command_killed":
+		// The command-outcome statuses are shell-job statuses: a job_status
+		// result may carry one (the supervised command exited nonzero or was
+		// signalled, still a successful query about a finished job), but a
+		// delegate's own lifecycle never does.
+		return toolName == "job_status"
 	default:
 		return false
 	}

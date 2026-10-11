@@ -66,13 +66,22 @@ func FromError(err error) Info {
 	if err == nil {
 		return evenerFailure()
 	}
-	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+	if ce, ok := errors.AsType[*llm.ConfigurationError](err); ok {
+		if errors.Is(ce, llm.ErrSignInRequired) {
+			return signInRequiredFailure()
+		}
 		return evenerConfiguration()
 	}
 	// The typed check comes first: an exhausted allowance is recognized from the
 	// error's own category rather than from wording that may vary by provider.
 	if llm.Kind(err) == llm.KindQuotaExceeded {
-		return usageLimitFailure(err.Error())
+		// Only a reset instant the llm layer parsed into the error's own fields
+		// licenses reading a window from the rendered message: the message begins
+		// with provider text that may echo a "resets … )" fragment of its own.
+		if _, ok := llm.UsageLimitResetAt(err); ok {
+			return usageLimitFailure(err.Error())
+		}
+		return usageLimitFailure("")
 	}
 	var llmErr llm.Error
 	if errors.As(err, &llmErr) && (strings.TrimSpace(llmErr.Provider()) != "" || llmErr.StatusCode() != 0 || strings.TrimSpace(llmErr.ErrorCode()) != "") {
@@ -159,6 +168,18 @@ func evenerConfiguration() Info {
 	}
 }
 
+// signInRequiredFailure is the guidance for a provider instance whose stored
+// credential is absent or whose token endpoint refused to refresh it. The
+// remedy is to sign in again, not to check the hub's launch configuration. The
+// message on the underlying error names the instance and the login command.
+func signInRequiredFailure() Info {
+	return Info{
+		Source: SourceProvider,
+		Title:  "Sign-in required",
+		Hint:   "This provider instance's sign-in has expired or is missing. Sign in to that provider again, then retry the turn.",
+	}
+}
+
 func providerFailure() Info {
 	return Info{
 		Source: SourceProvider,
@@ -179,7 +200,7 @@ var providerStatusPrefix = regexp.MustCompile(`\berror \(status=\d+\)`)
 // usageLimitFailure builds the guidance for an exhausted plan or quota. The
 // reset window is already rendered into message by the llm layer (relative and
 // absolute), so the hint repeats the message's tail rather than reformatting a
-// time it would have to re-parse.
+// time it would have to re-parse. An empty message contributes no window.
 func usageLimitFailure(message string) Info {
 	hint := "This account's model allowance is spent. Sending the turn again will fail the same way."
 	if window := resetWindowFrom(message); window != "" {
@@ -194,12 +215,15 @@ func usageLimitFailure(message string) Info {
 }
 
 // resetWindowFrom lifts the "resets in 3d 17h (Tue Jul 28 10:02 PDT)" clause out
-// of an already-formatted usage-limit message, returning "" when absent.
+// of an already-formatted usage-limit message, returning "" when absent. The llm
+// layer appends its window as the message's final clause, so the last "resets "
+// is the one Evener rendered; an earlier occurrence may be provider text.
 func resetWindowFrom(message string) string {
-	_, after, found := strings.Cut(message, "resets ")
-	if !found {
+	start := strings.LastIndex(message, "resets ")
+	if start < 0 {
 		return ""
 	}
+	after := message[start+len("resets "):]
 	// The clause ends at the close of the parenthesized absolute time.
 	if end := strings.Index(after, ")"); end >= 0 {
 		return strings.TrimSpace(after[:end+1])

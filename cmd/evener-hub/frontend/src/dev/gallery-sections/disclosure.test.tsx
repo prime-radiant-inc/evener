@@ -1,8 +1,6 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import { expect, test } from "vitest";
 import DisclosureGallerySection from "./disclosure";
-
-afterEach(cleanup);
 
 test("each ThemeFlip pane shows disabled collapsed store and open controlled disclosures", () => {
   render(<DisclosureGallerySection />);

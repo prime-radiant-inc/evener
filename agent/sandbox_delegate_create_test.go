@@ -21,9 +21,10 @@ func delegateTestClient(step func(llm.Request) llm.Response) *llm.Client {
 	return client
 }
 
-// sandboxScratchDirs lists the per-session sandbox scratch dirs (evener-sandbox-*)
-// directly under base — the leak surface for a per-delegate sandbox whose spawn
-// fails after EnableSandbox provisioned one.
+// sandboxScratchDirs lists the session scratch dirs under base: disposable ones
+// (evener-sandbox-*) directly under it and named ones (evener-scratch-<root>/<id>)
+// inside a root's tree. It is the leak surface for a per-delegate sandbox whose
+// spawn fails after EnableSandbox provisioned one.
 func sandboxScratchDirs(t *testing.T, base string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(base)
@@ -32,8 +33,20 @@ func sandboxScratchDirs(t *testing.T, base string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "evener-sandbox-") {
+		switch {
+		case !e.IsDir():
+		case strings.HasPrefix(e.Name(), "evener-sandbox-"):
 			out = append(out, e.Name())
+		case strings.HasPrefix(e.Name(), "evener-scratch-"):
+			sessions, err := os.ReadDir(filepath.Join(base, e.Name()))
+			if err != nil {
+				t.Fatalf("read scratch tree %q: %v", e.Name(), err)
+			}
+			for _, sess := range sessions {
+				if sess.IsDir() {
+					out = append(out, filepath.Join(e.Name(), sess.Name()))
+				}
+			}
 		}
 	}
 	return out
@@ -78,6 +91,7 @@ func prepareWithDelegateSandbox(t *testing.T, s *Session, lane string, pol *sand
 // an OFF parent that requests its own restricted box gets an environment enforced
 // at its lane.
 func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts) // parent env is off
@@ -114,6 +128,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
 // the delegate's own SessionScratchDir into the terminal packet metadata, the
 // same absolute path the sandboxed child actually has as $EVENER_SCRATCH_DIR.
 func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
@@ -141,6 +156,7 @@ func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
 // extra writable root does NOT leak onto it — the delegate's box is a pure function
 // of ITS OWN policy.
 func TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
@@ -164,6 +180,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent(t *testin
 // than its parent is refused with a legible invalid_request error, and the refusal
 // happens BEFORE minting any IDs (no delegate id is returned).
 func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
@@ -200,7 +217,6 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	s := newSession(t, withClient(c), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-leak-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -216,6 +232,9 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 
 	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
 	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, &sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: new(true)})
+	// The create path reserves the child's ID first, so its scratch is named
+	// in the root's tree; a child that never existed must not keep one there.
+	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, "02wMz5Txv1C3Hut0M8GCeB")
 
 	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
 	if err == nil {
@@ -277,13 +296,10 @@ func TestSpawnAgent_PerDelegateSandboxCleansScratchWhenLaunchIsRejected(t *testi
 	}
 }
 
-// TestParentClose_RetainsPerDelegateSandboxScratch: a completed+retained
-// per-delegate-sandbox delegate owns a FRESH env whose EnableSandbox provisioned a
-// scratch dir. At PARENT close, retained children are torn down via close(false),
-// which skips env cleanup (children historically shared the parent env), so the
-// sandboxed child's scratch must be retained and its live lease released. Not
-// parallel: isolates TMPDIR to observe the scratch base.
-func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
+// A per-delegate-sandbox delegate owns a fresh env whose EnableSandbox mints its
+// scratch in the root's tree. Closing an unarchived parent keeps that scratch.
+// Not parallel: isolates TMPDIR to observe the scratch base.
+func TestParentCloseKeepsPerDelegateSandboxScratch(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 
@@ -293,7 +309,6 @@ func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-close-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -309,27 +324,30 @@ func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)
 	}
-	// The sandboxed child provisioned a scratch dir.
-	if got := sandboxScratchDirs(t, isolated); len(got) == 0 {
+	// The sandboxed child provisioned a scratch dir named in the parent's tree.
+	got := sandboxScratchDirs(t, isolated)
+	if len(got) == 0 {
 		t.Fatalf("expected a per-delegate sandbox scratch dir after spawn, found none in %s", isolated)
 	}
-
-	// Closing the parent must retain the child's owned scratch for the handoff.
-	s.Close()
-	left := sandboxScratchDirs(t, isolated)
-	if len(left) == 0 {
-		t.Errorf("parent close must retain the per-delegate-sandbox scratch for manual cleanup")
-	}
-	for _, name := range left {
-		if err := os.RemoveAll(filepath.Join(isolated, name)); err != nil {
-			t.Errorf("manual cleanup of retained scratch %q: %v", name, err)
+	tree := "evener-scratch-" + s.id + string(filepath.Separator)
+	for _, dir := range got {
+		if !strings.HasPrefix(dir, tree) {
+			t.Errorf("delegate scratch %s is outside the root's tree %s", dir, tree)
 		}
+	}
+
+	// Closing an unarchived parent keeps the child's scratch: only archiving the
+	// root removes the tree.
+	s.Close()
+	if left := sandboxScratchDirs(t, isolated); !slices.Equal(left, got) {
+		t.Errorf("parent close changed the per-delegate scratch: before %v, after %v", got, left)
 	}
 }
 
 // TestSandboxPromptLine: an unsandboxed env sources no environment sandbox line; a
 // sandboxed env sources the mode + network line.
 func TestSandboxPromptLine(t *testing.T) {
+	t.Parallel()
 	if line := sandboxPromptLine(newSession(t).currentEnv()); line != "" {
 		t.Errorf("an unsandboxed env must have no sandbox line, got %q", line)
 	}
@@ -354,6 +372,7 @@ func TestSandboxPromptLine(t *testing.T) {
 // parent box" — this test instead exercises the real EnableSandbox path so a
 // Wrapper (and its real, on-disk scratch dir) exists.
 func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, root)
@@ -380,6 +399,7 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 }
 
 func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	net := true
 	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
@@ -406,9 +426,6 @@ func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
 	}
 	if !strings.Contains(got, "Read-only delegates may write only inside this scratch directory; all other writes are denied.") {
 		t.Fatalf("read-only prompt line must explain its write boundary: %q", got)
-	}
-	if !strings.Contains(got, "In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual.") {
-		t.Fatalf("sandbox prompt line must explain the handoff contract: %q", got)
 	}
 }
 
@@ -486,7 +503,6 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	})), withDir(root), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			noSyncJobStore:  true,
@@ -548,13 +564,13 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 // (mode + network) in the delegate result so the parent can verify the child's
 // actual confinement; an unsandboxed delegate omits the key.
 func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
 	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-echo-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -617,6 +633,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 // EnableSandbox would sandbox (or re-box) the SHARED parent env mid-session. Assert
 // the child gets the requested box AND the parent env is untouched.
 func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	c := llm.NewClient()
@@ -626,7 +643,6 @@ func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParen
 	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-noiso-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -683,6 +699,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParen
 // under an unsandboxed parent is refused with a legible error (not silently
 // dropped), before any IDs are minted.
 func TestCreateDelegate_SandboxNetWithoutModeRefusedEarly(t *testing.T) {
+	t.Parallel()
 	_, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts) // parent env is off

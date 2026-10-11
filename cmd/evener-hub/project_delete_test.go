@@ -315,11 +315,11 @@ func TestProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	pins := hubcore.NewPinSectionStore(dbPath)
-	section, _, err := pins.CreateOrReuseAndAssign("Research", deletedID, timeNowForTest())
+	section, _, err := pins.CreateOrReuseAndAssign("Research", "", deletedID, timeNowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := pins.Assign(section.ID, skippedID, timeNowForTest()); err != nil {
+	if _, _, err := pins.Assign(section.ID, "", skippedID, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: pins, Roster: hubcore.NewRosterWithEntries()})
@@ -341,10 +341,10 @@ func TestProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := assignments[deletedID]; ok {
+	if _, ok := assignments[hubcore.SessionPinKey("", deletedID)]; ok {
 		t.Fatalf("deleted assignment survived: %+v", assignments)
 	}
-	if _, ok := assignments[skippedID]; !ok {
+	if _, ok := assignments[hubcore.SessionPinKey("", skippedID)]; !ok {
 		t.Fatalf("skipped assignment removed: %+v", assignments)
 	}
 }
@@ -367,7 +367,7 @@ func TestProjectDeleteReportsPinStoreCleanupError(t *testing.T) {
 		t.Fatal(err)
 	}
 	pins := hubcore.NewPinSectionStore(dbPath)
-	if _, _, err := pins.CreateOrReuseAndAssign("Research", webTestSessionID, timeNowForTest()); err != nil {
+	if _, _, err := pins.CreateOrReuseAndAssign("Research", "", webTestSessionID, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 	pins.SetFs(failingMkdirAllFS{Fs: afero.NewOsFs(), err: errors.New("forced pin cleanup failure")})
@@ -1798,7 +1798,7 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	assertProjectDeleteDecisionAbsent(t, dbPath, "project", project.ID)
 }
 
-func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t *testing.T) {
+func TestProjectDeleteDoesNotScrubProjectRowsWhenPastIndexNoLongerHasTheSessions(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -1834,20 +1834,14 @@ func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t
 
 	inputs := &hubcore.InputsVersion{}
 	past.SetOnChange(inputs.Bump)
-	oldBuild := hubBuildNavigationTree
-	interleaveObserved := false
-	hubBuildNavigationTree = func(metas []schema.SessionMeta, live []hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, projects map[string]identifier.Project) hubcore.Tree {
-		tree := oldBuild(metas, live, decisions, projects)
-		if err := os.Remove(filepath.Join(stateDir, "sessions", sessionID+".meta.json")); err != nil {
-			t.Fatalf("remove session metadata during snapshot interleave: %v", err)
-		}
-		if _, err := past.Rebuild(); err != nil {
-			t.Fatalf("rebuild during snapshot interleave: %v", err)
-		}
-		interleaveObserved = true
-		return tree
+	// The session's metadata is removed and the index rebuilt after the
+	// project was last seen, so the delete set is empty.
+	if err := os.Remove(filepath.Join(stateDir, "sessions", sessionID+".meta.json")); err != nil {
+		t.Fatalf("remove session metadata: %v", err)
 	}
-	t.Cleanup(func() { hubBuildNavigationTree = oldBuild })
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatalf("rebuild past index: %v", err)
+	}
 
 	web := NewWebServer(hubcore.WebConfig{
 		Past:     past,
@@ -1861,9 +1855,6 @@ func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t
 		WorkingDir: project.CanonicalPath,
 	}); err != nil {
 		t.Fatalf("dispatch project delete: %v", err)
-	}
-	if !interleaveObserved {
-		t.Fatal("snapshot/rebuild interleave did not execute")
 	}
 	assertArchiveDecisionPresent(t, archive, "session", sessionID, true)
 	assertArchiveDecisionPresent(t, archive, "project", project.ID, true)

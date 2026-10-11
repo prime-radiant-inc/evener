@@ -20,6 +20,7 @@ import (
 // (job_watch.go lines 1617-1630): nil cfg, empty pending, receiver mismatch,
 // and a matching pending key.
 func TestCovWatchConfigHasPendingMatchingKey(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// nil cfg.
@@ -75,6 +76,7 @@ func TestCovWatchConfigHasPendingMatchingKey(t *testing.T) {
 // TestCovRememberUnpersistedTerminalPendingWatchSend covers
 // rememberUnpersistedTerminalPendingWatchSend (job_watch.go lines 3432-3452).
 func TestCovRememberUnpersistedTerminalPendingWatchSend(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// nil cfg — no-op.
@@ -132,6 +134,7 @@ func TestCovRememberUnpersistedTerminalPendingWatchSend(t *testing.T) {
 // TestCovFinishStableWatchSettlementRetry covers
 // finishStableWatchSettlementRetry (job_watch.go lines 3649-3653).
 func TestCovFinishStableWatchSettlementRetry(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.stableWatchSettlementRetrying = true
 	jm.finishStableWatchSettlementRetry()
@@ -143,6 +146,7 @@ func TestCovFinishStableWatchSettlementRetry(t *testing.T) {
 // TestCovRecordWatchSendPending covers recordWatchSendPending
 // (job_watch.go lines 3814-3818): the retained runtime-state transition.
 func TestCovRecordWatchSendPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// Install a live watch so we can record a pending send against it.
@@ -194,6 +198,7 @@ func TestCovRecordWatchSendPending(t *testing.T) {
 // TestCovRemoveRuntimePendingWatchSend covers removeRuntimePendingWatchSend
 // (job_watch.go lines 3851-3860).
 func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// No watches — should be a no-op.
@@ -226,6 +231,7 @@ func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
 // TestCovChildResumable covers childResumable (job_watch.go lines 4406-4409)
 // and directStableDelegateForChildSession (lines 4411-4421).
 func TestCovChildResumable(t *testing.T) {
+	t.Parallel()
 	// nil session / no controller — returns false.
 	s := &Session{}
 	if s.childResumable("child_1") {
@@ -252,6 +258,7 @@ func TestCovChildResumable(t *testing.T) {
 // TestCovWatchKeyMatchesClearRequest covers all branches of
 // watchKeyMatchesClearRequest (job_watch.go lines 1473-1487).
 func TestCovWatchKeyMatchesClearRequest(t *testing.T) {
+	t.Parallel()
 	candidate := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "caller", ReceiverSessionID: "r1", ReceiverDelegateID: "d1"}
 
 	// Exact match.
@@ -313,6 +320,7 @@ func TestCovWatchKeyMatchesClearRequest(t *testing.T) {
 // site that has bumped conditionFires just before, so the test drives that
 // counter the same way.
 func TestCovRecordWatchDeliveryLocked(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// nil cfg — returns false.
@@ -354,6 +362,7 @@ func TestCovRecordWatchDeliveryLocked(t *testing.T) {
 // TestCovWatchKeyForConfigLocked covers watchKeyForConfigLocked
 // (job_watch.go lines 1528-1535).
 func TestCovWatchKeyForConfigLocked(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// Empty watches — not found.
@@ -394,6 +403,7 @@ func TestCovWatchKeyForConfigLocked(t *testing.T) {
 // TestCovPruneWatchedTargetWatchesLocked covers pruneWatchedTargetWatchesLocked
 // (job_watch.go lines 1641-1655).
 func TestCovPruneWatchedTargetWatchesLocked(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// No watches — returns nil.
@@ -438,6 +448,7 @@ func TestCovPruneWatchedTargetWatchesLocked(t *testing.T) {
 
 // TestCovInspectWatchByID covers inspectWatchByID (job_watch.go lines 1960-1979).
 func TestCovInspectWatchByID(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// Not found.
@@ -487,6 +498,7 @@ func TestCovInspectWatchByID(t *testing.T) {
 
 // TestCovLiveWatchSummaries covers liveWatchSummaries (job_watch.go lines 2040-2064).
 func TestCovLiveWatchSummaries(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// No watches — empty result.
@@ -542,6 +554,7 @@ func TestCovLiveWatchSummaries(t *testing.T) {
 // (job_watch.go lines 3892-3908): settling a key, settling with higher seq,
 // and the settled-order cap eviction.
 func TestCovSettleWatchSendLocked(t *testing.T) {
+	t.Parallel()
 	cfg := &watchConfig{}
 
 	// Settle key with seq 1.
@@ -597,6 +610,7 @@ func TestCovSettleWatchSendLocked(t *testing.T) {
 // TestCovResolveWatchSendTarget covers resolveWatchSendTarget
 // (job_watch.go lines 4633-4643).
 func TestCovResolveWatchSendTarget(t *testing.T) {
+	t.Parallel()
 	// Non-watched alias — returned as-is.
 	got, err := resolveWatchSendTarget("caller", "job_1")
 	if err != nil || got != "caller" {
@@ -625,6 +639,7 @@ func TestCovResolveWatchSendTarget(t *testing.T) {
 // TestCovHasPendingWatchSends covers hasPendingWatchSends
 // (job_watch.go lines 4614-4631).
 func TestCovHasPendingWatchSends(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// No watches, no terminal flush — false.
@@ -652,6 +667,7 @@ func TestCovHasPendingWatchSends(t *testing.T) {
 // TestCovWatchSendTokenNotification covers watchSendTokenNotification
 // (job_watch.go lines 375-389).
 func TestCovWatchSendTokenNotification(t *testing.T) {
+	t.Parallel()
 	state := jobstore.WatchSendState{
 		Key: jobstore.WatchSendKey{
 			ResolvedWatchedIdentity: "job_watched",
@@ -690,6 +706,7 @@ func TestCovWatchSendTokenNotification(t *testing.T) {
 
 // TestCovJobManagerForToken covers jobManagerForToken (job_watch.go lines 392-406).
 func TestCovJobManagerForToken(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	s := &Session{jobManager: jm}
 
@@ -721,6 +738,7 @@ func TestCovJobManagerForToken(t *testing.T) {
 // TestCovResolveWatchSendToken covers resolveWatchSendToken
 // (job_watch.go lines 410-426).
 func TestCovResolveWatchSendToken(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	s := &Session{jobManager: jm}
 
@@ -744,6 +762,7 @@ func TestCovResolveWatchSendToken(t *testing.T) {
 
 // TestCovWithSelfInfluence covers withSelfInfluence (job_watch.go lines 347-350).
 func TestCovWithSelfInfluence(t *testing.T) {
+	t.Parallel()
 	d := watchSendDelivery{}
 	c := selfInfluence{self: true, gradientDepth: 3, fuseDepth: 5, truncated: true}
 	d = d.withSelfInfluence(c)
@@ -755,6 +774,7 @@ func TestCovWithSelfInfluence(t *testing.T) {
 // TestCovAppendWatchFrameJobRead covers appendWatchFrameJobRead
 // (job_watch.go lines 4693-4701).
 func TestCovAppendWatchFrameJobRead(t *testing.T) {
+	t.Parallel()
 	// Empty frame — returned as-is.
 	if got := appendWatchFrameJobRead("", "job_1"); got != "" {
 		t.Fatalf("empty frame should return empty, got %q", got)
@@ -793,6 +813,7 @@ func (c waitStartedClock) NewTimer(d time.Duration) clockpkg.Timer {
 // TestCovWaitForJobDone covers waitForJobDone (session_tools_jobs.go lines 1902-1917).
 // It synchronizes on timer creation to prove the wait begins before completion.
 func TestCovWaitForJobDone(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// Job not in running — returns true immediately (already done).
@@ -830,6 +851,7 @@ func TestCovWaitForJobDone(t *testing.T) {
 
 // TestCovWaitForJobDone_ContextCancel covers the context cancellation path.
 func TestCovWaitForJobDone_ContextCancel(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	// Create a running job that never finalizes.
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
@@ -856,6 +878,7 @@ func TestCovWaitForJobDone_ContextCancel(t *testing.T) {
 
 // TestCovProjectJobRecord covers projectJobRecord (session_tools_jobs.go lines 1930-1932).
 func TestCovProjectJobRecord(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	s := &Session{jobManager: jm, clock: jm.clock}
 	rec := &jobstore.JobRecord{
@@ -875,6 +898,7 @@ func TestCovProjectJobRecord(t *testing.T) {
 // TestCovJobToolRegisterFuncRegister covers jobToolRegisterFunc.Register
 // (session_tools_jobs.go lines 69-70).
 func TestCovJobToolRegisterFuncRegister(t *testing.T) {
+	t.Parallel()
 	called := false
 	f := jobToolRegisterFunc(func(rt tool.RegisteredTool) error {
 		called = true

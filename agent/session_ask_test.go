@@ -171,7 +171,7 @@ func TestAskUser_InvisibleNonInteractive(t *testing.T) {
 // TestChildRegistryKeepsDelegateWithAllowance uses) never sees ask_user.
 func TestAskUser_InvisibleForSubagent(t *testing.T) {
 	t.Parallel()
-	cfg := SessionConfig{NoProjectPrompts: true}
+	cfg := SessionConfig{}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
 	cfg.spawn.delegationAllowance = 1
@@ -201,7 +201,7 @@ func TestAskUser_RestoredSubagentStaysInvisible(t *testing.T) {
 		ProfileID:  "openai",
 		Model:      "gpt-5.2",
 		IsSubagent: true,
-		Config:     (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:     (SessionConfig{}).toSnapshot(),
 	}
 	// restoreCfg.spawn intentionally left zero: the empty-carrier case.
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
@@ -673,12 +673,11 @@ func TestAskUser_DeniedOrInvalidOnlyAskDoesNotEndTurn(t *testing.T) {
 	if strings.TrimSpace(out) != "Proceeding without the clarifying question." {
 		t.Fatalf("ProcessInput returned %q, want the round-2 communicate message", out)
 	}
-	// Inbox semantics (attention-status-model v5): round 2's communicate is a
-	// clean, output-producing completion with nothing else in flight, so it
-	// re-arms awaiting on its own — unrelated to the invalid ask, which posted
-	// nothing (askPendingCount below is the discriminator that proves that).
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state = %q, want %q", got, SessionAwaiting)
+	// Round 2's communicate is a plain reply, so the session rests idle:
+	// the invalid ask posted nothing (askPendingCount below is the
+	// discriminator that proves that).
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q", got, SessionIdle)
 	}
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("askPendingCount = %d, want 0 (the invalid call posts nothing)", got)
@@ -741,13 +740,12 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 	if strings.TrimSpace(out) != "Proceeding without the question." {
 		t.Fatalf("ProcessInput returned %q, want the round-2 communicate message", out)
 	}
-	// Inbox semantics (attention-status-model v5): round 2's communicate is a
-	// clean, output-producing completion with nothing else in flight, so it
-	// re-arms awaiting on its own. What this test actually guards — that a
-	// deny alone does not end the turn early, at the ask boundary — is proven
-	// above by askPendingCount==0 and requests==2 (round 2 ran at all).
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state = %q, want %q (a deny alone must not end the turn AT THE ASK BOUNDARY; round 2's own communicate legitimately re-arms awaiting)", got, SessionAwaiting)
+	// Round 2's communicate is a plain reply, so the session rests idle.
+	// What this test actually guards — that a deny alone does not end the
+	// turn early, at the ask boundary — is proven above by askPendingCount==0
+	// and requests==2 (round 2 ran at all).
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q (a deny alone must not end the turn AT THE ASK BOUNDARY; round 2's plain reply rests idle)", got, SessionIdle)
 	}
 }
 
@@ -813,14 +811,13 @@ func TestAskUser_EntryGateRefusesNotificationWake(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
-	// Inbox semantics (attention-status-model v5): the drained notification
-	// turn runs last within this ProcessInput call and is itself a clean,
-	// output-producing completion ("notification ack") with nothing else in
-	// flight, so it re-arms awaiting on its own. What this test guards — the
-	// notification actually drained instead of staying stuck — is proven by
-	// requests==3 and peekNotifications==0 below, not by the raw rest state.
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own clean completion re-arms awaiting)", got, SessionAwaiting)
+	// The drained notification turn runs last within this ProcessInput call
+	// and is itself a plain completion ("notification ack"), so it rests
+	// idle. What this test guards — the notification actually drained
+	// instead of staying stuck — is proven by requests==3 and
+	// peekNotifications==0 below, not by the raw rest state.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own plain completion rests idle)", got, SessionIdle)
 	}
 	if got := len(f.Requests()); got != 3 {
 		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
@@ -844,7 +841,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	}
 	sess := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withAdapter(f),
 	)
 	wakes := make(chan struct{}, 2)
@@ -1015,15 +1012,13 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
-	// Inbox semantics (attention-status-model v5): the drained notification
-	// turn runs last within this ProcessInput call and is itself a clean,
-	// output-producing completion ("notification ack") with nothing else in
-	// flight, so it re-arms awaiting on its own. What this test guards — the
-	// notification held during the ask actually drained afterward instead of
-	// being dropped — is proven by requests==3 and peekNotifications==0
-	// below, not by the raw rest state.
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own clean completion re-arms awaiting)", got, SessionAwaiting)
+	// The drained notification turn runs last within this ProcessInput call
+	// and is itself a plain completion ("notification ack"), so it rests
+	// idle. What this test guards — the notification held during the ask
+	// actually drained afterward instead of being dropped — is proven by
+	// requests==3 and peekNotifications==0 below, not by the raw rest state.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after reply = %q, want %q (the drained notification turn's own plain completion rests idle)", got, SessionIdle)
 	}
 	if got := len(f.Requests()); got != 3 {
 		t.Fatalf("requests after reply = %d, want 3 (reply turn + the drained notification turn)", got)
@@ -1037,12 +1032,10 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 // which stays live by design: a message the user queues mid-round (via the
 // same deterministic same-round-tool idiom as the notification test above)
 // drains as the very next turn once the ask ends the round — it IS the reply,
-// so the pending set clears (askPendingCount below). It does NOT prove the
-// session stays idle: under attention-status-model v5's inbox semantics, the
-// drained reply's own turn is itself a clean, output-producing completion
-// with nothing else in flight, so it independently re-arms awaiting — the
-// discriminator that the ASK resolved (rather than the reply never landing)
-// is askPendingCount==0 and the ack present in history, not the raw state.
+// so the pending set clears (askPendingCount below). The drained reply's own
+// plain completion then rests idle; the discriminator that the ASK resolved
+// (rather than the reply never landing) is askPendingCount==0 and the ack
+// present in history.
 func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
@@ -1072,8 +1065,8 @@ func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state = %q, want %q (the drained queued text's own clean completion re-arms awaiting; see askPendingCount below for the ask-resolved discriminator)", got, SessionAwaiting)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want %q (the drained queued text's own plain reply rests idle; see askPendingCount below for the ask-resolved discriminator)", got, SessionIdle)
 	}
 	if got := len(f.Requests()); got != 2 {
 		t.Fatalf("requests = %d, want 2 (the asking round + the queued text drained as the reply)", got)
@@ -1228,30 +1221,28 @@ func TestAskUser_CompactSucceedsWhenIdle(t *testing.T) {
 	}
 }
 
-// --- Post-merge fixup: Compact must not over-hold on a plain awaiting rest ---
+// --- Compact must not over-hold on an awaiting rest with nothing pending ---
 //
-// attention-status-model v5's general inbox semantics (merged post-write-up)
-// changed what SessionAwaiting means: it is no longer produced only by a
-// pending ask_user question. A plain, output-producing turn with nothing else
-// in flight now also rests SessionAwaiting, with an EMPTY pending-ask set.
-// Compact's guard above still read raw state (s.State() == SessionAwaiting)
-// rather than askPendingCount(), so it refused Compact on ANY rested session
-// even when nothing is pending — a regression this test pins.
+// SessionAwaiting is not produced only by a pending ask_user question: a turn
+// that ended on needs_response also rests SessionAwaiting, with an EMPTY
+// pending-ask set. A guard that read raw state (s.State() == SessionAwaiting)
+// rather than askPendingCount() would refuse Compact even when nothing is
+// pending — a regression this test pins.
 
-// TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk covers the
-// corrected guard: a session resting SessionAwaiting purely from a clean
-// completion (no question posted, askPendingCount()==0) must not trip the
+// TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk covers the
+// guard: a session resting SessionAwaiting from a needs_response turn (no
+// question posted, askPendingCount()==0) must not trip the
 // pending-ask error — Compact may still fail or succeed for other reasons,
 // but not this one.
-func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
+func TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 	t.Parallel()
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	}
-	sess := newSession(t, withAdapter(f))
+	sess := newSession(t, withAdapter(f), withImmediateRest())
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1260,14 +1251,14 @@ func TestAskUser_CompactProceedsOnPlainAwaitingRestNoPendingAsk(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after a plain completion = %q, want %q (test setup broken)", got, SessionAwaiting)
+		t.Fatalf("state after a needs_response completion = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("askPendingCount after a plain completion = %d, want 0 (test setup broken)", got)
+		t.Fatalf("askPendingCount after a needs_response completion = %d, want 0 (test setup broken)", got)
 	}
 
 	if err := sess.Compact(context.Background()); err != nil && strings.Contains(err.Error(), compactErrPending) {
-		t.Fatalf("Compact on a plain awaiting rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this general rest)", err)
+		t.Fatalf("Compact on a needs_response rest with nothing pending returned the pending-ask error: %v (the hold is for a genuine pending question, not this needs_response rest)", err)
 	}
 }
 
@@ -1412,7 +1403,7 @@ func TestAskUser_RestoreRederivesAwaiting(t *testing.T) {
 }
 
 // TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering covers spec §6's
-// carve-out: a steering turn trailing the ask's ack (e.g. a task-nudge
+// carve-out: a steering turn trailing the ask's ack (e.g. a task-inactive
 // reminder injected before the round-boundary check runs — injectPostToolSteering
 // running before deliverIfCommunicated) does not resolve the question; the
 // tail scan must see past it to the ack underneath. Built directly via
@@ -1554,6 +1545,75 @@ func TestAskUser_AcceptSteeringCarrierInputTagsSteeringCarrierOnAppendFailureFor
 	}
 }
 
+// TestProcessPendingUserInputReportsRanFalseWhenACarrierDrainsTwoFailedSteers
+// pins the reachable shape of RoboRev #3437's concern: ProcessPendingUserInput
+// claims one steering carrier, and that carrier's own drain retires EVERY
+// queued bad-skill steer (both shown below), so the drain ladder has no second
+// carrier left to claim and the claimed carrier's stand-down is reported once
+// as ran=false.
+func TestProcessPendingUserInputReportsRanFalseWhenACarrierDrainsTwoFailedSteers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	for _, id := range []string{"carrier-two-1", "carrier-two-2"} {
+		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: id,
+			Input:            clientMutationInput("please hold", nil, []string{"no-such-skill"}),
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationSteer(%s): %v", id, err)
+		}
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=false err=nil", ran, err)
+	}
+	failures := 0
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnFailure {
+			failures++
+		}
+	}
+	if failures != 2 {
+		t.Fatalf("TurnFailure turns = %d, want 2 (one claimed carrier drained both failed steers)", failures)
+	}
+}
+
+// TestSteeringCarrierStoodDownRemembersEveryTurn pins RoboRev #3437's fix: the
+// stand-down marker is a set keyed by turn id, so a later carrier's stand-down
+// cannot erase an earlier one. A single slot would drop turn_a and make
+// ProcessPendingUserInput report ran=true for a carrier that never started.
+func TestSteeringCarrierStoodDownRemembersEveryTurn(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	s.markSteeringCarrierStoodDown("turn_a")
+	s.markSteeringCarrierStoodDown("turn_b")
+	if !s.steeringCarrierStoodDown("turn_a") {
+		t.Fatal("a later stand-down erased turn_a: ProcessPendingUserInput would report ran=true for a carrier that never ran")
+	}
+	if !s.steeringCarrierStoodDown("turn_b") {
+		t.Fatal("turn_b's stand-down is not remembered")
+	}
+	if s.steeringCarrierStoodDown("turn_c") {
+		t.Fatal("turn_c never stood down but reads as stood down")
+	}
+	s.resetSteeringCarrierStoodDown()
+	if s.steeringCarrierStoodDown("turn_a") || s.steeringCarrierStoodDown("turn_b") {
+		t.Fatal("resetSteeringCarrierStoodDown left a marker behind")
+	}
+}
+
 // TestAskUser_RecordFailedSteeringSelectionTagsSteeringCarrierForAnAnsweringSteer
 // is the append-failure test's selection-failure sibling: an ANSWERING
 // steer's carrier claim whose own skill selection fails to prepare
@@ -1597,10 +1657,11 @@ func TestAskUser_RecordFailedSteeringSelectionTagsSteeringCarrierForAnAnsweringS
 		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
 	// errSteeringCarrierStoodDown is swallowed by processOneInput's own
-	// dispatch (session_lifecycle.go:1944) -- a graceful stand-down, not a
-	// visible failure -- so only ran is asserted here.
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); !ran || err != nil {
-		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=true err=nil", ran, err)
+	// dispatch -- a graceful stand-down, not a visible failure -- but the
+	// carrier ran no model turn, so ProcessPendingUserInput must report
+	// ran=false (issue #185 item 3).
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=false err=nil", ran, err)
 	}
 
 	if got := sess.askPendingCount(); got != 0 {
@@ -2047,11 +2108,15 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	ask := askUserCall("ask1", askUserArgsValid())
 	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	trigger := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
+	// The answered round also ends on needs_response, so the durable boundary
+	// is awaiting: it differs from the idle the generic failure boundary would
+	// pick, which is what makes this test tell the two apart.
+	reply := communicateCallArgs("reply1", map[string]any{"message": "which region?", "end_reason": "needs_response"})
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return toolCallResponse(loop, trigger) },
+			func(req llm.Request) llm.Response { return toolCallResponse(loop, reply, trigger) },
 		},
 	}
 	c := llm.NewClient()
@@ -2137,7 +2202,7 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 		}
 		terminalEvents++
 		if data.Reason != "turn_failed" || data.State != string(SessionAwaiting) || data.Interrupted {
-			t.Fatalf("failed marker session-end = %+v, want turn_failed/Awaiting without interruption", data)
+			t.Fatalf("failed marker session-end = %+v, want turn_failed/awaiting without interruption", data)
 		}
 	}
 	if terminalEvents != 1 {
@@ -2474,6 +2539,99 @@ func TestAskUser_RestoreResolvesAcrossUserSteer(t *testing.T) {
 	}
 }
 
+// TestAskUser_RestoreResolvesAcrossUserSteerFollowedBySameRoundDaemonReminder
+// is the combined fixture #1946 asks for alongside the individual oracles:
+// TestAskUser_RestoreResolvesAcrossUserSteer pins a resolving user steer
+// alone, TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering pins a
+// trailing reminder alone — this pins the two together, in one round. The
+// steer is accepted through the real queue/claim/carrier path (so its turn
+// and journal record are exactly what production writes), and the round it
+// opens then carries a daemon task reminder (the same shape
+// injectPostToolSteering appends via appendSteeringTurn: kind task-inactive, no
+// user source) before a plain final response. On restore, the final
+// response is a generic completion whose round-entry check
+// (roundEntryResolvesAskBoundary) walks back and FIRST meets the reminder —
+// non-resolving — so the completion cannot settle the boundary there; the
+// scan must continue past the reminder and reach the user steer entry,
+// which resolves it and keeps the older ask cleared. No production defect
+// was found in this interaction; the fixture exists to pin it.
+func TestAskUser_RestoreResolvesAcrossUserSteerFollowedBySameRoundDaemonReminder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-steer pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-1",
+		Input:            clientMutationInput("focus on the tests", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "steer-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
+		t.Fatalf("acceptSteeringCarrierInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after the accepted steer = %d, want 0", got)
+	}
+
+	// The same-round daemon task reminder (stand-in text), appended the way
+	// production appends daemon reminders (appendSteeringTurn: task-inactive
+	// kind, no user source), and the round's plain final response after it. Both are
+	// transcript-shape-only appends, like the trailing-steering oracle's:
+	// the restore scan inspects shape, not which mechanism produced it.
+	sess.appendSteeringTurn("<SYSTEM-REMINDER>\nYou have not touched your task list in a while.\n</SYSTEM-REMINDER>", events.SteeringKindTaskInactive)
+	sess.appendTurn(schema.TurnAssistant, llm.Assistant("noted"))
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after the reminder and completion = %d, want 0 (neither may resurrect the cleared ask)", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (the outer scan must pass the reminder and resolve at the user steer entry)", restored.askPending)
+	}
+	// The round ends in a plain final response with nothing after it and no
+	// ask pending, so it restores idle: the reminder never lets the scan
+	// re-derive the older ask underneath it.
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (a plain final response, no ask pending)", got, SessionIdle)
+	}
+}
+
 // TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt covers RoboRev
 // #1806 round 4's High/Medium: a human-note update is user-sourced
 // (events.SteeringSourceUser) exactly like an answering steer, but it does
@@ -2542,6 +2700,16 @@ func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
 // contract tests in session_tools_misc_contract_fuzz_test.go do) rather than
 // through a live session, since a fresh session always stamps kinds and so
 // cannot reproduce the legacy (pre-stamping) shape.
+// The fixture text deliberately does NOT carry the write-path human-note
+// prefix (humanNoteSteerPrefix): isHumanNoteSteer's last-resort text-shape
+// fallback would classify the turn as a note even with the journal ignored,
+// leaving the journal record with nothing left to prove. With the prefix
+// absent, only the origins lookup can keep the ask pending, and the
+// nil-origins control below asserts the discriminating pair directly: the
+// same kindless turn resolves as an ordinary answering steer exactly when
+// no journal record backs it (the text-shape fallback itself is the
+// sibling test TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape's
+// own subject, and keeps its prefixed fixture for exactly that reason).
 func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -2569,7 +2737,9 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	// A legacy human-note steering turn: user-sourced, kindless (as it would
 	// be if written before SteeringKind existed), its ClientMutationID the
 	// only link back to the journal record that still says what wrote it.
-	legacyNote := schema.NewTurn(schema.TurnSteering, llm.User("human updated their whiteboard: watch the ingest path"))
+	// The text carries no human-note prefix, so the journal record is the
+	// only note evidence this turn has.
+	legacyNote := schema.NewTurn(schema.TurnSteering, llm.User("watch the ingest path"))
 	legacyNote.SteeringSource = events.SteeringSourceUser
 	legacyNote.ClientMutationID = "note-legacy"
 	history := append(append([]schema.Turn{}, sess.history...), legacyNote)
@@ -2581,6 +2751,21 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	}
 	if state := deriveRestoredState(history, 0, origins); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState with journal provenance = %q, want %q", state, SessionAwaiting)
+	}
+
+	// The discriminating nil-origins control: the SAME kindless, prefix-free
+	// turn with no journal record to consult reads as an ordinary answering
+	// steer and resolves the ask. Only the origins-versus-nil difference
+	// separates the two runs, so the journal's notes/human/set evidence is
+	// load-bearing: a restore path that ignored it would fail the first
+	// half, and one that hallucinated note classification without it would
+	// fail this one.
+	pending, isAskRound = deriveRestoredAskPending(history, 0, nil)
+	if isAskRound || len(pending) != 0 {
+		t.Fatalf("deriveRestoredAskPending without journal provenance = pending=%#v isAskRound=%v, want the kindless turn to resolve the ask as an ordinary answering steer", pending, isAskRound)
+	}
+	if state := deriveRestoredState(history, 0, nil); state != SessionIdle {
+		t.Fatalf("deriveRestoredState without journal provenance = %q, want %q", state, SessionIdle)
 	}
 }
 
@@ -3245,7 +3430,7 @@ func TestAskUser_ForkedChildDoesNotApplyItsOwnJournalToAnInheritedAnsweringSteer
 		ID:        sessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 		// Every turn in inheritedHistory came from the parent; the child has
 		// not added any of its own yet.
 		ParentSessionID: "01KPARENT0000000000000000",
@@ -3603,19 +3788,15 @@ func TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
 }
 
 // TestAskUser_RestoreRederivesIdleAfterAnsweredAsk covers spec §6's other
-// half: a user turn following the ack (the reply) resolves the question. It
-// no longer asserts idle after the reply: under attention-status-model v5's
-// inbox semantics (merged post-write-up), the reply's OWN turn is itself a
-// clean completion with user-visible output and nothing else in flight, so
-// it legitimately re-arms awaiting — the identical wire value an unresolved
-// ask would show. What must hold, and what this test asserts instead, is
-// that the ASK genuinely resolved: askPendingCount drops to 0 the moment the
+// half: a user turn following the ack (the reply) resolves the question, and
+// the reply's own plain completion rests idle. What must also hold is that
+// the ASK genuinely resolved: askPendingCount drops to 0 the moment the
 // reply is accepted (spec §5.2, checked live, where the pending set is a
 // real in-memory signal — it is not persisted, so checking it again after
 // restore would be vacuous), and the reply demonstrably reached the model as
 // a new turn (the second fakeAdapter step only fires for a genuine new
-// round). Restored state is awaiting for the same inbox reason live state
-// was, not because ask1 resurrected as pending: the transcript-shape pending
+// round). Restored state is idle, as live state was, and ask1 does not
+// resurrect as pending: the transcript-shape pending
 // definition (§6) that distinguishes "resolved" from "still pending" keys on
 // ask1's ack having a LATER TurnUserInput, which it does here regardless of
 // what the tail's own state settles to.
@@ -3658,8 +3839,8 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	if got := sess.askPendingCount(); got != 0 {
 		t.Fatalf("post-reply pending count = %d, want 0 (the reply must resolve the ask)", got)
 	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("post-reply state = %q, want %q (inbox semantics: the reply's own clean, output-producing turn re-arms awaiting)", got, SessionAwaiting)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("post-reply state = %q, want %q (the reply's own plain completion rests idle)", got, SessionIdle)
 	}
 
 	meta := sess.Meta()
@@ -3671,16 +3852,10 @@ func TestAskUser_RestoreRederivesIdleAfterAnsweredAsk(t *testing.T) {
 	}
 	defer restored.Close()
 
-	// The restored state is awaiting for the same general reason (agent
-	// moved last with the reply's own plain-text turn) — not because ask1
-	// re-derived as pending. deriveRestoredAskPending (spec §2) reads this
-	// tail as a GENERIC awaiting rest too — the decisive turn is the reply's
-	// own plain final response, with no tool calls at all — so checking
-	// askPendingCount here would still read 0: not because restore skips the
-	// set (post-§2 it doesn't), but because nothing here is genuinely
-	// pending. The meaningful check already ran live above.
-	if got := restored.State(); got != SessionAwaiting {
-		t.Fatalf("restored state = %q, want %q (agent moved last: the reply's own response)", got, SessionAwaiting)
+	// The restored state is idle, as live: the decisive turn is the reply's
+	// own plain final response, and ask1 does not re-derive as pending.
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (the reply's own plain response)", got, SessionIdle)
 	}
 }
 
@@ -4025,25 +4200,23 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 	}
 }
 
-// TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks is the
-// negative control that must stay green both before and after the fix: a
-// restart after a GENERIC awaiting rest (a plain completion, no ask_user
-// involved — attention-status-model v5's general inbox semantics) must never
-// rebuild a pending set, and an idle /goal must still kick immediately, not
-// arm — mirroring the live TestSetGoal_KicksOnPlainAwaitingRestNoPendingAsk.
-// This is spec §2's "generic awaiting: no rebuild" edge case, observed
-// through restore.
-func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.T) {
+// TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks is the
+// negative control: a restart after an awaiting rest with no ask_user
+// involved (a needs_response turn) must never rebuild a pending set, and an
+// idle /goal must still kick immediately, not arm — mirroring the live
+// TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk. This is spec §2's
+// "generic awaiting: no rebuild" edge case, observed through restore.
+func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("here is my answer") },
+			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
 		},
 	})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -4071,10 +4244,10 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 		t.Fatalf("restored state = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	if restored.HasPendingAsk() {
-		t.Fatal("HasPendingAsk() = true after restoring a GENERIC awaiting rest with no ask, want false")
+		t.Fatal("HasPendingAsk() = true after restoring a needs_response rest with no ask, want false")
 	}
 	if got := restored.askPendingCount(); got != 0 {
-		t.Fatalf("restored askPendingCount = %d, want 0 (a generic awaiting rest must never rebuild a pending set)", got)
+		t.Fatalf("restored askPendingCount = %d, want 0 (a needs_response rest must never rebuild a pending set)", got)
 	}
 
 	var kicked []string
@@ -4084,7 +4257,7 @@ func TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks(t *testing.
 		t.Fatalf("SetGoal: %v", err)
 	}
 	if !started {
-		t.Fatal("SetGoal against a restored GENERIC awaiting rest must report started=true and kick immediately (nothing is genuinely pending)")
+		t.Fatal("SetGoal against a restored needs_response rest must report started=true and kick immediately (nothing is genuinely pending)")
 	}
 	if len(kicked) != 1 {
 		t.Fatalf("kick count = %d, want exactly 1", len(kicked))
@@ -4145,61 +4318,6 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 	}
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("askPendingCount after the reply = %d, want 0 (the turn-entry clear, session_lifecycle.go:783, must still fire on a restored session)", got)
-	}
-}
-
-// --- Task 10: the ask-user prompt-section gate (spec §4.5, §7) ---
-//
-// These tests render the system prompt directly (session_surface_behavior_test.go's
-// sess.renderSystemPrompt(sess.env) pattern) rather than driving a full
-// ProcessInput round trip: the gate under test is template composition, not
-// turn machinery. The three cases mirror the invisibility semantics already
-// proven for the tool's own registration above (TestAskUser_VisibleInteractiveRoot
-// / _InvisibleNonInteractive / _InvisibleForSubagent): the guidance section
-// shows exactly when ask_user is registered.
-
-// TestAskUser_PromptSectionVisibleForInteractiveRoot covers spec §4.5: an
-// interactive root session's rendered system prompt carries the ask-user
-// guidance section, opening with its verbatim "Asking the user." lead-in.
-func TestAskUser_PromptSectionVisibleForInteractiveRoot(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}))
-
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if !strings.Contains(prompt, "Asking the user.") {
-		t.Fatal("system prompt missing ask-user guidance for an interactive root session")
-	}
-}
-
-// TestAskUser_PromptSectionHiddenWhenNonInteractive covers spec §4.5/§7: a
-// NonInteractive session never registers ask_user (TestAskUser_InvisibleNonInteractive
-// above), so its rendered prompt must not carry the guidance section either —
-// invisible, not merely unused.
-func TestAskUser_PromptSectionHiddenWhenNonInteractive(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true, NonInteractive: true}))
-
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, "Asking the user.") {
-		t.Fatal("system prompt contains ask-user guidance in a NonInteractive session")
-	}
-}
-
-// TestAskUser_PromptSectionHiddenForSubagent covers spec §4.5/§7: a subagent
-// session (live spawn carrier set, the same config shape
-// TestAskUser_InvisibleForSubagent above uses) never registers ask_user, so
-// its rendered prompt must not carry the guidance section.
-func TestAskUser_PromptSectionHiddenForSubagent(t *testing.T) {
-	t.Parallel()
-	cfg := SessionConfig{NoProjectPrompts: true}
-	cfg.spawn.depth = 1
-	cfg.spawn.parentSessionID = "parent-session"
-	cfg.spawn.delegationAllowance = 1
-	sess := newSession(t, withConfig(cfg))
-
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, "Asking the user.") {
-		t.Fatal("system prompt contains ask-user guidance in a subagent session")
 	}
 }
 
@@ -4987,6 +5105,15 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	// Stand sess in as dlg_source's runtime the way a real delegate child is:
+	// it uses the root's controller but does not own it. Releasing the
+	// controller NewSession built for it, and clearing ownership, is what keeps
+	// sess.Close from shutting the root's delegate tree down around itself and
+	// waiting out the close budget for its own stop.
+	if err := sess.closeOwnedDelegateStore(); err != nil {
+		t.Fatalf("close the session's own delegate store: %v", err)
+	}
+	sess.ownsDelegateController = false
 	sess.delegateController = fixture.controller
 	sess.delegateRootSessionID = fixture.root.ID()
 	sess.owningDelegateID = "dlg_source"
@@ -5071,6 +5198,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 // history with a TurnEnvironment turn sitting between a resolving
 // TurnUserInput entry and the round's own TurnAssistant/TurnToolResults pair.
 func TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?")),
 		schema.NewTurn(schema.TurnEnvironment, llm.User("cwd: /repo")),
@@ -5083,6 +5211,7 @@ func TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry(t
 }
 
 func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?")),
 		{Kind: schema.TurnFailure, Message: llm.System("provider failed"), Error: &schema.TurnFailureInfo{Message: "provider failed"}},

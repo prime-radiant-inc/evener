@@ -7,15 +7,16 @@
 // submission settles.
 //
 // Framework-free: no React, no zustand, no storage. `outbox`/`optimistic`/
-// `recovery` are plain settable fields the host writes after its own durable
-// read (IndexedDB on the web) - this module never reads or writes storage
-// itself. The two things a host's storage and drafts DO have to answer -
+// `recovery` hold what the host's own durable read found (IndexedDB on the
+// web), written through `projectSnapshot` - this module never reads or writes
+// storage itself. The two things a host's storage and drafts DO have to answer -
 // "what is ref X's current thread model" and "what did ref X's composer
 // draft hold, and how do I clear it" - are the injected ports below, sized
 // to exactly what this module calls.
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { ThreadModel } from "../../model";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingEntries";
+import { type MutationPersistenceSnapshot, replaceTargetRecords } from "./projection";
 import type {
   ClientIdentity,
   MutationAttachmentRef,
@@ -25,13 +26,22 @@ import type {
   MutationRecoveryRecord,
 } from "./records";
 
-// A pure read over `model`'s active turn: true once an identified user
+// A pure read over `model`'s running turn: true once an identified user
 // message (one carrying its own clientMutationId) has landed in it and
 // nothing but a system message has followed since - the "sent, not yet
 // answered" state a composer shows with no confirmation timer of its own,
 // retired the moment a real assistant frame lands.
+//
+// Reads runningTurnId, not activeTurnId: activeTurnId is the read-only
+// snapshot field (only refreshed by a thread/read), while runningTurnId is
+// kept current by every live thread/status/changed frame too (reducer.ts's
+// model comment). A live session that never re-reads would otherwise never
+// see this go true once its send's echo lands (kata-shaped regression:
+// the skeleton this gates would drop the instant the echo's own
+// clientMutationId got reconciled out of the pending outbox, with nothing
+// live to pick up the baton).
 export function awaitingFirstFrameSend(model: ThreadModel | undefined): boolean {
-  const activeTurn = model?.turns.find((turn) => turn.id === model.activeTurnId);
+  const activeTurn = model?.turns.find((turn) => turn.id === model.runningTurnId);
   if (!activeTurn) return false;
   let sawIdentifiedUserMessage = false;
   for (const item of activeTurn.items) {
@@ -90,7 +100,7 @@ export interface PendingTurnsThreadsPort {
 // (`clearDraft`). No storage mechanism is named here.
 export interface PendingTurnsDraftPort {
   readDraftRevision(ref: string): number;
-  readComposerDraft(ref: string): { text: string; skillNames: readonly string[] };
+  readComposerDraft(ref: string): { text: string; skillNames: readonly string[]; commandNames?: readonly string[] };
   clearDraft(ref: string): void;
 }
 
@@ -112,13 +122,18 @@ export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAtt
   recovery: Map<string, MutationRecoveryRecord<A>>;
   submittingRefs: ReadonlySet<string>;
   // Every client mutation id this store's own durable projection has held,
-  // for as long as the store lives. The durable records themselves are the
-  // primary evidence of "this client submitted it", and they are
-  // deliberately short-lived: an authoritative read settles every identity
-  // the daemon reports back out of storage. Provenance has to outlive the
-  // record, because routing asks about it after the hydrate too - see
-  // `reconcilePendingEntries`. Ids only, never pruned.
-  submittedHere: ReadonlySet<string>;
+  // for as long as the store lives, mapped to that record's `createdAt`.
+  // The durable records themselves are the primary evidence of "this client
+  // submitted it", and they are deliberately short-lived: an authoritative
+  // read settles every identity the daemon reports back out of storage.
+  // Provenance has to outlive the record, because routing asks about it
+  // after the hydrate too - see `reconcilePendingEntries`. The carried
+  // `createdAt` is read there for steer-family entries - the one timestamp
+  // the post-settle projection cannot re-derive, since the authoritative
+  // entry carries none - and the pre-settle reload re-discovers it through
+  // the same durable-read scan. Written at the same `recordSubmittedHere`
+  // site, never pruned.
+  submittedHere: ReadonlyMap<string, number>;
 }
 
 // The submitted values `settleSubmittedDraft` compares the current draft
@@ -130,6 +145,7 @@ export interface SubmittedDraft {
   draftRevisionAtStart: number;
   text: string;
   skillNames: readonly string[];
+  commandNames?: readonly string[];
 }
 
 export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAttachmentRef>
@@ -139,6 +155,13 @@ export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAtt
   // `submittedHere`. A no-op (no `setState`, `getState()` unchanged) when
   // every discovered id is already known.
   recordSubmittedHere(snapshot: { outbox: MutationOutboxRecord<A>[]; optimistic: MutationOptimisticRecord<A>[] }): void;
+  // Replaces each of `targets`' outbox, optimistic and recovery records with
+  // `snapshot`'s (replaceTargetRecords). A no-op (no `setState`, `getState()`
+  // unchanged) when the snapshot holds what the store already does: most
+  // reads find nothing new (the web's outbox rescans storage every two seconds
+  // while connected), and a publish wakes every subscriber. A map with no
+  // change keeps its identity when another one changed.
+  projectSnapshot(targets: ReadonlySet<string>, snapshot: MutationPersistenceSnapshot<A>): void;
   // Marks `ref` as having a submission in flight. Returns false (and leaves
   // state alone) if one already is - the guard a caller turns into its own
   // rejection - otherwise marks it and returns true.
@@ -175,7 +198,7 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     optimistic: new Map(),
     recovery: new Map(),
     submittingRefs: new Set(),
-    submittedHere: new Set(),
+    submittedHere: new Map(),
   })) as PendingTurnsStore<A>;
 
   store.recordSubmittedHere = (snapshot) => {
@@ -183,13 +206,24 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     // The outbox is shared per origin: another client's records read back
     // out of it are visible here but are not this store's submissions, and
     // claiming them would reroute this store's own routing behind their
-    // sends.
+    // sends. The carried value is the record's createdAt - the one timestamp
+    // the post-settle projection cannot re-derive (the authoritative entry
+    // carries none).
     const discovered = [...snapshot.outbox, ...snapshot.optimistic]
       .filter((record) => deps.identity.isOwnMutationRecord(record))
-      .map((record) => record.clientMutationId)
-      .filter((id) => !known.has(id));
+      .map((record) => [record.clientMutationId, record.createdAt] as const)
+      .filter(([id]) => !known.has(id));
     if (discovered.length === 0) return;
-    store.setState((state) => ({ submittedHere: new Set([...state.submittedHere, ...discovered]) }));
+    store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
+  };
+
+  store.projectSnapshot = (targets, snapshot) => {
+    const state = store.getState();
+    const outbox = replaceTargetRecords(state.outbox, targets, snapshot.outbox);
+    const optimistic = replaceTargetRecords(state.optimistic, targets, snapshot.optimistic);
+    const recovery = replaceTargetRecords(state.recovery, targets, snapshot.recovery);
+    if (outbox === state.outbox && optimistic === state.optimistic && recovery === state.recovery) return;
+    store.setState({ outbox, optimistic, recovery });
   };
 
   store.beginSubmission = (ref) => {
@@ -212,8 +246,13 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     if (!draftUnchanged) return { cleared: false, draftUnchanged };
     const draft = deps.draft.readComposerDraft(ref);
     const skillNames = [...submitted.skillNames];
+    const commandNames = submitted.commandNames ?? [];
+    const draftCommands = draft.commandNames ?? [];
     const selectionsUnchanged =
-      draft.skillNames.length === skillNames.length && draft.skillNames.every((name, i) => name === skillNames[i]);
+      draft.skillNames.length === skillNames.length &&
+      draft.skillNames.every((name, i) => name === skillNames[i]) &&
+      draftCommands.length === commandNames.length &&
+      draftCommands.every((name, i) => name === commandNames[i]);
     if (draft.text !== submitted.text || !selectionsUnchanged) return { cleared: false, draftUnchanged };
     deps.draft.clearDraft(ref);
     return { cleared: true, draftUnchanged };

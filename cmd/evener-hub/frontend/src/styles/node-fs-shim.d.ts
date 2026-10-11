@@ -1,11 +1,12 @@
 // This project ships no @types/node (see the note atop
 // appwire-client/typescript/reducer.test.ts) and this task may not add it, so
 // TypeScript has zero declarations for Node's builtin modules. This file
-// hand-declares the exact, minimal surface token-contract.test.ts uses to
-// walk and read the src/ tree from disk at test time (vitest runs on real
-// Node, so these resolve and execute fine at runtime — this file only
-// exists to satisfy `tsc --noEmit`). A real @types/node install, if this
-// project ever adds one, supersedes and can delete this file outright.
+// hand-declares the exact, minimal surface the test code uses: the files
+// token-contract.test.ts and its neighbours read from disk at test time, and
+// the AsyncLocalStorage testEndedBodyGuard.ts carries the running test in.
+// Vitest runs on real Node, so these resolve and execute fine at runtime; this
+// file only exists to satisfy `tsc --noEmit`. A real @types/node install, if
+// this project ever adds one, supersedes and can delete this file outright.
 declare module "node:fs" {
   export interface Dirent {
     name: string;
@@ -24,4 +25,12 @@ declare module "node:path" {
 
 declare module "node:url" {
   export function fileURLToPath(url: string): string;
+}
+
+declare module "node:async_hooks" {
+  export class AsyncLocalStorage<T> {
+    getStore(): T | undefined;
+    run<R>(store: T, callback: () => R): R;
+    disable(): void;
+  }
 }

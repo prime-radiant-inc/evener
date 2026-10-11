@@ -22,8 +22,10 @@ import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexe
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { PendingChips } from "../../pending/PendingChips";
 import {
+  pendingTurnEntries,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
@@ -196,16 +198,16 @@ function renderStrip(props: ReturnType<typeof defaultProps>) {
 // SettleAfterRetryLookup arms a one-shot barrier on the RETRY FLOW'S OWN reads
 // instead of a global listOutbox count (issue #1723): the retry's
 // post-reconciliation getOutbox lookup (retryBlockedMutation's second read of a
-// still-blocked record - the retry's last storage touch before handleRetry's
-// own reads) arms the barrier, and the first TARGET-scoped listOutbox read
+// still-blocked record - the retry's last storage touch before its decision
+// read) arms the barrier, and the first TARGET-scoped listOutbox read
 // CREATED after that arm fires it - the refresh retryBlockedPendingTurn's own
-// mutateThenRefresh awaits, the retry window's only read before handleRetry's
+// mutateThenRefresh awaits, the retry window's only read before its
 // decision read since #1722 removed the redundant second refresh - so the
-// concurrent settle commits inside the retry window, ahead of handleRetry's own
+// concurrent settle commits inside the retry window, ahead of the retry's own
 // reads. What the test pins is that a
 // settle landing anywhere in that window is the benign no-op the flow owes -
 // no "still cannot be checked" error for a row the retry had already made moot.
-// It does not and cannot pin the settle BETWEEN handleRetry's refresh and its
+// It does not and cannot pin the settle BETWEEN the retry's refresh and its
 // decision read: fake-indexeddb's cross-connection commit visibility is
 // asynchronous relative to the flow's awaits, so that finer staging would make
 // the green side flaky (verified empirically on PR 1393 - a regressed
@@ -235,7 +237,7 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
     // proceeds: the click-time capture read ahead of every check (counted in
     // the getOutboxWithStopEpoch override below), and the final lookup after
     // its reconciliation. The second read is the boundary between the retry's
-    // machinery and handleRetry's own reads.
+    // machinery and the decision read.
     if (this.#onSettle && record?.state === "blockedUnknown") {
       this.#blockedLookups += 1;
       if (this.#blockedLookups === 2) {
@@ -282,7 +284,7 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
 // RetryPersistenceReadCounter counts the retry flow's own TARGET-scoped
 // persistence reads (issue #1722). readMutationPersistence(ref) is the only
 // caller of a target-scoped listRecovery read (stores/threads.ts), and both a
-// projection refresh and handleRetry's decision read go through it; the retry's
+// projection refresh and the retry's decision read go through it; the retry's
 // own machinery touches only outbox rows. The window opens at the retry's
 // post-reconciliation lookup of the still blocked record - the same boundary
 // SettleAfterRetryLookup arms on above - so refreshes the click's side effects
@@ -357,20 +359,6 @@ afterEach(() => {
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
   vi.restoreAllMocks();
   vi.useRealTimers();
-  // Every test here calls ensureThread(ref) directly for setup - QueueStrip
-  // takes its ref as a prop and never calls ensureThread/releaseThread
-  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
-  // test. Under isolate:false that is what a later file's own
-  // connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 describe("visibility", () => {
@@ -431,6 +419,34 @@ describe("visibility", () => {
 });
 
 describe("durable recovery rows", () => {
+  // A promoted row's composed content lives in its optimisticDisplay - the
+  // wire params carry only the queue position - so a rejected/canceled
+  // promote must still render its words in the durable row (roborev #2140
+  // round 6), never a blank one.
+  test("a rejected promote renders its composed content, not a blank row", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/promoteQueuedAsSteer",
+      payload: { ref: "ref_a", index: 0, expectedInstanceId: "instance", expectedEntryId: "q1" },
+      attachments: [],
+      optimisticDisplay: {
+        method: "turn/promoteQueuedAsSteer",
+        input: [{ type: "text", text: "promoted words" }],
+      },
+    });
+    const recovery = await storage.transferToRecovery(outbox.clientMutationId, "rejected", "turn is not active");
+    storage.close();
+    if (!recovery) throw new Error("failed to seed recovery");
+    await refreshPendingTurnsProjection("ref_a");
+    renderStrip(defaultProps({ onEditRecovery: vi.fn() }));
+
+    expect(await screen.findByText("promoted words")).toBeTruthy();
+  });
+
   test("a rejected record renders as an ordinary editable queued row", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -536,6 +552,24 @@ describe("durable recovery rows", () => {
     expect(isDisabled(retry)).toBe(true);
   });
 
+  // Regression for the review finding on #4005: retryBlockedMutation refuses a
+  // storage-blocked ref (its reconcile sits on the same wedge), but the strip
+  // still offered an enabled Retry - a press would hang on the wedged storage
+  // read and then fail. The button mirrors the storage-blocked refusal the
+  // same way it mirrors the snapshot refusals, and re-enables the moment
+  // discovery's reconcile retry clears the state.
+  test("Retry stays blocked while the ref's reconciliation is storage-blocked", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type: "idle" } });
+    await seedBlockedUnknown("uncertain");
+    act(() => threadsStore.setState({ mutationReconciliationStorageBlocked: new Set(["ref_a"]) }));
+    renderStrip(defaultProps());
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+    act(() => threadsStore.setState({ mutationReconciliationStorageBlocked: new Set() }));
+    await waitFor(() => expect(isDisabled(retry)).toBe(false));
+  });
+
   // Regression for the review finding on the reduced branch: Retry's disabled
   // state mirrored only restartRequired/notLoaded/authority, while
   // retryBlockedMutation also refuses a ref carrying a restart-blocking
@@ -572,9 +606,8 @@ describe("durable recovery rows", () => {
 
     await user.click(retry);
     const storage = new MutationOutboxIndexedDB();
-    await waitFor(async () => {
-      expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
     storage.close();
   });
 
@@ -658,8 +691,10 @@ describe("durable recovery rows", () => {
     await flushPendingTurnsProjectionForTests();
     // Block the same record again so the row returns: a lingering error state
     // from the window would now be visible on it.
-    await otherTab.markUnknown(original.clientMutationId, "blockedUnknown");
-    await refreshPendingTurnsProjection(ref);
+    await act(async () => {
+      await otherTab.markUnknown(original.clientMutationId, "blockedUnknown");
+      await refreshPendingTurnsProjection(ref);
+    });
     await flushPendingTurnsProjectionForTests();
     const row = (await screen.findByText("uncertain input")).closest("li");
     if (!row) throw new Error("missing blocked row after the settle window");
@@ -684,7 +719,7 @@ describe("durable recovery rows", () => {
     await flushPendingTurnsProjectionForTests();
     // Keep the record blocked through the retry's own reconciliation, the
     // fixture the genuinely-blocked case above uses: the retry then reports the
-    // row still cannot be checked and handleRetry reaches its decision read -
+    // row still cannot be checked and reaches its decision read -
     // the path the redundant refresh lived on.
     fake.on("thread/read", () =>
       readResponse(ref, {
@@ -695,7 +730,7 @@ describe("durable recovery rows", () => {
     await userEvent.setup().click(retry);
     await flushPendingTurnsProjectionForTests();
     // Two target-scoped reads: the refresh retryBlockedPendingTurn's own
-    // mutateThenRefresh awaits, then handleRetry's decision read. A third is the
+    // mutateThenRefresh awaits, then the retry's decision read. A third is the
     // redundant second refresh #1722 removed - it re-read the same durable rows
     // and fed neither the projection nor the decision.
     expect(storage.readRefs()).toEqual(["ref_a", "ref_a"]);
@@ -851,9 +886,8 @@ describe("canceled rows", () => {
     if (!row) throw new Error("missing canceled row");
     await user.click(within(row).getByRole("button", { name: "Retry" }));
     const storage = new MutationOutboxIndexedDB();
-    await waitFor(async () => {
-      expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
     storage.close();
   });
 
@@ -969,8 +1003,10 @@ describe("canceled rows", () => {
     expect(getToasts()).toEqual([]);
     expect(await storage.listOutbox("ref_a")).toEqual(before);
     expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
-    resolveRead?.();
-    await refreshed;
+    await act(async () => {
+      resolveRead?.();
+      await refreshed;
+    });
   });
 });
 
@@ -1181,6 +1217,58 @@ describe("row rendering", () => {
     expect(row.textContent).not.toMatch(/\[skill\](\s|$)/);
   });
 
+  test.each([
+    { preview: "[command]", commandNames: ["probe"], display: "[command: probe]" },
+    { preview: "[2 commands]", commandNames: ["a", "b"], display: "[command: a] [command: b]" },
+  ])("a command-only authoritative row replaces $preview with named markers", async (entry) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, commandInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: [entry.preview],
+          commandNames: [entry.commandNames],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = await screen.findByRole("listitem");
+    expect(within(row).getByText(entry.display)).toBeTruthy();
+    expect(row.textContent).not.toContain(entry.preview);
+  });
+
+  test.each([
+    { text: "[command]", commandNames: ["probe"], display: "[command] [command: probe]" },
+    { text: "[command]", commandNames: [], display: "[command]" },
+    { text: "[skill]", commandNames: ["probe"], display: "[skill] [command: probe]" },
+  ])("an authoritative row preserves literal $text prose with $commandNames", async (entry) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, commandInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [entry.text],
+          preview: [entry.text],
+          commandNames: [entry.commandNames],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = await screen.findByRole("listitem");
+    expect(within(row).getByText(entry.display)).toBeTruthy();
+  });
+
   // Only the generic skill placeholder is redundant with the named markers.
   // An entry that also holds an image must keep its image placeholder: dropping
   // every preview for a no-prose entry would silently hide the attachment.
@@ -1271,10 +1359,70 @@ describe("promote", () => {
       fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+  });
+
+  test("promote passes the row's text (or the row's stripped preview) into the optimistic display", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 0,
+          depth: 3,
+          ids: ["q1", "q2", "q3"],
+          texts: ["hello", "", ""],
+          preview: ["hello", "[image]", "[skill]"],
+          skillNames: [["pkg:probe"], [], ["pkg:audit"]],
+        },
+      },
     });
+    fake.on("turn/promoteQueuedAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "pending",
+      },
+    }));
+    renderStrip(defaultProps());
+
+    const rows = await screen.findAllByRole("listitem");
+    await act(async () => {
+      fireEvent.click(within(rows[0]!).getByRole("button", { name: /steer now/i }));
+    });
+    await act(async () => {
+      fireEvent.click(within(rows[1]!).getByRole("button", { name: /steer now/i }));
+    });
+    // The skill-only row (generic "[skill]" preview, no text) must promote with
+    // a blank display text: the ghost renders the named marker alone, matching
+    // the queue row, instead of doubling it behind the raw placeholder.
+    await act(async () => {
+      fireEvent.click(within(rows[2]!).getByRole("button", { name: /steer now/i }));
+    });
+    // Every press must have committed its durable enqueue before the
+    // projection read: a wire call only happens after its enqueue, so this
+    // wait - not a timer - is what makes the read below race-free.
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(3);
+    // Each press unlocks its row once its handler has finished.
+    await waitFor(() => {
+      for (const row of rows) expect(isDisabled(within(row).getByRole("button", { name: /steer now/i }))).toBe(false);
+    });
+    await act(async () => {
+      await refreshPendingTurnsProjection("ref_a");
+    });
+    // The display input is observable where it lands: the optimistic promote
+    // record's preview - the ghost's body (spec §3.2), not a wire param.
+    const entries = pendingTurnEntries("ref_a", "promote");
+    expect(entries).toEqual([
+      expect.objectContaining({ text: "hello", skillNames: ["pkg:probe"] }),
+      expect.objectContaining({ text: "[image]" }),
+      expect.objectContaining({ text: "", skillNames: ["pkg:audit"] }),
+    ]);
   });
 });
 
@@ -1298,8 +1446,12 @@ describe("press-time controls", () => {
     applied(fake, "turn/drainAsSteer");
     renderStrip(defaultProps());
     const drain = await screen.findByRole("button", { name: /steer queue now/i });
-    foldAwaiting(fake);
-    fireEvent.click(drain);
+    // One act holds the render back until both have landed: the press still
+    // meets the render that predates the awaiting frame.
+    act(() => {
+      foldAwaiting(fake);
+      fireEvent.click(drain);
+    });
     await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
     expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
   });
@@ -1311,8 +1463,12 @@ describe("press-time controls", () => {
     renderStrip(defaultProps());
     const row = (await screen.findAllByRole("listitem"))[0]!;
     const promote = within(row).getByRole("button", { name: /steer now/i });
-    foldAwaiting(fake);
-    fireEvent.click(promote);
+    // One act holds the render back until both have landed: the press still
+    // meets the render that predates the awaiting frame.
+    act(() => {
+      foldAwaiting(fake);
+      fireEvent.click(promote);
+    });
     await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
     expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
   });
@@ -1435,10 +1591,9 @@ describe("cancel", () => {
       fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
   });
 });
 
@@ -1511,9 +1666,8 @@ describe("edit", () => {
     });
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("queued text", undefined, ["probe"]);
-    await waitFor(() => {
-      expect(fake.calls.some((call) => call.method === "turn/cancelQueued")).toBe(true);
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.some((call) => call.method === "turn/cancelQueued")).toBe(true);
   });
 
   test("a skill-only queued entry (blank text) stays editable so its chips can be restored", async () => {
@@ -1552,6 +1706,11 @@ describe("edit", () => {
     });
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("", undefined, ["probe"]);
+    // Settle the removal this click started before the test ends. Left in
+    // flight, its asynchronous completion lands during the next test's
+    // resetThreadsStoreForTests and surfaces as the queue-edit failure toast
+    // this file asserts on.
+    await flushPendingTurnsProjectionForTests();
   });
 
   // The restore runs after the row is locked, so a failure there owes the row
@@ -1677,10 +1836,9 @@ describe("re-rendering after the queue shifts", () => {
       fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
   });
 
   test("after the daemon confirms the head entry is consumed, the surviving row cancels with its NEW index", async () => {
@@ -1731,10 +1889,9 @@ describe("re-rendering after the queue shifts", () => {
       fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
   });
 });
 
@@ -1925,20 +2082,19 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(steerNow);
     });
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer")?.params).toMatchObject({
+      ref: "ref_a",
+      index: 0,
+      expectedEntryId: "q1",
     });
 
     const drainButton = screen.getByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      await flushPendingTurnsProjectionForTests();
     });
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.find((c) => c.method === "turn/drainAsSteer")?.params).toMatchObject({ ref: "ref_a" });
   });
 
   // When the status is what blocks a drain (awaiting with a queue is the ask
@@ -1961,8 +2117,7 @@ describe("drain-as-steer affordance", () => {
     expect(isDisabled(steerNow)).toBe(true);
     const wrapper = steerNow.parentElement;
     if (!wrapper) throw new Error("Steer now has no tooltip wrapper");
-    fireEvent.mouseEnter(wrapper);
-    expect((await screen.findByRole("tooltip")).textContent).toBe(NO_ACTIVE_TURN);
+    expect(hoverForTooltip(wrapper).textContent).toBe(NO_ACTIVE_TURN);
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
@@ -1991,15 +2146,14 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
-      await flushPendingTurnsProjectionForTests();
+      // Settling the drain's work after this act keeps its re-renders inside the
+      // flush's own act, and the drain's request has gone out by the time the
+      // flush returns.
     });
+    await flushPendingTurnsProjectionForTests();
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
-    });
+    const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+    expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
     expect(onDrainSuccess).toHaveBeenCalledTimes(1);
   });
 
@@ -2050,9 +2204,9 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(drainButton);
       // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
-      await flushPendingTurnsProjectionForTests();
+      // the projection flush runs after this act, not inside it (#2599).
     });
+    await flushPendingTurnsProjectionForTests();
     expect(getToasts()).toHaveLength(0);
     expect(screen.queryByText(/reload/i)).toBeNull();
   });
@@ -2087,9 +2241,9 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(drainButton);
       // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
-      await flushPendingTurnsProjectionForTests();
+      // the projection flush runs after this act, not inside it (#2599).
     });
+    await flushPendingTurnsProjectionForTests();
 
     await screen.findByText(/image attachment is still processing/i);
     expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);

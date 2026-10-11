@@ -123,11 +123,12 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	// base, and the assertion below will fail.
 	deps := &toolDeps{
 		emit:                   func(events.EventKind, events.EventData) {},
+		deliverCommunicate:     func(events.CommunicateData) error { return nil },
 		abort:                  func(context.Context) error { return nil },
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
+		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 	}
 	registerCommunicateTool(reg, deps)
 

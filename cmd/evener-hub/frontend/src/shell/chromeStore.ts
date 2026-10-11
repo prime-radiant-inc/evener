@@ -1,7 +1,8 @@
 // chromeStore carries the shell chrome's cross-pane state, published
 // host-agnostically and rendered by whichever workspace host is showing.
-// StackHost (the <900px host) reads it; DockHost never does - every channel
-// is always written, so a pane never asks "am I mobile?"
+// StackHost (the <900px host) reads the focused title and back action;
+// DockHost reads hydrated titles by pane ID. Every channel is written
+// independently of the host, so a pane never asks "am I mobile?"
 // (2026-07-30-mobile-session-layout-design.md, decision 2).
 //
 // paneTitle: the focused pane's TITLE, published by PaneScaffold (the
@@ -9,6 +10,10 @@
 // publishing (no pane mounted, or the publishing pane just unmounted), and
 // StackHost's bar simply shows nothing between back and the drawer
 // trigger, as before.
+//
+// paneTitles: hydrated titles keyed by the owning pane, so desktop tabs can
+// name a resource already loaded by its pane without another data reader.
+// The descriptor supplies the fallback until that pane publishes a title.
 //
 // paneBack: the focused pane's own "up" target, for a pane whose internal
 // drill-down the workspace cannot see - settings is a SINGLETON pane, so
@@ -26,6 +31,8 @@ import { createStore } from "zustand/vanilla";
 export interface ChromeStoreState {
   paneTitle: string | null;
   setPaneTitle(title: string | null): void;
+  paneTitles: ReadonlyMap<string, string>;
+  setPaneTitleFor(paneId: string, title: string | null): void;
   paneBack: (() => void) | null;
   setPaneBack(handler: (() => void) | null): void;
 }
@@ -33,6 +40,15 @@ export interface ChromeStoreState {
 export const chromeStore = createStore<ChromeStoreState>()((set) => ({
   paneTitle: null,
   setPaneTitle: (title) => set({ paneTitle: title }),
+  paneTitles: new Map(),
+  setPaneTitleFor: (paneId, title) =>
+    set((state) => {
+      if ((state.paneTitles.get(paneId) ?? null) === title) return state;
+      const paneTitles = new Map(state.paneTitles);
+      if (title === null) paneTitles.delete(paneId);
+      else paneTitles.set(paneId, title);
+      return { paneTitles };
+    }),
   paneBack: null,
   setPaneBack: (handler) => set({ paneBack: handler }),
 }));
@@ -45,5 +61,5 @@ export function useChromeStore<T>(selector: (state: ChromeStoreState) => T): T {
 // mirrors workspace.ts's resetWorkspaceStoreForTests precedent. No
 // production code should ever call this.
 export function resetChromeStoreForTests(): void {
-  chromeStore.setState({ paneTitle: null, paneBack: null });
+  chromeStore.setState({ paneTitle: null, paneTitles: new Map(), paneBack: null });
 }

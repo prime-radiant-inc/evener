@@ -24,6 +24,7 @@ import (
 )
 
 func TestDelegateResourceBootstrap_RootOwnsOneController(t *testing.T) {
+	t.Parallel()
 	sess, _, _ := newDelegateResourceBootstrapSession(t)
 
 	if pointer := delegateControllerPointer(t, sess); pointer == 0 {
@@ -32,6 +33,7 @@ func TestDelegateResourceBootstrap_RootOwnsOneController(t *testing.T) {
 }
 
 func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	rootController := delegateControllerPointer(t, root)
 
@@ -120,6 +122,7 @@ func TestDelegateResourceBootstrap_LegacyDelegateWatchStateFailsClosed(t *testin
 }
 
 func TestDelegateResourceBootstrap_ShellOnlyAndStableWatchStateOpen(t *testing.T) {
+	t.Parallel()
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
 	removeDelegateStoreIfPresent(t, stateDir, meta.ID)
 	jobPath := filepath.Join(jobsDir(stateDir, meta.ID), "jobs.jsonl")
@@ -155,6 +158,7 @@ func TestDelegateResourceBootstrap_ShellOnlyAndStableWatchStateOpen(t *testing.T
 }
 
 func TestDelegateResourceBootstrap_UnknownStoreVersionFailsClosed(t *testing.T) {
+	t.Parallel()
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
 	path := delegateResourceStorePath(stateDir, meta.ID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -284,6 +288,7 @@ func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
 }
 
 func TestDelegateResourceBootstrap_WorkingDirEACCESPreservesResumability(t *testing.T) {
+	t.Parallel()
 	fixture := newIdleDelegateRestoreInputFixture(t)
 	testOnly := testConfig{
 		delegateRestoreStat: func(path string) (os.FileInfo, error) {
@@ -298,6 +303,7 @@ func TestDelegateResourceBootstrap_WorkingDirEACCESPreservesResumability(t *test
 }
 
 func TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability(t *testing.T) {
+	t.Parallel()
 	fixture := newIdleDelegateRestoreInputFixture(t)
 	testOnly := testConfig{
 		delegateRestoreReadFile: func(path string) ([]byte, error) {
@@ -314,11 +320,11 @@ func TestDelegateResourceBootstrap_MetadataEACCESPreservesResumability(t *testin
 func TestDelegateResourceBootstrap_TranscriptEIOPreservesResumability(t *testing.T) {
 	fixture := newIdleDelegateRestoreInputFixture(t)
 	previousOpen := openTranscriptFile
-	openTranscriptFile = func(path string) (io.ReadCloser, error) {
+	openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
 		if filepath.Clean(path) == filepath.Clean(fixture.transcriptPath) {
 			return nil, &os.PathError{Op: "open", Path: path, Err: syscall.EIO}
 		}
-		return previousOpen(path)
+		return previousOpen(path, root)
 	}
 	t.Cleanup(func() { openTranscriptFile = previousOpen })
 
@@ -481,7 +487,6 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
@@ -498,7 +503,7 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 
 func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *llm.Client, *provider.Profile, string, string, *fakeAdapter) {
 	t.Helper()
-	stateDir := t.TempDir()
+	stateDir := realTempDirForTest(t)
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
@@ -507,7 +512,6 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,

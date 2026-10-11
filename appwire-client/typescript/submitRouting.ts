@@ -79,13 +79,13 @@ export function decideSteerRoute(opts: {
 //          route; the daemon would accept a steer while idle but it lands in
 //          the next turn.
 //   drain  turn/drainAsSteer and turn/promoteQueuedAsSteer: steer && (active
-//          || idle with a non-empty queue). A Stop parks the daemon's queue
+//          || resting with a non-empty queue). A Stop parks the daemon's queue
 //          (agent/session_client_mutation.go QueueHeld); the entries stay and
-//          the session reports idle with a queue, which an unparked queue
-//          never does (agent/session_state.go WireState upgrades idle to
+//          the session reports resting with a queue, which an unparked queue
+//          never does (agent/session_state.go WireState upgrades resting to
 //          active on pending queued work). A drain or promote is one of the
 //          runs that releases it (agent/session_client_mutation_queue.go,
-//          no status precondition). Idle only: awaiting with a queue is the
+//          no status precondition). Resting only: awaiting with a queue is the
 //          ask boundary and that queue runs next on its own.
 //   queue  turn/queue: active && queue.
 //   send   turn/start: !active && send. The composer routes Send through
@@ -123,13 +123,32 @@ export interface SessionControls {
 // absent flag reads as false, the same as the hub withholding it.
 type ControlCapabilities = Partial<Pick<ThreadCapabilities, "steer" | "interrupt" | "queue" | "send">>;
 
+// A session resting between turns: idle, or resting on a failed turn (the
+// daemon reports systemError from a failed turn until the next turn starts;
+// agent/session_state.go RestingWireState). A queue a Stop parked is the
+// user's to release from either.
+export function isSessionResting(statusType: string): boolean {
+  return statusType === "idle" || statusType === "systemError";
+}
+
+// The statuses of a session that has shut down: its runtime is gone, and a
+// first message resumes it. "notLoaded" is the shape a cold exited evener
+// session arrives in (cmd/evener-hub/app_threadread.go's
+// pastEntryThreadForList stamps it) and "closed" is a live session that shut
+// down in front of the client; both are appwire's own vocabulary
+// (appwire/types.go's ThreadStatus* constants). "ended" never crosses the
+// wire, but deriveSendQueueAvailability treats it as terminal, so it is
+// matched here too rather than leaving the two modules disagreeing about the
+// same word. One set for every client, so none keeps its own copy.
+export const SHUT_DOWN_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
+
 export function sessionControls(
   statusType: string,
   capabilities: ControlCapabilities,
   queueDepth: number,
 ): SessionControls {
   const active = isTurnActive(statusType);
-  const parked = statusType === "idle" && queueDepth > 0;
+  const parked = isQueueParked(statusType, queueDepth);
   const controls: SessionControls = {
     stop: active && capabilities.interrupt === true,
     steer: canSteer(statusType, capabilities),
@@ -156,6 +175,14 @@ export function isTurnActive(statusType: string): boolean {
   return statusType === "active";
 }
 
+// A Stop parks the queue: the session rests with messages still queued, which
+// an unparked queue never does (a queue behind a running turn or a pending
+// question is waiting, not parked). The one statement of that rule, for the
+// controls here and for surfaces that show a parked queue.
+export function isQueueParked(statusType: string, queueDepth: number): boolean {
+  return isSessionResting(statusType) && queueDepth > 0;
+}
+
 export function canSteer(statusType: string, capabilities: Partial<Pick<ThreadCapabilities, "steer">>): boolean {
   return isTurnActive(statusType) && capabilities.steer === true;
 }
@@ -166,5 +193,5 @@ export function canDrainQueue(
   queueDepth: number,
 ): boolean {
   if (capabilities.steer !== true) return false;
-  return isTurnActive(statusType) || (statusType === "idle" && queueDepth > 0);
+  return isTurnActive(statusType) || isQueueParked(statusType, queueDepth);
 }

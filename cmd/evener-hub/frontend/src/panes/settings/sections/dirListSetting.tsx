@@ -20,7 +20,8 @@
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useId, useState } from "react";
-import { directoryActions, extensionsStore, useExtensionsStore } from "../../../stores/extensions";
+import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
+import { LOCAL_HOST } from "../../../stores/hostRouting";
 import {
   Button,
   type CollectionAddResult,
@@ -36,7 +37,7 @@ import {
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { DirectoryActions } from "../../../widgets/pathfield";
 import styles from "./dirListSetting.module.css";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
   section: requireClass(styles.section, "dirListSetting.module.css", "section"),
@@ -170,6 +171,9 @@ export interface DirListSettingProps {
   wireField: "pluginDirs" | "skillsDirs";
   label: string;
   copy: string;
+  /** The host whose own directory list this instance edits (component 07b).
+   * Defaults to the local hub, so a direct render is today's local section. */
+  host?: string;
 }
 
 /**
@@ -180,10 +184,14 @@ export interface DirListSettingProps {
  * actually being ready - see the mount effect's own comment), validates an
  * add via evener/path/validate before saving, and confirms every row removal.
  */
-export function DirListSetting({ wireField, label, copy }: DirListSettingProps) {
-  const layer = useExtensionsStore((s) => s.launchLayer);
-  const loading = useExtensionsStore((s) => s.launchLayerLoading);
-  const error = useExtensionsStore((s) => s.launchLayerError);
+export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: DirListSettingProps) {
+  // The extensions instance for the selected host: the controller's own store
+  // for the local hub, a per-host instance (over evener/host/request) for a
+  // remote one, so its launch layer and path helpers are that host's own.
+  const store = extensionsStoreForHost(host);
+  const layer = useExtensionsStoreForHost(host, (s) => s.launchLayer);
+  const loading = useExtensionsStoreForHost(host, (s) => s.launchLayerLoading);
+  const error = useExtensionsStoreForHost(host, (s) => s.launchLayerError);
   const toasts = useToasts();
 
   // useConnectedEffect (not a bare useEffect): a direct deep link to
@@ -191,16 +199,16 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
   // before AppShell's own connect() handshake finishes, and fetchLaunchLayer
   // requires a connected client - see that hook's own doc comment for the
   // race this guards against.
-  useConnectedEffect(() => extensionsStore.getState().fetchLaunchLayer(), []);
+  useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
   async function handleAdd(path: string): Promise<CollectionAddResult> {
-    const validated = await extensionsStore.getState().validatePath(path, "dir");
+    const validated = await store.getState().validatePath(path, "dir");
     if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
-    const current = extensionsStore.getState().launchLayer ?? ({} as LaunchConfigLayer);
+    const current = store.getState().launchLayer ?? ({} as LaunchConfigLayer);
     const canonical = validated.path || path;
     const nextList = [...(current[wireField] ?? []), canonical];
     try {
-      await extensionsStore.getState().setLaunchLayer({ ...current, [wireField]: nextList });
+      await store.getState().setLaunchLayer({ ...current, [wireField]: nextList });
       return { ok: true };
     } catch (err) {
       return { ok: false, error: friendlyErrorMessage(err) };
@@ -208,10 +216,10 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
   }
 
   async function handleRemove(path: string): Promise<void> {
-    const current = extensionsStore.getState().launchLayer ?? ({} as LaunchConfigLayer);
+    const current = store.getState().launchLayer ?? ({} as LaunchConfigLayer);
     const nextList = (current[wireField] ?? []).filter((p) => p !== path);
     try {
-      await extensionsStore.getState().setLaunchLayer({ ...current, [wireField]: nextList });
+      await store.getState().setLaunchLayer({ ...current, [wireField]: nextList });
     } catch (err) {
       toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     }
@@ -241,14 +249,17 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
         <Skeleton />
       ) : (
         <PathListEditor
-          directory={directoryActions}
+          directory={{
+            validatePath: (path, kind) => store.getState().validatePath(path, kind),
+            createDirectory: (path) => store.getState().createDirectory(path),
+          }}
           label={label}
           addLabel="New directory"
           kind="dir"
           items={items}
           onAdd={handleAdd}
           onRemove={handleRemove}
-          complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+          complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
           emptyMessage={`No ${lowerLabel}. Add one below.`}
           removeConfirmTitle="Remove directory"
           removeConfirmBody={(path) => `Remove "${path}" from ${lowerLabel}?`}

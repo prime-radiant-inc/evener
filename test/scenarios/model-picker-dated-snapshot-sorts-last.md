@@ -134,7 +134,7 @@ Investigated and ruled out:
   openrouter ids (including the qwen dated pair) satisfy that filter, so
   they never reach the picker at all regardless of this track's own code.
   The provider registry replaced that catalog filter with the spec §5
-  visibility rule (`llm/client.go#liveSaysNoTools`), which drops a row only
+  visibility rule (`llm/client.go#LiveSaysNoTools`), which drops a row only
   when the provider's own listing says it serves no tools.
 
 Given no live path existed, the rule was verified as passing, on that

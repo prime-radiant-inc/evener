@@ -7,6 +7,7 @@ import (
 	"log"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,14 @@ type ServerConfig struct {
 	Version    string
 	SourceID   string
 	Features   appwire.FeatureSet
+	// OS, Arch and Roots describe the serving machine, reported in
+	// ServerInfo so a client can show the hub's own machine's system and
+	// project roots beside the hosts it reaches over SSH. Empty OS/Arch and a
+	// nil Roots leave them absent; a server that does not claim a machine
+	// leaves all three unset.
+	OS    string
+	Arch  string
+	Roots []string
 	// WebSocketTrace records raw data frames and lifecycle events for each
 	// accepted connection. Nil keeps tracing disabled.
 	WebSocketTrace *WebSocketTrace
@@ -50,6 +59,18 @@ type ServerConfig struct {
 	// ConnectionAdmissionContext captures immutable metadata before accepting
 	// any WebSocket frames. It must preserve the supplied context cancellation.
 	ConnectionAdmissionContext func(context.Context) context.Context
+	// ConcurrentRequest names requests beyond the built-in slow reads
+	// (concurrentDispatchMethod) that may leave the connection's serial worker,
+	// judged from the method and its params: the hub uses it for a forwarded
+	// read, whose cost is the remote host's. It must be pure and synchronous,
+	// and answer ok only for a request safe to run out of order against
+	// every other request on the connection, and that a client can simply
+	// retry: one beyond its full pool (concurrentRequestCap) is answered
+	// Unavailable without running. pool names what the request waits on (the
+	// hub names the remote host), and each pool has its own slots, so one
+	// slow pool cannot refuse another's requests. It runs on the serial
+	// worker, which has no panic barrier, so it must not panic. Nil adds none.
+	ConcurrentRequest func(method string, params json.RawMessage) (pool string, ok bool)
 }
 
 type SubscriptionAdmissionIntent uint8
@@ -88,6 +109,27 @@ const requestQueueCap = 64
 // error, no Unavailable — so later requests head-of-line wait for a read to
 // finish; that wait is the design's second deliberate scheduling change.
 const slowReadDispatchCap = 16
+
+// concurrentRequestCap bounds how many requests one connection holds in
+// flight in each pool a server's ConcurrentRequest names, apart from the slow
+// reads' slots so neither kind can take the other's: the hub's forwarded
+// reads wait on remote hosts, and a slow host must not cost thread reads
+// their burst room. A stalled pool fills only its own slots. A full pool
+// refuses the next one as Unavailable rather than parking the worker: these
+// requests wait on something the hub does not bound (a remote host), so
+// parking would wedge every request on the connection behind them, the very
+// stall the pool exists to prevent. The
+// refusal is one a read can simply retry. It is sized well past a pane's
+// burst (a spawn form opened on a remote host sends about 7). The goroutines
+// it bounds are cheap.
+const concurrentRequestCap = 32
+
+// concurrentRequestTotalCap bounds a connection's admitted requests across
+// all its pools. Pool names come from the requests themselves (the hub's are
+// the host names a client sends), so without it a client could hold any number
+// of goroutines by naming a new pool each time. It leaves room for four
+// stalled hosts' full pools.
+const concurrentRequestTotalCap = 4 * concurrentRequestCap
 
 // slowReadCapStallAdvisory is how long a single blocked slow-read acquire
 // parks before the worker reports the wedged lane — the same scale as
@@ -277,14 +319,16 @@ func (s *Server) NewConnection(id string) *Connection {
 	// (at 32 this side evicted live clients whose send loop napped through a
 	// turn-boundary burst on a loaded machine).
 	return &Connection{
-		id:                id,
-		server:            s,
-		send:              make(chan appwire.Message, appwire.NotificationBufferCap),
-		requests:          make(chan admittedRequest, s.requestQueueCapacity),
-		slowReadSlots:     make(chan struct{}, slowReadDispatchCap),
-		slowReadInflight:  map[string]int{},
-		workerExited:      make(chan struct{}),
-		pendingAdmissions: map[*subscriptionAdmission]struct{}{},
+		id:                           id,
+		server:                       s,
+		send:                         make(chan appwire.Message, appwire.NotificationBufferCap),
+		requests:                     make(chan admittedRequest, s.requestQueueCapacity),
+		slowReadSlots:                make(chan struct{}, slowReadDispatchCap),
+		requestPools:                 make(map[string]int),
+		requestPoolSaturationAdvised: make(map[string]bool),
+		slowReadInflight:             map[string]int{},
+		workerExited:                 make(chan struct{}),
+		pendingAdmissions:            map[*subscriptionAdmission]struct{}{},
 	}
 }
 
@@ -505,6 +549,9 @@ func (s *Server) SetBeforeSubscriptionGate(fn func()) {
 
 func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) (appwire.InitializeResponse, error) {
 	if !s.cfg.AdapterNativeInitialize && params.ProtocolVersion != appwire.ProtocolVersion {
+		if olderProtocolVersion(params.ProtocolVersion) {
+			return appwire.InitializeResponse{}, appwire.UpgradeRequired(params.ProtocolVersion, appwire.ProtocolVersion)
+		}
 		return appwire.InitializeResponse{}, appwire.InvalidRequest(
 			fmt.Sprintf("protocol version %q is incompatible; want %q", params.ProtocolVersion, appwire.ProtocolVersion),
 		)
@@ -518,12 +565,38 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 		capability = s.cfg.NavigationCapability()
 	}
 	return appwire.InitializeResponse{
-		ServerInfo:      appwire.ServerInfo{Name: s.cfg.ServerName, Version: s.cfg.Version},
+		ServerInfo: appwire.ServerInfo{
+			Name:    s.cfg.ServerName,
+			Version: s.cfg.Version,
+			OS:      s.cfg.OS,
+			Arch:    s.cfg.Arch,
+			Roots:   append([]string(nil), s.cfg.Roots...),
+		},
 		ProtocolVersion: protocolVersion,
 		SourceID:        s.cfg.SourceID,
 		Features:        s.cfg.Features,
 		Navigation:      navigationCapability(capability),
 	}, nil
+}
+
+// olderProtocolVersion reports whether version is an AppWire protocol version
+// ("evener-appwire-v<N>") older than the one this server speaks.
+func olderProtocolVersion(version string) bool {
+	n, ok := protocolVersionNumber(version)
+	current, currentOK := protocolVersionNumber(appwire.ProtocolVersion)
+	return ok && currentOK && n < current
+}
+
+func protocolVersionNumber(version string) (int, bool) {
+	digits, ok := strings.CutPrefix(version, "evener-appwire-v")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 0 || strconv.Itoa(n) != digits {
+		return 0, false
+	}
+	return n, true
 }
 
 func navigationCapability(capability *appwire.NavigationCapability) *appwire.NavigationCapability {
@@ -560,9 +633,25 @@ type Connection struct {
 	// before spawning a slow read; the slow-read goroutine releases it when
 	// handleAndEnqueue returns.
 	slowReadSlots chan struct{}
+	// requestPools counts, by the pool ConcurrentRequest named, the admitted
+	// requests in flight; each pool holds at most concurrentRequestCap, and
+	// requestsInFlight, their sum, at most concurrentRequestTotalCap.
+	// requestPoolsMu guards both: the worker takes slots and the requests'
+	// goroutines free them.
+	requestPoolsMu   sync.Mutex
+	requestPools     map[string]int
+	requestsInFlight int
+	// requestPoolSaturationAdvised marks the pools whose fill has been
+	// logged. requestPoolsMu guards it, and a pool's mark goes when the pool
+	// drains, so it holds only pools in use however many names clients send:
+	// a pool reports once each time it fills.
+	requestPoolSaturationAdvised map[string]bool
 	// capSaturationAdvised makes the cap-saturation advisory one-shot per
 	// connection. Only the worker goroutine touches it.
 	capSaturationAdvised bool
+	// requestTotalSaturationAdvised does the same for the connection's total
+	// of admitted requests. Only the worker goroutine touches it.
+	requestTotalSaturationAdvised bool
 	// slowReadMu guards slowReadInflight, the per-method tally of in-flight
 	// slow reads the stall advisory names.
 	slowReadMu       sync.Mutex
@@ -578,10 +667,21 @@ type Connection struct {
 	mu                sync.RWMutex
 	initialized       bool
 	recoveryRunning   bool
-	cancel            context.CancelFunc
-	responseMu        sync.Mutex
-	hydrationMu       sync.Mutex
-	hydrations        map[string]*hydrationResponseFinalizer
+	// recoveryClearID is the requestIDKey of the in-flight force-stop
+	// response, from the moment its handler finishes (markRecoveryClear)
+	// through the moment its transport.Send call actually returns
+	// (afterSend). It is the single source of truth for "some force-stop
+	// response still has to reach the wire": beforeSend does not clear it
+	// (only recoveryRunning, so the client-visible guarantee — recoveryRunning
+	// is already false before any byte of the response reaches the wire — is
+	// unchanged), so admission below can check recoveryClearID != "" the same
+	// way it checks recoveryRunning, covering enqueue and the transport write
+	// with one field instead of a second bool that could drift from it.
+	recoveryClearID string
+	cancel          context.CancelFunc
+	responseMu      sync.Mutex
+	hydrationMu     sync.Mutex
+	hydrations      map[string]*hydrationResponseFinalizer
 	// afterWrite holds the AfterResponseWritten callbacks, keyed the same way
 	// hydrations is (requestIDKey). afterWriteDrained records that
 	// runPendingAfterWrite has already run, so a callback arriving after the
@@ -735,6 +835,116 @@ func (c *Connection) takeAllHydrations() []*hydrationResponseFinalizer {
 	}
 	c.responseMu.Unlock()
 	return pending
+}
+
+// markRecoveryClear records resp's requestIDKey as the force-stop response
+// whose transmission should clear recoveryRunning. It must be called before
+// resp is enqueued, while recoveryRunning is still true (see the comment in
+// receiveInbound): the flag has to survive the enqueue itself, and beforeSend
+// clears it only once the send loop dequeues this exact response, right
+// before it reaches the transport.
+func (c *Connection) markRecoveryClear(resp appwire.Message) string {
+	id, _ := responseHydrationOutcome(resp)
+	if id == "" {
+		return ""
+	}
+	c.mu.Lock()
+	c.recoveryClearID = id
+	c.mu.Unlock()
+	return id
+}
+
+// clearRecoveryOnPanic runs fn, and if fn panics, rolls back the force-stop
+// busy flag before letting the panic continue to fn's own caller. It exists
+// for the one gap markRecoveryClear/beforeSend otherwise leaves: fn is the
+// enqueue step, and beforeSend — the thing that normally clears the flag —
+// only ever runs once the send loop dequeues the response fn was supposed to
+// place on the send channel. If fn panics first, that response never gets
+// there, beforeSend never runs for it, and without this rollback the
+// connection would refuse every force stop from then on. The panic itself
+// is deliberately not recovered here — handleRecovered's own barrier (fn
+// runs from inside its onResponse continuation) still logs it and answers
+// the request — this only repairs the connection-local state a panic mid
+// enqueue would otherwise strand.
+//
+// The rollback only clears state still keyed to id (the response this call
+// marked via markRecoveryClear), comparing exactly like beforeSend/afterSend
+// do: fn can panic after the send loop already transmitted this response and
+// admitted a newer force stop, and an unconditional clear would wipe that
+// newer force stop's state instead of just this one's.
+func (c *Connection) clearRecoveryOnPanic(id string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.mu.Lock()
+			if c.recoveryClearID == id {
+				c.recoveryClearID = ""
+				c.recoveryRunning = false
+			}
+			c.mu.Unlock()
+			panic(r)
+		}
+	}()
+	fn()
+}
+
+// beforeSend runs on the send loop immediately before the transport call for
+// every outbound frame, so it stays cheap for the common case (no force stop
+// in flight) via the RLock check below: when msg is the response
+// markRecoveryClear tagged, it clears recoveryRunning here — strictly before
+// Send, not after: Send can block or fail against a peer that stopped
+// draining, so clearing only once it returns would (as an earlier version of
+// this fix did) leave a gap between the client receiving the frame and the
+// flag actually clearing. Clearing immediately before the call instead keeps
+// a real ordering guarantee: this runs in the same goroutine as Send,
+// strictly before it in program order, so the client cannot observe the
+// response before recoveryRunning is already false.
+//
+// recoveryClearID is deliberately left set (not cleared here): admission
+// checks it the same way it checks recoveryRunning, so a force stop is still
+// refused for as long as Send is actually in flight — a blocked write, not
+// just a full outbound buffer, is otherwise a second gap this same
+// admission check needs to cover. afterSend clears it once Send returns.
+func (c *Connection) beforeSend(msg appwire.Message) {
+	c.mu.RLock()
+	clearID := c.recoveryClearID
+	c.mu.RUnlock()
+	if clearID == "" {
+		return
+	}
+	id, _ := responseHydrationOutcome(msg)
+	if id != clearID {
+		return
+	}
+	c.mu.Lock()
+	if c.recoveryClearID == id {
+		c.recoveryRunning = false
+	}
+	c.mu.Unlock()
+}
+
+// afterSend runs on the send loop immediately after a successful transport
+// call, the send-loop half of beforeSend: it clears recoveryClearID once
+// Send has actually returned for the response beforeSend marked, ending
+// admission's refusal window. It is wired in beside responseWritten, which
+// already runs at this exact point for an unrelated purpose (the
+// AfterResponseWritten callback), rather than adding a third send-loop
+// callback parameter for one more single-purpose hook.
+func (c *Connection) afterSend(msg appwire.Message) {
+	c.mu.RLock()
+	clearID := c.recoveryClearID
+	c.mu.RUnlock()
+	if clearID == "" {
+		return
+	}
+	id, _ := responseHydrationOutcome(msg)
+	if id != clearID {
+		return
+	}
+	c.mu.Lock()
+	if c.recoveryClearID == id {
+		c.recoveryClearID = ""
+	}
+	c.mu.Unlock()
 }
 
 // responseWritten runs the after-write callback registered for msg's request,
@@ -1365,7 +1575,32 @@ func concurrentDispatchMethod(method string) bool {
 		// out of order: hubUpdateMu plus the cross-process install lock
 		// fail a concurrent apply fast, and the restart waits on its own
 		// response flush rather than connection order.
-		appwire.MethodEvenerUpdateApply:
+		appwire.MethodEvenerUpdateApply,
+		// evener/activity/read waits up to its per-host budget on each
+		// attached host, and a phone polls it every ten seconds on the
+		// connection its sends ride. It writes nothing, and each answer
+		// replaces the last, so order does not matter to the poller.
+		appwire.MethodEvenerActivityRead,
+		// evener/jobs/list builds the whole activity tree: seconds and
+		// megabytes for a delegate-heavy session, and the web UI refetches
+		// it on every delegate update on the socket its navigation rides.
+		// It writes nothing (the shared fold caches are mutex-guarded and
+		// already serve every connection at once), and the client asks for
+		// one tree at a time and discards a response that is stale or from
+		// another revision, so answer order does not matter.
+		appwire.MethodEvenerJobsList,
+		// evener/plugin/checkUpdates waits on every installed plugin's git
+		// remote (each under its own timeout, a few at a time) when a
+		// plugins view opens. It changes nothing installed (the answers it
+		// keeps are guarded by the plugins manager's own mutex), and each
+		// answer replaces the last, so order does not matter.
+		appwire.MethodEvenerPluginCheckUpdates,
+		// Session activity reads may reconstruct retained journals. They are
+		// read-only and carry request cancellation into bounded reconstruction.
+		appwire.MethodEvenerThreadActivityRead,
+		appwire.MethodEvenerThreadDelegatesList,
+		appwire.MethodEvenerThreadJobsList,
+		appwire.MethodEvenerThreadWatchesList:
 		return true
 	}
 	return false
@@ -1400,20 +1635,72 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodEvenerThreadForceStop && c.isInitialized() {
 		c.mu.Lock()
-		busy := c.recoveryRunning
+		// recoveryClearID != "" covers the gap between beforeSend clearing
+		// recoveryRunning and afterSend confirming the response actually
+		// reached the transport: without it, a force stop whose write is
+		// merely slow (not blocked behind a full buffer, which
+		// recoveryRunning alone already covers) would be admitted while the
+		// prior one is still being transmitted.
+		//
+		// This does trade back a sliver of the #2469 guarantee: between
+		// transport.Send handing the frame to the socket and afterSend
+		// running (a handful of instructions in the same goroutine, no I/O),
+		// a client that received the response and immediately fires a
+		// sequential force stop could still see a spurious "already
+		// running" refusal. Closing that sliver would mean clearing
+		// recoveryClearID in beforeSend too - which is exactly what would
+		// reopen the (much larger, blocked-write-duration) admission window
+		// this field exists to close. Deliberately kept as an over-refusal
+		// this narrow rather than reintroduced as an under-refusal this
+		// wide.
+		busy := c.recoveryRunning || c.recoveryClearID != ""
 		if !busy {
 			c.recoveryRunning = true
 		}
 		c.mu.Unlock()
 		if busy {
-			c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable("force stop is already running")))
+			// This enqueue runs directly in the receive loop's goroutine, with
+			// no handler and so no handleRecovered call to barrier it — recoverPanic
+			// is the barrier here, the same one handleRecovered uses internally,
+			// so a panic enqueueing the refusal can't crash this goroutine (and,
+			// since nothing above it recovers either, the whole process) any more
+			// than a panic enqueueing an admitted force stop's real response can.
+			c.recoverPanic(msg, func() {
+				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable("force stop is already running")))
+			})
 			return true
 		}
 		// Recovery must reach ownership cancellation even when the serial worker
 		// is awaiting an unresponsive daemon. Other mutations retain FIFO order.
+		// recoveryRunning stays true across this whole dispatch, including the
+		// enqueue: enqueueResponse can block for a long time against a peer
+		// that has stopped draining (a full outbound buffer parks it until the
+		// send loop catches up or the connection ends), and clearing the flag
+		// any earlier than that would let a flood of force stops pile up
+		// dispatch goroutines behind it with no bound — the same unbounded
+		// backlog the flag exists to prevent for every other mutation.
+		//
+		// markRecoveryClear instead defers the clear to beforeSend, which the
+		// send loop runs immediately before handing this exact response to the
+		// transport. That keeps the ordering guarantee the flag depends on: a
+		// channel send happens before the corresponding receive completes, so
+		// the send loop can never dequeue (and so never transmit) this
+		// response before beforeSend has already cleared the flag — a client
+		// that pipelines a second force stop right behind the first can never
+		// observe the flag still set for a recovery that has already been
+		// handed to the transport.
+		//
+		// clearRecoveryOnPanic covers the gap that leaves: if enqueueDispatched
+		// panics before the response ever reaches the send channel, beforeSend
+		// — the only other thing that clears the flag — never runs for it, and
+		// the connection would refuse every force stop from then on. The panic
+		// itself is still handleRecovered's to log and contain; this only
+		// rolls the flag back first.
 		go func() {
-			defer func() { c.mu.Lock(); c.recoveryRunning = false; c.mu.Unlock() }()
-			c.handleAndEnqueue(ctx, msg)
+			c.handleRecovered(ctx, msg, func(resp appwire.Message) {
+				id := c.markRecoveryClear(resp)
+				c.clearRecoveryOnPanic(id, func() { c.enqueueDispatched(ctx, resp) })
+			})
 		}()
 		return true
 	}
@@ -1561,9 +1848,10 @@ func formatTally(tally map[string]int) string {
 }
 
 // executeOrdered applies the dispatch policy to one dequeued frame: the
-// slow-read methods concurrentDispatchMethod names spawn onto their own
-// goroutine — a full-transcript read cannot head-of-line block the
-// connection — and everything else, initialize and notifications included,
+// slow-read methods concurrentDispatchMethod names, and the requests the
+// server's ConcurrentRequest admits, spawn onto their own goroutine — a
+// full-transcript read or a remote host's answer cannot head-of-line block
+// the connection — and everything else, initialize and notifications included,
 // executes inline in the worker so handlers keep the per-connection ordering
 // they were written against.
 //
@@ -1643,6 +1931,21 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 			c.handleAndEnqueue(ctx, msg)
 		}()
 		return
+	}
+	if concurrent := c.server.cfg.ConcurrentRequest; msg.Request != nil && concurrent != nil && c.isInitialized() {
+		if pool, ok := concurrent(msg.Request.Method, msg.Request.Params); ok {
+			if refusal := c.tryRequestSlot(ctx, pool); refusal != "" {
+				c.recoverPanic(msg, func() {
+					c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable(refusal)))
+				})
+				return
+			}
+			go func() {
+				defer c.releaseRequestSlot(pool)
+				c.handleAndEnqueue(ctx, msg)
+			}()
+			return
+		}
 	}
 	c.handleAndEnqueue(ctx, msg)
 }
@@ -1735,6 +2038,61 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 	return true
 }
 
+// tryRequestSlot takes one of pool's slots for a request the server's
+// ConcurrentRequest admitted, or at once returns the refusal to answer it
+// with when that pool or the connection's total is full
+// (concurrentRequestCap says why it never parks). A pool's first refusal each
+// time it fills, and the connection total's first, report through
+// Server.logf, as the slow-read cap's does.
+func (c *Connection) tryRequestSlot(ctx context.Context, pool string) (refusal string) {
+	// As the slow-read acquire does: a request dequeued after cancellation
+	// starts nothing. The caller's refusal enqueue then fails on the same
+	// cancellation, which tears the connection down anyway.
+	if err := ctx.Err(); err != nil {
+		return err.Error()
+	}
+	c.requestPoolsMu.Lock()
+	poolFull := c.requestPools[pool] >= concurrentRequestCap
+	totalFull := !poolFull && c.requestsInFlight >= concurrentRequestTotalCap
+	if !poolFull && !totalFull {
+		c.requestPools[pool]++
+		c.requestsInFlight++
+	}
+	advisePool := poolFull && !c.requestPoolSaturationAdvised[pool]
+	if advisePool {
+		c.requestPoolSaturationAdvised[pool] = true
+	}
+	c.requestPoolsMu.Unlock()
+	switch {
+	case poolFull:
+		refusal = fmt.Sprintf("this connection already has %d requests waiting on slow answers from %q; try again shortly", concurrentRequestCap, pool)
+		if advisePool {
+			c.server.logf("appserver: connection %s concurrent request pool is full for %q (%d in flight); refusing its further requests as Unavailable until one finishes", c.id, pool, concurrentRequestCap)
+		}
+	case totalFull:
+		refusal = fmt.Sprintf("this connection already has %d requests waiting on slow answers; try again shortly", concurrentRequestTotalCap)
+		if !c.requestTotalSaturationAdvised {
+			c.requestTotalSaturationAdvised = true
+			c.server.logf("appserver: connection %s concurrent request pools are full in total (%d in flight); refusing further admitted requests as Unavailable until one finishes", c.id, concurrentRequestTotalCap)
+		}
+	}
+	return refusal
+}
+
+// releaseRequestSlot frees the pool slot tryRequestSlot took, dropping a pool
+// with nothing left in flight, and its advisory mark, so the maps hold only
+// pools in use.
+func (c *Connection) releaseRequestSlot(pool string) {
+	c.requestPoolsMu.Lock()
+	defer c.requestPoolsMu.Unlock()
+	c.requestsInFlight--
+	c.requestPools[pool]--
+	if c.requestPools[pool] <= 0 {
+		delete(c.requestPools, pool)
+		delete(c.requestPoolSaturationAdvised, pool)
+	}
+}
+
 // releaseSlowReadSlot frees the cap slot when a slow read's handleAndEnqueue
 // returns — completion, not response delivery, is what drains the cap.
 func (c *Connection) releaseSlowReadSlot(method string) {
@@ -1764,15 +2122,60 @@ func (c *Connection) inflightSlowReads() string {
 // covers the receive loop's goroutine), and the inline path shares the
 // barrier so both dispatch modes contain a panic identically.
 func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) {
+	c.handleRecovered(ctx, msg, func(resp appwire.Message) {
+		c.enqueueDispatched(ctx, resp)
+	})
+}
+
+// handleRecovered is handleAndEnqueue's panic barrier as a continuation:
+// onResponse runs from inside the same defer/recover that covers
+// HandleMessage, so whatever onResponse does with the response — enqueue it,
+// or the force-stop dispatch's clear-then-enqueue — is covered by the
+// barrier exactly like the handler itself. Every onResponse call, on either
+// path below, goes through deliver, which recovers its own panics: a panic
+// from onResponse is logged and swallowed there without a follow-up
+// response (retrying it risks a duplicate frame, and a client that gets
+// nothing back still has its own request timeout), and — because deliver
+// never lets that panic reach this function's own defer — it can never
+// re-enter (and escape) the outer barrier either, including when onResponse
+// panics while delivering the recover branch's synthesized error.
+//
+// This continuation shape is why onResponse exists at all rather than a
+// return value: an earlier version returned the response and left the caller
+// to enqueue it outside this function, which quietly narrowed the barrier to
+// HandleMessage alone — a panic during the enqueue itself (a real,
+// independent failure mode: enqueueResponse touches hydration bookkeeping
+// beyond the plain channel send) could then escape the dispatch goroutine
+// uncaught.
+func (c *Connection) handleRecovered(ctx context.Context, msg appwire.Message, onResponse func(appwire.Message)) {
+	deliver := func(resp appwire.Message) {
+		c.recoverPanic(msg, func() { onResponse(resp) })
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
 			if msg.Request != nil {
-				c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
+				deliver(appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error handling request")))
 			}
 		}
 	}()
-	c.enqueueDispatched(ctx, c.HandleMessage(ctx, msg))
+	deliver(c.HandleMessage(ctx, msg))
+}
+
+// recoverPanic runs fn, logging and swallowing any panic instead of letting
+// it escape to fn's caller. It is the shared panic barrier every dispatch
+// path in this file uses outside HandleMessage's own coverage in
+// handleRecovered: handleRecovered's deliver uses it for onResponse, and the
+// force-stop busy-refusal path (which never reaches handleRecovered — there
+// is no handler response to deliver) uses it directly, so an enqueue panic
+// on either path is contained identically.
+func (c *Connection) recoverPanic(msg appwire.Message, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.server.panicLogf("appserver: panic handling %s: %v\n%s", methodOf(msg), r, debug.Stack())
+		}
+	}()
+	fn()
 }
 
 // methodOf names a message's method for the panic log; a frame that is

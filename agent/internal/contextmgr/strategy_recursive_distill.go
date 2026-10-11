@@ -26,6 +26,10 @@ type RecursiveDistillStrategy struct {
 	macroSummaries []string
 	lastMicroAt    int // turn count at last micro-summary
 	lastMacroAt    int // turn count at last macro-summary
+	// aux holds the last micro/macro summary failure so a turn that skips the
+	// cadence guard keeps reporting the degradation instead of clearing it
+	// before the next eligible retry.
+	aux auxFailure
 }
 
 // NewRecursiveDistillStrategy returns a RecursiveDistillStrategy bound to the
@@ -106,24 +110,40 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	turnCount := len(history)
 
 	// Micro-summary every 10 turns.
-	if turnCount-s.lastMicroAt >= 10 {
-		micro, err := s.microSummarize(ctx, history)
-		if err == nil {
-			s.microSummaries = append(s.microSummaries, micro)
-			s.lastMicroAt = turnCount
-		}
+	if turnCount-s.lastMicroAt < 10 {
+		return s.aux.stale()
+	}
 
-		// Macro-summary every 50 turns (when we've accumulated 5 micro-summaries).
-		if len(s.microSummaries) >= 5 && turnCount-s.lastMacroAt >= 50 {
-			macro, err := s.macroSummarize(ctx, s.microSummaries)
-			if err == nil {
-				s.macroSummaries = append(s.macroSummaries, macro)
-				s.microSummaries = nil // Reset after folding into macro.
-				s.lastMacroAt = turnCount
+	var auxErr error
+	micro, err := s.microSummarize(ctx, history)
+	if err != nil {
+		// Surface it and leave the watermark unchanged so the eligible action
+		// retries; the caller warns without failing the turn.
+		auxErr = fmt.Errorf("recursive-distill strategy: micro-summary: %w", err)
+	} else {
+		s.microSummaries = append(s.microSummaries, micro)
+		s.lastMicroAt = turnCount
+	}
+
+	// Macro-summary every 50 turns (when we've accumulated 5 micro-summaries).
+	// Attempted even when the micro step failed, as before this change.
+	if len(s.microSummaries) >= 5 && turnCount-s.lastMacroAt >= 50 {
+		macro, err := s.macroSummarize(ctx, s.microSummaries)
+		if err != nil {
+			if auxErr == nil {
+				auxErr = fmt.Errorf("recursive-distill strategy: macro-summary: %w", err)
 			}
+		} else {
+			s.macroSummaries = append(s.macroSummaries, macro)
+			s.microSummaries = nil // Reset after folding into macro.
+			s.lastMacroAt = turnCount
 		}
 	}
 
+	if auxErr != nil {
+		return s.aux.record(auxErr)
+	}
+	s.aux.clear()
 	return nil
 }
 

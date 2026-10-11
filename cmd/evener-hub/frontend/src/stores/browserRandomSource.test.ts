@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, expect, test, vi } from "vitest";
 import { browserRandomSource } from "./browserRandomSource";
 import { stubThrowingGetter } from "./throwingGetterTestUtils";

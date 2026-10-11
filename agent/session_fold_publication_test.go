@@ -247,7 +247,7 @@ func newScriptedSummaryCompactSession(t *testing.T, provider string, responder f
 func TestFoldPublication_ClaimedNoteNotReinjectedByConcurrentFold(t *testing.T) {
 	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "note-reinject-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	})
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold, note handoff lands in the preserved tail
 
@@ -303,7 +303,7 @@ func TestFoldPublication_NoteRepinnedMidFoldSurvivesPublication(t *testing.T) {
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	})
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
@@ -421,10 +421,10 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, "fold-order-cheap", func(llm.Request) llm.Response {
 		if summarizeCalls.Add(1) == 1 {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold A summary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold A summary\n[END SUMMARY]")}
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold B summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold B summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds actually fold
 
 	parked := make(chan struct{})
@@ -464,7 +464,7 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 		t.Fatalf("Compact (A): %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -504,8 +504,8 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMarker(t *testing.T) {
 	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "append-order-cheap", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	inCommit := make(chan struct{})
@@ -549,7 +549,7 @@ func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMark
 	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
 		t.Fatal("test setup: the concurrently recorded turn is not in live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -575,8 +575,8 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	compactErr := make(chan error, 1)
@@ -597,7 +597,7 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
 		t.Fatal("test setup: the merge-back did not carry the concurrently recorded turn into live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -779,8 +779,8 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	compactErr := make(chan error, 1)
@@ -819,7 +819,7 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 		t.Fatal("test setup: the live history no longer carries the private evidence")
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -870,8 +870,8 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	inCommit := make(chan struct{})
@@ -912,7 +912,7 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 	if indexOfTurnText(currentHistory(t, s), attnText) >= 0 {
 		t.Fatal("test setup: the removed attention turn is still in live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -934,10 +934,10 @@ func TestFoldPublication_StaleFoldFlushDoesNotOverrideNewerFoldNaming(t *testing
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, "stale-namer-cheap", func(llm.Request) llm.Response {
 		if summarizeCalls.Add(1) == 1 {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold A summary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold A summary\n[END SUMMARY]")}
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold B summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold B summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds actually fold
 
 	var nameMu sync.Mutex
@@ -1013,10 +1013,10 @@ func TestFoldPublication_NamerCompletingAfterNewerFoldFlushDoesNotOverride(t *te
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, provider, func(llm.Request) llm.Response {
 		if summarizeCalls.Add(1) == 1 {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold A summary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold A summary\n[END SUMMARY]")}
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold B summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold B summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds actually fold
 
 	// The REAL namer path (no nameSessionFromTextFunc seam): the completion
@@ -1179,10 +1179,10 @@ func TestFoldPublication_OlderFoldFlushSuppressedByNewerPublication(t *testing.T
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, "pub-order-gate-cheap", func(llm.Request) llm.Response {
 		if summarizeCalls.Add(1) == 1 {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold A summary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold A summary\n[END SUMMARY]")}
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold B summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nfold B summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds actually fold
 
 	// Launch-granularity observable: the flush gate suppresses BEFORE the
@@ -1296,8 +1296,8 @@ func TestFoldPublication_NamerGateEvaluationRacesPublication(t *testing.T) {
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, provider, func(llm.Request) llm.Response {
 		n := summarizeCalls.Add(1)
-		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\n## Progress\nfold %d summary\n[END SUMMARY]", n))}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): fold 1 actually folds
 
 	// Real namer path: fold 1's summary-naming call parks mid-LLM-call, so
@@ -1362,8 +1362,8 @@ func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, "meta-race-cheap", func(llm.Request) llm.Response {
 		n := summarizeCalls.Add(1)
-		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\n## Progress\nfold %d summary\n[END SUMMARY]", n))}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): the prep fold actually folds
 
 	entered := make(chan struct{})
@@ -1419,7 +1419,7 @@ func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatalf("final quiescent Compact: %v", err)
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -1488,8 +1488,8 @@ func TestApplyPendingForceCompact_WarnsWhenInstructionsUnpublished(t *testing.T)
 			if !ok {
 				t.Error("test setup: the simulated competing publish itself unexpectedly conflicted")
 			}
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nlosing summary\n[END SUMMARY]")}
-		}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nlosing summary\n[END SUMMARY]")}
+		}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 		evs, mu, done := collectEvents(s)
 		seedNumberedSessionHistory(t, s, 12)
 
@@ -1511,8 +1511,8 @@ func TestApplyPendingForceCompact_WarnsWhenInstructionsUnpublished(t *testing.T)
 	t.Run("published fold: no unpublished-instructions warning", func(t *testing.T) {
 		t.Parallel()
 		s := newScriptedSummaryCompactSession(t, "instr-win-cheap", func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-		}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+		}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 		evs, mu, done := collectEvents(s)
 		seedNumberedSessionHistory(t, s, 12)
 		if err := s.requestForceCompact(instructions); err != nil {
@@ -1666,7 +1666,6 @@ func TestPrepareModelRequest_LosingFoldDoesNotMutateSharedPayloads(t *testing.T)
 		// default compact strategy does not.
 		ContextStrategy:  "session-log",
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 	}), withoutGitSnapshot())
 
 	observationSecret := strings.Repeat("SECRET-OBSERVATION ", 40)
@@ -1753,8 +1752,8 @@ func TestSessionCompact_TotalLossReportsPublicationConflict(t *testing.T) {
 			t.Error("test setup: the simulated competing publish itself unexpectedly conflicted")
 		}
 		s.mu.Unlock()
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nlosing summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nlosing summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12)
 
 	err := s.Compact(context.Background())
@@ -1778,8 +1777,8 @@ func TestFoldPublication_StaleSteeringEffectCannotLandAfterNewerPublication(t *t
 	var summarizeCalls atomic.Int32
 	s := newScriptedSummaryCompactSession(t, "stale-steer-cheap", func(llm.Request) llm.Response {
 		n := summarizeCalls.Add(1)
-		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\n## Progress\nfold %d summary\n[END SUMMARY]", n))}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds produce a summary artifact
 	if !s.canInstructTool("read_transcript") {
 		t.Skip("session cannot instruct read_transcript; the transcript reminder never fires here")
@@ -1908,8 +1907,8 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 			close(entered)
 			<-proceed
 		}
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	if err := s.closeAttachedTranscript(); err != nil {
 		t.Fatalf("close default transcript: %v", err)
 	}
@@ -1947,7 +1946,7 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 	if err := os.WriteFile(restoredPath, crashFS.snapshot(), 0o600); err != nil {
 		t.Fatalf("write restored transcript: %v", err)
 	}
-	data, err := readTranscriptFull(restoredPath)
+	data, err := readTranscriptFull(restoredPath, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

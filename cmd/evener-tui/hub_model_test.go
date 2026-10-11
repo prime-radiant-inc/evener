@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 // collapseViewWhitespace flattens a rendered Overlay/popup view (box-drawing
@@ -1087,6 +1088,44 @@ func TestHubModelBrowseKeepsComposerVisibleAndTyping(t *testing.T) {
 	}
 }
 
+// TestHubModelBrowsePrintableRunesStayInComposer pins the text-first browse
+// ruling (kata 7hh0): every printable rune is composer text at any delivery
+// timing. The coalesced batch TestHubModelBrowseKeepsComposerVisibleAndTyping
+// covers must reach the composer, and so must the same runes delivered one
+// KeyMsg at a time — before the ruling, the sequential "f" fired the fork
+// binding mid-word and the two deliveries disagreed.
+func TestHubModelBrowsePrintableRunesStayInComposer(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Fork = true
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgUser, Text: "question", TurnIndex: 1, TranscriptEntryIndex: 1},
+		{Kind: transcript.MsgAssistant, Text: "answer"},
+	}
+	m.session.refreshViewport()
+	m.sessionView()
+	m.enterSessionBrowse(false)
+	m.sessionView()
+
+	for _, r := range "draft" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+
+	if !m.session.scrollMode {
+		t.Fatal("sequential printable runes must not leave transcript browse")
+	}
+	if m.forkDraft != nil {
+		t.Fatal("a printable rune in browse must not fire a command binding")
+	}
+	if got := m.session.input.Value(); got != "draft" {
+		t.Fatalf("sequential printable runes should land whole in the composer, got %q", got)
+	}
+}
+
 // TestHubModelBrowseFooterStillShowsEnterSend pins the rendering fact the
 // tmux e2e sync for issue #540 depends on: the browse-mode footer keeps the
 // composer panel — including its compose-mode "enter send" hint — on screen
@@ -1112,7 +1151,7 @@ func TestHubModelBrowseFooterStillShowsEnterSend(t *testing.T) {
 	m.enterSessionBrowse(false)
 
 	view := ansiPattern.ReplaceAllString(m.sessionView(), "")
-	if !strings.Contains(view, "esc/i/q: compose") {
+	if !strings.Contains(view, "esc: compose") {
 		t.Fatalf("browse footer should show the browse action bar:\n%s", view)
 	}
 	if !strings.Contains(view, "enter send") {
@@ -1249,28 +1288,39 @@ func TestHubModelBrowseEnterTogglesSelectedDetail(t *testing.T) {
 	}
 }
 
-func TestHubModelSessionBrowseExitKeysReturnToCompose(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		msg  tea.KeyMsg
-	}{
-		{name: "esc", msg: tea.KeyMsg{Type: tea.KeyEsc}},
-		{name: "i", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}}},
-		{name: "q", msg: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := newSessionHubModel(nil)
-			m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
-			m.enterSessionBrowse(false)
-			updated, _ := m.Update(tc.msg)
-			got := updated.(hubModel)
-			if got.session.scrollMode {
-				t.Fatalf("%s should return to compose", tc.msg.String())
-			}
-			if got.browseSelected != -1 {
-				t.Fatalf("%s browse selection=%d, want -1", tc.msg.String(), got.browseSelected)
-			}
-		})
+// TestHubModelSessionBrowseEscReturnsToCompose pins the text-first exit (kata
+// 7hh0): Escape is the only key that leaves browse. The old printable exits i
+// and q are composer text now.
+func TestHubModelSessionBrowseEscReturnsToCompose(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
+	m.enterSessionBrowse(false)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := updated.(hubModel)
+	if got.session.scrollMode {
+		t.Fatal("esc should return to compose")
+	}
+	if got.browseSelected != -1 {
+		t.Fatalf("esc browse selection=%d, want -1", got.browseSelected)
+	}
+}
+
+// TestHubModelBrowsePrintableExitLettersAreComposerText pins that i and q —
+// the browse exits removed by the text-first ruling (kata 7hh0) — are composer
+// text instead of commands.
+func TestHubModelBrowsePrintableExitLettersAreComposerText(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
+	m.enterSessionBrowse(false)
+	for _, r := range "iq" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+	if !m.session.scrollMode {
+		t.Fatal("i/q must not leave transcript browse")
+	}
+	if got := m.session.input.Value(); got != "iq" {
+		t.Fatalf("i/q should land in the composer, got %q", got)
 	}
 }
 
@@ -2383,8 +2433,8 @@ func TestHubModelInlineTurnBoundaryKeepsTheControls(t *testing.T) {
 		name         string
 		notification appwire.Notification
 	}{
-		{"turn/completed of the previous turn", *appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted}}).Notification},
-		{"turn/started of the next turn", *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress}}).Notification},
+		{"history/updated recording the previous turn's completion", *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusCompleted}}}).Notification},
+		{"thread/status/changed naming the next turn active", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, ActiveTurnID: "turn_2"}).Notification},
 		{"the status frame", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}).Notification},
 	}
 	for _, frame := range frames {
@@ -2504,7 +2554,7 @@ func TestHubModelStatusRefreshDoesNotRegressTheQueueRevision(t *testing.T) {
 // A failed turn is followed by its own status frame: the agent's failure exit
 // (agent/session_lifecycle.go endInputAtTurnFailure) emits EventSessionEnd with
 // Reason "turn_failed", which the projector announces as thread/status/changed
-// (idle), capabilities riding inline. The frame owns the transition: the
+// (systemError), capabilities riding inline. The frame owns the transition: the
 // failed turn/completed leaves the status alone, so the frame is seen as a
 // change (the capability refresh fires) and its inline set is applied at once.
 func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
@@ -2526,18 +2576,18 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Interrupt = true
 	m.session.processing = true
-	failed := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}})
+	failed := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}}})
 	m.applyHubNotification(*failed.Notification)
 
-	idle := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+	failedFrame := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     "01SEND",
 		Ref:          "local:01SEND",
-		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
 		Capabilities: &appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: false},
 	})
-	cmd := m.applyHubNotification(*idle.Notification)
-	if m.detail.State != appwire.ThreadStatusIdle || m.session.processing {
-		t.Fatalf("after the failed turn's status frame: state=%q processing=%v, want idle and not processing", m.detail.State, m.session.processing)
+	cmd := m.applyHubNotification(*failedFrame.Notification)
+	if m.detail.State != appwire.ThreadStatusSystemError || m.session.processing {
+		t.Fatalf("after the failed turn's status frame: state=%q processing=%v, want systemError and not processing", m.detail.State, m.session.processing)
 	}
 	if c := m.sessionControls(); !c.send || c.stop {
 		t.Fatalf("controls after the failed turn's status frame = %+v, want send offered and stop withdrawn from the frame's inline capabilities", c)
@@ -2549,10 +2599,40 @@ func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
 	m = newSessionHubModel(nil)
 	m.detail.State = appwire.ThreadStatusActive
 	m.detail.ActiveTurnID = "turn_2"
-	late := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}})
+	late := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turns: []appwire.Turn{{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}}})
 	m.applyHubNotification(*late.Notification)
 	if m.detail.State != appwire.ThreadStatusActive || m.detail.ActiveTurnID != "turn_2" {
 		t.Fatalf("a failed completion for a superseded turn changed the session: state=%q active=%q", m.detail.State, m.detail.ActiveTurnID)
+	}
+}
+
+// A failed turn leaves the session resting like an idle one: the daemon
+// reports systemError until the next turn starts. The resting affordances
+// keyed on idle hold for it too (appwire.IsRestingThreadStatus).
+func TestHubModelSessionRestingOnAFailedTurnKeepsRestedControls(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{
+		Ref:          "local:th_1",
+		SessionID:    "sess_1",
+		Live:         true,
+		State:        appwire.ThreadStatusSystemError,
+		Capabilities: hubSessionCapabilities{Send: true, Steer: true, Queue: true},
+	}
+	if c := m.sessionControls(); !c.send || c.stop || c.drain {
+		t.Fatalf("controls on a failed session with nothing queued = %+v, want send only", c)
+	}
+	if !hubNotesIdleWake(m.detail) {
+		t.Fatal("a live session resting on a failed turn must warn that saving a note wakes the agent")
+	}
+	before := len(m.session.messages)
+	updated, _ := m.handleSessionForceSteer()
+	if got := updated.(hubModel); len(got.session.messages) != before {
+		t.Fatalf("force-steer on a resting failed session with nothing queued added %+v, want the quiet no-op an idle session gets", got.session.messages[before:])
+	}
+	m.detail.Queue.Depth = 1
+	if c := m.sessionControls(); !c.drain {
+		t.Fatalf("controls with a parked queue on a failed session = %+v, want drain offered", c)
 	}
 }
 
@@ -3508,18 +3588,22 @@ func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	got.detail.ActiveTurnID = ""
 	got.detail.Capabilities.Interrupt = false
 	got.detail.Capabilities.Steer = false
-	params, err := json.Marshal(map[string]any{
-		"turn": appwire.Turn{ID: "turn_notified", Status: appwire.TurnStatusInProgress},
+	// The read model's turn/started replacement: an open turn's id rides
+	// thread/status/changed's own ActiveTurnID field (the spec's "Turn
+	// status" display rule), not a dedicated turn-boundary notification.
+	params, err := json.Marshal(appwire.ThreadStatusChangedParams{
+		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		ActiveTurnID: "turn_notified",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got.applyHubNotification(appwire.Notification{Method: appwire.NotifyTurnStarted, Params: params})
+	got.applyHubNotification(appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: params})
 	if got.detail.ActiveTurnID != "turn_notified" {
 		t.Fatalf("notified active turn id=%q", got.detail.ActiveTurnID)
 	}
 	if got.detail.Capabilities.Interrupt || got.detail.Capabilities.Steer {
-		t.Fatalf("turn/started mutated unsupported turn actions: %+v", got.detail.Capabilities)
+		t.Fatalf("thread/status/changed mutated unsupported turn actions: %+v", got.detail.Capabilities)
 	}
 }
 
@@ -3614,7 +3698,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	m := newSessionHubModel(client)
 	m.detail.Capabilities.Fork = true
 	// A live turn whose id and transcript entry index have diverged: the fork
-	// request must carry the ENTRY index, which is what sourceTurnId means.
+	// request must carry a sourceItemKey naming the ENTRY index.
 	m.session.messages = []transcript.ChatMessage{
 		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 2, TranscriptEntryIndex: 3},
 		{Kind: transcript.MsgAssistant, Text: "answer"},
@@ -3622,7 +3706,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if cmd != nil {
 		t.Fatal("starting a fork draft should be synchronous")
 	}
@@ -3651,7 +3735,8 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	if got.detail.SessionID != "02CHILD" {
 		t.Fatalf("detail=%+v", got.detail)
 	}
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -3668,7 +3753,7 @@ func TestHubModelBrowseForkRequiresUserMessageWithTranscriptEntryIndex(t *testin
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	got := updated.(hubModel)
 	if got.forkDraft != nil {
 		t.Fatalf("fork draft=%+v, want nil", got.forkDraft)
@@ -3689,7 +3774,7 @@ func TestHubModelBrowseForkRequiresSelectedUserMessage(t *testing.T) {
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if cmd != nil {
 		t.Fatal("invalid fork selection should not call hub")
 	}
@@ -3718,7 +3803,7 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if cmd != nil {
 		t.Fatal("starting a fork draft should be synchronous")
 	}
@@ -3744,7 +3829,8 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	if !strings.Contains(view, "Fork failed:") || !strings.Contains(view, "fork failed from test") {
 		t.Fatalf("missing fork failure notice:\n%s", view)
 	}
-	if gotReq.Ref != "local:01SEND" || gotReq.SourceTurnID != "3" || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 3})
+	if gotReq.Ref != "local:01SEND" || gotReq.SourceItemKey != wantKey || gotReq.EditedInput != "edited request" || gotReq.Label != "original before fork" {
 		t.Fatalf("fork request=%+v", gotReq)
 	}
 }
@@ -3885,14 +3971,14 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 	m.detail.Capabilities.Fork = true
 	m.enterSessionBrowse(false)
 	got = m.sessionView()
-	for _, want := range []string{"esc/i/q: compose", "f: fork selected user message", "ctrl+o: dashboard"} {
+	for _, want := range []string{"esc: compose", "ctrl+f: fork selected user message", "ctrl+o: dashboard"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("browse footer missing %q:\n%s", want, got)
 		}
 	}
 	m.detail.Capabilities.Fork = false
 	got = m.sessionView()
-	if strings.Contains(got, "f: fork") {
+	if strings.Contains(got, "ctrl+f: fork") {
 		t.Fatalf("browse footer advertised unavailable fork:\n%s", got)
 	}
 }
@@ -3916,7 +4002,7 @@ func TestHubModelForkCommandEntersBrowseMode(t *testing.T) {
 		t.Fatal("/fork should enter transcript browse mode")
 	}
 	view := got.sessionView()
-	for _, want := range []string{"Select a user message, then press f to fork.", "f: fork selected user message", "original request"} {
+	for _, want := range []string{"Select a user message with ctrl+up/ctrl+down, then press ctrl+f to fork.", "ctrl+f: fork selected user message", "original request"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("/fork view missing %q:\n%s", want, view)
 		}
@@ -4552,19 +4638,25 @@ func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
 		session: newModel(nil),
 	}
 
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: "other",
 		Ref:      "local:other",
-		Delta:    "wrong",
+		Item: appwire.OverlayItem{
+			Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "wrong"},
+		},
 	}).Notification)
 	if len(m.session.messages) != 0 {
 		t.Fatalf("messages=%+v, want no mutation from other session", m.session.messages)
 	}
 
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: "current",
 		Ref:      "local:current",
-		Delta:    "right",
+		Item: appwire.OverlayItem{
+			Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "right"},
+		},
 	}).Notification)
 	if len(m.session.messages) != 1 || m.session.messages[0].Text != "right" {
 		t.Fatalf("messages=%+v", m.session.messages)

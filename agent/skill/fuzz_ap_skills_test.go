@@ -38,6 +38,7 @@ func FuzzApSkillFileParse(f *testing.F) {
 		"no frontmatter at all",
 		"",
 		"---\n",
+		"name: a\ndescription: d\n---\nbody\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -75,7 +76,10 @@ func FuzzApSkillFileParse(f *testing.F) {
 			if err != nil {
 				t.Fatalf("LoadSkillBody on discovered skill %q errored: %v", meta.Name, err)
 			}
-			doc, perr := frontmatter.Parse(string(data))
+			// Derive the expected body through the same recovery Load applies, or a
+			// recovered delimiterless input would disagree on the body.
+			bodySource, _ := recoverMissingOpeningDelimiter(data)
+			doc, perr := frontmatter.Parse(string(bodySource))
 			if perr != nil {
 				t.Fatalf("frontmatter reparse failed after discovery: %v", perr)
 			}

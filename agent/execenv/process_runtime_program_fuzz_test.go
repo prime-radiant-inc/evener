@@ -16,6 +16,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // FuzzProcessRuntimeProgram exercises the public command, grep-ripgrep, stream,
@@ -273,6 +276,17 @@ func (c *processRuntimeCommand) appendTrace(root string, scratch map[string]stri
 func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace {
 	t.Helper()
 	root := t.TempDir()
+	// Container provisioning must not depend on the machine's /tmp (AGENTS.md's
+	// determinism rule), so this fixture points it at a base inside the fixture and
+	// made world-usable, exactly as the production bases are.
+	worldBase := filepath.Join(root, "world-temp")
+	if err := os.Mkdir(worldBase, 0o700); err != nil {
+		t.Fatalf("make fixture world temp base: %v", err)
+	}
+	if err := os.Chmod(worldBase, 0o777|os.ModeSticky); err != nil {
+		t.Fatalf("open fixture world temp base: %v", err)
+	}
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{worldBase}))
 	sub := filepath.Join(root, "sub")
 	venvBin := filepath.Join(sub, ".venv", "bin")
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {
@@ -316,6 +330,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		t.Fatalf("Platform = %q", platform)
 	}
 
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 	if _, err := env.ExecArgv(context.Background(), "tool", nil, 50, filepath.Join(filepath.Dir(root), "outside"), nil); err == nil {
 		t.Fatal("ExecArgv outside the root unexpectedly succeeded")
 	}
@@ -323,6 +338,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		t.Fatalf("outside-root command was configured or started: %+v", command)
 	}
 
+	env.Sandbox = nil
 	env.EnvPolicy = EnvPolicyNone
 	result, err := env.ExecArgv(context.Background(), "tool", []string{"--check"}, 50, "sub", map[string]string{
 		"PATH":    "/fixture/base-bin",
@@ -402,7 +418,7 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		return "/fixture/rg", nil
 	}
 	grep, err := env.Grep(context.Background(), "x; touch never", "sub", "*.go", true, 2, "")
-	if err != nil || grep != "one\ntwo" {
+	if err != nil || grep != searchresult.WithNotes("one\ntwo", grepTruncationNote(2)) {
 		t.Fatalf("Grep ripgrep success = %q, %v", grep, err)
 	}
 	// Grep hands ripgrep an argument vector directly (never a shell command
@@ -480,13 +496,14 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		t.Fatalf("StreamCommand detached wait=(%d, %v)", code, waitErr)
 	}
 
-	// The stream path initializes its PID tracker lazily and applies the same root
-	// containment before creating a runtime. Invalid roots therefore cannot consume
-	// a factory plan or reach Start.
+	// A confined stream rejects an external cwd before creating a runtime.
+	// The rejection must not consume a factory plan or reach Start.
 	env.runningPIDs = nil
+	env.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 	if handle, err := env.StreamCommand(context.Background(), "never", filepath.Join(filepath.Dir(root), "outside"), nil, &bytes.Buffer{}); err == nil || handle != nil {
 		t.Fatalf("outside-root StreamCommand = (%v, %v), want nil/error", handle, err)
 	}
+	env.Sandbox = nil
 	handle, err = env.StreamCommand(context.Background(), "stream-default-dir", "", nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("StreamCommand default directory: %v", err)
@@ -539,27 +556,62 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	processRuntimeCheckSystemAdapter(t)
 	factory.assertConsumed()
 	// Every spawn exports the lazily provisioned per-session scratch dir as
-	// EVENER_SCRATCH_DIR and TMPDIR under every env policy (commit bf79673f5,
+	// EVENER_SCRATCH_DIR under every env policy (commit bf79673f5,
 	// "feat(execenv): preserve developer PATH and always export session scratch
 	// vars"). SessionScratchDir reports it without provisioning; the spawns
 	// above already provisioned it. A WithWorkingDirectory clone does not
 	// inherit the parent's scratch: it provisions its own on first use.
+	//
+	// TMPDIR no longer names that scratch on THIS fixture. The env above carries
+	// no policy at all (Sandbox == nil), so its file tools are UNCONFINED and each
+	// env mints a world-usable session temp container in a host temp whose leaf is
+	// the exported TMPDIR (#495): a descendant that becomes another uid cannot
+	// write the private 0700 scratch, and that is the bug the split fixes. The
+	// write-blocked (file-tool-confined) shape, which keeps TMPDIR == scratch, is
+	// covered by agent/execenv/sandbox_lifecycle_test.go and the sandbox prompt
+	// tests.
 	scratch := env.SessionScratchDir()
 	childScratch := child.SessionScratchDir()
 	if scratch == "" || childScratch == "" || childScratch == scratch {
 		t.Fatalf("session scratch dirs = %q / child %q, want distinct nonempty", scratch, childScratch)
 	}
+	parentTmp := processRuntimeEnvMap(factory.command("argv-none").config.Env)["TMPDIR"]
+	childTmp := processRuntimeEnvMap(factory.command("child-argv").config.Env)["TMPDIR"]
+	for _, got := range []struct{ name, tmpDir, scratch string }{
+		{"env", parentTmp, scratch},
+		{"child", childTmp, childScratch},
+	} {
+		// The predicate encodes both platform answers; the oracle supplies the
+		// real one.
+		if err := processRuntimeSessionTmpError(got.name, got.tmpDir, got.scratch, sandbox.SessionTmpSupported); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, name := range []string{"argv-none", "argv-default", "argv-all", "argv-core"} {
 		processRuntimeAssertEnv(t, factory.command(name).config.Env, map[string]string{
 			"EVENER_SCRATCH_DIR": scratch,
-			"TMPDIR":             scratch,
+			"TMPDIR":             parentTmp,
 		}, nil)
 	}
 	processRuntimeAssertEnv(t, factory.command("child-argv").config.Env, map[string]string{
 		"EVENER_SCRATCH_DIR": childScratch,
-		"TMPDIR":             childScratch,
+		"TMPDIR":             childTmp,
 	}, nil)
-	scratchPlaceholders := map[string]string{scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH"}
+	// The container leaf is as random per environment as the scratch dir, so it
+	// has to be normalized too or the determinism oracle would see a fresh path on
+	// every replay. The container itself appears in no env value, so mapping the
+	// leaf is enough. Where TMPDIR names the scratch itself (no container), the
+	// scratch placeholder already covers it, so only add the temp placeholders
+	// when the paths differ.
+	scratchPlaceholders := map[string]string{
+		scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH",
+	}
+	if parentTmp != scratch {
+		scratchPlaceholders[parentTmp] = "$TMPDIR"
+	}
+	if childTmp != childScratch {
+		scratchPlaceholders[childTmp] = "$CHILD_TMPDIR"
+	}
 	for _, command := range factory.byName {
 		command.appendTrace(root, scratchPlaceholders)
 	}

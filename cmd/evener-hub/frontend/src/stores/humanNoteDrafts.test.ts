@@ -173,6 +173,14 @@ test("older B acknowledgment cannot clear a revert to A or a newer failed C", as
 });
 
 test("only a matching identity acknowledges and server text stays opaque", async () => {
+  // The session pane that renders the draft holds its ref, so the sweep the
+  // acknowledgment schedules keeps the now-clean record.
+  act(() => {
+    workspaceStore.setState({
+      panes: [{ id: "p_session", type: "session", params: { ref: "ref-a" }, slot: "main" }],
+      focusedPaneId: "p_session",
+    });
+  });
   const record = await persisted();
   syncHumanNote("ref-a", "A");
   const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
@@ -180,7 +188,7 @@ test("only a matching identity acknowledges and server text stays opaque", async
   act(() => acknowledgeHumanNote({ ...record, clientMutationId: "wrong" }, "wrong"));
   expect(result.current?.dirty).toBe(true);
   const canonical = " \n\tcanonical\u00a0e\u0301🙂  ";
-  act(() => acknowledgeHumanNote(record, canonical));
+  await act(async () => acknowledgeHumanNote(record, canonical));
   expect(result.current).toMatchObject({ text: canonical, dirty: false, saved: true, error: null });
 });
 
@@ -576,8 +584,11 @@ test("a blocked note accepted by another connection updates the draft through th
   // Another connection's dispatcher accepts the blocked save: the row moves
   // outbox -> optimistic (state "accepted"). This tab sees no write of its
   // own - only the shared storage changed, which is exactly the cross-tab
-  // shape the refresh exists to reconcile.
-  await storage.settleReceipt(original.clientMutationId, "pending");
+  // shape the refresh exists to reconcile. The write goes through its own
+  // connection to the same database: this tab's storage would notify this
+  // tab's own listeners, which another tab's write never does.
+  const otherConnection = new MutationOutboxIndexedDB({ indexedDB: globalThis.indexedDB });
+  await otherConnection.settleReceipt(original.clientMutationId, "pending");
   expect(await storage.getOutbox(original.clientMutationId)).toBeUndefined();
   expect((await storage.getOptimistic(original.clientMutationId))?.state).toBe("accepted");
   // Any pane mount drives the same refresh a persistence notification does;

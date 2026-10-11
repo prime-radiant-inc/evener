@@ -150,13 +150,20 @@ func newInstancesFixture(t *testing.T, env map[string]string) *instancesFixture 
 	t.Helper()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
+	// credentials.toml gets its own directory so a test that blocks its writes
+	// (breakCredentialWrites) does not also block the providers.toml write in the
+	// same mutation.
+	credsDir := filepath.Join(dir, "creds")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	tomlPath := filepath.Join(dir, "providers.toml")
-	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, env)
+	ctl := newTestInstancesController(t, tomlPath, credsDir, stateDir, env)
 	return &instancesFixture{
 		ctl:       ctl,
 		tomlPath:  tomlPath,
 		stateDir:  stateDir,
-		credsPath: filepath.Join(dir, "credentials.toml"),
+		credsPath: filepath.Join(credsDir, "credentials.toml"),
 		store:     ctl.auth.creds,
 	}
 }
@@ -171,8 +178,12 @@ func newFlakyReloadFixture(t *testing.T, storedKeyFor string, fail func(load int
 	t.Helper()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
+	credsDir := filepath.Join(dir, "creds")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	tomlPath := filepath.Join(dir, "providers.toml")
-	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, nil, instancesControllerHooks{
+	ctl := newTestInstancesController(t, tomlPath, credsDir, stateDir, nil, instancesControllerHooks{
 		seed: func(store *credentials.Store) {
 			if storedKeyFor == "" {
 				return
@@ -195,7 +206,7 @@ func newFlakyReloadFixture(t *testing.T, storedKeyFor string, fail func(load int
 		ctl:       ctl,
 		tomlPath:  tomlPath,
 		stateDir:  stateDir,
-		credsPath: filepath.Join(dir, "credentials.toml"),
+		credsPath: filepath.Join(credsDir, "credentials.toml"),
 		store:     ctl.auth.creds,
 	}
 }
@@ -242,6 +253,85 @@ api_key = "sk-inline"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
+	}
+}
+
+// TestInstances_UnreadableCredentialsStoreRefusesInsteadOfPanicking pins the
+// instance-callers half of TestAuth_UnreadableCredentialsStoreRefusesInsteadOfPanicking:
+// an unreadable credentials store is a first-class state (creds nil, the write
+// closures replaced with refusals), but the instance rename and remove paths
+// still dereferenced c.auth.creds directly. credentials.Store.Get takes its
+// receiver's lock, so a nil store panicked inside the RPC handler - in exactly
+// the configuration the series now tolerates. A rename or removal that cannot
+// see the store must refuse typed, before it persists any config change, rather
+// than panic or strand a credential under a name it just gave up.
+func TestInstances_UnreadableCredentialsStoreRefusesInsteadOfPanicking(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	// The default store a nil CredsStore resolves to: credentials.toml beside
+	// the state root (hubAuthCredentialsPath). The store refuses a file with
+	// group or other bits set, which is how a real file becomes unreadable
+	// without being absent.
+	credsPath := filepath.Join(root, "credentials.toml")
+	if err := os.WriteFile(credsPath, []byte("[providers]\n"), 0o600); err != nil {
+		t.Fatalf("write credentials.toml: %v", err)
+	}
+	if err := os.Chmod(credsPath, 0o644); err != nil {
+		t.Fatalf("chmod credentials.toml: %v", err)
+	}
+	if _, err := credentials.LoadStore(credsPath); err == nil {
+		t.Fatal("LoadStore accepted the fixture, so this test is not exercising an unreadable store")
+	}
+	providersToml := writeProvidersToml(t, root, bearerInstanceToml)
+	before, err := os.ReadFile(providersToml)
+	if err != nil {
+		t.Fatalf("read providers.toml: %v", err)
+	}
+	// The registry still resolves against a healthy store: only the auth
+	// controller's own store is unreadable, which is the state the mutation
+	// paths used to dereference.
+	healthy, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	auth := newHubAuthControllerWithStore(stateDir, nil)
+	auth.stateDir = stateDir
+	auth.providersConfigPath = providersToml
+	auth.reg = newTestRegistry(t, stateDir, providersToml, healthy, nil)
+	ctl := &hubInstancesController{reg: auth.reg, providersConfigPath: providersToml, auth: auth}
+
+	// The read paths route through storedKey, so the listing builds rather than
+	// panicking on a nil store.
+	if row := entry(t, ctl.List(), "work-ant"); row.Name != "work-ant" {
+		t.Fatalf("row = %+v, want the instance to still list", row)
+	}
+
+	// A rename refuses typed, naming the file the operator has to fix.
+	err = ctl.Edit(appwire.InstanceEditParams{Name: "work-ant", NewName: "work-ant-renamed"})
+	if err == nil {
+		t.Fatal("Edit renamed an instance with no readable credentials store")
+	}
+	assertWireCode(t, err, appwire.CodeInternalError)
+	if !strings.Contains(err.Error(), credsPath) {
+		t.Fatalf("rename refusal = %v, want it to name %s", err, credsPath)
+	}
+
+	// A removal refuses the same way.
+	if err := ctl.Remove(appwire.InstanceRemoveParams{Name: "work-ant"}); err == nil {
+		t.Fatal("Remove removed an instance with no readable credentials store")
+	} else {
+		assertWireCode(t, err, appwire.CodeInternalError)
+	}
+
+	// Neither persisted anything: providers.toml is byte-for-byte what it was,
+	// so no rename or removal reaches the file before the credential cleanup it
+	// cannot complete.
+	after, err := os.ReadFile(providersToml)
+	if err != nil {
+		t.Fatalf("read providers.toml after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("providers.toml changed under a refused rename/removal:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -511,6 +601,45 @@ func TestInstances_EditImplicitWritesShadowingEntry(t *testing.T) {
 	}
 	if after.ActiveSource != "env:GROQ_API_KEY" {
 		t.Fatalf("ActiveSource = %q; the shadowing entry must not break credential inheritance", after.ActiveSource)
+	}
+}
+
+// TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow is #1024: a
+// clear flag on an implicit instance (one the environment or a curated
+// provider supplies) has no authored value to clear. Writing the row back
+// would author [providers.<name>] with nothing but its id - an empty shadow
+// that changes no behavior (the name still inherits by matching) but leaves
+// noise in providers.toml. The clear is a no-op, not an error and not a write.
+func TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow(t *testing.T) {
+	cases := []struct {
+		name   string
+		params appwire.InstanceEditParams
+	}{
+		{"clearBaseUrl", appwire.InstanceEditParams{ClearBaseURL: true}},
+		{"clearProtocol", appwire.InstanceEditParams{ClearProtocol: true}},
+		{"clearSurface", appwire.InstanceEditParams{ClearSurface: true}},
+		{"clearAPIKeyEnv", appwire.InstanceEditParams{ClearAPIKeyEnv: true}},
+		{"clearCredentialHeader", appwire.InstanceEditParams{ClearCredentialHeader: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+			params := tc.params
+			params.Name = "groq"
+			if err := f.ctl.Edit(params); err != nil {
+				t.Fatalf("Edit(%s): %v", tc.name, err)
+			}
+			if providers := readConfigProviders(t, f.tomlPath); len(providers) != 0 {
+				t.Fatalf("a clear-only edit on an implicit instance authored %v", providers)
+			}
+			after := entry(t, f.ctl.List(), "groq")
+			if !after.Implicit {
+				t.Fatalf("groq stopped being implicit: %+v", after)
+			}
+			if after.ActiveSource != "env:GROQ_API_KEY" {
+				t.Fatalf("ActiveSource = %q, want the inherited credential left alone", after.ActiveSource)
+			}
+		})
 	}
 }
 
@@ -1192,6 +1321,72 @@ func TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails(t *testing.T
 	}
 }
 
+// A rollback restores the OAuth record byte for byte (the test above), but
+// the refresh-refusal marker (#2479) sits beside it in its own sidecar file:
+// without restoring that too, a removal that rolls back after deleting it
+// would leave the instance reporting signed-in and healthy even though its
+// refresh token is still permanently refused.
+func TestInstances_RemoveRestoresARefreshRefusalMarkerWhenTheConfigWriteFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record := makeOAuthRecord("work", "")
+	if err := authopenai.SaveAuth(f.stateDir, "work", record); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := authopenai.RecordRefreshRejection(f.stateDir, "work", record, time.Now()); err != nil {
+		t.Fatalf("RecordRefreshRejection: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+
+	restored, err := authopenai.LoadAuth(f.stateDir, "work")
+	if err != nil {
+		t.Fatalf("the OAuth record was not restored: %v", err)
+	}
+	if !authopenai.RefreshRejected(f.stateDir, "work", restored) {
+		t.Fatal("the refresh-refusal marker was not restored with the record")
+	}
+}
+
+// The marker is a best-effort, self-healing sidecar (the next failed refresh
+// re-notes it), unlike the OAuth record itself, so an unreadable marker must
+// not block a removal the way an unreadable record does.
+func TestInstances_RemoveIgnoresAnUnreadableRefreshRefusalMarker(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	// A directory where the marker file would be: os.ReadFile refuses it with
+	// something other than ErrNotExist.
+	if err := os.MkdirAll(authopenai.RefreshRejectionPath(f.stateDir, "work"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
+		t.Fatalf("Remove: %v, want the unreadable marker to be ignored", err)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); ok {
+		t.Fatal("the instance was not removed")
+	}
+}
+
 // The cleanup is two destructive steps, so its own failure has the same
 // asymmetry the config write has: the stored key is deleted before the OAuth
 // record is even attempted, and a failure on the second step leaves the
@@ -1756,6 +1951,7 @@ func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing
 // the name the caller re-authors after being told the removal failed, so they
 // still go back - losing them would report the failure and take the secret too.
 func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1771,22 +1967,16 @@ func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *te
 	// rollback write is what has to fail here. It is broken through the
 	// registry's own load callback, so no stub stands in for the write: the
 	// removal's reload is the second load the replacement registry serves (the
-	// first primes it over the clean file) and it turns the writer's temp path
-	// into a directory, which is the same disk that refuses any full disk or
-	// read-only root. The first write's temp file is gone once its rename
-	// landed, so the removal's own write still succeeds and only the rollback
-	// after it cannot land.
+	// first primes it over the clean file) and it leaves the writer's directory
+	// unwritable, which is the same disk that refuses any full disk or read-only
+	// root. The first write has already landed when this load runs, so the
+	// removal's own write still succeeds and only the rollback after it cannot
+	// land.
 	var loads int
 	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 		loads++
 		if loads == 2 {
-			resolved, err := filepath.EvalSymlinks(f.tomlPath)
-			if err != nil {
-				t.Errorf("EvalSymlinks(%s): %v", f.tomlPath, err)
-			}
-			if err := os.Mkdir(resolved+".tmp", 0o700); err != nil {
-				t.Errorf("Mkdir(%s): %v", resolved+".tmp", err)
-			}
+			blockProvidersWrites(t, f.tomlPath)
 		}
 		opts := append(
 			testProbeRegistryOptions(f.stateDir, f.store, func(string) (string, bool) { return "", false }),
@@ -2560,6 +2750,18 @@ func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
 	exposed := "a-key-another-local-user-could-read"
 	if err := os.WriteFile(keyPath, []byte(exposed), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	// Create already wrote this file 0600. WriteFile preserves an existing
+	// file's permissions, so expose it explicitly before testing rotation.
+	if err := os.Chmod(keyPath, 0o644); err != nil {
+		t.Fatalf("Chmod(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	exposedInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat exposed %s: %v", endpointFingerprintKeyFile, err)
+	}
+	if got := exposedInfo.Mode().Perm(); got != 0o644 {
+		t.Fatalf("fixture key mode = %o, want exposed 0644 before the read", got)
 	}
 
 	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
@@ -3827,22 +4029,104 @@ func TestInstances_EditRenamesEntryDefaultStoredKeyAndOAuthRecord(t *testing.T) 
 	}
 }
 
-// breakCredentialWrites makes every later credentials.toml save fail for a
-// real filesystem reason rather than a stubbed one: the store writes through
-// <path>.tmp and renames, so a directory occupying that name refuses the open
-// whoever the test runs as. What the rename does with that refusal is then
-// the real store, the real move and the real providers.toml write.
+// The refusal marker (#2479) is keyed by instance name, so moveCredentials
+// has to carry it explicitly: without that, renaming an instance whose
+// refresh token the issuer permanently refused would report the renamed
+// instance signed in and healthy until its next failed refresh re-noted it.
+func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record := makeOAuthRecord("work", "")
+	if err := authopenai.SaveAuth(f.stateDir, "work", record); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := authopenai.RecordRefreshRejection(f.stateDir, "work", record, time.Now()); err != nil {
+		t.Fatalf("RecordRefreshRejection: %v", err)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
+		t.Fatalf("Edit(rename): %v", err)
+	}
+
+	moved, err := authopenai.LoadAuth(f.stateDir, "personal")
+	if err != nil {
+		t.Fatalf("OAuth record did not move: %v", err)
+	}
+	if !authopenai.RefreshRejected(f.stateDir, "personal", moved) {
+		t.Fatal("the renamed instance lost its refresh-refusal marker")
+	}
+	if authopenai.RefreshRejected(f.stateDir, "work", moved) {
+		t.Fatal("the old instance name still carries the marker after the rename")
+	}
+}
+
+// If the note can't be carried, the rename must say so rather than silently
+// dropping the sign-in signal - but it still finishes the rename like every
+// other layer's own failure does (the stored-key move and the OAuth record
+// copy/delete are each attempted independently of the others' outcome), so a
+// marker-copy failure alone does not leave the instance under both names at
+// once.
+func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record := makeOAuthRecord("work", "")
+	if err := authopenai.SaveAuth(f.stateDir, "work", record); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := authopenai.RecordRefreshRejection(f.stateDir, "work", record, time.Now()); err != nil {
+		t.Fatalf("RecordRefreshRejection: %v", err)
+	}
+	// A non-empty directory where the new name's marker would be written: an
+	// empty one would just be removed by the record save's own (unrelated)
+	// best-effort clear of "personal"'s marker before RecordRefreshRejection
+	// ever runs, leaving nothing to obstruct the write it's meant to prove
+	// fails. Non-empty, the clear's os.Remove fails too (harmlessly, since
+	// it's best effort), and the write's rename onto it still fails.
+	markerPath := authopenai.RefreshRejectionPath(f.stateDir, "personal")
+	if err := os.MkdirAll(markerPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(markerPath, "child"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	if err == nil || !strings.Contains(err.Error(), "refresh-refusal marker") {
+		t.Fatalf("Edit(rename) = %v, want the refused marker copy reported", err)
+	}
+	// The rename still finished: no duplicate record under both names.
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); !errors.Is(loadErr, authopenai.ErrAuthNotFound) {
+		t.Fatalf("the old OAuth record was left behind even though the rename otherwise finished (err = %v)", loadErr)
+	}
+	moved, loadErr := authopenai.LoadAuth(f.stateDir, "personal")
+	if loadErr != nil {
+		t.Fatalf("the new OAuth record is missing: %v", loadErr)
+	}
+	if authopenai.RefreshRejected(f.stateDir, "personal", moved) {
+		t.Fatal("the marker reports carried even though its copy failed")
+	}
+}
+
+// breakCredentialWrites makes every later credentials.toml save fail for a real
+// filesystem reason rather than a stubbed one: the store stages its temp file
+// under a random name in the target's directory, so the directory is made
+// unwritable and the exclusive create is refused. What the save does with that
+// refusal is then the real store, the real move and the real providers.toml
+// write. The caller must have passed requireWritableDirRefusal.
 func breakCredentialWrites(t *testing.T, credsPath string) {
 	t.Helper()
-	if err := os.Mkdir(credsPath+".tmp", 0o700); err != nil {
-		t.Fatalf("blocking the credentials temp path: %v", err)
-	}
+	blockWritesInDir(t, filepath.Dir(credsPath))
 }
 
 // A store that refuses the write is the one failure that could lose a
 // credential, and the move is one persist: the entry stays under the old name
 // in memory and in the file, and the rename says what it left behind.
 func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -3910,6 +4194,7 @@ func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 // reach between the move and that reload, so the unreadable config is written
 // from there.
 func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -5133,5 +5418,84 @@ func TestInstances_EditCapturesTheListingForARename(t *testing.T) {
 	}
 	if renamed := entry(t, out, "personal"); renamed.Name != "personal" {
 		t.Fatalf("captured row = %+v, want the renamed instance", renamed)
+	}
+}
+
+// The implicit-provider fallback resolves at presence depth. A
+// command-credentialed record always has an instance of its own (the
+// config layer instantiates whatever it keys), so this fallback cannot
+// see command material today; the pin keeps its answer identical to a
+// full resolve's, so the depth swap can never lose a field.
+func TestResolvedInstanceForPresenceShape(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(tomlPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := newTestRegistry(t, t.TempDir(), tomlPath, store, map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "tok"})
+	r := holder.Get()
+	p, ok := r.Provider("amazon-bedrock")
+	if !ok {
+		t.Fatal("the curated implicit provider is missing")
+	}
+	inst, addressable := resolvedInstanceFor(r, "amazon-bedrock", p.Hidden)
+	if !addressable {
+		t.Fatal("the implicit-provider fallback stopped resolving")
+	}
+	// The truth a view must agree with is the launch the bare name
+	// makes — the listing resolve — not the model-less probe, which
+	// signs its own request.
+	launch, err := r.ResolveInstanceListing("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.CredentialSource != launch.Credential.Source {
+		t.Fatalf("fallback CredentialSource = %q, want the launch's %q", inst.CredentialSource, launch.Credential.Source)
+	}
+	if inst.Auth != launch.Transport.Auth || inst.Protocol != launch.Protocol {
+		t.Fatal("the fallback's auth/protocol drifted from the launch resolve")
+	}
+	if inst.ShadowedEnvVar != launch.ShadowedEnvVar {
+		t.Fatalf("fallback ShadowedEnvVar = %q, want %q", inst.ShadowedEnvVar, launch.ShadowedEnvVar)
+	}
+}
+
+// The implicit-provider fallback view must show the launch the bare
+// name makes: the default row's merged transport, the user's top-level
+// globs included. A provider-level transport here would offer setup an
+// endpoint and a scheme the bare launch never signs with.
+func TestResolvedInstanceForMatchesLaunchTransportForImplicitProvider(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(tomlPath, []byte("[models.\"*claude-opus*\"]\nauth = \"none\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := newTestRegistry(t, t.TempDir(), tomlPath, store, map[string]string{})
+	r := holder.Get()
+	p, ok := r.Provider("amazon-bedrock")
+	if !ok {
+		t.Fatal("the curated implicit provider is missing")
+	}
+	inst, addressable := resolvedInstanceFor(r, "amazon-bedrock", p.Hidden)
+	if !addressable {
+		t.Fatal("the implicit-provider fallback stopped resolving")
+	}
+	launch, err := r.ResolveInstanceListing("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Transport.Auth != "none" {
+		t.Fatalf("fixture: the default row's launch scheme = %q; want the glob's none", launch.Transport.Auth)
+	}
+	if inst.Auth != launch.Transport.Auth {
+		t.Fatalf("fallback auth = %q, want the launch's %q: the view must show the scheme the bare launch signs with", inst.Auth, launch.Transport.Auth)
 	}
 }

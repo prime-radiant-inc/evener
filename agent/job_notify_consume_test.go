@@ -325,7 +325,6 @@ func TestTerminalJobStatusReadContinuesCurrentTurn(t *testing.T) {
 		NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		SessionConfig{
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,

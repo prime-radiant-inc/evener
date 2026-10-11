@@ -223,6 +223,7 @@ func (a *retirementAttentionAdapter) Complete(ctx context.Context, req llm.Reque
 // A real delegate result creates root attention. A failed provider turn arms
 // the actual retry, whose wake can outlive successful receipt consumption.
 func TestRetirementAutonomousAttentionRetryWake(t *testing.T) {
+	t.Parallel()
 	for _, attachBefore := range []bool{true, false} {
 		t.Run(fmt.Sprintf("attached-first=%t", attachBefore), func(t *testing.T) {
 			retirementAttentionRetryWake(t, attachBefore)
@@ -248,6 +249,8 @@ func retirementAttentionRetryWake(t *testing.T, attachBefore bool) {
 	done := sub.done
 	sub.mu.Unlock()
 	retirementAwait(t, done)
+	// done does not cover the namer the child's first turn launched.
+	joinRetirementTreeEmitters(sub.sess)
 	path := transcriptPath(root.stateDir, root.id)
 	original, err := readDelegateAttentionFold(path, root.id)
 	if err != nil || len(original.pendingIDs()) != 1 {
@@ -317,6 +320,7 @@ func retirementAttentionRetryWake(t *testing.T, attachBefore bool) {
 }
 
 func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	adapter := &retirementAttentionAdapter{name: "openai"}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
@@ -331,15 +335,24 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 			}
 		}
 		clk.Drain()
-		root.SetNotifyFunc(nil)
 	}()
+	// Pause each root attention retry callback in place. The seam fires inside
+	// scheduleRootAttentionRetryLocked's callback, right after it takes ownership
+	// (beginAttentionCallback succeeded, so the outstanding callback already
+	// projects a notification blocker), so the pause belongs to that callback by
+	// construction. It replaces a notify hook gated on root.attentionCallbacks,
+	// which identified a counter value rather than the caller: a foreign wake
+	// landing between the retry's increment and its own notify matched the same
+	// count and could still steal the pause, letting the retry run unpaused and
+	// the later blocker check find no notification evidence (#1879's "missing
+	// notification evidence").
 	var gate atomic.Int32
-	root.SetNotifyFunc(func() {
+	root.cfg.testOnly.rootAttentionRetryCallback = func() {
 		if selected := gate.Swap(0); selected != 0 {
 			close(entered[selected-1])
 			<-resume[selected-1]
 		}
-	})
+	}
 	var c *RetirementController
 	for i := range 2 {
 		d := root.createDelegate(context.Background(), delegateArgs{Task: "original overlapping attention"})
@@ -351,6 +364,8 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		done := sub.done
 		sub.mu.Unlock()
 		retirementAwait(t, done)
+		// done does not cover the namer the child's first turn launched.
+		joinRetirementTreeEmitters(sub.sess)
 		path := transcriptPath(root.stateDir, root.id)
 		original, err := readDelegateAttentionFold(path, root.id)
 		if err != nil || len(original.pendingIDs()) != 1 {
@@ -402,7 +417,73 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 	assertRetirementEvidenceEligible(t, c)
 }
 
+// A superseded root attention retry callback must not take the pause seam: its
+// generation no longer matches, so it returns at scheduleRootAttentionRetryLocked's
+// early return instead of proceeding. If the seam fired before that check, a
+// doomed timer would consume the gate a live retry needs, reintroducing the
+// mis-attribution #1879's flake was.
+func TestRetirementRootAttentionRetrySeamSkipsStaleCallback(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
+	defer root.Close()
+	var fired atomic.Int32
+	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs["stale-seam-source"] = struct{}{}
+	root.scheduleRootAttentionRetryLocked()
+	// Supersede the armed callback (a newer schedule or a reset invalidated it)
+	// before it fires; the parked timer is not cancelled, so it still runs.
+	root.resetRootAttentionRetryLocked()
+	root.attentionMu.Unlock()
+
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("stale retry callback fired the pause seam %d times, want 0", got)
+	}
+}
+
+// A root attention retry callback that fires while the rail is parked must not
+// take the pause seam either: it returns at the parkedAtFire early return
+// instead of proceeding. Parking is the durable hold a Stop takes, so this is
+// the second early return the seam must sit behind, beside the stale-generation
+// case above.
+func TestRetirementRootAttentionRetrySeamSkipsParkedCallback(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
+	defer root.Close()
+	var fired atomic.Int32
+	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs["parked-seam-source"] = struct{}{}
+	root.scheduleRootAttentionRetryLocked()
+	root.attentionMu.Unlock()
+
+	// Park the rail before the armed callback fires; the parked timer is not
+	// cancelled, so it still runs and reads the hold.
+	if err := root.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !root.rootAttentionRailParked() {
+		t.Fatal("fixture: the attention rail is not parked")
+	}
+
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("parked retry callback fired the pause seam %d times, want 0", got)
+	}
+}
+
 func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	adapter := &retirementAttentionAdapter{name: "openai"}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
@@ -419,6 +500,8 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 		done := sub.done
 		sub.mu.Unlock()
 		retirementAwait(t, done)
+		// done does not cover the namer the child's first turn launched.
+		joinRetirementTreeEmitters(sub.sess)
 		path := transcriptPath(root.stateDir, root.id)
 		original, err := readDelegateAttentionFold(path, root.id)
 		if err != nil || len(original.pendingIDs()) != 1 {
@@ -480,6 +563,7 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 // synchronously re-arm so the next firing wakes delivery of the original
 // source.
 func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	adapter := &retirementAttentionAdapter{name: "openai"}
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}), withAdapter(adapter))
@@ -495,6 +579,8 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	done := sub.done
 	sub.mu.Unlock()
 	retirementAwait(t, done)
+	// done does not cover the namer the child's first turn launched.
+	joinRetirementTreeEmitters(sub.sess)
 	path := transcriptPath(root.stateDir, root.id)
 	original, err := readDelegateAttentionFold(path, root.id)
 	if err != nil || len(original.pendingIDs()) != 1 {
@@ -517,6 +603,10 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the root attention source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -534,7 +624,7 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	})
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	res := <-resultCh
 	if res.err != nil || res.claim != nil {
 		t.Fatalf("pending attention source escaped preparing: %+v %v", res.state, res.err)
@@ -567,6 +657,7 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 // same owner state and keep the session blocked until the retry callback
 // settles the exact arm it retained.
 func TestRetirementAttentionArmRetryPending(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk, MaxSubagentDepth: 1}))
 	defer root.Close()
@@ -621,6 +712,7 @@ func TestRetirementAttentionArmRetryPending(t *testing.T) {
 // session must keep blocking them — retirement of a torn-down runtime is
 // never eligible.
 func TestRetirementSandboxTeardownBlocks(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	// This test owns the close; no deferred root.Close().
 	c := retirementEvidenceController(t, root)
@@ -672,6 +764,7 @@ func TestRetirementSandboxTeardownBlocks(t *testing.T) {
 // An admitted environment operation must prevent a claim until its real owner
 // ends it; omitting environment ownership from retirement makes this fail.
 func TestRetirementEnvironmentLeaseBlocks(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c, err := NewRetirementController(0, clock.Real())
@@ -715,6 +808,7 @@ func TestRetirementEnvironmentLeaseBlocks(t *testing.T) {
 }
 
 func TestRetirementEnvironmentClaimFirstRefuses(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c, err := NewRetirementController(0, clock.Real())
@@ -745,6 +839,7 @@ func TestRetirementEnvironmentClaimFirstRefuses(t *testing.T) {
 
 // A direct setter must not bypass a claim even when no daemon route wraps it.
 func TestRetirementSafetyDirectSetterClaimFirst(t *testing.T) {
+	t.Parallel()
 	for _, setter := range []string{"Rename", "ClearGoal"} {
 		t.Run(setter, func(t *testing.T) {
 			dir := t.TempDir()
@@ -995,6 +1090,10 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the retained re-lock source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -1012,7 +1111,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	})
 	select {
 	case r := <-resultCh:
-		root.jobManager.mu.Unlock()
+		unlockJobs()
 		t.Fatalf("real TryClaim completed before the timer fired: %+v", r)
 	default:
 	}
@@ -1020,7 +1119,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	beforeRefused := calls.Load()
 	clk.Advance(laneSweepDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	if got := calls.Load(); got != beforeRefused {
 		t.Fatalf("refused relock retry performed %d Git calls", got-beforeRefused)
 	}
@@ -1183,14 +1282,21 @@ func TestRetirementAutonomousReLock(t *testing.T) {
 }
 
 func TestRetirementSafetyEscalation(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"claim-first", "pending", "resolved-rerun", "pre-attach", "close"} {
 		t.Run(order, func(t *testing.T) {
-			home := t.TempDir()
+			// The sandbox refuses to traverse a symlinked path component unless
+			// the request carries a grant for the resolved location, so a test
+			// that pins a denied boundary must name the physical path. On macOS
+			// t.TempDir sits under /var, a symlink to /private/var; the lexical
+			// spelling never settles through a grant. Resolve both temp roots so
+			// the boundary is the supported one on every platform.
+			home := resolvedPath(t, t.TempDir())
 			workdir := filepath.Join(home, "work")
 			if err := os.Mkdir(workdir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			outside := filepath.Join(t.TempDir(), "original.txt")
+			outside := filepath.Join(resolvedPath(t, t.TempDir()), "original.txt")
 			originalBytes := []byte("original escalation content")
 			if err := os.WriteFile(outside, originalBytes, 0o600); err != nil {
 				t.Fatal(err)
@@ -1205,7 +1311,7 @@ func TestRetirementSafetyEscalation(t *testing.T) {
 			env.Sandbox = &policy
 			client := llm.NewClient()
 			client.Register(&fakeAdapter{name: "openai"})
-			root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true}})
+			root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1380,10 +1486,31 @@ func assertRetirementEvidenceBlocked(t *testing.T, c *RetirementController, cate
 // own raw eligibility check both need to avoid racing that goroutine and
 // intermittently reporting a settled owner ineligible (#1879); this is the
 // one place that wait lives, so both call it, and both are exercised by the
-// same regression tests below.
+// same regression tests below. The wait covers the whole delegate tree: a
+// delegate child's first turn launches the child's own namer, and a namer
+// whose call fails (a scripted provider that answers with no JSON title)
+// leaves the session unnamed, so the next prompt launches another one.
 func retirementClaimAfterFirstTurn(root *Session, c *RetirementController) (*RetirementClaim, RetirementSnapshot, error) {
-	root.sendersWG.Wait()
+	joinRetirementTreeEmitters(root)
 	return c.TryClaim(true)
+}
+
+// joinRetirementTreeEmitters waits for the detached event emitters (subagent
+// runs, drives, session namers) of s and of every resident descendant. A
+// parent joins before its children, because a child's run goroutine is the
+// parent's emitter and is what launches the child's namer. A test that has
+// awaited a delegate child's done channel calls it on the child alone to join
+// the namer that turn launched: while that namer holds its "autonomous" lease,
+// TryClaim refuses before it reads any other evidence, so a claim the test
+// expects to succeed, or to refuse for a named reason, sees only the lease.
+func joinRetirementTreeEmitters(s *Session) {
+	s.sendersWG.Wait()
+	if s.subagents == nil {
+		return
+	}
+	for _, child := range s.subagents.sessions() {
+		joinRetirementTreeEmitters(child)
+	}
 }
 
 func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
@@ -1415,6 +1542,7 @@ func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 // returns, proving the shared helper is the seam under test. After release, a
 // second Wait drains both goroutines before the eligible claim is checked.
 func TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
 			return finalResponse("turn settled")
@@ -1466,6 +1594,7 @@ func TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer(t *testing.T) {
 }
 
 func TestRetirementSafetyDirectSetterAdmissionFirst(t *testing.T) {
+	t.Parallel()
 	for _, setter := range []string{"Rename", "ClearGoal"} {
 		t.Run(setter, func(t *testing.T) {
 			entered, resume := make(chan struct{}), make(chan struct{})
@@ -1503,6 +1632,7 @@ func TestRetirementSafetyDirectSetterAdmissionFirst(t *testing.T) {
 }
 
 func TestRetirementAutonomousActiveGoal(t *testing.T) {
+	t.Parallel()
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			return toolCallResponse(llm.ToolCallData{ID: "goal-settle", Name: "update_goal", Type: "function", Arguments: []byte(`{"status":"complete","intent":"settling original goal"}`)})
@@ -1524,6 +1654,7 @@ func TestRetirementAutonomousActiveGoal(t *testing.T) {
 }
 
 func TestRetirementQuestionPendingAndReply(t *testing.T) {
+	t.Parallel()
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withAdapter(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			return toolCallResponse(askUserCall("original-question", askUserArgsValid()))
@@ -1552,6 +1683,7 @@ func TestRetirementQuestionPendingAndReply(t *testing.T) {
 }
 
 func TestRetirementSafetyShellRecordLifecycle(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c := retirementEvidenceController(t, root)
@@ -1657,6 +1789,7 @@ func TestRetirementWatchActiveRegistration(t *testing.T) {
 }
 
 func TestRetirementEnvironmentPreAttachWork(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	work, ok := root.beginEnvWork("original-operation")
@@ -1669,6 +1802,7 @@ func TestRetirementEnvironmentPreAttachWork(t *testing.T) {
 }
 
 func TestRetirementEnvironmentSwapClaimFirst(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c := retirementEvidenceController(t, root)
@@ -1692,6 +1826,7 @@ func TestRetirementEnvironmentSwapClaimFirst(t *testing.T) {
 }
 
 func TestRetirementEnvironmentDispose(t *testing.T) {
+	t.Parallel()
 	for _, claimFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("claim-first-%t", claimFirst), func(t *testing.T) {
 			root := newQueuePersistTestSession(t, t.TempDir())
@@ -1732,6 +1867,7 @@ func TestRetirementEnvironmentDispose(t *testing.T) {
 }
 
 func TestRetirementQuestionDirectClaimFirst(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c := retirementEvidenceController(t, root)
@@ -1754,6 +1890,7 @@ func TestRetirementQuestionDirectClaimFirst(t *testing.T) {
 }
 
 func TestRetirementEnvironmentOverlappingDisposals(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	// One caller is admitted before process-controller attachment, the second
@@ -1781,6 +1918,7 @@ func TestRetirementEnvironmentOverlappingDisposals(t *testing.T) {
 }
 
 func TestRetirementWatchFiredOneShot(t *testing.T) {
+	t.Parallel()
 	for _, paused := range []bool{false, true} {
 		t.Run(fmt.Sprintf("notification-callback-paused-%t", paused), func(t *testing.T) {
 			clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
@@ -1871,6 +2009,7 @@ func TestRetirementWatchFiredOneShot(t *testing.T) {
 }
 
 func TestRetirementWatchTerminalPendingSend(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("terminal watch acknowledged") },
 	}}
@@ -1933,6 +2072,7 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 }
 
 func TestRetirementAutonomousNaming(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"prompt", "compaction"} {
 		for _, order := range []string{"claim-first", "launch-first", "pre-attach"} {
 			t.Run(source+"/"+order, func(t *testing.T) {
@@ -2003,6 +2143,7 @@ func TestRetirementAutonomousNaming(t *testing.T) {
 }
 
 func TestRetirementAutonomousNotificationRetryWake(t *testing.T) {
+	t.Parallel()
 	for _, attachBefore := range []bool{true, false} {
 		t.Run(fmt.Sprintf("attach-before=%t", attachBefore), func(t *testing.T) {
 			retirementNotificationRetryWake(t, attachBefore)
@@ -2090,6 +2231,7 @@ func retirementNotificationRetryWake(t *testing.T, attachBefore bool) {
 }
 
 func TestRetirementAutonomousNotificationRetryEmptySource(t *testing.T) {
+	t.Parallel()
 	for _, settlement := range []string{"status-consume", "notification-turn"} {
 		t.Run(settlement, func(t *testing.T) {
 			clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
@@ -2190,6 +2332,7 @@ func TestRetirementAutonomousNotificationRetryEmptySource(t *testing.T) {
 // notification turn while its callback remains paused; the later callback
 // settles first, and eligibility requires the last callback's return.
 func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("first overlapping source settled") },
@@ -2297,6 +2440,7 @@ func TestRetirementAutonomousNotificationRetryOverlap(t *testing.T) {
 // armed flag and synchronously re-arm the one-shot, so the next firing wakes
 // delivery of the original source.
 func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("refused-retry source settled") },
@@ -2330,6 +2474,10 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the live pending source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -2348,7 +2496,7 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	// The armed one-shot fires now and is refused for the whole window.
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	res := <-resultCh
 	if res.err != nil || res.claim != nil {
 		t.Fatalf("pending source escaped preparing: %+v %v", res.state, res.err)
@@ -2379,6 +2527,7 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 }
 
 func TestRetirementAutonomousNamingOverlap(t *testing.T) {
+	t.Parallel()
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}))
 	firstIn, secondIn := make(chan struct{}), make(chan struct{})
 	firstResume, secondResume := make(chan struct{}), make(chan struct{})
@@ -2444,6 +2593,7 @@ func TestRetirementAutonomousNamingOverlap(t *testing.T) {
 }
 
 func TestRetirementSafetyUnreadableJobEvidence(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"malformed", "incomplete-tail", "missing", "directory"} {
 		t.Run(fault, func(t *testing.T) {
 			root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}))
@@ -2526,6 +2676,7 @@ func TestRetirementSafetyUnreadableJobEvidence(t *testing.T) {
 }
 
 func TestRetirementSafetyDurableShellNotification(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("durable receipt acknowledged") },
 	}}
@@ -2586,6 +2737,7 @@ func TestRetirementSafetyDurableShellNotification(t *testing.T) {
 }
 
 func TestRetirementSafetyColdGoal(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	if err := root.Rename("cold-goal-root"); err != nil {
@@ -2701,6 +2853,7 @@ func TestRetirementSafetyColdGoal(t *testing.T) {
 }
 
 func TestRetirementSafetyColdJobEvidence(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -2816,12 +2969,49 @@ func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	}
 }
 
+// retirementHeldAttentionAdapter holds every agent turn at the LLM boundary
+// until release closes, signalling started on the first one, so a test can
+// keep a delegate's attention generation in flight for as long as it asserts.
+// Structured-output calls (the session namer's JSON-schema requests, which
+// share this provider when no cheap model is configured and may still be in
+// flight from earlier turns) pass straight through: started must mean the
+// attention generation reached the provider, not a namer.
+type retirementHeldAttentionAdapter struct {
+	retirementDelegateAdapter
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (a *retirementHeldAttentionAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if req.ResponseFormat != nil {
+		return a.retirementDelegateAdapter.Complete(ctx, req)
+	}
+	a.startOnce.Do(func() { close(a.started) })
+	select {
+	case <-a.release:
+		return a.retirementDelegateAdapter.Complete(ctx, req)
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
 // TestRetirementSafetyNotificationPinsDelegateResident documents the cold
 // notification boundary: a delegate child's shell completion is delivered
 // through the durable stable-attention stream at finalize, and production
-// reclamation refuses to make a child with pending attention cold, so the
-// obligation stays on the resident evidence path.
+// reclamation refuses to make a child that still owes that attention cold,
+// so the obligation stays on the resident evidence path.
+//
+// Arming the attention drives the child synchronously inside finalize: the
+// parent reserves and commits an attention generation and launches its run
+// before finalize returns. The obligation then lives on the child only until
+// that run finishes and its outcome is delivered to the root, after which the
+// child is quiescent and legitimately reclaimable. The provider holds the
+// attention generation in flight so the pin is asserted while the child
+// provably owns the obligation, not at whatever settlement stage the run
+// happens to have reached.
 func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -2829,6 +3019,18 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	if child == nil || child.jobManager == nil {
 		t.Fatal("original idle runtime or its job manager missing")
 	}
+	held := &retirementHeldAttentionAdapter{
+		retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter{name: "openai"}},
+		started:                   make(chan struct{}),
+		release:                   make(chan struct{}),
+	}
+	root.client.Register(held)
+	released := false
+	defer func() {
+		if !released {
+			close(held.release)
+		}
+	}()
 	rec, err := child.jobManager.createShell(createShellOpts{Command: "original-pinned-shell"})
 	if err != nil {
 		t.Fatal(err)
@@ -2843,6 +3045,14 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	if recs[rec.JobID] == nil || recs[rec.JobID].NotifyState != jobstore.NotifyDelivered || recs[rec.JobID].TerminalGen == "" {
 		t.Fatalf("original shell completion not stably delivered: %+v", recs[rec.JobID])
 	}
+	retirementAwait(t, held.started)
+	sub := root.subagents.get(d.ChildSessionID)
+	if sub == nil {
+		t.Fatal("original child missing from root manager while its attention generation runs")
+	}
+	sub.mu.Lock()
+	attentionRunDone := sub.done
+	sub.mu.Unlock()
 	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
 		t.Fatal(err)
 	}
@@ -2854,26 +3064,40 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	// version moved mid-collection (delegate_tree_retirement.go:193); that is
 	// a retry signal, never an escape. The pin holds when every attempt
 	// refuses and a settled attempt still names the original owner.
-	var state RetirementSnapshot
-	// TRIPWIRE: hang guard only; the durable attention stream settles in
-	// milliseconds once finalize's delivery lands.
-	waitForCondition(t, 5*time.Second, "pinned shell attention refusal settles", func() bool {
-		claim, got, err := c.TryClaim(true)
-		if claim != nil {
-			if abortErr := c.Abort(claim, ""); abortErr != nil {
-				t.Fatal(abortErr)
+	settledRefusal := func(stage string) RetirementSnapshot {
+		t.Helper()
+		var state RetirementSnapshot
+		// TRIPWIRE: hang guard only; a refusal settles in milliseconds.
+		waitForCondition(t, 5*time.Second, stage+" refusal settles", func() bool {
+			claim, got, err := c.TryClaim(true)
+			if claim != nil {
+				if abortErr := c.Abort(claim, ""); abortErr != nil {
+					t.Fatal(abortErr)
+				}
+				t.Fatalf("%s: pinned shell attention escaped: %+v", stage, got)
 			}
-			t.Fatalf("pinned shell attention escaped: %+v", got)
-		}
-		state = got
-		return err == nil
-	})
-	// The obligation's owner at the settled instant is timing-dependent:
-	// still-pending child attention blocks with the original DelegateID,
-	// while attention already delivered blocks with the session actually
-	// driving it (a turn on the original child, or root-owned work). All
-	// name the original root/child pair; an empty or foreign-owned refusal
-	// would mean the obligation was lost.
+			state = got
+			return err == nil
+		})
+		return state
+	}
+	// While the attention generation is held, the obligation belongs to the
+	// original delegate child and nothing else.
+	state := settledRefusal("held attention generation")
+	if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
+		return b.DelegateID == d.DelegateID || b.SessionID == d.ChildSessionID
+	}) {
+		t.Fatalf("held attention generation lost its original owner: %+v", state)
+	}
+	close(held.release)
+	released = true
+	retirementAwait(t, attentionRunDone)
+	state = settledRefusal("finished attention generation")
+	// Once the run finishes, the obligation's owner at the settled instant
+	// is timing-dependent: an outcome still being delivered blocks with the
+	// original DelegateID, while an outcome already delivered blocks with
+	// root-owned work. All name the original root/child pair; an empty or
+	// foreign-owned refusal would mean the obligation was lost.
 	if len(state.Blockers) == 0 {
 		t.Fatalf("pinned shell attention escaped with empty blockers: %+v", state)
 	}
@@ -2889,6 +3113,7 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 // original owner — the child's session — not the root. Mirrored cold side:
 // TestRetirementSafetyColdJobWatchContent.
 func TestRetirementSafetyDescendantShellResidentRunning(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -2935,6 +3160,7 @@ func TestRetirementSafetyDescendantShellResidentRunning(t *testing.T) {
 // attention, while the active watch stays in the cold journal and has no
 // other evidence owner than the cold fold.
 func TestRetirementSafetyColdJobWatchContent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	d := retirementIdleDelegate(t, root1)
@@ -3126,6 +3352,7 @@ func TestRetirementSafetyColdJobWatchContent(t *testing.T) {
 // surface over the scripted git boundary; lane creation and rollback effects
 // are asserted on the real registry/sidecar state.
 func TestRetirementEnvironmentWorktreeCreate(t *testing.T) {
+	t.Parallel()
 	t.Run("claim-first", func(t *testing.T) {
 		sr := newScriptedLaneRepo(t)
 		r := sr.wt()
@@ -3256,6 +3483,7 @@ func TestRetirementEnvironmentWorktreeCreate(t *testing.T) {
 	})
 }
 func TestRetirementWatchFiredRepeating(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("repeat acknowledged") },

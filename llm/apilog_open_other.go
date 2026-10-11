@@ -32,3 +32,7 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 	}
 	return file, nil
 }
+
+func closePrivateAPILogFile(file *os.File) error {
+	return file.Close()
+}

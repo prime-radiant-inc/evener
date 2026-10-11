@@ -8,8 +8,9 @@ import path from "node:path";
 // it) - a contract that only holds when the install is the checkout's OWN, not
 // a fleet worktree's symlink into the one shared install (a tree every
 // concurrent lane can write). The config refuses to serve on a shared install;
-// the preview's own tests skip on one instead of re-testing a contract that
-// cannot hold there. CI's fresh npm ci checkout is where these actually run.
+// its tests copy the frontend, AppWire package and lockfile-matching dependencies
+// into a private fixture, so they run without shared-install skips. A separate
+// shared-install fixture verifies the production config's refusal.
 //
 // The verdict tests node_modules ITSELF (lstat), never the whole resolved
 // path: realpathSync would also resolve a symlinked PARENT (macOS's

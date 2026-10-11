@@ -42,7 +42,7 @@ var (
 
 // runPluginAutoUpgradeTick is the plain, timer-free core of the auto-upgrade
 // daemon (design doc §9.1): refresh every known marketplace, then upgrade
-// every installed, git-backed plugin that has autoUpgrade enabled. It never
+// every installed plugin that can upgrade and has autoUpgrade enabled. It never
 // returns an error itself — marketplace-refresh and per-plugin upgrade
 // failures are collected into errs and written to stderr, so one bad
 // marketplace or plugin never blocks the others (failure-isolated; the

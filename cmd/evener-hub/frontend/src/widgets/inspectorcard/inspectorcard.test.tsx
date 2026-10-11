@@ -1,10 +1,8 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import { InspectorCard } from "./index";
 import rawStyles from "./inspectorcard.module.css";
-
-afterEach(cleanup);
 
 const styles = {
   card: requireClass(rawStyles.card, "inspectorcard.module.css", "card"),

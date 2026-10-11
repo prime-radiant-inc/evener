@@ -1,13 +1,28 @@
 // Navigation snapshot and delta decoding: validates a hub navigation response
-// against the resource key that asked for it, normalizes the entities and
-// order containers into a deep-frozen graph, and materializes that graph back
-// into the rows a view renders.
+// against the resource key that asked for it, drops the value-record keys
+// this client does not know, normalizes the entities and order containers
+// into a deep-frozen graph, and materializes that graph back into the rows a
+// view renders.
 import type {
+  AttentionSummary,
+  NavigationCatalogs,
   NavigationDelta,
   NavigationEntityRecord,
+  NavigationFailure,
+  NavigationManifest,
   NavigationOrderContainer,
+  NavigationPinSectionDescriptor,
+  NavigationProjectSummary,
+  NavigationQuestion,
   NavigationReadBase,
+  NavigationResourceDescriptor,
+  NavigationSections,
+  NavigationSessionLocation,
+  NavigationSessionSummary,
   NavigationSnapshot,
+  NavigationSubagentTally,
+  NavigationTaskProgress,
+  Source,
 } from "../../types.gen";
 import { cloneAndDeepFreezeJSON } from "./immutable";
 import {
@@ -46,6 +61,10 @@ export type DecodedNavigationResponse =
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 const hasOwn = (value: Record<string, unknown>, key: string) => Object.hasOwn(value, key);
+// exactKeys is for structure: the response envelope, the snapshot and delta
+// records, entity, container and owner records, and paging metadata. A key the
+// codec does not know there changes how the rest of the response is read, so
+// a change of that kind ships behind a new representationVersion.
 const exactKeys = (
   value: unknown,
   required: readonly string[],
@@ -66,6 +85,65 @@ const count = (value: unknown): value is number => Number.isSafeInteger(value) &
 const bool = (value: unknown): value is boolean => typeof value === "boolean";
 const optional = (value: unknown, check: (candidate: unknown) => boolean) => value === undefined || check(value);
 const schemaError = (category: string): Error => new Error(`navigation protocol: invalid ${category}`);
+
+// A value record's keys: the keys it must carry, every key the codec knows
+// (the required keys, then the optional ones), and the keys whose values are
+// themselves value records, one record or a list of them.
+interface ValueRecordKeys {
+  readonly required: readonly string[];
+  readonly known: readonly string[];
+  readonly nested?: Readonly<Record<string, ValueRecordKeys>>;
+}
+
+// A value record's key table, mapped over its generated interface: every key
+// of the interface must be listed, and each entry must say whether the
+// interface marks that key optional. A key the interface dropped, one added
+// without a table entry, or one flipped between required and optional stops
+// the table from compiling (#2477).
+export type ValueRecordKeyTable<T> = {
+  readonly [K in keyof T]-?: Record<never, never> extends Pick<T, K> ? "optional" : "required";
+};
+
+// valueRecordKeys turns that table back into the runtime lists the validators
+// read: the required keys, every key (in the table's own order, required keys
+// written first), and the nested value records on the keys that hold them.
+const valueRecordKeys = <T>(table: ValueRecordKeyTable<T>, nested?: ValueRecordKeys["nested"]): ValueRecordKeys => {
+  const required: string[] = [];
+  const known: string[] = [];
+  for (const [key, mark] of Object.entries(table as Record<string, "required" | "optional">)) {
+    known.push(key);
+    if (mark === "required") required.push(key);
+  }
+  return { required, known, nested };
+};
+
+// knownKeys is exactKeys for a value record: every required key is present,
+// and a key the record's keys do not name is allowed. A newer hub adds
+// optional keys to value records without a ProtocolVersion bump
+// (appwire/types.go), and an app built before a key existed must keep reading
+// every page that carries it. The validators still check every key they name;
+// decodeNavigationResponse then drops the rest (dropUnknownKeys).
+const knownKeys = (value: unknown, keys: ValueRecordKeys): value is Record<string, unknown> =>
+  isRecord(value) && keys.required.every((key) => hasOwn(value, key));
+
+// dropUnknownKeys copies a validated value record, keeping only the keys its
+// ValueRecordKeys name, nested records included. It runs after validation, so
+// every nested value it recurses into is a record or a list of records.
+// Dropping keeps unvalidated data out of the graph and the rendered rows, and
+// keeps merge's identity check from seeing a change an older app cannot show.
+function dropUnknownKeys(value: Record<string, unknown>, keys: ValueRecordKeys): Record<string, unknown> {
+  const kept: Record<string, unknown> = {};
+  for (const key of keys.known) {
+    if (!hasOwn(value, key)) continue;
+    const item = value[key];
+    const nested = keys.nested?.[key];
+    if (nested === undefined) kept[key] = item;
+    else if (Array.isArray(item)) kept[key] = item.map((entry) => dropUnknownKeys(entry, nested));
+    else kept[key] = dropUnknownKeys(item as Record<string, unknown>, nested);
+  }
+  return kept;
+}
+
 const MAX_NAVIGATION_DEPTH = 32;
 const MAX_NAVIGATION_SESSION_ENTITIES = 2000;
 const MAX_NAVIGATION_GRAPH_ENTITIES = MAX_NAVIGATION_SESSION_ENTITIES + 1;
@@ -102,109 +180,191 @@ const version = (value: unknown): value is NavigationReadBase =>
   (value.revision as number) >= 0 &&
   safeString(value.etag, 1024);
 
-const SESSION_REQUIRED = ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"];
-const SESSION_OPTIONAL = [
-  "branch",
-  "cluster_count",
-  "favorite",
-  "rename",
-  "ask_pending",
-  "dormant",
-  "updated_at",
-  "more_subagents",
-  "omitted_descendants",
-  "omitted_watches",
-  "omitted_armed_watches",
-  "running_jobs",
-  "completed_jobs",
-  "watches",
-];
-const JOB_REQUIRED = ["job_id", "job_type", "status"];
-const JOB_OPTIONAL = ["command", "task", "reason", "intent", "full_command"];
-const WATCH_REQUIRED = ["id", "source", "deliveries", "created_at", "active"];
-const WATCH_OPTIONAL = [
-  "target",
-  "send_to",
-  "note",
-  "cadence",
-  "output_match",
-  "events",
-  "wildcard_events",
-  "delivery_times",
-  "end_reason",
-];
-const PROJECT_REQUIRED = ["key", "name", "session_count"];
-const PROJECT_OPTIONAL = [
-  "working_dir",
-  "rollup_state",
-  "rollup_live",
-  "rollup_attn",
-  "default_expanded",
-  "more_current",
-  "more_recent",
-  "more_archived",
-  "worktrees",
-  "is_archived",
-  "favorite",
-  "sources",
-];
+const TASKS_KEYS = valueRecordKeys<NavigationTaskProgress>({
+  total: "required",
+  done: "required",
+  cancelled: "optional",
+  current_id: "optional",
+  current: "optional",
+});
+const SUBAGENT_TALLY_KEYS = valueRecordKeys<NavigationSubagentTally>({
+  running: "required",
+  failed: "required",
+  done: "required",
+});
+const QUESTION_KEYS = valueRecordKeys<NavigationQuestion>({
+  text: "required",
+  count: "required",
+  options: "optional",
+});
+const FAILURE_KEYS = valueRecordKeys<NavigationFailure>({
+  title: "optional",
+  cause_kind: "optional",
+  provider: "optional",
+  status: "optional",
+});
+const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
+  {
+    ref: "required",
+    host_id: "required",
+    session_id: "required",
+    title: "required",
+    project: "required",
+    state: "required",
+    kind: "required",
+    live: "required",
+    children: "required",
+    branch: "optional",
+    favorite: "optional",
+    rename: "optional",
+    ask_pending: "optional",
+    approval_pending: "optional",
+    approval_tool: "optional",
+    approval_target: "optional",
+    question: "optional",
+    failure: "optional",
+    last_message: "optional",
+    model_name: "optional",
+    dormant: "optional",
+    offline: "optional",
+    updated_at: "optional",
+    turn_ended_at: "optional",
+    unseen: "optional",
+    seen_through: "optional",
+    more_subagents: "optional",
+    subagents: "optional",
+    omitted_descendants: "optional",
+    running_job_count: "optional",
+    running_job_command: "optional",
+    watch_count: "optional",
+    armed_watch_count: "optional",
+    tasks: "optional",
+  },
+  {
+    tasks: TASKS_KEYS,
+    subagents: SUBAGENT_TALLY_KEYS,
+    question: QUESTION_KEYS,
+    failure: FAILURE_KEYS,
+  },
+);
+const PROJECT_KEYS = valueRecordKeys<NavigationProjectSummary>({
+  key: "required",
+  name: "required",
+  session_count: "required",
+  working_dir: "optional",
+  rollup_state: "optional",
+  rollup_live: "optional",
+  rollup_attn: "optional",
+  default_expanded: "optional",
+  more_current: "optional",
+  more_recent: "optional",
+  more_archived: "optional",
+  worktrees: "optional",
+  is_archived: "optional",
+  favorite: "optional",
+  sources: "optional",
+});
+// A project resource's anchor entity carries only key; the rest of the summary
+// arrives through the owned containers, so the table is the generated
+// summary's key field and nothing more.
+const PROJECT_ANCHOR_KEYS = valueRecordKeys<Pick<NavigationProjectSummary, "key">>({ key: "required" });
+const PIN_SECTION_KEYS = valueRecordKeys<NavigationPinSectionDescriptor>({
+  id: "required",
+  name: "required",
+  count: "required",
+});
+const SOURCE_KEYS = valueRecordKeys<Source>({
+  id: "required",
+  label: "required",
+  kind: "required",
+  online: "required",
+});
+const COUNT_KEYS = valueRecordKeys<NavigationResourceDescriptor>({ count: "required" });
+const ATTENTION_SUMMARY_KEYS = valueRecordKeys<AttentionSummary>({
+  needsYou: "required",
+  error: "required",
+  working: "required",
+});
+const SECTIONS_KEYS = valueRecordKeys<NavigationSections>(
+  { live: "required", needs_you: "required", pin_sections: "required" },
+  { live: COUNT_KEYS, needs_you: COUNT_KEYS, pin_sections: COUNT_KEYS },
+);
+const CATALOGS_KEYS = valueRecordKeys<NavigationCatalogs>(
+  { projects: "required", archived_projects: "required", test_runs: "required" },
+  { projects: COUNT_KEYS, archived_projects: COUNT_KEYS, test_runs: COUNT_KEYS },
+);
+const MANIFEST_KEYS = valueRecordKeys<NavigationManifest>(
+  {
+    generation_id: "required",
+    revision: "required",
+    sources: "required",
+    attentionSummary: "required",
+    sections: "required",
+    catalogs: "required",
+  },
+  { sources: SOURCE_KEYS, attentionSummary: ATTENTION_SUMMARY_KEYS, sections: SECTIONS_KEYS, catalogs: CATALOGS_KEYS },
+);
+// A location resource's metadata is the generated response type without the
+// session the resource carries through its containers; the metadata wire type
+// has no generated name of its own.
+const LOCATION_KEYS = valueRecordKeys<Omit<NavigationSessionLocation, "session">>({
+  generation_id: "required",
+  revision: "required",
+  ref: "required",
+  top_level_ref: "required",
+  top_level: "required",
+  catalog: "optional",
+  project_key: "optional",
+  tier: "optional",
+  pin_section_id: "optional",
+});
 
-function jobValue(value: unknown): boolean {
-  return (
-    exactKeys(value, JOB_REQUIRED, JOB_OPTIONAL) &&
-    identity(value.job_id) &&
-    identity(value.job_type) &&
-    identity(value.status) &&
-    optional(value.command, (item) => boundedString(item, 512)) &&
-    optional(value.task, (item) => boundedString(item, 512)) &&
-    optional(value.reason, (item) => boundedString(item, 512)) &&
-    optional(value.intent, (item) => boundedString(item, 512)) &&
-    optional(value.full_command, (item) => boundedString(item, 4096))
+// Mirrors navigationTaskProgressValid: safe non-negative counts, no more tasks
+// done and cancelled than exist (an absent cancelled count is zero), and a
+// current task within the label bound.
+const tasksValue = (value: unknown): boolean =>
+  knownKeys(value, TASKS_KEYS) &&
+  count(value.total) &&
+  count(value.done) &&
+  optional(value.cancelled, count) &&
+  optional(value.current_id, count) &&
+  optional(value.current, (item) => boundedString(item, 512)) &&
+  (value.done as number) + ((value.cancelled as number | undefined) ?? 0) <= (value.total as number);
+
+// Mirrors navigationSubagentTallyValid: every count is a safe non-negative
+// integer.
+const subagentTallyValue = (value: unknown): boolean =>
+  knownKeys(value, SUBAGENT_TALLY_KEYS) && count(value.running) && count(value.failed) && count(value.done);
+
+// Mirrors navigationQuestionValid's bounds: text of 1 to 200 characters, at
+// least one question counted, and at most five labels of 1 to 80 characters.
+const questionValue = (value: unknown): boolean =>
+  knownKeys(value, QUESTION_KEYS) &&
+  boundedString(value.text, 200) &&
+  value.text !== "" &&
+  count(value.count) &&
+  (value.count as number) >= 1 &&
+  optional(
+    value.options,
+    (item) =>
+      Array.isArray(item) && item.length <= 5 && item.every((label) => boundedString(label, 80) && label !== ""),
   );
-}
 
-const watchCadenceValue = (value: unknown): boolean =>
-  exactKeys(value, ["kind"], ["seconds", "derived_next_fire_at", "every", "filter"]) &&
-  identity(value.kind) &&
-  optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0) &&
-  optional(value.derived_next_fire_at, rfc3339Timestamp) &&
-  optional(value.every, count) &&
-  optional(value.filter, (item) => boundedString(item, 512));
+// Mirrors navigationFailureValid: a title of 1 to 80 characters or a cause kind
+// (at least one), cause identities, and a safe non-negative status.
+const failureValue = (value: unknown): boolean =>
+  knownKeys(value, FAILURE_KEYS) &&
+  (value.title !== undefined || value.cause_kind !== undefined) &&
+  optional(value.title, (item) => boundedString(item, 80) && item !== "") &&
+  optional(value.cause_kind, (item) => identity(item)) &&
+  optional(value.provider, (item) => identity(item)) &&
+  optional(value.status, count);
 
-function watchValue(value: unknown): boolean {
+// sessionFieldsValue checks every field of a session summary except its
+// children, whose rule depends on where the summary travels.
+function sessionFieldsValue(value: unknown): value is Record<string, unknown> & { children: unknown[] } {
   return (
-    exactKeys(value, WATCH_REQUIRED, WATCH_OPTIONAL) &&
-    identity(value.id) &&
-    identity(value.source) &&
-    count(value.deliveries) &&
-    rfc3339Timestamp(value.created_at) &&
-    bool(value.active) &&
-    optional(value.target, (item) => boundedString(item, 512)) &&
-    optional(value.send_to, (item) => boundedString(item, 512)) &&
-    optional(value.note, (item) => boundedString(item, 512)) &&
-    optional(value.cadence, (item) => Array.isArray(item) && item.every(watchCadenceValue)) &&
-    optional(value.output_match, (item) => boundedString(item, 512)) &&
-    optional(value.events, (item) => Array.isArray(item) && item.every((event) => boundedString(event, 512))) &&
-    optional(value.wildcard_events, bool) &&
-    optional(
-      value.delivery_times,
-      (item) => Array.isArray(item) && item.every((instant) => rfc3339Timestamp(instant)),
-    ) &&
-    optional(value.end_reason, (item) => boundedString(item, 512))
-  );
-}
-
-// Mirrors navigationSessionValueValid exactly: the armed subset can never exceed
-// the omitted total, and an absent total counts as zero rather than as unknown.
-// No producer can send an armed count without a total -- the projector counts
-// every omitted armed row in the total too -- so treating absence as unknown
-// would only let a malformed snapshot through.
-const omittedArmedWithinOmitted = (value: Record<string, unknown>): boolean =>
-  ((value.omitted_armed_watches as number | undefined) ?? 0) <= ((value.omitted_watches as number | undefined) ?? 0);
-
-function sessionValue(value: unknown): value is Record<string, unknown> {
-  return (
-    exactKeys(value, SESSION_REQUIRED, SESSION_OPTIONAL) &&
+    knownKeys(value, SESSION_KEYS) &&
     identity(value.ref) &&
     identity(value.host_id) &&
     identity(value.session_id) &&
@@ -214,28 +374,70 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     identity(value.kind) &&
     bool(value.live) &&
     Array.isArray(value.children) &&
-    value.children.length === 0 &&
     optional(value.branch, (item) => boundedString(item, 512)) &&
-    optional(value.cluster_count, count) &&
     optional(value.favorite, bool) &&
     optional(value.rename, bool) &&
     optional(value.ask_pending, bool) &&
+    optional(value.approval_pending, bool) &&
+    optional(value.approval_tool, (item) => identity(item)) &&
+    optional(value.approval_target, (item) => boundedString(item, 512)) &&
+    optional(value.question, questionValue) &&
+    optional(value.failure, failureValue) &&
+    optional(value.last_message, (item) => boundedString(item, 200) && item !== "") &&
+    optional(value.model_name, (item) => boundedString(item, 512) && item !== "") &&
     optional(value.dormant, bool) &&
+    optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
+    optional(value.turn_ended_at, rfc3339Timestamp) &&
+    optional(value.unseen, bool) &&
+    optional(value.seen_through, rfc3339Timestamp) &&
     optional(value.more_subagents, count) &&
+    optional(value.subagents, subagentTallyValue) &&
     optional(value.omitted_descendants, count) &&
-    optional(value.omitted_watches, count) &&
-    optional(value.omitted_armed_watches, count) &&
-    omittedArmedWithinOmitted(value) &&
-    optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
-    optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
-    optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue))
+    optional(value.running_job_count, count) &&
+    optional(value.running_job_command, (item) => boundedString(item, 512)) &&
+    optional(value.watch_count, count) &&
+    optional(value.armed_watch_count, count) &&
+    ((value.armed_watch_count as number | undefined) ?? 0) <= ((value.watch_count as number | undefined) ?? 0) &&
+    optional(value.tasks, tasksValue)
   );
+}
+
+// A graph entity's children are edges, so its own children array is empty.
+function sessionValue(value: unknown): value is Record<string, unknown> {
+  return sessionFieldsValue(value) && value.children.length === 0;
+}
+
+// An evener/archived/list row is a plain summary with its children (fork
+// originals) nested inline, as the hub projects them. Every row and nested
+// child counts against `budget`, which starts at the entity bound a
+// navigation session may hold.
+function sessionTreeValue(value: unknown, depth: number, budget: { nodes: number }): boolean {
+  return (
+    depth <= MAX_NAVIGATION_DEPTH &&
+    --budget.nodes >= 0 &&
+    sessionFieldsValue(value) &&
+    value.children.every((child) => sessionTreeValue(child, depth + 1, budget))
+  );
+}
+
+/** Validates the `sessions` of an evener/archived/list response: at most one
+ * page of plain session summaries whose children are nested inline. Throws on
+ * any malformed row or an oversized page. */
+export function decodeArchivedListSessions(value: unknown): NavigationSessionSummary[] {
+  const budget = { nodes: MAX_NAVIGATION_SESSION_ENTITIES };
+  if (
+    !Array.isArray(value) ||
+    value.length > NAVIGATION_SECTION_LIMIT ||
+    !value.every((row) => sessionTreeValue(row, 1, budget))
+  )
+    throw schemaError("archived list");
+  return value as NavigationSessionSummary[];
 }
 
 function projectValue(value: unknown): value is Record<string, unknown> {
   return (
-    exactKeys(value, PROJECT_REQUIRED, PROJECT_OPTIONAL) &&
+    knownKeys(value, PROJECT_KEYS) &&
     identity(value.key) &&
     boundedString(value.name, 512) &&
     count(value.session_count) &&
@@ -266,10 +468,7 @@ function projectValue(value: unknown): value is Record<string, unknown> {
 
 function pinSectionValue(value: unknown): value is Record<string, unknown> {
   return (
-    exactKeys(value, ["id", "name", "count"]) &&
-    identity(value.id) &&
-    boundedString(value.name, 512) &&
-    count(value.count)
+    knownKeys(value, PIN_SECTION_KEYS) && identity(value.id) && boundedString(value.name, 512) && count(value.count)
   );
 }
 
@@ -293,25 +492,33 @@ function entityIdentityForResource(
     return { logical: `project\0${value.value.key as string}`, anchor: false };
   }
   if (key.kind === "project" && value.kind === "project") {
-    if (!exactKeys(value.value, ["key"]) || value.value.key !== key.projectKey) throw schemaError("entity schema");
+    if (!knownKeys(value.value, PROJECT_ANCHOR_KEYS) || value.value.key !== key.projectKey)
+      throw schemaError("entity schema");
     return { logical: `project\0${value.value.key as string}`, anchor: true };
   }
   if (value.kind !== "session" || !sessionValue(value.value)) throw schemaError("entity schema");
   return { logical: `session\0${value.value.ref as string}`, anchor: false };
 }
 
+// entity checks an entity record's structure only. validateDeltaForResource
+// runs the value validator separately (entityIdentityForResource below), so
+// this stays a boolean guard rather than a second full validation (#2478).
 function entity(value: unknown, key: ResourceKey): value is NavigationEntityRecord {
-  if (
-    !exactKeys(value, ["key", "kind", "value"]) ||
-    !entityKeyValid(key, value.key) ||
-    !safeString(value.kind, 128) ||
-    !isRecord(value.value)
-  )
-    return false;
-  const kind = value.kind;
-  if (typeof kind !== "string") return false;
-  entityIdentityForResource(key, { kind, value: value.value });
-  return true;
+  return (
+    exactKeys(value, ["key", "kind", "value"]) &&
+    entityKeyValid(key, value.key) &&
+    safeString(value.kind, 128) &&
+    isRecord(value.value)
+  );
+}
+
+// validateEntity runs an entity record's structure check and its value's
+// validator once, returning the value's decoded identity. validateGraphForResource
+// needs the identity, so a single call replaces the
+// entity()+entityIdentityForResource() pair it used to run (#2478).
+function validateEntity(value: unknown, key: ResourceKey): { logical: string; anchor: boolean } {
+  if (!entity(value, key)) throw schemaError("entity schema");
+  return entityIdentityForResource(key, { kind: value.kind, value: value.value });
 }
 
 function owner(value: unknown): value is NavigationOrderContainer["owner"] {
@@ -343,31 +550,31 @@ function container(value: unknown, key: ResourceKey): value is NavigationOrderCo
 }
 
 function descriptor(value: unknown): boolean {
-  return exactKeys(value, ["count"]) && count(value.count);
+  return knownKeys(value, COUNT_KEYS) && count(value.count);
 }
 
 function manifestMetadata(value: Record<string, unknown>): boolean {
   if (
-    !exactKeys(value, ["generation_id", "revision", "sources", "attentionSummary", "sections", "catalogs"]) ||
+    !knownKeys(value, MANIFEST_KEYS) ||
     !Array.isArray(value.sources) ||
     value.sources.length > 64 ||
     !value.sources.every(
       (source) =>
-        exactKeys(source, ["id", "label", "kind", "online"]) &&
+        knownKeys(source, SOURCE_KEYS) &&
         identity(source.id) &&
         boundedString(source.label, 512) &&
         identity(source.kind) &&
         bool(source.online),
     ) ||
-    !exactKeys(value.attentionSummary, ["needsYou", "error", "working"]) ||
+    !knownKeys(value.attentionSummary, ATTENTION_SUMMARY_KEYS) ||
     !count(value.attentionSummary.needsYou) ||
     !count(value.attentionSummary.error) ||
     !count(value.attentionSummary.working) ||
-    !exactKeys(value.sections, ["live", "needs_you", "pin_sections"]) ||
+    !knownKeys(value.sections, SECTIONS_KEYS) ||
     !descriptor(value.sections.live) ||
     !descriptor(value.sections.needs_you) ||
     !descriptor(value.sections.pin_sections) ||
-    !exactKeys(value.catalogs, ["projects", "archived_projects", "test_runs"]) ||
+    !knownKeys(value.catalogs, CATALOGS_KEYS) ||
     !descriptor(value.catalogs.projects) ||
     !descriptor(value.catalogs.archived_projects) ||
     !descriptor(value.catalogs.test_runs)
@@ -454,14 +661,11 @@ function validateResourceMetadata(metadata: unknown, key: ResourceKey, versionVa
       bool(metadata.truncated);
   else
     valid =
-      exactKeys(
-        metadata,
-        ["generation_id", "revision", "ref", "top_level_ref", "top_level"],
-        ["project_key", "tier", "pin_section_id"],
-      ) &&
+      knownKeys(metadata, LOCATION_KEYS) &&
       metadata.ref === key.ref &&
       identity(metadata.top_level_ref) &&
       bool(metadata.top_level) &&
+      optional(metadata.catalog, (item) => identity(item)) &&
       optional(metadata.project_key, (item) => identity(item)) &&
       optional(metadata.tier, (item) => identity(item)) &&
       optional(metadata.pin_section_id, (item) => identity(item));
@@ -493,10 +697,10 @@ export function validateGraphForResource(
   let anchorKey: string | undefined;
   let sessionEntities = 0;
   for (const [mapKey, item] of graph.entities) {
-    if (mapKey !== item.key || !entity(item, key)) throw schemaError("entity schema");
+    if (mapKey !== item.key) throw schemaError("entity schema");
+    const decoded = validateEntity(item, key);
     if (item.kind === "session" && ++sessionEntities > MAX_NAVIGATION_SESSION_ENTITIES)
       throw schemaError("resource graph");
-    const decoded = entityIdentityForResource(key, item);
     if (logical.has(decoded.logical)) throw schemaError("logical identity");
     logical.add(decoded.logical);
     if (decoded.anchor) {
@@ -538,7 +742,8 @@ export function validateGraphForResource(
             ownerEntity.key === anchorKey &&
             ["current", "recent", "archived"].includes(ownerSlot);
       if (!allowed) throw schemaError("resource graph");
-      if (item.children.length > 50) throw schemaError("resource graph");
+      if (ownerEntity.kind === "session" && item.children.length !== 0) throw schemaError("resource graph");
+      if (item.children.length > NAVIGATION_SECTION_LIMIT) throw schemaError("resource graph");
       const owned = slots.get(ownerEntity.key) ?? new Set<string>();
       owned.add(ownerSlot);
       slots.set(ownerEntity.key, owned);
@@ -590,14 +795,19 @@ export function validateSnapshotForResource(
     !Array.isArray(snapshot.containers)
   )
     throw schemaError("snapshot");
+  // Build the maps decode validates, rejecting a duplicate key outright.
+  // validateGraphForResource below runs each entity and container validator
+  // exactly once; validating here too made a snapshot read run them twice
+  // before merge's third pass (#2478).
   const entities = new Map<string, NavigationGraphEntity>();
   for (const item of snapshot.entities) {
-    if (!entity(item, key) || entities.has(item.key)) throw schemaError("entity schema");
-    entities.set(item.key, item);
+    if (!isRecord(item) || typeof item.key !== "string" || entities.has(item.key)) throw schemaError("entity schema");
+    entities.set(item.key, item as NavigationGraphEntity);
   }
   const containers = new Map<string, NavigationGraphContainer>();
   for (const item of snapshot.containers) {
-    if (!container(item, key) || containers.has(item.key)) throw schemaError("container schema");
+    if (!isRecord(item) || typeof item.key !== "string" || containers.has(item.key))
+      throw schemaError("container schema");
     containers.set(item.key, item as NavigationGraphContainer);
   }
   validateGraphForResource(key, versionValue, {
@@ -647,6 +857,42 @@ const RESPONSE_COMMON_KEYS = ["status", "generationId", "revision", "etag"] as c
 const RESPONSE_SNAPSHOT_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "data"] as const;
 const RESPONSE_DELTA_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "base", "data"] as const;
 
+// The value-record keys of an entity a resource holds; validateEntity already
+// refused, through entityIdentityForResource, a kind the resource cannot hold.
+function entityValueKeys(key: ResourceKey, kind: string): ValueRecordKeys {
+  if (kind === "session") return SESSION_KEYS;
+  if (kind === "pin_section") return PIN_SECTION_KEYS;
+  return key.kind === "project" ? PROJECT_ANCHOR_KEYS : PROJECT_KEYS;
+}
+
+function knownEntity(key: ResourceKey, item: NavigationEntityRecord): NavigationEntityRecord {
+  return { ...item, value: dropUnknownKeys(item.value as Record<string, unknown>, entityValueKeys(key, item.kind)) };
+}
+
+// Paging metadata is exact (validateResourceMetadata refused any unknown key),
+// so only a manifest's or a location's metadata can carry one to drop.
+function knownMetadata(key: ResourceKey, metadata: unknown): unknown {
+  if (key.kind === "manifest") return dropUnknownKeys(metadata as Record<string, unknown>, MANIFEST_KEYS);
+  if (key.kind === "location") return dropUnknownKeys(metadata as Record<string, unknown>, LOCATION_KEYS);
+  return metadata;
+}
+
+function knownSnapshot(key: ResourceKey, snapshot: NavigationSnapshot): NavigationSnapshot {
+  return {
+    ...snapshot,
+    metadata: knownMetadata(key, snapshot.metadata),
+    entities: snapshot.entities.map((item) => knownEntity(key, item)),
+  };
+}
+
+function knownDelta(key: ResourceKey, delta: NavigationDelta): NavigationDelta {
+  return {
+    ...delta,
+    ...(delta.metadata === undefined ? {} : { metadata: knownMetadata(key, delta.metadata) }),
+    upsertedEntities: delta.upsertedEntities.map((item) => knownEntity(key, item)),
+  };
+}
+
 export function decodeNavigationResponse(
   key: ResourceKey,
   sentBase: NavigationReadBase | undefined,
@@ -686,11 +932,12 @@ export function decodeNavigationResponse(
     (wire.representation !== "snapshot" && wire.representation !== "delta") ||
     !("data" in wire)
   )
-    throw new Error("navigation protocol: invalid v2 response");
+    throw new Error("navigation protocol: invalid v3 response");
   if (wire.representation === "snapshot") {
     if (!exactKeys(wire, RESPONSE_SNAPSHOT_KEYS)) throw new Error("navigation protocol: invalid snapshot");
-    validateSnapshotForResource(key, current, wire.data as NavigationSnapshot);
-    return { status: "snapshot", version: current, snapshot: wire.data as NavigationSnapshot };
+    const snapshot = wire.data as NavigationSnapshot;
+    validateSnapshotForResource(key, current, snapshot);
+    return { status: "snapshot", version: current, snapshot: knownSnapshot(key, snapshot) };
   }
   if (!exactKeys(wire, RESPONSE_DELTA_KEYS)) throw new Error("navigation protocol: invalid delta response");
   try {
@@ -703,7 +950,7 @@ export function decodeNavigationResponse(
       !validateDeltaForResource(key, current, wire.data)
     )
       throw schemaError("delta");
-    return { status: "delta", version: current, base: wire.base, delta: wire.data };
+    return { status: "delta", version: current, base: wire.base, delta: knownDelta(key, wire.data) };
   } catch (cause) {
     throw new NavigationBaseInvalidError(cause);
   }

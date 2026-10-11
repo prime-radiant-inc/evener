@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>toolrow-intentless-hit-area layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; gap: 24px; width: 600px; padding: 12px; }
+  /* Production reserves the rail gutter at/above 700px (turnblock.module.css
+   * .runContent), which the .rowIcon's negative pull hangs into. */
+  .railBox { box-sizing: border-box; padding-left: var(--speaker-gutter); }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Both rows are ToolRow.tsx's intent-less expandable branch, copied from
+     its current jsdom render (class names unhashed):
+
+       <div class="row">
+         <span class="rowIcon">…</span>
+         <div class="summaryLine">
+           <span class="summary">…</span>{trailing}
+         </div>
+         <button class="trigger" aria-expanded aria-controls aria-label>
+           <span class="chevron">…</span>
+         </button>
+       </div>
+
+     The trigger is a sibling of the summary line, never its parent (no
+     interactive controls nested in a button); only the CSS overlay makes it
+     own the row's full hit area. -->
+<main class="fixtures">
+  <div class="railBox">
+    <div class="row" data-testid="tool-row" id="row-web"><span class="rowIcon" data-testid="tool-row-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M13.5 8 A5.5 5.5 0 1 1 2.5 8 A5.5 5.5 0 1 1 13.5 8 M2.7 8 H13.3 M8 2.6 C6.1 5 6.1 11 8 13.4 M8 2.6 C9.9 5 9.9 11 8 13.4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span><div class="summaryLine"><span class="summary" data-testid="tool-row-summary" id="summary-web"><span id="plain-web">Fetched</span> <a id="link-web" href="https://example.com/page" target="_blank" rel="noopener noreferrer">https://example.com/page</a></span></div><button type="button" class="trigger" data-testid="tool-row-trigger" id="trigger-web" aria-expanded="false" aria-controls="b1" aria-label="Fetched https://example.com/page"><span class="chevron" aria-hidden="true" data-open="false" data-testid="tool-row-chevron"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></button></div>
+  </div>
+  <div class="railBox">
+    <div class="row" data-testid="tool-row" id="row-write"><span class="rowIcon" data-testid="tool-row-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M3.2 12.8 L3.9 10.2 L10.6 3.5 A1.5 1.5 0 0 1 12.7 5.6 L6 12.3 L3.2 12.8 Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span><div class="summaryLine"><span class="summary" data-testid="tool-row-summary" id="summary-write">Wrote src/fizzbuzz.py</span><span class="inline" data-open-shell="true"><button title="Open" type="button" aria-label="Open src/fizzbuzz.py beside" class="button quiet sm" id="open-write"><span class="icon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></button></span></div><button type="button" class="trigger" data-testid="tool-row-trigger" id="trigger-write" aria-expanded="false" aria-controls="b2" aria-label="Wrote src/fizzbuzz.py"><span class="chevron" aria-hidden="true" data-open="false" data-testid="tool-row-chevron"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></button></div>
+  </div>
+</main>
+<!-- The #plain-web span is the only harness addition inside the row: it wraps
+     the literal text "Fetched" (production renders it as a bare text node) so
+     the measure can aim at plain summary text without a Range. A span with no
+     class and no rule changes nothing about layout or hit testing. -->
+<script>
+window.measure = () => {
+  const rect = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+  };
+  const contains = (outer, inner) =>
+    outer.left <= inner.left + 0.5 && outer.right >= inner.right - 0.5 && outer.top <= inner.top + 0.5 && outer.bottom >= inner.bottom - 0.5;
+  const name = (el) =>
+    `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${el.className && typeof el.className === "string" ? `.${el.className.trim().split(/\s+/).join(".")}` : ""}`;
+  // A glyph inside a control is named with the control that owns it.
+  const describe = (el) => {
+    if (!el) return "nothing";
+    const owner = el.closest("button, a");
+    return owner && owner !== el ? `${name(el)} inside ${name(owner)}` : name(el);
+  };
+  const hitAt = (el) => {
+    const r = el.getBoundingClientRect();
+    return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  };
+  const owns = (target, hit) => hit !== null && (hit === target || target.contains(hit));
+  const fixture = (name, plainId, controlId, controlKind) => {
+    const row = document.getElementById(`row-${name}`);
+    const trigger = document.getElementById(`trigger-${name}`);
+    const summary = document.getElementById(`summary-${name}`);
+    const plain = document.getElementById(plainId);
+    const control = document.getElementById(controlId);
+    const plainHit = hitAt(plain);
+    const controlHit = hitAt(control);
+    return {
+      name,
+      controlKind,
+      triggerCoversRow: contains(rect(trigger), rect(row)),
+      triggerCoversSummary: contains(rect(trigger), rect(summary)),
+      plainHitsTrigger: owns(trigger, plainHit),
+      plainHit: describe(plainHit),
+      controlHitsControl: owns(control, controlHit),
+      controlHit: describe(controlHit),
+    };
+  };
+  return {
+    fixtures: [
+      fixture("web", "plain-web", "link-web", "summary link"),
+      fixture("write", "summary-write", "open-write", "Open control"),
+    ],
+  };
+};
+</script>
+</body>
+</html>

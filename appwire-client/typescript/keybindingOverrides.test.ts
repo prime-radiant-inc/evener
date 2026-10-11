@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";

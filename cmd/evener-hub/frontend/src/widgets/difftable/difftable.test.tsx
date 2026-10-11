@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./difftable.module.css";
 import { DiffTable, type DiffTableColumn, type DiffTableRow } from "./index";
@@ -10,8 +10,6 @@ import { DiffTable, type DiffTableColumn, type DiffTableRow } from "./index";
 const styles = {
   old: requireClass(rawStyles.old, "difftable.module.css", "old"),
 };
-
-afterEach(cleanup);
 
 const COLUMNS: DiffTableColumn[] = [
   { key: "flavor", label: "Flavor" },

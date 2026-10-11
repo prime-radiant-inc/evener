@@ -70,7 +70,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 		raw, err = s.contextMgr.ElicitNote(ctx, foldable, skillInventorySummaries(inventory))
 	}
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "note elicitation failed: " + err.Error()})
+		s.emit(events.EventWarning, bareWarningDataFromError("note elicitation failed", err))
 		return
 	}
 	// Split the selection block from the free-text note and accept both as one

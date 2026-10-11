@@ -32,7 +32,7 @@ func probeAdmissionIdentitySwap(t *testing.T, sameOwner, unsubscribe bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -61,7 +61,7 @@ func probeAdmissionIdentitySwap(t *testing.T, sameOwner, unsubscribe bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.ReplaceAppIdentity(prepared, nil)
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	if unsubscribe {
 		if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: newRef}); err != nil {
 			t.Fatal(err)

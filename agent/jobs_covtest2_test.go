@@ -19,6 +19,7 @@ import (
 // (jobs.go lines 1622-1624): the no-notification finalize path used by
 // complete-or-handle kept shells.
 func TestCovFinalizeWithRunNoNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notifications []jobNotification
 	jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
@@ -57,6 +58,7 @@ func TestCovFinalizeWithRunNoNotification(t *testing.T) {
 // TestCovFinalizeWithRunNoNotification_AlreadyFinalized covers the case where
 // finalizeWithRunNoNotification is called on a job that already has a terminal.
 func TestCovFinalizeWithRunNoNotification_AlreadyFinalized(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
@@ -80,6 +82,7 @@ func TestCovFinalizeWithRunNoNotification_AlreadyFinalized(t *testing.T) {
 
 // TestCovFinalizeWithRunNoNotification_NilRun covers the nil-run early return.
 func TestCovFinalizeWithRunNoNotification_NilRun(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	prepare := func(run *runningJob) (jobstore.Status, string, *int, error) {
 		t.Fatal("prepare should not be called for nil run")
@@ -92,6 +95,7 @@ func TestCovFinalizeWithRunNoNotification_NilRun(t *testing.T) {
 
 // TestCovStopChildren covers stopChildren (jobs_nested.go lines 406-432).
 func TestCovStopChildren(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	s := &Session{jobManager: jm, id: jm.sessionID}
 
@@ -145,6 +149,7 @@ func TestCovStopChildren(t *testing.T) {
 
 // TestCovStopChildren_NoJobManager covers stopChildren with no job manager.
 func TestCovStopChildren_NoJobManager(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	stopped, err := s.stopChildren("parent_1")
 	if err == nil {
@@ -157,6 +162,7 @@ func TestCovStopChildren_NoJobManager(t *testing.T) {
 
 // TestCovCreateJobOutputForID covers createJobOutputForID (jobs.go lines 641-662).
 func TestCovCreateJobOutputForID(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// Invalid job ID (wrong owner session).
@@ -185,6 +191,7 @@ func TestCovCreateJobOutputForID(t *testing.T) {
 
 // TestCovCreateJobOutputForID_BadID covers createJobOutputForID with a malformed ID.
 func TestCovCreateJobOutputForID_BadID(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	// A job ID that cannot be parsed for owner session extraction.
 	_, _, err := jm.createJobOutputForID("not_a_valid_job_id")
@@ -198,6 +205,7 @@ func TestCovCreateJobOutputForID_BadID(t *testing.T) {
 // the panic recovery, marshal error, addResource error, compile error, and
 // successful validation paths.
 func TestCovValidateStructuredResultWithAddResource(t *testing.T) {
+	t.Parallel()
 	// Successful validation: a simple object schema with a required field.
 	schema := map[string]any{
 		"type": "object",
@@ -243,6 +251,7 @@ func TestCovValidateStructuredResultWithAddResource(t *testing.T) {
 // TestCovValidateStructuredResultWithAddResource_Panic covers the panic recovery
 // path in validateStructuredResultWithAddResource.
 func TestCovValidateStructuredResultWithAddResource_Panic(t *testing.T) {
+	t.Parallel()
 	// A schema that will cause the compiler to panic during Compile.
 	// Use a circular reference schema to trigger a panic.
 	panicAddResource := func(c *jsonschema.Compiler, uri string, r io.Reader) error {
@@ -261,6 +270,7 @@ func TestCovValidateStructuredResultWithAddResource_Panic(t *testing.T) {
 // TestCovRearmTerminalNotificationDecision covers
 // rearmTerminalNotificationDecision (jobs.go lines 2082-2092).
 func TestCovRearmTerminalNotificationDecision(t *testing.T) {
+	t.Parallel()
 	sessionID := "sess_1"
 
 	// Non-terminal status — no rearm.
@@ -329,6 +339,7 @@ func TestCovRearmTerminalNotificationDecision(t *testing.T) {
 // TestCovArmPendingTerminalNotifications covers armPendingTerminalNotifications
 // (jobs.go lines 2094-2155).
 func TestCovArmPendingTerminalNotifications(t *testing.T) {
+	t.Parallel()
 	t.Run("not armed persists pending before enqueue", func(t *testing.T) {
 		jm := newTestJM(t)
 		var notifications []jobNotification
@@ -424,111 +435,35 @@ func TestCovArmPendingTerminalNotifications(t *testing.T) {
 	})
 }
 
-// TestCovValidatedOutputStatsForRecord covers validatedOutputStatsForRecord
-// (jobs.go lines 2175-2184): the mismatch path and the nil-record path.
-func TestCovValidatedOutputStatsForRecord(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.log")
-	if err := os.WriteFile(path, []byte("hello world\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Nil record — should return stats without mismatch check.
-	total, retainedStart, err := validatedOutputStatsForRecord(path, nil)
-	if err != nil {
-		t.Fatalf("nil rec: %v", err)
-	}
-	if total != 12 { // "hello world\n" = 12 bytes
-		t.Fatalf("total = %d, want 12", total)
-	}
-	if retainedStart != 0 {
-		t.Fatalf("retainedStart = %d, want 0", retainedStart)
-	}
-
-	// Terminal record with matching output bytes — OK.
-	rec := &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 12}
-	total, _, err = validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		t.Fatalf("matching bytes: %v", err)
-	}
-	if total != 12 {
-		t.Fatalf("total = %d, want 12", total)
-	}
-
-	// Terminal record with mismatched output bytes — error.
-	rec.OutputBytes = 99
-	_, _, err = validatedOutputStatsForRecord(path, rec)
-	if err == nil {
-		t.Fatal("mismatched bytes should return error")
-	}
-	if !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("error should mention mismatch: %v", err)
-	}
-
-	// Non-existent file — error.
-	_, _, err = validatedOutputStatsForRecord(filepath.Join(dir, "nonexistent.log"), nil)
-	if err == nil {
-		t.Fatal("non-existent file should return error")
-	}
-
-	// Non-terminal record — no mismatch check (only terminal records are checked).
-	rec.Status = jobstore.StatusRunning
-	rec.OutputBytes = 99
-	total, _, err = validatedOutputStatsForRecord(path, rec)
-	if err != nil {
-		t.Fatalf("non-terminal rec should not check mismatch: %v", err)
-	}
-	if total != 12 {
-		t.Fatalf("total = %d, want 12", total)
-	}
-}
-
-// TestCovTailOutputFileWithOpen covers tailOutputFileWithOpen
-// (jobs.go lines 2252+): negative tailBytes error and open error.
-func TestCovTailOutputFileWithOpen(t *testing.T) {
-	// Negative tailBytes.
-	_, _, _, err := tailOutputFileWithOpen("/nonexistent", -1, 0, func(string) (jobOutputReadFile, error) {
-		t.Fatal("open should not be called for negative tailBytes")
-		return nil, nil
-	})
-	if err == nil {
-		t.Fatal("negative tailBytes should return error")
-	}
-
-	// Open error.
-	_, _, _, err = tailOutputFileWithOpen("/nonexistent", 100, 0, func(path string) (jobOutputReadFile, error) {
-		return nil, errors.New("open failed")
-	})
-	if err == nil || !strings.Contains(err.Error(), "open output") {
-		t.Fatalf("open error should wrap: %v", err)
-	}
-
-	// Successful read.
+// TestCovReadClosedJobOutput covers readClosedJobOutput: an invalid limit, a
+// missing file, a total that disagrees with the record, and a whole read.
+func TestCovReadClosedJobOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
 	content := "line1\nline2\nline3\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, total, truncated, err := tailOutputFileWithOpen(path, 100, int64(len(content)), func(p string) (jobOutputReadFile, error) {
-		return os.Open(p)
-	})
-	if err != nil {
-		t.Fatalf("successful read: %v", err)
+	if _, _, _, err := readClosedJobOutput(path, nil, -1, false); !errors.Is(err, jobstore.ErrInvalidLimit) {
+		t.Fatalf("negative limit: %v, want ErrInvalidLimit", err)
 	}
-	if total != int64(len(content)) {
-		t.Fatalf("total = %d, want %d", total, len(content))
+	if _, _, _, err := readClosedJobOutput(filepath.Join(dir, "missing.log"), nil, 100, false); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: %v, want ErrNotExist", err)
 	}
-	if truncated {
-		t.Fatal("should not be truncated")
+	rec := &jobstore.JobRecord{Status: jobstore.StatusCompleted, OutputBytes: 99}
+	if _, _, _, err := readClosedJobOutput(path, rec, 100, false); err == nil {
+		t.Fatal("a total that disagrees with the record should be refused")
 	}
-	if out != content {
-		t.Fatalf("output = %q, want complete content %q", out, content)
+	out, total, truncated, err := readClosedJobOutput(path, nil, 100, false)
+	if err != nil || out != content || total != int64(len(content)) || truncated {
+		t.Fatalf("whole read = %q, %d, %v, %v; want the complete content", out, total, truncated, err)
 	}
 }
 
 // TestCovForwardDisabled covers forwardDisabled (jobs.go lines 2070-2074).
 func TestCovForwardDisabled(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// nil run — false.
@@ -552,6 +487,7 @@ func TestCovForwardDisabled(t *testing.T) {
 // TestCovTreeReservationRelease covers treeReservation.release
 // (jobs.go lines 322-329): nil receiver and double-release.
 func TestCovTreeReservationRelease(t *testing.T) {
+	t.Parallel()
 	// nil receiver — no panic.
 	var r *treeReservation
 	r.release()
@@ -584,6 +520,7 @@ func TestCovTreeReservationRelease(t *testing.T) {
 // TestCovRunningJobCloseDone covers the closeDone variants
 // (jobs.go lines 344-364).
 func TestCovRunningJobCloseDone(t *testing.T) {
+	t.Parallel()
 	run := &runningJob{done: make(chan struct{})}
 	run.closeDone()
 	select {
@@ -600,6 +537,7 @@ func TestCovRunningJobCloseDone(t *testing.T) {
 
 // TestCovRunningJobCloseDoneDurable covers closeDoneDurable.
 func TestCovRunningJobCloseDoneDurable(t *testing.T) {
+	t.Parallel()
 	run := &runningJob{done: make(chan struct{})}
 	run.closeDoneDurable()
 	if runningJobCompletion(run.completion.Load()) != runningJobCompletionDurable {
@@ -609,6 +547,7 @@ func TestCovRunningJobCloseDoneDurable(t *testing.T) {
 
 // TestCovRunningJobCloseDoneAbandoned covers closeDoneAbandoned.
 func TestCovRunningJobCloseDoneAbandoned(t *testing.T) {
+	t.Parallel()
 	run := &runningJob{done: make(chan struct{})}
 	run.closeDoneAbandoned()
 	if runningJobCompletion(run.completion.Load()) != runningJobCompletionAbandoned {
@@ -618,6 +557,7 @@ func TestCovRunningJobCloseDoneAbandoned(t *testing.T) {
 
 // TestCovRunningJobCloseDoneOnce covers that closeDone is idempotent.
 func TestCovRunningJobCloseDoneOnce(t *testing.T) {
+	t.Parallel()
 	run := &runningJob{done: make(chan struct{})}
 	run.closeDoneDurable()
 	// Second call should not panic.
@@ -630,6 +570,7 @@ func TestCovRunningJobCloseDoneOnce(t *testing.T) {
 
 // TestCovEnqueueNotifications covers enqueueNotifications (jobs.go lines 1872-1885).
 func TestCovEnqueueNotifications(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// nil enqueue — returns false.
@@ -678,6 +619,7 @@ func TestCovEnqueueNotifications(t *testing.T) {
 // TestCovAppendStartForwardFailure covers appendStartForwardFailure
 // (jobs.go lines 1783-1802).
 func TestCovAppendStartForwardFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
@@ -728,6 +670,7 @@ func TestCovAppendStartForwardFailure(t *testing.T) {
 // (jobs.go lines 1804-1834): nil value, capture-failed, schema-requested,
 // too-large, and valid paths.
 func TestCovBoundedStructuredResult(t *testing.T) {
+	t.Parallel()
 	// nil value, no schema, no capture failed — returns nil, nil, "".
 	v, valid, reason := boundedStructuredResult(nil, nil, false)
 	if v != nil || valid != nil || reason != "" {
@@ -773,6 +716,7 @@ func TestCovBoundedStructuredResult(t *testing.T) {
 // TestCovJobStopReceiptWait covers jobStopReceipt.wait (jobs.go lines 1465-1477):
 // nil run and non-durable completion.
 func TestCovJobStopReceiptWait_NilRun(t *testing.T) {
+	t.Parallel()
 	r := jobStopReceipt{manager: newTestJM(t), jobID: "job_nil"}
 	err := r.wait()
 	if err == nil {
@@ -785,6 +729,7 @@ func TestCovJobStopReceiptWait_NilRun(t *testing.T) {
 
 // TestCovJobStopReceiptWait_Durable covers a successful durable wait.
 func TestCovJobStopReceiptWait_Durable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
@@ -801,6 +746,7 @@ func TestCovJobStopReceiptWait_Durable(t *testing.T) {
 
 // TestCovJobStopReceiptWait_Abandoned covers a non-durable (abandoned) completion.
 func TestCovJobStopReceiptWait_Abandoned(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {

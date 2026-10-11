@@ -36,6 +36,7 @@ func (fs failAfterCreateFS) Create(name string) (afero.File, error) {
 }
 
 func TestFallbackCompactionWriteFailureStillResetsEnvironmentTracker(t *testing.T) {
+	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "env-compaction-write-error", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("unused")} }, withDir(t.TempDir()))
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
 		t.Fatal(err)

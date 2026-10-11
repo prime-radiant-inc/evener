@@ -377,7 +377,7 @@ func wrcExerciseClearAndDurability(t *testing.T, r *wrcReader) {
 	if exists, err := jm.hasWatchID(durable.WatchID); err != nil || !exists {
 		t.Fatalf("durable hasWatchID = %t, %v", exists, err)
 	}
-	clearEvent, err := jm.durableWatchClearEvent(durable.WatchID, "cleared")
+	clearEvent, _, err := jm.durableWatchClearEvent(durable.WatchID, "cleared")
 	if err != nil || clearEvent == nil || clearEvent.WatchID != durable.WatchID {
 		t.Fatalf("durable clear event = %+v, %v", clearEvent, err)
 	}
@@ -388,7 +388,7 @@ func wrcExerciseClearAndDurability(t *testing.T, r *wrcReader) {
 	if exists, err := jm.hasWatchID(durable.WatchID); err != nil || exists {
 		t.Fatalf("durable watch remains active: %t, %v", exists, err)
 	}
-	if event, err := jm.durableWatchClearEvent(durable.WatchID, "cleared"); err != nil || event != nil {
+	if event, _, err := jm.durableWatchClearEvent(durable.WatchID, "cleared"); err != nil || event != nil {
 		t.Fatalf("cleared durable watch made another clear event: %+v, %v", event, err)
 	}
 
@@ -442,7 +442,7 @@ func wrcExerciseClearAndDurability(t *testing.T, r *wrcReader) {
 	if err := errorJM.restoreWatchSendPending(); err == nil {
 		t.Fatal("restore from closed store succeeded")
 	}
-	if _, err := errorJM.durableWatchClearEvent("watch", "cleared"); err == nil {
+	if _, _, err := errorJM.durableWatchClearEvent("watch", "cleared"); err == nil {
 		t.Fatal("durable clear event from closed store succeeded")
 	}
 	if _, err := errorJM.hasWatchID("watch"); err == nil {

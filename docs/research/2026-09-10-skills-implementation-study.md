@@ -325,7 +325,7 @@ test is valuable plumbing coverage and cannot replace that evaluation. [E6]
 
 - [E1: discovery and parsing](../../agent/skill/skills.go), lines 15–103 and
   152–189; [initialization](../../agent/session_init.go), lines 1350–1377.
-- [E2: catalog and inline instructions](../../agent/prompts/sections/skills.md.tmpl);
+- [E2: catalog and inline instructions](../../agent/prompts/system.md.tmpl);
   [message role](../../agent/session_model_call.go), lines 903–920.
 - [E3: tool activation](../../agent/session_tools_communicate.go), lines 176–198;
   [exact lookup](../../agent/session_tool_registry.go), lines 288–291.
@@ -333,7 +333,7 @@ test is valuable plumbing coverage and cannot replace that evaluation. [E6]
   21–72; [user-input boundary](../../agent/session_lifecycle.go), lines 1388–1398.
 - [E5: delegate preload](../../agent/subagents.go), lines 933–958 and 1224–1227;
   [prompt construction](../../agent/session_prompts.go), line 158;
-  [preload section](../../agent/prompts/sections/activated-skills.md.tmpl).
+  [preload section](../../agent/prompts/system.md.tmpl).
 - [E6: inline plumbing test](../../agent/session_skills_test.go), lines 135–225;
   [slash resolution tests](../../agent/session_slash_command_test.go), lines 39–187.
 - [E7: tool output limit](../../agent/internal/tool/registry.go), lines 972–999;

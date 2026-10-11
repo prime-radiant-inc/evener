@@ -18,7 +18,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
-	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/auth/openai/oaitest"
@@ -62,6 +61,56 @@ func TestRunPluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	}
 	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
 		t.Fatalf("startup order = %v, want the config-dir guard and then the resolver", order)
+	}
+}
+
+// The seeding warning is best-effort, but best-effort does not mean
+// process-global: a library-style caller supplies stderr to route Evener's
+// diagnostics, and this warning must go through that stream like the plugin
+// warnings beside it. A failing seed hook drives the warning; the injected
+// buffer must receive it and the process-global stream must not.
+func TestRunSeedingWarningUsesInjectedStderr(t *testing.T) {
+	oldResolve := runResolvePlugins
+	oldEnsure := runEnsureUserConfigDirs
+	oldSeed := runSeedMarketplaces
+	t.Cleanup(func() {
+		runResolvePlugins = oldResolve
+		runEnsureUserConfigDirs = oldEnsure
+		runSeedMarketplaces = oldSeed
+	})
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{}, nil
+	}
+	runEnsureUserConfigDirs = func() error { return nil }
+	runSeedMarketplaces = func(context.Context) error { return errors.New("seed failed") }
+
+	// Swap the process-global stderr onto a private file so a warning that
+	// bypasses the injected stream lands somewhere we can read instead of the
+	// test runner's own output. This test is serial (it mutates package seams).
+	procStderr, err := os.CreateTemp(t.TempDir(), "proc-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { procStderr.Close() }) // runs last
+	oldStderr := os.Stderr
+	os.Stderr = procStderr
+	t.Cleanup(func() { os.Stderr = oldStderr }) // runs first
+
+	var stderr bytes.Buffer
+	_ = run(context.Background(), runConfig{workDir: t.TempDir(), stateDir: t.TempDir(), stdout: io.Discard, stderr: &stderr})
+
+	if !strings.Contains(stderr.String(), "warning: seeding default marketplaces: seed failed") {
+		t.Errorf("injected stderr = %q, want the seeding warning", stderr.String())
+	}
+	if _, err := procStderr.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(procStderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "seeding default marketplaces") {
+		t.Errorf("process stderr = %q, want the warning routed through the injected stream", got)
 	}
 }
 
@@ -1511,57 +1560,5 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 				t.Error("processed input for a run an interrupt had already ended")
 			}
 		})
-	}
-}
-
-// TestRunPreservesAdoptedRetainedScratchWhenRestoreFails is roborev round-8 High
-// 1 on the one-shot run path: a resume adopts a durable retained allocation onto
-// the launch environment, then a later restore failure must retain it (release
-// the lease) rather than run os.RemoveAll over a directory the manifest still
-// references.
-func TestRunPreservesAdoptedRetainedScratchWhenRestoreFails(t *testing.T) {
-	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
-	oldRestore := runRestoreSession
-	t.Cleanup(func() { runRestoreSession = oldRestore })
-
-	stateDir := t.TempDir()
-	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
-	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
-		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
-	}); err != nil {
-		t.Fatalf("SaveSessionMeta: %v", err)
-	}
-	var adopted sandbox.ScratchReference
-	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
-		adopted = adoptRetainedScratchOntoLaunchEnv(t, stateDir, sessionID, env)
-		return nil, errors.New("restore failed after the retained scratch was adopted")
-	}
-
-	err := run(context.Background(), runConfig{
-		resume:                sessionID,
-		workDir:               stateDir,
-		stateDir:              stateDir,
-		runTimeout:            time.Hour,
-		noDefaultMarketplaces: true,
-		stdout:                &bytes.Buffer{},
-		stderr:                &bytes.Buffer{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "restore session") {
-		t.Fatalf("run error = %v, want the restore failure", err)
-	}
-	if adopted.Dir == "" {
-		t.Fatal("restore stub never ran, so no retained scratch was adopted")
-	}
-	if _, err := os.Stat(adopted.Dir); err != nil {
-		t.Fatalf("failed run removed the adopted retained scratch %s: %v", adopted.Dir, err)
-	}
-	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID}
-	handle, err := sandbox.OpenRetainedSessionScratch(owner, adopted)
-	if err != nil {
-		t.Fatalf("failed run did not release the adopted scratch lease: %v", err)
-	}
-	if err := handle.Retain(); err != nil {
-		t.Fatal(err)
 	}
 }

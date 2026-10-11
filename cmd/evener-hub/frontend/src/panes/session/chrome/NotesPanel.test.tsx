@@ -24,7 +24,8 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { fileURLToPath, NotesPanelBody } from "./NotesPanel";
+import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
+import { NotesPanelBody } from "./NotesPanel";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -114,7 +115,8 @@ function holdSessionPane(...refs: string[]) {
 
 function openPanel(model: ThreadModel) {
   holdSessionPane(model.ref);
-  render(<NotesPanelBody sessionRef={model.ref} model={model} />);
+  const sourcePaneId = workspaceStore.getState().panes.find((pane) => pane.type === "session")?.id;
+  render(<NotesPanelBody sessionRef={model.ref} model={model} sourcePaneId={sourcePaneId} />);
 }
 
 function editor(): HTMLTextAreaElement {
@@ -147,11 +149,17 @@ async function advance(ms: number) {
 // through enqueue and dispatch, §4's click-time stop-epoch capture included).
 // Each probe read is a real round trip that lets pending work complete; the
 // turn bound is a tripwire that fails loudly, never the mechanism awaited —
-// threads.test.ts's flushIndexedDBUntil rule.
+// threads.test.ts's flushIndexedDBUntil rule. Each turn runs in its own act()
+// so the panel re-renders the completed work settles into land inside it, and
+// the render is committed before `done` looks at the DOM.
 async function flushIndexedDBUntil(done: () => boolean, maxTurns = 60): Promise<void> {
   const probe = new MutationOutboxIndexedDB();
   try {
-    for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
+    for (let turn = 0; turn < maxTurns && !done(); turn += 1) {
+      await act(async () => {
+        await probe.listTargetRefs();
+      });
+    }
   } finally {
     probe.close();
   }
@@ -494,17 +502,6 @@ test("a flushed blur save does not resubmit when its original deadline passes", 
   setHumanNote.mockRestore();
 });
 
-test("a malformed file URL never becomes an open-beside target", () => {
-  expect(fileURLToPath("file:///tmp/with%20space.md")).toBe("/tmp/with space.md");
-  // A malformed escape yields no path either: the URL names something we cannot
-  // interpret, and guessing the literal bytes risks opening a different file than
-  // the entry means. Canonical file URLs always encode "%", so this only rejects
-  // input this system never produced.
-  expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("");
-  // A string that is not a URL yields no path at all.
-  expect(fileURLToPath("not a url")).toBe("");
-});
-
 // --- rule 1: capability unset hides the panel body entirely -------------------
 
 test("notes panel body renders nothing when capability unset", () => {
@@ -574,6 +571,18 @@ test("notes panel is read-only under the recovery fence and keeps a dirty draft 
   // draft is editable again rather than having been discarded or submitted.
   panel.rerender(<NotesPanelBody sessionRef={model.ref} model={{ ...model, resumeRequired: false }} />);
   expect(editor().value).toBe("draft written before the fence");
+});
+
+// The whiteboards keep their line breaks (the agent's is a paragraph, a "Now:"
+// line and "Next:" lines), so the read-only body carries each line as written;
+// the prose class's `white-space: pre-wrap` draws them (jsdom applies no CSS
+// module styles, so this test pins the text the browser receives).
+test("multi-line whiteboards render with their line structure", () => {
+  const agentNote = "Fixing the importer for the reporting team.\nNow: checking the exporter.\nNext: report back.";
+  const humanNote = "Ship by Friday.\n\nAsk me before touching the schema.";
+  openPanel(testModel({ status: { type: "ended" }, humanNote, agentNote }));
+  expect(screen.getByTestId("shared-notes-agent").textContent).toBe(agentNote);
+  expect(screen.getByTestId("shared-notes-human").textContent).toBe(humanNote);
 });
 
 test("ended-empty session shows inert text with no editor", () => {
@@ -1114,7 +1123,8 @@ test("older B success followed by C rejection keeps C visible and recoverable", 
   await user.type(editor(), "B");
   await user.tab();
   await advance(10_000);
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "notes/human/set")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "notes/human/set")).toHaveLength(1);
   await user.clear(editor());
   await user.type(editor(), "C");
   await user.tab();
@@ -1194,7 +1204,8 @@ test("a second blur while a save is in flight replays the latest draft instead o
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
-  await waitFor(async () => expect((await readMutationPersistence(model.ref)).recovery).toEqual([]));
+  await flushPendingTurnsProjectionForTests();
+  expect((await readMutationPersistence(model.ref)).recovery).toEqual([]);
 });
 
 test("a B-save parking behind an in-flight A-save persists instead of overwriting A", async () => {
@@ -1303,7 +1314,8 @@ test("a failed save retries on the next blur with the latest draft", async () =>
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
-  await waitFor(async () => expect((await readMutationPersistence(model.ref)).recovery).toEqual([]));
+  await flushPendingTurnsProjectionForTests();
+  expect((await readMutationPersistence(model.ref)).recovery).toEqual([]);
 });
 
 test("a persistently failing save does not hot-loop the same drain", async () => {
@@ -1626,6 +1638,11 @@ test("a live-to-ended transition without blur does not invent a save", async () 
 
 test("idle live session shows the wake warning under the editor", () => {
   openPanel(testModel({ status: { type: "idle" }, humanNote: "old note" }));
+  expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
+});
+
+test("a live session resting on a failed turn shows the wake warning too", () => {
+  openPanel(testModel({ status: { type: "systemError" }, humanNote: "old note" }));
   expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
 });
 

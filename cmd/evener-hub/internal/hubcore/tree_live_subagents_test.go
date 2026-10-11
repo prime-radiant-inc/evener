@@ -10,15 +10,9 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// The Live tier used to build flat, parentless TreeNode values: a live
-// subagent appeared as its own top-level row instead of nesting under the
-// parent that spawned it, and its active state never colored the row the way
-// every other section's rows do. These tests pin the fix: the Live tier now
-// builds via buildNode (the same path the Projects tier uses), so subagent
-// children nest under their live parent with the same foldout and the same
-// active-status color as every other section.
-
-func TestBuildTreeLiveNestsActiveSubagentUnderParent(t *testing.T) {
+// Live rows are roots. A live subagent is never a Live row, and its parent's
+// row carries no child for it.
+func TestBuildTreeLiveHasNoRowForSubagent(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
 		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
@@ -31,29 +25,8 @@ func TestBuildTreeLiveNestsActiveSubagentUnderParent(t *testing.T) {
 
 	tree := BuildTreeAt(metas, live, nil, now)
 
-	// The parent is the one top-level Live row; the subagent nests under it.
-	if len(tree.Live) != 1 {
-		t.Fatalf("Live tier has %d rows, want 1 (the parent)", len(tree.Live))
-	}
-	parent := tree.Live[0]
-	if parent.ID != "parent" {
-		t.Fatalf("Live[0].ID = %q, want parent", parent.ID)
-	}
-	if len(parent.Children) != 1 {
-		t.Fatalf("parent has %d children, want 1 (the live subagent)", len(parent.Children))
-	}
-	child := parent.Children[0]
-	if child.ID != "child" {
-		t.Fatalf("child.ID = %q, want child", child.ID)
-	}
-	if child.Kind != "subagent" {
-		t.Errorf("child.Kind = %q, want subagent", child.Kind)
-	}
-	// The active subagent carries its own daemon-reported state, which the
-	// frontend's cadenceStateFor maps to the working/active color family —
-	// the same color every other section uses for an active subagent.
-	if child.State != "active" {
-		t.Errorf("child.State = %q, want active (the working/active color)", child.State)
+	if len(tree.Live) != 1 || tree.Live[0].ID != "parent" || len(tree.Live[0].Children) != 0 {
+		t.Fatalf("Live = %+v, want the parent alone with no children", tree.Live)
 	}
 }
 
@@ -129,21 +102,6 @@ func TestBuildTreeCarriesSessionWatchesForNavigation(t *testing.T) {
 			t.Fatalf("sibling carries the parent's watch: %+v", siblingRow.Watches)
 		}
 	}
-	// The in-process child carries its own watches on its nested row — live and
-	// project — and neither the parent's nor the sibling's.
-	if len(parentRow.Children) != 1 {
-		t.Fatalf("parent children = %+v, want the one nested subagent", parentRow.Children)
-	}
-	childRow := parentRow.Children[0]
-	if childRow.ID != "child" {
-		t.Fatalf("child row ID = %q, want child", childRow.ID)
-	}
-	if len(childRow.Watches) != 1 || childRow.Watches[0].ID != "watch-child" {
-		t.Fatalf("child live watches = %+v, want only watch-child", childRow.Watches)
-	}
-	if len(parentProject.Children) != 1 || len(parentProject.Children[0].Watches) != 1 || parentProject.Children[0].Watches[0].ID != "watch-child" {
-		t.Fatalf("child project watches = %+v, want only watch-child", parentProject.Children)
-	}
 }
 
 // An older daemon omits Watches entirely; the diagnostics helper must treat
@@ -196,102 +154,47 @@ func TestBuildTreeLiveExcludesSubagentWhoseParentIsLive(t *testing.T) {
 	}
 }
 
-func TestBuildTreeLiveKeepsOrphanedSubagentTopLevel(t *testing.T) {
+func TestBuildTreeLivePrunesNonLiveForkOriginals(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	dir := schema.EnvironmentInfo{WorkingDir: "/projects/evener"}
 	metas := []schema.SessionMeta{
-		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "orphan", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "liveorig", ForkLabel: "before edit", CreatedAt: now, UpdatedAt: now, EnvInfo: dir},
+		{ID: "livecont", ParentSessionID: "liveorig", CreatedAt: now, UpdatedAt: now, EnvInfo: dir},
+		{ID: "deadorig", ForkLabel: "before edit", CreatedAt: now, UpdatedAt: now, EnvInfo: dir},
+		{ID: "deadcont", ParentSessionID: "deadorig", CreatedAt: now, UpdatedAt: now, EnvInfo: dir},
 	}
-	// Only the subagent is live; the parent is not. The subagent has no live
-	// row to nest under, so it keeps its own top-level Live row rather than
-	// vanishing from the rail.
+	// Only livecont and its original are live, so the original stays under the
+	// Live row. deadcont is live with a non-live original, which the Live tier
+	// prunes; the project row keeps it.
 	live := []LiveEntry{
-		{PID: 1, SessionID: "orphan", Status: appwire.ThreadStatusActive},
+		{PID: 1, SessionID: "livecont", Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: "liveorig", Status: appwire.ThreadStatusIdle},
+		{PID: 3, SessionID: "deadcont", Status: appwire.ThreadStatusIdle},
 	}
 
 	tree := BuildTreeAt(metas, live, nil, now)
 
-	if len(tree.Live) != 1 {
-		t.Fatalf("Live tier has %d rows, want 1 (the orphaned subagent)", len(tree.Live))
+	rows := map[string]TreeNode{}
+	for _, row := range tree.Live {
+		rows[row.ID] = row
 	}
-	if tree.Live[0].ID != "orphan" {
-		t.Fatalf("Live[0].ID = %q, want orphan", tree.Live[0].ID)
+	if len(rows) != 2 {
+		t.Fatalf("Live rows = %v, want the two continuations", rows)
 	}
-}
-
-func TestBuildTreeLivePrunesNonLiveChildren(t *testing.T) {
-	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
-	metas := []schema.SessionMeta{
-		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "livechild", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "deadchild", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	if children := rows["livecont"].Children; len(children) != 1 || children[0].ID != "liveorig" {
+		t.Fatalf("livecont children = %+v, want its live original", children)
 	}
-	// Only livechild and the parent are live. deadchild has no live entry and
-	// is not listed in RunningSubagentIDs, so it is neither running nor
-	// resumable — it must be pruned from the Live subtree.
-	live := []LiveEntry{
-		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"livechild"}},
-		{PID: 2, SessionID: "livechild", Status: appwire.ThreadStatusActive},
-	}
-
-	tree := BuildTreeAt(metas, live, nil, now)
-
-	if len(tree.Live) != 1 {
-		t.Fatalf("Live tier has %d rows, want 1 (the parent)", len(tree.Live))
-	}
-	parent := tree.Live[0]
-	if len(parent.Children) != 1 {
-		t.Fatalf("parent has %d children, want 1 (only the live subagent)", len(parent.Children))
-	}
-	if parent.Children[0].ID != "livechild" {
-		t.Fatalf("child = %q, want livechild", parent.Children[0].ID)
-	}
-	// deadchild is not live and must not appear anywhere in the Live subtree.
-	for _, child := range parent.Children {
-		if child.ID == "deadchild" {
-			t.Error("non-live subagent deadchild appeared in the Live tier subtree")
-		}
-	}
-}
-
-func TestBuildTreeLiveSubagentStateMatchesProjectRow(t *testing.T) {
-	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
-	metas := []schema.SessionMeta{
-		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "child", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-	}
-	live := []LiveEntry{
-		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}},
-		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
-	}
-
-	tree := BuildTreeAt(metas, live, nil, now)
-
-	// The Live-tier subagent child and the Projects-tier subagent child must
-	// report the same state — both come from the same stateFor closure, so
-	// the active color cannot disagree between sections.
-	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "parent")
-	if !inLive || !inProject {
-		t.Fatalf("parent missing: live=%v project=%v", inLive, inProject)
-	}
-	if len(liveRow.Children) != 1 || len(projectRow.Children) != 1 {
-		t.Fatalf("children: live=%d project=%d, want 1 each", len(liveRow.Children), len(projectRow.Children))
-	}
-	liveChild := liveRow.Children[0]
-	projectChild := projectRow.Children[0]
-	if liveChild.State != projectChild.State {
-		t.Errorf("subagent state disagrees: live=%q project=%q", liveChild.State, projectChild.State)
-	}
-	if liveChild.State != "active" {
-		t.Errorf("subagent state = %q, want active", liveChild.State)
+	if children := rows["deadcont"].Children; len(children) != 0 {
+		t.Fatalf("deadcont children = %+v, want the non-live original pruned", children)
 	}
 }
 
 // A crashed daemon stays in the roster for the crash-retention window carrying
 // the in-process children it last reported, and Roster.List hands those records
-// to the tree unfiltered. Nothing is running those delegates, so the sidebar
-// must say so — the same answer Roster.SubagentState now gives the thread read
-// and workspace projections. The parent's own crash marker is untouched.
+// to the tree unfiltered. Nothing is running those delegates, so the project
+// stops counting them as working: the same answer Roster.SubagentState gives
+// the thread read and workspace projections. The parent's own crash marker is
+// untouched.
 func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -316,8 +219,8 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01CHILD", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
-	if got := treeNodeState(t, BuildTreeAt(metas, r.List(), nil, now), "01CHILD"); got != "active" {
-		t.Fatalf("child state while the parent daemon is alive = %q, want active", got)
+	if project := BuildTreeAt(metas, r.List(), nil, now).Projects[0]; project.RollupLive != 1 {
+		t.Fatalf("project working count while the parent daemon is alive = %d, want 1", project.RollupLive)
 	}
 
 	// kill -9 the parent: its probe fails and the process is confirmed gone.
@@ -330,8 +233,8 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 	}
 
 	tree := BuildTreeAt(metas, r.List(), nil, now)
-	if got := treeNodeState(t, tree, "01CHILD"); got != "ended" {
-		t.Fatalf("child state after the parent crashed = %q, want ended", got)
+	if project := tree.Projects[0]; project.RollupLive != 0 {
+		t.Fatalf("project working count after the parent crashed = %d, want 0", project.RollupLive)
 	}
 	if got := treeNodeState(t, tree, "01PARENT"); got != "errored" {
 		t.Fatalf("crashed parent state = %q, want errored", got)

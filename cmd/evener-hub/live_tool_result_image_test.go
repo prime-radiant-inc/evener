@@ -7,20 +7,21 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/appprojector"
+	"primeradiant.com/evener/internal/appoverlay"
 )
 
-// settledToolItem projects one image-returning read_file call through a real
-// daemon projector and returns the item a live watcher's item/completed
-// carries, plus the projector to feed the round's persist announcement to.
-func settledToolItem(t *testing.T, sessionID, sha string, size int64) (*appprojector.AppEventProjector, appwire.ThreadItem) {
+// settledToolItem runs one image-returning read_file call through a real
+// daemon overlay and returns the tool item a live watcher's overlay/upserted
+// carries, plus the overlay to feed the round's persist announcement to.
+func settledToolItem(t *testing.T, sessionID, sha string, size int64) (*appoverlay.Overlay, appwire.ThreadItem) {
 	t.Helper()
-	p := appprojector.NewAppEventProjector(sessionID, "local:"+sessionID)
-	p.Project(events.New(events.UserInputData{Text: "look at shot.png"}))
-	p.Project(events.New(events.ToolCallStartData{
+	o := appoverlay.New(appoverlay.NewBudget(appoverlay.DefaultBudgetBytes))
+	t.Cleanup(o.Close)
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_read"}))
+	o.Event(events.New(events.ToolCallStartData{
 		ToolName: "read_file", CallID: "call_read", ArgumentsJSON: `{"file_path":"shot.png"}`,
 	}))
-	notes := p.Project(events.New(events.ToolCallEndData{
+	changes := o.Event(events.New(events.ToolCallEndData{
 		ToolName: "read_file", CallID: "call_read", ArgumentsJSON: `{"file_path":"shot.png"}`,
 		Output: "[image: png, 12 bytes, base64 data follows]",
 		OutputImages: []events.OutputImage{{
@@ -28,27 +29,27 @@ func settledToolItem(t *testing.T, sessionID, sha string, size int64) (*appproje
 			MediaType: "image/png", Size: size, SHA: sha,
 		}},
 	}))
-	return p, itemFromNotifications(t, notes)
+	return o, itemFromChanges(t, changes)
 }
 
-func itemFromNotifications(t *testing.T, notes []appprojector.AppNotification) appwire.ThreadItem {
+func itemFromChanges(t *testing.T, changes []appoverlay.Change) appwire.ThreadItem {
 	t.Helper()
-	for _, note := range notes {
-		if note.Method != appwire.NotifyItemCompleted {
+	for _, change := range changes {
+		if change.Method != appwire.NotifyOverlayUpserted {
 			continue
 		}
-		params, ok := note.Params.(appwire.ItemLifecycleParams)
+		params, ok := change.Params.(appwire.OverlayUpsertedParams)
 		if !ok {
-			t.Fatalf("item/completed params are %T, want appwire.ItemLifecycleParams", note.Params)
+			t.Fatalf("overlay/upserted params are %T, want appwire.OverlayUpsertedParams", change.Params)
 		}
-		return params.Item
+		return params.Item.Item
 	}
-	t.Fatalf("no item/completed among %d notifications", len(notes))
+	t.Fatalf("no overlay/upserted among %d changes", len(changes))
 	return appwire.ThreadItem{}
 }
 
 // TestALiveImageReadThumbnailPointsAtAServableRoute is the composition kata
-// v3dv is about, end to end across the daemon's projector and this relay.
+// v3dv is about, end to end across the daemon's overlay and this relay.
 //
 // A read_file of an image has two possible thumbnails: the sha-addressed route
 // this hub serves by scanning the transcript, and the file-backed /doc/image
@@ -70,7 +71,7 @@ func TestALiveImageReadThumbnailPointsAtAServableRoute(t *testing.T) {
 	sessionID := "02wMz5Txv733WHFsVy66SR"
 	sha := imageSha(png)
 
-	projector, settled := settledToolItem(t, sessionID, sha, int64(len(png)))
+	overlay, settled := settledToolItem(t, sessionID, sha, int64(len(png)))
 	item := enrichedItem(t, sessionID, cwd, settled)
 	if len(item.OutputImages) != 1 {
 		t.Fatalf("OutputImages=%+v, want exactly one thumbnail for the call", item.OutputImages)
@@ -83,7 +84,7 @@ func TestALiveImageReadThumbnailPointsAtAServableRoute(t *testing.T) {
 	// Once the round's results are in the transcript the sha route works, and
 	// it is the honest one: it serves the bytes the tool actually returned,
 	// not whatever that path holds now.
-	released := itemFromNotifications(t, projector.Project(events.New(events.ToolResultImagesPersistedData{
+	released := itemFromChanges(t, overlay.Event(events.New(events.ToolResultImagesPersistedData{
 		CallIDs: []string{"call_read"},
 	})))
 	item = enrichedItem(t, sessionID, cwd, released)

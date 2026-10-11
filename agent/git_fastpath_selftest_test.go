@@ -12,6 +12,7 @@ import (
 // The PATH reorder must never change WHICH git the suite runs, only how fast it
 // starts. Same version before and after is the whole safety property.
 func TestFastGitPathKeepsTheSameGitVersion(t *testing.T) {
+	t.Parallel()
 	before, err := exec.Command("git", "--version").Output()
 	if err != nil {
 		t.Skip("git not available")

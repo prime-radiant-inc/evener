@@ -13,8 +13,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/internal/turnwindow"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -196,9 +200,6 @@ type readMeta struct {
 	LastRendered  int
 }
 
-// errBadRange is the sentinel wrapped by parseRangeErr for malformed range specs.
-var errBadRange = errors.New("malformed range")
-
 var encodeTranscriptJSON = func(v any) (string, error) {
 	var buf strings.Builder
 	enc := json.NewEncoder(&buf)
@@ -225,94 +226,14 @@ func parseRange(spec string, entryCount int) (startSeq, endSeq int) {
 
 // parseRangeErr is parseRange's strict variant: it returns an error for a
 // syntactically malformed spec instead of falling back to the default, so the
-// tool layer can surface a clear error. Valid syntax produces the same clamped
-// bounds as parseRange. An empty entry list is not malformed; it yields (0, -1).
-//
-// Grammar (Task 5):
-//   - ""         → the last defaultRangeTurns turns.
-//   - "last:N"   → the last N turns (N must be a positive integer).
-//   - "start:N"  → the first N turns (N must be a positive integer).
-//   - "N-M"      → seq N..M inclusive (N, M non-negative integers).
-//
-// "N-M" with N > M is syntactically valid; it clamps to an empty range rather
-// than erroring.
+// tool layer can surface a clear error. The empty spec is the smart default,
+// the last defaultRangeTurns turns; every other spec follows turnwindow's
+// grammar, shared with doctor transcript.
 func parseRangeErr(spec string, entryCount int) (startSeq, endSeq int, err error) {
-	if entryCount <= 0 {
-		return 0, -1, nil
+	if spec == "" {
+		spec = fmt.Sprintf("last:%d", defaultRangeTurns)
 	}
-	last := entryCount - 1
-
-	switch {
-	case spec == "":
-		return clampRange(entryCount-defaultRangeTurns, last, entryCount)
-
-	case strings.HasPrefix(spec, "last:"):
-		n, ok := parsePositiveInt(strings.TrimPrefix(spec, "last:"))
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(entryCount-n, last, entryCount)
-
-	case strings.HasPrefix(spec, "start:"):
-		n, ok := parsePositiveInt(strings.TrimPrefix(spec, "start:"))
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(0, n-1, entryCount)
-
-	case strings.Contains(spec, "-"):
-		lo, hi, ok := parseDashRange(spec)
-		if !ok {
-			return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-		}
-		return clampRange(lo, hi, entryCount)
-
-	default:
-		return 0, 0, fmt.Errorf("%w: %q", errBadRange, spec)
-	}
-}
-
-// clampRange clamps [lo, hi] to [0, entryCount-1] and returns it as inclusive
-// bounds. A resulting lo > hi denotes an empty selection.
-func clampRange(lo, hi, entryCount int) (startSeq, endSeq int, err error) {
-	if lo < 0 {
-		lo = 0
-	}
-	if hi > entryCount-1 {
-		hi = entryCount - 1
-	}
-	if hi < 0 {
-		hi = 0
-	}
-	if lo > entryCount-1 {
-		lo = entryCount - 1
-	}
-	return lo, hi, nil
-}
-
-// parsePositiveInt parses s as a strictly positive base-10 integer.
-func parsePositiveInt(s string) (int, bool) {
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return n, true
-}
-
-// parseDashRange parses an "N-M" spec into non-negative integers N and M. Both
-// operands must be present and non-negative; either side missing or non-numeric
-// is rejected.
-func parseDashRange(spec string) (lo, hi int, ok bool) {
-	parts := strings.SplitN(spec, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	lo, err1 := strconv.Atoi(parts[0])
-	hi, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || lo < 0 || hi < 0 {
-		return 0, 0, false
-	}
-	return lo, hi, true
+	return turnwindow.Parse(spec, entryCount)
 }
 
 // rawLinesForRange reads the transcript file at path and returns semantic
@@ -331,8 +252,8 @@ func parseDashRange(spec string) (lo, hi int, ok bool) {
 // the output builder is grown up front to the exact byte size, and cap
 // enforcement is a single linear prefix walk — never a re-decode or re-copy of
 // the accumulator per line.
-func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
-	f, err := openTranscriptFile(path)
+func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, lines int, skipped int, truncated bool, err error) {
+	f, err := openTranscriptFile(path, root)
 	if err != nil {
 		return "", 0, 0, false, fmt.Errorf("open transcript: %w", err)
 	}
@@ -675,7 +596,7 @@ func isFrontAnchored(spec string) bool {
 	if spec == "" || strings.HasPrefix(spec, "last:") {
 		return false
 	}
-	_, _, ok := parseDashRange(spec)
+	_, _, ok := turnwindow.ParseDash(spec)
 	return ok
 }
 
@@ -811,6 +732,12 @@ func writeDocumentHeader(b *strings.Builder, header transcript.Header, opt rende
 
 // writeEntry emits one transcript entry as markdown.
 func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool string, idx *resultIndex, opt renderOpts) {
+	if !e.Turn.Kind.PublicTranscript() {
+		// Attention resolutions are durable private correlation records, and
+		// transcript-only entries exist for the history projection. Both are
+		// transparent to the public conversation and its tool-round structure.
+		return
+	}
 	switch e.Turn.Kind {
 	case schema.TurnUserInput:
 		fmt.Fprintf(b, "\n## Turn %d — User\n", seq)
@@ -824,10 +751,13 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		fmt.Fprintf(b, "\n## Turn %d — Steering\n", seq)
 		writeCompactNote(b, "Steering", e.Turn, wantFullTurn(opt, seq))
 
-	case schema.TurnEnvironment, schema.TurnNotesContext:
+	case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 		label := "Environment"
 		if e.Turn.Kind == schema.TurnNotesContext {
 			label = "Shared notes"
+		}
+		if e.Turn.Kind == schema.TurnMemoryContext {
+			label = "Memory context"
 		}
 		fmt.Fprintf(b, "\n## Turn %d — %s\n", seq, label)
 		writeCompactNote(b, label, e.Turn, wantFullTurn(opt, seq))
@@ -854,10 +784,6 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 	case schema.TurnHookCompleted:
 		fmt.Fprintf(b, "\n## Turn %d — Hook\n", seq)
 		writeCompactNote(b, "Hook", e.Turn, wantFullTurn(opt, seq))
-
-	case schema.TurnAttentionResolution:
-		// Resolution markers are durable private correlation records. They are
-		// transparent to the public conversation and its tool-round structure.
 
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the
@@ -963,7 +889,16 @@ func writeAssistantContent(b *strings.Builder, seq int, t schema.Turn, resultToo
 				// Consume its mechanical result (the runtime persists an
 				// {"accepted":...} ack) so it does not surface as an orphan.
 				idx.consumed[p.ToolCall.ID] = true
-				writeResultToolMessage(b, p.ToolCall)
+				paired, hasResult := idx.byCallID[p.ToolCall.ID]
+				// A runtime failure (IsError=true, PrevalOnly=false) executed
+				// and returned an error; its raw bytes are not the delivered
+				// message. The app thread (apptranscript.go:714-742) renders
+				// nothing for runtime failures — only PrevalOnly rejections
+				// surface raw bytes. Skip the render so the markdown matches.
+				if hasResult && paired.result.IsError && !paired.result.PrevalOnly {
+					continue
+				}
+				writeResultToolMessage(b, p.ToolCall, hasResult && !paired.result.IsError)
 				continue
 			}
 			if !wroteToolsHeader {
@@ -989,7 +924,7 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 		}
 	}
 
-	writeToolCardLine(b, status, tc.Name, tc.Arguments)
+	writeToolCardLine(b, status, tc.Name, tc)
 
 	if hasResult {
 		full := wantFullResult(opt, callOwnerSeq, paired.ownerSeq)
@@ -998,11 +933,26 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 }
 
 // writeToolCardLine emits the "- [status] `name` — intent: <X> — input: <summary>"
-// header line for a tool card. The intent segment is omitted when absent.
-func writeToolCardLine(b *strings.Builder, status, name string, args json.RawMessage) {
+// header line for a tool card.
+func writeToolCardLine(b *strings.Builder, status, name string, tc *llm.ToolCallData) {
+	args := json.RawMessage(tc.SentArgumentsBytes())
+	// For a healed communicate (status "ok") with malformed raw bytes,
+	// use the repaired Arguments instead of the raw bytes — live and
+	// AppWire reload suppress raw bytes for successful communicates.
+	if name == "communicate" && status == "ok" && tc.RawArguments != "" {
+		args = tc.Arguments
+	}
 	fmt.Fprintf(b, "- [%s] `%s`", status, name)
-	if intent := toolIntent(args); intent != "" {
-		fmt.Fprintf(b, " — intent: %s", intent)
+	// Suppress intent when RawArguments is set (invalid JSON) OR when the
+	// arguments exceed the size cap (oversized valid JSON is rejected by
+	// ValidateRawArguments on the live path, which suppresses Description
+	// there). The durable record only sets RawArguments for !json.Valid,
+	// so oversized valid JSON has RawArguments="" and would otherwise show
+	// intent on reload.
+	if tc.RawArguments == "" && tool.ValidateRawArguments(tc.Arguments) == nil {
+		if intent := toolIntent(tc.Arguments); intent != "" {
+			fmt.Fprintf(b, " — intent: %s", intent)
+		}
 	}
 	fmt.Fprintf(b, " — input: %s\n", toolInputSummary(name, args))
 }
@@ -1059,17 +1009,40 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 // writeResultToolMessage extracts and renders the "message" field from a result
 // tool call's JSON arguments as plain assistant text. Falls back to the raw
 // arguments string if the message field is absent.
-func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData) {
-	if len(tc.Arguments) > 0 {
-		var args map[string]any
-		if err := json.Unmarshal(tc.Arguments, &args); err == nil {
-			if msg, ok := args["message"]; ok {
+func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData, healed bool) {
+	args := json.RawMessage(tc.SentArgumentsBytes())
+	if len(args) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(args, &m); err == nil {
+			if msg, ok := m["message"]; ok {
 				fmt.Fprintf(b, "%v\n", msg)
 				return
 			}
 		}
-		// No "message" key: render the raw arguments as a fallback.
-		b.Write(tc.Arguments)
+		// For a healed communicate (result is "ok"), the raw bytes are malformed
+		// but were repaired and delivered live. Repair them here to recover the
+		// message — matching what live delivered — instead of showing the raw
+		// malformed bytes. For a rejected communicate (result is "error") or a
+		// pending call (no result), the raw fallback is correct: the user sees
+		// the raw bytes the model sent.
+		if healed && tc.RawArguments != "" {
+			repaired, _ := repair.RepairJSON([]byte(tc.RawArguments))
+			// Replay the communicate-specific normalization (promote string
+			// output to object, copy output.message into message) so a healed
+			// call with a string-valued output renders the same message live
+			// delivered — matching the apptranscript projection path.
+			normalized := apptranscript.NormalizeCommunicateArguments(repaired)
+			if err := json.Unmarshal(normalized, &m); err == nil {
+				if msg, ok := m["message"]; ok {
+					fmt.Fprintf(b, "%v\n", msg)
+					return
+				}
+			}
+		}
+		// No "message" key or unparseable: render the raw arguments.
+		// Bound the raw fallback so one pathological line cannot dominate the
+		// card, mirroring the summary path's resultLineMaxRunes limit.
+		b.WriteString(oneLine(truncRunes(string(args), resultLineMaxRunes)))
 		b.WriteString("\n")
 	}
 }
@@ -1135,14 +1108,47 @@ func writeToolResultBody(b *strings.Builder, toolName string, result *llm.ToolRe
 // known job result fields: in that case the general JSON pretty-print keeps the
 // extra evidence visible rather than the struct silently dropping it.
 func jobResultBody(raw string) (string, bool) {
-	r, ok := decodeJobResult(raw)
+	r, ok := decodeRenderableJobResult(raw)
 	if !ok {
 		return "", false
 	}
-	if hasNonJobResultKeys(raw) {
-		return "", false
+	// A delegate_send reply can carry earlier results of its delegate ahead
+	// of its own (#3906). Each renders exactly as a reply does, after the
+	// reply's status line so the ref survives truncation; any element with
+	// evidence this projection doesn't capture sends the whole body to the
+	// JSON fallback, as a top-level key would.
+	var b strings.Builder
+	b.WriteString(jobResultStatus(r, raw))
+	for i, element := range r.EarlierResults {
+		earlier, ok := decodeRenderableJobResult(string(element))
+		if !ok || len(earlier.EarlierResults) != 0 {
+			return "", false
+		}
+		b.WriteString(earlierResultHeader(i, len(r.EarlierResults)))
+		b.WriteString(jobResultStatus(earlier, string(element)))
+		b.WriteString(jobResultOutput(earlier))
 	}
+	if len(r.EarlierResults) != 0 {
+		b.WriteString(latestResultHeader)
+	}
+	b.WriteString(jobResultOutput(r))
+	return b.String(), true
+}
 
+// decodeRenderableJobResult decodes a job result body this projection can
+// render whole: it reports false when the body isn't a job result or carries
+// keys jobResult doesn't capture.
+func decodeRenderableJobResult(raw string) (jobResult, bool) {
+	r, ok := decodeJobResult(raw)
+	if !ok || hasNonJobResultKeys(raw) {
+		return jobResult{}, false
+	}
+	return r, true
+}
+
+// jobResultStatus is a job result's status line, with the ref prominent, and
+// its metadata line.
+func jobResultStatus(r jobResult, raw string) string {
 	ref := r.TranscriptRef
 	if ref == "" {
 		ref = "(none)"
@@ -1154,10 +1160,15 @@ func jobResultBody(raw string) (string, bool) {
 	if jobID == "" {
 		jobID = "(none)"
 	}
-	// Status line first, with the ref prominent and before the output body.
+	// An update a delegate_send reply carries settled nothing and has no
+	// status; its metadata line says it is an update.
+	status := r.Status
+	if status == "" {
+		status = "(none)"
+	}
 	statusParts := []string{
 		"job_id=" + jobID,
-		"status=" + r.Status,
+		"status=" + status,
 	}
 	if r.Reason != "" {
 		statusParts = append(statusParts, "reason="+r.Reason)
@@ -1169,7 +1180,6 @@ func jobResultBody(raw string) (string, bool) {
 		// merely accepting it as a decoded-but-invisible field.
 		statusParts = append(statusParts, "tools=["+strings.Join(r.Tools, ",")+"]")
 	}
-
 	var b strings.Builder
 	b.WriteString(strings.Join(statusParts, " "))
 	b.WriteString("\n")
@@ -1178,6 +1188,12 @@ func jobResultBody(raw string) (string, bool) {
 		b.WriteString(metadata)
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+// jobResultOutput is a job result's output and structured result.
+func jobResultOutput(r jobResult) string {
+	var b strings.Builder
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
 		b.WriteString("\n")
@@ -1191,7 +1207,7 @@ func jobResultBody(raw string) (string, bool) {
 		}
 		b.WriteString("\n")
 	}
-	return b.String(), true
+	return b.String()
 }
 
 // jobResultKnownKeys is the set of JSON keys captured by jobResult. A body with
@@ -1236,6 +1252,7 @@ var jobResultKnownKeys = map[string]bool{
 	// walks both structs' real marshaled output and fails, naming the key, the
 	// next time either struct grows a field this allowlist doesn't know — issue #194.
 	"child_session_id":    true, // stableDelegateCreateResult
+	"name":                true, // stableDelegateCreateResult (display label)
 	"model":               true, // stableDelegateCreateResult
 	"sandbox":             true, // stableDelegateCreateResult
 	"worktree":            true, // stableDelegateCreateResult, delegateSendResult
@@ -1253,6 +1270,8 @@ var jobResultKnownKeys = map[string]bool{
 	"latest_activity_at":  true, // delegateSendResult
 	"cumulative_usage":    true, // delegateSendResult
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
+	"artifacts_dir":       true, // stableDelegateCreateResult
+	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
 }
 
 var jobResultMetadataKeys = []string{
@@ -1282,6 +1301,7 @@ var jobResultMetadataKeys = []string{
 	// otherwise become a known-but-invisible key — silently dropped evidence
 	// the moment it stops triggering the raw-JSON-dump fallback.
 	"child_session_id",
+	"name",
 	"model",
 	"error",
 	"task",
@@ -1290,6 +1310,7 @@ var jobResultMetadataKeys = []string{
 	"requested_model",
 	"resolved_profile_id",
 	"resolved_model",
+	"artifacts_dir",
 	"reasoning_effort",
 	"run_started_at",
 	"run_ended_at",
@@ -1542,6 +1563,11 @@ func formatNumber(f float64) string {
 // safe scalar arguments.
 func toolInputSummary(name string, args json.RawMessage) string {
 	m := parseArgs(args)
+	// Non-object JSON (rejected-call raw bytes, or valid non-object args)
+	// falls through to a bounded raw rendering instead of an empty summary.
+	if m == nil && len(args) > 0 {
+		return oneLine(truncRunes(string(args), 120))
+	}
 	get := func(key string) string {
 		if m == nil {
 			return ""
@@ -1698,4 +1724,10 @@ func truncRunes(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit]) + "…"
+}
+
+// oneLine collapses newlines to spaces and strips carriage returns so a
+// summary never breaks its one-line card. Mirrors doctor.oneLine.
+func oneLine(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }

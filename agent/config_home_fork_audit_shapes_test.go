@@ -13,6 +13,7 @@ import (
 // flags. The fixtures are parsed, never compiled, so they name the package's
 // real constructors and options without having to satisfy their signatures.
 func TestConfigHomeForkAuditFindsEachShape(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		src     string

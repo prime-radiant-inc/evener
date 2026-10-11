@@ -34,6 +34,12 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
+	// SessionID, when set, is the ID a new top-level session takes. A launcher
+	// picks it with PickFreshSessionID before enabling the environment's
+	// sandbox, so the scratch the sandbox mints is named after the session.
+	// Empty lets NewSession mint one. Not persisted.
+	SessionID string `json:"-"`
+
 	// LifetimeContext owns this session tree: `evener run` supplies its run
 	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
 	// context, so cancelling either ends the tree's own context immediately
@@ -41,6 +47,16 @@ type SessionConfig struct {
 	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
+
+	// MemoryStateRoot is the owning runtime host's binding, never persisted.
+	// An empty state root leaves library sessions without memory access.
+	// MemoryProjectID is bound at launch and persisted. A root session saved
+	// without one adopts its own home's binding on resume, never the resume cwd's.
+	// A delegate with a live parent (on spawn or restore) takes the parent's;
+	// resumed on its own, it keeps the binding it saved.
+	MemoryStateRoot string `json:"-"`
+	MemoryProjectID string `json:"memory_project_id,omitempty"`
+	DisableMemory   bool   `json:"disable_memory,omitempty"`
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
@@ -121,10 +137,6 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
-	// NoProjectPrompts suppresses loading .evener/prompts/ from the project directory.
-	// Useful for A/B testing to match Docker container behavior (no project prompts).
-	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
-
 	// AgentsDocPath is the personal AGENTS.md loaded ahead of the project's own
 	// instruction docs. Empty resolves <userdirs.DefaultConfigRoot()>/AGENTS.md
 	// from the process environment; a hub passes its own concrete path so
@@ -136,6 +148,14 @@ type SessionConfig struct {
 	// The task prompt is the complete specification; the agent must make all decisions
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
+
+	// AskResponderAttached says this process answers ask_user questions for a
+	// NonInteractive session (`evener run --ask-responder`), so ask_user is
+	// offered even though no human is present. It belongs to the process, not
+	// the session: it is never persisted, so a resumed session is exactly what
+	// a plain run saves and NonInteractive keeps its own meaning for tasks and
+	// the snapshot.
+	AskResponderAttached bool `json:"-"`
 
 	// TurnEndsProcess indicates the process exits when the current turn's work is
 	// drained, as in a one-shot `evener run`: there is no later turn in which a
@@ -285,6 +305,11 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// memoryBeforeIO observes the native scope boundary without providing data.
+	memoryBeforeIO func(scope, operation string) error
+	// memoryRealBudget gives the memory boundary its production read budget
+	// instead of the long default tests get (see memoryBoundaryWait).
+	memoryRealBudget bool
 	// visionSideChannelTimeout supplies an explicit owned deadline only for
 	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration
@@ -311,6 +336,12 @@ type testConfig struct {
 	// before the claim's own refusal -- the window a poisoning lands in. Nil in
 	// production.
 	clientMutationStartClaiming func()
+	// failTurnBeforeRecording, when set, makes a turn fail before its user entry
+	// is recorded. It is the one seam that reaches the pre-incorporation,
+	// non-transcript failure the start path's give-back keys on: an integration
+	// test cannot produce one without closing the session, which closes the
+	// claim path too. Nil in production.
+	failTurnBeforeRecording func() error
 	// clientMutationStartAnnounced observes a start that has claimed and
 	// announced, immediately before the turn runs -- the window a close lands in,
 	// where the post-run give-back decides whether the claim goes back. Nil in
@@ -351,6 +382,11 @@ type testConfig struct {
 	// the drive claim is held. Tests use it to drive the child at exactly that
 	// point and assert the committed start refuses a second turn.
 	delegateSendStartCommitted func(*subagent)
+	// delegateSendChildResolved observes a send once it has resolved (and,
+	// cold, restored) its child, just before it takes the child's drive
+	// guard. Tests use it to make the child busy at that point. Nil in
+	// production.
+	delegateSendChildResolved func(*subagent)
 	// delegateSendStartClaimed observes the committed send start at the earliest
 	// point in the window: immediately after ReserveStart and before CommitStart,
 	// when the id-keyed claim has been taken but restoreIdleForSend has NOT yet
@@ -370,6 +406,15 @@ type testConfig struct {
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
+	// rootAttentionRetryCallback observes a root attention retry callback that
+	// has passed scheduleRootAttentionRetryLocked's early returns: it took
+	// ownership (beginAttentionCallback succeeded), its generation is still
+	// current, and the rail is not parked. It fires whether or not that callback
+	// then notifies -- the notification blocker is projected by the ownership
+	// lease, not by the notify -- so a test that pauses here holds exactly the
+	// live retry, and a stale or parked timer never reaches it. A notify hook
+	// cannot identify the caller. Nil in production.
+	rootAttentionRetryCallback func()
 	// delegateRuntimeReclaimClose replaces only the external Session close
 	// boundary used by admission-triggered stable-runtime reclamation.
 	delegateRuntimeReclaimClose func(*Session)
@@ -389,13 +434,47 @@ type testConfig struct {
 	// subagentBeforeSettlement observes the final unlocked boundary before a
 	// stable generation enters controller settlement.
 	subagentBeforeSettlement func(*subagent)
+	// delegateAttentionBeforeDriveClaim observes the owner's selected attention
+	// before it claims the retained child for a start. The transcript read has
+	// released attentionMu and no child/controller lock is held, so a competing
+	// drive may complete while this observer is paused. Nil in production.
+	delegateAttentionBeforeDriveClaim func(*subagent)
 	// delegateAttentionStartCommitted observes the start hand-off: the attention
 	// generation is committed and its run goroutine does not exist yet. Tests use
 	// it to drive the child from a second goroutine at exactly that point.
 	delegateAttentionStartCommitted func(*subagent)
+	// delegateAttentionBeforeGuardRelease observes an attention drive that
+	// launched no run, while it still holds the child's drive guard. Tests
+	// pause it there so another drive is refused on that guard. Nil in
+	// production.
+	delegateAttentionBeforeGuardRelease func(*subagent)
+	// afterModelHistorySnapshot runs on every request build, just after the
+	// round snapshots its history and before a leased delegate turn takes the
+	// controller's own snapshot, so a test can land a turn between the two.
+	// Nil in production.
+	afterModelHistorySnapshot func()
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)
+	// subagentBeforeGenerationAnnounced observes a stable child's finalize
+	// tail just before it announces and releases its finished generation:
+	// the child has stopped finalizing, the delegate is idle but not yet
+	// released. Nil in production.
+	subagentBeforeGenerationAnnounced func(*subagent)
+	// subagentBeforeGenerationReleased observes the unlocked boundary after
+	// announcement execution, before the exact controller finalizing claim is
+	// released. An inline result can be acknowledged while this seam is held.
+	// Nil in production.
+	subagentBeforeGenerationReleased func(*subagent, delegateLease)
+	// delegateFinalizationWaitCeiling overrides how long a send waits for a
+	// finished generation's finalize tail to release the delegate
+	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
+	// never releases. Nil in production.
+	delegateFinalizationWaitCeiling *time.Duration
+	// delegateSendAwaitingFinalization observes a send that found the
+	// delegate still finalizing, just before it waits for the release. Nil
+	// in production.
+	delegateSendAwaitingFinalization func()
 
 	// registerTool injects deterministic registration failures. Nil preserves
 	// direct Registry.Register calls.
@@ -490,6 +569,66 @@ type testConfig struct {
 	// config (subCfg := s.cfg), so a grandchild would likewise get a fresh client.
 	childClientFactory func() *llm.Client
 
+	// disableDelegateIdleRelease suppresses the non-terminal idle release of a
+	// finalized stable delegate's runtime subtree (see
+	// releaseIdleRuntimeAfterFinalize). Production always releases, so an idle
+	// delegate's process-local resources — stdio MCP server processes above
+	// all — do not outlive its generation for the life of the daemon. The
+	// warm-supervision and retirement-admission fixtures set this because their
+	// subject is the warm-resume machinery itself — a deliberately retained
+	// runtime under an explicit in-process mode — not the retention policy the
+	// default exercises. It is inherited by child configs, so setting it on a
+	// fixture's root session covers its whole delegate tree.
+	disableDelegateIdleRelease bool
+
+	// delegateIdleReleaseDelay overrides the production idle-release grace
+	// (delegateIdleReleaseDelayDefault) for tests: the idle-release contract
+	// test shrinks it to 100ms so the scheduled release fires within its poll
+	// window. Nil keeps the production default. Inherited by child configs
+	// like every testOnly field.
+	delegateIdleReleaseDelay *time.Duration
+
+	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
+	// tests; zero rests awaiting at the settle itself. Nil keeps the
+	// production default.
+	needsResponseQuietPeriod *time.Duration
+
+	// needsResponseRestBeforeAnnounce, when set, runs in the quiet-period
+	// timer after the session rests awaiting and before STATUS_SETTLED is
+	// emitted, with restMu held, so a test can start a turn in that gap.
+	needsResponseRestBeforeAnnounce func()
+
+	// turnStartBeforeRestMu, when set, runs in processOneInput right before
+	// the turn start takes restMu, so a test knows the lock is the next thing
+	// the turn waits on.
+	turnStartBeforeRestMu func()
+
+	// idleTeardownConcurrency overrides the idle-release member teardown's
+	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil
+	// keeps the production default. Inherited by child configs like every
+	// testOnly field.
+	idleTeardownConcurrency *int
+
+	// idleTeardownMemberStarted and idleTeardownMemberSettled observe one
+	// idle-release member teardown's boundaries, fired with the member
+	// session immediately before its teardown body runs and immediately
+	// after it returns. Nil in production. Inherited by child configs like
+	// every testOnly field.
+	idleTeardownMemberStarted func(*Session)
+	idleTeardownMemberSettled func(*Session)
+
+	// afterDelegateAttentionRestore observes the wake pass's one vulnerable
+	// window: after a cold attention restoration has installed the runtime and
+	// before the attention reservation commits, on the root session's own
+	// goroutine. Nil in production.
+	afterDelegateAttentionRestore func(delegateID string, restored *subagent)
+
+	// delegateAttentionGiveUpAfter overrides how many consecutive counted
+	// restore failures the attention drive tolerates before it hands a
+	// delegate's attention to the root (maxDelegateAttentionRestoreFailures).
+	// Zero keeps the default.
+	delegateAttentionGiveUpAfter int
+
 	// namerClient, when non-nil, is the llm.Client the background session namer
 	// uses instead of the session's own. The namer runs on a detached goroutine,
 	// so routing it through a separate scripted client keeps its draw off the
@@ -564,6 +703,18 @@ type testConfig struct {
 	// turns a red/green question into a positive fact. Nil in production.
 	closeAfterDisposeSweepJoin func()
 
+	// closeAwaitingEnvWork observes Close() at its environment-work join
+	// (joinEnvWorkWithinCloseBudget) immediately before it blocks there: the
+	// join holds the drained channel of live admitted work, which only the
+	// last admission's endEnvWork closes, and the close budget is not yet
+	// spent. It is the positive signal a fence test holds admitted work
+	// against. A close that is missing the join never calls it and reaches
+	// environment cleanup instead; a join with nothing outstanding, or with its
+	// budget already spent, does not call it either.
+	// TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds pins that the join
+	// really waits once it has called it. Nil in production.
+	closeAwaitingEnvWork func()
+
 	// envCleanupObserved observes every environment Close() runs Cleanup on,
 	// just before it does, so a test can assert the process-table cleanup ran
 	// exactly once and on the environment the session currently holds — never
@@ -577,11 +728,6 @@ type testConfig struct {
 	// context the refresh's git runs under, so a test can also assert that a
 	// close cancels that work. Nil in production.
 	swapEnvAfterAdopt func(refreshCtx context.Context)
-
-	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
-	// before each UpdateScratchBindings attempt, so a test can make the first
-	// attempt stale and exercise the rebase-and-retry loop. Nil in production.
-	scratchSwapBeforeUpdate func()
 
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
@@ -684,6 +830,13 @@ type spawnConfig struct {
 	// daemon. It is inherited unchanged by descendants, so one callback observes
 	// the whole in-process tree without consuming any child's event channel.
 	descendantEvent func(events.SessionEvent)
+
+	// descendantRecorded reports every entry a descendant's transcript
+	// records, with the descendant's session id, to the root daemon. It is
+	// inherited unchanged like descendantEvent; each descendant installs it as
+	// its own transcript's recorded-entry hook, so it runs under that
+	// transcript's append lock.
+	descendantRecorded func(sessionID string, rec transcript.Record)
 
 	// parentDelegateID is the durable delegate handle that owns this child
 	// session in its parent.
@@ -813,12 +966,20 @@ func (c *SessionConfig) applyDefaults() {
 	}
 }
 
+// noOneToAsk reports whether nobody can answer an ask_user question in this
+// session: no human, and no responder attached by this process.
+func (c SessionConfig) noOneToAsk() bool {
+	return c.NonInteractive && !c.AskResponderAttached
+}
+
 // toSnapshot projects the persisted wire fields of a SessionConfig into a
 // schema.ConfigSnapshot, dropping the engine-only json:"-" fields that are never
 // serialized. The field set mirrors schema.ConfigSnapshot exactly; the converter
 // round-trip test guards against any field being dropped or misrouted.
 func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 	return schema.ConfigSnapshot{
+		MemoryProjectID:             c.MemoryProjectID,
+		DisableMemory:               c.DisableMemory,
 		MaxToolRoundsPerInput:       c.MaxToolRoundsPerInput,
 		MaxTurns:                    c.MaxTurns,
 		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
@@ -836,7 +997,6 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		PluginDirs:                  c.PluginDirs,
 		SystemPromptFile:            c.SystemPromptFile,
 		SystemPromptAppend:          c.SystemPromptAppend,
-		NoProjectPrompts:            c.NoProjectPrompts,
 		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
 		TurnEndsProcess:             c.TurnEndsProcess,
@@ -862,6 +1022,8 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 // after loading a meta.json or snapshot from disk.
 func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 	return SessionConfig{
+		MemoryProjectID:             s.MemoryProjectID,
+		DisableMemory:               s.DisableMemory,
 		MaxToolRoundsPerInput:       s.MaxToolRoundsPerInput,
 		MaxTurns:                    s.MaxTurns,
 		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,
@@ -879,7 +1041,6 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		PluginDirs:                  s.PluginDirs,
 		SystemPromptFile:            s.SystemPromptFile,
 		SystemPromptAppend:          s.SystemPromptAppend,
-		NoProjectPrompts:            s.NoProjectPrompts,
 		AgentsDocPath:               s.AgentsDocPath,
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,

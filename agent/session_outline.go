@@ -18,7 +18,7 @@ import (
 // truncated/elided_turns report the budget elision honestly.
 // This is a flat envelope (no nested meta) per spec §"format: outline".
 type readOutlineEnvelope struct {
-	TranscriptRef string `json:"transcript_ref"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
 	Format        string `json:"format"`
 	TurnsTotal    int    `json:"turns_total"`
 	Content       string `json:"content"`
@@ -63,6 +63,9 @@ type jobResult struct {
 	Tools                 []string `json:"tools"`
 	StructuredResult      any      `json:"structured_result"`
 	StructuredResultValid *bool    `json:"structured_result_valid"`
+	// EarlierResults are earlier results a delegate_send wait carried ahead
+	// of its own (#3906), each a job result body of its own.
+	EarlierResults []json.RawMessage `json:"earlier_results"`
 }
 
 func (r jobResult) effectiveJobID() string {
@@ -184,7 +187,7 @@ func renderOutline(entries []transcript.Entry, start, end int) (content string, 
 // Empty segments are dropped, so a plain user turn is just "<seq> · User · <text>".
 func outlineLine(entries []transcript.Entry, seq int, idx *resultIndex) (string, bool) {
 	t := entries[seq].Turn
-	if t.Kind == schema.TurnToolResults || t.Kind == schema.TurnAttentionResolution {
+	if t.Kind == schema.TurnToolResults || !t.Kind.PublicTranscript() {
 		return "", false
 	}
 

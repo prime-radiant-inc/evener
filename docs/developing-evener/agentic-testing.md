@@ -9,6 +9,141 @@ from real sessions.
 If you are writing a new scenario, see `test/scenarios/README.md` for
 the file structure. This document is the runbook side.
 
+## Memory evidence: deterministic plumbing versus live behavior
+
+Default memory tests supply fixture-owned memory/history/workspace roots and a
+scripted provider only at the LLM boundary. `agent/session_memory_test.go`
+drives real `ProcessInput`, native read/edit/search tools, persistence,
+retention and artifact recovery. `TestMemoryGardeningSkill` proves real
+`use_skill` activation and a focused correction, not that a live model chooses
+to garden. `TestMemoryContextProjection` verifies persisted lower-trust
+user-source context and existing CLI/AppWire display mapping.
+
+`TestMemoryGenericDelivery` produces and compares
+`agent/testdata/toolwire/memory.json` in the existing toolwire format. Regenerate
+only that recording with:
+
+```sh
+GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryGenericDelivery$' -count=1 -v -update-wire
+```
+
+Check it without `-update-wire`. Its actual session-produced oversized
+`memory_read`/`memory_search` results and `read_transcript` recovery pass through
+existing shared hydration, browser generic tool bodies, native row/evidence
+rendering and the TUI transcript adapter. Normalize only nondeterministic
+capability IDs and runtime times; keep output and reference relationships.
+Renderer unit checks are not physical-device or browser end-to-end evidence.
+
+Live recall/correction comparisons answer a different question: whether the
+model uses memory effectively. They require explicit `EVENER_LIVE_TESTS=1`,
+fixture-only memory/history/config/workspaces/auth, held-out verifier isolation
+and predeclared model, effort, request/tool-round/time budgets. No credential
+alone enables them. Enforce shared logical-call and HTTP-attempt admission
+budgets across retries and descendants before paid requests. Report observed
+usage and known-price cost honestly; do not imply a hard token or money cap
+where the provider offers none. Stop on infrastructure failure rather than
+adding arms or silent retries. Deterministic green checks do not establish a
+live recall advantage, and an unrun evaluation has no result.
+
+### Bounded memory fixture pairs
+
+`TestMemoryEvalAdmission` and `TestMemoryEvalIsolation` exercise real sessions,
+children, auxiliary naming, Responses retry/cancellation and Linux bwrap file
+and shell confinement. Positive-controlled inotify observations cover ambient
+memory/history/config decoys. Scripted tests forbid completion HTTP except for
+their local scripted server. `TestMemoryEvalEpisodes` runs the real checker and
+independent verifier-only Go tests through recall A/B and correction A/B/C,
+enabled then disabled for each pair. Each fresh session retains its arm's actual
+transcripts, with the same ordinary recall tools. These are plumbing checks,
+not evidence that a live model learns, retrieves or corrects memory.
+
+The evaluator captures and validates the compiling Go version before TestMain
+isolates HOME/XDG. When a trimpath build has no runtime GOROOT, Go's own exact
+version resolver selects an already installed/cached toolchain with GOPROXY=off,
+not a download or a machine-specific path. That root is reused for restricted
+read grants, fixture checkers, held-out tests and the ambient-read observer.
+Fixture execution keeps GOTOOLCHAIN=local and network access disabled.
+Both ordinary `go test` and direct installed-Go launchers are qualified offline.
+
+The verifier uses real `go test -json` run and terminal pass/fail events for
+every expected held-out test, plus a matching package result and exit status.
+Completed assertion failures remain behavioral task failures. Compiler/setup
+errors, missing/skipped tests and incomplete output are infrastructure errors.
+An initial verifier infrastructure error stops before session/model dispatch.
+A final verifier infrastructure error stops before another stage or pair.
+The shared terminal error also refuses further admission, with no retry.
+Stage deadline exhaustion remains a planned budget limitation, not a pass.
+
+Run offline with the repository's Go toolchain. Host-dependent isolation and
+episode cases skip without working Linux bwrap, while source, route and pure
+admission checks remain active. Opted-in live evaluation refuses an unsupported
+host before source discovery or paid work, with no isolation fallback:
+
+```sh
+env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryEval' -count=1 -v
+env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -race -p 2 ./agent -run '^TestMemoryEval' -count=1
+env -u EVENER_LIVE_TESTS GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryEvalLivePairs$' -count=1 -v
+```
+
+The last command skips before provider-config/auth discovery. Only after offline
+qualification, independent implementation review and controller authorization:
+
+```sh
+EVENER_LIVE_TESTS=1 go test ./agent -run '^TestMemoryEvalLivePairs$' -count=1 -timeout=26m -v
+```
+
+One serial test owns exactly two sequential pairs on
+`codex-jesse-at-pr/gpt-6.1-sol`, effort `high`. Shared admission caps logical
+calls and completion HTTP attempts separately at 96 across roots, children,
+auxiliaries and provider retries. Stage request/HTTP/tool-round caps are recall
+8/10 and correction 8/12/10, with nested stage/arm/run deadlines of 3/6/24
+minutes. Root turn retries and model fallbacks are disabled. Naming retains its
+own retry policy, but a shared terminal infrastructure failure cancels admitted
+work and refuses subsequent logical/HTTP dispatch and stages. Planned budget
+and context stops remain distinct. An expired or exhausted stage is not retried.
+The outer 26-minute timeout adds no request time.
+
+After that gate, the evaluator privately copies only the selected
+`providers.toml` and `auth/codex-jesse-at-pr.json`, byte-for-byte, before offline
+resolution. Opt-in source paths are captured before TestMain resets HOME/XDG,
+without opening files. Ordinary startup selects no sources. Present-empty
+`EVENER_PROVIDERS_CONFIG` refuses without fallback.
+Private directories/files use 0700/0600 and are outside every agent grant.
+Auth is call-scoped, never a mutation of `DefaultCodex.StateDir`; refreshed
+copies are not synced back. Missing auth or an unexpected route fails without
+a paid availability probe. All disposable fixture roots are inspected before
+cleanup, after joined work. Credential-redacted evidence is retained in the
+printed `memory-eval-evidence-*` directory outside agent grants.
+
+Evidence separates executed task checks from capture, retrieval, application
+and correction tool/file grades. Root tool observers retain specific memory
+commit before/after bodies and checker bytes without replacing tool results.
+Only relevant returned lesson text, supported standalone checker invocations
+and rule-changing commits in the observed order earn positive grades. Arbitrary
+Markdown remains legal. Other prose, command forms, repeated ambiguous calls
+and unobserved descendant commits remain explicitly unproven with raw evidence.
+Automatic index-only retrieval is not credited by the explicit-tool oracle.
+Observed final-response usage includes auxiliary calls, but unfinished-response
+usage and cost without a cited price remain unknown. Cancellation does not
+prove billing stops. Two pairs cannot establish reliability or savings.
+The retained repaired-harness comparison is a valid negative result: the opt-in
+command exited 1 although all ten final stage checks actually executed and passed
+18 held-out tests. All ten model sessions hit their logical-call caps without
+normal completion. No native memory calls occurred, and every wiki snapshot was
+empty. The run used 96 logical calls and, separately, 96 completion HTTP attempts,
+accounted for by 86 root responses and ten naming auxiliaries.
+
+Seven successful visible checker calls used export-style environment setup that
+the narrow application oracle does not credit. Those checks prove execution,
+not memory application or benefit. Recall, correction, reliability and savings
+remain unproved. Initial verifier diagnostics and the exact live wire tool
+advertisement were not retained. Collector completion/duration fields are not
+valid outcome evidence; actual terminal events and elapsed timings are used.
+Infrastructure-stop diagnostic retention also remains limited. Historical invalid
+attempts remain in retained reports, not evidence of a valid comparison. Any
+later live run needs fresh controller authorization and valid executed held-out
+checks, not an automatic retry or changed success threshold.
+
 ## Setup checklist
 
 **Never Jesse's real hub, never his port `9180`.** His `evener hub` runs
@@ -383,7 +518,7 @@ malformed request. Send:
 
 ```json
 {"id": 1, "method": "initialize",
- "params": {"protocolVersion": "evener-appwire-v2",
+ "params": {"protocolVersion": "evener-appwire-v6",
             "clientInfo": {"name": "scenario", "version": "0"},
             "capabilities": {"experimentalApi": false}}}
 ```
@@ -391,23 +526,36 @@ malformed request. Send:
 Notifications for other threads arrive interleaved with your responses,
 so match on `id` rather than reading the next frame and hoping.
 
-Navigation reads use the same socket and method catalog. Send
-`evener/navigation/read` with one of these parameter shapes, then inspect the
-response envelope's `data` field:
+Navigation reads use the same socket and method catalog. The
+[navigation capability and request types](../../appwire/types.go) use
+representation version 3 independently of the connection protocol version.
+Send `evener/navigation/read` with one of these parameter shapes:
 
 ```json
-{"resource":"manifest"}
-{"resource":"section","section":"live","offset":0,"limit":50}
-{"resource":"pin_catalog","offset":0,"limit":100}
-{"resource":"pin_section","sectionId":"<id>","offset":0,"limit":50}
-{"resource":"catalog","catalog":"projects","offset":0,"limit":100}
-{"resource":"project","projectKey":"<key>"}
-{"resource":"project_page","projectKey":"<key>","tier":"current","offset":0,"limit":50}
-{"resource":"location","ref":"local:<session-id>"}
+{"representationVersion":3,"resource":"manifest"}
+{"representationVersion":3,"resource":"section","section":"live","offset":0,"limit":50}
+{"representationVersion":3,"resource":"pin_catalog","offset":0,"limit":100}
+{"representationVersion":3,"resource":"pin_section","sectionId":"<id>","offset":0,"limit":50}
+{"representationVersion":3,"resource":"catalog","catalog":"projects","offset":0,"limit":100}
+{"representationVersion":3,"resource":"project","projectKey":"<key>"}
+{"representationVersion":3,"resource":"project_page","projectKey":"<key>","tier":"current","offset":0,"limit":50}
+{"representationVersion":3,"resource":"location","ref":"local:<session-id>"}
 ```
 
-The response has `status`, `generationId`, `revision`, and `etag`; `status`
-`not_modified` omits `data`. There is no HTTP `/api/navigation` equivalent.
+The response has `status`, `generationId`, `revision`, and `etag`. For `ok`,
+`representation` identifies the normalized `snapshot` or `delta` in `data`.
+Supply the exact previous `{generationId,revision,etag}` as `base` to request
+conditional revalidation; a delta names the base it extends. `not_modified`
+and `gone` omit `data`. A missing retained delta base yields a fresh snapshot.
+These rules are owned by the
+[navigation service](../../cmd/evener-hub/navigation_service.go).
+
+Navigation lists root sessions and carries compact own-session job/watch counts
+and a bounded running-command description. It has no per-session `subagents`
+resource or job/watch detail arrays. Use the explicit session activity methods
+in the [AppWire catalog](../appwire-protocol.md) for those collections. A
+`location` read answers navigation placement rather than activity ancestry.
+There is no HTTP `/api/navigation` equivalent.
 
 A session to aim a gating assertion at costs nothing and needs no
 provider credential: start with an empty AppWire `input` and the daemon
@@ -586,9 +734,10 @@ inventing a CSS path; if you need one that isn't here, grep
 |---|---|
 | `[data-testid="composer-input-card"]` | the prompt card; the textarea inside is `[aria-label="Message"]`, placeholder `Message the agent…` (`:783-784`) |
 | `[data-testid="composer-submit"]` | **Send**. Routes to `turn/queue` while a turn runs, `turn/start` otherwise (`submitRouting.ts:19-23`) — one label, two timings |
-| `[data-testid="composer-steer"]` | **Steer**. Renders only while `busy && capabilities.steer` (`:382`) |
-| `[data-testid="composer-stop"]` | **Stop** (interrupt) |
+| `[data-testid="composer-steer"]` | **Steer**. Renders only while `busy && capabilities.steer` (`:382`); above the phone-width boundary only — at or below it (`COMPOSER_PHONE_MAX_WIDTH`, 399) Steer rides in the session menu's leading group |
+| `[data-testid="composer-stop"]` | **Stop** (interrupt). In the control row above the phone-width boundary; in the session menu's leading group at or below it |
 | `[data-testid="composer-attach"]` | the paperclip; opens the hidden `input[type=file]` |
+| `[data-testid="current-work-goal"]` | the CurrentWork goal row, present only while a goal is set; its value button `[data-testid="current-work-goal-value"]` reopens the composer with the `/goal` draft, and the goal's live status word is `[data-testid="current-work-goal-status"]` |
 | `[data-testid="pending-chips"]` | optimistic in-flight chips, labelled `Sending` / `Steering` / `Draining` (`pending/PendingChips.tsx:38-42,56`) |
 
 Shift+Enter is the Steer chord and reaches `handleSteerClick`
@@ -605,13 +754,19 @@ mutations whose fate is unknown read `Delivery uncertain — <text>` with a
 deleted — <text>` with `Copy` (`:349-374`).
 
 **Rail** (`shell/rail/RailRow.tsx`, `Rail.tsx`): a session row is
-`[data-session-ref="local:<SID>"]` (`RailRow.tsx:509`) — note
+`[data-session-ref="local:<SID>"]` — note
 `data-session-ref`, not the legacy `data-ref`, and there is no `.sb-row`
-class anywhere. Inside it: `[data-testid="rail-row-activity"]` (the
-second, gloss line — this is where the state word lands, **lowercased**
-by `humanizeState`, unlike `hubapi.StateWord`'s sentence case),
-`[data-testid="rail-row-time"]`, `[data-testid="rail-row-not-started"]`,
-`[data-testid="favorite-star"]`, `[data-testid="rail-row-overflow"]`.
+class anywhere. The row is one line. Its status signal is either
+`[data-testid="rail-status-spinner"][aria-label="Running"]` or
+`[data-testid="rail-status-dot"]`, whose `data-status` is `needs-you` or
+`failed` and whose accessible label is `Needs you` or `Broken`. Quiet rows
+have no signal. Hover `[data-testid="rail-row-title"]` to expose the rich
+`[role="tooltip"]` context card, whose header carries the detailed status
+word (`Question waiting`, `Restart required`, and so on); on a touch-only
+device, long-press the title to expose it, since a tap opens the session. Other
+row hooks are `[data-testid="rail-row-time"]`, `[data-testid="rail-row-not-started"]`,
+and `[data-testid="rail-row-overflow"]`; `[data-testid="favorite-star"]`
+belongs to pinned project rows, not sessions.
 Rail chrome: `[data-testid="rail-search"]`, `[data-testid="rail-settings"]`,
 `[data-testid="rail-brand"]`, `[data-testid="rail-chevron"]`. There is no
 separate "needs you" section — the Rail deliberately does not build one
@@ -625,8 +780,8 @@ separate "needs you" section — the Rail deliberately does not build one
 `[data-testid="turn-failure"]`, `[data-testid="system-notice-line"]`,
 `[data-testid="notification-card"]`, `[data-testid="image-gallery-thumb"]`
 and `[data-testid="image-gallery-lightbox-img"]`,
-`[data-testid="load-older-row"]` / `[data-testid="load-older-sentinel"]` /
-`[data-testid="load-older-retry"]` (`flow/LoadOlderRow.tsx:82-91`),
+`[data-testid="load-older-row"]` / `[data-testid="load-older-retry"]`
+(`flow/LoadOlderRow.tsx`),
 `[data-testid="new-content-pill"]`, `[data-testid="seen-divider"]`.
 
 **Session chrome** (`panes/session/chrome/`):
@@ -634,7 +789,7 @@ and `[data-testid="image-gallery-lightbox-img"]`,
 facts (`status-row-effort`, `status-row-context`, `status-row-cost`,
 `status-row-queue`, `status-row-work-time`, `status-row-failures`),
 `[data-testid="model-switch-trigger"]` / `[data-testid="model-switch-value"]`,
-`[data-testid="goal-popover"]`, `[data-testid="task-row"]`.
+`[data-testid="task-row"]`.
 
 **Spawn** (`panes/spawn/Spawn.tsx`): `[data-testid="spawn-prompt-card"]`
 and its control row `[data-testid="spawn-controls"]`,
@@ -721,7 +876,7 @@ JSON.stringify({
   steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
   stopRendered: !!document.querySelector('[data-testid="composer-stop"]'),
   turns: document.querySelectorAll('[data-testid="turn-block"]').length,
-  activity: document.querySelector('[data-testid="rail-row-activity"]')?.textContent,
+  indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-status-spinner"], [data-session-ref="local:<SID>"] [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
   queueHeading: document.querySelector("h3")?.textContent,   // "Queued messages (N)"
 })
 ```

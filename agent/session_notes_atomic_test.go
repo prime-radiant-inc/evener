@@ -47,6 +47,7 @@ func reloadHumanNoteStore(t *testing.T, s *Session) {
 }
 
 func TestHumanNoteFenceRejectsWholeSave(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatal(err)
@@ -70,6 +71,7 @@ func TestHumanNoteFenceRejectsWholeSave(t *testing.T) {
 }
 
 func TestHumanNoteAtomicDurability(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"reservation", "before-effect", "after-effect"} {
 		t.Run(boundary, func(t *testing.T) {
 			s := newDurableHumanNoteSession(t)
@@ -94,7 +96,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 			}
 			want, count := "old", 1
 			if boundary == "after-effect" {
-				want, count = "new value", 2
+				want, count = "new\nvalue", 2
 			}
 			if disk.HumanNote == nil || *disk.HumanNote != want || len(disk.SteeringOrder) != count {
 				t.Fatalf("disk note/steering = %+v / %v; want %q / %d", disk.HumanNote, disk.SteeringOrder, want, count)
@@ -115,7 +117,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if response.Note != "new value" || response.Receipt.ClientMutationID != "save" {
+			if response.Note != "new\nvalue" || response.Receipt.ClientMutationID != "save" {
 				t.Fatalf("response = %+v", response)
 			}
 			if _, err := s.SetHumanNote("newer", "latest"); err != nil {
@@ -125,7 +127,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if replay.Note != "new value" || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
+			if replay.Note != "new\nvalue" || replay.Receipt.Disposition != appwire.MutationDispositionReplayed {
 				t.Fatalf("replay = %+v", replay)
 			}
 			if live, _ := s.notesSnapshot(); live != "latest" {
@@ -146,6 +148,7 @@ func TestHumanNoteAtomicDurability(t *testing.T) {
 }
 
 func TestHumanNoteRecoveryChecksEffectFence(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatal(err)
@@ -177,6 +180,7 @@ func TestHumanNoteRecoveryChecksEffectFence(t *testing.T) {
 }
 
 func TestHumanNoteAtomicNoOpHeldAndConsumedReceipt(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatal(err)
@@ -234,6 +238,7 @@ func TestHumanNoteAtomicNoOpHeldAndConsumedReceipt(t *testing.T) {
 }
 
 func TestHumanNoteRestoreCanonicalFixtures(t *testing.T) {
+	t.Parallel()
 	for _, note := range []string{"saved-sentinel", ""} {
 		t.Run(note, func(t *testing.T) {
 			s := newNotesToolSession(t)
@@ -288,6 +293,7 @@ func TestHumanNoteRestoreCanonicalFixtures(t *testing.T) {
 }
 
 func TestHumanNoteReadAuthorityRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if _, err := s.SetHumanNote("save", "sentinel"); err != nil {
 		t.Fatal(err)
@@ -314,6 +320,7 @@ func TestHumanNoteReadAuthorityRejectsUnknownFields(t *testing.T) {
 }
 
 func TestHumanNoteCommittedErrorPublishesAcceptance(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	for len(s.Events()) > 0 {
 		<-s.Events()
@@ -342,6 +349,7 @@ func TestHumanNoteCommittedErrorPublishesAcceptance(t *testing.T) {
 }
 
 func TestHumanNoteCleanCutoverDoesNotImportMetadata(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	meta := s.Meta()
 	meta.HumanNote = "unsupported-old-note"
@@ -368,6 +376,7 @@ func TestHumanNoteCleanCutoverDoesNotImportMetadata(t *testing.T) {
 }
 
 func TestHumanNoteCleanCutoverRejectsOldJournalFields(t *testing.T) {
+	t.Parallel()
 	for _, field := range []string{"notes_delivery_pending", "notes_stored_value", "notes_stored_value_set", "notes_inner_steer_id", "notes_adopted_intent"} {
 		t.Run(field, func(t *testing.T) {
 			s := newDurableHumanNoteSession(t)

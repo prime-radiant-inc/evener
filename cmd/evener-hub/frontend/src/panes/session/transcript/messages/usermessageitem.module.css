@@ -165,3 +165,28 @@
     grid-column: 1 / -1;
   }
 }
+
+/* The provisional register a held steering ghost renders in
+ * (docs/web-ui/specs/2026-09-20-steering-ghost-live-edge.md §2, mockup A):
+ * the message it WILL become, marked not-yet-delivered. Dashed --accent
+ * bubble edge, the whole row at reduced opacity, and a dashed left
+ * railmark beside the bubble. Tokens only - no new colors. */
+.provisional {
+  opacity: 0.78;
+}
+
+.provisional .body {
+  border: 1px dashed var(--accent);
+  position: relative;
+}
+
+.provisional .railmark {
+  position: absolute;
+  left: -12px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: repeating-linear-gradient(180deg, var(--accent) 0 4px, transparent 4px 8px);
+  opacity: 0.55;
+  border-radius: 1px;
+}

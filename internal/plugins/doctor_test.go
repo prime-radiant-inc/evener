@@ -305,10 +305,10 @@ func TestDoctor_VersionMatch_NoWarning(t *testing.T) {
 }
 
 // TestDoctor_VersionMismatch_DirectorySource_HonestRemediation reproduces the
-// Important finding where a directory (or Rel) source's version-mismatch WARN
-// pointed at `evener plugin upgrade`, which Manager.Upgrade always no-ops for
-// such a source (sourceCannotUpgrade): following the remediation could never
-// clear the warning. The remediation must instead be honest about that.
+// Important finding where an in-place install's (usedInPlace) version-mismatch
+// WARN pointed at `evener plugin upgrade`, which Manager.Upgrade always no-ops
+// for it: following the remediation could never clear the warning. The
+// remediation must instead be honest about that.
 func TestDoctor_VersionMismatch_DirectorySource_HonestRemediation(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")
@@ -430,7 +430,9 @@ func TestDoctor_AutoUpgradeOnDirectorySourceWarns(t *testing.T) {
 	}
 }
 
-func TestDoctor_AutoUpgradeOnRelSourceWarns(t *testing.T) {
+// A relative source upgrades from its marketplace clone, so auto-upgrade on
+// it is no mistake.
+func TestDoctor_AutoUpgradeOnRelSource_NoWarning(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")
 	writePlugin(t, dir, "widget", nil)
@@ -448,8 +450,8 @@ func TestDoctor_AutoUpgradeOnRelSourceWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if !hasFinding(findings, "auto-upgrade is on") {
-		t.Errorf("expected autoupgrade sanity warning for a Rel source; findings=%+v", findings)
+	if hasFinding(findings, "auto-upgrade is on") {
+		t.Errorf("autoupgrade sanity warning for a Rel source, which can upgrade; findings=%+v", findings)
 	}
 }
 
@@ -891,5 +893,61 @@ func TestDoctor_ASingleNameNoFilesystemCanHoldIsAPendingRename(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("findings = %+v, want the pending rename for a name no filesystem can hold", findings)
+	}
+}
+
+// A relative plugin in a directory marketplace is used from the marketplace's
+// own folder, so like a directory source it can never upgrade: doctor's
+// version-mismatch advice must not point at upgrade, and auto-upgrade on it is
+// still warned about.
+func TestDoctor_RelSourceInADirectoryMarketplaceIsUsedInPlace(t *testing.T) {
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugins", "widget", ".claude-plugin", "plugin.json"), []byte(`{"name":"widget","version":"2.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if f := findFinding(t, findings, "does not match"); strings.Contains(f.Remediation, "evener plugin upgrade") {
+		t.Errorf("an in-place plugin's version mismatch points at the no-op upgrade: %q", f.Remediation)
+	}
+	if !hasFinding(findings, "auto-upgrade is on") {
+		t.Errorf("no auto-upgrade warning for an in-place plugin; findings=%+v", findings)
+	}
+}
+
+// Upgrade all and the auto-upgrade sweep take a relative plugin in a
+// directory marketplace without error: it is served from the marketplace's
+// own folder (stagePlugin returns before any fetch), so its upgrade is a
+// no-op and the sweep reports nothing.
+func TestUpgrade_RelSourceInADirectoryMarketplaceIsANoOp(t *testing.T) {
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "local"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
+		t.Fatalf("SetAutoUpgrade: %v", err)
+	}
+	if _, err := m.UpdateAll(context.Background()); err != nil {
+		t.Fatalf("UpdateAll: %v", err)
+	}
+	if upgraded, err := m.UpdateAutoUpgrade(context.Background()); err != nil || len(upgraded) != 0 {
+		t.Fatalf("UpdateAutoUpgrade = %+v (%v), want a no-op", upgraded, err)
 	}
 }

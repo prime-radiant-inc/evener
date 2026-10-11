@@ -87,12 +87,12 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal("attach scan did not fire")
 			}
 		case 6:
-			_, err := jm.runTerminalCatchup(watchArgs{Target: "job_x", OutputMatch: "["}, watchKey{Target: "job_x"}, jobstore.StatusCompleted)
+			_, err := jm.runTerminalCatchup(watchArgs{Target: "job_x", OutputMatch: "["}, watchKey{Target: "job_x"}, jobstore.StatusCompleted, "")
 			if err == nil {
 				t.Fatal("invalid terminal regexp accepted")
 			}
 		case 7:
-			_, err := jm.runTerminalCatchup(watchArgs{Target: "job_missing", OutputMatch: "hit"}, watchKey{Target: "job_missing"}, jobstore.StatusCompleted)
+			_, err := jm.runTerminalCatchup(watchArgs{Target: "job_missing", OutputMatch: "hit"}, watchKey{Target: "job_missing"}, jobstore.StatusCompleted, "")
 			if err == nil {
 				t.Fatal("missing terminal output accepted")
 			}
@@ -169,7 +169,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			}
 		case 16:
 			rec := createWatchOutputJob(t, jm)
-			res, err := jm.runTerminalCatchup(watchArgs{Target: rec.JobID, OutputMatch: "absent"}, watchKey{Target: rec.JobID}, jobstore.StatusCompleted)
+			res, err := jm.runTerminalCatchup(watchArgs{Target: rec.JobID, OutputMatch: "absent"}, watchKey{Target: rec.JobID}, jobstore.StatusCompleted, "")
 			if err != nil || res.Fired {
 				t.Fatalf("unmatched catchup = %+v, %v", res, err)
 			}

@@ -1,35 +1,41 @@
 import { expect, test } from "vitest";
-import { memoryNavigationPersistence } from "../../testing/navigationPersistence";
-import type { NavigationManifest, NavigationSessionSummary, NavigationWatchSummary } from "../../types.gen";
+import type { NavigationManifest, NavigationSessionSummary } from "../../types.gen";
 import { normalizedGraphFromSnapshot } from "./codec";
-import {
-  selectDisplaySources,
-  selectSessionOmittedArmedWatches,
-  selectSessionOmittedWatches,
-  selectSources,
-} from "./selectors";
-import { createNavigationStore } from "./store";
-import { isSettledGone, keyID, navigationViewScope, type ResourceKey, type ResourceState } from "./types";
-
-const emptyState = () => createNavigationStore({ persistence: memoryNavigationPersistence() }).getState();
+import { selectDisplaySources, selectSources, subagentTallyToShow } from "./selectors";
+import { isSettledGone, navigationViewScope, type ResourceKey, type ResourceState } from "./types";
 
 test.each([
   [
     { kind: "project_page", projectKey: "项目/a|b", tier: "recent", offset: 2, limit: 7 },
-    "nav2/project_page///6aG555uuL2F8Yg/cmVjZW50/2/7",
+    "nav3/project_page///6aG555uuL2F8Yg/cmVjZW50/2/7",
   ],
-  [{ kind: "location", ref: "源/α:β|?" }, "nav2/location/5rqQL86xOs6yfD8////0/0"],
+  [{ kind: "location", ref: "源/α:β|?" }, "nav3/location/5rqQL86xOs6yfD8////0/0"],
   [
     { kind: "pin_section", sectionId: "pins/研发|?", offset: 3, limit: 11 },
-    "nav2/pin_section//cGlucy_noJTlj5F8Pw///3/11",
+    "nav3/pin_section//cGlucy_noJTlj5F8Pw///3/11",
   ],
-  [{ kind: "section", section: "live", offset: 4, limit: 0 }, "nav2/live/////4/50"],
+  [{ kind: "section", section: "live", offset: 4, limit: 0 }, "nav3/live/////4/50"],
   [
     { kind: "project_page", projectKey: "project", tier: "current", offset: 5, limit: 51 },
-    "nav2/project_page///cHJvamVjdA/Y3VycmVudA/5/50",
+    "nav3/project_page///cHJvamVjdA/Y3VycmVudA/5/50",
   ],
-  [{ kind: "pin_catalog", offset: 6, limit: 0 }, "nav2/pin_catalog/////6/100"],
-  [{ kind: "catalog", catalog: "projects", offset: 7, limit: 101 }, "nav2/projects/////7/100"],
+  [{ kind: "pin_catalog", offset: 6, limit: 0 }, "nav3/pin_catalog/////6/100"],
+  [{ kind: "catalog", catalog: "projects", offset: 7, limit: 101 }, "nav3/projects/////7/100"],
+  [
+    { kind: "project", projectKey: "no-project", catalog: "test_runs" },
+    "nav3/project///bm8tcHJvamVjdA//0/0/catalog/test_runs",
+  ],
+  [
+    {
+      kind: "project_page",
+      projectKey: "no-project",
+      catalog: "archived_projects",
+      tier: "current",
+      offset: 1,
+      limit: 2,
+    },
+    "nav3/project_page///bm8tcHJvamVjdA/Y3VycmVudA/1/2/catalog/archived_projects",
+  ],
 ] as const)("navigation view scope matches Go parity vector %#", (key, expected) => {
   expect(navigationViewScope(key as ResourceKey)).toBe(expected);
 });
@@ -62,73 +68,6 @@ test("a settled gone tombstone counts, a stale retained one does not", () => {
   expect(isSettledGone(tombstone(true))).toBe(false);
   expect(isSettledGone(undefined)).toBe(false);
   expect(isSettledGone(null)).toBe(false);
-});
-
-function watchesState(
-  title: string,
-  watches: NavigationWatchSummary[],
-  omittedWatches = 0,
-  omittedArmedWatches = 0,
-): ReturnType<typeof emptyState> {
-  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
-  const summary = {
-    ref: "local:s",
-    host_id: "local",
-    session_id: "s",
-    title,
-    project: "p",
-    state: "idle",
-    kind: "session",
-    live: true,
-    watches,
-    omitted_watches: omittedWatches,
-    omitted_armed_watches: omittedArmedWatches,
-    children: [],
-  } as unknown as NavigationSessionSummary;
-  const resource: ResourceState = {
-    key: sectionKey,
-    data: { sessions: [summary] },
-    loadedRevision: 1,
-    targetRevision: 1,
-    forceToken: 0,
-    etag: "tag",
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "generation_test",
-  };
-  return { ...emptyState(), resources: new Map([[keyID(sectionKey), resource]]) };
-}
-
-// A ref that drops out of the session list must not keep a cache entry for the
-// life of the page. Deleting the entry also drops its old array, so the next
-// read recomputes instead of serving a stale identity.
-test("selectSessionOmittedWatches reads the count off the summary and is zero when absent", () => {
-  const watchRow: NavigationWatchSummary = {
-    id: "w",
-    source: "self",
-    deliveries: 1,
-    created_at: "2026-09-12T10:00:00Z",
-    active: true,
-  };
-  expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow], 5))).toBe(5);
-  expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow]))).toBe(0);
-  expect(selectSessionOmittedWatches("local:absent", watchesState("t", [watchRow], 5))).toBe(0);
-});
-
-// The armed subset of the omitted rows is what the rail and the activity panel
-// add to the retained armed count; it must be readable and zero when absent.
-test("selectSessionOmittedArmedWatches reads the armed subset and is zero when absent", () => {
-  const watchRow: NavigationWatchSummary = {
-    id: "w",
-    source: "self",
-    deliveries: 1,
-    created_at: "2026-09-12T10:00:00Z",
-    active: true,
-  };
-  expect(selectSessionOmittedArmedWatches("local:s", watchesState("t", [watchRow], 5, 3))).toBe(3);
-  expect(selectSessionOmittedArmedWatches("local:s", watchesState("t", [watchRow], 5))).toBe(0);
-  expect(selectSessionOmittedArmedWatches("local:absent", watchesState("t", [watchRow], 5, 3))).toBe(0);
 });
 
 // selectSources feeds the host picker and the spawn form's launch target, so a
@@ -218,4 +157,33 @@ test("the two views differ exactly where settledness does", () => {
   const stale = manifestResource({ stale: true });
   expect(sourcesOf(stale)).toEqual([]);
   expect(displaySourcesOf(stale).map((source) => source.id)).toEqual(["local", "buildbox"]);
+});
+
+// D6: only a live root shows its subagent tally, and only when something in it
+// is worth a glance. Done subagents are history, so a tally of all done shows
+// nothing.
+test("subagentTallyToShow shows a live root's running and failed counts and hides the rest", () => {
+  const row = (overrides: Partial<NavigationSessionSummary>): NavigationSessionSummary => ({
+    ref: "local:s",
+    host_id: "local",
+    session_id: "s",
+    title: "t",
+    project: "p",
+    state: "active",
+    kind: "session",
+    live: true,
+    children: [],
+    ...overrides,
+  });
+  expect(subagentTallyToShow(row({ subagents: { running: 3, failed: 1, done: 5 } }))).toEqual({
+    running: 3,
+    failed: 1,
+  });
+  expect(subagentTallyToShow(row({ subagents: { running: 0, failed: 2, done: 0 } }))).toEqual({
+    running: 0,
+    failed: 2,
+  });
+  expect(subagentTallyToShow(row({ subagents: { running: 0, failed: 0, done: 4 } }))).toBeNull();
+  expect(subagentTallyToShow(row({}))).toBeNull();
+  expect(subagentTallyToShow(row({ live: false, subagents: { running: 3, failed: 0, done: 0 } }))).toBeNull();
 });

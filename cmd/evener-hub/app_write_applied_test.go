@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,15 +47,42 @@ func TestWriteAppliedKeepsTheInnerMessageAndWireClass(t *testing.T) {
 	}
 }
 
-// blockProvidersWrites leaves a directory where WriteConfigFile stages its
-// bytes, so every later write of providers.toml fails on a real filesystem
-// refusal (the technique breakCredentialWrites uses on the credentials file).
+// blockProvidersWrites makes every later write of providers.toml fail on a real
+// filesystem refusal (the technique breakCredentialWrites uses on the
+// credentials file). WriteConfigFile stages its bytes under a random name in
+// the target's directory, so no fixed temp name can be occupied to refuse the
+// open; the unwritable directory refuses the exclusive create itself.
 func blockProvidersWrites(t *testing.T, tomlPath string) {
 	t.Helper()
-	// The reload this runs from can be attempted more than once in a call, and
-	// the path only has to be occupied, not freshly created.
-	if err := os.Mkdir(tomlPath+".tmp", 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		t.Errorf("blocking the providers.toml temp path: %v", err)
+	blockWritesInDir(t, filepath.Dir(tomlPath))
+}
+
+// blockWritesInDir removes the write bit from dir for the rest of the test,
+// which is how a test refuses a writer that stages its temp file under a random
+// name in dir. The mode is restored when the test ends so the temp-dir cleanup
+// can still remove the tree. Root bypasses the permission check and Windows
+// does not refuse the create the POSIX way, so a test that relies on this must
+// call requireWritableDirRefusal first.
+func blockWritesInDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Errorf("blocking writes in %s: %v", dir, err)
+	}
+}
+
+// requireWritableDirRefusal skips a test whose write-refusal injection makes a
+// directory unwritable: root bypasses the write-permission check, and Windows
+// does not refuse the create as POSIX does, so the writer would succeed and the
+// test would assert the wrong branch. It must run on the test goroutine, not
+// from a registry-loader callback (t.Skip uses runtime.Goexit).
+func requireWritableDirRefusal(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("write-refusal injection relies on POSIX directory permission, which Windows does not enforce")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("write-refusal injection relies on directory write permission, which root bypasses")
 	}
 }
 
@@ -70,9 +98,16 @@ type instanceRollbackFixture struct {
 
 func newInstanceRollbackFixture(t *testing.T) *instanceRollbackFixture {
 	t.Helper()
+	requireWritableDirRefusal(t)
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
+	// providers.toml gets its own directory so blocking its writes (below) does
+	// not also block the hub state written under dir.
+	configDir := filepath.Join(dir, "config")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tomlPath := filepath.Join(configDir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
 	credsStore := newTestCredentialsStore(t)
 	failReload := &atomic.Bool{}
@@ -283,6 +318,7 @@ func TestInstances_RemoveMarksAppliedWhenTheConfigWriteFailsAndTheCredentialCann
 // writeApplied mark stays, because the deleted key is what every other
 // client's credential status for this name is stale against.
 func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheStoredKeyCannotBeRestored(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newFlakyReloadFixture(t, "groq", func(int) bool { return false })
 	if before := entry(t, f.ctl.List(), "groq"); !before.Implicit || before.ActiveSource != "store" {
 		t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
@@ -334,6 +370,7 @@ func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheStoredKeyCan
 // that carries it - cannot be put back. Same standing removal, same frame and
 // discriminator, because supplyOAuth names the layer that is gone.
 func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheOAuthRecordCannotBeRestored(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newFlakyReloadFixture(t, "", func(int) bool { return false })
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
 	if before := entry(t, f.ctl.List(), "openai-codex"); !before.Implicit || before.ActiveSource != "oauth" {
@@ -389,6 +426,7 @@ func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheOAuthRecordC
 // mark have to come back around the leftovers, exactly as the reload-rollback
 // path folds them.
 func TestInstances_RemoveRollsBackWhenTheImplicitConfigWriteFailsAndTheCarryingRecordIsRestored(t *testing.T) {
+	requireWritableDirRefusal(t)
 	f := newFlakyReloadFixture(t, "", func(int) bool { return false })
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
 	// The stray key beside the carrying record: it cannot be restored, while
@@ -603,6 +641,7 @@ type partialRollbackFixture struct {
 
 func newPartialRollbackFixture(t *testing.T) *partialRollbackFixture {
 	t.Helper()
+	requireWritableDirRefusal(t)
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
@@ -613,10 +652,11 @@ func newPartialRollbackFixture(t *testing.T) *partialRollbackFixture {
 	failNext := &atomic.Bool{}
 	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 		if failNext.CompareAndSwap(true, false) {
-			// The store writes through <path>.tmp and renames, so a directory
-			// occupying that name refuses the open. The mkdir result is
+			// The store stages its temp file under a random name in the creds
+			// directory, so the directory is made unwritable: the exclusive
+			// create then fails whatever name it would take. The chmod result is
 			// asserted from the test goroutine, not here.
-			_ = os.Mkdir(credsStore.Path()+".tmp", 0o700)
+			blockWritesInDir(t, filepath.Dir(credsStore.Path()))
 			return nil, nil, errors.New("the registry refused to load")
 		}
 		return load(extra...)
@@ -682,8 +722,8 @@ func TestHubRPCInstanceRemoveBroadcastsWhenAPartialRollbackLeavesACredentialDele
 	if !strings.Contains(err.Error(), "some credentials were not put back") {
 		t.Fatalf("evener/instance/remove = %v, want the leftover stray key reported", err)
 	}
-	if st, statErr := os.Stat(f.credsPath + ".tmp"); statErr != nil || !st.IsDir() {
-		t.Fatalf("credentials temp path = %v (err %v), want the blocking directory this case needs", st, statErr)
+	if info, statErr := os.Stat(filepath.Dir(f.credsPath)); statErr != nil || info.Mode().Perm()&0o200 != 0 {
+		t.Fatalf("credentials dir = %v (err %v), want the unwritable directory this case needs", info, statErr)
 	}
 	if v, _ := f.store.Get("openai-codex"); v != "" {
 		t.Fatalf("stored key = %q, want the stray key still deleted", v)

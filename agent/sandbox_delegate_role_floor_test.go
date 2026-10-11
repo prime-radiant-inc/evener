@@ -31,7 +31,6 @@ func newReadOnlyRoleFloorSession(t *testing.T, lane string, facts sandbox.HostFa
 		withConfig(SessionConfig{
 			StateDir:         packageFixtureTempDir(t, "role-floor-*"),
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -109,6 +108,7 @@ func setWriteBlockedRestrictedParent(t *testing.T, parent *Session, facts sandbo
 }
 
 func TestCreateDelegate_ReadOnlyRoleSandboxRequestFloor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		mode    string
@@ -157,6 +157,7 @@ func TestCreateDelegate_ReadOnlyRoleSandboxRequestFloor(t *testing.T) {
 }
 
 func TestCreateDelegate_FilteredMutationToolUsesEffectiveCeilingFloor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		mode    string
@@ -227,6 +228,7 @@ func TestCreateDelegate_FilteredMutationToolUsesEffectiveCeilingFloor(t *testing
 }
 
 func TestCreateDelegate_EffectiveMutationToolPreservesWorkspaceWrite(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	s, _ := newReadOnlyRoleFloorSession(t, lane, sbxBwrapFacts(home))
 	result := s.createDelegate(context.Background(), delegateArgs{
@@ -344,6 +346,7 @@ func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
 }
 
 func TestCreateDelegate_WriteBlockedParentCannotBeRelaxed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		mode       string

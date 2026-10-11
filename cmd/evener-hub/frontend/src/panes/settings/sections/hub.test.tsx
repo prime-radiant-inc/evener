@@ -1,8 +1,8 @@
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
@@ -28,8 +28,6 @@ beforeEach(() => {
   resetSettingsOverviewStoreForTests();
   resetDaemonResidentsStoreForTests();
 });
-
-afterEach(cleanup);
 
 test("fetches the overview on mount and renders the 3 read-only fields with their help text", async () => {
   const fake = connectFakeClient();

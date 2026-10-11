@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/remoteinstall"
 )
 
 // TestRound10PushVerifiesByteCount pins the round-ten Medium that the push had
@@ -71,23 +72,23 @@ func TestRound10PushVerifiesByteCount(t *testing.T) {
 // a temp file and only then run, so a truncated or dropped stream cannot
 // half-execute.
 func TestInstallerScriptChecksTheWriteBeforeExecuting(t *testing.T) {
-	const size = 1234
-	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin", size)
+	got := remoteinstall.Command("v1.2.3", "", "/opt/evener/bin", "/opt/evener/share/evener/bin")
 	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
-		t.Fatalf("installerCommand still pipes the script into sh, masking a failed write: %q", got)
+		t.Fatalf("the installer command still pipes the script into sh, masking a failed write: %q", got)
 	}
 	// Round twelve adds the byte count to the handoff check: the script runs only
 	// when the streamed file is exactly as long as the embedded copy, so a
 	// truncated stream (which ssh reports as a clean EOF, leaving `cat` at exit 0)
 	// cannot half-execute.
-	if !strings.Contains(got, "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = 1234 ] && env ") {
-		t.Fatalf("installerCommand does not check the script write's byte count before executing the installer: %q", got)
+	wantCheck := "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(len(remoteinstall.Script)) + " ] && env "
+	if !strings.Contains(got, wantCheck) {
+		t.Fatalf("the installer command does not check the script write's byte count before executing the installer: %q", got)
 	}
 	if !strings.Contains(got, "EVENER_INSTALL_VERSION=v1.2.3") {
-		t.Fatalf("installerCommand lost the pinned ref: %q", got)
+		t.Fatalf("the installer command lost the pinned ref: %q", got)
 	}
 	if !strings.Contains(got, "BINDIR=/opt/evener/bin") || !strings.Contains(got, "EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin") {
-		t.Fatalf("installerCommand lost the custom install dirs: %q", got)
+		t.Fatalf("the installer command lost the custom install dirs: %q", got)
 	}
 }
 
@@ -112,10 +113,13 @@ func TestRound10PreflightDiscoversInstallerDefault(t *testing.T) {
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			// No evener on the non-interactive PATH.
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+		case strings.Contains(joined, executableProbeRemote("evener")):
+			// The dedicated executable probe: absent.
+			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
 			return []byte(resolved + "\n"), nil
 		default:
@@ -158,9 +162,12 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+		case strings.Contains(joined, executableProbeRemote("evener")):
+			// The dedicated executable probe: absent.
+			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, resolved):
 			if installed {
 				return []byte(resolved + "\n"), nil
@@ -204,6 +211,8 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 			return os.WriteFile(out, []byte("staged-binary"), 0o755)
 		},
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	// Two attempts from the SAME original host (empty EvenerPath), exactly as a
 	// reconnect starts from the registry host rather than the last attempt's copy.

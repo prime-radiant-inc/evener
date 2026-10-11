@@ -36,6 +36,13 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 # library so their failure modes can be exercised directly rather than
 # inspected as script text; see gatebounded_test.go.
 . "$script_dir/../lib/gate-bounded.sh"
+. "$script_dir/../lib/gate-scratch-root.sh"
+. "$script_dir/../lib/gate-root-shards.sh"
+# The RAM-backed scratch must hold the gate's peak: test binaries, go build
+# work directories and every test's temp files across concurrent streams. A
+# full `make test` peaked at ~600MB (2026-09-22); 2GiB leaves room for growth
+# and a neighbouring gate.
+GATE_SCRATCH_MIN_KB=${GATE_SCRATCH_MIN_KB:-2097152}
 
 # The load-aware budgets, and the effective -p/-parallel flags they become,
 # live in scripts/lib/gate-budgets.sh so the wiring can be exercised directly
@@ -55,7 +62,7 @@ if ! . "$gate_budgets_lib"; then
 fi
 gate_source_helper "$script_dir/../lib/load-aware-workers.sh"
 
-MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
+MODULES=${MODULES:-". agent llm auth envvars invariant identifier execsupport"}
 ROOT_FULL=${ROOT_FULL:-0}
 
 # WEB controls the concurrent frontend gate. It is skipped automatically when
@@ -120,6 +127,12 @@ done
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
+# ROOT_SHARDED, <PREFIX>_SHARDS and ROOT_REST: see scripts/lib/gate-root-shards.sh.
+# The -race gate keeps the hub and CLI sharded: their tests are mostly serial,
+# so one process uses about one core, and on a 4-core runner sharding took the
+# race root wave from ~690-790s to ~430s. Refuse a mistyped toggle up front.
+root_shard_excluded_packages >/dev/null || exit 2
+root_rest_enabled || [ "$?" -eq 1 ] || exit 2
 # The agent module's test count has grown past the point where 4 shards
 # (the agentshards default) keep each shard's -run pattern under the OS
 # argument-list limit. The shard runner now writes the -run regex to a file
@@ -162,7 +175,9 @@ fi
 # it prints anything. That is heavier than the `go list` those flags feed, so it
 # gets its own, larger bound: enough for a cold build cache on a busy host, but
 # still finite, so a stalled cache fails with the diagnostic instead of hanging
-# the gate before its own timeout can speak.
+# the gate before its own timeout can speak. The agent wave's prebuild of the
+# shard runner compiles the same package, so it shares this bound rather than
+# carrying a second copy.
 LIST_BUILD_FLAGS_TIMEOUT=${EVENER_LIST_BUILD_FLAGS_TIMEOUT:-300}
 if [[ ! "$LIST_BUILD_FLAGS_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	printf 'run-module-tests.sh: EVENER_LIST_BUILD_FLAGS_TIMEOUT must be a positive integer in seconds (got %q)\n' "$LIST_BUILD_FLAGS_TIMEOUT" >&2
@@ -274,6 +289,16 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
+# Mint the scratch, and so every stream's TMPDIR, in RAM when the host offers
+# it; see gate-scratch-root.sh for the fsync cost this avoids.
+TMPDIR="$(gate_scratch_root /dev/shm "$GATE_SCRATCH_MIN_KB")" || exit 2
+export TMPDIR
+# Go builds and runs test binaries in GOTMPDIR instead of TMPDIR when one is
+# set (in the environment or with go env -w), so check that it can execute too.
+gate_gotmpdir="$(go env GOTMPDIR 2>/dev/null)"
+if [ -n "$gate_gotmpdir" ]; then
+	gate_require_exec "$gate_gotmpdir" GOTMPDIR || exit 2
+fi
 scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()
@@ -363,23 +388,56 @@ run_module() {
 		package_list="$logdir/root.packages"
 		derive_list_flags "$m" || return $?
 		run_enumeration "$m" "$package_list" || return $?
+		local -a sharded=()
+		local excluded label prefix
+		while IFS= read -r excluded; do
+			sharded+=("$excluded")
+		done < <(root_shard_excluded_packages)
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
 					continue
 					;;
 			esac
+			# A sharded package runs beside this go test instead (see below), or
+			# in another job entirely.
+			[[ " ${sharded[*]-} " == *" $pkg "* ]] && continue
 			packages+=("$pkg")
 		done <"$package_list"
-		if [ "${#packages[@]}" -eq 0 ]; then
+		if root_rest_enabled && [ "${#packages[@]}" -eq 0 ]; then
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
+		# cmd/evener-hub's ~2100 and cmd/evener's ~340 tests are mostly serial,
+		# and each ran at about one core for close to a minute at the head of
+		# this wave. evener dev <label>-shards splits each across processes while
+		# the rest of the module runs. Each gets the same flags and the same
+		# -skip (plus a caller's own <LABEL>_SHARD_SKIP); its -run is the gate's
+		# Test/Example surface, which the runner applies itself. Each is timed
+		# like the go test below, so the module's reported wall time (the last
+		# "real" line) covers whichever stream finished last.
+		local -a shard_pids=()
+		local skip_var status=0 root_status=0
+		while read -r label prefix; do
+			skip_var="${prefix}_SHARD_SKIP"
+			env "$skip_var=$(gate_shard_skip "$root_skip" "${!skip_var:-}")" /usr/bin/time -p go run ./cmd/evener-dev/bin dev "$label-shards" ${test_flags[@]+"${test_flags[@]}"} </dev/null &
+			shard_pids+=("$!")
+		done < <(root_shard_runners)
 		# ROOT_FULL removes short mode through module_test_flags_array while
 		# retaining the regular Test/Example name filter. Fuzz-owned targets and
 		# sanity functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
-		return
+		if root_rest_enabled; then
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}" || root_status=$?
+		fi
+		local pid rc
+		for pid in ${shard_pids[@]+"${shard_pids[@]}"}; do
+			rc=0
+			wait "$pid" || rc=$?
+			# Report the first failing shard runner's status.
+			[ "$status" -ne 0 ] || status=$rc
+		done
+		[ "$root_status" -ne 0 ] && return "$root_status"
+		return "$status"
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
 		# The agent module's wall time is dominated by its top-level package, one
@@ -389,15 +447,28 @@ run_module() {
 		# ~26s). Its subpackages are small and already concurrent internally, but
 		# they run AFTER the shards finish, not alongside them (~22s shards then
 		# ~8s subpackages, sequential). Overlapping the two phases was measured
-		# and made things worse: the agent module shares WAVE2 with five other
+		# and made things worse: the agent module shares WAVE2 with six other
 		# modules, so the added contention stretched the shard phase by more
 		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
-		# `go run` collapses its child's exit code to 1 and reports the real
-		# one as an "exit status N" line on stderr, so the runner's 129/130/143
-		# signal exits survive in the binary but not through this call. Only
-		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		# The shards used to run through `go run ./cmd/evener-dev/bin`, whose
+		# compile of cmd/evener-dev/bin is a tree the go list enumeration never
+		# warmed: on a stalled cache that compile was the one discovery-adjacent
+		# step still unbounded. Build the runner first under run_bounded, then run
+		# the built binary unbounded -- a fixed bound on the test suite itself
+		# could manufacture a flake on a loaded runner.
+		local agent_shards_bin="$logdir/agent-shards.bin"
+		if ! run_bounded_build "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev agent-shards build' "$m" \
+			"$logdir/agent-shards-build" "$agent_shards_bin" "$repo_root" ./cmd/evener-dev/bin; then
+			printf 'run-module-tests.sh: could not build the agent-shards runner\n' >&2
+			return 1
+		fi
+		# The built binary inherits the environment `go run` handed its child, so
+		# the runner's 129/130/143 signal exits reach the gate here (only
+		# zero-vs-nonzero is read below, so nothing depends on them).
+		# The shards get the gate's fuzz-owned skip like every other module;
+		# coverage-floor.sh already measures agent without those tests.
+		(cd .. && AGENT_SHARD_SKIP="$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")" "$agent_shards_bin" dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
@@ -511,8 +582,10 @@ run_wave $WAVE2
 # package reports "[no tests to run]" and exits 0, so every module reports PASS
 # and the gate proves nothing. Go's own per-package status lines are the only
 # evidence available here - a package that executed tests prints "ok <pkg>
-# <time>" with no "[no tests to run]"/"[no test files]" note. If not one
-# scheduled module has such a line, the run was a silent no-op. Checked only
+# <time>" with no "[no tests to run]"/"[no test files]" note, and a shard
+# runner's shard that executed tests prints "PASS  <label>:<n> <time> (<count>
+# tests)" (the race gate's hub lane runs only shards). If not one scheduled
+# module has such a line, the run was a silent no-op. Checked only
 # when nothing else failed (a failure already tells the reader to look) and only
 # when Go work was actually scheduled (an explicitly web-only run has no Go
 # tests to account for).
@@ -522,7 +595,8 @@ if [ "$fail" -eq 0 ] && [ -n "$WAVE1$WAVE2" ]; then
 	for m in $WAVE1 $WAVE2; do
 		log="$(logpath "$m")"
 		[ -f "$log" ] || continue
-		if grep -E '^ok[[:space:]]' "$log" | grep -qv -e '\[no tests to run\]' -e '\[no test files\]'; then
+		if grep -E '^ok[[:space:]]' "$log" | grep -qv -e '\[no tests to run\]' -e '\[no test files\]' ||
+			grep -qE '^PASS +[a-z]+:[0-9]+ .*\([1-9][0-9]* tests\)' "$log"; then
 			zero_test_run=0
 			break
 		fi

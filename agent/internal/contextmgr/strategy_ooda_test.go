@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
@@ -272,6 +273,59 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	}
 	if strings.Contains(orientText, "recall") {
 		t.Errorf("expected no 'recall' reference in truncation notice, got: %s", orientText[:min(500, len(orientText))])
+	}
+}
+
+// TestOODAStrategy_ManageContext_TruncationNeverSplitsRune pins that the 80k
+// log cap lands on a rune boundary, so the injected orient message stays valid
+// UTF-8. The rendered entry prefix ("Turn 1 [shell] success: ") is 24 bytes, so
+// 3-byte runes start on a grid that puts byte 80000 inside a rune.
+func TestOODAStrategy_ManageContext_TruncationNeverSplitsRune(t *testing.T) {
+	client := llm.NewClient()
+	profile := testOpenAIProfileWithContextWindow(1000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+
+	// Set thresholds high so no compaction occurs.
+	cm.ObservationMaskThreshold = 0.99
+	cm.ThinkingClearThreshold = 0.99
+	cm.CheckpointThreshold = 0.99
+	cm.SummarizeThreshold = 0.99
+	cm.PreserveRecentTurns = 2
+	cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log.jsonl")
+	sessionLog := mustNewSessionLog(t, logPath)
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
+		Turn:    1,
+		Action:  "shell",
+		Summary: strings.Repeat("€", 27000),
+		Outcome: "success",
+	})
+
+	ooda := &OODAStrategy{
+		SessionLogStrategy: &SessionLogStrategy{
+			cm:  cm,
+			log: sessionLog,
+		},
+	}
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
+	}
+
+	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	orientText := history[len(history)-1].Message.Text()
+	if !strings.Contains(orientText, "session log truncated") {
+		t.Fatalf("expected the log to be truncated, got: %s", orientText[:min(200, len(orientText))])
+	}
+	if !utf8.ValidString(orientText) {
+		t.Fatalf("orient message is not valid UTF-8: the log cap split a rune")
 	}
 }
 

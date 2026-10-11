@@ -35,6 +35,7 @@ func responseWith(parts ...llm.ContentPart) *llm.Response {
 }
 
 func TestSalvageText_TruncatedToolCallArgs(t *testing.T) {
+	t.Parallel()
 	partial := responseWith(toolCallPart("write_file", `{"path":"a.md","content":"# Plan\nlots of tex`))
 
 	got := salvageText(partial)
@@ -48,6 +49,7 @@ func TestSalvageText_TruncatedToolCallArgs(t *testing.T) {
 }
 
 func TestSalvageText_TextThenToolMarkerOrdering(t *testing.T) {
+	t.Parallel()
 	partial := responseWith(
 		textPart("here's my plan: "),
 		toolCallPart("write_file", `{"path":"a.md"}`),
@@ -64,6 +66,7 @@ func TestSalvageText_TextThenToolMarkerOrdering(t *testing.T) {
 }
 
 func TestSalvageText_ReasoningOnly_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	partial := responseWith(thinkingPart("thinking hard about the plan"))
 
 	if got := salvageText(partial); got != "" {
@@ -72,6 +75,7 @@ func TestSalvageText_ReasoningOnly_ReturnsEmpty(t *testing.T) {
 }
 
 func TestSalvageText_ReasoningIgnoredAlongsideText(t *testing.T) {
+	t.Parallel()
 	partial := responseWith(
 		thinkingPart("thinking hard about the plan"),
 		textPart("here's my plan"),
@@ -83,12 +87,14 @@ func TestSalvageText_ReasoningIgnoredAlongsideText(t *testing.T) {
 }
 
 func TestSalvageText_Nil_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	if got := salvageText(nil); got != "" {
 		t.Fatalf("salvageText(nil) = %q, want empty", got)
 	}
 }
 
 func TestSalvageText_MultipleToolCalls_EachGetsAMarker(t *testing.T) {
+	t.Parallel()
 	partial := responseWith(
 		toolCallPart("write_file", `{"path":"a.md"}`),
 		toolCallPart("write_file", `{"path":"b.md"}`),
@@ -106,6 +112,7 @@ func TestSalvageText_MultipleToolCalls_EachGetsAMarker(t *testing.T) {
 }
 
 func TestPartialJSONStringFields_TruncatedContentTail(t *testing.T) {
+	t.Parallel()
 	raw := `{"path":"a.md","content":"# Plan\nlots of tex`
 
 	got := partialJSONStringFields(raw)
@@ -118,6 +125,7 @@ func TestPartialJSONStringFields_TruncatedContentTail(t *testing.T) {
 }
 
 func TestPartialJSONStringFields_SkipsNonStringTopLevelFields(t *testing.T) {
+	t.Parallel()
 	raw := `{"count":5,"name":"foo","nested":{"a":"b"},"ok":true,"list":[1,2,3],"tag":"bar"}`
 
 	got := partialJSONStringFields(raw)
@@ -130,18 +138,21 @@ func TestPartialJSONStringFields_SkipsNonStringTopLevelFields(t *testing.T) {
 }
 
 func TestPartialJSONStringFields_EmptyOnNonObject(t *testing.T) {
+	t.Parallel()
 	if got := partialJSONStringFields("not json"); len(got) != 0 {
 		t.Fatalf("partialJSONStringFields() = %+v, want empty", got)
 	}
 }
 
 func TestPartialJSONStringFields_EmptyObject(t *testing.T) {
+	t.Parallel()
 	if got := partialJSONStringFields("{}"); len(got) != 0 {
 		t.Fatalf("partialJSONStringFields() = %+v, want empty", got)
 	}
 }
 
 func TestPartialJSONStringFields_TruncatedMidKey(t *testing.T) {
+	t.Parallel()
 	raw := `{"path":"a.md","cont`
 
 	got := partialJSONStringFields(raw)
@@ -159,6 +170,7 @@ func TestPartialJSONStringFields_TruncatedMidKey(t *testing.T) {
 // end of the object, and inside a skipped nested object, where a stray '{'
 // would unbalance the brace-depth walk and swallow every field after it.
 func TestPartialJSONStringFields_BracesInsideStringsAreNotStructure(t *testing.T) {
+	t.Parallel()
 	t.Run("StringValue", func(t *testing.T) {
 		got := partialJSONStringFields(`{"a":"}{"}`)
 
@@ -177,6 +189,7 @@ func TestPartialJSONStringFields_BracesInsideStringsAreNotStructure(t *testing.T
 // salvage: this is a truncated byte stream, not a decoded object, and silently
 // dropping one occurrence would hide bytes the model actually produced.
 func TestPartialJSONStringFields_DuplicateTopLevelKey(t *testing.T) {
+	t.Parallel()
 	got := partialJSONStringFields(`{"path":"a.md","path":"b.md"}`)
 
 	want := []struct{ Key, Value string }{

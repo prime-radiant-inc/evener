@@ -1,10 +1,8 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./badge.module.css";
 import { Badge, type BadgeTone } from "./index";
-
-afterEach(cleanup);
 
 const styles = {
   neutral: requireClass(rawStyles.neutral, "badge.module.css", "neutral"),

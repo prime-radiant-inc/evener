@@ -5,20 +5,74 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 )
+
+// remoteHostSourceSeams are the per-host seams one remote hub source resolves
+// through: the dialing client func, the attached-only client/handshake/facts
+// lookups, and the online signal. Startup reads them straight from WebConfig;
+// the host manager carries the same seams in its own config.
+type remoteHostSourceSeams struct {
+	client           appsource.RemoteHubClientFunc
+	clientIfAttached func(host string) (*appwire.Client, bool)
+	handshake        func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
+	facts            func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	online           func(host string) bool
+}
+
+// registerRemoteHubSource constructs and wires one remote host's appsource
+// source and registers it — the one construction path startup
+// (newHubSourceRegistry) and the runtime add (hubHostManager.registerSource)
+// share, so a host added at runtime is wired exactly like a configured one.
+// The non-dialing seams every non-explicit read path resolves through are
+// set here: the attached-only client lookup and the attach handshake facts
+// (component 05, §"Registration and default-source selection"). The online
+// signal fails open when none is wired — the pre-06 default — so an
+// explicitly attached host stays usable by every source-mediated call that
+// gates on Online(), while hostRow never trusts the signal alone: its
+// attached-client guard still decides Attached, so the fail-open default
+// cannot render a channel-less row online.
+//
+// The identity generation is assigned in the remote-thread cache BEFORE the
+// source becomes registry-visible: a refresh walk may enumerate the source
+// the moment it is added, and the walk captures the source's generation
+// immediately before it reads it, so every enumerable source must carry a
+// generation from the instant it is enumerable, or the publish drops its
+// rows as unowned. Configured hosts never pass through the host manager, so
+// theirs is assigned on this path; the local source needs none — the walk
+// skips it, so it can never own walk-published rows.
+func registerRemoteHubSource(registry *appsource.Registry, cache *hubcore.RemoteThreadCache, host hostreg.Host, seams remoteHostSourceSeams) {
+	source := appsource.NewRemoteHubSource(host.Name, host.Roots, seams.client)
+	source.SetHostClientIfAttached(seams.clientIfAttached)
+	source.SetHostFacts(seams.facts)
+	source.SetHostHandshake(seams.handshake)
+	source.SetHostOnline(func() bool {
+		return seams.online == nil || seams.online(host.Name)
+	})
+	if cache != nil {
+		cache.RegisterSource(host.Name)
+	}
+	registry.Add(source)
+}
 
 // newHubSourceRegistry builds the hub's sources over cfg.Roster. The hub always
 // wires a roster (main.go). Without one there is no local source at all, so a
@@ -36,7 +90,14 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		// subscribers to re-read.
 		// The roster's resolved session id is passed along: a legacy entry names
 		// no session of its own, and its relay session is keyed by the resolved one.
-		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
+		// An archived session's scratch outlives a daemon still running at
+		// archive time, so a daemon's exit kicks the reconcile that removes it.
+		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) {
+			local.AnnounceDaemonGone(gone.Entry, gone.SessionID)
+			if cfg.ScratchReconcile != nil {
+				cfg.ScratchReconcile()
+			}
+		})
 		registry.Add(local)
 	}
 	if len(cfg.RemoteHosts) > 0 {
@@ -48,18 +109,13 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
 		} else {
 			for _, host := range cfg.RemoteHosts {
-				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
-				// The non-dialing seams every non-explicit read path resolves
-				// through: the attached-only client lookup and the attach
-				// handshake facts (component 05, §"Registration and
-				// default-source selection").
-				source.SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)
-				source.SetHostFacts(cfg.RemoteHostFacts)
-				source.SetHostHandshake(cfg.RemoteHostHandshake)
-				source.SetHostOnline(func() bool {
-					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
+				registerRemoteHubSource(registry, cfg.RemoteThreadCache, host, remoteHostSourceSeams{
+					client:           cfg.RemoteHostClient,
+					clientIfAttached: cfg.RemoteHostClientIfAttached,
+					handshake:        cfg.RemoteHostHandshake,
+					facts:            cfg.RemoteHostFacts,
+					online:           cfg.RemoteHostOnline,
 				})
-				registry.Add(source)
 			}
 		}
 	}
@@ -76,37 +132,57 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			continue
 		}
 		entry := appsource.LocalDaemonEntry{
-			Entry:         item.Entry,
-			SessionID:     item.SessionID,
-			Status:        item.Status,
-			PendingAsk:    item.PendingAsk,
-			RunningJobs:   item.RunningJobs,
-			CompletedJobs: item.CompletedJobs,
-			Watches:       item.Watches,
+			Entry:              item.Entry,
+			SessionID:          item.SessionID,
+			Status:             item.Status,
+			PendingAsk:         item.PendingAsk,
+			PendingEscalation:  item.PendingEscalation,
+			PendingEscalations: item.PendingEscalations,
+			PendingQuestion:    item.PendingQuestion,
+			Failure:            item.Failure,
+			RunningJobs:        item.RunningJobs,
+			CompletedJobs:      item.CompletedJobs,
+			Watches:            item.Watches,
+			Capabilities:       item.Capabilities,
+			CapabilitiesKnown:  item.CapabilitiesKnown,
+			Subagents:          item.Subagents,
+			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
+			LastMessage:        item.LastMessage,
+			Tasks:              item.Tasks,
+			CurrentModel:       item.CurrentModel,
 		}
 		entries = append(entries, entry)
-		// In-process descendants are addressed as their own AppWire
-		// threads, but are served by their owner's daemon endpoint.
+		// In-process descendants are addressed as their own AppWire threads,
+		// served by their owner's daemon endpoint, but each alias is built
+		// from only the fields it owns rather than a copy of the root with
+		// the root-only ones cleared: a pending question, an approval, jobs,
+		// the subagent tally, the turn end and the task list are all the
+		// root's alone (a subagent never asks the user or escalates, and its
+		// own diagnostics carry its own jobs where they belong), so an alias
+		// row never has them to begin with, and a future root-only field
+		// needs no clearing line added here (#2589).
 		for _, childID := range item.RunningSubagentIDs {
-			child := entry
-			child.OwnerSessionID = entry.SessionID
-			child.SessionID = childID
-			// The alias carries the child's OWN watches, sampled by
-			// the prober into ChildWatches. Inheriting the root
-			// entry's Watches would put the root's rows on the
-			// child row (and, for a read-only alias, they were
-			// suppressed anyway), losing the child's own.
-			child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
-			// The child's own projected status when the daemon carries
-			// it — inheriting the parent's status would render a
-			// settled delegate as working (or vice versa). "" (old
-			// daemon) keeps the inherited status, the pre-states
-			// behavior.
+			status := entry.Status
+			// The child's own projected status when the daemon carries it —
+			// inheriting the parent's status would render a settled delegate
+			// as working (or vice versa). "" (old daemon) keeps the
+			// inherited status, the pre-states behavior.
 			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
-				child.Status = childState
+				status = childState
 			}
-			child.ReadOnlyAlias = true
-			entries = append(entries, child)
+			entries = append(entries, appsource.LocalDaemonEntry{
+				Entry:          entry.Entry,
+				SessionID:      childID,
+				OwnerSessionID: entry.SessionID,
+				Status:         status,
+				// The alias carries the child's OWN watches, sampled by the
+				// prober into ChildWatches: the root's Watches would put the
+				// root's rows on the child row, losing the child's own.
+				Watches:           appwire.CloneEvenerWatches(item.ChildWatches[childID]),
+				Capabilities:      entry.Capabilities,
+				CapabilitiesKnown: entry.CapabilitiesKnown,
+				ReadOnlyAlias:     true,
+			})
 		}
 	}
 	return entries
@@ -114,7 +190,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 
 var (
 	resolveTurnStartSource = sourceForThread
-	resumeTurnStartThread  = hubThreadAutoResume
+	resumeTurnStartThread  = resumeTurnStartThreadResume
 	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		return c.LoginComplete(ctx, p)
 	}
@@ -125,6 +201,20 @@ var (
 		return c.TrustRepo(ctx, p)
 	}
 )
+
+// resumeTurnStartThreadResume is the resume a failed turn/start runs before its
+// one retry (the two call sites in the turn/start handler below). A turn/start
+// the resume-only carve-out admitted IS the request whose send folds and owns
+// the resume, so its resume runs explicit (non-automatic), which clears the
+// ResumeRequired fence; every other turn/start keeps the automatic resume, and
+// a session without a resume obligation is unchanged. See
+// turnStartResumeExplicit and sessionAdmitsResumeRequired (app_sources.go).
+func resumeTurnStartThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	if turnStartResumeExplicit(ctx, cfg, params.Ref, params.Session) {
+		return hubThreadResume(ctx, cfg, sources, params)
+	}
+	return hubThreadAutoResume(ctx, cfg, sources, params)
+}
 
 type threadReadRelayPolicy interface {
 	// RelayOnThreadRead reports whether a plain (non-Subscribe) thread/read
@@ -202,25 +292,46 @@ func enrichLocalSourcedThreadImages(thread appwire.Thread) appwire.Thread {
 // hub mints both /s/<session>/images/<sha> (stamped by stampThreadImageURLs) and
 // /doc/image?session=<session>&path=<rel> (attached to file-backed output images
 // by outputImagesForToolCall/resolveOutputImageFile), so any root-relative path
-// must be neutralized, not just the /s/... one. External URLs and data: URLs are
-// untouched, because the browser resolves them against their own origin.
+// that still names a bare session must be neutralized, not just the /s/... one.
+// External URLs and data: URLs are untouched, because the browser resolves them
+// against their own origin.
+//
+// A route whose session id already names another source (`<sourceID>:<session>`)
+// is the exception: the source's own outbound translation writes it as the
+// host-qualified controller route this hub serves by proxying to that host (see
+// appsource's image URL visitor), so neutralization must leave it alone. Only a
+// route still naming a bare session — one the remote hub minted for itself — is
+// removed.
 func stripRemoteImageRoutes(thread appwire.Thread) appwire.Thread {
 	for turnIndex := range thread.Turns {
 		items := thread.Turns[turnIndex].Items
 		for itemIndex := range items {
 			for imageIndex := range items[itemIndex].Images {
-				if isHubRelativeImageRoute(items[itemIndex].Images[imageIndex].URL) {
+				if isHubRelativeImageRoute(items[itemIndex].Images[imageIndex].URL) &&
+					!hostQualifiedImageRoute(items[itemIndex].Images[imageIndex].URL) {
 					items[itemIndex].Images[imageIndex].URL = ""
 				}
 			}
 			for imageIndex := range items[itemIndex].OutputImages {
-				if isHubRelativeImageRoute(items[itemIndex].OutputImages[imageIndex].URL) {
+				if isHubRelativeImageRoute(items[itemIndex].OutputImages[imageIndex].URL) &&
+					!hostQualifiedImageRoute(items[itemIndex].OutputImages[imageIndex].URL) {
 					items[itemIndex].OutputImages[imageIndex].URL = ""
 				}
 			}
 		}
 	}
 	return thread
+}
+
+// hostQualifiedImageRoute reports whether raw is a controller image route whose
+// session id already names another source, in the host-qualified form
+// `/s/<sourceID>:<session>/images/<sha>` or
+// `/doc/image?session=<sourceID>:<session>`. Such a route is one this hub serves
+// by proxying to the owning host, so it is not a route the remote hub minted for
+// itself and must not be neutralized. The grammar lives with the visitor that
+// writes those routes, so the two cannot drift.
+func hostQualifiedImageRoute(raw string) bool {
+	return appsource.HostQualifiedControllerImageRoute(raw)
 }
 
 // isHubRelativeImageRoute reports whether raw is an origin-relative image route
@@ -239,6 +350,71 @@ func relayOnThreadRead(source appsource.Source) bool {
 		return policy.RelayOnThreadRead()
 	}
 	return true
+}
+
+// withReadHistoryIdentity gives response, packed by the hub, the history
+// identity of the read its items came from: what the client merges or
+// replaces by.
+func withReadHistoryIdentity(response, from appwire.ThreadReadResponse) appwire.ThreadReadResponse {
+	response.BootGeneration = from.BootGeneration
+	response.Epoch = from.Epoch
+	response.Snapshot = from.Snapshot
+	response.Overlay = from.Overlay
+	response.Authoritative = from.Authoritative
+	response.Changes = from.Changes
+	return response
+}
+
+// fallbackHistoryIdentity is the identity of a live read whose items the hub
+// filled from the transcript because the source returned none. A daemon that
+// serves the thread's history (it names a boot generation) still streams it,
+// so the response merges under the daemon's generation and epoch rather than
+// replacing as a daemonless read would; the transcript's snapshot stands in
+// when the daemon named none. Otherwise nothing serves the thread's history
+// and the transcript read is daemonless.
+func fallbackHistoryIdentity(live, past appwire.ThreadReadResponse) appwire.ThreadReadResponse {
+	if live.BootGeneration == "" {
+		return past
+	}
+	if live.Snapshot == nil {
+		live.Snapshot = past.Snapshot
+	}
+	return live
+}
+
+// withDroppedWindowItems adds to a source read's changes the window items
+// this hub's packer dropped for size. The source subtracted its own window
+// from its changes, so a changed item it returned in the window that the
+// packer then dropped would otherwise reach the client in neither: the
+// response is authoritative only from its first returned position, and a
+// held copy of the item would stay stale. A read with no changes replaces
+// whole history and needs none.
+func withDroppedWindowItems(source appsource.Source, changes *appwire.HistoryChanges, window transcriptItemCandidateResult, packed appwire.Thread) *appwire.HistoryChanges {
+	if changes == nil {
+		return nil
+	}
+	kept := map[string]bool{}
+	for _, turn := range packed.Turns {
+		for _, item := range turn.Items {
+			kept[item.TranscriptKey] = true
+		}
+	}
+	var dropped []appwire.ThreadItem
+	for _, candidate := range window.Candidates.Candidates {
+		if !kept[candidate.Item.TranscriptKey] {
+			dropped = append(dropped, candidate.Item)
+		}
+	}
+	if len(dropped) == 0 {
+		return changes
+	}
+	// The image passes work on a thread's turns; the dropped items ride in
+	// one carrier turn through them, as the window's own items did.
+	carrier := enrichSourcedThreadImages(source, appwire.Thread{
+		ID: packed.ID, SessionID: packed.SessionID, CWD: packed.CWD,
+		Turns: []appwire.Turn{{Items: dropped}},
+	})
+	return &appwire.HistoryChanges{Turns: changes.Turns, Items: append(append([]appwire.ThreadItem(nil), changes.Items...), carrier.Turns[0].Items...)}
 }
 
 // listItemTurns returns a packed item-mode page when the source has item
@@ -304,7 +480,7 @@ func listItemTurns(
 	if packErr != nil {
 		return appwire.ThreadTurnsListResponse{}, true, packErr
 	}
-	return packed, true, nil
+	return candidates.History.StampPage(packed), true, nil
 }
 
 func blockedUnknownMutationError(clientMutationID string, err error) error {
@@ -324,6 +500,418 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 	}
 }
 
+// mutationResumeFailureError reports a resume failure the way the mutation that
+// needed the resume must see it.
+//
+// A resume that failed because the CALLER'S TARGET was deleted is not an unknown
+// outcome: that target is gone, and the deletion is this caller's to reconcile,
+// so the refusal keeps its own meaning (MutationOutcomeTargetDeleted /
+// RetryDispositionNone) and is named for this caller. Without that, a mutation
+// whose target was deleted between the failed attempt and the auto-resume would
+// come back unknown/blocked and its record would be retained rather than
+// reconciled as orphaned.
+//
+// A resume fences TWO sets, however, and only the first is this caller's target.
+// resumeThreadLockedLaunch fences the requested target alone and then every alias
+// of its ownership group (deletionFenceErrorForGroup), and it reports the first
+// alias it finds deleted. Since the requested target's own fence runs first, a
+// group-fence failure the mutation sees is by construction about a SIBLING alias
+// -- another name of the session, not the target the caller addressed (see
+// deletionFenceErrorForGroup's doc and the force-stop path's identical
+// sibling-alias fence). Settling the caller's record as orphaned on a sibling's
+// deletion would discard a mutation addressed to a target that may still exist.
+//
+// The decision therefore asks the fence every admission path already asks --
+// deletionFenceError, the single-target fence, which answers for the requested
+// target and names the caller's own id -- instead of trusting whichever alias the
+// resume reported. When it answers, that refusal is returned (the deletion, named
+// for this caller, with its own outcome); when it does not, the failure keeps
+// exactly the blocked-unknown envelope it gets today, as does every non-deletion
+// resume failure. Nothing here touches the id the daemon stored.
+func mutationResumeFailureError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string, resumeErr error) error {
+	if clientMutationID == "" {
+		return resumeErr
+	}
+	if isTargetDeletedError(resumeErr) {
+		if own := deletionFenceError(cfg, ref, threadID, clientMutationID); own != nil {
+			return own
+		}
+		// A stable alias can resolve to a different CURRENT target, and the resume
+		// fences that resolved ownership too (resumeThread resolves it and hands the
+		// resolved target to the locked launch's fence), so a deletion of the target
+		// this caller's alias resolves to is the caller's own even though the alias
+		// itself is not the deleted record. The resume discards the resolved target
+		// when it fails, so re-resolve it with the same resolver instead of
+		// guessing. Only these two ends of the caller's own request are claimed, so a
+		// SIBLING alias's deletion stays out of this caller's record.
+		if resolved := resolvedOwnershipTarget(cfg, ref, threadID); resolved != "" {
+			if own := deletionFenceError(cfg, "", resolved, clientMutationID); own != nil {
+				return own
+			}
+		}
+	}
+	return blockedUnknownMutationError(clientMutationID, resumeErr)
+}
+
+// resolvedOwnershipTarget returns the current target a mutation's ref resolves
+// to, computed with the same resolver the resume used (resumeOwnership), or ""
+// when it cannot be resolved: the hub holds no resume authority to resolve with,
+// the ref is not a local one, the request names no id, or the ownership chain
+// refuses to resolve (a pending recovery obligation, a cycle).
+//
+// It mirrors resumeThread's own derivation of the requested identity, so the
+// chain walked here is the chain that resume walked; a resolution that has moved
+// on since the resume failed simply yields a target the fence does not recognize,
+// which keeps the caller's record retained rather than misattributed.
+func resolvedOwnershipTarget(cfg hubcore.WebConfig, ref, threadID string) string {
+	if cfg.ResumeLocks == nil {
+		return ""
+	}
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID != "local" {
+		return ""
+	}
+	requestedID := strings.TrimSpace(threadID)
+	if requestedID == "" {
+		requestedID = parsed.ThreadID
+	}
+	if requestedID == "" {
+		return ""
+	}
+	target, _, err := resumeOwnership(cfg, requestedID, parsed.ThreadID)
+	if err != nil {
+		return ""
+	}
+	return target
+}
+
+// canonicalMutationID returns the form two clientMutationId values are compared
+// in.
+//
+// The hub does not trim the caller's id: it echoes exactly what the caller sent,
+// because every client correlates its outbox record by that id. The daemon does
+// trim it, at its own handler boundary, before a receipt or a refusal ever names
+// it (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear set
+// params.ClientMutationID = strings.TrimSpace(params.ClientMutationID), and
+// agent/session_notes_rpc.go does the same). A byte-exact hub comparison would
+// therefore fail to see a padded caller id (" mut-1 ") in the normalized id the
+// daemon named ("mut-1"), and treat a known rejection or deletion as if it
+// belonged to someone else.
+func canonicalMutationID(id string) string { return strings.TrimSpace(id) }
+
+// mutationIDsMatch reports whether a caller's clientMutationId and the id a
+// hub-visible error names refer to the same mutation, compared canonically (see
+// canonicalMutationID). Only a non-empty error id can match: an error that names
+// no mutation never names the caller's.
+func mutationIDsMatch(callerID, errorID string) bool {
+	canonical := canonicalMutationID(errorID)
+	return canonical != "" && canonical == canonicalMutationID(callerID)
+}
+
+// errorNamesClientMutation reports whether err already carries clientMutationID,
+// the id of the mutation the caller submitted.
+//
+// Every client judges a failed mutation by that id alone: the web outbox's
+// dispatcher refuses to correlate a failure that names none and a different id
+// (appwire-client/typescript/state/mutation/dispatcher.ts), so the record stays
+// "submitting" -- the prompt is neither delivered nor surfaced as failed, and
+// the user has to retype it. A refusal the daemon minted for the caller's own
+// mutation (rejectClientMutation sets the id) needs no help; a refusal that
+// names a different mutation is no more correlatable for this caller than one
+// that names none, and one that names none has to be wrapped before it leaves
+// the hub.
+//
+// The comparison is canonical, not byte-exact (see mutationIDsMatch): the hub
+// does not trim the caller's id, but the daemon names the id it trimmed, so a
+// padded caller id would otherwise fail to recognize its own rejection. This is
+// a comparison-time canonicalization only -- an id the hub echoes back stays
+// exactly what the caller sent (see adoptCallerMutationID), because the client
+// correlates byte-for-byte.
+//
+// The wire client decodes ErrorData as a map on some paths and as the typed
+// struct on others, so both shapes are read -- the same convention
+// app_retirement_resume.go's isLifecycleRetiringError follows.
+func errorNamesClientMutation(err error, clientMutationID string) bool {
+	if clientMutationID == "" {
+		return false
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		return false
+	}
+	return mutationIDsMatch(clientMutationID, clientMutationIDFromData(wire.Data))
+}
+
+// adoptCallerMutationID hands err back with its clientMutationId rewritten to
+// the caller's own id when the error names the same mutation in canonical form
+// but not byte-for-byte -- the daemon trims the id before naming it, the caller
+// submitted it padded.
+//
+// The rewrite is what keeps the response echoable: every client correlates its
+// outbox record byte-for-byte against the id it submitted
+// (appwire-client/typescript/state/mutation/dispatcher.ts compares
+// data.clientMutationId !== record.clientMutationId), so a response carrying the
+// daemon's normalized id would never settle a record that submitted a padded
+// one. The id is never rewritten to a trimmed form -- the caller's own id is
+// always the one echoed.
+//
+// err is returned unchanged when there is nothing to rewrite: it is not a
+// WireError, it names no id, it already names the caller's id, or it names a
+// mutation that is not the caller's. The rewrite handles both decoded shapes
+// (typed ErrorData and map[string]any), the convention nameTargetDeletedFailure
+// follows.
+func adoptCallerMutationID(err error, clientMutationID string) error {
+	if clientMutationID == "" {
+		return err
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return err
+	}
+	named := clientMutationIDFromData(wire.Data)
+	if named == clientMutationID || !mutationIDsMatch(clientMutationID, named) {
+		return err
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		data.ClientMutationID = clientMutationID
+		wire.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		wire.Data = updated
+	default:
+		return err
+	}
+	return wire
+}
+
+// adoptCallerMutationReceipt returns receipt with its ClientMutationID rewritten
+// to the caller's own id when the receipt names the same mutation in canonical
+// form but not byte-for-byte -- the daemon trims the id before it mints the
+// receipt, while the caller submitted it padded.
+//
+// A successful mutation's receipt is what settles the caller's outbox record,
+// and every client correlates that record byte-for-byte against the id it
+// submitted (appwire-client/typescript/state/mutation/dispatcher.ts compares
+// receipt.clientMutationId !== record.clientMutationId). A receipt naming the
+// daemon's normalized id would therefore leave a padded record submitting even
+// though the mutation applied: the success-path twin of the failure-path
+// rewrite adoptCallerMutationID performs. Only the id changes -- disposition,
+// thread/instance/turn ids, queue entry ids and projection state are untouched
+// -- and the id is never rewritten to a trimmed form.
+func adoptCallerMutationReceipt(receipt appwire.MutationReceipt, clientMutationID string) appwire.MutationReceipt {
+	if clientMutationID == "" || receipt.ClientMutationID == clientMutationID {
+		return receipt
+	}
+	if !mutationIDsMatch(clientMutationID, receipt.ClientMutationID) {
+		return receipt
+	}
+	receipt.ClientMutationID = clientMutationID
+	return receipt
+}
+
+// adoptFailureClientMutationID adopts the caller's own id onto a failure a
+// direct mutation path returned: first nameTargetDeletedFailure's stamp for an
+// ID-LESS target deletion, then adoptCallerMutationID's canonical rewrite.
+//
+// A target deletion is the one failure the hub can always attribute to the
+// caller whose mutation hit it, even when the error says nothing about which
+// mutation that was: a preflight thread/read deletion relayed from a remote hub
+// reaches the hub with no clientMutationId at all (app_relay.go's startTurn
+// hands it back untouched when the hub holds no deletion record of its own), and
+// the deleting client's record is the caller's. Stamping the caller's id keeps
+// the deletion's own outcome (targetDeleted / none) so the client reconciles the
+// record as orphaned instead of leaving it submitting. nameTargetDeletedFailure
+// is reused exactly as the retry path uses it -- it already refuses to touch a
+// deletion that names a different mutation.
+//
+// Nothing else acquires an id here. An error that already names a DIFFERENT
+// mutation is not this caller's to own (adoptCallerMutationID leaves it, and
+// nameTargetDeletedFailure declines it), and an ID-LESS error that is not a
+// deletion could belong to any caller, so it is left exactly as it is rather
+// than claimed for this one.
+func adoptFailureClientMutationID(err error, clientMutationID string) error {
+	if err == nil || clientMutationID == "" {
+		return err
+	}
+	if isTargetDeletedError(err) {
+		if enriched := nameTargetDeletedFailure(clientMutationID, err); enriched != nil {
+			return enriched
+		}
+	}
+	return adoptCallerMutationID(err, clientMutationID)
+}
+
+// adoptCallerMutationResult adopts the caller's ID onto a successful receipt
+// or a failed result. receipt points to the handler's local response field.
+// Failed results leave that field unchanged. The daemon's durable ID and the
+// result's other fields retain their original meaning.
+func adoptCallerMutationResult(receipt *appwire.MutationReceipt, err error, clientMutationID string) error {
+	if err != nil {
+		return adoptFailureClientMutationID(err, clientMutationID)
+	}
+	*receipt = adoptCallerMutationReceipt(*receipt, clientMutationID)
+	return nil
+}
+
+// isShapeRefusal reports whether err refuses the request's shape: appwire's
+// invalid-params and invalid-request codes carrying the invalidParams
+// discriminant, decided before anything executes.
+//
+// The code alone is not enough. CodeInvalidParams is shared with
+// resourceNotFound, transcriptItemCursorStale, and invalidHostField, which mean
+// something entirely different to the caller; matching the code alone would let
+// any of them masquerade as a deterministic shape refusal. Requiring the
+// discriminant is what separates a true shape refusal -- resending the identical
+// payload can never answer differently, and the web outbox already recovers from
+// an uncorrelated one, so wrapping it as an unknown mutation outcome would tell
+// the caller less than the refusal itself does -- from those other refusals.
+func isShapeRefusal(err error) bool {
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return false
+	}
+	if wire.Code != appwire.CodeInvalidParams && wire.Code != appwire.CodeInvalidRequest {
+		return false
+	}
+	return evenerErrorInfoFromData(wire.Data) == string(appwire.ErrorInvalidParams)
+}
+
+// shapeRefusalNamesOtherMutation reports whether a shape refusal names a
+// clientMutationId that belongs to a caller other than this one: a non-empty id
+// that is not the caller's. The client dispatcher correlates by that id alone,
+// so such a refusal is unrelated to this caller's record and must not be
+// returned as the shape refusal it is.
+//
+// The comparison is canonical, like errorNamesClientMutation's: the daemon names
+// the trimmed id while the hub holds the caller's verbatim one, so a padded
+// caller id must still recognize its own shape refusal rather than have it
+// treated as another caller's.
+func shapeRefusalNamesOtherMutation(err error, clientMutationID string) bool {
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return false
+	}
+	id := clientMutationIDFromData(wire.Data)
+	canonical := canonicalMutationID(id)
+	return canonical != "" && canonical != canonicalMutationID(clientMutationID)
+}
+
+// correlateRetryFailure decides what a retry that an earlier failure's resume
+// made possible must report when it fails in turn.
+//
+// Several failures keep their own meaning and are returned unchanged: the
+// caller's own cancellation (context.Canceled / context.DeadlineExceeded, which
+// is not a mutation outcome at all), a refusal that already names this caller's
+// mutation, and a true shape refusal (see isShapeRefusal) that is this caller's
+// to own -- one that names NO mutation id or names the caller's own. A shape
+// refusal that names a DIFFERENT mutation belongs to that other caller: it is
+// not passed through, because the client would treat it as unrelated to its
+// record and skip the no-id recovery path it applies to invalid-params, leaving
+// this caller's mutation stuck submitting. The one exemption whose meaning is
+// kept but whose id is added is a target deletion that names no mutation
+// (below). Everything else is a failure no client's mutation dispatcher can
+// classify -- one that names no clientMutationId, or names a different mutation
+// (the web outbox correlates by that id alone) -- and is wrapped in the
+// blocked-unknown envelope so the mutation is retained for a retry rather than
+// left submitting forever (see blockedUnknownMutationError).
+//
+// The one exemption that is enriched rather than returned unchanged is a target
+// deletion that names no mutation: it is handed back with this caller's
+// clientMutationId stamped on it (keeping MutationOutcomeTargetDeleted) so the
+// dispatcher can settle it as orphaned rather than be left unable to classify
+// it. A deletion that names a DIFFERENT mutation is not this caller's to settle,
+// so it is blocked-unknown instead. See nameTargetDeletedFailure.
+//
+// A nil return means err keeps its own meaning; callers return err unchanged.
+// Shared by turn/start's retryAfterResume and withSessionResume's post-resume
+// retry so every resume-once-then-retry mutation correlates its retry failure
+// the same way.
+func correlateRetryFailure(clientMutationID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	if errorNamesClientMutation(err, clientMutationID) {
+		return nil
+	}
+	// A shape refusal is preserved only when it is this caller's to own: one that
+	// names no mutation, or names the caller's own (returned above). A refusal
+	// naming a DIFFERENT mutation is not this caller's to act on, and passing it
+	// through unchanged would leave this caller's record submitting, so it falls
+	// through to the blocked-unknown default below.
+	if isShapeRefusal(err) && !shapeRefusalNamesOtherMutation(err, clientMutationID) {
+		return nil
+	}
+	if isTargetDeletedError(err) {
+		// A target deletion is the caller's to settle only when it names this
+		// caller's mutation (returned unchanged above) or names none at all. A
+		// deletion that names none -- e.g. a preflight thread/read deletion
+		// relayed from a remote hub -- leaves the dispatcher unable to
+		// correlate the record, so it is stamped with this caller's id rather
+		// than hidden behind a generic outage. A deletion naming a DIFFERENT
+		// mutation is not this caller's to settle: restamping it would make
+		// that other caller's record settle as orphaned, so it falls through to
+		// the blocked-unknown default below, retaining this caller's record.
+		if clientMutationID == "" {
+			return nil
+		}
+		if enriched := nameTargetDeletedFailure(clientMutationID, err); enriched != nil {
+			return enriched
+		}
+	}
+	return blockedUnknownMutationError(clientMutationID, err)
+}
+
+// nameTargetDeletedFailure enriches a target-deletion refusal with the caller's
+// mutation id when it names NO mutation at all, keeping the deletion's own
+// outcome (MutationOutcomeTargetDeleted / RetryDispositionNone). A deletion
+// that already names the caller's own mutation needs no help; a deletion that
+// names a DIFFERENT mutation is not this caller's to restamp -- doing so would
+// let this caller's dispatcher settle the other mutation as orphaned -- so it
+// is left to correlateRetryFailure's blocked-unknown default.
+//
+// A nil return means the refusal already names this caller's mutation (or
+// names a different one, or carries no WireError to enrich), so the caller
+// returns it unchanged (or falls through to blocked-unknown). A non-nil return
+// is the refusal with clientMutationId set, which the caller returns in its
+// place.
+func nameTargetDeletedFailure(clientMutationID string, err error) error {
+	if clientMutationID == "" || errorNamesClientMutation(err, clientMutationID) {
+		return nil
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		return nil
+	}
+	// Only a deletion that names NO mutation is enriched. One that names a
+	// different mutation belongs to that other caller and must not be restamped
+	// as this caller's, or this caller's dispatcher would settle the other
+	// mutation as orphaned.
+	if clientMutationIDFromData(wire.Data) != "" {
+		return nil
+	}
+	// The wire client decodes Data as the typed appwire.ErrorData on some paths
+	// and as map[string]any on others; both are stamped the same way
+	// blockedAdmissionMutationError stamps its own, without disturbing the
+	// deletion outcome the refusal already carries.
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		data.ClientMutationID = clientMutationID
+		wire.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		wire.Data = updated
+	default:
+		return nil
+	}
+	return wire
+}
+
 // allowsPastFallbackAfterLiveReadFailure preserves atomic rejoin once a live
 // relay is available. A subscribed local read with no rendezvous entry never
 // acquired a relay, so it may still hydrate the persisted transcript.
@@ -336,13 +924,24 @@ func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appw
 }
 
 // hubLaunchConfigRoot resolves cfg.LaunchConfigRoot, falling back to
-// cmdutil.DefaultConfigRoot() when unset (a zero-value WebConfig built
-// directly, as some tests do).
+// userdirs.DefaultConfigRoot() when unset (a zero-value WebConfig built
+// directly, as some tests do), and returns "" when no absolute root resolves.
+// The root has to be absolute: a relative one - what cmdutil.DefaultConfigRoot
+// substitutes when neither XDG_CONFIG_HOME nor a home directory resolves -
+// would resolve launch.toml against the process working directory, letting a
+// repository control the hub's launch config. An empty result means "no user
+// config root": launchconfig then applies no user-level layers.
 func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
-	if cfg.LaunchConfigRoot != "" {
-		return cfg.LaunchConfigRoot
+	root := cfg.LaunchConfigRoot
+	if root == "" {
+		// userdirs, not cmdutil: this one reports an unresolvable root as
+		// empty instead of substituting a relative path.
+		root = userdirs.DefaultConfigRoot()
 	}
-	return cmdutil.DefaultConfigRoot()
+	if root == "" || !filepath.IsAbs(root) {
+		return ""
+	}
+	return root
 }
 
 // hubAuthStateRoot is where the auth controller keeps OAuth records: the
@@ -361,12 +960,34 @@ func hubAuthStateRoot(reg *hubcore.ProviderRegistry) string {
 	return cmdutil.DefaultStateRoot()
 }
 
+// hubLogfFor is where the hub's operational log lines go: cfg.Logf, or
+// stderr with the "[hub] " prefix.
+func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
+	if cfg.Logf != nil {
+		return cfg.Logf
+	}
+	// Resolve the sink once, when the logger is built, not per call. A server
+	// goroutine outlives the test that started it, so reading the mutable
+	// os.Stderr global from it races any test that redirects os.Stderr
+	// (captureHubStderr, issue #2783). The startup path sets the sink before
+	// any server runs, so this captures the same destination it always wanted.
+	stderr := os.Stderr
+	return func(format string, args ...any) {
+		_, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...)
+	}
+}
+
+// navigationStatsLogfFor is where navigation build stats lines go. Tests that
+// build a hub web server replace it so a slow build cannot write to stderr
+// outside a test that asserts the line (which passes cfg.Logf).
+var navigationStatsLogfFor = hubLogfFor
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -378,7 +999,17 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices, *hubAuthController) {
+	// One fallback registry when cfg carries no live one, built once here so
+	// every host surface below — attach, management, and the admin proxy —
+	// validates against the same instance: a host added at runtime must be
+	// attachable and administrable, never "unknown" to a sibling handler
+	// that built its own copy from the configured entries. main.go always
+	// threads the live registry; the fallback is the embedder/test shape
+	// (newWebServer nil-defaults its own cfg copy the same way).
+	if cfg.RemoteHostRegistry == nil {
+		cfg.RemoteHostRegistry = hostRegistryFromConfig(cfg)
+	}
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -387,13 +1018,18 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return navigation.Capability()
 		}
 	}
-	hubLogf := func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
-	}
+	hubLogf := hubLogfFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName:           "evener-hub",
-		Version:              Version,
-		SourceID:             "local",
+		ServerName: "evener-hub",
+		Version:    Version,
+		SourceID:   "local",
+		// The hub's own machine: its system and architecture from the running
+		// binary, and its project roots from hub.toml's top-level `roots`, so a
+		// client showing the hub's own machine beside its SSH hosts has the
+		// same facts a HostRow carries.
+		OS:                   runtime.GOOS,
+		Arch:                 runtime.GOARCH,
+		Roots:                cfg.MachineRoots,
 		WebSocketTrace:       appwireTrace,
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,
@@ -404,6 +1040,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
+		ConcurrentRequest: forwardedHostRead,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -494,7 +1131,15 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			KeybindingsSettings:       true,
 		},
 	})
-	authController := newHubAuthControllerWithStore(hubAuthStateRoot(cfg.Registry), cfg.CredsStore)
+	// One credentials store for every credential surface this server builds.
+	// One store for every credential surface, resolved once by the auth
+	// controller's constructor (hubCredentialStore) and read back below: each
+	// surface resolving the fallback on its own let a hub built with no explicit
+	// CredsStore — the embedder shape, and the one these constructors tolerate —
+	// serve evener/auth/apiKey/set while refusing the push with "credential push
+	// requires a local credentials store".
+	authStateRoot := hubAuthStateRoot(cfg.Registry)
+	authController := newHubAuthControllerWithStore(authStateRoot, cfg.CredsStore)
 	authController.reg = cfg.Registry
 	authController.providersConfigPath = cfg.ProvidersConfigPath
 	authController.noUserLayer = cfg.NoUserLayer
@@ -538,16 +1183,53 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
+	registerArchivedListHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
-	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerActivityReadHandler(server, cfg, sources)
+	registerSessionActivityHandlers(server, cfg, sources)
+	// The notices read the same answers evener/auth/list and evener/plugin/list
+	// give, through the controllers those methods use (S11).
+	notices := &hubNotices{
+		auth:    func() (appwire.AuthListResponse, error) { return authController.List(appwire.EmptyParams{}) },
+		plugins: pluginsController.ListPlugins,
+		sources: sources,
+		roster:  cfg.Roster,
+		remote:  cfg.RemoteThreadCache,
+	}
+	if instancesController != nil {
+		notices.refreshProviders = instancesController.refreshProviderFile
+	}
+	registerNoticesHandler(server, notices)
+	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
+	registerSessionSeenHandler(server, cfg, navigation)
 	registerMiscHandlers(server, cfg, sources)
+	// Component 08's host registry surface (add/list/status/remove from slice
+	// 1; update from slice 2). Controller-local, never dials; add and remove
+	// invalidate the manifest's sources, and an edit that changes the roots
+	// retires and re-registers them, so the picker converges without a refresh
+	// tick.
+	// The manager, the live host registry, and the selected hub.toml path all
+	// come from cfg — main.go threads the real sshconn.Manager, the one
+	// registry shared with the attach handler, and the config path the
+	// surface rewrites in place, so the surface is wired, not a
+	// placeholder. It returns the manager so newWebServer can expose it
+	// (main.go binds its event recorder to the SSH manager's lifecycle).
+	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)
+	// The remnant fence reaches the attach path through the WebConfig seam: the
+	// manager owns the durable teardown-remnant records and attach has no
+	// manager handle of its own. It must be installed BEFORE the attach handler
+	// is registered: registerHostAttachHandler takes cfg BY VALUE, so its
+	// closure reads the field off the copy that call captures — assigning it
+	// afterwards would leave the handler reading an empty seam and dialing over
+	// a host whose teardown is still open.
+	cfg.HostRemnantFence = hostManage.openRemnantID
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
-	registerHostAttachHandler(server, cfg, sources)
+	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
 	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
@@ -559,7 +1241,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// stay subscribed while no browser is connected so that a host's config
 	// change is still relayed when one returns, and it re-subscribes itself
 	// across client reconnects. Its context is the RPC server's own lifetime
-	// handle (round eight), which Shutdown cancels when shutdown begins. Bound
+	// handle, which Shutdown cancels when shutdown begins. Bound
 	// this way the fan-out stops with the server it belongs to: a hub server
 	// recreated in-process no longer leaves the previous server's fan-outs
 	// subscribed forever (one goroutine per remote host, each still holding the
@@ -575,8 +1257,13 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// (web.go) keeps the handle so main.go can bind hostAttached to the
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
-	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
-	return server, hostAdmin
+	// The push gets that same store, with the error of resolving it when there
+	// was none: a credentials.toml that cannot be read is then one fact both
+	// surfaces answer from (the controller's writes refuse, and so does the
+	// push) instead of a nil store one of them dereferences.
+	credsStore, credsErr := authController.credentialStore()
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
+	return server, hostAdmin, hostManage, notices, authController
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -600,6 +1287,18 @@ func registerThreadHandlers(
 	relays hubRelayFunctions,
 	logf func(format string, args ...any),
 ) {
+	// evener/session/image is the AppWire counterpart of the local image routes:
+	// the controller's host-qualified image routes proxy through it to the hub
+	// that owns the session (multi-host component 05). It resolves only against
+	// this hub's own local session state.
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+		return sessionImageFromHub(ctx, cfg, sources, params)
+	})
+	// evener/session/document is the AppWire counterpart of the raw /doc/file
+	// read, for the controller's /doc/file proxy (S7).
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(ctx context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(ctx, cfg, sources, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
@@ -698,7 +1397,7 @@ func registerThreadHandlers(
 			past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
 			if pastErr != nil {
 				read.finish(false)
-				return appwire.ThreadReadResponse{}, pastErr
+				return appwire.ThreadReadResponse{}, daemonlessReadError(pastErr)
 			}
 			if ok {
 				pastPage = &past
@@ -710,7 +1409,7 @@ func registerThreadHandlers(
 		wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -719,6 +1418,7 @@ func registerThreadHandlers(
 			if pastPage != nil {
 				resp.Thread.Turns = pastPage.Thread.Turns
 				resp.OlderCursor = pastPage.OlderCursor
+				resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 				annotateThreadProjects([]appwire.Thread{resp.Thread})
 			} else {
@@ -744,7 +1444,8 @@ func registerThreadHandlers(
 					read.finish(false)
 					return appwire.ThreadReadResponse{}, packErr
 				}
-				resp = packed
+				resp = withReadHistoryIdentity(packed, read.response)
+				resp.Changes = withDroppedWindowItems(source, resp.Changes, candidates, resp.Thread)
 			}
 		} else {
 			// A live daemon's turns carry sha-addressed tool-result descriptors with
@@ -756,7 +1457,8 @@ func registerThreadHandlers(
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
 		// own unsupported fork flag does not describe this hub-owned action.
-		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.Thread = applyHubCapabilities(cfg, resp.Thread)
+		resp.RequestGeneration = params.RequestGeneration
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -820,6 +1522,10 @@ func registerThreadHandlers(
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
+		params, err := appitempaging.ApplyBefore(params)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
 		// Live source first; fall back to the saved transcript (paged on the
 		// hub) for past/not-loaded sessions.
 		source, srcErr := sourceForThreadWithDeletionFence(ctx, cfg, sources, params.Ref, params.ThreadID)
@@ -853,7 +1559,7 @@ func registerThreadHandlers(
 		}
 		saved, ok, pastErr := pastThreadTurnsList(ctx, cfg, params)
 		if pastErr != nil {
-			return appwire.ThreadTurnsListResponse{}, pastErr
+			return appwire.ThreadTurnsListResponse{}, daemonlessReadError(pastErr)
 		}
 		if ok {
 			return saved, nil
@@ -873,23 +1579,23 @@ func registerThreadHandlers(
 			if isTargetDeletedError(err) {
 				return appwire.EvenerSubagentPreviewResponse{}, err
 			}
-			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			preview, ok, pastErr := pastSubagentPreview(ctx, cfg, ref, params.Limit)
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
-				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+				return preview, nil
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
-			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			preview, ok, pastErr := pastSubagentPreview(ctx, cfg, ref, params.Limit)
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
-				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+				return preview, nil
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
@@ -936,6 +1642,12 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
 		resolved := false
+		// initialPreDispatch records whether the ORIGINAL attempt is proven to
+		// have failed before anything was dispatched: it stayed true only when the
+		// first attempt never resolved a source. Any other first-attempt failure
+		// resolved the source first, so it may have dispatched; see
+		// retryAfterResume's not-accepted rule.
+		initialPreDispatch := false
 		attemptStart := func() (appwire.TurnStartResponse, error) {
 			source, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
 				return resolveTurnStartSource(sources, params.Ref, params.ThreadID)
@@ -944,12 +1656,63 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			resolved = true
-			return relays.startTurn(ctx, source, params)
+			resp, err := relays.startTurn(ctx, source, params)
+			err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+			return resp, err
+		}
+		// retryAfterResume runs the attempt a resume this request performed made
+		// possible. A failure there that gives the caller no way to judge its own
+		// mutation is wrapped in the resume path's own blocked-unknown envelope
+		// (see blockedUnknownMutationError), so the prompt is retained for a
+		// retry rather than left submitting forever.
+		//
+		// correlateRetryFailure's exemptions are consulted first, so a refusal
+		// that already carries its own meaning is never rewritten: a refusal
+		// naming this caller's mutation (recovery admission, daemon-restart-
+		// required, a shape refusal) and a target deletion keep their own
+		// outcome. Only a genuinely uncorrelated failure is left. It is reported
+		// not-accepted only when the WHOLE operation is proven pre-dispatch --
+		// both the retry and the original attempt failed before reaching a
+		// source -- because a retry that fails source resolution proves nothing
+		// about an earlier attempt that already reached a source and may have
+		// applied the mutation before its response was lost. The caller's
+		// cancellation is handled before either, since it is not a mutation
+		// outcome at all.
+		retryAfterResume := func() (appwire.TurnStartResponse, error) {
+			resolved = false
+			resp, err := attemptStart()
+			if err == nil {
+				return resp, nil
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return resp, err
+			}
+			// The resumed daemon names the id it trimmed; rewrite it back to the
+			// caller's own id before anything compares or returns it, so a
+			// canonical match is recognized and the response still carries exactly
+			// the id the caller submitted.
+			err = adoptCallerMutationID(err, params.ClientMutationID)
+			if wrapped := correlateRetryFailure(params.ClientMutationID, err); wrapped != nil {
+				// A target deletion keeps its own outcome even pre-dispatch: a
+				// deleted target never accepts the mutation, but the caller must
+				// still be told the target is gone rather than re-offered it as
+				// not-accepted. correlateRetryFailure hands it back enriched.
+				if !resolved && initialPreDispatch && !isTargetDeletedError(err) {
+					// Source resolution failed before the retry reached a source,
+					// and the original attempt never reached one either, so nothing
+					// was dispatched and the mutation's outcome is known -- not
+					// accepted -- rather than unknown.
+					return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, err.Error())
+				}
+				return appwire.TurnStartResponse{}, wrapped
+			}
+			return resp, err
 		}
 		resp, err := attemptStart()
 		if err == nil {
 			return resp, nil
 		}
+		initialPreDispatch = !resolved
 		if !resolved {
 			if wire, ok := errors.AsType[appwire.WireError](err); ok && wire.Code == appwire.CodeInvalidParams {
 				return appwire.TurnStartResponse{}, err
@@ -958,10 +1721,9 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+				return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 			}
-			resolved = false
-			return attemptStart()
+			return retryAfterResume()
 		}
 		if isLifecycleRetiringError(err) {
 			// The owning daemon refused the mutation because it is retiring and
@@ -969,10 +1731,17 @@ func registerThreadHandlers(
 			// authority — admission fences, ownership alias locks, confirmed exit,
 			// one resume — then retry the original request verbatim.
 			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
-				return appwire.TurnStartResponse{}, resumeErr
+				// This path fails with refusals that name no mutation at all -- the
+				// retirement/lifecycle "retiring" refusal, an ownership or roster
+				// error, an admission fence -- and its ownership-group fence can
+				// name a sibling alias, so hand it the same treatment as every
+				// other resume failure (see mutationResumeFailureError): the
+				// deletion outcome only when it is this caller's own target's, and
+				// otherwise the blocked-unknown envelope carrying the caller's id,
+				// rather than an unnamed error the client can never correlate.
+				return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 			}
-			resolved = false
-			return attemptStart()
+			return retryAfterResume()
 		}
 		if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
@@ -981,10 +1750,9 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, err
 		}
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+			return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 		}
-		resolved = false
-		return attemptStart()
+		return retryAfterResume()
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -993,7 +1761,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnSteerResponse{}, err
@@ -1003,18 +1771,22 @@ func registerThreadHandlers(
 			}
 			return source.SteerTurn(ctx, params)
 		})
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnInterruptResponse{}, err
 			}
 			return source.InterruptTurn(ctx, params)
 		})
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.EmptyResponse, error) {
@@ -1028,6 +1800,22 @@ func registerThreadHandlers(
 			return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
 		})
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDelegateStop, func(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.DelegateStopResponse, error) {
+			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, ""); err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			stopper, ok := source.(appsource.DelegateStopSource)
+			if !ok {
+				return appwire.DelegateStopResponse{}, appwire.Unavailable("this session's source cannot stop a subagent")
+			}
+			return stopper.StopDelegate(ctx, params)
+		})
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
@@ -1035,16 +1823,29 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
+		// A queued message is a session mutation a past thread advertises, so it
+		// carries the same exited == never-exited contract as turn/start: the hub
+		// resumes the session and retries the write (withSessionResume). Without
+		// it a queue write against a thread whose daemon has exited was refused
+		// outright, which is exactly the route the web composer chooses for a
+		// message sent while it already has a send in flight against a finished
+		// session (appwire-client/typescript/sendQueueAvailability.ts) — so the
+		// message was dropped instead of being queued behind the resume that send
+		// had started.
+		resp, err := withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
-				return appwire.TurnQueueResponse{}, err
+				// Resolution failed before anything reached a source, so a resume
+				// retry that fails the same way proves nothing was dispatched.
+				return appwire.TurnQueueResponse{}, preDispatchRefusalError{err}
 			}
 			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
 				return appwire.TurnQueueResponse{}, err
 			}
 			return source.QueueTurn(ctx, params)
 		})
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -1053,7 +1854,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnDrainAsSteerResponse{}, err
@@ -1063,6 +1864,8 @@ func registerThreadHandlers(
 			}
 			return source.DrainAsSteer(ctx, params)
 		})
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 		if params.Index < 0 {
@@ -1074,13 +1877,15 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 			}
 			return source.PromoteQueuedAsSteer(ctx, params)
 		})
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 		if params.Index < 0 {
@@ -1092,13 +1897,15 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnCancelQueuedResponse{}, err
 			}
 			return source.CancelQueued(ctx, params)
 		})
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
@@ -1107,7 +1914,9 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedInstanceID) == "" {
 			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
 		}
-		return clearThreadWithResume(ctx, cfg, sources, params)
+		resp, err := clearThreadWithResume(ctx, cfg, sources, params)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
@@ -1143,16 +1952,31 @@ func registerThreadHandlers(
 		return setGoalWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodNotesHumanSet, func(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-		return setNotesHumanWithResume(ctx, cfg, sources, params)
+		resp, err := setNotesHumanWithResume(ctx, cfg, sources, params)
+		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodUrlsRemove, func(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-		return removeURLWithResume(ctx, cfg, sources, params)
+		resp, err := removeURLWithResume(ctx, cfg, sources, params)
+		return resp, adoptFailureClientMutationID(err, params.ClientMutationID)
 	})
 }
 
 // registerAuthHandlers registers the evener/auth/* RPC handlers, routed to the
 // auth controller. Successful mutations broadcast evener/auth/updated.
 func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
+	// A credential rejection appearing or clearing changes the instance's
+	// status (its Error) with no write behind it, so it is announced the way a
+	// write is: clients re-read statuses on evener/auth/updated. It is set here,
+	// before the server serves, and never again: probes read it unlocked.
+	authController.credentialRejectionChanged = func(name string) {
+		status, err := authController.Status(appwire.AuthStatusParams{Provider: name})
+		if err != nil {
+			notifyInstanceUpdated(server, "")
+			return
+		}
+		notifyAuthUpdated(server, status.Provider, status.ActiveSource, "")
+	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 		return authController.Status(params)
 	})
@@ -1188,6 +2012,17 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeyClear(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyConditionalSet, func(ctx context.Context, params appwire.ApiKeyConditionalSetParams) (appwire.ApiKeyConditionalSetResponse, error) {
+		resp, err := authController.ApiKeyConditionalSet(params)
+		// A skipped classification wrote nothing, so it owes no broadcast; a
+		// landed write - and a write whose post-write status read failed -
+		// broadcasts like every other credential write (notifyAuthWrite folds
+		// the applied-but-unread case).
+		if err != nil || resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+			notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
+		}
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
 		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.CredentialJsonSet(params) })
@@ -1410,6 +2245,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		return pluginsController.SetAutoUpgrade(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckUpdates, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
+		return pluginsController.CheckUpdates(ctx)
+	})
 }
 
 // notifyMarketplaceUpdated broadcasts a evener/marketplace/updated notification
@@ -1458,8 +2296,8 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateCheck, hubUpdateCheck)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateApply, hubUpdateApply)
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(_ context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
-		return hubSearch(cfg, params), nil
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(ctx context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
+		return hubSearch(ctx, cfg, params, time.Now())
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
@@ -1472,6 +2310,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsOutput, func(ctx context.Context, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 		return hubJobsOutput(ctx, cfg, sources, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsGet, func(ctx context.Context, params appwire.JobsGetParams) (appwire.JobsGetResponse, error) {
+		return hubJobsGet(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadTranscriptsList, func(ctx context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 		return hubThreadTranscriptList(ctx, cfg, sources, params)

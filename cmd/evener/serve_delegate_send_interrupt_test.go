@@ -494,8 +494,11 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 			startedStatus = turn.Status
 		}
 	}
-	if startedCount != 1 || startedStatus != "inProgress" {
-		t.Fatalf("started turn was not exactly once and inProgress before SESSION_END projection: count=%d status=%q turns=%#v", startedCount, startedStatus, turns.Thread.Turns)
+	// History is projected from recorded entries, and the interrupted
+	// completion is recorded before the runner emits SESSION_END: the read
+	// already shows the turn interrupted, exactly once.
+	if startedCount != 1 || startedStatus != "interrupted" {
+		t.Fatalf("started turn was not exactly once and interrupted before SESSION_END projection: count=%d status=%q turns=%#v", startedCount, startedStatus, turns.Thread.Turns)
 	}
 	stoppedBeforeProjection := daemon.mutationSnapshot(t)
 	interruptBeforeProjection := stoppedBeforeProjection.Journal[interrupt.ClientMutationID]

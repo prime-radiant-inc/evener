@@ -7,14 +7,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 )
 
-func key(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
-
-// TestHubModelBrowseKJMovesSelectionAndReachesFork is the regression test for the
-// browse-mode fork bug: k/j must move the browse cursor across rows (auto-
-// scrolling to keep it visible) so a user message can be selected and forked.
-// Before the fix, k/j only scrolled the viewport and browseSelected was pinned
-// to the trailing message, so f never reached a user message.
-func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
+// TestHubModelBrowseSelectionChordsReachFork is the regression test for the
+// browse-mode fork bug: the selection chords must move the browse cursor across
+// rows (auto-scrolling to keep it visible) so a user message can be selected and
+// forked. Browse is text-first (kata 7hh0), so those chords are non-printable —
+// ctrl+up/ctrl+down to move, ctrl+f to fork.
+func TestHubModelBrowseSelectionChordsReachFork(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Capabilities.Fork = true
 	m.width = 100
@@ -38,33 +36,33 @@ func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
 		t.Fatalf("initial selection=%d, want 3 (last message)", m.browseSelected)
 	}
 
-	// f on a non-user (trailing assistant) message must not start a fork.
-	updated, _ := m.Update(key("f"))
+	// ctrl+f on a non-user (trailing assistant) message must not start a fork.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	m = updated.(hubModel)
 	if m.forkDraft != nil {
 		t.Fatal("fork must not start on a non-user message")
 	}
 
-	// k walks the cursor up to the first user message.
+	// ctrl+up walks the cursor up to the first user message.
 	for range 3 {
-		updated, _ = m.Update(key("k"))
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
 		m = updated.(hubModel)
 	}
 	if m.browseSelected != 0 {
 		t.Fatalf("after 3×k selection=%d, want 0 (first user message)", m.browseSelected)
 	}
 
-	// f on the selected user message starts a fork draft — fork is reachable.
-	updated, _ = m.Update(key("f"))
+	// ctrl+f on the selected user message starts a fork draft — fork is reachable.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	m = updated.(hubModel)
 	if m.forkDraft == nil {
-		t.Fatal("f on a selected user message must start a fork draft")
+		t.Fatal("ctrl+f on a selected user message must start a fork draft")
 	}
 	if m.forkDraft.EntryIndex != 1 {
 		t.Fatalf("fork draft entry index=%d, want 1", m.forkDraft.EntryIndex)
 	}
 
-	// j walks back down (after re-entering browse on a fresh model).
+	// ctrl+down walks back down (after re-entering browse on a fresh model).
 	m2 := newSessionHubModel(nil)
 	m2.width, m2.height = 100, 12
 	m2.session.width, m2.session.height = 100, 12
@@ -77,12 +75,12 @@ func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
 	m2.sessionView()
 	m2.enterSessionBrowse(false)
 	m2.sessionView()
-	upd, _ := m2.Update(key("k")) // 2 -> 1
+	upd, _ := m2.Update(tea.KeyMsg{Type: tea.KeyCtrlUp}) // 2 -> 1
 	m2 = upd.(hubModel)
-	upd, _ = m2.Update(key("j")) // 1 -> 2
+	upd, _ = m2.Update(tea.KeyMsg{Type: tea.KeyCtrlDown}) // 1 -> 2
 	m2 = upd.(hubModel)
 	if m2.browseSelected != 2 {
-		t.Fatalf("k then j selection=%d, want 2", m2.browseSelected)
+		t.Fatalf("ctrl+up then ctrl+down selection=%d, want 2", m2.browseSelected)
 	}
 }
 
@@ -110,11 +108,11 @@ func TestHubModelBrowseSelectionScrollsIntoView(t *testing.T) {
 	// must scroll up to follow it.
 	start := m.browseSelected
 	for range 6 {
-		updated, _ := m.Update(key("k"))
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
 		m = updated.(hubModel)
 	}
 	if m.browseSelected != start-6 {
-		t.Fatalf("6×k selection=%d, want %d", m.browseSelected, start-6)
+		t.Fatalf("6×ctrl+up selection=%d, want %d", m.browseSelected, start-6)
 	}
 	if m.session.viewport.YOffset >= startOffset {
 		t.Fatalf("viewport did not scroll up to follow the cursor: offset=%d start=%d", m.session.viewport.YOffset, startOffset)

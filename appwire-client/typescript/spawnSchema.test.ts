@@ -32,16 +32,16 @@ describe("perLaunchEvenerOptions (floor §1.11, spawn.js:618-626)", () => {
 describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
   test("a boolean tri-state maps true/false but drops the (default)", () => {
     const options = [
-      option({ wireField: "noProjectPrompts", kind: "boolean" }),
+      option({ wireField: "apiLog", kind: "boolean" }),
       option({ wireField: "nonInteractive", kind: "boolean" }),
       option({ wireField: "verbose", kind: "boolean" }),
     ];
     const layer = collectAdvancedOverrides(options, {
-      noProjectPrompts: { value: "true" },
+      apiLog: { value: "true" },
       nonInteractive: { value: "false" },
       verbose: { value: "(default)" },
     });
-    expect(layer).toEqual({ noProjectPrompts: true, nonInteractive: false });
+    expect(layer).toEqual({ apiLog: true, nonInteractive: false });
   });
 
   test("skips an unchecked radio and an empty text/select, keeps chosen scalars", () => {
@@ -98,21 +98,21 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
       option({ wireField: "agent", kind: "text" }),
       option({ wireField: "maxSubagentDepth", kind: "integer" }),
       option({ wireField: "maxRounds", kind: "integer" }),
-      option({ wireField: "noProjectPrompts", kind: "boolean" }),
+      option({ wireField: "apiLog", kind: "boolean" }),
       option({ wireField: "contextStrategy", kind: "select" }),
     ];
     const raw = {
       agent: "  evener  ",
       maxSubagentDepth: "12abc",
       maxRounds: "12.5",
-      noProjectPrompts: "true",
+      apiLog: "true",
       contextStrategy: "   ",
     };
     const advanced = collectAdvancedOverrides(options, {
       agent: { value: raw.agent },
       maxSubagentDepth: { value: raw.maxSubagentDepth },
       maxRounds: { value: raw.maxRounds },
-      noProjectPrompts: { value: raw.noProjectPrompts },
+      apiLog: { value: raw.apiLog },
       contextStrategy: { value: raw.contextStrategy },
     });
     const state: LaunchFormState = { scalars: raw, lists: {}, envMaps: {}, mcpLists: {}, explicitEmpty: {} };
@@ -121,7 +121,7 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
     // routing both through launchSchema.collectScalar (#1444). A fractional
     // "12.5" is dropped (not sent as 12.5) because the Go wire type is *int.
     expect(advanced).toEqual(collectConfig(options, state));
-    expect(advanced).toEqual({ agent: "evener", noProjectPrompts: true });
+    expect(advanced).toEqual({ agent: "evener", apiLog: true });
   });
 
   test("drops an unsafe or rounding integer magnitude on both paths (Go wire type is *int)", () => {

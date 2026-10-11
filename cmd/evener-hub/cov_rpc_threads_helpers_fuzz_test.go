@@ -43,9 +43,10 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				}
 			}
 		case 2:
-			for _, raw := range []string{"", "turn_0", "turn_nope", "turn_1", " 2 "} {
-				turn, err := parseSourceTurnID(raw)
-				if raw == "turn_1" && (err != nil || turn != 1) {
+			const validKey = "apptranscript-item-v2:t_1:0:0"
+			for _, raw := range []string{"", "turn_1", "apptranscript-item-v2:prelude:header:0", validKey, "  " + validKey + "  "} {
+				turn, err := parseSourceItemKey(raw)
+				if (raw == validKey || raw == "  "+validKey+"  ") && (err != nil || turn != 1) {
 					t.Fatalf("parse valid: turn=%d err=%v", turn, err)
 				}
 			}
@@ -129,7 +130,7 @@ func FuzzCovRPCThreadsHelpers(f *testing.F) {
 				}
 			}
 			if threadForkRequiresTurnCapability(appwire.ThreadForkParams{}) ||
-				!threadForkRequiresTurnCapability(appwire.ThreadForkParams{SourceTurnID: "1"}) ||
+				!threadForkRequiresTurnCapability(appwire.ThreadForkParams{SourceItemKey: "1"}) ||
 				!threadForkRequiresTurnCapability(appwire.ThreadForkParams{EditedInput: "x"}) ||
 				!threadForkRequiresTurnCapability(appwire.ThreadForkParams{Label: "x"}) {
 				t.Fatal("fork capability classification")

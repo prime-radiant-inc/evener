@@ -1,26 +1,9 @@
-// Narrows TaskListResponse.data (types.gen.ts types it `unknown` -
-// the Go source (appwire/types.go:896-898) is `Data any`, so codegen has no
-// named struct to reflect) into a display-ready TaskRow[]. The real runtime
-// shape - confirmed by reading the daemon handler chain rather than
-// guessing, since the catalog itself says nothing - is a JSON array of
-// agent/task/task_store.go's Task struct (json tags: id/type/description/
-// prompt/status/depends_on/notes/reasoning_effort/insert/created_at/
-// updated_at/completed_at), always non-nil-but-possibly-empty for any
-// source that wires SetTasksFunc (every real evener daemon session does,
-// cmd/evener/serve.go:596) and unreachable (a rejected request, not a null
-// response) for a source that does not advertise task support. `data` is
-// `null`/`undefined` only when no tasksFn is registered
-// server-side (server/appwire_runtime.go:713-721) - an old daemon - which
-// this parser reports as `null` ("no data"), distinct from a real empty
-// list (`[]`, "zero tasks"). Shared by the web tasks panel and its store, the
-// transcript's task_list card, and native's tasks sheet and task list.
-//
-// created_at/updated_at/completed_at ARE carried (as createdAt/updatedAt/
-// completedAt): the 2026-08-09 panel redesign (docs/superpowers/specs/
-// 2026-08-09-task-list-ui-design.md) shows per-task recency and completion
-// times, which the legacy panel's field set predates; `insert` remains
-// intentionally uncarried because neither app has a consumer for it.
+// Validates untrusted task-list and task-tool payloads and adapts the shared
+// snake_case wire shape to display rows. Null is unavailable; [] is an
+// authoritative empty list. Tool mutation snapshots may add started/settled.
+// The insert template marker has no display consumer and is not projected.
 
+import type { Task } from "./types.gen";
 import { asJsonObject } from "./watchRows";
 
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
@@ -32,11 +15,7 @@ export interface TaskCounts {
   remaining?: number;
 }
 
-export interface TaskRow {
-  id: number;
-  type: string;
-  description: string;
-  prompt: string;
+export interface TaskRow extends Pick<Task, "id" | "type" | "description" | "prompt"> {
   status: TaskStatus;
   dependsOn?: number[];
   notes?: string[];
@@ -45,13 +24,29 @@ export interface TaskRow {
   // into that status. Ordinary task-list responses omit this side-channel
   // field.
   started?: boolean;
+  // The terminal-status analogue of started: mutation snapshots mark
+  // whether this call transitioned the task into done or cancelled (the
+  // pre-call status differed). The store preserves the original CompletedAt
+  // on re-assertions, so this marker distinguishes a fresh settle from an
+  // annotation of an old one. Ordinary task-list responses omit it.
+  settled?: boolean;
   // Wire timestamps (agent/task/task_store.go), carried as ISO strings.
   // Optional: the parser never drops a row for lacking them, and views omit
   // time displays for absent fields. created_at/updated_at are always present
-  // on the real wire; completed_at exists only for done tasks.
+  // on the real wire; completed_at exists for settled tasks (done or
+  // cancelled) - the terminal transition's stamp, absent for rows persisted
+  // before terminal stamping.
   createdAt?: string;
   updatedAt?: string;
   completedAt?: string;
+}
+
+// The settled count: done plus cancelled, the finished tasks that remaining
+// counts the complement of. One derivation for every surface that counts
+// finished tasks - the hub's Tasks chips, the inline task card's meter and
+// this file's remaining fallback.
+export function taskSettledCount(tasks: Pick<TaskCounts, "done" | "cancelled">): number {
+  return tasks.done + (tasks.cancelled ?? 0);
 }
 
 // One condensed sentence for a task aggregate, shared by the web's inline task
@@ -66,17 +61,25 @@ export interface TaskRow {
 export function taskAggregateLabel(tasks: TaskCounts): string {
   const noun = tasks.total === 1 ? "task" : "tasks";
   if (tasks.total === 0) return "No tasks";
-  const remaining = tasks.remaining ?? Math.max(0, tasks.total - tasks.done - (tasks.cancelled ?? 0));
+  const remaining = tasks.remaining ?? Math.max(0, tasks.total - taskSettledCount(tasks));
   if (remaining > 0) return `${remaining} of ${tasks.total} ${noun} left`;
   if ((tasks.cancelled ?? 0) > 0) return `All ${tasks.total} ${noun} settled`;
   return `All ${tasks.total} ${noun} done`;
 }
 
+// The closed status enum the Go store mints (agent/task/task_store.go,
+// TaskStatus). A status outside it - a newer daemon's addition, or corrupt
+// data - is dropped rather than cast: groupTasks routes every unmatched
+// status into the settled group, where the web pane would render an
+// unknown-status row as a broken glyph.
+const KNOWN_STATUSES = new Set(["open", "in_progress", "done", "cancelled"]);
+
 // A row is usable once it carries the wire's non-omitempty fields with the
 // right primitive types (id/type/description/prompt/status are never
-// omitted by the Go struct's own json tags, even when zero-valued) -
-// anything else (a null entry, a stray string, a shape missing `id`) is
-// dropped rather than fabricated or allowed to crash the whole parse.
+// omitted by the Go struct's own json tags, even when zero-valued) and a
+// status the enum defines - anything else (a null entry, a stray string, a
+// shape missing `id`, an unknown status) is dropped rather than fabricated
+// or allowed to crash the whole parse.
 function parseRow(raw: unknown): TaskRow | null {
   const fields = asJsonObject(raw);
   if (!fields) return null;
@@ -90,12 +93,14 @@ function parseRow(raw: unknown): TaskRow | null {
     notes,
     reasoning_effort,
     started,
+    settled,
     created_at,
     updated_at,
     completed_at,
   } = fields;
   if (typeof id !== "number" || typeof type !== "string" || typeof description !== "string") return null;
   if (typeof prompt !== "string" || typeof status !== "string") return null;
+  if (!KNOWN_STATUSES.has(status)) return null;
 
   const row: TaskRow = { id, type, description, prompt, status: status as TaskStatus };
   if (Array.isArray(depends_on) && depends_on.every((d) => typeof d === "number")) {
@@ -109,6 +114,9 @@ function parseRow(raw: unknown): TaskRow | null {
   }
   if (typeof started === "boolean") {
     row.started = started;
+  }
+  if (typeof settled === "boolean") {
+    row.settled = settled;
   }
   if (typeof created_at === "string" && created_at !== "") row.createdAt = created_at;
   if (typeof updated_at === "string" && updated_at !== "") row.updatedAt = updated_at;

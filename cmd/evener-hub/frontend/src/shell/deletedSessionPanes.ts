@@ -1,3 +1,4 @@
+import { markCacheSessionsDeleted } from "../stores/threads";
 import { navigate, paneToURL, urlToPane } from "./routing";
 import { workspaceStore } from "./workspace";
 
@@ -18,8 +19,18 @@ import { workspaceStore } from "./workspace";
 // a pane carries. An id that already carries a source prefix passes through
 // unchanged, the same both-forms tolerance the navigation store's
 // applies to this very field.
+function deletedSessionRefs(deletedIDs: string[]): Set<string> {
+  return new Set(deletedIDs.map((id) => (id.includes(":") ? id : `local:${id}`)));
+}
+
+// Response-time privacy fence: call before awaiting fallible navigation.
+// Pane convergence below must never repeat this broadcast.
+export function markDeletedSessionCaches(deletedIDs: string[]): void {
+  markCacheSessionsDeleted([...deletedSessionRefs(deletedIDs)]);
+}
+
 export function closePanesForDeletedSessions(deletedIDs: string[]): void {
-  const goneRefs = new Set(deletedIDs.map((id) => (id.includes(":") ? id : `local:${id}`)));
+  const goneRefs = deletedSessionRefs(deletedIDs);
   const workspace = workspaceStore.getState();
   for (const pane of workspace.panes) {
     const paneRef = (pane.params as { ref?: unknown }).ref;

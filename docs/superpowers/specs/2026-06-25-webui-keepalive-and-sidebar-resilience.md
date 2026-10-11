@@ -31,7 +31,7 @@ browser ──WS /rpc──► hub (appserver) ──WS──► per-session dae
   that context only cancels on a *clean* teardown. No ping ticker.
 - `appwire/client.go` — the hub↔daemon read loop blocks on `Recv` forever; it
   ends only on a transport **error**.
-- `cmd/evener-hub/assets/appwire.js` — reconnect is wired **only** to the WS
+- `cmd/serf-hub/assets/appwire.js` — reconnect is wired **only** to the WS
   `error`/`close` handlers; `request()` has no timeout.
 - `cmd/evener-hub/assets/renderer.js` — the liveness UI is **cosmetic**; it never
   triggers a re-read or reconnect.

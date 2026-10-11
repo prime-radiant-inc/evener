@@ -1,0 +1,1909 @@
+package hub
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+)
+
+// updateFixture is a hub host manager booted over a real hub.toml that already
+// declares the fixture's own host ("side"), plus the config path the tests
+// assert the durable state against. Every live host lives in the one
+// machine-managed hub.toml, so the file is the durable record these tests read
+// back and no sidecar exists. declared, when given, are extra entries the boot
+// file carries; they are ordinary live, editable hosts like every other one.
+type updateFixture struct {
+	m          *hubHostManager
+	configPath string
+	sources    *appsource.Registry
+	hosts      *hostreg.Registry
+}
+
+// newUpdateFixture seeds hub.toml with the fixture's own host ("side") plus any
+// extra entries a test wants the boot file to declare, then boots through
+// bootHostManager so the manager's store, registry, and durable file all start
+// from that one seed — the file is what a live entry durably is, so an edit
+// lands in it and the next boot sees it.
+func newUpdateFixture(t *testing.T, declared ...hostreg.Host) *updateFixture {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	seed := append([]hostreg.Host{{Name: "side", SSH: "side.example"}}, declared...)
+	if err := writeHubTOMLHosts(configPath, seed); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	return &updateFixture{m: m, configPath: configPath, sources: m.cfg.sources, hosts: m.cfg.hosts}
+}
+
+// readHubTOMLBytes reads hub.toml's raw bytes, so a test can pin that a refusal
+// wrote nothing at all.
+func readHubTOMLBytes(t *testing.T, configPath string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	return data
+}
+
+// TestHostManageUpdateRoundTripsEveryMutableField pins criteria 1 and 2: each
+// mutable field lands, list/status returns it, and a fresh boot over the same
+// config reads the edited values back out of the machine-managed hub.toml, the
+// durable record every live host now lives in.
+func TestHostManageUpdateRoundTripsEveryMutableField(t *testing.T) {
+	f := newUpdateFixture(t)
+	entry := appwire.HostEntry{
+		Address:    "side2.example",
+		User:       "operator",
+		KeyPath:    "/keys/side",
+		EvenerPath: "/opt/evener",
+		ConfigPath: "/etc/evener/hub.toml",
+		Addr:       "127.0.0.1:9180",
+		Roots:      []string{"/srv/one", "/srv/two"},
+	}
+	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if resp.Host.Name != "side" || resp.Host.Address != entry.Address {
+		t.Fatalf("response row = %+v, want the edited entry", resp.Host)
+	}
+	status, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	got := status.Host
+	if got.Address != entry.Address || got.User != entry.User || got.KeyPath != entry.KeyPath ||
+		got.EvenerPath != entry.EvenerPath || got.ConfigPath != entry.ConfigPath || got.Addr != entry.Addr ||
+		!slices.Equal(got.Roots, entry.Roots) {
+		t.Fatalf("row = %+v, want the edited entry %+v", got, entry)
+	}
+	// hub.toml is the durable record: a fresh boot over the same config sees the
+	// edited values as the effective entry.
+	boot := bootHostManager(t, f.configPath)
+	loaded, ok := boot.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("the edited host is not in the reloaded hub.toml")
+	}
+	want := hostreg.Host{
+		Name: "side", SSH: entry.Address, User: entry.User, KeyPath: entry.KeyPath,
+		EvenerPath: entry.EvenerPath, ConfigPath: entry.ConfigPath, Addr: entry.Addr, Roots: entry.Roots,
+	}
+	if !loaded.Equal(want) {
+		t.Fatalf("reloaded entry = %+v, want %+v", loaded, want)
+	}
+	// The durable file itself holds the whole edited entry, so the bytes the next
+	// boot reads are the ones the edit wrote.
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.Hosts) != 1 {
+		t.Fatalf("hub.toml hosts = %+v, want the single edited entry", cfg.Hosts)
+	}
+	onFile := cfg.Hosts[0]
+	if onFile.Name != "side" || onFile.SSH != entry.Address || onFile.User != entry.User || onFile.KeyPath != entry.KeyPath ||
+		onFile.EvenerPath != entry.EvenerPath || onFile.ConfigPath != entry.ConfigPath || onFile.Addr != entry.Addr ||
+		!slices.Equal(onFile.Roots, entry.Roots) {
+		t.Fatalf("hub.toml entry = %+v, want the edited entry's fields", onFile)
+	}
+}
+
+// TestHostManageUpdateKeepsTheFileOrder pins criterion 17's second half: an edit
+// replaces one entry rather than moving it, so the file keeps the order it had.
+func TestHostManageUpdateKeepsTheFileOrder(t *testing.T) {
+	f := newUpdateFixture(t)
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "second", Address: "second.example"},
+	}); err != nil {
+		t.Fatalf("Add(second): %v", err)
+	}
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "side2.example"})); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	assertHubTOMLHostNames(t, f.configPath, "side", "second")
+}
+
+// TestHostManageUpdateCannotRename pins the no-rename invariant (criterion 3):
+// an update's target is HostUpdateParams.Name, the request's one immutable
+// field, and the entry's own Name is deliberately never read. So a request that
+// addresses "side" while its entry carries Name "other" is an ordinary edit of
+// side — nothing is re-keyed — rather than a rename. A later change that started
+// reading params.Entry.Name would silently move the host to the entry's name
+// and leave the addressed name stale, with every other test still green.
+func TestHostManageUpdateCannotRename(t *testing.T) {
+	f := newUpdateFixture(t)
+	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Name: "other", Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// The response row still describes the addressed host, not a renamed one,
+	// and the removal/rename discriminator is not set on an ordinary edit.
+	if resp.Host.Name != "side" || resp.Host.Address != "edited.example" {
+		t.Fatalf("response row = %+v, want side with the edited address", resp.Host)
+	}
+	if resp.Host.Removed {
+		t.Fatalf("update row = %+v, want no removed/rename discriminator", resp.Host)
+	}
+	// The durable hub.toml still holds side (edited), never other.
+	assertHubTOMLHostNames(t, f.configPath, "side")
+	reloaded, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("reload hub.toml: %v", err)
+	}
+	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].Name != "side" || reloaded.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("reloaded hub.toml = %+v, want side with the edited address only", reloaded.Hosts)
+	}
+	// The in-memory host store still holds side (edited), never other.
+	stored := f.m.cfg.store.snapshot()
+	if len(stored) != 1 || stored[0].Name != "side" || stored[0].SSH != "edited.example" {
+		t.Fatalf("host store = %+v, want side with the edited address only", stored)
+	}
+	if storeHas(f.m.cfg.store, "other") {
+		t.Fatal("a rename put the entry's name into the host store")
+	}
+	// The live registry still holds side (edited), never other.
+	live, ok := f.hosts.Get("side")
+	if !ok || live.SSH != "edited.example" {
+		t.Fatalf("live registry entry = %+v (present %v), want side with the edited address", live, ok)
+	}
+	if _, ok := f.hosts.Get("other"); ok {
+		t.Fatal("a rename registered the entry's name in the live registry")
+	}
+	// The registry holds no registration under the entry's name, asked through
+	// the registry's own predicate rather than guessed at internally.
+	if f.hosts.SameRegistration("other", hostreg.Host{Name: "other"}) {
+		t.Fatal("the registry matched a registration under the entry's name")
+	}
+}
+
+// TestHostManageUpdateRefusalsCommitNothing pins criteria 4, 5, and 14's durable
+// half: an unknown name and a name with a mutation in flight both refuse, and
+// the file's bytes are the ones the fixture left. The old declared-name refusal
+// this test carried is gone with the sidecar: a name hub.toml declares at boot
+// is a live entry like any other, and
+// TestHostManageUpdateEditsAFileDeclaredHost pins that inverted property. The
+// file-declared "toml" entry below is therefore one of the live entries the
+// refusal must leave untouched.
+func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
+	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
+	before := readHubTOMLBytes(t, f.configPath)
+
+	_, err := f.m.Update(context.Background(), updateRequestFor("nope", 1, "no-such-incarnation", appwire.HostEntry{Address: "other.example"}))
+	if err == nil {
+		t.Fatal("Update of an unknown name committed, want a refusal")
+	}
+	assertWireCode(t, err, appwire.CodeInvalidParams)
+
+	// A name with a mutation in flight: the conflict, and that refusal writes
+	// nothing either. Take the mark the update path takes, in the same
+	// commit-phase hold.
+	f.m.cfg.mu.Lock()
+	f.m.markMutating("side")
+	f.m.cfg.mu.Unlock()
+	_, err = f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "other.example"}))
+	if err == nil {
+		t.Fatal("Update of a name with a mutation in flight committed, want a refusal")
+	}
+	assertWireCode(t, err, appwire.CodeConflict)
+	f.m.cfg.mu.Lock()
+	f.m.unmarkMutating("side")
+	f.m.cfg.mu.Unlock()
+
+	// The live entries are the two the fixture started with, untouched...
+	live, ok := f.hosts.Get("toml")
+	if !ok || live.SSH != "toml.example" {
+		t.Fatalf("hub.toml entry after the refusals = %+v, want it untouched", live)
+	}
+	side, ok := f.hosts.Get("side")
+	if !ok || side.SSH != "side.example" {
+		t.Fatalf("host entry after the refusals = %+v, want it untouched", side)
+	}
+	// ...and so are the file's bytes, across both refusals.
+	if after := readHubTOMLBytes(t, f.configPath); !bytes.Equal(before, after) {
+		t.Fatalf("hub.toml changed across the refusals:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestHostManageUpdateEditsAFileDeclaredHost pins the inverted half of the
+// retired declared-name refusal: a host hub.toml declared at boot is a live
+// entry like every other one — the hub rewrites the file it manages, so no
+// class of host is protected from editing (registry spec 08 §6/§19) — and
+// Update succeeds on it, with the machine-managed file holding the edit.
+func TestHostManageUpdateEditsAFileDeclaredHost(t *testing.T) {
+	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
+	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "toml", appwire.HostEntry{Address: "toml2.example", User: "operator"}))
+	if err != nil {
+		t.Fatalf("Update of a file-declared host: %v", err)
+	}
+	if resp.Host.Name != "toml" || resp.Host.Address != "toml2.example" || resp.Host.Origin != hostOriginHubTOML {
+		t.Fatalf("response row = %+v, want the edited file-declared host", resp.Host)
+	}
+	// The live registry holds the edit.
+	live, ok := f.hosts.Get("toml")
+	if !ok || live.SSH != "toml2.example" || live.User != "operator" {
+		t.Fatalf("live entry = %+v (present %v), want the edited file-declared host", live, ok)
+	}
+	// The durable file holds it too, in the order the file had, with the
+	// fixture's own host still in place.
+	assertHubTOMLHostNames(t, f.configPath, "side", "toml")
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.Hosts) != 2 || cfg.Hosts[1].Name != "toml" || cfg.Hosts[1].SSH != "toml2.example" || cfg.Hosts[1].User != "operator" {
+		t.Fatalf("hub.toml hosts = %+v, want side and the edited toml entry", cfg.Hosts)
+	}
+}
+
+// TestHostManageUpdateValidatesBeforeWriting pins criterion 12: a refusal
+// commits nothing — not even a normalized copy — and a padded input is stored
+// trimmed, so the file and the live set cannot drift.
+func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
+	f := newUpdateFixture(t)
+	before := readHubTOMLBytes(t, f.configPath)
+	for _, entry := range []appwire.HostEntry{
+		{Address: ""},
+		{Address: "   "},
+		{Address: "h.example", Roots: []string{"   "}},
+		{Address: "u@h.example", User: "bob"},
+	} {
+		if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry)); err == nil {
+			t.Errorf("Update(%+v) accepted, want a validation refusal", entry)
+		}
+	}
+	if after := readHubTOMLBytes(t, f.configPath); !bytes.Equal(before, after) {
+		t.Fatal("a refused update rewrote hub.toml")
+	}
+	if live, ok := f.hosts.Get("side"); !ok || live.SSH != "side.example" {
+		t.Fatalf("live entry after the refusals = %+v, want it untouched", live)
+	}
+	// The refusal names the input, so the dialog can place it (criterion 11).
+	_, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "u@h.example", User: "bob"}))
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("refusal = %v, want a WireError", err)
+	}
+	if data, ok := wire.Data.(appwire.HostFieldErrorData); !ok || data.Field != "user" {
+		t.Fatalf("refusal data = %#v, want the blamed input user", wire.Data)
+	}
+	// A padded input is stored trimmed.
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "  side3.example  ", User: "  operator  "})); err != nil {
+		t.Fatalf("Update with padded values: %v", err)
+	}
+	live, _ := f.hosts.Get("side")
+	if live.SSH != "side3.example" || live.User != "operator" {
+		t.Fatalf("stored entry = %+v, want the trimmed values", live)
+	}
+	reloaded, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("reload hub.toml: %v", err)
+	}
+	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].SSH != "side3.example" || reloaded.Hosts[0].User != "operator" {
+		t.Fatalf("reloaded entries = %+v, want the trimmed values on disk", reloaded.Hosts)
+	}
+}
+
+// TestHostManageUpdateRefusalPrecedence pins the commit phase's refusal order
+// against an invalid entry: the target's own refusal wins over the entry's shape
+// refusal. An empty address is a field refusal on its own, so each case below
+// would get that generic refusal if the entry were validated first — the old
+// order. The surface specifies the target refusal instead: an unknown name is
+// not found and a name with a mutation in flight is the conflict, whatever the
+// entry carries. (The retired declared-name refusal is gone with the sidecar —
+// a file-declared host is a target like any other, pinned by
+// TestHostManageUpdateEditsAFileDeclaredHost.)
+func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
+	f := newUpdateFixture(t)
+	// The invalid entry: an empty address, which ValidateEntry alone refuses as a
+	// field error. It must not be what these calls are told.
+	invalid := appwire.HostEntry{Address: ""}
+
+	assertTargetRefusal := func(name string, err error, want string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("Update(%s, invalid entry) committed, want a refusal", name)
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("refusal for %s = %v, want a WireError", name, err)
+		}
+		if _, isField := wire.Data.(appwire.HostFieldErrorData); isField {
+			t.Fatalf("refusal data for %s = %#v, want the target refusal, not a field blame", name, wire.Data)
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal for %s = %v, want it to contain %q", name, err, want)
+		}
+	}
+
+	// Unknown name: not found, not the field refusal.
+	_, err := f.m.Update(context.Background(), updateRequestFor("nope", 1, "no-such-incarnation", invalid))
+	assertTargetRefusal("nope", err, "unknown host")
+
+	// A live host with a mutation in flight: the conflict, not the field
+	// refusal. Take the mark the update path takes, in the same commit-phase hold.
+	f.m.cfg.mu.Lock()
+	f.m.markMutating("side")
+	f.m.cfg.mu.Unlock()
+	_, err = f.m.Update(context.Background(), updateRequest(t, f.m, "side", invalid))
+	assertTargetRefusal("side", err, "a mutation is already in progress")
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("in-flight refusal = %v, want the conflict code", err)
+	}
+	f.m.cfg.mu.Lock()
+	f.m.unmarkMutating("side")
+	f.m.cfg.mu.Unlock()
+}
+
+// TestHostManageUpdateAdvancesTheRegistryGeneration pins criterion 6 through the
+// hub: two successive edits give strictly increasing generations and each stops
+// matching a capture taken before it.
+func TestHostManageUpdateAdvancesTheRegistryGeneration(t *testing.T) {
+	f := newUpdateFixture(t)
+	ctx := context.Background()
+	first, _ := f.hosts.Get("side")
+	if _, err := f.m.Update(ctx, updateRequest(t, f.m, "side", appwire.HostEntry{Address: "a2.example"})); err != nil {
+		t.Fatalf("first Update: %v", err)
+	}
+	second, _ := f.hosts.Get("side")
+	if second.Generation <= first.Generation {
+		t.Fatalf("generation = %d after editing %d, want a strictly greater one", second.Generation, first.Generation)
+	}
+	if f.hosts.SameRegistration("side", first) {
+		t.Fatal("a capture from before the first edit still matches")
+	}
+	if _, err := f.m.Update(ctx, updateRequest(t, f.m, "side", appwire.HostEntry{Address: "a3.example"})); err != nil {
+		t.Fatalf("second Update: %v", err)
+	}
+	third, _ := f.hosts.Get("side")
+	if third.Generation <= second.Generation {
+		t.Fatalf("generation = %d after the second edit, want > %d", third.Generation, second.Generation)
+	}
+	if f.hosts.SameRegistration("side", second) {
+		t.Fatal("a capture from the first edit still matches the second's entry")
+	}
+}
+
+// TestHostManageUpdateMintsOneGenerationWithNoManager pins the invariant the
+// hub-level generation test missed: with no sshconn manager wired, a single edit
+// swaps the registry entry exactly once, so the entry advances by exactly one
+// generation and the retired mark is the pre-swap generation. A double swap
+// mints two generations — and marks the intermediate one, not the identity the
+// swap actually replaced — so the exact step and the exact mark are both
+// asserted.
+func TestHostManageUpdateMintsOneGenerationWithNoManager(t *testing.T) {
+	f := newUpdateFixture(t)
+	if f.m.cfg.manager != nil {
+		t.Fatal("the fixture wired a manager; this test pins the no-manager path")
+	}
+	before, ok := f.hosts.Get("side")
+	if !ok {
+		t.Fatal("side not registered before the update")
+	}
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	after, ok := f.hosts.Get("side")
+	if !ok {
+		t.Fatal("the update dropped the registry entry")
+	}
+	if after.Generation != before.Generation+1 {
+		t.Fatalf("generation = %d after editing %d, want exactly one advance to %d", after.Generation, before.Generation, before.Generation+1)
+	}
+	f.m.cfg.state.mu.Lock()
+	rec := f.m.cfg.state.records["side"]
+	var mark uint64
+	if rec != nil {
+		mark = rec.retiredThrough
+	}
+	f.m.cfg.state.mu.Unlock()
+	if mark != before.Generation {
+		t.Fatalf("retired mark = %d, want the pre-swap generation %d", mark, before.Generation)
+	}
+}
+
+// TestHostManageUpdateRollsBackWhenTheLivePhaseFails pins criterion 16: a failed
+// live phase leaves the file, the store row, and the live registry describing the
+// old entry, and a retry of the same edit then succeeds.
+// TestHostManageUpdateCommitsWithRemnantWhenTheLivePhaseFails pins spec 08
+// §6's commit-point rule for an edit: the rebind seam that fails (a manager
+// whose registry cannot hold the host) fails AFTER the commit landed, so the
+// edit is committed — the durable entry is the committed one, the receipt is
+// finalized, and the response is the union's committed-with-teardown-failure
+// arm carrying the seam and the pre-minted remnantId. There is no compensation
+// path back: "Restoring bytes after a teardown cannot rebuild destroyed
+// handles, so compensation covers pre-commit failures only".
+func TestHostManageUpdateCommitsWithRemnantWhenTheLivePhaseFails(t *testing.T) {
+	f := newUpdateFixture(t)
+	// A manager whose registry is a DIFFERENT, empty one: UpdateHost refuses
+	// hostreg.ErrUnknownHost deterministically — the seam that fails once the
+	// durable commit landed.
+	otherReg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(otherReg, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	f.m.cfg.gate = manager
+	before, _ := f.hosts.Get("side")
+
+	result, err := f.m.UpdateResult(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update = %v, want the committed-with-teardown-failure arm", err)
+	}
+	arm := result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
+	}
+	if arm.Seam != "update-host" {
+		t.Fatalf("failure arm seam = %q, want update-host", arm.Seam)
+	}
+	if arm.RemnantID == "" {
+		t.Fatal("the failure arm carries no remnantId")
+	}
+	// The edit committed: the durable file and the store row both describe the
+	// edited entry, and the remnant pins the RETIRED identity the rebind could
+	// not finish tearing down.
+	onDisk, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("reload hub.toml: %v", err)
+	}
+	if len(onDisk.Hosts) != 1 || onDisk.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("hub.toml after the committed edit = %+v, want the edited entry", onDisk.Hosts)
+	}
+	stored := f.m.cfg.store.snapshot()
+	if len(stored) != 1 || stored[0].SSH != "edited.example" {
+		t.Fatalf("store rows after the committed edit = %+v, want the edited entry", stored)
+	}
+	remnant, ok := f.m.cfg.store.remnantByID(arm.RemnantID)
+	if !ok || !remnant.open() {
+		t.Fatalf("no open remnant %q", arm.RemnantID)
+	}
+	if remnant.Generation != before.Generation || remnant.IncarnationID != before.IncarnationID {
+		t.Fatalf("remnant = %+v, want the retired pair %d/%s", remnant, before.Generation, before.IncarnationID)
+	}
+	if remnant.PendingTeardown.Kind != hostTeardownKindUpdate {
+		t.Fatalf("pinned target = %+v, want the update rebind", remnant.PendingTeardown)
+	}
+	// The receipt recorded the committed outcome with the remnant beside it, and
+	// the original mutationId replays that arm rather than re-applying.
+	replay, err := f.m.UpdateResult(context.Background(), updateRequestFor("side", before.Generation, before.IncarnationID, appwire.HostEntry{Address: "edited.example"}))
+	if err == nil {
+		t.Fatalf("a fresh keyed update over the fenced name = %+v, want the remnant-open refusal", replay)
+	} else if data, ok := wireData(err).(appwire.RemnantOpenErrorData); !ok || data.RemnantID != arm.RemnantID {
+		t.Fatalf("refusal = %v, want remnant-open naming %q", err, arm.RemnantID)
+	}
+}
+
+// TestHostManageUpdateCommitsWithRemnantWhenTheSwapDropsTheEntry pins the
+// commit-point rule for the vanish-inside-the-swap seam: UpdateHost commits its
+// swap, and a directly driven registry then removes that entry inside the same
+// gate hold — after the committed swap and the caller's retirement, and so
+// before the hub's gate-free finish-phase reread. The swap landed, so the edit
+// is COMMITTED: the durable entry and the store row keep the edit, a remnant
+// pins the retired identity, and forward repair converges the runtime — "once
+// the first planned teardown executes, the mutation is committed and there is
+// no compensation path back".
+func TestHostManageUpdateCommitsWithRemnantWhenTheSwapDropsTheEntry(t *testing.T) {
+	f := newUpdateFixture(t)
+	removed := make(chan error, 1)
+	manager := sshconn.New(f.hosts, sshconn.Options{
+		Runner:  &attachedUpdateRunner{},
+		OnEvent: func(ev sshconn.Event) { f.m.observeEvent(ev) },
+		// The removal lands inside UpdateHost's gate hold, after the committed
+		// swap and the caller's retirement, and therefore before the hub's
+		// gate-free finish-phase reread: drive the registry directly, bypassing
+		// the hub mutation mark, to make that reread observe the vanished live
+		// entry.
+		AfterUpdateHostSwap: func(name string) {
+			removed <- f.hosts.Remove(name)
+		},
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): the commit-failure
+	// seam below must be reached under the hub's own reservation.
+	f.m.cfg.gate = manager
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+
+	result, err := f.m.UpdateResult(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update = %v, want the committed-with-teardown-failure arm", err)
+	}
+	if result.HostMutationTeardownFailure == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
+	}
+	if removeErr := <-removed; removeErr != nil {
+		t.Fatalf("direct registry removal: %v", removeErr)
+	}
+	if _, ok := f.hosts.Get("side"); ok {
+		t.Fatal("the directly removed live entry reappeared")
+	}
+	// The commit stands: the store row and the file keep the edit.
+	stored := f.m.cfg.store.snapshot()
+	if len(stored) != 1 || stored[0].SSH != "edited.example" {
+		t.Fatalf("store rows after the vanished swap = %+v, want the committed edit", stored)
+	}
+	onDisk, loadErr := LoadConfig(f.configPath)
+	if loadErr != nil {
+		t.Fatalf("load hub.toml: %v", loadErr)
+	}
+	if len(onDisk.Hosts) != 1 || onDisk.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("hub.toml = %+v, want the committed edit", onDisk.Hosts)
+	}
+	// The retry re-applies the staged runtime set, converging the live set to
+	// the configuration hub.toml already holds.
+	retry, err := f.m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{
+		RemnantID: result.HostMutationTeardownFailure.RemnantID,
+	})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
+	}
+	if live, ok := f.hosts.Get("side"); !ok || live.SSH != "edited.example" {
+		t.Fatalf("live entry after the retry = %+v (ok=%v), want the committed edit re-applied", live, ok)
+	}
+}
+
+// TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes pins the
+// live-failure arm's absent-entry case, which only a directly driven registry
+// reaches: the edit's commit has landed, its live phase is parked on the gate a
+// supervisor holds, and the registry drops the name before UpdateHost runs. The
+// live phase then fails with hostreg.ErrUnknownHost *and* the live set has no
+// entry to restore, so the un-commit must be a removal — the committed store
+// row and the file entry go too. Restoring the edited row instead leaves an edit
+// for a name that is not live, which a later Add duplicates and the next
+// hub.toml load rejects. The name's derived state goes with the row exactly as the
+// success-side vanished arm retires it: leaving the source registration, the
+// attach record, the cache generation, or the retained list behind keeps facts
+// for a name the live registry no longer holds, and a later Add reuses the stale
+// source instance.
+// TestHostManageUpdateCommitsWithRemnantWhenTheLiveEntryVanishes pins spec 08
+// §6's commit-point rule against the vanished-entry seam: a registry driven
+// directly under the update's gate hold drops the name, so the rebind cannot
+// find it. The commit landed before that, so the edit is COMMITTED — the store
+// row and the file keep the edited entry, the receipt is the
+// committed-with-teardown-failure arm, and a durable remnant pins the identity
+// whose rebind failed. Compensation, the pre-commit rule, is over: restoring
+// bytes cannot rebuild the handles the rebind was to retire.
+func TestHostManageUpdateCommitsWithRemnantWhenTheLiveEntryVanishes(t *testing.T) {
+	pu := startParkedUpdate(t, "side")
+	pu.m.cfg.mu.Lock()
+	_, present := pu.m.cfg.hosts.Get("side")
+	pu.m.cfg.mu.Unlock()
+	if !present {
+		t.Fatal("the live entry vanished before the test could drop it")
+	}
+	if err := pu.m.cfg.hosts.Remove("side"); err != nil {
+		t.Fatalf("direct registry removal: %v", err)
+	}
+	pu.release()
+	done := pu.waitUpdateDone(t)
+	if done.err == nil {
+		t.Fatal("Update whose live entry vanished succeeded, want the teardown-failure arm")
+	}
+	if _, ok := pu.m.cfg.hosts.Get("side"); ok {
+		t.Fatal("the directly removed live entry reappeared")
+	}
+	// The committed row and the file keep the edit: the commit is not undone.
+	var stored *hostreg.Host
+	for _, e := range pu.m.cfg.store.snapshot() {
+		if e.Name == "side" {
+			copyEntry := e
+			stored = &copyEntry
+		}
+	}
+	if stored == nil || stored.SSH != "edited.example" {
+		t.Fatalf("store rows = %+v, want the committed edit for side", pu.m.cfg.store.snapshot())
+	}
+	if names := hubTOMLHostNames(t, pu.configPath); !slices.Contains(names, "side") {
+		t.Fatalf("hub.toml lost the committed edit: %v", names)
+	}
+	cfg, err := LoadConfig(pu.configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.Hosts) != 2 || cfg.Hosts[1].SSH != "edited.example" {
+		t.Fatalf("hub.toml = %+v, want the committed edit", cfg.Hosts)
+	}
+	// The remnant is durable and open, and the fence holds the name until the
+	// repair converges.
+	remnants := pu.m.cfg.store.remnantSnapshot()
+	if len(remnants) != 1 {
+		t.Fatalf("remnants = %+v, want exactly one open remnant", remnants)
+	}
+	var remnantID string
+	for id, remnant := range remnants {
+		remnantID = id
+		if !remnant.open() || remnant.PendingTeardown.Kind != hostTeardownKindUpdate {
+			t.Fatalf("remnant = %+v, want an open update remnant", remnant)
+		}
+	}
+	// The retry re-applies the staged runtime set first (the file's entry, which
+	// hub.toml already holds), so the vanished name converges back into the live
+	// set and the remnant clears.
+	retry, err := pu.m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
+	}
+	live, ok := pu.m.cfg.hosts.Get("side")
+	if !ok || live.SSH != "edited.example" {
+		t.Fatalf("live entry after the retry = %+v (ok=%v), want the committed edit re-applied", live, ok)
+	}
+	if _, open := pu.m.cfg.store.markedRemnantFor("side"); open {
+		t.Fatal("the fence still stands after the retry")
+	}
+}
+
+// TestHostManageUpdateVanishedEntryRetiresDerivedState pins the finish-phase
+// vanished arm's cleanup: when a directly driven registry drops the name inside
+// the same gate hold as a successful live phase — after the committed swap and the
+// retirement, before the hub rereads the live entry — the committed store row and
+// file entry go, and so does the name's derived state, exactly as Remove retires
+// it: the source registration, the name-keyed attach record, the remote-thread
+// cache entry (generation included), and the retained last-known-good list.
+// Pre-fix the arm dropped only the store row, so the tree kept rendering sessions
+// for a name the live registry no longer had.
+// TestHostManageUpdateVanishedEntryKeepsTheCommit pins the same commit-point
+// rule for the third vanished-entry seam — UpdateHost's own update observing an
+// entry a directly driven registry dropped — and with it the retirement the
+// finish phase owes a name whose rebind could not complete: the commit stands,
+// the remnant carries the repair handle, and the derived state a later row would
+// render from is retired exactly as Remove retires it.
+func TestHostManageUpdateVanishedEntryKeepsTheCommit(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	sources := appsource.NewRegistry()
+	cache := &hubcore.RemoteThreadCache{}
+	var forgotten []string
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, hosts, nil)
+	m.cfg.forgetLastGoodThreads = func(sourceID string) { forgotten = append(forgotten, sourceID) }
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	// Park the edit in its post-commit window, then drive the registry directly
+	// so the rebind observes the vanished entry.
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	m.testOnlyParkPostCommit = func(name string) {
+		if name != "side" {
+			return
+		}
+		once.Do(func() { close(parked) })
+		<-release
+	}
+	req := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	done := make(chan appwire.HostMutationResult, 1)
+	go func() {
+		result, _ := m.UpdateResult(context.Background(), req)
+		done <- result
+	}()
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the edit never reached its post-commit window")
+	}
+	if err := m.cfg.hosts.Remove("side"); err != nil {
+		t.Fatalf("direct registry removal: %v", err)
+	}
+	close(release)
+	result := <-done
+	arm := result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
+	}
+	if arm.RemnantID == "" {
+		t.Fatal("the arm names no remnant")
+	}
+	// The commit stands in both durable places.
+	if stored := m.cfg.store.snapshot(); len(stored) != 1 || stored[0].SSH != "edited.example" {
+		t.Fatalf("store rows = %+v, want the committed edit", stored)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.Hosts) != 1 || cfg.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("hub.toml = %+v, want the committed edit", cfg.Hosts)
+	}
+	if _, durable := cfg.TeardownRemnants[arm.RemnantID]; !durable {
+		t.Fatalf("hub.toml carries no remnant %q beside the committed edit", arm.RemnantID)
+	}
+	// The repair converges the runtime, and the remnant clears.
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: arm.RemnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
+	}
+	if live, ok := hosts.Get("side"); !ok || live.SSH != "edited.example" {
+		t.Fatalf("live entry after the retry = %+v (ok=%v), want the committed edit re-applied", live, ok)
+	}
+	_ = sources
+	_ = cache
+	_ = forgotten
+}
+
+// updateOutcome carries the parked Update's result back to the test.
+type updateOutcome struct {
+	resp appwire.HostUpdateResponse
+	err  error
+}
+
+// parkedUpdate is one update held in its post-commit rebind window: the
+// manager's test-only park seam (testOnlyParkPostCommit) holds the update after
+// its durable commit, with the mutation mutex released and its per-host gate
+// reservation still held (spec 08 §4's "gate released last"), and immediately
+// before the manager rebind — which runs under that reservation. The update's
+// commit has landed by the time the helper returns — the file and the store row
+// hold the edited entry, and the mark fences the name — and the window stays
+// open until release.
+type parkedUpdate struct {
+	m          *hubHostManager
+	sources    *appsource.Registry
+	cache      *hubcore.RemoteThreadCache
+	forgotten  *forgottenSources
+	configPath string
+	release    func()
+	updateDone chan updateOutcome
+	// parked reports the update reached its released window, and returned
+	// reports it left it — the same two moments the old runner flags reported.
+	parked   atomic.Bool
+	returned atomic.Bool
+	// drainOnce guards the one read of updateDone, so the test's own call and
+	// the cleanup's drain can both ask for the outcome safely.
+	drainOnce sync.Once
+	outcome   updateOutcome
+}
+
+// forgottenSources records the names the retention seam was asked to drop. The
+// seam runs on the update's own goroutine while the test reads after
+// waitUpdateDone, so the mutex keeps the read race-free.
+type forgottenSources struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (f *forgottenSources) forget(sourceID string) {
+	f.mu.Lock()
+	f.names = append(f.names, sourceID)
+	f.mu.Unlock()
+}
+
+func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(reg, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	sources := appsource.NewRegistry()
+	// The cache and the retention hook are the fixture's own derived-state
+	// seams: a real RemoteThreadCache mints a generation per source at
+	// registration (registerRemoteHubSource) and lets RemoveSource drop it, and
+	// forgetLastGoodThreads stands in for the web server's retained
+	// last-known-good list. Both are wired here so the removal/rollback arms that
+	// retire derived state can be observed from the tests that drive them.
+	cache := &hubcore.RemoteThreadCache{}
+	forgotten := &forgottenSources{}
+	m := newHubHostManager(sources, manager, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, reg, nil)
+	m.cfg.forgetLastGoodThreads = forgotten.forget
+	for _, host := range []appwire.HostAddParams{
+		{Entry: appwire.HostEntry{Name: "keep", Address: "keep.example"}},
+		{Entry: appwire.HostEntry{Name: name, Address: name + ".example"}},
+	} {
+		if _, err := m.Add(context.Background(), host); err != nil {
+			t.Fatalf("Add(%s): %v", host.Entry.Name, err)
+		}
+	}
+	// Park the update in its post-commit window with the manager's test-only
+	// seam: the commit lands, the mutation mutex is released, the gate
+	// reservation is still held (and stays held through the live phase), and the
+	// live phase has not run yet. The seam replaces the old parked-Ensure
+	// technique, which no longer reaches this window: the guarded update
+	// try-acquires the gate before its commit, so a gate holder refuses it busy
+	// instead of parking it.
+	pu := &parkedUpdate{m: m, sources: sources, cache: cache, forgotten: forgotten, configPath: configPath, updateDone: make(chan updateOutcome, 1)}
+	entered := make(chan struct{})
+	releaseCh := make(chan struct{})
+	var releaseOnce sync.Once
+	pu.release = func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	var parkOnce sync.Once
+	m.testOnlyParkPostCommit = func(host string) {
+		if host != name {
+			return
+		}
+		// The flag is published BEFORE the channel close the test waits on: the
+		// close is the happens-before edge, so a reader that has received from
+		// `entered` must observe `parked` as true. Publishing it after the close
+		// let a loaded runner read a stale false and fail the window assertion.
+		pu.parked.Store(true)
+		parkOnce.Do(func() { close(entered) })
+		<-releaseCh
+		pu.returned.Store(true)
+	}
+	// The guarded request is built on the test goroutine: it reads the live
+	// pair, and a helper call must never run t.Fatalf off this goroutine.
+	generation, incarnation := testMutationIdentity(t, m, name)
+	params := appwire.HostUpdateParams{
+		Name:                  name,
+		Entry:                 appwire.HostEntry{Address: "edited.example"},
+		MutationID:            newTestMutationID(),
+		ExpectedGeneration:    generation,
+		ExpectedIncarnationID: incarnation,
+	}
+	go func() {
+		resp, err := m.Update(context.Background(), params)
+		pu.updateDone <- updateOutcome{resp: resp, err: err}
+	}()
+	// The commit landed once the file holds the edited address: the save runs
+	// under the mutation mutex, ahead of the live phase; the update then parks
+	// on the seam, so the window stays open until release.
+	waitHubTOMLAddress(t, configPath, name, "edited.example")
+	<-entered
+	t.Cleanup(func() {
+		// Release the park, then drain the update before the manager's Close
+		// and the temp dir removal run.
+		pu.release()
+		pu.waitUpdateDone(t)
+	})
+	return pu
+}
+
+// waitHubTOMLAddress polls hub.toml until name's entry carries want as its
+// address, with a deadline only a genuine failure to commit can hit.
+func waitHubTOMLAddress(t *testing.T, configPath, name, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		cfg, err := LoadConfig(configPath)
+		if err == nil {
+			for _, h := range cfg.Hosts {
+				if h.Name == name && h.SSH == want {
+					return
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("the update of %q never committed: load hub.toml: %v", name, err)
+			}
+			t.Fatalf("the update of %q never committed: hub.toml = %+v", name, cfg.Hosts)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// waitUpdateDone collects the parked Update's result once the window closes.
+func (pu *parkedUpdate) waitUpdateDone(t *testing.T) updateOutcome {
+	t.Helper()
+	pu.drainOnce.Do(func() {
+		select {
+		case pu.outcome = <-pu.updateDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the update never finished after its live phase was released")
+		}
+	})
+	return pu.outcome
+}
+
+// TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits pins
+// criterion 14 and the round-8 liveness property in one window: while an update
+// is parked in its live phase the mutation mutex is free (host/list serves), the
+// fenced name refuses add, remove, and a second update with the same conflict a
+// removal in flight produces today, and a different name commits.
+func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing.T) {
+	pu := startParkedUpdate(t, "side")
+
+	if err := served(t, "host/list", func() error {
+		_, err := pu.m.List(context.Background(), appwire.EmptyParams{})
+		return err
+	}); err != nil {
+		t.Fatalf("host/list during the update window: %v", err)
+	}
+	if !pu.parked.Load() || pu.returned.Load() {
+		t.Fatal("the parked live phase finished before host/list served; the test did not hold the window open")
+	}
+
+	for _, call := range []struct {
+		name string
+		run  func() error
+	}{
+		{"host/add", func() error {
+			_, err := pu.m.Add(context.Background(), appwire.HostAddParams{
+				Entry: appwire.HostEntry{Name: "side", Address: "resurrect.example"},
+			})
+			return err
+		}},
+		{"host/remove", func() error {
+			_, err := pu.m.Remove(context.Background(), removeRequestFor("side", 1, "mid-window-incarnation"))
+			return err
+		}},
+		{"host/update", func() error {
+			_, err := pu.m.Update(context.Background(), updateRequestFor("side", 1, "mid-window-incarnation", appwire.HostEntry{Address: "second.example"}))
+			return err
+		}},
+	} {
+		if err := served(t, call.name, call.run); err == nil {
+			t.Errorf("%s of the mid-update name committed, want the mutation conflict", call.name)
+		} else {
+			assertWireCode(t, err, appwire.CodeConflict)
+		}
+	}
+	// The refusals committed nothing: the entry the update's own commit wrote is
+	// the whole durable state of the window.
+	assertHubTOMLHostNames(t, pu.configPath, "keep", "side")
+	cfg, err := LoadConfig(pu.configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.Hosts) != 2 || cfg.Hosts[1].Name != "side" || cfg.Hosts[1].SSH != "edited.example" {
+		t.Fatalf("hub.toml during the window = %+v, want the edited entry", cfg.Hosts)
+	}
+
+	// A different name commits through the window: one host's teardown holds up
+	// no other host's mutation.
+	if err := served(t, "host/add (other)", func() error {
+		_, err := pu.m.Add(context.Background(), appwire.HostAddParams{
+			Entry: appwire.HostEntry{Name: "other", Address: "other.example"},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("Add(other) during the update window: %v", err)
+	}
+	assertHubTOMLHostNames(t, pu.configPath, "keep", "side", "other")
+
+	// Release: the update completes, the row reports the edited entry, and the
+	// fence lifts with it.
+	pu.release()
+	done := pu.waitUpdateDone(t)
+	if done.err != nil {
+		t.Fatalf("Update: %v", done.err)
+	}
+	if done.resp.Host.Address != "edited.example" {
+		t.Fatalf("update row = %+v, want the edited entry", done.resp.Host)
+	}
+	if _, err := pu.m.Update(context.Background(), updateRequest(t, pu.m, "side", appwire.HostEntry{Address: "after.example"})); err != nil {
+		t.Fatalf("Update after the window closed: %v", err)
+	}
+}
+
+// TestHostManageUpdateLeavesTheRowOffline pins criteria 7/8's row half at the hub
+// level: the edit retires the channel, so the row reads offline with Connect
+// available, and the configured values are the edited entry's (criterion 1).
+// The dial half — that a following attach dials the EDITED entry — is pinned in
+// package sshconn, where the attach fixtures live
+// (TestEnsureAfterUpdateDialsTheEditedEntry).
+func TestHostManageUpdateLeavesTheRowOffline(t *testing.T) {
+	pu := startParkedUpdate(t, "side")
+	pu.release()
+	if done := pu.waitUpdateDone(t); done.err != nil {
+		t.Fatalf("Update: %v", done.err)
+	}
+	row, err := pu.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if row.Host.Attached {
+		t.Fatalf("row = %+v, want it offline: every update retires the channel", row.Host)
+	}
+	if row.Host.Address != "edited.example" || row.Host.Origin != hostOriginHubTOML {
+		t.Fatalf("row = %+v, want the edited entry under the hub.toml origin", row.Host)
+	}
+}
+
+// TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate pins the
+// swap-before-clear ordering: while UpdateHost waits, a row built from the old
+// registration may still honestly retain its attached facts. Once the registry
+// swaps, that old registration is fenced out and the final clear must remove the
+// facts it recorded during the wait.
+func TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate(t *testing.T) {
+	pu := startParkedUpdate(t, "side")
+
+	// Simulate the fenced fold of a concurrent row built from the still-current
+	// old entry. observeEvent and recordKnown are the same seams lifecycle events
+	// and attached hostRow calls use to repopulate the name-keyed record; the row
+	// carries the still-current old entry's generation, exactly as a row built
+	// before the swap would.
+	preSwap, _ := pu.m.cfg.hosts.Get("side")
+	pu.m.cfg.mu.Lock()
+	pu.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "old-server", ServerVersion: "0.1.0",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}, hostFactsValidity{handshake: true, facts: true}, preSwap.Generation)
+	pu.m.cfg.mu.Unlock()
+	pu.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("old attach failed")})
+
+	pu.release()
+	done := pu.waitUpdateDone(t)
+	if done.err != nil {
+		t.Fatalf("Update: %v", done.err)
+	}
+	row := done.resp.Host
+	if row.Name != "side" || row.Address != "edited.example" || row.Origin != hostOriginHubTOML {
+		t.Fatalf("finished row = %+v, want the edited configured entry", row)
+	}
+	if row.ServerName != "" || row.ServerVersion != "" || row.HubVersion != "" || row.OS != "" || row.Arch != "" {
+		t.Fatalf("finished row = %+v, want no facts retained from the old identity", row)
+	}
+	if row.LastAttachErr != "" {
+		t.Fatalf("finished row = %+v, want no attach error retained from the old identity", row)
+	}
+}
+
+// attachedUpdateStdio is one in-memory SSH child stream. Its peer serves the
+// AppWire initialize handshake, so Manager.Ensure publishes a real Channel that
+// the hub's Update path must retire.
+type attachedUpdateStdio struct {
+	conn net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func (s *attachedUpdateStdio) Stdin() io.WriteCloser { return s.conn }
+func (s *attachedUpdateStdio) Stdout() io.ReadCloser { return s.conn }
+func (s *attachedUpdateStdio) Kill() error {
+	s.once.Do(func() {
+		_ = s.conn.Close()
+		close(s.done)
+	})
+	return nil
+}
+func (s *attachedUpdateStdio) Wait() error {
+	<-s.done
+	return nil
+}
+
+// attachedUpdateRunner answers the normal preflight as an already-healthy dev
+// hub, then serves initialize over an in-memory stream. It never starts a real
+// process or opens a network listener.
+type attachedUpdateRunner struct{}
+
+func (*attachedUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+	joined := strings.Join(argv, " ")
+	switch {
+	case strings.HasSuffix(joined, "uname -s"):
+		return []byte("Linux\n"), nil
+	case strings.HasSuffix(joined, "uname -m"):
+		return []byte("x86_64\n"), nil
+	case strings.Contains(joined, "XDG_STATE_HOME"):
+		return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+	case strings.HasSuffix(joined, "id -u"):
+		return []byte("1000\n"), nil
+	case strings.Contains(joined, "launch-check"):
+		return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+	case strings.Contains(joined, "api/health"):
+		return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+	default:
+		return nil, errors.New("attachedUpdateRunner: unexpected remote command")
+	}
+}
+
+func (*attachedUpdateRunner) Start(_ context.Context, _ []string, _ io.Writer) (sshconn.Stdio, error) {
+	client, server := net.Pipe()
+	stdio := &attachedUpdateStdio{conn: client, done: make(chan struct{})}
+	go func() {
+		transport := appwire.NewStreamTransport(server)
+		defer transport.Close()
+		for {
+			msg, err := transport.Recv(context.Background())
+			if err != nil {
+				return
+			}
+			if msg.Request != nil && msg.Request.Method == appwire.MethodInitialize {
+				resp := appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+				if err := transport.Send(context.Background(), appwire.ResponseMessage(msg.Request.ID, resp)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return stdio, nil
+}
+
+// TestHostManageUpdateDropsAnAttachedChannel proves the manager-backed live
+// phase is wired through the hub path: a real attached channel exists before
+// Update and is gone when Update returns. The offline-row test above alone
+// cannot prove this because its parked Ensure deliberately fails before attach.
+func TestHostManageUpdateDropsAnAttachedChannel(t *testing.T) {
+	f := newUpdateFixture(t)
+	runner := &attachedUpdateRunner{}
+	manager := sshconn.New(f.hosts, sshconn.Options{Runner: runner})
+	t.Cleanup(func() { _ = manager.Close() })
+	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	f.m.cfg.gate = manager
+	f.m.cfg.online = manager.Attached
+	f.m.cfg.clientIfAttached = manager.ClientIfAttached
+
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+	if !manager.Attached("side") {
+		t.Fatal("host is offline before Update; the test did not establish the channel")
+	}
+	if _, ok := manager.ClientIfAttached("side"); !ok {
+		t.Fatal("ClientIfAttached before Update = false, want a live channel")
+	}
+
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if manager.Attached("side") {
+		t.Fatal("Attached after hub Update = true, want the channel retired")
+	}
+	if _, ok := manager.ClientIfAttached("side"); ok {
+		t.Fatal("ClientIfAttached after hub Update = true, want no live channel")
+	}
+	row, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after Update: %v", err)
+	}
+	if row.Host.Attached || row.Host.Address != "edited.example" {
+		t.Fatalf("row after Update = %+v, want the edited host offline", row.Host)
+	}
+}
+
+// TestHostManageUpdateClearsTheAttachRecord pins criterion 8's offline half: an
+// edit retires the identity the retained attach facts belong to, so the retiring
+// record — its attach error and its last-known facts — does not outlive the entry
+// it describes. No teardown clears it for an offline host whose address changed;
+// this is the one live effect the edit performs itself.
+func TestHostManageUpdateClearsTheAttachRecord(t *testing.T) {
+	f := newUpdateFixture(t)
+	// Retain state the way the manager's lifecycle events and attached rows do.
+	// The failure carries the error the row renders; the state event that follows
+	// it is what marks the host in-progress without clearing that error, so the
+	// record carries both halves the edit must retire. Seeding the failure alone
+	// would leave midAttach false, and the post-edit mid-attach assertion below
+	// could then never fail.
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("dial refused")})
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StateAttaching})
+	live, _ := f.hosts.Get("side")
+	f.m.cfg.mu.Lock()
+	f.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}, hostFactsValidity{handshake: true, facts: true}, live.Generation)
+	f.m.cfg.mu.Unlock()
+
+	before, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !before.Host.MidAttach || before.Host.LastAttachErr != "dial refused" || before.Host.HubVersion != "9.9.9" {
+		t.Fatalf("row before the edit = %+v, want the retained attach state: in-progress, its error, and its facts", before.Host)
+	}
+
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "side2.example"})); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	after, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after the edit: %v", err)
+	}
+	if after.Host.LastAttachErr != "" {
+		t.Fatalf("row = %+v, want the retired identity's attach error gone", after.Host)
+	}
+	if after.Host.MidAttach {
+		t.Fatalf("row = %+v, want the retired identity's in-progress state gone", after.Host)
+	}
+	if after.Host.ServerName != "" || after.Host.ServerVersion != "" || after.Host.HubVersion != "" ||
+		after.Host.OS != "" || after.Host.Arch != "" {
+		t.Fatalf("row = %+v, want the retired identity's last-known facts gone", after.Host)
+	}
+	if after.Host.Address != "side2.example" {
+		t.Fatalf("row = %+v, want the edited entry", after.Host)
+	}
+}
+
+// TestHostManageUpdateHoldsRetainedStateOutOfAnInFlightMutation pins the row
+// interleaving the mutation mark exists for: an update has committed its swap
+// (the new, higher-generation entry is visible) but has not yet run its
+// retirement, with the mutation mutex released between the two. A concurrent,
+// gate-free row that snapshots the new entry passes hostEntryCurrent and still
+// sees gen > retiredThrough, so it would fold the retired identity's midAttach,
+// lastAttachError, and last-known facts unless the name's in-flight mark fences
+// it out. hostRow must therefore fold and record nothing while the mark is
+// held. The mark's lifetime is what makes this exactly the window: it is taken
+// in the update's commit phase and cleared in its finish phase (Update), so it
+// spans the commit-to-retire gap and nothing beyond it — which is why clearing
+// the mark must fold the retained state back, not mute it forever.
+func TestHostManageUpdateHoldsRetainedStateOutOfAnInFlightMutation(t *testing.T) {
+	f := newUpdateFixture(t)
+	// Retain the identity state an edit must retire, the way the manager's
+	// lifecycle events and attached rows do: a failure carrying the error, the
+	// state event that marks the host in-progress without clearing it, and the
+	// last-known facts of an attached row.
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("dial refused")})
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StateAttaching})
+	live, _ := f.hosts.Get("side")
+	f.m.cfg.mu.Lock()
+	f.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}, hostFactsValidity{handshake: true, facts: true}, live.Generation)
+	// Take the mark the update path takes, in the same commit-phase hold.
+	f.m.markMutating("side")
+	f.m.cfg.mu.Unlock()
+
+	held, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status with the mutation mark held: %v", err)
+	}
+	if held.Host.MidAttach || held.Host.LastAttachErr != "" || held.Host.ServerName != "" ||
+		held.Host.ServerVersion != "" || held.Host.HubVersion != "" || held.Host.OS != "" || held.Host.Arch != "" {
+		t.Fatalf("row = %+v, want none of the retained state while the name is marked in flight", held.Host)
+	}
+
+	// Clear the mark the way the finish phase does; the retained state must fold
+	// back, proving the suppression is the window and not a permanent mute.
+	f.m.cfg.mu.Lock()
+	f.m.unmarkMutating("side")
+	f.m.cfg.mu.Unlock()
+
+	released, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after the mark cleared: %v", err)
+	}
+	if !released.Host.MidAttach || released.Host.LastAttachErr != "dial refused" || released.Host.HubVersion != "9.9.9" {
+		t.Fatalf("row = %+v, want the retained attach state folded back once the mark cleared", released.Host)
+	}
+}
+
+// TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange pins criterion 10's
+// both halves: a roots edit drops the host's derived rows and its last-good
+// retention and registers the source afresh — the source's identity owns what it
+// addresses — while an edit that leaves roots alone keeps the very same source,
+// its cache generation, and the retained list, so an address or path edit never
+// blanks the host's sessions in the tree.
+func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	sources := appsource.NewRegistry()
+	cache := &hubcore.RemoteThreadCache{}
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, hosts, nil)
+	var forgotten []string
+	m.cfg.forgetLastGoodThreads = func(sourceID string) { forgotten = append(forgotten, sourceID) }
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example", Roots: []string{"/one"}},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	firstSource, ok := sources.Source("side")
+	if !ok {
+		t.Fatal("the added host has no source")
+	}
+	firstGen, ok := cache.SourceGeneration("side")
+	if !ok {
+		t.Fatal("the added host's source has no cache generation")
+	}
+
+	// A non-roots edit: the same source, the same generation, nothing forgotten.
+	if _, err := m.Update(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "side2.example", Roots: []string{"/one"}})); err != nil {
+		t.Fatalf("non-roots Update: %v", err)
+	}
+	if kept, ok := sources.Source("side"); !ok || kept != firstSource {
+		t.Fatalf("source after a non-roots edit = %v (present %v), want the same instance", kept, ok)
+	}
+	if gen, ok := cache.SourceGeneration("side"); !ok || gen != firstGen {
+		t.Fatalf("cache generation after a non-roots edit = %d (present %v), want it unchanged at %d", gen, ok, firstGen)
+	}
+	if len(forgotten) != 0 {
+		t.Fatalf("a non-roots edit dropped retained rows for %v, want nothing", forgotten)
+	}
+
+	// A roots edit: a fresh registration, the old identities and retention
+	// dropped first, and the generation the re-registration minted still in place
+	// afterwards.
+	if _, err := m.Update(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "side2.example", Roots: []string{"/two"}})); err != nil {
+		t.Fatalf("roots Update: %v", err)
+	}
+	secondSource, ok := sources.Source("side")
+	if !ok {
+		t.Fatal("the roots edit left the host with no source")
+	}
+	if secondSource == firstSource {
+		t.Fatal("the roots edit kept the old source, whose identity addresses the old roots")
+	}
+	secondGen, ok := cache.SourceGeneration("side")
+	if !ok {
+		t.Fatal("the roots edit left the source unregistered in the cache")
+	}
+	if secondGen == firstGen {
+		t.Fatalf("cache generation = %d, want the re-registration's own", secondGen)
+	}
+	if !slices.Equal(forgotten, []string{"side"}) {
+		t.Fatalf("forgotten = %v, want exactly the roots edit's own drop", forgotten)
+	}
+}
+
+// TestHostManageRootsEditCannotResurrectOldRetention holds the finish phase in
+// the exact window after its retention clear and asks a completed old-source
+// walk to store real rows. Both ownership configurations must reject the stale
+// store: a cache generation when RemoteThreadCache is wired, and the source
+// instance when it is absent. The channels hold the window deterministically;
+// no scheduling sleep manufactures the race.
+func TestHostManageRootsEditCannotResurrectOldRetention(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		withCache bool
+	}{
+		{name: "cache_wired", withCache: true},
+		{name: "cache_absent", withCache: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "hub.toml")
+			if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+				t.Fatalf("write hub.toml: %v", err)
+			}
+			hosts, err := hostreg.New(nil)
+			if err != nil {
+				t.Fatalf("hostreg.New: %v", err)
+			}
+			sources := appsource.NewRegistry()
+			var cache *hubcore.RemoteThreadCache
+			if tt.withCache {
+				cache = &hubcore.RemoteThreadCache{}
+			}
+			webCfg := hubcore.WebConfig{RemoteThreadCache: cache}
+			m := newHubHostManager(sources, nil, webCfg, configPath, hosts, nil)
+			if _, err := m.Add(context.Background(), appwire.HostAddParams{
+				Entry: appwire.HostEntry{Name: "side", Address: "side.example", Roots: []string{"/old-root"}},
+			}); err != nil {
+				t.Fatalf("Add(side): %v", err)
+			}
+
+			oldSource, ok := sources.Source("side")
+			if !ok {
+				t.Fatal("the added host has no source")
+			}
+			var oldGeneration uint64
+			capturedGeneration := false
+			if cache != nil {
+				oldGeneration, capturedGeneration = cache.SourceGeneration("side")
+				if !capturedGeneration {
+					t.Fatal("the added host's source has no cache generation")
+				}
+			}
+			web := &WebServer{cfg: webCfg, sources: sources}
+			oldRows := []appwire.Thread{{ID: "retired-root-session", Source: "side", CWD: "/old-root"}}
+			web.storeLastGoodThreadsIfCurrent(oldSource, oldGeneration, capturedGeneration, oldRows)
+			if got := web.lastGoodThreadsForSource("side"); len(got) != 1 || got[0].ID != oldRows[0].ID || got[0].CWD != oldRows[0].CWD {
+				t.Fatalf("seeded retention = %+v, want the old source's real row %+v", got, oldRows)
+			}
+
+			forgotten := make(chan struct{})
+			releaseFinish := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(releaseFinish) }) })
+			m.cfg.forgetLastGoodThreads = func(sourceID string) {
+				web.forgetLastGoodThreads(sourceID)
+				close(forgotten)
+				<-releaseFinish
+			}
+
+			updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "side.example", Roots: []string{"/new-root"}})
+			updateDone := make(chan error, 1)
+			go func() {
+				_, err := m.Update(context.Background(), updateParams)
+				updateDone <- err
+			}()
+			<-forgotten
+			if got := web.lastGoodThreadsForSource("side"); len(got) != 0 {
+				t.Fatalf("retention at the held post-forget window = %+v, want none", got)
+			}
+
+			// Complete the old walk while the finish phase is held. The retirement
+			// that makes this store stale must already have happened, or this write
+			// can recreate rows that no later step clears.
+			web.storeLastGoodThreadsIfCurrent(oldSource, oldGeneration, capturedGeneration, oldRows)
+			releaseOnce.Do(func() { close(releaseFinish) })
+			if err := <-updateDone; err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			if got := web.lastGoodThreadsForSource("side"); len(got) != 0 {
+				t.Fatalf("old-root retention survived the completed roots edit: %+v", got)
+			}
+		})
+	}
+}
+
+// serveUpdateInitialize answers the AppWire initialize handshake on a runner's
+// in-memory stream, so Manager.Ensure can publish a real channel without a
+// process or a listener.
+func serveUpdateInitialize(server net.Conn) {
+	transport := appwire.NewStreamTransport(server)
+	defer transport.Close()
+	for {
+		msg, err := transport.Recv(context.Background())
+		if err != nil {
+			return
+		}
+		if msg.Request != nil && msg.Request.Method == appwire.MethodInitialize {
+			resp := appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+			if err := transport.Send(context.Background(), appwire.ResponseMessage(msg.Request.ID, resp)); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// reapParkingStdio is one in-memory SSH child whose exit (Wait) parks on a test
+// channel: Channel.Close kills it and then waits on the child's exit, so the
+// reap runs to completion only when the test releases it. Kill signals entered,
+// which the gate-inheriting rebind reaches while the mutation's per-host
+// reservation is still held (spec 08 §4's "gate released last").
+type reapParkingStdio struct {
+	conn        net.Conn
+	done        chan struct{}
+	once        sync.Once
+	entered     chan struct{}
+	waitRelease <-chan struct{}
+}
+
+func (s *reapParkingStdio) Stdin() io.WriteCloser { return s.conn }
+func (s *reapParkingStdio) Stdout() io.ReadCloser { return s.conn }
+func (s *reapParkingStdio) Kill() error {
+	s.once.Do(func() {
+		close(s.entered)
+		_ = s.conn.Close()
+		close(s.done)
+	})
+	return nil
+}
+func (s *reapParkingStdio) Wait() error {
+	<-s.done
+	<-s.waitRelease
+	return nil
+}
+
+// reapParkingRunner parks a real attached channel's reap on reapRelease, so a
+// rebind can be observed inside its manager call — after the teardown and the
+// registry swap, with the mutation's per-host reservation still held and
+// UpdateHostUnderGate not yet returned. A later Start parks the attach itself
+// (after the manager has emitted StateAttaching) and keeps holding the per-host
+// gate, so a new-identity Ensure stays mid-attach.
+type reapParkingRunner struct {
+	attachedUpdateRunner
+	mu          sync.Mutex
+	starts      int
+	newOnce     sync.Once
+	reapEntered chan struct{}
+	reapRelease chan struct{}
+	newEntered  chan struct{}
+	newRelease  chan struct{}
+}
+
+func (r *reapParkingRunner) Start(_ context.Context, _ []string, _ io.Writer) (sshconn.Stdio, error) {
+	r.mu.Lock()
+	r.starts++
+	n := r.starts
+	r.mu.Unlock()
+	if n == 1 {
+		client, server := net.Pipe()
+		stdio := &reapParkingStdio{
+			conn: client, done: make(chan struct{}),
+			entered: r.reapEntered, waitRelease: r.reapRelease,
+		}
+		go serveUpdateInitialize(server)
+		return stdio, nil
+	}
+	r.newOnce.Do(func() { close(r.newEntered) })
+	<-r.newRelease
+	return nil, errors.New("reapParkingRunner: released")
+}
+
+// TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold is the RED/GREEN
+// test for the update-versus-attach race. The record clear is handed to the
+// manager and runs inside the swap's own gate hold, so it happens before a
+// new-identity attach can start, and the mutation's reservation is held through
+// the whole rebind (spec 08 §4's "gate released last"). Pre-fix, the clear ran
+// after UpdateHost returned — a window in which the new registration can
+// already have attached and recorded its own mid-attach state — and erased
+// that fresh state. The test holds the update inside its reap (the swap and the
+// clear done, the reservation still held), pins that a competing acquisition is
+// refused there, records the new identity's mid-attach through the same
+// lifecycle seam a real attach uses, releases the reap, and asserts the
+// response and status rows still carry that fresh state.
+func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &reapParkingRunner{
+		reapEntered: make(chan struct{}),
+		reapRelease: make(chan struct{}),
+		newEntered:  make(chan struct{}),
+		newRelease:  make(chan struct{}),
+	}
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, reg, nil)
+	manager := sshconn.New(reg, sshconn.Options{
+		Runner:  runner,
+		OnEvent: func(ev sshconn.Event) { m.observeEvent(ev) },
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	// The reap and the parked new-identity attach are released independently;
+	// one sync.Once each, so releasing the reap cannot swallow the later release.
+	// Registered after the manager's Close cleanup so it runs first (LIFO): Close
+	// waits for the parked Ensure, so the parks must be released ahead of it.
+	var reapOnce, newOnce sync.Once
+	t.Cleanup(func() {
+		reapOnce.Do(func() { close(runner.reapRelease) })
+		newOnce.Do(func() { close(runner.newRelease) })
+	})
+	m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	m.cfg.gate = manager
+
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	// Attach the original identity: the update must have a channel to reap.
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+	if !manager.Attached("side") {
+		t.Fatal("host is offline before Update; the test did not establish the channel")
+	}
+
+	updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	updateDone := make(chan updateOutcome, 1)
+	go func() {
+		resp, err := m.Update(context.Background(), updateParams)
+		updateDone <- updateOutcome{resp: resp, err: err}
+	}()
+
+	// The update has swapped the entry, emitted the retired identity's Detached,
+	// run its retire hook, and is now parked in the reap — inside the manager
+	// call, with the mutation's reservation still held.
+	select {
+	case <-runner.reapEntered:
+	case done := <-updateDone:
+		t.Fatalf("the update finished before its reap: err=%v", done.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never reached its reap; the runner did not park the channel close")
+	}
+
+	// The window a new-identity attach would enter is closed: with the retire
+	// hook already run, a competing acquisition — the first step of any attach —
+	// is refused busy instead of entering the swap hold.
+	competing, err := manager.TryAcquire("side", hostops.Holder{Kind: hostops.HolderPlan})
+	if err == nil {
+		competing()
+		t.Fatal("a new-identity acquisition entered the swap hold after the retire hook ran")
+	}
+	var busy *hostops.BusyError
+	if !errors.As(err, &busy) || busy.Holder.Kind != hostops.HolderManager || busy.Holder.Activity != "update" {
+		t.Fatalf("competing acquisition refusal = %v, want the update reservation's busy error", err)
+	}
+
+	// The fresh state the fix protects: a real new-identity attach cannot start
+	// under the held reservation, so its mid-attach state is recorded through the
+	// same lifecycle seam the attach emits (the state write itself takes no
+	// gate). A pre-fix post-return clear would wipe it before the response row
+	// was built.
+	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StateAttaching})
+
+	// Release the reap: UpdateHost returns, and its response row is built while
+	// the just-recorded state must still be there.
+	reapOnce.Do(func() { close(runner.reapRelease) })
+	select {
+	case done := <-updateDone:
+		if done.err != nil {
+			t.Fatalf("Update: %v", done.err)
+		}
+		if !done.resp.Host.MidAttach {
+			t.Fatalf("update row = %+v, want the new identity's in-progress attach retained", done.resp.Host)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never returned after its reap was released")
+	}
+	row, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after Update: %v", err)
+	}
+	if !row.Host.MidAttach {
+		t.Fatalf("row = %+v, want the new identity's in-progress attach retained after Update", row.Host)
+	}
+	if row.Host.Address != "edited.example" {
+		t.Fatalf("row = %+v, want the edited entry", row.Host)
+	}
+}
+
+// TestHostManageUpdateStaleRowCannotResurrectRetiredState pins the reviewer's
+// interleaving exactly: a row built from the PRE-swap entry passes
+// hostEntryCurrent before the swap, the swap advances the generation and its
+// retire hook clears the record, and only THEN does the stale row reach its
+// state writes. With the update parked in its reap, the swap and the hook have
+// already run and the gate is free, so the stale write lands after the
+// retirement — the window that TestHostManageUpdateClearsFactsRecordedWhile-
+// WaitingForTheGate never places the write in (that test records before the
+// swap). Pre-fix the retirement was a bare remove, so the stale recordKnown
+// recreated the record from the retired identity and the stale apply folded
+// its facts back; the generation-scoped retire fences both. The other half is
+// asserted too: a row for the NEW generation still records and folds normally,
+// so the mark cannot block the live identity.
+func TestHostManageUpdateStaleRowCannotResurrectRetiredState(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &reapParkingRunner{
+		reapEntered: make(chan struct{}),
+		reapRelease: make(chan struct{}),
+		newEntered:  make(chan struct{}),
+		newRelease:  make(chan struct{}),
+	}
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, reg, nil)
+	manager := sshconn.New(reg, sshconn.Options{
+		Runner:  runner,
+		OnEvent: func(ev sshconn.Event) { m.observeEvent(ev) },
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	var reapOnce, newOnce sync.Once
+	t.Cleanup(func() {
+		reapOnce.Do(func() { close(runner.reapRelease) })
+		newOnce.Do(func() { close(runner.newRelease) })
+	})
+	m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	m.cfg.gate = manager
+
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	staleEntry, ok := reg.Get("side")
+	if !ok {
+		t.Fatal("side not registered before the update")
+	}
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+
+	updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	updateDone := make(chan updateOutcome, 1)
+	go func() {
+		resp, err := m.Update(context.Background(), updateParams)
+		updateDone <- updateOutcome{resp: resp, err: err}
+	}()
+	// The update has swapped the entry and run its retire hook, and is parked in
+	// the reap inside the manager call: the retirement is already done, and the
+	// stale writes below are direct state writes that take no gate.
+	select {
+	case <-runner.reapEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never reached its reap; the runner did not park the channel close")
+	}
+
+	newEntry, ok := reg.Get("side")
+	if !ok {
+		t.Fatal("the update dropped the registry entry")
+	}
+	if newEntry.Generation <= staleEntry.Generation {
+		t.Fatalf("new generation = %d, want > the retired %d", newEntry.Generation, staleEntry.Generation)
+	}
+
+	// The stale late write: an ATTACHED row captured from the retired entry
+	// reaches recordKnown after the retirement. Its generation is at or below the
+	// retired mark, so it must write nothing back — pre-fix (a bare remove) it
+	// recreated the record from the retired identity, which the edited host's
+	// later offline rows then rendered as their own.
+	staleAttached := appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "retired-hub", ServerVersion: "0.0.1",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}
+	m.cfg.mu.Lock()
+	m.cfg.state.recordKnown(staleAttached, hostFactsValidity{handshake: true, facts: true}, staleEntry.Generation)
+	m.cfg.mu.Unlock()
+	m.cfg.state.mu.Lock()
+	rec := m.cfg.state.records["side"]
+	var (
+		known   appwire.HostRow
+		errText string
+		mark    uint64
+	)
+	if rec != nil {
+		known = rec.known
+		errText = rec.lastErr
+		mark = rec.retiredThrough
+	}
+	m.cfg.state.mu.Unlock()
+	if mark != staleEntry.Generation {
+		t.Fatalf("retired mark = %d, want the retired generation %d", mark, staleEntry.Generation)
+	}
+	if known.ServerName != "" || known.ServerVersion != "" || known.HubVersion != "" || known.OS != "" || known.Arch != "" {
+		t.Fatalf("record after the stale write = %+v, want the retired identity's facts gone", known)
+	}
+	if errText != "" {
+		t.Fatalf("record attach error after the stale write = %q, want it empty", errText)
+	}
+
+	// An offline row built from the retired generation folds nothing either: the
+	// offline row the edited host's later list/status renders must not carry the
+	// retired facts.
+	staleOffline := appwire.HostRow{Name: "side"}
+	m.cfg.mu.Lock()
+	m.cfg.state.apply(&staleOffline, staleEntry.Generation)
+	m.cfg.mu.Unlock()
+	if staleOffline.MidAttach || staleOffline.LastAttachErr != "" {
+		t.Fatalf("stale offline row = %+v, want no retired attach state folded in", staleOffline)
+	}
+	if staleOffline.ServerName != "" || staleOffline.ServerVersion != "" || staleOffline.HubVersion != "" || staleOffline.OS != "" || staleOffline.Arch != "" {
+		t.Fatalf("stale offline row = %+v, want no retired facts folded in", staleOffline)
+	}
+
+	// The mark must not block the live identity: a row for the new generation
+	// still records and folds normally.
+	freshAttached := appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "new-hub", ServerVersion: "1.0.0",
+		HubVersion: "1.2.3", OS: "darwin", Arch: "arm64",
+	}
+	m.cfg.mu.Lock()
+	m.cfg.state.recordKnown(freshAttached, hostFactsValidity{handshake: true, facts: true}, newEntry.Generation)
+	freshOffline := appwire.HostRow{Name: "side"}
+	m.cfg.state.apply(&freshOffline, newEntry.Generation)
+	m.cfg.mu.Unlock()
+	if freshOffline.ServerName != "new-hub" || freshOffline.ServerVersion != "1.0.0" ||
+		freshOffline.HubVersion != "1.2.3" || freshOffline.OS != "darwin" || freshOffline.Arch != "arm64" {
+		t.Fatalf("new-generation row = %+v, want its own facts retained and folded", freshOffline)
+	}
+
+	reapOnce.Do(func() { close(runner.reapRelease) })
+	select {
+	case done := <-updateDone:
+		if done.err != nil {
+			t.Fatalf("Update: %v", done.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never returned after its reap was released")
+	}
+}
+
+// TestHostManageRemoveCarriesTheEffectiveEntryFields pins the removal response's
+// shape: it carries the whole effective entry it removed — User, EvenerPath,
+// ConfigPath, Addr, and a cloned Roots — not just the name/address/key subset
+// slice 1 needed, so a removal row matches every other row for the same host.
+// The Roots clone is asserted directly: mutating the response's slice must not
+// reach the registry entry's.
+func TestHostManageRemoveCarriesTheEffectiveEntryFields(t *testing.T) {
+	f := newUpdateFixture(t)
+	entry := appwire.HostEntry{
+		Name: "rem", Address: "rem.example", User: "operator", KeyPath: "/keys/rem",
+		EvenerPath: "/opt/evener", ConfigPath: "/etc/evener/hub.toml",
+		Addr: "127.0.0.1:9180", Roots: []string{"/srv/one", "/srv/two"},
+	}
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: entry}); err != nil {
+		t.Fatalf("Add(rem): %v", err)
+	}
+	live, ok := f.hosts.Get("rem")
+	if !ok {
+		t.Fatal("rem not registered after Add")
+	}
+	resp, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "rem"))
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	got := resp.Host
+	if !got.Removed || got.Origin != hostOriginHubTOML {
+		t.Fatalf("removal row = %+v, want Removed with the hub.toml origin", got)
+	}
+	if got.Name != "rem" || got.Address != entry.Address || got.User != entry.User ||
+		got.KeyPath != entry.KeyPath || got.EvenerPath != entry.EvenerPath ||
+		got.ConfigPath != entry.ConfigPath || got.Addr != entry.Addr {
+		t.Fatalf("removal row = %+v, want the whole effective entry %+v", got, entry)
+	}
+	if !slices.Equal(got.Roots, entry.Roots) {
+		t.Fatalf("removal row Roots = %v, want %v", got.Roots, entry.Roots)
+	}
+	if len(got.Roots) == 0 {
+		t.Fatal("removal row carried no roots; the clone assertion below cannot prove independence")
+	}
+	got.Roots[0] = "/mutated"
+	if live.Roots[0] != "/srv/one" {
+		t.Fatalf("mutating the response Roots reached the registry entry: %v", live.Roots)
+	}
+}

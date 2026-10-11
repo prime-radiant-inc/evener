@@ -304,6 +304,35 @@ func TestReconstructionValidationEnforcesNativeRecordSize(t *testing.T) {
 	}
 }
 
+// TestReconstructionMarksWrittenEntriesWithMachineryFlags: the doctor
+// writes current-build entries, so each must carry machinery_flagged —
+// otherwise DecodeEntry treats them as pre-flag legacy and infers machinery
+// from text shape, hiding a user's verbatim <system-notification> paste in
+// the reconstructed transcript. The synthesized reconstruction notice is
+// itself machinery and must carry the part flag.
+func TestReconstructionMarksWrittenEntriesWithMachineryFlags(t *testing.T) {
+	source := reconstructionSourceFixture(t)
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, map[string]string{}, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) < 2 {
+		t.Fatalf("entries = %d, want at least the fixture turns plus the reconstruction notice", len(entries))
+	}
+	for i, entry := range entries {
+		if !entry.MachineryFlagged {
+			t.Errorf("entry %d lacks machinery_flagged: reconstruction writes current-build entries, so their part flags are authoritative", i)
+		}
+	}
+	notice := entries[len(entries)-1]
+	if notice.Turn.Kind != schema.TurnSteering {
+		t.Fatalf("last entry kind = %s, want the reconstruction notice steering turn", notice.Turn.Kind)
+	}
+	if len(notice.Turn.Message.Content) != 1 || !notice.Turn.Message.Content[0].Machinery {
+		t.Fatalf("reconstruction notice part = %+v, want one flagged machinery part", notice.Turn.Message.Content)
+	}
+}
+
 func TestReconstructMatchesToolResultInstantsAndPreservesRounds(t *testing.T) {
 	source := reconstructionSourceFixture(t)
 	source.Results[0].Timestamp = "2026-09-08T18:04:00.000-07:00"
@@ -557,8 +586,56 @@ func TestReconstructRejectsDuplicateHeaderFieldsBeforeStaging(t *testing.T) {
 	}
 }
 
+func TestReconstructPreservesMemoryContext(t *testing.T) {
+	t.Parallel()
+	dbPath, metaPath, output := reconstructionFixture(t)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const body = "opaque-memory-archive-3730\nsecond-line-281"
+	if _, err := db.Exec(`UPDATE messages SET source_subtype='MEMORY_CONTEXT',content=? WHERE id=3`, body); err != nil {
+		t.Fatal(err)
+	}
+	report, err := reconstructSession(context.Background(), "02wLIRxqmq3AUo6vl2OW37", dbPath, metaPath, "", output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(report.TranscriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []transcript.Entry
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n"))[1:] {
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, entry)
+	}
+	wantKinds := []schema.TurnKind{schema.TurnUserInput, schema.TurnMemoryContext, schema.TurnAssistant, schema.TurnToolResults, schema.TurnSteering}
+	if len(entries) != len(wantKinds) {
+		t.Fatalf("entries=%d, want %d", len(entries), len(wantKinds))
+	}
+	for i, kind := range wantKinds {
+		if entries[i].Seq != i || entries[i].Turn.Kind != kind {
+			t.Fatalf("entry %d: seq=%d kind=%s, want %s", i, entries[i].Seq, entries[i].Turn.Kind, kind)
+		}
+	}
+	memory := entries[1].Turn
+	if memory.Message.Role != llm.RoleUser || memory.Message.Text() != body || memory.Timestamp.Format("2006-01-02T15:04:05Z07:00") != "2026-09-09T01:02:00Z" {
+		t.Fatalf("memory context lost role, body or timestamp: %+v", memory)
+	}
+	call := entries[2].Turn.Message.Content[0].ToolCall
+	result := entries[3].Turn.Message.Content[0].ToolResult
+	if call == nil || result == nil || call.ID != result.ToolCallID || result.Content != "result sentinel" {
+		t.Fatal("memory context disturbed the following tool round")
+	}
+}
+
 func TestReconstructRejectsResultsCrossingToolRoundBoundaries(t *testing.T) {
-	for _, kind := range []schema.TurnKind{schema.TurnUserInput, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext, schema.TurnSystem, schema.TurnAssistant, schema.TurnModelSwitch, schema.TurnFailure} {
+	for _, kind := range []schema.TurnKind{schema.TurnUserInput, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnNotesContext, schema.TurnMemoryContext, schema.TurnSystem, schema.TurnAssistant, schema.TurnModelSwitch, schema.TurnFailure} {
 		t.Run(string(kind), func(t *testing.T) {
 			source := reconstructionSourceFixture(t)
 			tool := source.Messages[4]
@@ -568,6 +645,9 @@ func TestReconstructRejectsResultsCrossingToolRoundBoundaries(t *testing.T) {
 			_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
 			if err == nil || entries != nil {
 				t.Fatal("accepted a result from an interrupted tool round")
+			}
+			if kind == schema.TurnMemoryContext && !strings.Contains(err.Error(), "crosses a tool-round boundary") {
+				t.Fatalf("memory must reject the crossed tool round, not the turn kind: %v", err)
 			}
 		})
 	}
@@ -1008,5 +1088,25 @@ func TestReconstructRetainsAggregateCacheUsageWithoutBreakdown(t *testing.T) {
 				t.Fatalf("cache writes = %d, want %d", *got.CacheWriteTokens, tc.aggregate)
 			}
 		})
+	}
+}
+
+// TestValidArchivedResultStatusCommandOutcomes covers the command-outcome
+// statuses in the job_status/delegate arm: an AgentsView archive can record a
+// job whose supervised command exited nonzero or died on a signal, and
+// reconstruction must not abort on it.
+func TestValidArchivedResultStatusCommandOutcomes(t *testing.T) {
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		if !validArchivedResultStatus("job_status", status) {
+			t.Errorf("validArchivedResultStatus(job_status, %q) = false, want true", status)
+		}
+		// The command-outcome statuses are shell-job statuses: a delegate's
+		// own lifecycle never carries one, so an archived delegate tool
+		// result with one is invalid, not reconstructed.
+		for _, tool := range []string{"delegate", "delegate_send"} {
+			if validArchivedResultStatus(tool, status) {
+				t.Errorf("validArchivedResultStatus(%q, %q) = true, want false", tool, status)
+			}
+		}
 	}
 }

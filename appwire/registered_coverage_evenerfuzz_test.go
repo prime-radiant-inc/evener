@@ -112,7 +112,9 @@ func runRegisteredCoverageSuite(t *testing.T) {
 
 type coverageCoordinator struct{ handle *coverageHandle }
 
-func (c coverageCoordinator) Register(string, string, string) PendingHandle { return c.handle }
+func (c coverageCoordinator) Register(string, string, string, string) PendingHandle {
+	return c.handle
+}
 
 type coverageHandle struct{ failed bool }
 
@@ -148,13 +150,13 @@ func coverFailureBranches(t *testing.T) {
 	go func() { errCh <- c.Request(context.Background(), "bad", nil, new(any)) }()
 	written := <-tr.writes
 	c.pendingMu.Lock()
-	c.pending[written.Request.ID.String()].ch <- Message{}
+	c.pending[written.Request.ID.String()].ch <- pendingResult{}
 	c.pendingMu.Unlock()
 	<-errCh
 	go func() { errCh <- c.Request(context.Background(), "marshal", nil, new(any)) }()
 	written = <-tr.writes
 	c.pendingMu.Lock()
-	c.pending[written.Request.ID.String()].ch <- ResponseMessage(written.Request.ID, make(chan int))
+	c.pending[written.Request.ID.String()].ch <- pendingResult{msg: ResponseMessage(written.Request.ID, make(chan int))}
 	c.pendingMu.Unlock()
 	<-errCh
 
@@ -219,7 +221,7 @@ func coverFailureBranches(t *testing.T) {
 	_ = (&WSTransport{}).Ping(context.Background())
 	pingWebSocket = oldPing
 	_, _ = DialWebSocketWithHeaders(context.Background(), "://bad", nil, nil)
-	oldRead, oldUnmarshalWS := readWebSocket, unmarshalWSMessage
+	oldRead, oldDecodeFrame := readWebSocket, decodeFrame
 	readWebSocket = func(*websocket.Conn, context.Context) (websocket.MessageType, []byte, error) {
 		return 0, nil, errors.New("read")
 	}
@@ -227,7 +229,7 @@ func coverFailureBranches(t *testing.T) {
 	readWebSocket = func(*websocket.Conn, context.Context) (websocket.MessageType, []byte, error) {
 		return websocket.MessageText, []byte("{}"), nil
 	}
-	unmarshalWSMessage = func([]byte, any) error { return errors.New("decode") }
+	decodeFrame = func(*Message, []byte) error { return errors.New("decode") }
 	_, _ = (&WSTransport{}).Recv(context.Background())
-	readWebSocket, unmarshalWSMessage = oldRead, oldUnmarshalWS
+	readWebSocket, decodeFrame = oldRead, oldDecodeFrame
 }

@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
 import { Menu, type MenuItem } from "./index";
-
-afterEach(cleanup);
 
 function items(overrides?: Partial<Record<string, Partial<MenuItem>>>): MenuItem[] {
   const base: MenuItem[] = [

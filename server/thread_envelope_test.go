@@ -51,6 +51,17 @@ func readThreadOverWire(t *testing.T, srv *Server, ref string) appwire.Thread {
 	return read.Thread
 }
 
+// listedRootEvener returns the root thread's Evener block from a status-only
+// thread/list, the list-side counterpart of readThreadOverWire.
+func listedRootEvener(t *testing.T, srv *Server) appwire.EvenerThread {
+	t.Helper()
+	list, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{StatusOnly: true})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	return list.Data[0].Evener
+}
+
 // TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem is the freshness
 // contract for facetsByEvent, asserted one producer at a time against the wire.
 //
@@ -388,6 +399,92 @@ func TestThreadEnvelopeSeedUsesTaskAggregateAndStructuredMetaGoal(t *testing.T) 
 	}
 	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "wire goal objective" || thread.Evener.Goal.Status != "active" || thread.Evener.Goal.Iterations != 2 {
 		t.Fatalf("thread.Evener.Goal = %+v, want wire goal objective/active/2", thread.Evener.Goal)
+	}
+}
+
+func TestThreadCWDSeedsFromSessionMetaAndCheckpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.SetWorkingDir("/launch/checkout")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
+		ID: "root", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/restored/worktree"},
+	}})
+
+	if got := readThreadOverWire(t, srv, "local:root").CWD; got != "/restored/worktree" {
+		t.Fatalf("seeded cwd = %q, want restored SessionMeta cwd", got)
+	}
+	// A late launch-status seed is initialization only and cannot replace the
+	// materialized current-session cwd.
+	srv.SetWorkingDir("/stale/launch-checkout")
+	if got := readThreadOverWire(t, srv, "local:root").CWD; got != "/restored/worktree" {
+		t.Fatalf("cwd after stale SetWorkingDir = %q, want restored SessionMeta cwd", got)
+	}
+
+	// A checkpoint still repairs cwd when no newer direct carrier raced it.
+	src.meta.EnvInfo.WorkingDir = "/checkpoint/worktree"
+	feedBridge(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root", Data: events.TurnEndedData{}})
+	if got := readThreadOverWire(t, srv, "local:root").CWD; got != "/checkpoint/worktree" {
+		t.Fatalf("checkpoint cwd = %q, want current SessionMeta cwd", got)
+	}
+
+	// Restoration replaces the envelope with the replacement session's metadata,
+	// not the launch checkout retained in StatusInfo.
+	srv.SetAppIdentity("local", "restored")
+	src.meta = schema.SessionMeta{ID: "restored", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/second/restored-worktree"}}
+	srv.RefreshThreadEnvelope()
+	if got := readThreadOverWire(t, srv, "local:restored").CWD; got != "/second/restored-worktree" {
+		t.Fatalf("replacement cwd = %q, want replacement SessionMeta cwd", got)
+	}
+}
+
+func TestEnvironmentChangedCWDCheckpointCannotOverwriteConcurrentCarrier(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.SetWorkingDir("/launch/A")
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
+		ID: "root", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/worktree/A"},
+	}})
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src.parkAfterMeta = func() {
+		once.Do(func() {
+			close(parked)
+			<-release
+		})
+	}
+	checkpointDone := make(chan struct{})
+	go func() {
+		defer close(checkpointDone)
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "root", Data: events.TurnEndedData{}}, nil)
+	}()
+	<-parked
+
+	cursor := srv.appNotifier.CurrentSequence()
+	BridgeEvent(srv, events.SessionEvent{
+		Kind: events.EventEnvironmentChanged, SessionID: "root",
+		Data: events.EnvironmentChangedData{WorkingDir: "/worktree/B"},
+	}, nil)
+	notifications := srv.AppNotificationsAfter(cursor, "root")
+	if len(notifications) != 1 || notifications[0].Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("environment notifications = %+v, want one thread resync", notifications)
+	}
+	if got := readThreadOverWire(t, srv, "local:root").CWD; got != "/worktree/B" {
+		t.Fatalf("resync-time cwd = %q, want direct carrier B", got)
+	}
+
+	close(release)
+	<-checkpointDone
+	if got := readThreadOverWire(t, srv, "local:root").CWD; got != "/worktree/B" {
+		t.Fatalf("cwd after stale checkpoint = %q, want direct carrier B", got)
+	}
+
+	// Launch status remains only a fallback even if its setter runs after the
+	// direct carrier committed.
+	srv.SetWorkingDir("/stale/launch-A")
+	if got := readThreadOverWire(t, srv, "local:root").CWD; got != "/worktree/B" {
+		t.Fatalf("cwd after stale launch seed = %q, want direct carrier B", got)
 	}
 }
 
@@ -745,7 +842,15 @@ func (c *countingThreadEnvelopeSource) DetailedStatus() DetailedStatus {
 	return DetailedStatus{}
 }
 func (c *countingThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { c.hit(); return nil }
-func (c *countingThreadEnvelopeSource) AskPending() bool                      { c.hit(); return false }
+func (c *countingThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	c.hit()
+	return nil
+}
+
+func (c *countingThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
+	c.hit()
+	return nil
+}
 func (c *countingThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	c.hit()
 	return schema.SessionMeta{}

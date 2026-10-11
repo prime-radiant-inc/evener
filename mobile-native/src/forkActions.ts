@@ -1,11 +1,6 @@
 import type { ConversationTurnForkActions } from "../../mobile/src/services/conversation";
 import type { DraftLibrary } from "./draftLibrary";
-import type {
-	ForkCheckpoint,
-	ForkCheckpointRepository,
-	ForkChild,
-	ForkTarget,
-} from "./forkCheckpointRepository";
+import type { ForkCheckpoint, ForkCheckpointRepository, ForkChild, ForkTarget } from "./forkCheckpointRepository";
 import type { LocationRepository } from "./location";
 
 interface ForkState {
@@ -25,8 +20,7 @@ export class ForkActions {
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
-	private unwritten: { expected: ForkCheckpoint; child: ForkChild } | null =
-		null;
+	private unwritten: { expected: ForkCheckpoint; child: ForkChild } | null = null;
 	constructor(
 		private repository: ForkCheckpointRepository,
 		private service: ConversationTurnForkActions,
@@ -57,10 +51,7 @@ export class ForkActions {
 		if (this.disposed || this.state.pending) return;
 		try {
 			if (this.unwritten) {
-				this.repository.acknowledge(
-					this.unwritten.expected,
-					this.unwritten.child,
-				);
+				this.repository.acknowledge(this.unwritten.expected, this.unwritten.child);
 				this.unwritten = null;
 			}
 			this.publish({
@@ -71,8 +62,7 @@ export class ForkActions {
 		} catch {
 			this.publish({
 				storageUnavailable: true,
-				error:
-					"The fork recovery record could not be saved or loaded. Keep this screen open and retry storage.",
+				error: "The fork recovery record could not be saved or loaded. Keep this screen open and retry storage.",
 			});
 		}
 	}
@@ -80,8 +70,7 @@ export class ForkActions {
 		if (this.disposed || !this.current() || this.state.pending) return null;
 		if (this.sourceInstance() !== target.instanceId) {
 			this.publish({
-				error:
-					"The source session changed. Return to it and select the message again.",
+				error: "The source session changed. Return to it and select the message again.",
 			});
 			return null;
 		}
@@ -127,11 +116,9 @@ export class ForkActions {
 				hubId: this.hubId,
 				sessionRef: child.ref,
 			});
-			if (!document.getSnapshot().loaded || document.getSnapshot().error)
-				document.retry();
+			if (!document.getSnapshot().loaded || document.getSnapshot().error) document.retry();
 			let draft = document.getSnapshot();
-			if (!draft.loaded || draft.error)
-				throw Error("The child draft is unavailable.");
+			if (!draft.loaded || draft.error) throw Error("The child draft is unavailable.");
 			if (!checkpoint.draftPrepared) {
 				if (
 					!draft.submitting &&
@@ -156,18 +143,9 @@ export class ForkActions {
 			return null;
 		}
 	}
-	finish(
-		locations: Pick<LocationRepository, "save">,
-		navigate: (child: ForkChild) => void,
-	) {
+	finish(locations: Pick<LocationRepository, "save">, navigate: (child: ForkChild) => void) {
 		const saved = this.state.checkpoint;
-		if (
-			this.disposed ||
-			!this.current() ||
-			!saved?.child ||
-			!saved.draftPrepared
-		)
-			return false;
+		if (this.disposed || !this.current() || !saved?.child || !saved.draftPrepared) return false;
 		try {
 			// A process exit between navigation renders must reopen the child
 			// before its recovery record can be removed.
@@ -178,8 +156,7 @@ export class ForkActions {
 			navigate(saved.child);
 		} catch {
 			this.publish({
-				error:
-					"The fork exists, but its destination could not be opened. Retry opening it.",
+				error: "The fork exists, but its destination could not be opened. Retry opening it.",
 			});
 			return false;
 		}
@@ -193,14 +170,7 @@ export class ForkActions {
 		return true;
 	}
 	discardUnknown(expected: ForkCheckpoint) {
-		if (
-			this.disposed ||
-			!this.current() ||
-			this.state.pending ||
-			expected.child ||
-			this.unwritten
-		)
-			return false;
+		if (this.disposed || !this.current() || this.state.pending || expected.child || this.unwritten) return false;
 		try {
 			const removed = this.repository.removeIf(expected);
 			if (removed)
@@ -214,8 +184,7 @@ export class ForkActions {
 		} catch {
 			this.publish({
 				storageUnavailable: true,
-				error:
-					"The saved request could not be cleared. Retry storage before creating another fork.",
+				error: "The saved request could not be cleared. Retry storage before creating another fork.",
 			});
 			return false;
 		}

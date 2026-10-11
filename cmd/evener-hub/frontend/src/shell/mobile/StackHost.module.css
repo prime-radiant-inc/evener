@@ -1,4 +1,5 @@
 .host {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -11,6 +12,18 @@
    * (the composer's own bar, whose chrome fills the home-indicator band
    * while its padding keeps the controls clear) and body (end-of-scroll
    * content on footer-less panes). */
+}
+
+.activityOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  pointer-events: none;
+}
+
+.activityOverlay > * {
+  pointer-events: auto;
 }
 
 .topBar {

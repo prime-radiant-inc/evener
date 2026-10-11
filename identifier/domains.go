@@ -26,6 +26,8 @@ func NewAPIAttemptID() (string, error)       { return newDomainID("att_") }
 func NewSyntheticCallID() (string, error)    { return newDomainID("call_") }
 func NewClientMutationID() (string, error)   { return newDomainID("") }
 func NewTerminalGeneration() (string, error) { return newDomainID("") }
+func NewTurnID() (string, error)             { return newDomainID("t_") }
+func NewRoundID() (string, error)            { return newDomainID("r_") }
 
 func ValidateSessionID(value string) error          { return validateDomainID(value, "") }
 func ValidateInstallationID(value string) error     { return validateDomainID(value, "") }
@@ -38,6 +40,8 @@ func ValidateAPIAttemptID(value string) error       { return validateDomainID(va
 func ValidateSyntheticCallID(value string) error    { return validateDomainID(value, "call_") }
 func ValidateClientMutationID(value string) error   { return validateDomainID(value, "") }
 func ValidateTerminalGeneration(value string) error { return validateDomainID(value, "") }
+func ValidateTurnID(value string) error             { return validateDomainID(value, "t_") }
+func ValidateRoundID(value string) error            { return validateDomainID(value, "r_") }
 
 func mustDomainID(newID func() (string, error)) string {
 	value, err := newID()
@@ -58,3 +62,5 @@ func MustNewAPIAttemptID() string       { return mustDomainID(NewAPIAttemptID) }
 func MustNewSyntheticCallID() string    { return mustDomainID(NewSyntheticCallID) }
 func MustNewClientMutationID() string   { return mustDomainID(NewClientMutationID) }
 func MustNewTerminalGeneration() string { return mustDomainID(NewTerminalGeneration) }
+func MustNewTurnID() string             { return mustDomainID(NewTurnID) }
+func MustNewRoundID() string            { return mustDomainID(NewRoundID) }

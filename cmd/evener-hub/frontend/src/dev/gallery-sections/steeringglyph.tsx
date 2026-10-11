@@ -14,7 +14,7 @@ export default function SteeringGlyphGallerySection() {
         <div className={styles.row}>
           <p className={styles.rowLabel}>inline in a row of text</p>
           <span>
-            <SteeringGlyph /> System steered: Tasks done
+            <SteeringGlyph /> System steered: Tasks complete
           </span>
         </div>
       </ThemeFlip>

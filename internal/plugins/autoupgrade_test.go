@@ -3,7 +3,6 @@ package plugins
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,11 +16,7 @@ func advanceGitRepo(t *testing.T, dir, file, content string) {
 	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "-C", dir, "commit", "-aqm", "advance")
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git commit: %v\n%s", err, out)
-	}
+	gitIn(t, dir, "commit", "-aqm", "advance")
 }
 
 // makeGitBackedMarketplace builds a marketplace repo whose one named plugin is
@@ -35,13 +30,7 @@ func makeGitBackedMarketplace(t *testing.T, plugin string) (mktRepo, pluginRepo 
 	makeGitRepo(t, pluginRepo, "extra.txt", "v1")
 
 	mktRepo = filepath.Join(t.TempDir(), "mkt")
-	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mj := `{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"` + plugin + `","source":{"source":"url","url":"` + pluginRepo + `"}}]}`
-	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"), []byte(mj), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeURLCatalog(t, mktRepo, plugin, pluginRepo, "")
 	makeGitRepo(t, mktRepo, "README.md", "x")
 	return mktRepo, pluginRepo
 }
@@ -171,7 +160,9 @@ func TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated(t *testing.T) {
 	}
 }
 
-func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
+// The sweep upgrades a relative-source plugin from its refreshed marketplace
+// when its folder changed.
+func TestUpdateAutoUpgrade_UpgradesARelativeSourceWhoseFolderChanged(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -187,13 +178,21 @@ func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
 	if err := m.SetAutoUpgrade(context.Background(), "widget", name, true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
-
-	updated, err := m.UpdateAutoUpgrade(context.Background())
-	if err != nil {
-		t.Fatalf("UpdateAutoUpgrade: %v", err)
+	if updated, err := m.UpdateAutoUpgrade(context.Background()); err != nil || len(updated) != 0 {
+		t.Fatalf("UpdateAutoUpgrade with the folder unchanged = %+v (%v), want no upgrade", updated, err)
 	}
-	if len(updated) != 0 {
-		t.Fatalf("UpdateAutoUpgrade touched a relative-source plugin: %+v", updated)
+
+	if err := os.WriteFile(filepath.Join(mktRepo, "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", ".")
+	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	updated, err := m.UpdateAutoUpgrade(context.Background())
+	if err != nil || len(updated) != 1 || updated[0].Plugin != "widget" {
+		t.Fatalf("UpdateAutoUpgrade after the folder changed = %+v (%v), want widget upgraded", updated, err)
 	}
 }
 

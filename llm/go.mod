@@ -9,8 +9,10 @@ require (
 	golang.org/x/net v0.50.0
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sys v0.43.0
+	primeradiant.com/evener v0.0.0
 	primeradiant.com/evener/auth v0.1.0
 	primeradiant.com/evener/envvars v0.0.0
+	primeradiant.com/evener/execsupport v0.0.0
 	primeradiant.com/evener/identifier v0.0.0
 	primeradiant.com/evener/invariant v0.0.0
 )
@@ -18,4 +20,5 @@ require (
 require (
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
 )

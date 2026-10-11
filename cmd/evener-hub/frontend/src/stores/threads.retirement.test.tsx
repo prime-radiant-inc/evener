@@ -36,8 +36,10 @@ import {
   subscribeComposerSubmissionCommitted,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { createTestComposerSource } from "../panes/session/testing/composerSource";
 import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
@@ -49,24 +51,6 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 // state in this file is awaited inside act(), and no waitFor() (which flips the
 // flag back off, RTL's asyncWrapper) is used.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-// MemoryStorage: Node 26 shadows jsdom's working window.localStorage with its
-// own non-functional global (same workaround as Composer.integration.test.tsx).
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Scripted in-process WebSocket transport
@@ -274,10 +258,21 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   // RED_SUPPRESS_REPLACEMENT is on, neither happens.
   let replacementBound = false;
 
-  socket.on("thread/read", (_id, _params) => {
+  socket.on("thread/read", (_id, params) => {
     const instanceId = replacementBound && !RED_SUPPRESS_REPLACEMENT ? INSTANCE_V2 : INSTANCE_V1;
+    // Matches the turn/start handler's own history/updated identity below:
+    // a read with no snapshot at all takes hydrateThread's legacy
+    // (unversioned) branch, whose EMPTY_HISTORY bootGeneration ("") never
+    // equals a live frame's "1" - the mismatch reads as a boot-generation
+    // replace and invalidates the thread the instant that frame lands,
+    // dropping the new turn instead of merging it.
+    const requestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
     const response: ThreadReadResponse = {
       thread: makeThread(instanceId, sentTurnIds),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: sentTurnIds.length },
+      ...(requestGeneration !== undefined ? { requestGeneration } : {}),
     };
     return response;
   });
@@ -325,16 +320,21 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
       turnId: newTurnId,
       projectionState: "reflected",
     };
-    // Emit turn/started + turn/completed after the response so the thread
-    // model gains the new turn through the real notification path.
+    // Emit history/updated (turn/started + turn/completed's read-model
+    // replacement) after the response so the thread model gains the new
+    // turn through the real notification path.
     queueMicrotask(() => {
       socket.emit({
-        method: "turn/started",
-        params: { threadId: THREAD_ID, ref: REF, turn: newTurn },
-      } as AnyNotification);
-      socket.emit({
-        method: "turn/completed",
-        params: { threadId: THREAD_ID, ref: REF, turn: newTurn },
+        method: "history/updated",
+        params: {
+          threadId: THREAD_ID,
+          ref: REF,
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...newTurn, items: [] }],
+          items: newTurn.items,
+        },
       } as AnyNotification);
       settleTurnAttempt?.();
     });
@@ -383,7 +383,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   // live, then enter the unsent draft through the editor itself.
   const { unmount } = render(
     <ClientProvider client={client}>
-      <ComposerView ref={REF} focused={false} />
+      <ComposerView ref={REF} source={createTestComposerSource(REF)} focused={false} />
     </ClientProvider>,
   );
 
@@ -487,8 +487,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  // @ts-expect-error — Node 26 localStorage workaround (same as integration test)
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();

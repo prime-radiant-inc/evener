@@ -71,15 +71,19 @@ func sessionHistory(s *Session) []schema.Turn {
 	return append([]schema.Turn(nil), s.history...)
 }
 
+// transcriptTurns is the transcript's model history: every entry but the
+// transcript-only ones, which history never holds.
 func transcriptTurns(t *testing.T, path string) []schema.Turn {
 	t.Helper()
-	data, err := readTranscriptFull(path)
+	data, err := readTranscriptFull(path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
 	var out []schema.Turn
 	for _, entry := range data.Entries {
-		out = append(out, entry.Turn)
+		if !entry.Turn.Kind.TranscriptOnly() {
+			out = append(out, entry.Turn)
+		}
 	}
 	return out
 }

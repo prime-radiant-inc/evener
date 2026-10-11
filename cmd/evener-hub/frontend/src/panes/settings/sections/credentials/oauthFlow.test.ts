@@ -1,9 +1,43 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { InstanceEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
-import { startOAuthFlow } from "./oauthFlow";
+import { CODEX_AUTH_SCHEME, startOAuthFlow, supportsHostDeviceSignIn } from "./oauthFlow";
+
+// The CROSS-LANGUAGE half of this contract. CODEX_AUTH_SCHEME above decides
+// which remote-host instances are offered "Sign in on host", and the hub's own
+// gate (cmd/evener-hub/app_auth.go's instanceIsCodex ->
+// registry.AuthOAuthOpenAICodex) decides which the host will accept. The two
+// live in different languages and were each pinned only to a literal of their
+// own, so renaming one left the other green. Both are pinned now to the
+// checked-in value at cmd/evener-hub/codex_auth_scheme.txt, read here and by
+// app_auth_scheme_pin_test.go. This test's job is to prove this end still IS
+// that value, so an edit to the shipped constant fails rather than silently
+// diverging from the host.
+const here = dirname(fileURLToPath(import.meta.url));
+const SHARED_SCHEME_PATH = join(here, "../../../../../../codex_auth_scheme.txt");
+
+function sharedCodexAuthScheme(): string[] {
+  return readFileSync(SHARED_SCHEME_PATH, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+describe("CODEX_AUTH_SCHEME cross-language pin", () => {
+  test("is exactly the scheme the shared pin names", () => {
+    const shared = sharedCodexAuthScheme();
+    // An empty or multi-value pin would make the assertion vacuous, so the
+    // pin's own shape is checked rather than assumed.
+    expect(shared).toHaveLength(1);
+    expect(CODEX_AUTH_SCHEME).toBe(shared[0]);
+  });
+});
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -64,5 +98,76 @@ describe("startOAuthFlow", () => {
 
     expect(anchors).toHaveLength(0);
     expect(editor).toMatchObject({ kind: "device", userCode: "CODE" });
+  });
+});
+
+// The instance rows the support predicate is asked about carry the wire's own
+// two fields: `auth` is the resolved transport scheme and `providerId` the
+// registry id the instance is built on (appwire-client's InstanceEntry;
+// cmd/evener-hub/app_instances.go's entryFor fills both).
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
+  return {
+    protocol: "openai-responses",
+    auth: "bearer",
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    ...overrides,
+  };
+}
+
+describe("supportsHostDeviceSignIn", () => {
+  test("offers the action for the curated Codex provider", () => {
+    expect(
+      supportsHostDeviceSignIn(
+        instance({
+          name: "openai-codex",
+          providerId: "openai-codex",
+          auth: "oauth-openai-codex",
+          authModes: ["oauth"],
+          implicit: true,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("offers it for an instance signed in through Codex OAuth on another base", () => {
+    // `auth` is authored independently of `base` (llm/registry/load.go's
+    // instanceRecord folds the instance's own fields over the base it inherits,
+    // llm/registry/merge.go's mergeTransport takes the layer's auth), and the
+    // hub's own gate is the resolved scheme (cmd/evener-hub/app_auth.go's
+    // instanceIsCodex: inst.Auth == registry.AuthOAuthOpenAICodex). The host
+    // accepts this instance, so the affordance has to be offered for it: gating
+    // on the provider id silently withheld a sign-in that works.
+    expect(
+      supportsHostDeviceSignIn(
+        instance({
+          name: "work",
+          base: "openai",
+          providerId: "openai",
+          auth: "oauth-openai-codex",
+          authModes: ["oauth"],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("withholds it for an openai-codex-based instance carrying another scheme", () => {
+    // The other direction of the same mismatch: the provider id says Codex while
+    // the scheme the host gates on says otherwise, so the button's only possible
+    // outcome is the host's "OAuth is not supported for instance" refusal.
+    expect(
+      supportsHostDeviceSignIn(
+        instance({
+          name: "codex-gateway",
+          base: "openai-codex",
+          providerId: "openai-codex",
+          auth: "bearer",
+          authModes: ["apiKey"],
+        }),
+      ),
+    ).toBe(false);
   });
 });

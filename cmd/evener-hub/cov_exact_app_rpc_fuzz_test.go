@@ -398,6 +398,9 @@ func FuzzExactAppRPC(f *testing.F) {
 			observeHubRelayFunctions = func(got hubRelayFunctions) { idleRelay = got }
 			idleServer = newHubAppServer(idleCfg, registry)
 			observeHubRelayFunctions = nil
+			// The subscriber below is never unregistered, so no idle tick ends
+			// this relay; its server's shutdown does.
+			t.Cleanup(func() { _ = idleServer.Shutdown(context.Background()) })
 			idleThread := thread
 			idleSource := &exactRPCSource{scriptedAppSource: &scriptedAppSource{id: "idle", thread: idleThread}, notifications: make(chan appwire.Notification)}
 			_ = idleRelay.startRelay(context.Background(), idleSource, appwire.ThreadReadParams{}, idleThread)

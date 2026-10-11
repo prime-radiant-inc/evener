@@ -123,7 +123,7 @@ func FuzzSessionAuxExactProgram(f *testing.F) {
 		case 14:
 			fuzzAuxForkSuccess(t, true)
 		case 15:
-			s := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}), withoutGitSnapshot())
+			s := newSession(t, withConfig(SessionConfig{}), withoutGitSnapshot())
 			base := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 			next := base.WithWorkingDirectory(t.TempDir())
 			s.swapEnvAndRefresh(next, nil)
@@ -244,12 +244,12 @@ type fuzzAuxWriter struct {
 	closeErr     error
 }
 
-func (w *fuzzAuxWriter) Append(schema.Turn) error {
+func (w *fuzzAuxWriter) Record(turn schema.Turn, _ transcript.RecordOptions) (transcript.Record, error) {
 	if w.appends == w.failAppendAt {
-		return errors.New("append fault")
+		return transcript.Record{}, errors.New("append fault")
 	}
 	w.appends++
-	return nil
+	return transcript.Record{Recorded: true, Turn: turn}, nil
 }
 func (w *fuzzAuxWriter) Close() error { err := w.closeErr; w.closeErr = nil; return err }
 

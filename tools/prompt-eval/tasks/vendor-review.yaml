@@ -1,0 +1,326 @@
+schema: 1
+id: prose.vendor-review
+tool: prompt-eval
+prompt: |
+  Legal wants a quick review of our five vendor contracts in contracts/. For each vendor, find the termination notice period, whether it auto-renews, and how long they keep our data after we leave. Put a table in REVIEW.md with one row per vendor and a Section column citing where you found each answer. The contracts are independent, so split the work however you like.
+fixture:
+  git: true
+  files:
+    contracts/arbor-storage.md: |
+      # Master Services Agreement
+      ## Arbor Storage, Inc.
+
+      This Master Services Agreement ("Agreement") is entered into by and between Arbor Storage, Inc. ("Arbor Storage" or "Vendor") and the customer identified in the applicable order form ("Customer"), governing Customer's use of Arbor Storage's cloud object storage platform (the "Services").
+
+      ### 1. Definitions
+
+      "Order Form" means the document referencing this Agreement that specifies the Services purchased, the fees, and the Initial Term. "Customer Data" means any data, files, or content that Customer or its users upload, store, or otherwise transmit through the Services. "Confidential Information" has the meaning given in Section 7.
+
+      ### 2. Services
+
+      Arbor Storage will provide Customer with access to its object storage platform, including standard and cold storage tiers, replication across at least two availability zones, and API access for upload, retrieval, and deletion of Customer Data. Arbor Storage may update the Services from time to time, provided such updates do not materially reduce the core functionality purchased under the Order Form.
+
+      ### 3. Fees and Payment
+
+      Customer will pay the fees set forth in the Order Form. Fees are invoiced monthly in arrears based on metered usage and are due within thirty (30) days of the invoice date. Late payments accrue interest at 1.5% per month or the highest rate permitted by law, whichever is lower. Arbor Storage may suspend the Services if an invoice remains unpaid more than fifteen (15) days after Customer receives notice of the delinquency.
+
+      ### 4. Term
+
+      This Agreement begins on the Effective Date stated in the Order Form and continues for an initial term of one (1) year (the "Initial Term"). Following the Initial Term, this Agreement automatically renews for successive one (1) year periods (each a "Renewal Term") unless either party gives notice of non-renewal as described in Section 5.
+
+      ### 5. Termination
+
+      Either party may terminate this Agreement for convenience, effective at the end of the then-current term, by giving the other party written notice at least sixty (60) days before the end of that term. Either party may also terminate this Agreement immediately upon written notice if the other party materially breaches this Agreement and fails to cure the breach within thirty (30) days after receiving notice describing the breach.
+
+      ### 6. Fees Upon Termination
+
+      If Customer terminates for Arbor Storage's uncured breach, Arbor Storage will refund any prepaid, unused fees on a pro-rata basis. If Arbor Storage terminates for Customer's uncured breach, no refund is owed. Termination does not relieve Customer of the obligation to pay fees accrued before the termination date.
+
+      ### 7. Confidentiality
+
+      Each party may disclose Confidential Information to the other in connection with this Agreement. The receiving party will use the disclosing party's Confidential Information only to perform its obligations under this Agreement, will protect it using at least the same degree of care it uses for its own confidential information of similar importance, and will not disclose it to any third party except to employees and contractors who need to know it and are bound by confidentiality obligations at least as protective as this Section. These obligations survive for three (3) years after termination of this Agreement.
+
+      ### 8. Data Retention and Deletion
+
+      Upon termination or expiration of this Agreement, Customer may export Customer Data for thirty (30) days. After that thirty-day export window closes, Arbor Storage will delete all remaining Customer Data from its production systems within forty-five (45) days of the termination date, except for copies retained in encrypted backups, which age out of the backup rotation on their normal schedule and are not separately deleted.
+
+      ### 9. Limitation of Liability
+
+      Neither party's aggregate liability arising out of or related to this Agreement will exceed the fees paid by Customer in the twelve (12) months preceding the event giving rise to the claim. Neither party will be liable for indirect, incidental, consequential, special, or punitive damages, including lost profits or lost data, even if advised of the possibility of such damages. These limitations do not apply to a party's confidentiality obligations under Section 7 or to either party's indemnification obligations.
+
+      ### 10. Support
+
+      Arbor Storage provides support by email and ticketing portal Monday through Friday, 8:00 a.m. to 8:00 p.m. Eastern Time, excluding Arbor Storage-observed holidays. Customer may purchase a premium support add-on for 24/7 coverage and a four-hour response target for severity-one incidents. Arbor Storage targets a same-business-day first response for standard support tickets, but this is a target, not a guarantee.
+
+      ### 11. General Provisions
+
+      This Agreement is governed by the laws of the State of Delaware without regard to conflicts of law principles. Neither party may assign this Agreement without the other's written consent, except in connection with a merger, acquisition, or sale of substantially all assets. This Agreement, together with any Order Forms, constitutes the entire agreement between the parties and supersedes all prior discussions regarding its subject matter.
+    contracts/beacon-mail.md: |
+      # Master Services Agreement
+      ## Beacon Mail, LLC
+
+      This Master Services Agreement ("Agreement") governs the provision of email delivery and inbox management services (the "Services") by Beacon Mail, LLC ("Beacon Mail") to the customer named in the applicable order ("Customer").
+
+      ### 1. Scope of Services
+
+      Beacon Mail will provide Customer with access to its transactional and marketing email delivery platform, including sending infrastructure, delivery analytics, and inbox placement monitoring. Beacon Mail will use commercially reasonable efforts to maintain a monthly uptime of at least 99.5% for the core sending API, measured across a calendar month.
+
+      ### 2. Customer Obligations
+
+      Customer is responsible for obtaining all consents required to send email to its recipients and for complying with applicable anti-spam laws, including CAN-SPAM and equivalent laws in jurisdictions where Customer's recipients are located. Customer will not use the Services to send unsolicited bulk email, and Beacon Mail may suspend Customer's account immediately, without prior notice, if it reasonably believes Customer is doing so.
+
+      ### 3. Term and Renewal
+
+      The initial term of this Agreement is two (2) years from the Effective Date (the "Initial Term"). This Agreement automatically renews for successive two (2) year terms (each a "Renewal Term") unless a party provides notice of non-renewal in accordance with Section 7. Fee increases for a Renewal Term, if any, will not exceed 7% over the prior term's fees unless Customer agrees otherwise in writing.
+
+      ### 4. Fees
+
+      Customer will pay the fees described in the applicable order, invoiced monthly in advance. All fees are exclusive of taxes, which Customer is responsible for except taxes on Beacon Mail's net income. Fees are non-refundable except as expressly stated in this Agreement.
+
+      ### 5. Service Levels and Credits
+
+      If Beacon Mail fails to meet the uptime commitment in Section 1 in a given month, Customer may request a service credit equal to 5% of that month's fees for each full percentage point of downtime below the commitment, up to a maximum credit of 30% of that month's fees. Service credits are Customer's sole and exclusive remedy for a failure to meet the uptime commitment.
+
+      ### 6. Confidentiality
+
+      Each party will keep confidential any non-public information disclosed by the other party that is designated as confidential or that a reasonable person would understand to be confidential given the nature of the information and circumstances of disclosure. Confidentiality obligations do not apply to information that is or becomes public through no fault of the receiving party, was already known to the receiving party without an obligation of confidentiality, or is independently developed. These obligations survive for two (2) years after termination.
+
+      ### 7. Termination for Convenience
+
+      Either party may decline to renew this Agreement at the end of the Initial Term or any Renewal Term by giving the other party written notice at least forty-five (45) days before the end of the then-current term. Neither party may terminate this Agreement for convenience during a term; termination during a term is available only under Section 8.
+
+      ### 8. Termination for Cause
+
+      Either party may terminate this Agreement immediately on written notice if the other party materially breaches this Agreement and does not cure the breach within fifteen (15) days after receiving written notice of the breach, or if the other party becomes insolvent or files for bankruptcy protection.
+
+      ### 9. Post-Termination Data Handling
+
+      Following termination or expiration of this Agreement for any reason, Beacon Mail will make Customer Data available for export for fourteen (14) days. Beacon Mail will then permanently delete all Customer Data, including message content, recipient lists, and delivery logs, from its active systems within sixty (60) days after the termination date.
+
+      ### 10. Limitation of Liability
+
+      Except for breaches of Section 6 (Confidentiality) or a party's indemnification obligations, neither party's total liability under this Agreement will exceed the total fees paid or payable by Customer in the six (6) months before the claim arose. Neither party is liable for any indirect, special, incidental, or consequential damages.
+
+      ### 11. Support
+
+      Standard support is available by email during business hours, 9:00 a.m. to 6:00 p.m. in Customer's local time zone, Monday through Friday. Customers on the Enterprise plan receive a dedicated account manager and a phone support line staffed 9:00 a.m. to 9:00 p.m. Eastern Time, seven days a week.
+
+      ### 12. Miscellaneous
+
+      This Agreement is governed by the laws of the State of New York. Notices under this Agreement must be in writing and delivered by email with confirmation of receipt or by certified mail. Waiver of any provision of this Agreement in one instance is not a waiver of that provision generally.
+    contracts/cinder-analytics.md: |
+      # Master Services Agreement
+      ## Cinder Analytics, Inc.
+
+      This Master Services Agreement ("Agreement") is made between Cinder Analytics, Inc. ("Cinder Analytics") and the customer identified in the applicable order form ("Customer"), covering Customer's use of Cinder Analytics's product analytics and reporting platform (the "Services").
+
+      ### 1. Definitions
+
+      "Documentation" means Cinder Analytics's then-current user guides for the Services. "Customer Data" means event data, usage data, and any other data Customer sends to the Services for processing. "Aggregated Data" means Customer Data combined with data from other customers in a form that does not identify Customer or any individual.
+
+      ### 2. Grant of Rights
+
+      Cinder Analytics grants Customer a non-exclusive, non-transferable right to access and use the Services during the term of this Agreement, solely for Customer's internal business purposes and in accordance with the Documentation. Cinder Analytics may use Aggregated Data to improve the Services and for benchmarking, provided the Aggregated Data does not identify Customer.
+
+      ### 3. Fees
+
+      Customer will pay the fees specified in the order form. Unless the order form states otherwise, fees are invoiced annually in advance and are due within thirty (30) days of invoice. Cinder Analytics may increase fees for a Renewal Term by giving Customer at least sixty (60) days' notice before the Renewal Term begins.
+
+      ### 4. Term
+
+      The Initial Term begins on the Effective Date and continues for one (1) year. This Agreement automatically renews for successive one (1) year Renewal Terms unless either party gives notice of non-renewal under Section 6.
+
+      ### 5. Suspension
+
+      Cinder Analytics may suspend Customer's access to the Services if Customer's use poses a security risk to the Services or to other customers, if Customer is delinquent on payment for more than thirty (30) days after notice, or if suspension is required to comply with law. Cinder Analytics will give Customer reasonable advance notice of a suspension where practical.
+
+      ### 6. Termination
+
+      Either party may terminate this Agreement for convenience effective at the end of the current term by giving the other party at least ninety (90) days' written notice before the end of that term. Either party may terminate immediately for the other's uncured material breach, following thirty (30) days' written notice of the breach and a failure to cure within that period.
+
+      ### 7. Confidentiality
+
+      Each party will protect the other's Confidential Information using reasonable care and will not use it except to perform its obligations or exercise its rights under this Agreement. This obligation does not restrict either party's use of Aggregated Data as permitted under Section 2. Confidentiality obligations survive termination of this Agreement for five (5) years.
+
+      ### 8. Warranties and Disclaimer
+
+      Each party represents that it has the authority to enter into this Agreement. Except as expressly stated in this Agreement, the Services are provided "as is," and Cinder Analytics disclaims all other warranties, express or implied, including any warranty of merchantability, fitness for a particular purpose, or non-infringement.
+
+      ### 9. Limitation of Liability
+
+      Cinder Analytics's total liability arising out of this Agreement will not exceed the fees Customer paid in the twelve (12) months preceding the claim. Neither party is liable for indirect, incidental, or consequential damages, except for a breach of Section 7 or a party's indemnification obligations under Section 10.
+
+      ### 10. Indemnification
+
+      Cinder Analytics will defend Customer against any third-party claim alleging that the Services, as provided by Cinder Analytics and used in accordance with this Agreement, infringe that third party's intellectual property rights, and will indemnify Customer against damages finally awarded as a result, provided Customer promptly notifies Cinder Analytics of the claim and cooperates in its defense.
+
+      ### 11. Data Retention
+
+      Cinder Analytics will delete Customer Data from its production systems within thirty (30) days after the termination or expiration of this Agreement. Customer may request an export of its Customer Data at any time before the deletion described in this Section.
+
+      ### 12. Support
+
+      Cinder Analytics provides support through its help center and a ticketing system, staffed Monday through Friday, 7:00 a.m. to 7:00 p.m. Pacific Time. Response time targets vary by plan tier and are described in the Documentation.
+
+      ### 13. General
+
+      This Agreement may be amended in writing signed by both parties. This Agreement is governed by the laws of the State of California. If any provision of this Agreement is held unenforceable, the remaining provisions remain in full force and effect.
+    contracts/delta-payments.md: |
+      # Master Services Agreement
+      ## Delta Payments, Inc.
+
+      This Master Services Agreement ("Agreement") is between Delta Payments, Inc. ("Delta Payments") and the customer identified in the applicable order ("Customer"), covering Delta Payments's payment processing and reconciliation platform (the "Services").
+
+      ### 1. Services
+
+      Delta Payments will process payment transactions submitted by Customer through the Services, provide settlement reporting, and make reasonable efforts to maintain PCI DSS compliance for the portions of the Services within Delta Payments's control. Customer remains responsible for its own PCI DSS compliance obligations as a merchant.
+
+      ### 2. Fees
+
+      Customer will pay the transaction fees and any monthly platform fee described in the order form. Transaction fees are deducted from settlement amounts before funds are transferred to Customer's designated bank account. Delta Payments will provide at least sixty (60) days' notice before any increase in transaction fee rates.
+
+      ### 3. Term
+
+      This Agreement has a fixed term of three (3) years from the Effective Date (the "Term"). This Agreement does not automatically renew. If the parties wish to continue the relationship after the Term, they must execute a new agreement or a written extension signed by both parties before the Term ends.
+
+      ### 4. Compliance and Audits
+
+      Customer will comply with the card network rules applicable to its business, including rules regarding chargebacks, refunds, and prohibited categories of goods and services. Delta Payments may audit Customer's compliance with this Section no more than once per calendar year on reasonable advance notice, except where an audit is required by a card network or regulator.
+
+      ### 5. Termination
+
+      Either party may terminate this Agreement for the other party's material breach if the breach remains uncured twenty (20) days after written notice describing the breach. Delta Payments may also terminate immediately, without notice, if required to do so by a card network, a regulator, or applicable law, or if Customer's risk profile changes such that continued processing would expose Delta Payments to an unacceptable risk of loss. Otherwise, either party may terminate for convenience by giving the other party thirty (30) days' written notice.
+
+      ### 6. Effect of Termination
+
+      Upon termination, Delta Payments will complete settlement of transactions processed before the termination date in the ordinary course. Delta Payments may withhold a reserve against anticipated chargebacks for up to one hundred eighty (180) days after termination, consistent with its standard risk practices disclosed to Customer at onboarding.
+
+      ### 7. Confidentiality
+
+      Each party will hold the other's confidential business and technical information in confidence and use it only for purposes of this Agreement. Transaction data and cardholder data are subject to the additional handling requirements in Section 8, which control in the event of a conflict with this Section.
+
+      ### 8. Data Retention Upon Termination
+
+      Delta Payments will delete Customer's transaction data and other Customer Data from its systems within thirty (30) days of termination, except records Delta Payments must retain by law, which are kept for seven (7) years to satisfy financial recordkeeping and card network requirements. Customer may request a final export of settlement records during the thirty-day period before deletion.
+
+      ### 9. Limitation of Liability
+
+      Delta Payments's aggregate liability under this Agreement will not exceed the fees paid by Customer in the three (3) months preceding the claim, except for liability arising from Delta Payments's gross negligence or willful misconduct, or either party's breach of Section 7 or Section 8. Neither party is liable for consequential, incidental, or punitive damages.
+
+      ### 10. Support
+
+      Delta Payments provides support by phone and email Monday through Friday, 8:00 a.m. to 6:00 p.m. Central Time, with 24/7 emergency support for processing outages. Customer should report suspected fraud or a processing outage through the emergency line described in the onboarding materials.
+
+      ### 11. Force Majeure
+
+      Neither party is liable for a failure or delay in performance caused by circumstances beyond its reasonable control, including natural disasters, acts of government, labor disputes, internet or telecommunications failures, or failures of a card network or banking partner. A party invoking this Section will notify the other party promptly and use reasonable efforts to resume performance.
+
+      ### 12. Notices
+
+      Notices under this Agreement must be in writing and sent by email to the address on file for the other party, with a copy by certified mail for notices of termination or breach. Notices are deemed received on the business day after email delivery, provided no bounce or delivery failure is received.
+
+      ### 13. General
+
+      This Agreement is governed by the laws of the State of Illinois. Neither party may assign this Agreement without the other's prior written consent, except in connection with a merger or sale of substantially all assets, and any attempted assignment in violation of this Section is void.
+    contracts/ember-search.md: |
+      # Master Services Agreement
+      ## Ember Search, Inc.
+
+      This Master Services Agreement ("Agreement") governs Customer's use of Ember Search, Inc.'s ("Ember Search") hosted search-as-a-service platform (the "Services"), as further described in the applicable order form.
+
+      ### 1. The Services
+
+      Ember Search will host a search index built from Customer Data that Customer submits through the indexing API, and will provide a query API for Customer's applications to search that index. Ember Search will use commercially reasonable efforts to keep the query API available at least 99.9% of the time each month, excluding scheduled maintenance windows announced at least twenty-four (24) hours in advance.
+
+      ### 2. Customer Data License
+
+      Customer grants Ember Search a license to host, index, and process Customer Data solely to provide the Services to Customer. Ember Search will not use Customer Data to train models or to provide services for any other customer.
+
+      ### 3. Fees
+
+      Fees are based on index size and query volume as described in the order form, invoiced monthly in arrears. Invoices are due within fifteen (15) days of receipt. Ember Search may suspend query access, but not indexing access, if an invoice is more than ten (10) days overdue.
+
+      ### 4. Renewal
+
+      This Agreement has an initial term of six (6) months. It automatically renews for successive six (6) month terms unless either party provides notice of non-renewal as described in Section 6. Ember Search will not increase fees during the initial six-month term, and will give Customer at least thirty (30) days' notice of any fee change taking effect in a renewal term.
+
+      ### 5. Changes to the Services
+
+      Ember Search may modify the Services from time to time, including adding, changing, or deprecating features, provided any deprecation of a feature Customer materially relies on comes with at least ninety (90) days' notice.
+
+      ### 6. Termination
+
+      Either party may terminate this Agreement for convenience, effective at the end of the current term, by giving the other party at least fifteen (15) days' written notice before the end of that term. Either party may terminate immediately for the other's uncured material breach following ten (10) days' written notice and a failure to cure within that period.
+
+      ### 7. Confidentiality
+
+      Neither party will disclose the other's Confidential Information to any third party without consent, except to a party's employees, contractors, and advisors who need to know it and are bound by confidentiality obligations at least as strict as this Section. This Section does not apply to information that becomes public without breach of this Agreement or that was rightfully known to the receiving party beforehand.
+
+      ### 8. Warranty Disclaimer and Liability
+
+      The Services are provided without warranties of any kind except as expressly stated in this Agreement. Ember Search's total liability under this Agreement is capped at the fees Customer paid in the three (3) months before the claim arose, except for a breach of Section 2 or Section 7, or either party's indemnification obligations.
+
+      ### 9. Data Deletion
+
+      Within fourteen (14) days after termination or expiration of this Agreement, Ember Search will delete Customer Data from its search indexes and from its primary storage systems. Customer may download an export of its Customer Data at any time before that deletion occurs by requesting it through the account console.
+
+      ### 10. Support
+
+      Ember Search offers support by chat and email during business hours, 9:00 a.m. to 5:00 p.m. Pacific Time, Monday through Friday. Enterprise-tier customers may purchase extended coverage that adds weekend chat support from 10:00 a.m. to 4:00 p.m. Pacific Time.
+
+      ### 11. Publicity
+
+      Neither party will issue a press release or make any public statement naming the other party or referencing this Agreement without the other party's prior written consent, except that Ember Search may list Customer's name and logo on a customer list on its website unless Customer opts out in writing.
+
+      ### 12. Notices
+
+      Notices under this Agreement must be in writing and sent to the address for the receiving party listed in the order form, by email with confirmation of receipt or by courier with tracking. A notice is effective on the date received.
+
+      ### 13. General
+
+      This Agreement is governed by the laws of the State of Washington. This Agreement, together with the order form, is the entire agreement between the parties regarding the Services and supersedes any prior proposals or communications on that subject.
+    contracts/amendments/cinder-analytics-amendment-1.md: |
+      # Amendment No. 1 to Master Services Agreement
+      ## Cinder Analytics, Inc.
+
+      This Amendment No. 1 ("Amendment") is entered into by and between Cinder Analytics, Inc. and Customer, and amends the Master Services Agreement between the parties (the "Agreement"). Except as expressly modified by this Amendment, all terms of the Agreement remain in full force and effect.
+
+      ### 1. Termination Notice Period
+
+      Section 6 (Termination) of the Agreement is amended to reduce the notice period for termination for convenience from ninety (90) days to thirty (30) days. All other terms of Section 6, including the cure period for termination for material breach, are unchanged.
+
+      ### 2. Effective Date
+
+      This Amendment is effective as of the date of the last signature below and remains in effect for the remaining term of the Agreement, including any Renewal Terms.
+
+      ### 3. Miscellaneous
+
+      This Amendment may be executed in counterparts. Capitalized terms used but not defined in this Amendment have the meanings given in the Agreement.
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: REVIEW.md exists
+      run: test -f REVIEW.md
+    - name: table header names the Section column
+      run: grep -m1 '^|' REVIEW.md | grep -qi section
+    - name: each vendor is a table row
+      run: |
+        for v in "Arbor Storage" "Beacon Mail" "Cinder Analytics" "Delta Payments" "Ember Search"; do
+          grep -i "$v" REVIEW.md | grep -q '^|' || { echo "no table row for $v" >&2; exit 1; }
+        done
+    - name: cinder row cites the amendment
+      run: "grep -i 'cinder' REVIEW.md | grep -qi 'amend'"
+    - name: contracts left unchanged
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- contracts
+reference: |
+  cat > REVIEW.md <<'EOF'
+  # Vendor contract review
+
+  | Vendor | Termination notice | Auto-renews | Data retention after termination | Section |
+  | --- | --- | --- | --- | --- |
+  | Arbor Storage | 60 days | Yes, successive 1-year terms | 45 days after termination, following a 30-day export window | Sections 4, 5, 8 |
+  | Beacon Mail | 45 days | Yes, successive 2-year terms | 60 days | Sections 3, 7, 9 |
+  | Cinder Analytics | 30 days (amended from 90 days by Amendment No. 1) | Yes, successive 1-year terms | 30 days | Section 6, amended by Amendment 1 Section 1; Sections 4, 11 |
+  | Delta Payments | 30 days | No, fixed 3-year term | 30 days, except records required by law, kept 7 years | Sections 3, 5, 8 |
+  | Ember Search | 15 days | Yes, successive 6-month terms | 14 days | Sections 4, 6, 9 |
+  EOF

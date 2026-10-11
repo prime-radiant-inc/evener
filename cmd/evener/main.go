@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"text/tabwriter"
@@ -35,6 +36,7 @@ type runCLIFlags struct {
 	workDir                     *string
 	systemPrompt                *string
 	stateDir                    *string
+	disableMemory               *bool
 	resume                      *string
 	resumeWith                  *string
 	resumeLast                  *bool
@@ -51,7 +53,6 @@ type runCLIFlags struct {
 	contextStrategy             *string
 	outputSchema                *string
 	verbose                     *bool
-	noProjectPrompts            *bool
 	agentName                   *string
 	skillsDirs                  stringSliceFlag
 	mcpServers                  stringSliceFlag
@@ -69,6 +70,7 @@ type runCLIFlags struct {
 	sandboxNet                  *string
 	apiLog                      *string
 	runTimeout                  *time.Duration
+	askResponder                *string
 }
 
 func main() {
@@ -210,6 +212,11 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(2)
 		return
 	}
+	if err := rejectAskResponderWithResume(*flags.askResponder, *flags.resume, *flags.resumeWith, *flags.resumeLast); err != nil {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
+		deps.exit(2)
+		return
+	}
 
 	var cpuStop func()
 	if *flags.cpuProfile != "" {
@@ -270,6 +277,7 @@ func mainWithDeps(deps mainDeps) {
 		visionModel:                 *flags.visionModel,
 		workDir:                     *flags.workDir,
 		stateDir:                    *flags.stateDir,
+		disableMemory:               *flags.disableMemory,
 		systemPrompt:                *flags.systemPrompt,
 		systemPromptAppend:          []string(flags.systemPromptAppend),
 		maxRounds:                   *flags.maxRounds,
@@ -284,7 +292,6 @@ func mainWithDeps(deps mainDeps) {
 		exportATIFProviderHandles:   *flags.exportATIFProviderHandles,
 		outputSchema:                *flags.outputSchema,
 		verbose:                     *flags.verbose,
-		noProjectPrompts:            *flags.noProjectPrompts,
 		agentName:                   *flags.agentName,
 		skillsDirs:                  []string(flags.skillsDirs),
 		mcpServers:                  []string(flags.mcpServers),
@@ -299,6 +306,7 @@ func mainWithDeps(deps mainDeps) {
 		sandboxNet:                  *flags.sandboxNet,
 		apiLog:                      *flags.apiLog,
 		runTimeout:                  *flags.runTimeout,
+		askResponder:                *flags.askResponder,
 		stdout:                      deps.stdout,
 		stderr:                      deps.stderr,
 		resume:                      *flags.resume,
@@ -325,6 +333,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.workDir = fs.String("dir", "", "working `directory` (default: current directory)")
 	flags.systemPrompt = fs.String("system-prompt", "", "path to a custom system prompt `file`")
 	flags.stateDir = fs.String("state-dir", "", "override runtime state `directory` (default: XDG-computed)")
+	flags.disableMemory = fs.Bool("disable-memory", false, "disable native memory for this session, including on resume")
 	flags.resume = fs.String("resume", "", "resume a previous session by `id`")
 	flags.resumeWith = fs.String("resume-with", "", "start a new prompt using a previous session's `id` as context")
 	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")
@@ -341,7 +350,6 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
-	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .evener/prompts/ loading (match container behavior)")
 	flags.agentName = fs.String("agent", "", "agent persona `name`: default (default), explorer, or another available agent name")
 	fs.Var(&flags.skillsDirs, "skills-dir", "extra skill `directory` (repeatable)")
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
@@ -359,6 +367,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
 	flags.runTimeout = fs.Duration("timeout", 0, "overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback)")
+	flags.askResponder = fs.String("ask-responder", "", "command run via `sh -c` to answer ask_user questions: gets the questions as JSON on stdin, its stdout is the reply; makes the session interactive (up to "+strconv.Itoa(askResponderMaxRounds)+" rounds per input)")
 
 	fs.Usage = func() {
 		printRunUsage(stderr, fs)
@@ -387,6 +396,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  serve\tRun the evener HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
+	_, _ = fmt.Fprintf(tw, "  install\tInstall Evener on a remote macOS or Linux host over SSH\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_, _ = fmt.Fprintf(tw, "  hub\tRun the evener-hub web orchestrator\n")
 	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
@@ -473,7 +483,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		upgrade: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 			return runUpgrade(args, stdout, stderr)
 		},
-		plugin: runPlugin,
+		install: runInstall,
+		plugin:  runPlugin,
 		hub: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			// The hub's attach subcommand bridges AppWire over this process's
 			// stdin/stdout, so they must be threaded through rather than dropped:
@@ -512,6 +523,7 @@ type cliCommandRunners struct {
 	launchCheck func([]string, io.Reader, io.Writer, io.Writer) error
 	openAI      func([]string, io.Reader, io.Writer, io.Writer) error
 	upgrade     func([]string, io.Reader, io.Writer, io.Writer) error
+	install     func([]string, io.Reader, io.Writer, io.Writer) error
 	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
 	hub         func([]string, io.Reader, io.Writer, io.Writer) error
 	tui         func([]string, io.Reader, io.Writer, io.Writer) error
@@ -535,6 +547,8 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener openai", runners.openAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
 		return true, "evener upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
+	case "install":
+		return true, "evener install", runners.install(args[1:], stdin, stdout, stderr)
 	case "plugin":
 		return true, "evener plugin", runners.plugin(args[1:], stdin, stdout, stderr)
 	case "hub":

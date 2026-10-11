@@ -3,14 +3,21 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	"primeradiant.com/evener/llm"
 )
 
 // systemNotification wraps msg in a <system-notification> faux-XML block.
 // These blocks are used for one-way notifications to the model that are not
 // steering messages (which use <SYSTEM-REMINDER>) — e.g. tool-output context
-// like a skill's directory path, or a callback-cancellation notice.
+// like a skill's directory path, or a callback-cancellation notice. The tags
+// come from llm's exported constants — the same spelling the transcript
+// migration recognizes for entries written before part flags existed — so
+// the producer and the migration cannot drift apart. Parts manufactured from
+// these blocks for persisted messages must also carry the Machinery flag;
+// apptranscript's reloaded-bubble filter matches the flag alone.
 func systemNotification(msg string) string {
-	return "<system-notification>" + msg + "</system-notification>"
+	return llm.SystemNotificationOpenTag + msg + llm.SystemNotificationCloseTag
 }
 
 // systemNotificationf is the format variant of systemNotification.

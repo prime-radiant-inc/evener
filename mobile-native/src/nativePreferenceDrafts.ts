@@ -1,12 +1,12 @@
-import { canonicalJson } from "@evener/appwire-client";
+import { canonicalJson, isPlainObject, normalizeConfig } from "@evener/appwire-client";
 import type {
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
-} from "@evener/appwire-client";
-import type {
+	TranscriptDisplayConfigV1,
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
-} from "./preferenceDraftRepository";
+} from "@evener/appwire-client";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 /** A stored record's bytes that decode (JSON.parse succeeds) to the JSON
  * value `null` - a PRESENT record, distinct from no record at all (the
@@ -95,6 +95,19 @@ export function matchesStoredBytes(stored: string | null, value: unknown): boole
 	return draftIdentityKey(parseDraftBytes(stored)) === draftIdentityKey(value);
 }
 
+/** Whether two in-memory draft values name the same record - the shared
+ * marker-aware identity a compare-and-swap must run: a marker
+ * (StoredNullRecord, UnparseableDraftBytes) compares by its own tag rather
+ * than the ordinary shape its unique-symbol brand leaves in canonicalJson
+ * (an empty object, a raw-only object), and everything else compares
+ * canonically, key order normalized. The Storage-backed backend runs this
+ * same comparison through stored bytes (matchesStoredBytes re-derives the
+ * identity key for both sides); an in-memory test double compares its stored
+ * values through this predicate directly. */
+export function sameDraftIdentity(stored: unknown, expected: unknown): boolean {
+	return draftIdentityKey(stored) === draftIdentityKey(expected);
+}
+
 export interface NativePreferenceDraftBackend {
 	createId(): string;
 	get(key: string): unknown;
@@ -107,39 +120,36 @@ export interface NativePreferenceDraftBackend {
 	 * checkpoint shape, so a conforming backend never assumes it can decode
 	 * what it is given. */
 	deleteIf(key: string, identity: unknown): boolean;
+	/** Inserts `checkpoint` at `key` only if nothing is stored there; reports
+	 * whether it did - the atomic twin of replaceIf for a record that does
+	 * not exist yet (see DraftPort.insertIfAbsent). */
+	insertIfAbsent(key: string, checkpoint: unknown): boolean;
+	/** Replaces the record at `key` with `next` only if `expected` still names
+	 * it; reports whether it did (see DraftPort.replaceIf). */
+	replaceIf(key: string, expected: unknown, next: unknown): boolean;
 }
 
-/** The keybindings draft port settles atomically (a save that adopts a
- * checkpoint replaced under it): replaceIf is that port's own requirement,
- * not every NativePreferenceDraftBackend's - nativeTranscriptDrafts' backend
- * never calls it (the pre-migration transcript design never settles
- * atomically), so it stays on this narrower interface instead of widening
- * the shared one for a method only one consumer needs. */
+/** The keybindings port's own narrower view of the shared backend: its
+ * checkpoint shape is known, so its compare-and-swap signatures name it.
+ * Both native ports drive the shared DraftPort contract now - the transcript
+ * projection settles atomically through the same store machinery - so this
+ * interface only narrows the base, it does not add a method the transcript
+ * port lacks. */
 export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBackend {
 	/** Inserts `checkpoint` at `key` only if nothing is stored there; reports
 	 * whether it did. The atomic twin of replaceIf for a record that does not
 	 * exist yet - see DraftPort.insertIfAbsent's own comment. */
 	insertIfAbsent(key: string, checkpoint: KeybindingDraftCheckpoint): boolean;
-	replaceIf(
-		key: string,
-		expected: unknown,
-		next: KeybindingDraftCheckpoint,
-	): boolean;
-}
-
-/** The raw string-keyed storage a backend's own get/set/deleteIf/replaceIf
- * run on - Storage.getItemSync et al. in production and a Map-backed fake in
- * tests. */
-export interface RawStringStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
+	replaceIf(key: string, expected: unknown, next: KeybindingDraftCheckpoint): boolean;
 }
 
 /** One native keybinding backend over any raw string storage. Keeping parsing
  * and identity comparison here lets tests exercise the same code production
  * uses, including malformed bytes, stored JSON null, and key-order changes. */
-export function rawStringDraftBackend(storage: RawStringStorage, createId: () => string): NativeKeybindingDraftBackend {
+export function rawStringDraftBackend(
+	storage: SyncStringStorage,
+	createId: () => string,
+): NativeKeybindingDraftBackend {
 	function matches(key: string, value: unknown): boolean {
 		return matchesStoredBytes(storage.getItemSync(key), value);
 	}
@@ -180,10 +190,7 @@ export function rawStringDraftBackend(storage: RawStringStorage, createId: () =>
  * discard action needs that distinction (see draftUnreadableAfterDiscard). */
 export type DraftReadOutcome = "absent" | "readable" | "unreadable";
 
-export function classifyDraftRead(
-	loaded: unknown,
-	isReadable: (value: unknown) => boolean,
-): DraftReadOutcome {
+export function classifyDraftRead(loaded: unknown, isReadable: (value: unknown) => boolean): DraftReadOutcome {
 	if (loaded === null || loaded === undefined) return "absent";
 	return isReadable(loaded) ? "readable" : "unreadable";
 }
@@ -226,12 +233,8 @@ export function draftUnreadableAfterDiscard(current: DraftReadOutcome): boolean 
 	return current === "unreadable";
 }
 
-export function nativeKeybindingDrafts(
-	hubId: string,
-	backend: NativeKeybindingDraftBackend,
-): KeybindingDraftStorage {
-	if (!hubId.trim())
-		throw new Error("A hub id is required for preference drafts.");
+export function nativeKeybindingDrafts(hubId: string, backend: NativeKeybindingDraftBackend): KeybindingDraftStorage {
+	if (!hubId.trim()) throw new Error("A hub id is required for preference drafts.");
 	const key = `evener.native.keybinding-draft.${hubId}`;
 	return {
 		createId: () => backend.createId(),
@@ -243,31 +246,83 @@ export function nativeKeybindingDrafts(
 	};
 }
 
-export function nativeTranscriptDrafts(
-	hubId: string,
-	backend: NativePreferenceDraftBackend,
-): TranscriptDraftStorage {
-	if (!hubId.trim())
-		throw new Error("A hub id is required for preference drafts.");
+/** A transcript checkpoint the previous native implementation wrote - the
+ * hub's mobile-only draft, stored without the shared store's `layout` field.
+ * The shared decoder rejects a record without a layout as unreadable, so a
+ * legacy record is adopted under its known mobile layout instead of stranding
+ * a saved draft on upgrade. Returns the migrated checkpoint, or null when
+ * `value` is not a readable legacy checkpoint (a record that already carries
+ * a layout, an unreadable marker, or anything else the old shape did not
+ * admit). */
+function migrateLegacyTranscriptCheckpoint(value: unknown): TranscriptDraftCheckpoint | null {
+	if (!isPlainObject(value) || "layout" in value) return null;
+	if (typeof value.id !== "string" || value.id.length === 0) return null;
+	if (
+		!Number.isSafeInteger(value.baseRevision) ||
+		(value.baseRevision as number) < 0 ||
+		typeof value.writeUncertain !== "boolean"
+	)
+		return null;
+	let config: TranscriptDisplayConfigV1;
+	try {
+		config = normalizeConfig(value.config as TranscriptDisplayConfigV1);
+	} catch {
+		return null;
+	}
+	return {
+		id: value.id,
+		layout: "mobile",
+		baseRevision: value.baseRevision as number,
+		config,
+		writeUncertain: value.writeUncertain,
+	};
+}
+
+export function nativeTranscriptDrafts(hubId: string, backend: NativePreferenceDraftBackend): TranscriptDraftStorage {
+	if (!hubId.trim()) throw new Error("A hub id is required for preference drafts.");
 	const key = `evener.native.transcript-draft.${hubId}`;
+	/** The bytes a legacy checkpoint's migration could NOT rewrite, keyed by the
+	 * migrated checkpoint the read returned. The shared repository classifies a
+	 * read's value as the identity its later compare-and-swap names, so without
+	 * this the migrated-in-memory checkpoint would be compared against bytes
+	 * that still carry the legacy shape and every discard/save would refuse -
+	 * stranding the draft the best-effort migration kept readable. */
+	const legacyBytes = new WeakMap<object, unknown>();
+	const storedIdentity = (identity: unknown): unknown =>
+		typeof identity === "object" && identity !== null && legacyBytes.has(identity)
+			? legacyBytes.get(identity)
+			: identity;
 	return {
 		createId: () => backend.createId(),
+		// The shared store classifies whatever these bytes decode to: a valid
+		// checkpoint is read as one, and a present-but-unreadable record (a
+		// stored JSON null, unparseable bytes, or a checkpoint a build before
+		// layouts did not write) is tagged by parseDraftBytes and surfaces as
+		// draftUnreadable rather than silently reading as no draft - the same
+		// contract nativeKeybindingDrafts runs, and the one discardDraft's
+		// recovery needs.
 		load: () => {
-			const value = backend.get(key);
-			// A stored JSON `null` comes back from the shared backend.get() as
-			// STORED_NULL_RECORD (parseDraftBytes tags it so the KEYBINDINGS
-			// port can classify it as a present-but-unreadable record - see
-			// nativeKeybindingDrafts). The transcript port has no
-			// unreadable-record recovery path, so it keeps treating a stored
-			// null as no draft, the same as a plain JSON.parse always did - but
-			// ONLY that exact case: a stored JSON STRING "null" (a present,
-			// invalid checkpoint) is a different value and falls through to be
-			// rejected below, not silently read as no draft.
-			if (value === undefined || value === null || isStoredNullRecord(value)) return null;
-			return value as TranscriptDraftCheckpoint;
+			const value = backend.get(key) ?? null;
+			const migrated = migrateLegacyTranscriptCheckpoint(value);
+			if (migrated === null) return value;
+			// Adopt the record under its known layout by compare-and-swap, so the
+			// bytes the shared store classifies are the bytes its later
+			// removeIf/replaceIf compare against. A refusal means another writer
+			// replaced it meanwhile: report what is actually there now instead of
+			// the migration. The adoption is BEST-EFFORT: a write failure
+			// (quota, denied storage) must not turn into a load() throw, which
+			// the shared store would map to storageUnavailable with no draft -
+			// hiding the readable legacy checkpoint this call just decoded.
+			try {
+				return backend.replaceIf(key, value, migrated) ? migrated : (backend.get(key) ?? null);
+			} catch {
+				legacyBytes.set(migrated, value);
+				return migrated;
+			}
 		},
 		save: (checkpoint) => backend.set(key, checkpoint),
-		remove: () => backend.delete(key),
-		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
+		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
+		removeIf: (checkpoint) => backend.deleteIf(key, storedIdentity(checkpoint)),
+		replaceIf: (expected, next) => backend.replaceIf(key, storedIdentity(expected), next),
 	};
 }

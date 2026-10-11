@@ -18,6 +18,7 @@ import (
 // runs, with its minted generation, forced origin, pending phase and valid
 // empty selection intact.
 func TestSkillCompaction_AcceptanceSurvivesMetadataRoundTrip(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	generation, err := s.requestSkillCompaction(context.Background(), "", "",
@@ -43,6 +44,7 @@ func TestSkillCompaction_AcceptanceSurvivesMetadataRoundTrip(t *testing.T) {
 // must be persisted as a pending automatic operation before any publication —
 // no fold runs as part of acceptance.
 func TestSkillCompaction_AcceptanceAutomaticSelectionOnlyBeforePublication(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	_, capturedNoteGen := s.pinnedNoteSnapshot()
@@ -81,6 +83,7 @@ func TestSkillCompaction_AcceptanceAutomaticSelectionOnlyBeforePublication(t *te
 // a forced operation is pending is rejected without minting a generation, and
 // the first request's note, selection and operation stand unchanged.
 func TestSkillCompaction_AcceptanceSecondRequestRejected(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	first, err := s.requestSkillCompaction(context.Background(), "first", "",
 		schema.SkillReloadSelection{State: "valid", Names: []string{"scope:probe"}})
@@ -116,6 +119,7 @@ func TestSkillCompaction_AcceptanceSecondRequestRejected(t *testing.T) {
 // acceptance (superseded_note) — its selection is discarded, never leaked into
 // the new cycle — and installs the forced operation.
 func TestSkillCompaction_AcceptanceForcedRequestSupersedesAutomaticOperation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	_, capturedNoteGen := s.pinnedNoteSnapshot()
 	accepted, err := s.acceptAutomaticSkillCompaction(context.Background(), capturedNoteGen, "automatic-note",
@@ -144,6 +148,7 @@ func TestSkillCompaction_AcceptanceForcedRequestSupersedesAutomaticOperation(t *
 // acceptance carrying a note generation captured before the note changed is
 // rejected, storing nothing.
 func TestSkillCompaction_StaleCapturedGenerationRejected(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	_, capturedNoteGen := s.pinnedNoteSnapshot()
 	s.setPinnedNote("changed mid-elicitation")
@@ -170,6 +175,7 @@ func TestSkillCompaction_StaleCapturedGenerationRejected(t *testing.T) {
 // acceptance guard's second arm — an automatic response is superseded when an
 // operation (here a forced one) already owns the cycle.
 func TestSkillCompaction_StaleAcceptanceRejectedWhileOperationPending(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	if _, err := s.requestSkillCompaction(context.Background(), "forced-note", "",
 		schema.SkillReloadSelection{State: "absent"}); err != nil {
@@ -193,6 +199,7 @@ func TestSkillCompaction_StaleAcceptanceRejectedWhileOperationPending(t *testing
 // TestSkillCompaction_LatchNonemptyNoteSkipsElicitation pins the nonempty-note
 // latch: high pressure must not re-elicit over an already-pinned note.
 func TestSkillCompaction_LatchNonemptyNoteSkipsElicitation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	called := false
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
@@ -216,6 +223,7 @@ func TestSkillCompaction_LatchNonemptyNoteSkipsElicitation(t *testing.T) {
 // pending-operation latch: with an empty note but a pending compaction
 // operation, high pressure must not fire the elicitor at all.
 func TestSkillCompaction_LatchPendingOperationSkipsElicitation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	called := false
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
@@ -276,6 +284,7 @@ func TestSkillCompaction_LatchFirstSelectionWins(t *testing.T) {
 // pending automatic operation — and its selection — durably, without
 // requesting a compaction or minting an operation generation.
 func TestSkillCompaction_ClearNoteCancelsAutomaticOperation(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	id := s.Meta().ID
@@ -329,6 +338,7 @@ func TestSkillCompaction_ClearNoteCancelsAutomaticOperation(t *testing.T) {
 // associated automatic operation — a pending forced operation (and its
 // round-tail trigger) survives the note clear.
 func TestSkillCompaction_ClearNoteLeavesForcedOperation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	gen, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
 		schema.SkillReloadSelection{State: "absent"})
@@ -356,6 +366,7 @@ func TestSkillCompaction_ClearNoteLeavesForcedOperation(t *testing.T) {
 // e.g. delivered but not yet fold-consumed) mutates the durable pinned note —
 // it must be persisted, or the stale note reappears after a restart.
 func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	gen, err := s.requestSkillCompaction(context.Background(), "keep", "opaque-instructions",
@@ -394,6 +405,7 @@ func TestSkillCompaction_ClearNotePersistsWithoutPendingOperation(t *testing.T) 
 // the persisted snapshot (cloned on every autosave) and the per-request scan by
 // one per cancel for the session's lifetime. The request scan must retire them.
 func TestSkillCompaction_CancellationReceiptsAreRetired(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	for i := range 3 {

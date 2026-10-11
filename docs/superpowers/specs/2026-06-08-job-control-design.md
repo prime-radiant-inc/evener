@@ -1052,7 +1052,7 @@ functions; the inventory below was built by grepping the tree, not from memory.
   → repoint to the job tools.
 - **evener hub web client JS assets** (`go:embed`-ed, served live — gate-token hits the static gate would
   otherwise leave red): `cmd/evener-hub/assets/renderer.js` (`case "SUBAGENT_START"`/`"SUBAGENT_END"` and
-  `"spawn_agent"`/`"resume_agent"`/`"close_agent"` renderers) and `cmd/evener-hub/assets/appwire.js`
+  `"spawn_agent"`/`"resume_agent"`/`"close_agent"` renderers) and `cmd/serf-hub/assets/appwire.js`
   (the `evener/subagent/started|completed` → `SUBAGENT_*` mapping). Repoint to the job lifecycle +
   job-tool names. (Earlier the inventory grepped only the Go tree — this is the JS consumer of the
   same wire notifications.)

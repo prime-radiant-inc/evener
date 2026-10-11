@@ -64,6 +64,7 @@ func isGitSnapshotCommand(command string) bool {
 }
 
 func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	env := &snapshotCountingEnv{root: dir}
 
@@ -80,6 +81,7 @@ func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
 }
 
 func TestNewSession_TestConfigCanSkipGitSnapshot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
@@ -150,6 +152,7 @@ func TestGitOriginURL_NotGitRepo(t *testing.T) {
 }
 
 func TestGitOriginURL_NilEnv(t *testing.T) {
+	t.Parallel()
 	got := gitOriginURL(context.Background(), nil, "/tmp/whatever")
 	if got != "" {
 		t.Fatalf("gitOriginURL(context.Background(), nil): got %q, want empty", got)
@@ -197,6 +200,7 @@ func TestSnapshotGit_InGitRepo(t *testing.T) {
 }
 
 func TestSnapshotGit_NotAGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
@@ -207,6 +211,7 @@ func TestSnapshotGit_NotAGitRepo(t *testing.T) {
 }
 
 func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()

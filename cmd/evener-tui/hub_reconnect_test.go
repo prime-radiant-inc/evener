@@ -10,6 +10,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
+	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -54,6 +56,68 @@ func TestHubModelStopsReportingConnectedWhenHubConnectionDrops(t *testing.T) {
 func staticHubDialer(client *appwire.Client, frames *hubFrameFeed) hubDialer {
 	return func(context.Context) (*appwire.Client, *hubFrameFeed, error) {
 		return client, frames, nil
+	}
+}
+
+// A scheduled marketplace reconciliation read died with the dropped
+// connection: its response will never arrive, so with the plugins panel open
+// the reconnect itself must reissue the tagged read - the fence of an
+// unconfirmed removal cannot wait for the user to happen to reopen the panel
+// or for a notification to refresh.
+func TestHubReconnectReissuesTaggedMarketplaceReconciliation(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, _, cleanupA := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}}, nil
+		})
+	})
+	defer cleanupA()
+	// The model sits on a connection that has dropped, feed included: a
+	// scheduled reconciliation read on it died with the drop.
+	oldClient, oldFeed, dropOldConnection := newTestHubClientWithFeed(t, nil)
+
+	m := hubModel{
+		client:                         oldClient,
+		pluginsPanel:                   marketplacePanelWithEntries(t, appwire.MarketplaceEntry{Name: "removed"}),
+		marketplaceRemovePending:       "removed",
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadIssued:      2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           1,
+	}
+	dropOldConnection()
+
+	cmd := m.applyHubReconnect(hubReconnectMsg{client: client, frames: oldFeed})
+	if cmd == nil {
+		t.Fatal("reconnect should schedule its recovery reads")
+	}
+	var list launchconfig.MarketplaceListResultMsg
+	seen := false
+	for _, msg := range runBatchedCmds(t, cmd) {
+		if result, ok := msg.(launchconfig.MarketplaceListResultMsg); ok {
+			list, seen = result, true
+		}
+	}
+	if !seen {
+		t.Fatal("reconnect should reissue the tagged marketplace read for the open panel")
+	}
+	if list.Err != nil || list.ReconcileGeneration != m.marketplaceReconcileGeneration || list.ReconcileGeneration <= m.marketplaceListFloor {
+		t.Fatalf("reissued read = %+v, want a fresh tagged generation (model now at %d)", list, m.marketplaceReconcileGeneration)
+	}
+
+	// The reissued read settles the fence the dead connection stranded.
+	got, _ := m.handleMarketplaceListResult(list)
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("after the reissued read settled, pending = %q/%v, want cleared", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("settled read should leave the surviving marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after the reissued read = %q, want %q", remove.Name, kept.Name)
 	}
 }
 
@@ -126,17 +190,16 @@ func TestHubModelReconnectsAfterHubConnectionDrops(t *testing.T) {
 	// rather than routed, because the read that re-subscribes has not run yet.
 	// Its only job is to show that the reconnect listens to the new feed at
 	// all: without a re-armed wait, nothing consumes it.
-	replacementApp.BroadcastAll(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+	replacementApp.BroadcastAll(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
-		TurnID:   "turn_4",
-		Item: appwire.ThreadItem{
+		Items: []appwire.ThreadItem{{
 			Type:   "agentMessage",
 			ID:     "item_agent_8",
 			TurnID: "turn_4",
 			Text:   "listening again",
 			Status: "completed",
-		},
+		}},
 	})
 	listening := false
 	for _, followUp := range runBatchedCmds(t, cmd) {
@@ -159,17 +222,16 @@ func TestHubModelReconnectsAfterHubConnectionDrops(t *testing.T) {
 	// Now that the re-read has re-subscribed, a frame ROUTED by subscription
 	// has to land in the transcript. That is the recovery the kata is about:
 	// live updates resume without restarting the TUI.
-	replacementApp.Broadcast("01SEND", appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+	replacementApp.Broadcast("01SEND", appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
-		TurnID:   "turn_4",
-		Item: appwire.ThreadItem{
+		Items: []appwire.ThreadItem{{
 			Type:   "agentMessage",
 			ID:     "item_agent_9",
 			TurnID: "turn_4",
 			Text:   "back online",
 			Status: "completed",
-		},
+		}},
 	})
 	updated, _ = m.Update(waitHubNotification(m.frames)())
 	m = updated.(hubModel)
@@ -251,4 +313,138 @@ func TestHubReconnectDelayBacksOffAndCaps(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("delays=%v, want %v", got, want)
 	}
+}
+
+// A quit must end the reconnect work with the model, not after it: a retry
+// parked in backoff would otherwise wake up, dial, and (with autostart on)
+// launch a hub while no TUI exists to use it. Run owns the lifecycle context;
+// canceling it has to abandon the backoff, cancel an in-flight dial, and stop
+// the loop from re-arming.
+func TestHubReconnectStopsOnLifecycleCancel(t *testing.T) {
+	t.Run("a canceled backoff never dials", func(t *testing.T) {
+		dialed := make(chan struct{}, 1)
+		m := hubModel{dialHub: func(context.Context) (*appwire.Client, *hubFrameFeed, error) {
+			dialed <- struct{}{}
+			return nil, nil, errors.New("dialed after cancel")
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.lifecycleCtx = ctx
+
+		// A long pending backoff stands in for the delay a real retry waits
+		// through; canceling before it elapses must end the cmd promptly. The
+		// retry runs under the model's own lifetime context, as Run wires it.
+		cmd := reconnectHub(m.reconnectContext(), m.dialHub, 2, time.Hour)
+		done := make(chan tea.Msg, 1)
+		go func() { done <- cmd() }()
+		cancel()
+
+		select {
+		case msg := <-done:
+			result, ok := msg.(hubReconnectMsg)
+			if !ok {
+				t.Fatalf("cmd returned %T, want a hubReconnectMsg", msg)
+			}
+			if !errors.Is(result.err, context.Canceled) {
+				t.Fatalf("canceled backoff error = %v, want context.Canceled", result.err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a canceled backoff kept sleeping; the retry would dial and autostart a hub after quit")
+		}
+		select {
+		case <-dialed:
+			t.Fatal("a canceled backoff still dialed; dialing with autostart launches a hub after the TUI is gone")
+		default:
+		}
+	})
+
+	t.Run("a blocked dial observes cancellation", func(t *testing.T) {
+		dialEntered := make(chan error, 1)
+		m := hubModel{dialHub: func(ctx context.Context) (*appwire.Client, *hubFrameFeed, error) {
+			dialEntered <- ctx.Err()
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.lifecycleCtx = ctx
+
+		// The first retry has no backoff, so the dial itself is the work in
+		// flight when the TUI exits.
+		cmd := reconnectHub(m.reconnectContext(), m.dialHub, 1, 0)
+		done := make(chan tea.Msg, 1)
+		go func() { done <- cmd() }()
+		// Wait until the dial has actually started, then quit: canceling first
+		// would (correctly) be caught before the dial, and the wait on ctx.Done
+		// inside it is what this subtest exercises.
+		select {
+		case err := <-dialEntered:
+			if err != nil {
+				t.Fatalf("dial entered with ctx already canceled: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the dial never started")
+		}
+		cancel()
+
+		select {
+		case msg := <-done:
+			result, ok := msg.(hubReconnectMsg)
+			if !ok || !errors.Is(result.err, context.Canceled) {
+				t.Fatalf("blocked dial result = %#v, want context.Canceled", msg)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the blocked dial did not observe cancellation; the dial goroutine outlives the model")
+		}
+	})
+
+	t.Run("no retry is re-armed once the lifecycle ends", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		m := hubModel{
+			dialHub:      staticHubDialer(nil, nil),
+			lifecycleCtx: ctx,
+		}
+		if cmd := m.applyHubReconnect(hubReconnectMsg{attempt: 1, err: errors.New("dial failed")}); cmd != nil {
+			t.Fatal("a canceled lifecycle still re-armed a retry; the loop outlives the TUI")
+		}
+	})
+
+	t.Run("an already-canceled context never dials", func(t *testing.T) {
+		dialed := make(chan struct{}, 1)
+		m := hubModel{dialHub: func(context.Context) (*appwire.Client, *hubFrameFeed, error) {
+			dialed <- struct{}{}
+			return nil, nil, nil
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		m.lifecycleCtx = ctx
+
+		// The delay-free first attempt skips the sleep's own ctx check, so an
+		// already-canceled lifetime must be caught before the dial.
+		msg := reconnectHub(m.reconnectContext(), m.dialHub, 1, 0)()
+		result, ok := msg.(hubReconnectMsg)
+		if !ok || !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("reconnect result = %#v, want context.Canceled", msg)
+		}
+		select {
+		case <-dialed:
+			t.Fatal("an already-canceled lifetime still dialed; the delay-free attempt would be checked too late")
+		default:
+		}
+	})
+
+	t.Run("a connection that succeeds at exit is closed, not installed", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		transport := appwiretest.NewScriptedTransport()
+		m := hubModel{lifecycleCtx: ctx}
+
+		cmd := m.applyHubReconnect(hubReconnectMsg{client: appwire.NewClient(transport), attempt: 1})
+		if cmd != nil {
+			t.Fatal("a canceled lifecycle still produced a follow-up command")
+		}
+		if m.client != nil || m.frames != nil {
+			t.Fatal("a canceled lifecycle still installed the connection that succeeded at exit")
+		}
+		assertTransportClosed(t, transport, "connection dialed at exit")
+	})
 }

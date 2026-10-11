@@ -1,3 +1,4 @@
+import { forEachJobOutputScalar } from "@evener/appwire-client";
 import Anser from "anser";
 
 export type AnsiNamedColor =
@@ -268,6 +269,20 @@ interface TerminalState {
   control: ControlState;
 }
 
+export type AnsiByteState = TerminalState;
+export type AnsiByteRow = {
+  offsetBytes: number;
+  endBytes: number;
+  line: AnsiLine;
+  /** Original byte offsets within this bounded fragment, one per visible UTF16 unit. */
+  textByteOffsets: Uint16Array;
+};
+export type AnsiByteRows = {
+  rows: AnsiByteRow[];
+  endState: AnsiByteState;
+  boundaries: Array<{ offsetBytes: number; state: AnsiByteState }>;
+};
+
 const MAX_CSI_SEQUENCE = 128;
 
 function defaultTerminalState(): TerminalState {
@@ -436,4 +451,45 @@ export function parseAnsiLines(text: string): AnsiLine[] {
   }
 
   return lines;
+}
+
+export const ANSI_BYTE_FRAGMENT_BYTES = 4096;
+
+// Display fragments and eviction checkpoints keep the original byte spans,
+// including malformed UTF8 and control strings that emit no visible text.
+export function parseAnsiByteRows(bytes: Uint8Array, offsetBytes: number, initialState?: AnsiByteState): AnsiByteRows {
+  const state = initialState === undefined ? defaultTerminalState() : cloneTerminalState(initialState);
+  const rows: AnsiByteRow[] = [];
+  const boundaries: AnsiByteRows["boundaries"] = [{ offsetBytes, state: cloneTerminalState(state) }];
+  let fragmentStart = offsetBytes;
+  let prefix = sgrSequence(state.sgr);
+  let presentation = "";
+  let textByteOffsets: number[] = [];
+  const flush = (endBytes: number, newline: boolean) => {
+    const line = parseAnsiLines(prefix + (newline ? presentation.slice(0, -1) : presentation))[0] ?? [];
+    if (newline || line.some((run) => run.text.length !== 0))
+      rows.push({ offsetBytes: fragmentStart, endBytes, line, textByteOffsets: Uint16Array.from(textByteOffsets) });
+    fragmentStart = endBytes;
+    prefix = sgrSequence(state.sgr);
+    presentation = "";
+    textByteOffsets = [];
+    boundaries.push({ offsetBytes: endBytes, state: cloneTerminalState(state) });
+  };
+  forEachJobOutputScalar(bytes, (value, start, end) => {
+    const absoluteStart = offsetBytes + start;
+    const absoluteEnd = offsetBytes + end;
+    if (absoluteEnd - fragmentStart > ANSI_BYTE_FRAGMENT_BYTES && absoluteStart > fragmentStart) {
+      flush(absoluteStart, false);
+    }
+    let newline = false;
+    scanTerminalText(value, state, (part) => {
+      presentation += part;
+      if (part.endsWith("\n")) newline = true;
+      else if (!part.startsWith("\u001b["))
+        for (let index = 0; index < part.length; index++) textByteOffsets.push(absoluteStart - fragmentStart);
+    });
+    if (newline) flush(absoluteEnd, true);
+  });
+  if (fragmentStart < offsetBytes + bytes.length) flush(offsetBytes + bytes.length, false);
+  return { rows, endState: cloneTerminalState(state), boundaries };
 }

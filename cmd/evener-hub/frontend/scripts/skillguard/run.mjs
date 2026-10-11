@@ -21,26 +21,46 @@
 // Deterministic: no credentials, no network beyond the loopback hub, no
 // shared dev server.
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
 import path from "node:path";
-import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
   createBrowserProcessCleanup,
+  createChromeProfileDir,
   describeBrowserStartupFailure,
   findChrome,
   parseChromeDevToolsAnnouncement,
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
-import { connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import {
+  connectOnlyPage,
+  createStartupDeadline,
+  devtoolsHttpURL,
+  evaluate,
+  navigateTo,
+  REFUSED_BUTTON_SELECTOR,
+  waitForHttp,
+} from "../browserGuardCdp.mjs";
+import { ReactionBudget } from "./budgets.mjs";
 
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
 const PROFILE_PREFIX = "skillguard-chrome-";
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
 const CHILD_EXIT_GRACE_MS = 2_000;
+
+// Mint the profile Chrome is pointed at under a short root, never the ambient
+// temp directory. This guard runs under a deep TMPDIR (a test harness nested in
+// an agent sandbox is two temp layers deep); minting straight under os.tmpdir()
+// there pushed the derived singleton socket path past sun_path and Chrome
+// aborted with "Socket path too long" before DevTools was ready, failing the
+// guard on a path-length accident rather than the behavior under test
+// (issue #3198). createChromeProfileDir picks a short root and trims the prefix
+// so the socket Chrome binds always fits, the same helper the other guards use.
+export function skillGuardChromeProfileDir(options = {}) {
+  return createChromeProfileDir(PROFILE_PREFIX, options);
+}
 
 // Fixture vocabulary, shared with cmd/evener-hub/skill_composer_browser_test.go.
 // The Go owner asserts these exact strings in the daemons' request logs and
@@ -71,7 +91,6 @@ const PROSE = {
   attachment: "PROSE_ATTACH_14d inspect the attached image",
   steerTurn: "PROSE_STEER_TURN_14e open a long turn for steering",
   steer: "PROSE_STEER_14e redirect the running turn",
-  capabilityLoss: "PROSE_CAPLOSS_14f aimed at a lost capability",
   failTurn: "PROSE_FAIL_TURN_14g open a long turn for the failing claim",
   fail: "PROSE_FAIL_14h request the missing source",
   delay: "PROSE_DELAY_14i submitted then edited while held",
@@ -204,6 +223,15 @@ function editorText(root) {
     (index > 0 && node.nodeName === "P" ? "\n" : "") + read(node)).join("");
 }
 
+// Runs in the page. Scrolls el into view and returns its center while el is
+// topmost there, else null: a press at a point that something else covers
+// would land on that something, as a real press would.
+function uncoveredCenter(el, block) {
+  el.scrollIntoView({ block });
+  const r = el.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+  return el.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
+}
+
 // Offset selection for single-line editing cases. Never place a caret inside
 // an atom: its complete label contributes to plain-text offsets, but its DOM
 // boundary is the only selectable location.
@@ -237,6 +265,11 @@ export class Driver {
     this.artifactDir = artifactDir;
     this.controlPath = controlPath;
     this.milestonePath = milestonePath;
+    // How slow THIS machine has proven to be: every wait's budget is sized
+    // from the slowest reaction a completed wait has already observed, so a
+    // loaded runner gets a proportional hang tripwire instead of the fixed
+    // floor (see budgets.mjs).
+    this.reactions = new ReactionBudget();
     this.failures = [];
     this.chromeBinary = null;
     this.chromeArgv = [];
@@ -259,7 +292,7 @@ export class Driver {
 
   async start() {
     this.chromeBinary = findChrome();
-    this.profileDir = mkdtempSync(path.join(tmpdir(), PROFILE_PREFIX));
+    this.profileDir = skillGuardChromeProfileDir();
     this.lifecycle = createBrowserProcessCleanup({ profileDir: this.profileDir });
     this.chromeArgv = [
       "--headless=new",
@@ -314,7 +347,7 @@ export class Driver {
     });
     this.endpoint = await announced;
     await waitForHttp(devtoolsHttpURL(this.endpoint, "/json/version"), "chrome devtools endpoint");
-    this.page = await connectPage(this.endpoint);
+    this.page = await connectOnlyPage(this.endpoint);
     await this.page.send("Page.enable").catch(() => {});
     await this.page.send("Runtime.enable").catch(() => {});
     // SKILLGUARD_CPU_THROTTLE=N slows the page's main thread N-fold through
@@ -548,7 +581,6 @@ export class Driver {
       key,
       code: codes?.code ?? key,
       windowsVirtualKeyCode: codes?.keyCode ?? 0,
-      nativeVirtualKeyCode: codes?.keyCode ?? 0,
       modifiers,
     });
     await this.send("Input.dispatchKeyEvent", {
@@ -556,7 +588,6 @@ export class Driver {
       key,
       code: codes?.code ?? key,
       windowsVirtualKeyCode: codes?.keyCode ?? 0,
-      nativeVirtualKeyCode: codes?.keyCode ?? 0,
       modifiers,
     });
   }
@@ -589,16 +620,24 @@ export class Driver {
   }
 
   // clickByText finds a visible button by its accessible text — some controls
-  // (the queue strip's buttons) carry no testid.
+  // (the queue strip's buttons) carry no testid. It finds and clicks the
+  // button in one page turn: a coordinate press measured in an earlier turn
+  // can land on a neighbour if the layout shifts in between (#3804, #3819).
+  // It still refuses a button that something else covers at its center.
   async clickByText(text) {
-    const boxes = await evaluate(
+    const result = await evaluate(
       this.send,
-      `(() => { const matches = [...document.querySelectorAll("button")].filter((b) => b.textContent.trim() === ${JSON.stringify(text)} || (b.getAttribute("aria-label") ?? "").trim() === ${JSON.stringify(text)});
-        return matches.map((b) => { b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: b.disabled }; }); })()`,
+      `(() => { const b = [...document.querySelectorAll("button")].find((n) => n.textContent.trim() === ${JSON.stringify(text)} || (n.getAttribute("aria-label") ?? "").trim() === ${JSON.stringify(text)});
+        if (!b) return "missing";
+        if (b.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
+        if (!(${uncoveredCenter})(b, "center")) return "covered";
+        b.click();
+        return "clicked"; })()`,
     );
-    if (!boxes || boxes.length === 0) throw new Error(`clickByText: no button labeled ${JSON.stringify(text)}`);
-    if (boxes[0].disabled) throw new Error(`clickByText: button ${JSON.stringify(text)} is disabled`);
-    await this.clickAt(boxes[0].x, boxes[0].y);
+    if (result === "missing") throw new Error(`clickByText: no button labeled ${JSON.stringify(text)}`);
+    if (result === "disabled") throw new Error(`clickByText: button ${JSON.stringify(text)} is disabled`);
+    if (result === "covered") throw new Error(`clickByText: button ${JSON.stringify(text)} is covered at its center`);
+    if (result !== "clicked") throw new Error(`clickByText: unexpected result ${JSON.stringify(result)} for ${JSON.stringify(text)}`);
   }
 
   // ---- page state (each returns plain JSON values) ----
@@ -661,8 +700,23 @@ export class Driver {
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
     const startedAt = Date.now();
-    let deadline = startedAt + timeoutMs;
+    // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
+    // budget: a run that has already proven this machine slow widens it (up to
+    // the ceiling), so a correct-but-slow reaction under load is not read as a
+    // wedged page. The wait is still released ONLY by the awaited condition --
+    // the budget decides only how long silence is tolerated (see budgets.mjs).
+    const budgetMs = this.reactions.deadline(timeoutMs);
+    let deadline = startedAt + budgetMs;
     let heldSince = null;
+    // A completed wait is the driver's observation of how slow the app is on
+    // this machine. With settleMs the reaction is the time to the FIRST hold --
+    // the settle window that follows is a proof barrier, not a reaction --
+    // and without it the condition held at this poll, which is now.
+    const settled = (value) => {
+      const reactedAt = settleMs > 0 ? heldSince : Date.now();
+      this.reactions.observe(reactedAt - startedAt);
+      return value;
+    };
     let settleAccounted = false;
     // When the previous poll ATTEMPT landed, success or failure: the span a
     // failure excludes from the proof is measured from here.
@@ -688,7 +742,7 @@ export class Driver {
       readAt = now;
       const held = !errored && value !== null && value !== undefined && value !== false;
       if (held) {
-        if (settleMs <= 0) return value;
+        if (settleMs <= 0) return settled(value);
         if (heldSince === null) {
           heldSince = now;
           if (!settleAccounted) {
@@ -696,7 +750,7 @@ export class Driver {
             deadline = Math.max(deadline, now + settleMs);
           }
         }
-        if (now - heldSince >= settleMs) return value;
+        if (now - heldSince >= settleMs) return settled(value);
       } else if (!errored) {
         heldSince = null;
       }
@@ -708,7 +762,7 @@ export class Driver {
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
         const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
         throw new Error(
-          `timed out after ${timeoutMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -880,12 +934,24 @@ export class Driver {
 
   // ---- composer gestures ----
 
+  // A rail row is pressed in the same page turn it is found and measured. A
+  // press measured in one turn and sent in the next can land on a neighbouring
+  // row once the rail shifts (a session's activity reorders it), opening the
+  // wrong session (#3874). The press goes to the row's text column, where the
+  // row's activation handler lives, and only while that text is topmost at its
+  // center, as a real press would require; otherwise the wait tries again.
+  pressRailRowExpr(ref) {
+    return `(() => {
+      const text = document.querySelector(${JSON.stringify(`[data-sidebar-rail] [data-session-ref="${ref}"]`)})?.firstElementChild;
+      if (!text) return null;
+      if (!(${uncoveredCenter})(text, "center")) return null;
+      text.click();
+      return true;
+    })()`;
+  }
+
   async openSession(ref) {
-    await this.waitPage(
-      `(() => document.querySelector("[data-session-ref='${ref}']") !== null ? true : null)()`,
-      { label: `rail row for ${ref}` },
-    );
-    await this.click(`[data-session-ref="${ref}"]`);
+    await this.waitPage(this.pressRailRowExpr(ref), { label: `rail row for ${ref} present and uncovered` });
     await this.waitPage(
       `(() => document.querySelector(${JSON.stringify(this.composerSelector(ref))}) !== null ? true : null)()`,
       { label: `composer for ${ref}` },
@@ -912,26 +978,26 @@ export class Driver {
     await this.press(ref, "Backspace");
   }
 
+  // The skill's slash-menu row, found, scrolled to and hit-tested in the turn
+  // that returns its center. The press itself is native and goes out one CDP
+  // round trip later: a real press is what exercises the row's mousedown
+  // handler, which keeps the editor focused, and an in-page click cannot.
+  // Measuring in the same turn as the hit-test leaves only that round trip for
+  // the menu to shift (#4071, the openSession race of #3874); a press that
+  // still lands on a neighbouring row adds the wrong chip, and the chip wait
+  // in completeSkill fails on it.
+  slashRowPointExpr(row) {
+    return `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
+      const b = menu && [...menu.querySelectorAll("button")].find((n) => n.textContent.includes(${JSON.stringify(row)}));
+      return b ? (${uncoveredCenter})(b, "nearest") : null; })()`;
+  }
+
   async completeSkill(ref, name) {
     const row = `/${name}`;
-    await this.waitPage(
-      `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']"); if (!menu) return null;
-        return [...menu.querySelectorAll("button")].some((b) => b.textContent.includes(${JSON.stringify(row)})) ? true : null; })()`,
-      { label: `slash menu row ${row}` },
-    );
-    // Click the skill's own row (native mouse events), not a keyboard commit,
-    // so the scenario never depends on highlight ordering.
-    const rowBox = await this.elementBox(
-      `[data-testid='composer-slash-menu'] button`,
-    );
-    if (!rowBox) throw new Error("slash menu row vanished before click");
-    const rows = await evaluate(
-      this.send,
-      `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-        return [...menu.querySelectorAll("button")].filter((b) => b.textContent.includes(${JSON.stringify(row)})).map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }); })()`,
-    );
-    if (!rows || rows.length === 0) throw new Error(`no ${row} row in slash menu`);
-    await this.clickAt(rows[0].x, rows[0].y);
+    // Click the skill's own row, not a keyboard commit, so the scenario never
+    // depends on highlight ordering.
+    const point = await this.waitPage(this.slashRowPointExpr(row), { label: `slash menu row ${row} present and uncovered` });
+    await this.clickAt(point.x, point.y);
     await this.waitPage(
       `(() => { const pane = ${this.paneScopeExpr(ref)};
         const chips = pane ? [...pane.querySelectorAll("[data-testid='composer-skill-chip']")] : [];
@@ -961,19 +1027,27 @@ export class Driver {
   // `View <name>` and `Remove <name>`), so the remove button is the one whose
   // label starts with "Remove ". The tile count is re-read between removals:
   // each click takes one tile, and the caller's loop ends when none are left.
+  // The first tile's remove button is found, hit-tested and clicked in one
+  // page turn (its handler is a plain click), so no layout shift can come
+  // between the measure and the press (#4071). The expression returns the
+  // button's label, "missing" or "covered".
+  removeAttachmentExpr(ref) {
+    return `(() => { const pane = ${this.paneScopeExpr(ref)};
+      const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
+      const b = tiles
+        .map((tile) => [...tile.querySelectorAll("button")].find((n) => (n.getAttribute("aria-label") ?? "").startsWith("Remove ")))
+        .find(Boolean);
+      if (!b) return "missing";
+      if (!(${uncoveredCenter})(b, "center")) return "covered";
+      b.click();
+      return b.getAttribute("aria-label"); })()`;
+  }
+
   async removeAttachmentTile(ref) {
-    const labels = await evaluate(
-      this.send,
-      `(() => { const pane = ${this.paneScopeExpr(ref)};
-        const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
-        const buttons = tiles
-          .map((tile) => [...tile.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Remove ")))
-          .filter(Boolean);
-        return buttons.map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label") }; }); })()`,
-    );
-    if (!labels || labels.length === 0) throw new Error("no attachment remove button");
-    await this.clickAt(labels[0].x, labels[0].y);
-    return labels[0].label;
+    const label = await evaluate(this.send, this.removeAttachmentExpr(ref));
+    if (label === "missing") throw new Error("no attachment remove button");
+    if (label === "covered") throw new Error("attachment remove button is covered at its center");
+    return label;
   }
 
   // Every action that SENDS the composer's draft states the draft it means to
@@ -1021,8 +1095,8 @@ export class Driver {
   }
 
   // A composer action click is lost when a re-render lands between the mouse
-  // press and release (no click event fires) — the roster refresh after a
-  // daemon death re-renders the shell exactly then. So each attempt is
+  // press and release (no click event fires) — any store update that
+  // re-renders the shell at that moment is enough. So each attempt is
   // verified by an OBSERVABLE effect (composer state changed, the button went
   // disabled, or a toast answered) and re-clicked when nothing happened. A
   // re-click while the first landed is harmless: actionPending disables the
@@ -1736,8 +1810,8 @@ async function runInlineEditing(driver) {
   // 229 code must not submit the message or accept a slash completion.
   await driver.focusComposer(ref);
   await driver.send("Input.imeSetComposition", { text: "あ", selectionStart: 1, selectionEnd: 1 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
   await driver.send("Input.insertText", { text: "あ" });
   // Composed straight against the last chip, which is exactly where a token
   // character has to be separated from it.
@@ -1788,6 +1862,39 @@ async function runScenarios(driver) {
   driver.sessionA = driver.pinnedSessionA;
   driver.sessionB = driver.pinnedSessionB;
   driver.milestone("sessions-visible", { sessionA: driver.sessionA, sessionB: driver.sessionB, rows: rows.rows });
+
+  // Actual owner inventories come from two real daemon cwd roots. A controller
+  // plugin shares the owners' plugin name but has a different command body.
+  for (const [ref, owner, other] of [[driver.sessionA, "alpha", "beta"], [driver.sessionB, "beta", "alpha"], [driver.sessionA, "alpha", "beta"]]) {
+    await driver.openSession(ref);
+    await driver.focusComposer(ref);
+    await driver.typeText(ref, "/");
+    const rows = await driver.waitPage(`(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
+      const rows = menu ? [...menu.querySelectorAll("button")].map((b) => b.textContent) : [];
+      return rows.some((row) => row.includes(${JSON.stringify(`/owner-${owner}`)})) ? rows : null; })()`,
+      { label: `owning ${owner} project command in live completion` });
+    check(!rows.some((row) => row.includes(`/owner-${other}`) || row.includes("controller-only")), `wrong owner inventory: ${JSON.stringify(rows)}`);
+    await driver.clearComposerDraft(ref);
+    if (driver.ownerCommandsSent?.has(owner)) {
+      driver.milestone("owner-alpha-returned", { ref, rows });
+      continue;
+    }
+    await driver.focusComposer(ref);
+    await driver.typeText(ref, `OWNER_PROSE_${owner} /owner-${owner}`);
+    const point = await driver.waitPage(driver.slashRowPointExpr(`/owner-${owner}`), {
+      label: `project command selection for ${owner}`,
+    });
+    await driver.clickAt(point.x, point.y);
+    await driver.waitPage(`(() => { const pane = ${driver.paneScopeExpr(ref)}; return pane?.querySelector("[data-testid='composer-command-chip']")?.textContent === ${JSON.stringify(`/owner-${owner}`)} ? true : null; })()`,
+      { label: `project command atom for ${owner}` });
+    const text = `OWNER_PROSE_${owner} /owner-${owner} `;
+    driver.milestone(`owner-${owner}-command`, { ref, rows });
+    await driver.clickSubmit(ref, { text, chips: [], tiles: 0 });
+    await driver.waitForComposerCleared(ref);
+    await driver.waitForReply(ref, text);
+    await driver.waitForTurnIdle(ref);
+    (driver.ownerCommandsSent ??= new Set()).add(owner);
+  }
 
   // ---- scenario: canonical selection ----
   await driver.openSession(driver.sessionA);
@@ -2043,42 +2150,9 @@ async function runScenariosPart2(driver) {
   });
   await driver.waitForReply(driver.sessionA, PROSE.attachment);
 
-  // ---- scenario: capability loss ----
-  await driver.openSession(driver.sessionB);
-  await driver.focusComposer(driver.sessionB);
-  await driver.typeText(driver.sessionB, PROSE.capabilityLoss);
-  await driver.selectSkillChip(driver.sessionB);
-  const staged = await driver.composerState(driver.sessionB);
-  driver.milestone("caploss-staged", staged);
-  // The Go owner shuts helper B down when it sees that milestone, then
-  // refreshes the real roster. The pane re-renders the thread as ended; the
-  // composer collapses to its follow-up invitation.
-  await driver.waitPage(
-    `(() => { const state = ${driver.composerStateExpr(driver.sessionB)}; return state && state.placeholder === "Send a follow-up…" ? true : null; })()`,
-    { timeoutMs: 30000, label: "session B rendered as ended" },
-  );
-  driver.milestone("caploss-ended", await driver.composerState(driver.sessionB));
-  await driver.focusComposer(driver.sessionB);
-  await driver.clickSubmit(driver.sessionB, draft(PROSE.capabilityLoss));
-  // The refusal keeps the draft: text and chips stay, and NOTHING durable is
-  // written for this mutation.
-  const refused = await driver.composerState(driver.sessionB);
-  check(refused.text.includes(PROSE.capabilityLoss), `draft text lost on refusal: ${JSON.stringify(refused)}`);
-  check(refused.chips.some((c) => c.includes(SKILL_NAME)), `draft chip lost on refusal: ${JSON.stringify(refused)}`);
-  const toast = await evaluate(driver.send, driver.toastExpr());
-  const durableB = await evaluate(driver.send, driver.durableRecordsExpr());
-  driver.milestone("caploss-refused", { ...refused, toast, durable: durableB });
-  // Clean the staged draft so later IndexedDB reads stay unambiguous.
-  await driver.focusComposer(driver.sessionB);
-  await driver.selectAll(driver.sessionB);
-  await driver.press(driver.sessionB, "Backspace");
-  // The refusal toast renders OVER the composer card and swallows clicks
-  // aimed at its buttons; wait for it to dismiss before any later scenario
-  // drives the composer again.
-  await driver.waitPage(
-    `(() => { const toast = document.querySelector("section[aria-label='Notifications']"); return !toast || toast.textContent.trim() === "" ? true : null; })()`,
-    { timeoutMs: 20000, label: "refusal toast dismissed" },
-  );
+  // No capability-loss scenario: see skillGuardAssert in
+  // skill_composer_browser_test.go for why, and for where the composer's
+  // skillInput refusal is covered instead.
 
   // ---- scenario: failed activation + explicit retry ----
   await driver.openSession(driver.sessionA);

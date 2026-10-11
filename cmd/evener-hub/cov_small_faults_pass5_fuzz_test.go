@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -109,25 +110,25 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		call(web.handleDocImage, http.MethodGet, "/doc/image?session=01PASS5&path=.")
 		call(web.handleDocImage, http.MethodGet, "/doc/image?session=remote:x&path=out.png")
 		call(web.handleDocImage, http.MethodPost, "/doc/image")
-		_, _ = readDocFile(cwd)
-		_, _ = readDocFile(filepath.Join(cwd, "missing"))
+		_, _ = readDocFile(cwd, cwd)
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "missing"))
 		_ = looksBinaryBytes(append(make([]byte, 9000), 0))
-		docStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
-		_, _ = readDocFile("x")
+		docStat = func(*os.File) (os.FileInfo, error) { return nil, errors.New("stat") }
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docStat = oldStat
-		docOpen = func(string) (*os.File, error) { return nil, errors.New("open") }
-		_, _ = readDocFile(filepath.Join(cwd, "note.txt"))
+		docOpen = func(string, string) (*os.File, error) { return nil, errors.New("open") }
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docOpen = oldOpen
-		docOpen = func(string) (*os.File, error) { return os.Open(cwd) }
-		_, _ = readDocFile(filepath.Join(cwd, "note.txt"))
+		docOpen = func(string, string) (*os.File, error) { return os.Open(cwd) }
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docOpen = oldOpen
-		_, _ = web.localSessionCWD("remote:x")
-		_, _ = web.localSessionCWD("01MISSING")
+		_, _ = web.localSessionCWD(context.Background(), "remote:x")
+		_, _ = web.localSessionCWD(context.Background(), "01MISSING")
 		past := hubcore.NewPastIndex("")
 		past.SeedForTest([]schema.SessionMeta{{ID: "01PAST", EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd}}, {ID: "01EMPTY"}})
 		pastWeb := NewWebServer(hubcore.WebConfig{Past: past})
-		_, _ = pastWeb.localSessionCWD("01PAST")
-		_, _ = pastWeb.localSessionCWD("01EMPTY")
+		_, _ = pastWeb.localSessionCWD(context.Background(), "01PAST")
+		_, _ = pastWeb.localSessionCWD(context.Background(), "01EMPTY")
 
 		t.Setenv(envvars.EVENERRecordHTTP.Name, "")
 		_ = newHTTPRequestRecorder(root)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -170,24 +171,25 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		_, _ = resolveOutputImageFile("s", cwd, ".", "x")
 		_, _, _ = readOutputImageFile(cwd)
 		_, _, _ = readOutputImageFile(filepath.Join(cwd, "missing"))
-		_ = outputImageSHA(png)
+		_ = imageSha(png)
 		_ = outputImageDisplayName("/")
 
 		args := map[string]string{}
 		item := appwire.ThreadItem{Type: "commandExecution", CallID: "c", ToolName: "write_file", ArgumentsJSON: `{"file_path":"out.png"}`, Output: "out.png"}
-		params, _ := json.Marshal(map[string]any{"item": item})
-		for _, n := range []appwire.Notification{{}, {Method: appwire.NotifyItemStarted}, {Method: appwire.NotifyItemStarted, Params: []byte("{")}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"other":{}}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"item":[]}`)}, {Method: appwire.NotifyItemStarted, Params: []byte(`{"item":{"type":"other"}}`)}, {Method: appwire.NotifyItemStarted, Params: params}, {Method: appwire.NotifyItemCompleted, Params: params}} {
+		itemsParams, _ := json.Marshal(map[string]any{"items": []appwire.ThreadItem{item}})
+		upsertedParams, _ := json.Marshal(map[string]any{"item": appwire.OverlayItem{Item: item}})
+		for _, n := range []appwire.Notification{{}, {Method: appwire.NotifyHistoryUpdated}, {Method: appwire.NotifyHistoryUpdated, Params: []byte("{")}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"other":{}}`)}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"items":{}}`)}, {Method: appwire.NotifyHistoryUpdated, Params: []byte(`{"items":[{"type":"other"}]}`)}, {Method: appwire.NotifyHistoryUpdated, Params: itemsParams}, {Method: appwire.NotifyOverlayUpserted, Params: upsertedParams}} {
 			_ = enrichOutputImageNotification("01PASS5", cwd, args, n)
 		}
 		lookupItem := appwire.ThreadItem{Type: "commandExecution", CallID: "lookup", ToolName: "write_file"}
-		lookupParams, _ := json.Marshal(map[string]any{"item": lookupItem})
+		lookupParams, _ := json.Marshal(map[string]any{"items": []appwire.ThreadItem{lookupItem}})
 		args["lookup"] = `{"file_path":"out.png"}`
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: lookupParams})
-		noFileParams, _ := json.Marshal(map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "shell", Output: "nothing"}})
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: noFileParams})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: lookupParams})
+		noFileParams, _ := json.Marshal(map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "shell", Output: "nothing"}}})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: noFileParams})
 		_ = enrichOutputImageNotification("", cwd, args, appwire.Notification{})
 		outputImageMarshal = func(any) ([]byte, error) { return nil, errors.New("marshal") }
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: params})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: itemsParams})
 		outputImageMarshal = oldMarshal
 		marshalCalls := 0
 		outputImageMarshal = func(v any) ([]byte, error) {
@@ -197,7 +199,7 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 			}
 			return json.Marshal(v)
 		}
-		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyItemCompleted, Params: params})
+		_ = enrichOutputImageNotification("01PASS5", cwd, args, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: itemsParams})
 		outputImageMarshal = oldMarshal
 		outputImageStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
 		_, _, _ = readOutputImageFile("x")

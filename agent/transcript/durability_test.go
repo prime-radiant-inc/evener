@@ -53,7 +53,10 @@ func TestAppendBatchWritesEveryTurnAtContiguousSeqs(t *testing.T) {
 }
 
 // A batch whose write fails and rolls back cleanly is all-or-nothing: nothing
-// is in the file and no seq is spent, so a retry lands the whole batch at seq 0.
+// is in the file and no entry ordinal is spent. Its sequence numbers ARE
+// spent: a reader in another process may have seen the lines before the
+// rollback took them out, so no later record may reuse them. A retry lands
+// the whole batch at the next ordinals and fresh sequence numbers.
 // Batch ops after the header (indices 0-3): Seek 4, Write 5 (faulted).
 func TestAppendBatchRollsBackWholeBatchOnWriteFailure(t *testing.T) {
 	base := afero.NewMemMapFs()
@@ -75,12 +78,15 @@ func TestAppendBatchRollsBackWholeBatchOnWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry after rollback: %v", err)
 	}
-	if firstSeq != 0 {
-		t.Fatalf("retry firstSeq = %d, want 0: the failed batch spent no seq", firstSeq)
+	if firstSeq != 2 {
+		t.Fatalf("retry firstSeq = %d, want 2: the rolled-back batch consumed seq 0 and 1", firstSeq)
 	}
 	entries := faultTestEntries(t, base)
-	if len(entries) != 2 || entries[0].Seq != 0 || entries[1].Seq != 1 {
-		t.Fatalf("entries after the retry = %+v, want two at seq 0 and 1", entries)
+	if len(entries) != 2 || entries[0].Seq != 2 || entries[1].Seq != 3 {
+		t.Fatalf("entries after the retry = %+v, want two at seq 2 and 3", entries)
+	}
+	if next, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("charlie")), RecordOptions{Door: DoorDurable}); err != nil || next.Ordinal != 2 || next.Seq != 4 {
+		t.Fatalf("next record = %+v, %v; want ordinal 2 (the rolled-back batch took none)", next, err)
 	}
 }
 
@@ -280,12 +286,90 @@ func TestAppendBatchFailClosedDistinguishesClosedFromRecorded(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnUserInput, llm.User("after close"))
 
 	// Ordinary door (failClosed=false): a closed writer is a silent nil no-op.
-	if _, retained, err := w.appendBatch([]schema.Turn{turn}, true, true, false); err != nil || retained != nil {
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, PlaceVerbatim, DoorDurable); err != nil || retained != nil {
 		t.Fatalf("ordinary appendBatch on a closed writer = (retained %v, err %v), want the silent nil no-op", retained, err)
 	}
 	// Synced owner (failClosed=true): a closed writer fails closed, so
 	// AppendSynced never reads a dropped write as durable.
-	if _, retained, err := w.appendBatch([]schema.Turn{turn}, true, false, true); !errors.Is(err, ErrWriterClosed) || retained != nil {
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, PlaceVerbatim, DoorSynced); !errors.Is(err, ErrWriterClosed) || retained != nil {
 		t.Fatalf("synced appendBatch on a closed writer = (retained %v, err %v), want ErrWriterClosed", retained, err)
+	}
+}
+
+// RetainedUnsyncedError boundary: a retained record's durability debt is not
+// permanent. AppendSynced adopts it (returns *RetainedUnsyncedError) when its
+// own fsync, its rollback, and the recovery barrier all fail; a LATER,
+// unfaulted EstablishDurability call (an owner's periodic barrier, or the
+// next successful append's own fsync) settles the debt without touching the
+// file again. Durable ops after the header: Seek 4, Write 5, Sync 6 (fault),
+// rollback Truncate 7 (fault), barrier Sync 9 (fault) -- matching
+// TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication. Every
+// op past 9 is unfaulted.
+func TestRetainedUnsyncedRecordIsSettledByALaterSuccessfulFsync(t *testing.T) {
+	plan := faultPlan(6)
+	plan[7] = 0x00 // rollback truncate fails: the whole line stays
+	plan[9] = 0x00 // recovery barrier fsync fails: durability unestablished
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("retained, settled later")))
+	if !errors.Is(err, ErrRetainedUnsynced) {
+		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced", err)
+	}
+	if !w.dirty {
+		t.Fatal("setup: a retained record must leave the writer dirty (durability owed)")
+	}
+	// A later barrier call, past every faulted op, succeeds and settles the debt.
+	if err := w.EstablishDurability(); err != nil {
+		t.Fatalf("later EstablishDurability = %v, want nil: the barrier eventually succeeds", err)
+	}
+	if w.dirty {
+		t.Fatal("a successful later barrier left the writer dirty; the debt should be settled")
+	}
+	if entries := faultTestEntries(t, base); len(entries) != 1 {
+		t.Fatalf("entries = %d, want the one record, still not duplicated after settling", len(entries))
+	}
+}
+
+// RetainedUnsyncedError boundary: a crash between adoption and the next fsync.
+// The retained record is a whole line in the file (a returning reader finds
+// it) even though the process that adopted it never gets to fsync again.
+// Reopening the file (openWriterFS, the resume path a restart takes) must
+// find the entry exactly once: resume's own recovery (the tail's framed scan
+// and its own EstablishDurability-equivalent) neither drops it nor duplicates
+// it, and the reopened writer's next Seq continues past it.
+func TestRetainedUnsyncedRecordSurvivesACrashBeforeTheNextFsync(t *testing.T) {
+	plan := faultPlan(6)
+	plan[7] = 0x00 // rollback truncate fails: the whole line stays
+	plan[9] = 0x00 // recovery barrier fsync fails: durability unestablished
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("retained across a crash")))
+	if !errors.Is(err, ErrRetainedUnsynced) {
+		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced", err)
+	}
+	// A crash: the process never closes w, and never fsyncs again. Reopen the
+	// same underlying file directly (no Close on w), as a restart would.
+	reopened, err := openWriterFS(base, faultTranscriptPath)
+	if err != nil {
+		t.Fatalf("openWriterFS after a crash: %v", err)
+	}
+	entries := faultTestEntries(t, base)
+	if len(entries) != 1 {
+		t.Fatalf("entries after reopen = %d, want the retained entry exactly once", len(entries))
+	}
+	if got := entries[0].Turn.Kind; got != schema.TurnUserInput {
+		t.Fatalf("recovered entry kind = %s, want %s", got, schema.TurnUserInput)
+	}
+	if err := reopened.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after reopen"))); err != nil {
+		t.Fatalf("Append after reopen: %v", err)
+	}
+	if entries := faultTestEntries(t, base); len(entries) != 2 {
+		t.Fatalf("entries after reopen and one more append = %d, want 2 (no duplicate of the retained one)", len(entries))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -166,5 +167,55 @@ func TestLinuxStartOffsetBounds(t *testing.T) {
 	}
 	if lower != 1500*time.Millisecond || upper != 1510*time.Millisecond {
 		t.Fatalf("bounds = %v..%v, want 1.5s..1.51s", lower, upper)
+	}
+}
+
+// /proc/<pid>/stat carries a process's start ticks (field 22) and its flags
+// (field 9) in one read; PF_EXITING (0x4) marks a process that has begun
+// exiting before its pidfd reports it gone (#3339). The command field may
+// hold spaces and parentheses, so fields count from the last ')'.
+func TestLinuxStatFacts(t *testing.T) {
+	stat := func(flags string) []byte {
+		// pid (comm) state ppid pgrp session tty tpgid flags … starttime(22)
+		return []byte("4242 (evener (serve) x) S 1 4242 4242 0 -1 " + flags + " 0 0 0 0 1 2 3 4 20 0 1 0 987654 0 0")
+	}
+	ticks, exiting, err := linuxStatFacts(stat("4194560"))
+	if err != nil || ticks != 987654 || exiting {
+		t.Fatalf("live stat: ticks=%d exiting=%v err=%v", ticks, exiting, err)
+	}
+	ticks, exiting, err = linuxStatFacts(stat("4194564"))
+	if err != nil || ticks != 987654 || !exiting {
+		t.Fatalf("exiting stat: ticks=%d exiting=%v err=%v", ticks, exiting, err)
+	}
+	if _, _, err := linuxStatFacts([]byte("4242 (evener) S 1")); err == nil {
+		t.Fatal("incomplete stat accepted")
+	}
+}
+
+// A daemon closing its files can drop a descriptor between the fd directory
+// read and its fdinfo read (#3339). That descriptor is skipped, as a failed
+// Stat of it already is, rather than failing the whole inspection.
+func TestLinuxOwnsLogSkipsADescriptorClosedMidScan(t *testing.T) {
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(state, "sessions", "session.api.jsonl")
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for _, dir := range []string{"fd", "fdinfo"} {
+		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// fd/3 names the log, but its fdinfo is already gone.
+	if err := os.Symlink(logPath, filepath.Join(root, "fd", "3")); err != nil {
+		t.Fatal(err)
+	}
+	owns, err := linuxOwnsLog(root, Target{PID: 4242, SessionID: "session", StateDir: state})
+	if err != nil || owns {
+		t.Fatalf("owns=%v err=%v, want the closed descriptor skipped", owns, err)
 	}
 }

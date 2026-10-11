@@ -25,12 +25,47 @@ type remoteHubCall struct {
 }
 
 // newScriptedRemoteHub wires an initialized AppWire client to an in-memory
-// server whose replies the caller scripts, recording every request. No SSH, no
-// network, no host.
+// server whose replies the caller scripts, recording every request. A reply
+// that is an appwire.WireError is sent as that error. No SSH, no network, no
+// host.
 func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.RawMessage) any) (*appwire.Client, func() []remoteHubCall) {
 	t.Helper()
 	client, calls, _ := newPushableScriptedRemoteHub(t, handle)
 	return client, calls
+}
+
+// scriptedRemoteHubReplying scripts a remote hub (newScriptedRemoteHub) that
+// answers every request for method with reply: a response, or an
+// appwire.WireError it sends back as an error.
+func scriptedRemoteHubReplying(method string, reply any) func(string, json.RawMessage) any {
+	return func(got string, _ json.RawMessage) any {
+		switch got {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case method:
+			return reply
+		default:
+			return appwire.EmptyResponse{}
+		}
+	}
+}
+
+// scriptedRemoteHubParams decodes the params of every request for method a
+// scripted remote hub recorded, in order.
+func scriptedRemoteHubParams[P any](t *testing.T, calls []remoteHubCall, method string) []P {
+	t.Helper()
+	var decoded []P
+	for _, call := range calls {
+		if call.method != method {
+			continue
+		}
+		var params P
+		if err := json.Unmarshal(call.params, &params); err != nil {
+			t.Fatalf("decode %s params %s: %v", method, call.params, err)
+		}
+		decoded = append(decoded, params)
+	}
+	return decoded
 }
 
 // newPushableScriptedRemoteHub is newScriptedRemoteHub plus the remote hub's side
@@ -60,6 +95,12 @@ func newPushableScriptedRemoteHub(t *testing.T, handle func(method string, param
 			calls = append(calls, remoteHubCall{method: msg.Request.Method, params: msg.Request.Params})
 			mu.Unlock()
 			reply := handle(msg.Request.Method, msg.Request.Params)
+			if wireErr, ok := reply.(appwire.WireError); ok {
+				if err := server.Send(ctx, appwire.ErrorMessage(msg.Request.ID, wireErr)); err != nil {
+					return
+				}
+				continue
+			}
 			data, err := json.Marshal(reply)
 			if err != nil {
 				return
@@ -247,6 +288,58 @@ func TestHubRPCThreadReadServesRemoteHubSource(t *testing.T) {
 	}
 	if turns.NextCursor == "" {
 		t.Fatalf("turns = %+v, want a controller-owned continuation cursor", turns)
+	}
+}
+
+// thread/shutdown for a ref the controller does not host must reach the owning
+// host. The controller's shutdown path (shutdownThreadTolerateExited) resolves
+// the remote source, gates on the thread's advertised capabilities, and forwards
+// on the owning host's client — the same non-dialing client every remote read
+// uses. Because the mask now carries Shutdown, the remote daemon's own claim
+// decides the gate; with it masked off the controller refuses the action locally
+// ("shutdown is not available for this session") without ever asking the host,
+// which is what left a controller unable to stop a session it did not host.
+func TestHubRPCThreadShutdownForwardsToRemoteHost(t *testing.T) {
+	// The remote daemon's own claim carries Shutdown, which the mask must
+	// preserve for the shutdown gate to pass.
+	remote, calls := newScriptedRemoteHub(t, scriptedRemoteThreadT1With(appwire.ThreadCapabilities{Shutdown: true}))
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if err := rpc.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "h1:t1"}); err != nil {
+		t.Fatalf("ThreadShutdown on remote ref: %v", err)
+	}
+
+	var forwarded appwire.ThreadShutdownParams
+	shutdowns := 0
+	for _, call := range calls() {
+		if call.method != appwire.MethodThreadShutdown {
+			continue
+		}
+		if err := json.Unmarshal(call.params, &forwarded); err != nil {
+			t.Fatalf("decode forwarded shutdown params: %v", err)
+		}
+		shutdowns++
+	}
+	if shutdowns != 1 {
+		t.Fatalf("forwarded thread/shutdown calls = %d, want exactly 1: the controller stopped the session locally instead of on its host", shutdowns)
+	}
+	if forwarded.Ref != "local:t1" {
+		t.Fatalf("forwarded shutdown ref = %q, want the remote hub's own local:t1", forwarded.Ref)
 	}
 }
 
@@ -443,6 +536,7 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 		Queue:        true,
 		ForkFromTurn: true,
 		SkillInput:   true,
+		Shutdown:     true,
 	}
 	if err := push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     "t1",
@@ -475,8 +569,12 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 			if status.Capabilities == nil {
 				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
 			}
-			if *status.Capabilities != (appwire.ThreadCapabilities{}) {
-				t.Fatalf("relayed status capabilities = %+v, want every unforwarded action masked like the read path", *status.Capabilities)
+			// The daemon claims Shutdown as well, so this pins both halves of the
+			// mask: the one forwarded action survives, every unforwarded one is
+			// dropped. An expectation of the empty set would only show that a claim
+			// containing no forwarded action stays empty.
+			if want := (appwire.ThreadCapabilities{Shutdown: true}); *status.Capabilities != want {
+				t.Fatalf("relayed status capabilities = %+v, want %+v", *status.Capabilities, want)
 			}
 			return
 		case <-deadline:
@@ -487,18 +585,26 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 
 // scriptedRemoteThreadT1 answers a remote hub's attach-bridge requests for one
 // thread named "t1" in the remote hub's own local namespace.
-func scriptedRemoteThreadT1(method string, _ json.RawMessage) any {
-	switch method {
-	case appwire.MethodInitialize:
-		return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
-	case appwire.MethodThreadRead:
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:     "t1",
-			Source: "local",
-			Evener: appwire.EvenerThread{Ref: "local:t1"},
-		}}
-	default:
-		return appwire.EmptyResponse{}
+func scriptedRemoteThreadT1(method string, params json.RawMessage) any {
+	return scriptedRemoteThreadT1With(appwire.ThreadCapabilities{})(method, params)
+}
+
+// scriptedRemoteThreadT1With is scriptedRemoteThreadT1 with the daemon's own
+// capability claim attached to the thread it reports.
+func scriptedRemoteThreadT1With(caps appwire.ThreadCapabilities) func(string, json.RawMessage) any {
+	return func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:     "t1",
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:t1", Capabilities: caps},
+			}}
+		default:
+			return appwire.EmptyResponse{}
+		}
 	}
 }
 
@@ -729,12 +835,15 @@ func TestHubRPCThreadReadDoesNotStampRemoteImageURLs(t *testing.T) {
 // A remote hub stamps its own origin-relative image routes before replying:
 // /s/<session>/images/<sha> for sha-addressed bytes and /doc/image?session=<...>
 // &path=<...> for file-backed output images. Such a route is only meaningful
-// against the remote origin: if it reaches the browser, the browser resolves it
-// against this hub's own origin for a session this hub does not have, which 404s
-// or, on a session-id collision, serves another session's bytes. While the
-// controller-side proxy is staged, every root-relative route must be
-// neutralized; external and data: URLs still resolve directly and must survive.
-func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
+// against the remote origin, so the outbound translation rewrites both forms
+// onto the host-qualified controller routes the browser must fetch them from
+// (`/s/h1:<session>/...`, `/doc/image?session=h1%3A<session>...`) — the bytes
+// then come from the owning host through the proxy, never from this hub's own
+// filesystem. External and data: URLs still resolve directly and must survive.
+//
+// Old assertion: both stamped routes were blanked while the proxy was staged
+// (URL == ""). New assertion: each is the host-qualified route.
+func TestHubRPCThreadReadRewritesRemoteImageRoutes(t *testing.T) {
 	sha := strings.Repeat("a", 64)
 	const external = "https://images.example.test/plot.png"
 	const docImage = "/doc/image?session=remote-session&path=shot.png"
@@ -810,34 +919,39 @@ func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
 	if len(item.OutputImages) != 4 {
 		t.Fatalf("output images = %+v, want all remote descriptors preserved", item.OutputImages)
 	}
-	if got := item.OutputImages[0].URL; got != "" {
-		t.Fatalf("remote output image route = %q, want the controller-relative route neutralized", got)
+	if got, want := item.OutputImages[0].URL, "/s/h1:remote-session/images/"+sha; got != want {
+		t.Fatalf("remote output image route = %q, want %q", got, want)
 	}
 	if got := item.OutputImages[0].SHA; got != sha {
-		t.Fatalf("output image sha = %q, want %q preserved for the staged proxy", got, sha)
+		t.Fatalf("output image sha = %q, want %q preserved for the proxy's sha form", got, sha)
 	}
 	if got := item.OutputImages[1].URL; got != external {
 		t.Fatalf("external output image URL = %q, want %q preserved", got, external)
 	}
-	if got := item.OutputImages[2].URL; got != "" {
-		t.Fatalf("remote /doc/image URL = %q, want it neutralized (it would resolve against the controller origin)", got)
+	if got, want := item.OutputImages[2].URL, "/doc/image?session=h1%3Aremote-session&path=shot.png"; got != want {
+		t.Fatalf("remote /doc/image URL = %q, want %q", got, want)
 	}
 	if got := item.OutputImages[2].Path; got != "shot.png" {
-		t.Fatalf("remote /doc/image path = %q, want the relative path preserved for the staged proxy", got)
+		t.Fatalf("remote /doc/image path = %q, want the relative path preserved for the proxy", got)
 	}
 	if got := item.OutputImages[3].URL; got != inline {
 		t.Fatalf("data: output image URL = %q, want %q preserved", got, inline)
 	}
-	if len(item.Images) != 2 || item.Images[0].URL != "" || item.Images[1].URL != "" {
-		t.Fatalf("remote input images = %+v, want both controller-relative routes neutralized", item.Images)
+	if len(item.Images) != 2 ||
+		item.Images[0].URL != "/s/h1:remote-session/images/"+sha ||
+		item.Images[1].URL != "/doc/image?session=h1%3Aremote-session&path=shot.png" {
+		t.Fatalf("remote input images = %+v, want both host-qualified controller routes", item.Images)
 	}
 }
 
 // evener/subagentPreview returns a remote thread's items exactly as thread/read
-// does, so it must run the same origin-relative image neutralization. Without it
-// a remote item's root-relative route reaches the browser, which resolves it
-// against the controller origin (404, or another session's bytes on a collision).
-func TestHubRPCSubagentPreviewNeutralizesRemoteImageRoutes(t *testing.T) {
+// does, so it must run the same image URL rewrite. Without it a remote item's
+// root-relative route reaches the browser, which resolves it against the
+// controller origin (404, or another session's bytes on a collision).
+//
+// Old assertion: the stamped route was blanked (URL == ""). New assertion: it
+// is the host-qualified controller route.
+func TestHubRPCSubagentPreviewRewritesRemoteImageRoutes(t *testing.T) {
 	const external = "https://images.example.test/plot.png"
 	sha := strings.Repeat("a", 64)
 	remoteRoute := "/s/remote-session/images/" + sha
@@ -899,8 +1013,8 @@ func TestHubRPCSubagentPreviewNeutralizesRemoteImageRoutes(t *testing.T) {
 	if len(preview.Items) != 1 || len(preview.Items[0].Images) != 2 {
 		t.Fatalf("preview items = %+v, want the single remote image item with both input images", preview.Items)
 	}
-	if got := preview.Items[0].Images[0].URL; got != "" {
-		t.Fatalf("remote preview image route = %q, want it neutralized", got)
+	if got, want := preview.Items[0].Images[0].URL, "/s/h1:remote-session/images/"+sha; got != want {
+		t.Fatalf("remote preview image route = %q, want %q", got, want)
 	}
 	if got := preview.Items[0].Images[1].URL; got != external {
 		t.Fatalf("external preview image URL = %q, want %q preserved", got, external)

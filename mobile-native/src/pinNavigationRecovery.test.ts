@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
-import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { nativeNavigationActions } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
@@ -13,11 +13,9 @@ function storage() {
 	return {
 		createId: () => `checkpoint-${++id}`,
 		get: (key: string) => structuredClone(values.get(key)),
-		set: (key: string, value: unknown) =>
-			values.set(key, structuredClone(value)),
+		set: (key: string, value: unknown) => values.set(key, structuredClone(value)),
 		deleteIf: (key: string, expected: unknown) => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected))
-				return false;
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
 			values.delete(key);
 			return true;
 		},
@@ -46,9 +44,8 @@ function client(failLocations: number[] = []) {
 			}
 			if (params.resource === "location") {
 				locationReads++;
-				if (failLocations.includes(locationReads))
-					throw new Error("location unavailable");
-				return wireV2(
+				if (failLocations.includes(locationReads)) throw new Error("location unavailable");
+				return wireSnapshot(
 					params as never,
 					{
 						top_level: true,
@@ -68,7 +65,7 @@ function client(failLocations: number[] = []) {
 					"g",
 				);
 			}
-			return wireV2(
+			return wireSnapshot(
 				params as never,
 				{
 					pin_sections: [{ id: "focus", name: "Focus", count: 1 }],
@@ -144,13 +141,8 @@ describe("pin navigation recovery", () => {
 		expect(second.getSnapshot().uncertain).toBe(false);
 		expect(journal.load()).toBeNull();
 		expect(fake.mutations).toBe(1);
-		expect(fake.calls.slice(afterWrite)).toEqual([
-			"evener/navigation/read",
-			"evener/navigation/read",
-		]);
-		expect(p2.getSnapshot().rows).toEqual([
-			{ id: "focus", name: "Focus", count: 1 },
-		]);
+		expect(fake.calls.slice(afterWrite)).toEqual(["evener/navigation/read", "evener/navigation/read"]);
+		expect(p2.getSnapshot().rows).toEqual([{ id: "focus", name: "Focus", count: 1 }]);
 	});
 	it("can recover a failed no-journal reconciliation without mutation", async () => {
 		const fake = client([1]);

@@ -3,10 +3,34 @@ package dev
 import (
 	"os"
 	"os/exec"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 )
+
+// TestWalkFlagsTreatsArgsAsBare pins that -args takes no value of its own:
+// everything after it is the test binary's argument list. list-build-flags
+// walks with walkFlags and stops on -args, so a word consumed as -args's value
+// is a word the walk can never see; as a bare flag the word after -args is
+// visited and the walk then ends. The selection walk used to carry its own
+// table, where -args took the next argument.
+func TestWalkFlagsTreatsArgsAsBare(t *testing.T) {
+	var visited []string
+	err := walkFlags([]string{"-args", "-race"}, func(tok flagToken) error {
+		if tok.hasValue {
+			t.Errorf("walkFlags gave %s the value %q; -args takes none", tok.name, tok.value)
+		}
+		visited = append(visited, tok.name)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walkFlags(-args -race) = %v", err)
+	}
+	if want := []string{"-args", "-race"}; !reflect.DeepEqual(visited, want) {
+		t.Fatalf("walkFlags(-args -race) visited %q, want %q", visited, want)
+	}
+}
 
 // TestEveryDocumentedFlagIsClassified is what makes "exhaustive" true rather
 // than asserted. The tables above claim to cover every flag `go help build`

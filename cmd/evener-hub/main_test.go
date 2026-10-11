@@ -132,14 +132,15 @@ func newTraceMainTestDeps(t *testing.T) (string, Config, mainDeps) {
 	ctx := t.Context()
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, func(func()), func()) {
 		},
+		startLaunchPrefetch: func(context.Context, *WebServer, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},
@@ -169,6 +170,62 @@ func TestRunMainCreatesAppWireTraceAndWarnsAboutRawPayloads(t *testing.T) {
 	}
 	if output := stderr.String(); !strings.Contains(output, tracePath) || !strings.Contains(output, "raw") || !strings.Contains(output, "sensitive") {
 		t.Errorf("trace startup diagnostic must name the path and warn that raw payloads are sensitive:\n%s", output)
+	}
+}
+
+// The startup banners (listening address, auth URL, auth token path) must
+// reach the stderr runMain was given, not the process's real stderr: a
+// caller that redirects diagnostics (this test, or a future embedder) would
+// otherwise never see them.
+func TestRunMainPrintsStartupBannersToTheGivenStderr(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	output := stderr.String()
+	for _, want := range []string{"listening on", "auth URL", "auth token also at"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("stderr missing %q banner:\n%s", want, output)
+		}
+	}
+}
+
+// The "past index rebuild" failure diagnostic and the "resolved evener at"
+// banner are the last two startup lines that bypassed the stderr runMain was
+// given, hardcoded to os.Stderr. Every other startup diagnostic already
+// routes through the parameter; these must too, or a caller that redirects
+// diagnostics never sees them.
+func TestRunMainRoutesRemainingDiagnosticsToTheGivenStderr(t *testing.T) {
+	root, cfg, deps := newTraceMainTestDeps(t)
+	// An unparseable state glob makes PastIndex.Rebuild fail, so runMain
+	// emits its "past index rebuild" diagnostic. newTraceMainTestDeps's
+	// loadConfig closure returns its own captured cfg, so hand runMain the
+	// cfg this test mutates.
+	cfg.StateGlob = "["
+	deps.loadConfig = func(string, bool) (Config, error) { return cfg, nil }
+	// With no -evener flag runMain resolves a sibling or PATH "evener" and
+	// announces where it found one; put one on PATH so resolution succeeds
+	// without depending on a real install.
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "evener"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	output := stderr.String()
+	for _, want := range []string{"past index rebuild", "resolved evener at"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("stderr missing %q diagnostic:\n%s", want, output)
+		}
 	}
 }
 
@@ -368,14 +425,15 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 	served := false
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, func(func()), func()) {
 		},
+		startLaunchPrefetch: func(context.Context, *WebServer, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},
@@ -433,8 +491,12 @@ func hermeticRegistryLoader(extra ...registry.Option) (*registry.Registry, *cred
 func TestRunMainPrefetchSeamStaysOffline(t *testing.T) {
 	root, cfg, deps := newTraceMainTestDeps(t)
 	var calls int32
-	deps.startLivePrefetch = func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+	deps.startLivePrefetch = func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, func(func()), func()) {
 		atomic.AddInt32(&calls, 1)
+	}
+	var launchCalls int32
+	deps.startLaunchPrefetch = func(context.Context, *WebServer, func(func())) {
+		atomic.AddInt32(&launchCalls, 1)
 	}
 	var stderr bytes.Buffer
 	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
@@ -443,6 +505,9 @@ func TestRunMainPrefetchSeamStaysOffline(t *testing.T) {
 	_ = root
 	if calls != 1 {
 		t.Fatalf("runMain invoked the prefetch seam %d times, want exactly once: startup must route its live prefetch through deps.startLivePrefetch", calls)
+	}
+	if launchCalls != 1 {
+		t.Fatalf("runMain invoked the launch warm seam %d times, want exactly once: startup must route its launch warm through deps.startLaunchPrefetch", launchCalls)
 	}
 }
 
@@ -478,14 +543,15 @@ func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
 	var web *WebServer
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: credentials.LoadStore,
-		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, func(func()), func()) {
 		},
+		startLaunchPrefetch: func(context.Context, *WebServer, func(func())) {},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},

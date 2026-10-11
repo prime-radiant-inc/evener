@@ -13,6 +13,7 @@ import (
 )
 
 func TestNewSessionAcquiresOwnershipBeforePersistingIdentity(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	wantErr := errors.New("ownership refused")
 	var sessionID string
@@ -46,6 +47,7 @@ func TestNewSessionAcquiresOwnershipBeforePersistingIdentity(t *testing.T) {
 }
 
 func TestNewSessionUsesCompactSessionID(t *testing.T) {
+	t.Parallel()
 	sess, err := NewSession(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +59,7 @@ func TestNewSessionUsesCompactSessionID(t *testing.T) {
 }
 
 func TestNewSessionReleasesOwnershipWhenInitializationFails(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := llm.NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -97,6 +100,7 @@ func TestNewSessionReleasesOwnershipWhenInitializationFails(t *testing.T) {
 }
 
 func TestRestoreSessionReloadsMetadataAfterOwnershipAcquisition(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	meta := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB"}
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {

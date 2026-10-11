@@ -2,6 +2,7 @@
 import { expect, test } from "vitest";
 import { formatDurationMs } from "./displayFormat";
 import {
+  capitalized,
   clip,
   clipJobID,
   formatByteCount,
@@ -128,6 +129,16 @@ test("lineCount: a trailing newline is not counted as an extra empty line", () =
 
 test("lineCount: only ONE trailing empty element is dropped, not more", () => {
   expect(lineCount("a\nb\n\n")).toBe(3); // "a", "b", "" - the blank line is real content
+});
+
+// --- capitalized -----------------------------------------------------------
+
+test("capitalized: upper-cases only the first letter", () => {
+  expect(capitalized("updated its note")).toBe("Updated its note");
+});
+
+test("capitalized: an empty string stays empty", () => {
+  expect(capitalized("")).toBe("");
 });
 
 // --- parseArgs / str -------------------------------------------------------

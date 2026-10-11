@@ -54,14 +54,14 @@ func TestPinSectionStoreRenamePostUpdateNotFound(t *testing.T) {
 func TestPinSectionStoreAssignSectionByIDNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("Research", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetErrorCounters()
 	// The Assign flow: sectionByIDTx (query 1). Fail the 1st query.
 	errorQueryTarget.Store(1)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err == nil {
 		t.Fatalf("Assign with non-retryable sectionByID error should fail")
 	}
@@ -84,7 +84,7 @@ func TestPinSectionStoreAssignBeginTxNonRetryable(t *testing.T) {
 		_ = db.Close()
 		return db, nil
 	}
-	_, _, err := store.Assign("x", "y", time.Unix(1, 0))
+	_, _, err := store.Assign("x", "", "y", time.Unix(1, 0))
 	if err == nil {
 		t.Fatalf("Assign with closed DB BeginTx should fail")
 	}
@@ -104,7 +104,7 @@ func TestPinSectionStoreCreateOrReuseBeginTxNonRetryable(t *testing.T) {
 		_ = db.Close()
 		return db, nil
 	}
-	_, _, err := store.CreateOrReuseAndAssign("n", "y", time.Unix(1, 0))
+	_, _, err := store.CreateOrReuseAndAssign("n", "", "y", time.Unix(1, 0))
 	if err == nil {
 		t.Fatalf("CreateOrReuseAndAssign with closed DB BeginTx should fail")
 	}
@@ -151,7 +151,7 @@ func TestPinSectionStoreDeleteSectionBeginTxNonRetryable(t *testing.T) {
 }
 
 // TestPinSectionStoreDeleteSessionBeginTxNonRetryable covers the BeginTx
-// non-retryable error path in DeleteSession (lines 505-511).
+// non-retryable error path in DeleteSession.
 func TestPinSectionStoreDeleteSessionBeginTxNonRetryable(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	realOpen := sql.Open
@@ -164,7 +164,7 @@ func TestPinSectionStoreDeleteSessionBeginTxNonRetryable(t *testing.T) {
 		_ = db.Close()
 		return db, nil
 	}
-	_, err := store.DeleteSession("y")
+	_, err := store.DeleteSession("", "y")
 	if err == nil {
 		t.Fatalf("DeleteSession with closed DB BeginTx should fail")
 	}
@@ -178,12 +178,12 @@ func TestPinSectionStoreAssignHookFires(t *testing.T) {
 	fired := false
 	pinSectionBeforeAssignmentCommitHook = func() { fired = true }
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, _, err := store.CreateOrReuseAndAssign("Research", "s1", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "s1", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	fired = false
-	if _, _, err := store.Assign(section.ID, "s2", time.Unix(2, 0)); err != nil {
+	if _, _, err := store.Assign(section.ID, "", "s2", time.Unix(2, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if !fired {
@@ -200,7 +200,7 @@ func TestPinSectionStoreCreateOrReuseHookFires(t *testing.T) {
 	fired := false
 	pinSectionBeforeAssignmentCommitHook = func() { fired = true }
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	if _, _, err := store.CreateOrReuseAndAssign("Research", "s1", time.Unix(1, 0)); err != nil {
+	if _, _, err := store.CreateOrReuseAndAssign("Research", "", "s1", time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if !fired {
@@ -216,7 +216,7 @@ func TestPinSectionStoreCreateOrReuseSectionInsertHookFires(t *testing.T) {
 	fired := false
 	pinSectionBeforeSectionInsertHook = func() { fired = true }
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	if _, _, err := store.CreateOrReuseAndAssign("Research", "s1", time.Unix(1, 0)); err != nil {
+	if _, _, err := store.CreateOrReuseAndAssign("Research", "", "s1", time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if !fired {
@@ -229,7 +229,7 @@ func TestPinSectionStoreCreateOrReuseSectionInsertHookFires(t *testing.T) {
 func TestPinSectionStoreRenameSectionByIDNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("RenameMe3", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("RenameMe3", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestPinSectionStoreRenameSectionByIDNonRetryable(t *testing.T) {
 func TestPinSectionStoreDeleteSectionSectionByIDNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("ToDelete3", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("ToDelete3", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,11 +270,11 @@ func TestPinSectionStoreDeleteSectionSectionByIDNonRetryable(t *testing.T) {
 // Rename (lines 387-390).
 func TestPinSectionStoreRenameConflict(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section1, _, err := store.CreateOrReuseAndAssign("First", "s1", time.Unix(1, 0))
+	section1, _, err := store.CreateOrReuseAndAssign("First", "", "s1", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.CreateOrReuseAndAssign("Second", "s2", time.Unix(2, 0)); err != nil {
+	if _, _, err := store.CreateOrReuseAndAssign("Second", "", "s2", time.Unix(2, 0)); err != nil {
 		t.Fatal(err)
 	}
 	// Rename "First" to "Second" — should conflict
@@ -288,7 +288,7 @@ func TestPinSectionStoreRenameConflict(t *testing.T) {
 // changes only the case of the name (same key, different display).
 func TestPinSectionStoreRenameCaseOnlyChange(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, _, err := store.CreateOrReuseAndAssign("Research", "s1", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "s1", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestPinSectionStoreRenameCaseOnlyChange(t *testing.T) {
 func TestPinSectionStoreUpsertSessionPinRowsAffectedError(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
-	section, _, err := store.CreateOrReuseAndAssign("UpsertTest", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("UpsertTest", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestPinSectionStoreUpsertSessionPinRowsAffectedError(t *testing.T) {
 	// The Assign flow: sectionByIDTx (query 1), upsertSessionPinTx (exec 1),
 	// then RowsAffected. We fail the 1st RowsAffected.
 	errorResultTarget.Store(1)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err == nil {
 		t.Fatalf("Assign with RowsAffected error should fail")
 	}
@@ -333,7 +333,7 @@ func TestPinSectionStoreCreateOrReuseEnsureSectionNonRetryable(t *testing.T) {
 	resetErrorCounters()
 	// The flow: sectionByKeyTx (query 1). Fail the 1st query.
 	errorQueryTarget.Store(1)
-	_, _, err := store.CreateOrReuseAndAssign("NewSection3", "session-x", time.Unix(2, 0))
+	_, _, err := store.CreateOrReuseAndAssign("NewSection3", "", "session-x", time.Unix(2, 0))
 	if err == nil {
 		t.Fatalf("CreateOrReuseAndAssign with non-retryable sectionByKey error should fail")
 	}
@@ -348,7 +348,7 @@ func TestPinSectionStoreCreateOrReuseEnsureSectionNonRetryable(t *testing.T) {
 // but let's also test case-insensitive same-key.
 func TestPinSectionStoreRenameCaseFoldSameKeyReturnsUnchanged(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, _, err := store.CreateOrReuseAndAssign("Research", "s1", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "s1", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,11 +410,11 @@ func TestNormalizePinSectionNameTrimsWhitespace(t *testing.T) {
 // This path converts the unique constraint error to ErrPinSectionConflict.
 func TestPinSectionStoreRenameExecUniqueConflict(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section1, _, err := store.CreateOrReuseAndAssign("First", "s1", time.Unix(1, 0))
+	section1, _, err := store.CreateOrReuseAndAssign("First", "", "s1", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.CreateOrReuseAndAssign("Second", "s2", time.Unix(2, 0)); err != nil {
+	if _, _, err := store.CreateOrReuseAndAssign("Second", "", "s2", time.Unix(2, 0)); err != nil {
 		t.Fatal(err)
 	}
 	// Rename "First" to "second" — should conflict because "second" folds

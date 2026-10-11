@@ -164,7 +164,6 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 				StateDir:         stateDir,
 				clock:            clk,
 				MaxSubagentDepth: 1,
-				NoProjectPrompts: true,
 				LLMSleep:         func(context.Context, time.Duration) error { return nil },
 			}
 			cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}

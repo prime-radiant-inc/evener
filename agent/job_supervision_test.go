@@ -78,6 +78,7 @@ type jobStatusToolOutput struct {
 }
 
 func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(5000, 0).UTC())
 	s := newSession(t, withConfig(SessionConfig{clock: clk}))
 	jm := s.jobManager
@@ -120,6 +121,7 @@ func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
 }
 
 func TestJobListRowsIncludeStatusSupervisionFields(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(6000, 0).UTC())
 	s := newSession(t, withConfig(SessionConfig{clock: clk}))
 	jm := s.jobManager

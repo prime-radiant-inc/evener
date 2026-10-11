@@ -8,6 +8,7 @@ import (
 // The close that refuses the swap also cancels the request context the op's
 // git runner is bound to; the target's unlock must not go through it.
 func TestWorktreeSwitch_RefusedMidSwapUnlocksTheTargetOnACancelledRequestContext(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	resA, err := r.create(t, map[string]any{"name": "a"})

@@ -132,8 +132,8 @@ func TestAppendDurable_Success(t *testing.T) {
 	}
 	w.mu.Lock()
 	dirty := w.dirty
-	seq := w.seq
 	w.mu.Unlock()
+	seq := tailNextSeq(w)
 	if dirty {
 		t.Fatal("dirty = true after durable append, want false")
 	}
@@ -179,12 +179,12 @@ func TestAppendDurable_WriteFailsRollback(t *testing.T) {
 	if !errors.Is(err, fault.ErrInjected) {
 		t.Fatalf("error = %v, want wrapped fault.ErrInjected", err)
 	}
-	// seq must not advance on a failed append.
-	w.mu.Lock()
-	seq := w.seq
-	w.mu.Unlock()
-	if seq != 0 {
-		t.Fatalf("seq = %d after failed durable append, want 0", seq)
+	// A rolled-back append consumes its seq but records no ordinal.
+	if seq := tailNextSeq(w); seq != 1 {
+		t.Fatalf("seq = %d after failed durable append, want 1", seq)
+	}
+	if w.tail.nextOrdinal != 0 {
+		t.Fatalf("ordinal = %d after failed durable append, want 0", w.tail.nextOrdinal)
 	}
 }
 
@@ -318,8 +318,8 @@ func TestAppendDurable_WriteTransferredNothingLeavesWriterUsable(t *testing.T) {
 	if got := entries[0].Turn.Message.Text(); got != "lands" {
 		t.Fatalf("entry text = %q, want the append that landed", got)
 	}
-	if entries[0].Seq != 0 {
-		t.Fatalf("entry seq = %d, want the 0 the failed append never spent", entries[0].Seq)
+	if entries[0].Seq != 1 {
+		t.Fatalf("entry seq = %d, want 1: the failed append consumed 0", entries[0].Seq)
 	}
 }
 
@@ -704,9 +704,7 @@ func TestOpenWriterFS_HappyReopen(t *testing.T) {
 		t.Fatalf("openWriterFS: %v", err)
 	}
 	// Two entries at seq 0 and 1 => next seq is 2.
-	w.mu.Lock()
-	seq := w.seq
-	w.mu.Unlock()
+	seq := tailNextSeq(w)
 	if seq != 2 {
 		t.Fatalf("resumed seq = %d, want 2 (maxSeq+1)", seq)
 	}
@@ -794,9 +792,7 @@ func TestOpenWriterFS_PartialLineTruncated(t *testing.T) {
 		t.Fatalf("recovered file = %q, want truncated to %q", recovered, data)
 	}
 	// Resume still counts the two entries: next seq is 2.
-	w.mu.Lock()
-	seq := w.seq
-	w.mu.Unlock()
+	seq := tailNextSeq(w)
 	if seq != 2 {
 		t.Fatalf("resumed seq = %d, want 2", seq)
 	}

@@ -97,8 +97,8 @@ func TestDelegateResourceStop_RequestFsyncPrecedesExternalCancellation(t *testin
 // TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence proves kata
 // tpb0's premise: FinishGeneration's PhaseStopping branch previously discarded
 // whatever the run loop had already captured (task, worktree, scratch path) and
-// replaced it with a bare "stopped by parent" packet carrying no metadata at
-// all. An externally cancelled delegate must retain that partial evidence so a
+// replaced it with the synthetic "stopped by parent" packet, which carries none
+// of that evidence. An externally cancelled delegate must retain that partial evidence so a
 // later job_status/delegate_send read can show it, instead of only "cancelled".
 func TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
@@ -251,6 +251,7 @@ func TestDelegateResourceStop_JobStopReportsClosedResumability(t *testing.T) {
 // line the delegate footer must not cross: a shell job_stop renders exactly the
 // one-line job-family footer, with no cancellation provenance appended.
 func TestDelegateResourceStop_ShellStopFooterCarriesNoDelegateProvenance(t *testing.T) {
+	t.Parallel()
 	reason := "stopped_by_parent"
 	shell := jobStopResult{
 		ID:             "job_1",
@@ -271,6 +272,7 @@ func TestDelegateResourceStop_ShellStopFooterCarriesNoDelegateProvenance(t *test
 // job_stop reports for each actor authorizeMutationLocked admits: the tree's
 // root session, or the exact parent delegate.
 func TestDelegateResourceStop_CancellingActorIsNamed(t *testing.T) {
+	t.Parallel()
 	if got, want := rootDelegateActor("root-session").describe(), "root session root-session"; got != want {
 		t.Fatalf("root actor describe() = %q, want %q", got, want)
 	}
@@ -540,9 +542,14 @@ func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *
 	root.queueDelegateDeliveryCommit("delegate-send", outcome.commit)
 
 	c := root.delegateController
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	root.close(ctx, closeOptions{cleanupEnv: true})
+	// Run the close with its normal, live budget. An already-cancelled budget
+	// makes every bounded join in close give up at once, so the child's run
+	// finalization and its session namer can still be writing under the state
+	// dir after close returns; their write then races t.TempDir's RemoveAll and
+	// fails the cleanup with "directory not empty". The abort this test asserts
+	// does not depend on the budget: close releases the queued inline commit
+	// synchronously, and joins the writers here.
+	root.Close()
 	c.mu.Lock()
 	stop := c.stop
 	aggregate := c.durable[fixture.delegateID]

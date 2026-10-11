@@ -224,7 +224,7 @@ func TestEnsureReplacesLinkLostChannel(t *testing.T) {
 
 	dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
 	dead.markLost()
-	m.publishChannel("alpha", dead)
+	m.publishChannel("alpha", dead, host)
 	if m.Attached("alpha") {
 		t.Fatal("link-lost channel reported attached")
 	}
@@ -259,7 +259,7 @@ func TestEnsureClosesEveryChannelItReplaces(t *testing.T) {
 	for round := range 3 {
 		dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
 		dead.markLost()
-		m.publishChannel(host.Name, dead)
+		m.publishChannel(host.Name, dead, host)
 
 		live, err := m.Ensure(context.Background(), host.Name)
 		if err != nil {
@@ -303,7 +303,7 @@ func TestManagerAttached(t *testing.T) {
 		t.Fatal("never-ensured host reported attached")
 	}
 	ch := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
-	m.publishChannel("alpha", ch)
+	m.publishChannel("alpha", ch, host)
 	if !m.Attached("alpha") {
 		t.Fatal("live channel not reported attached")
 	}
@@ -321,6 +321,55 @@ func TestManagerAttached(t *testing.T) {
 	}
 	if m.Attached("missing") {
 		t.Fatal("unknown host reported attached")
+	}
+}
+
+// publishChannel must stamp a channel with the registration the caller
+// validated, not with whatever entry the registry holds when it runs: a re-read
+// there is a TOCTOU. An update landing between the caller's
+// hostreg.Registry.SameRegistration recheck and the publish would otherwise
+// stamp a channel built from the pre-update entry with the post-update one,
+// which MatchesRegistration then accepts for a row rendering the new
+// configuration — the same "a row adopts another generation's channel and
+// facts" defect the registration field exists to prevent, now on the publisher
+// side. The registry here already holds the re-added entry (identical content,
+// fresh generation) when the channel is published for the entry it was dialed
+// for, so the channel must still pair with the dialed entry and refuse the
+// visible one. Deterministic, no sleeps.
+func TestPublishChannelStampsTheValidatedRegistrationNotTheVisibleOne(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+	dialed, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("reg.Get: not registered")
+	}
+	// The remove/re-add the in-flight attach raced: same content, advanced
+	// generation. This is what the registry holds when the publish runs, and
+	// what a re-read there would have stamped onto the channel.
+	if err := reg.Remove("alpha"); err != nil {
+		t.Fatalf("reg.Remove: %v", err)
+	}
+	if err := reg.Add(host); err != nil {
+		t.Fatalf("reg.Add after the remove: %v", err)
+	}
+	visible, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("reg.Get after the re-add: not registered")
+	}
+	if hostreg.SameRegistration(dialed, visible) {
+		t.Fatal("the re-add did not advance the registration; the test would exercise nothing")
+	}
+
+	m := newTestManager(t, reg, &fakeRunner{}, Options{})
+	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	if !m.publishChannel("alpha", ch, dialed) {
+		t.Fatal("publishChannel refused a live manager")
+	}
+	if !ch.MatchesRegistration(dialed) {
+		t.Fatal("the channel does not pair with the registration it was dialed for")
+	}
+	if ch.MatchesRegistration(visible) {
+		t.Fatal("the channel adopted the entry the registry holds now, not the one it was dialed for")
 	}
 }
 
@@ -356,6 +405,8 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 		}
 		fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		// With no BuildSource/BuildBinary there is no deploy to offer, so the
@@ -376,7 +427,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 				if call == 0 {
 					return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -386,6 +437,8 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		ch, err := m.Ensure(context.Background(), "alpha")
 		if err != nil {
@@ -408,13 +461,15 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 		fr := &fakeRunner{
 			runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				if containsToken(argv, "launch-check") {
-					return []byte(`unsupported appwire protocol "evener-appwire-v5" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+					return []byte(`unsupported appwire protocol "evener-appwire-v7" (supported "evener-appwire-v4")`), errors.New("exit status 1")
 				}
 				return cannedRun(nil)(context.Background(), argv, nil)
 			},
 			startFn: goodStartFn(t),
 		}
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		// The refusal is a fact about the binary, but with no deploy configured
@@ -433,9 +488,9 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`unsupported appwire protocol "evener-appwire-v5" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+					return []byte(`unsupported appwire protocol "evener-appwire-v7" (supported "evener-appwire-v4")`), errors.New("exit status 1")
 				}
-				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -445,6 +500,8 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		ch, err := m.Ensure(context.Background(), "alpha")
 		if err != nil {
@@ -466,7 +523,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		built := false
 		fr := deployRunner(t,
 			func(int) ([]byte, error) {
-				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// A real hub always reports started_at (cmd/evener-hub/web_api.go
@@ -484,6 +541,8 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 				return os.WriteFile(out, []byte("bin"), 0o755)
 			},
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		if !errors.Is(err, ErrLaunchContract) {
@@ -502,9 +561,9 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
+					return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// As above: the hub reports a start time, and the restarted process
@@ -517,6 +576,8 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 			controllerVersionOverride: "dev",
 			BuildBinary:               writeStageBinary,
 		})
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 			t.Fatalf("Ensure: %v", err)
@@ -652,8 +713,10 @@ func TestEnsureHonorsContextWhileWaitingForHostLock(t *testing.T) {
 		beforeHostGate: func(string) { arrival.hook() },
 	})
 
-	// Hold the host gate, the way a long preflight or attach does.
+	// Hold the host gate, the way a long preflight or attach does. The
+	// acquisition is paired so the gate entry comes back down with the test.
 	lock := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -1242,6 +1305,7 @@ func TestAttachEventIsEmittedUnderTheHostLock(t *testing.T) {
 				return
 			}
 			lock := m.hostLock(ev.Host)
+			defer m.releaseHostLock(ev.Host)
 			acquired := lock.TryLock()
 			if acquired {
 				lock.Unlock()
@@ -1919,7 +1983,7 @@ func TestEnsureBoundsHubIsPresent(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// A mismatching on-disk build puts a deploy on the table, which is the
 			// only path that runs the hub-presence probe.
-			return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			return nil, errors.New("curl: (7) Failed to connect")
 		case strings.Contains(joined, "list-units"):
@@ -2490,10 +2554,12 @@ func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 
 	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
 	ch.markLost()
-	if !m.publishChannel("alpha", ch) {
+	if !m.publishChannel("alpha", ch, host) {
 		t.Fatal("publishChannel refused a live manager")
 	}
-	if got := m.reconnectOnce(context.Background(), host, m.hostLock("alpha")); got {
+	hostGate := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
+	if got := m.reconnectOnce(context.Background(), host, hostGate); got {
 		t.Fatal("reconnectOnce reported work to do for a host another channel owns")
 	}
 	if starts := len(fr.recordedStarts()); starts != 0 {
@@ -3887,7 +3953,7 @@ func TestLostAfterPublishDetachesThePredecessorOnClose(t *testing.T) {
 	// slot, while announced still records the predecessor as the channel whose
 	// Attached has no match.
 	replacement := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
-	if !m.publishChannel("alpha", replacement) {
+	if !m.publishChannel("alpha", replacement, host) {
 		t.Fatal("publishChannel refused while the manager was open")
 	}
 	if err := m.Close(); err != nil {

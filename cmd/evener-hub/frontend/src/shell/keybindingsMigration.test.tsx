@@ -22,6 +22,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
+import { StubResizeObserver } from "../resizeObserverTestUtils";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
@@ -30,29 +32,6 @@ import { FocusScope } from "../widgets/focusscope";
 import { AppShell } from "./AppShell";
 import { closePalette, paletteStore } from "./palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
-
-// See AppShell.test.tsx for why both stubs are needed (jsdom has no
-// ResizeObserver; Node 26 shadows jsdom's localStorage accessor).
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 const TREE_SESSION = {
   row_id: "project:proj1:local:s1",
@@ -100,7 +79,7 @@ function navClient(): FakeClient {
     protocolVersion: "evener-appwire-v3",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] },
   }));
   return client;
 }
@@ -138,7 +117,7 @@ function installLocationForRoute(ref: string): void {
     error: null,
     generationID: location.generation_id,
   });
-  navigationStore.setState({ mode: "v2", clientGenerationID: location.generation_id, resources });
+  navigationStore.setState({ mode: "v3", clientGenerationID: location.generation_id, resources });
 }
 
 function installNeedsYouRows(): void {
@@ -160,7 +139,7 @@ function installNeedsYouRows(): void {
     error: null,
     generationID: "generation_test",
   });
-  navigationStore.setState({ mode: "v2", resources });
+  navigationStore.setState({ mode: "v3", resources });
 }
 
 // A focused plain <input> appended beside the shell: the editable target the
@@ -185,32 +164,39 @@ function openFakeModal(): { modal: HTMLElement; inside: HTMLButtonElement; close
 }
 
 beforeAll(async () => {
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
-  // @ts-expect-error MemoryStorage deliberately implements only the Storage
-  // methods the stores actually call - see AppShell.test.tsx's own stub.
-  globalThis.localStorage = new MemoryStorage();
-  // Await the lazy pane/dock modules once up front, then pay react-dom's
-  // per-boundary fallback throttle in one warm render per route shape - see
-  // AppShell.test.tsx's warmRoute for the full reasoning (the cost is real
-  // and awaitable here; inside a test it would eat the assertion window).
+  globalThis.ResizeObserver = StubResizeObserver;
+  installLocalStorage(new MemoryStorage());
+  // Await the lazy pane/dock modules once up front, then initialize each
+  // lazy payload in one warm render per route shape: a warm module cache
+  // still leaves React.lazy's first render suspending. Each render runs
+  // inside an awaited act so its reveal commits as soon as the chunk
+  // resolves; outside act, react-dom holds every reveal for its 300ms
+  // FALLBACK_THROTTLE_MS on a real timer, inside the assertion window of
+  // whichever test rendered first.
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
   await import("./DockHost");
   window.history.pushState({}, "", "/");
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await screen.findByText("No session open", undefined, { timeout: 10_000 });
   cleanup();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/settings");
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await screen.findByRole("navigation", { name: "Settings sections" }, { timeout: 10_000 });
   cleanup();
   resetWorkspaceStoreForTests();
   resetSettingsOverviewStoreForTests();
   window.history.pushState({}, "", "/s/local:warm");
   installLocationForRoute("local:warm");
-  render(<AppShell client={new FakeClient("ready")} />);
+  await act(async () => {
+    render(<AppShell client={new FakeClient("ready")} />);
+  });
   await screen.findByText(/loading transcript/i, undefined, { timeout: 10_000 });
   cleanup();
   resetWorkspaceStoreForTests();
@@ -221,10 +207,9 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   resetPrefsStoreForTests();
-  // @ts-expect-error see the beforeAll stub.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   localStorage.clear();
 });
 

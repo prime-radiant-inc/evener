@@ -77,7 +77,7 @@ A one-shot invocation looks like:
 ```
 EVENER_PROVIDERS_CONFIG="$run/providers.toml" "$run/evener" \
   --model <provider>/<model> --reasoning-effort <level> \
-  --max-rounds 1 --no-project-prompts "reply with the single word OK"
+  --max-rounds 1 "reply with the single word OK"
 ```
 
 ## Steps

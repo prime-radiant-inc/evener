@@ -1,8 +1,8 @@
 import { keyID } from "@evener/appwire-client/state/navigation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests } from "../workspace";
@@ -25,7 +25,7 @@ function setNeedsYou(count: number): void {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   const rows = Array.from({ length: count }, (_, i) => needsYouNode(i));
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -51,14 +51,8 @@ function DocFixture() {
   return <div>doc</div>;
 }
 
-// paneRegistry.ts is a shared module singleton - registerPaneForTests's
-// restorer (called in afterAll below) puts back whatever "doc" resolved to
-// before this file ran, so a later file sharing the same registry never
-// inherits this fixture.
-let restoreDocPane: () => void;
-
 beforeAll(async () => {
-  restoreDocPane = registerPaneForTests<{ ref: string }>({
+  registerPaneForTests<{ ref: string }>({
     id: "doc",
     title: () => "Doc",
     component: lazy(() => Promise.resolve({ default: DocFixture })),
@@ -67,17 +61,9 @@ beforeAll(async () => {
   await import("../../panes/welcome");
 });
 
-afterAll(() => {
-  restoreDocPane();
-});
-
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 test("renders a trigger button labeled Sessions", () => {

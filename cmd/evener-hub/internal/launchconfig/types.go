@@ -28,7 +28,6 @@ type Layer struct {
 	MaxSubagentDepth            *int              `toml:"max_subagent_depth,omitempty"`
 	MaxConcurrentDelegateTurns  *int              `toml:"max_concurrent_delegate_turns,omitempty"`
 	MaxRetainedTerminal         *int              `toml:"max_retained_terminal,omitempty"`
-	NoProjectPrompts            *bool             `toml:"no_project_prompts,omitempty"`
 	NonInteractive              *bool             `toml:"non_interactive,omitempty"`
 	AppReplaySize               *int              `toml:"app_replay_size,omitempty"`
 	SkillsDirs                  []string          `toml:"skills_dirs,omitempty"`

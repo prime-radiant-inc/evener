@@ -56,7 +56,7 @@ func TestThreadItemModeValidation(t *testing.T) {
 }
 
 func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
-	const wantCursorMessage = "cursor is required for thread/turns/list"
+	const wantCursorMessage = "cursor or before is required for thread/turns/list"
 	err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4})
 	var wireErr WireError
 	if !errors.As(err, &wireErr) || wireErr.Code != CodeInvalidParams || wireErr.Message != wantCursorMessage {
@@ -71,6 +71,21 @@ func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
 
 	if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Cursor: "opaque"}); err != nil {
 		t.Fatalf("opaque item cursor validation: %v", err)
+	}
+	// A before boundary stands in for a missing cursor: the source mints one
+	// from the thread's current identity.
+	before := &ThreadItemPosition{Entry: 3}
+	if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Before: before}); err != nil {
+		t.Fatalf("cursorless before validation: %v", err)
+	}
+	// before doesn't excuse a cursor that is present but isn't one, and the
+	// message names the cursor as the problem.
+	for name, cursor := range map[string]string{"whitespace": " ", "legacy numeric": "42"} {
+		err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Cursor: cursor, Before: before})
+		var wireErr WireError
+		if !errors.As(err, &wireErr) || wireErr.Message != "cursor must be an opaque item cursor" {
+			t.Errorf("%s cursor with before: error = %v, want the malformed-cursor message", name, err)
+		}
 	}
 }
 

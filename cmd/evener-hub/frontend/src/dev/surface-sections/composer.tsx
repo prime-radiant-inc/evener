@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import { AskDock } from "../../panes/session/composer/askDock";
 import { Composer } from "../../panes/session/composer/Composer";
 import { writeDraft } from "../../panes/session/composer/draft";
+import { type ComposerSourceState, createComposerSourceState } from "../../panes/session/composer/sourceState";
 import { ClientProvider } from "../../shell/clientContext";
 import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";
@@ -122,6 +123,16 @@ function seedComposerFixtures(): void {
   writeDraft(DRAFTED_REF, "One more thing - can you also add a CHANGELOG entry for this?");
 }
 
+function FixtureComposer({ ref }: { ref: string }) {
+  const [source, setSource] = useState<ComposerSourceState | null>(null);
+  useEffect(() => {
+    const owner = createComposerSourceState(ref);
+    setSource(owner);
+    return () => owner.dispose();
+  }, [ref]);
+  return source && <Composer ref={ref} source={source} focused={false} />;
+}
+
 export default function ComposerSurfaceSection() {
   const [seeded, setSeeded] = useState(false);
   useEffect(() => {
@@ -144,11 +155,11 @@ export default function ComposerSurfaceSection() {
           <ThemeFlip>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>resting</p>
-              <Composer ref={RESTING_REF} focused={false} />
+              <FixtureComposer ref={RESTING_REF} />
             </div>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>drafted</p>
-              <Composer ref={DRAFTED_REF} focused={false} />
+              <FixtureComposer ref={DRAFTED_REF} />
             </div>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>

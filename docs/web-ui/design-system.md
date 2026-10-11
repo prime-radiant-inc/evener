@@ -52,6 +52,42 @@ losing the conversation that made the evidence relevant.
   investigate without rebuilding their place. See
   [Open routing](../../cmd/evener-hub/frontend/src/panes/session/transcript/openTranscript.tsx)
   and [retained origins](../../cmd/evener-hub/frontend/src/shell/workspace.ts).
+- **Let filename Open own its placement.** On a settled session route, opening
+  or reopening a filename selects its document beside the exact living source
+  promoted to main, including a secondary session or read-only transcript.
+  The canonical document binding retains that source for Back. Reconnect and
+  settled location refresh do not replay the old route over this selection.
+  Route reconciliation waits until the opening stack finishes when document
+  hydration publishes a reference before the exact source owner arrives.
+  New or pending URL intent still takes precedence. Generic documents and
+  stale or mismatched source bindings do not override route placement. See
+  [document Open](../../cmd/evener-hub/frontend/src/panes/doc/openDoc.ts) and
+  [route reconciliation](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx).
+- **Return to reading, not a fresh end landing.** The pane-lifetime transcript
+  read view retains the source's measured entry and offset while a document is
+  open. On readonly remount,
+  [ReadOnlyThreadContent](../../cmd/evener-hub/frontend/src/panes/transcript/ReadOnlyThreadContent.tsx)
+  admits that capture through the existing transcript registry before scroll
+  initialization, including when content arrives after hydration. The shared
+  body and VirtualList still own committed measurement and restoration. A
+  retained away reader does not acquire end-follow intent from an unmeasured
+  port. Fresh readers still land at the latest content, and newer reader
+  movement supersedes the retained capture.
+- **Reconstruct the host, not the workspace.** Switching from a living phone
+  workspace to desktop, including its first desktop mount, restores dockview
+  geometry around the exact living pane records, their current slots and the
+  latest selection. Document Back owners, captured
+  file references and reopen generations stay with those records, outside pane
+  params and saved layouts. Phone-created panes survive; closed panes do not
+  return from stale geometry. Cold layout restoration creates fresh records and
+  honors route intent without resurrecting runtime owners. Programmatic slot
+  moves do not count as user selection. DockHost moves only panes whose logical
+  slots change, keeping the promoted main isolated and leaving unchanged-slot
+  panes in their user-chosen groups. Params, document-binding and pane add/remove
+  publications do not collect secondary splits into one group. Cold and live
+  restore retain saved group geometry; live slot changes made on phone reconcile
+  against saved placements without moving unaffected panes. See
+  [desktop recovery](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx).
 - **Quiet the frame, not the controls.** Fine rules and aligned columns replace decorative
   enclosure. Fields still look editable, overlays retain boundaries, focus remains visible,
   and semantic color distinguishes attention, activity, failure and selection with text or
@@ -61,6 +97,31 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+- **Keep session status inside its pane.** Every visible desktop session pane ends with its own
+  flush status footer, never one strip spanning sibling panes. The footer leads with that
+  session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
+  counts. A count click focuses the owning pane before opening the matching Overview category.
+  The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
+  “Overview kind” label. About is the fifth category and has no footer counter.
+  Phones omit the activity footer and the working-directory/repository row. The
+  composer ends at the pane's bottom edge with only required safe-area clearance, which
+  yields when the on-screen keyboard covers that area.
+- **Keep session inspection together.** Both session action menus offer Overview, retaining
+  the intended session's category choice. `/status` selects About without toggling a
+  standalone Details pane. About reuses the shared Details renderer and its accounting.
+  Phones move focus into the full-screen Overview after menu dismissal and contain Tab
+  until close. Return to a visible, connected opener, then a visible control for the
+  intended session, preferring the originating pane. Desktop remains nonmodal. Existing
+  standalone Details views and the `/tasks` pane toggle retain their behavior.
+- **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
+  Its category strip wraps without shortening labels or counts at narrow widths and XL
+  text. About's model, session ID, branch and paths wrap as selectable text. Its body
+  scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
+- **Preserve useful saved placements.** Workspace restore omits retired Activity
+  panes through its unknown-pane handling. Registered panes keep their bodies and
+  reachable tabs; valid session routes win before Welcome. Overview restores its
+  own open/category choice independently. The retained recursive Activity Sheet
+  and inline discovery keep their existing scope and renderer.
 
 The provenance corrections and nested navigation/focus repairs change behavior. Folding,
 disclosure persistence, keyboard rules, preferences and semantic hue roles are retained
@@ -99,6 +160,48 @@ do not establish current lifecycle. Expanded activity shows the five most recent
 items, with full history behind Open transcript. Omit unavailable counts and timing;
 distinguish unavailable activity from an empty loaded transcript. These are provenance
 rules, not permission to fabricate a summary or rewrite stored evidence.
+
+## Agent cascade
+
+Desktop Agents rows open or reuse a read-only cascade in the secondary pane group.
+Keep the original center conversation mounted with its composer and reading position.
+Keep the selected child and immediate parent readable; earlier ancestors become
+live 52px spines. The parent is 400px wide.
+The leaf flexes with a 440px minimum. Narrow desktop surfaces scroll horizontally
+and reveal the selected leaf instead of squeezing either reader. Parent and
+leaf transcript scrollers remain independent.
+
+Only ancestor spines use the session list's shared
+[SessionStatusIndicator](../../cmd/evener-hub/frontend/src/shell/SessionStatusIndicator.tsx):
+a gray spinning ring for active work, an amber dot for attention and a red diamond
+for failure. Idle and ended states have no glyph. The ring remains static under
+reduced motion. Each spine maps its own raw runtime status through
+`cadenceStateForStatus`: `systemError` means failure and `closed` means ended;
+unknown values remain quiet. Hover and visually hidden text preserve the runtime
+label, including unknown states, rather than replacing it with the indicator's
+family label. Readable parent and leaf columns keep their full status labels.
+Counts, focus and activity ownership remain unchanged.
+
+Ancestor controls open a scoped peek. Keyboard activation of a delegate replaces
+the path after that ancestor. Tasks remains inside the peek. One Escape closes
+only the topmost peek; the path and sidebar survive. Parent text selection never
+retargets the selected-leaf footer or sidebar.
+
+Only explicit drill, pop or return gestures animate geometry. Reconnect, status
+and late ancestry updates preserve geometry and focus. Reduced motion makes
+geometry changes immediate. Unknown ancestry stays visible rather than inventing
+a root or discarding the retained path.
+
+Return closes only the inspector and focuses its exact surviving source lifetime.
+A session source receives editor focus without moving its reader. A retired source
+is never recreated or replaced by a reused pane ID. Existing saved cascades without
+separated-inspection intent retain their recorded Return behavior. Open conversation
+opens an independent ordinary session pane. Saved intent preserves the selected
+ref, edges, read-only source and origin locator without serializing transcript
+payloads or image bytes. At the existing phone breakpoint, a saved cascade shows only its selected
+read-only content and Return; ordinary Agents activation keeps transcript
+navigation. See the [ownership contract](../product/session-activity.md#automatic-agent-cascade)
+and [real Chrome guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md).
 
 ## Editorial source coverage
 
@@ -155,20 +258,48 @@ danger = failure/destruction; accent = links, focus and selection. No decorative
 hues, invented activity, speculative progress bars or color-only distinctions.
 
 **Motion is evidence.** Default none. Preserve measured cadence and reduced-motion
-behavior; nothing animates during silence. See §5 for the exact budgets and exceptions.
+behavior. The shared rail and ancestor-spine running ring is the state-driven
+compact-status exception; it spins only while the owning status authority reports
+active work and becomes static under reduced motion. See §5 for the exact budgets
+and exceptions.
 
-**Signature — the cadence instrument (`<Cadence>` widget):** one component rendered everywhere
-a session appears (tree row, pane header, mobile card): a state dot plus a 64×10px activity
+**Signature — the cadence instrument (`<Cadence>` widget):** the full activity treatment used where
+a surface has room and frame evidence: a state dot plus a 64×10px activity
 trace of the last ~60s of frame arrivals as vertical ticks that fade with age. (The plan's
 original sketch said 24×10; implementation landed on 64×10 for tick legibility and every
 consumer + test pins 64 — recorded here so the doc matches the shipped truth.) Working = fresh
 ticks (alive token); quiet = ticks visibly aging to `--ink-low`; needs-you = dot and trailing
 edge in attention amber; failed = danger. It never animates on its own — it only re-renders
 when frames actually arrive, so a busy agent shows a dense fresh trace and a stalled one shows
-honest decay. **A trace with no in-window frames renders no SVG at all** — the dot alone —
-so callers without a live frame feed (rail rows) don't reserve 64px of dead width per row.
+honest decay. **A trace with no in-window frames renders no SVG at all** — the dot alone.
 Props: `{state: "idle"|"working"|"needs-you"|"failed"|"ended", frameTimes: number[], now:
 number}`.
+
+The browser rail uses a deliberately smaller status grammar instead of `<Cadence>` because its
+navigation summaries carry no frame trace and every session row must stay one line. Yellow solid
+dot = needs you, red diamond = broken, grey spinning ring = running; the shape difference keeps
+needs-you and broken distinct without hue. Precedence is broken, needs-you, running. Idle and ended
+rows reserve no indicator. The visible face is indicator, title, and age/actions only. Project,
+host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
+the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
+long press on the title exposes it and a tap activates the row. Session pin stars
+and textual state lines do not appear on the row.
+
+Ancestor spines share this compact renderer, not the rail's status authority.
+The rail retains navigation-summary arbitration, including running jobs and
+descendants, and maps normalized `errored` and `ended` values through
+`cadenceStateFor`. Spines use runtime metadata from their existing scoped activity
+binding and the separate raw-status mapper. Sharing the glyph adds no activity
+read, subscription or retry owner.
+
+Session context cards float 12px beyond the sidebar's right edge, vertically centered on the
+owning row and shifted to keep 8px of viewport clearance. An open card follows the row while
+the sidebar is dragged to a new width. When the card cannot fit beside the
+sidebar, it opens above or below the row with the same 12px gap. The card stays in the body portal
+and does not reflow navigation or take focus. Scroll and viewport resize dismiss it and cancel
+pending reveals, including long presses; a fresh gesture reveals it at the new position.
+Containment applies when the card's dimensions fit the viewport. Other HoverCards and tooltips
+keep their default placement.
 
 ---
 
@@ -228,8 +359,9 @@ The existing `--font-size-caption/ui/body/pane-title/page-title/display` ramp re
 reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
 1.6/1.4/1.25; display tracking remains −0.02em.
 
-Markdown defaults to the prose face/size while retaining `--prose-font-size` and `--markdown-ink`
-caller hooks. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
+Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
+reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
+prose, and `--markdown-ink` stays the ink hook. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
 explicitly keeps the mono face. Markdown tables use Inter at body size, tabular figures,
 wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
@@ -345,7 +477,7 @@ during implementation (noted inline); this table is the one to trust.
 | **EmptyState** | `{title: string; hint?: string; action?: ReactNode; size?: "default"\|"display"}` | `size="display"` sets the title at `--font-size-display` for the one pane whose empty state IS the page (Welcome); everything else keeps `--font-size-pane-title`. `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
 | **Table** | `{columns: TableColumn<Row>[]; rows: Row[]; rowKey(row); sortKey?; sortDir?: "ascending"\|"descending"; onSortChange?; filters?: {key,label,active}[]; onFilterToggle?; empty?}` | Controlled sort + filter; semantic `<table>`, `aria-sort` on sortable headers, filter chips compose Chip, horizontal overflow scrolls inside the widget. Ported from Beautiful UI's Records/Filter Table. |
 | **DiffTable** | `{columns: {key,label}[]; rows: {key; cells: Record<string,{value; proposed?}>}[]}` | Tabular proposed edits: struck-through old value beside the new one on the neutral `--diff-add-bg` wash — same hue-gate exemption as DiffBlock. Ported from Beautiful UI's Diff Table. |
-| **Loader** | `{label?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. Ported from Beautiful UI's Loading State. |
+| **Loader** | `{label?; rail?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. `rail` seats the grid in the transcript's icon-rail slot (the content-free "Thinking…" row's status glyph). Ported from Beautiful UI's Loading State. |
 | **InsightCard** | `{insights: {title; body; series?: number[]}[]; page; onPageChange}` | Paged insights with an inline SVG sparkline (aria-hidden + visually-hidden min/max alternative); pagination composes IconButton. Ported from Beautiful UI's Insight Cards. |
 | **RecommendationCard** | `{title; body; confidence?; onAccept?; onReject?; alternatives?}` | Agent-suggested action: micro-label eyebrow, confidence meter (`--accent` on `--field`; not the hue-gated Meter), Accept/Dismiss compose Button. Ported from Beautiful UI's Recommendation Card. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
@@ -363,7 +495,8 @@ during implementation (noted inline); this table is the one to trust.
 | **Dialog** | `{open; onClose; title; children; footer?}` | Modal: centered, 120ms fade-scale, Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. |
 | **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. |
 | **FocusScope** | `{trap?: boolean; children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. Does not (yet) set `inert` on anything outside the scope — see §4. |
-| **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, hidden on touch via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
+| **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, neither triggered on touch (a tap fires both and dismisses neither) and hidden there via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
+| **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean}` | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. |
 | **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
 | **PaneScaffold** | `{title; cadence?; actions?; footer?; children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional footer. Most-copied layout primitive in the app. |
 | **CodeBlock** | `{text: string; language?: string; showLineNumbers?: boolean}` | Mono block with a copy button (renders a real `Button` internally); no syntax highlighting (YAGNI this wave). |
@@ -389,6 +522,40 @@ folds at all, and a failure, a call still in flight, an auto-expanding card or a
 breaks the run rather than being spanned by it. Disclosure state goes through the shared
 disclosure store, so a reader's choice survives re-projection and the transcript's
 expand-all/collapse-all baselines reach it; the body mounts only while open.
+
+**Task status renders through one glyph family, shared by both task surfaces.** `TaskCheck`
+(`src/panes/session/transcript/tools/taskCheck.tsx`) is also transcript grammar rather than a
+widget, but unlike ToolRunGroup it serves TWO surfaces: the transcript's inline task card
+(`tools/taskCard.tsx`) and the tasks pane (`chrome/TasksPanel.tsx`), which the 2026-09
+task-rendering rework put on one grammar. It is a 16px square box drawn in the same line-art
+contract ToolIcon uses (stroke currentColor, 1.75, round caps/joins), the inner mark naming the
+state: plus = added, check = done, ✕ = cancelled, arrow = started, empty box = pending (not
+started yet — distinct from cancelled's ✕, so "won't happen" reads differently from "hasn't
+happened yet"). The glyph alone carries subtle semantic colour — the one scoped, user-approved
+exception to the cards' neutral ground (2026-07-31 tasklist renderer spec): done = `--alive`,
+started = `--accent`, added/cancelled/pending = `--ink-mid`. Text stays on the ink scale;
+done and cancelled read through strikethrough + low ink, never colour, and a cancelled glyph
+stays neutral — the attention hues are off limits for a routine reprioritization.
+
+The inline card is a WINDOW onto the plan, not a changelog (2026-09 rework, Jesse's ruleset):
+it settles folded at every verbosity level (descriptor `foldByDefault` — the level's
+expand-details default does not open it, only the reader's click does, which then persists
+through the shared disclosure store), so a run of task updates reads as quiet one-liners. The
+folded summary line names only the most recent update, mark + label (`→ Build the harness`);
+opening the row swaps that line for a recap sentence of the call's whole change
+(`Completed "Decide the folded line"; started "Build the harness"` — verbs Completed, Started,
+Added, Dropped, sentence case) and the body shows at most three slots joined by a hairline
+spine: most-recently-settled (done or cancelled; timestamps order it, list position breaks
+ties), in-progress, next. A note renders only when THIS call added it, set in the prose face —
+the note is the agent's own sentence. The footer keeps the aggregate sentence + meter and
+carries the whole-list affordance: an "Open task list" control that opens (and focuses) the
+session's Tasks pane and never closes it — an open operation, not the `/tasks` palette
+command's toggle — hidden where no session owns the card. An update
+that changes no task status renders nothing at all. The tasks pane keeps its grouped
+full-list structure — settled/in-progress/open groups, timestamps, meta, prompt disclosure,
+the full notes timeline — but renders its rows on the same TaskCheck family, its live row's
+latest note bare in the prose face (the "latest" label chip is gone), and its notes timeline
+in the same prose treatment.
 
 ---
 
@@ -494,7 +661,7 @@ six independent checks:
 7. **Every `var(--name)` without a fallback resolves to a declaration** somewhere under
    `src/` (tokens.css or a module's own local property). Exempt: dockview's `--dv-*` and the
    runtime-set names JS or an inline style declares (`--keyboard-inset`, `--rail-width`,
-   `--tap-min`, `--fill`, `--markdown-ink`, `--prose-font-size`, `--prose-ink`,
+   `--tap-min`, `--fill`, `--markdown-ink`, `--prose-ink`,
    `--density-scale`, `--font-scale`). Four undefined tokens had shipped before this check
    (`--radius-sm` twice, `--edge-hi`, `--font-size-title`), each silently falling back to the
    property's initial value.
@@ -538,11 +705,17 @@ budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
   triggered by hover, focus, or press. Transitions name their properties explicitly; a blanket
   `transition: all` is never used.
 
-Forbidden, unchanged: idle pulses, shimmer loops on live data, anything that animates during
-silence (the honest-liveness rule — a "working" indicator that looks identical whether the agent
-is streaming or hung is worse than no indicator). Every widget with motion of its own respects
+Forbidden: idle pulses, shimmer loops on live data, and animation that invents progress. Every
+widget with motion of its own respects
 `prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
 SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
+
+One compact-status exception: the shared grey running ring rotates in the browser
+rail while its authoritative navigation summary reports active work, including
+running jobs or descendants, and in ancestor spines while their own runtime status
+is active. It communicates state, not frame throughput or percent complete. Broken
+and needs-you remain static, shape-distinct indicators: a diamond and a solid dot.
+Under `prefers-reduced-motion: reduce`, the ring remains visible but does not rotate.
 
 One approved exception (2026-09-11): the transcript's content-free "Thinking…" placeholder,
 shown for a live reasoning item while the Reasoning content flag is off, uses the catalog
@@ -550,6 +723,18 @@ shown for a live reasoning item while the Reasoning content flag is off, uses th
 thought is no longer the turn's current activity, and is the only animation the transcript itself
 adds. Unlike Cadence it is not activity-gated, so it keeps pulsing if the stream stalls; Cadence's
 decaying trace remains the honest liveness signal. Every other idle pulse or shimmer stays banned.
+
+### Spatial motion (2026-09-29, zoom activity surfaces)
+
+A fourth budget, `--motion-duration-spatial` (240ms, still `--motion-easing-standard`), for
+user-initiated geometry changes: the activity sidebar sliding in, a zoom column opening, a column
+collapsing to a spine. Spatial motion answers *where did it go* — a panel that arrives from the
+edge it lives on, a column that narrows into the spine it became. Motion that doesn't preserve
+spatial continuity is decoration and stays banned. Data arriving (a job finishing, a watch firing)
+never animates geometry: state change is what the attention hues are for. Architecture: one library
+(`motion`), one wrapper module (`src/motion`), one reduced-motion switch (`MotionProvider`,
+`reducedMotion="user"`), durations from tokens, never literals. Components import the wrapper, never
+the library.
 
 ---
 

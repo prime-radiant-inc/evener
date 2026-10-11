@@ -13,6 +13,10 @@
 //   markdown / escaped <pre>). It is NOT the legacy /doc/file HTML page. The
 //   request itself comes from the DocPort the host supplies, so this module
 //   names no browser global, no origin and no credentials policy of its own.
+
+export * from "./documentReadDemand";
+export * from "./fileReferences";
+
 export interface DocFileContent {
   text: string;
   binary: boolean;
@@ -23,6 +27,13 @@ export interface DocFileContent {
   // truncated it (from the X-Doc-Total-Size header). Lets the pane say
   // exactly how much was elided, not just that something was.
   totalBytes?: number;
+  // The version this read served (S9): the sha256 of the whole file, from the
+  // response's ETag. Absent from a hub without S9 and for a file too large to
+  // hash (cmd/evener-hub/doc_serve.go docRevisionMaxBytes), so a caller falls
+  // back to comparing what it was shown.
+  revision?: string;
+  // When the file was last modified, in Unix milliseconds (X-Doc-Modified-At).
+  modifiedAt?: number;
 }
 
 // The server reads at most this many bytes into a doc pane and never streams
@@ -33,12 +44,13 @@ export interface DocFileContent {
 // is no longer inferred from the body length.
 export const DOC_FILE_MAX_BYTES = 512 * 1024;
 
-export type DocFileErrorKind = "forbidden" | "not-found" | "error";
+export type DocFileErrorKind = "forbidden" | "not-found" | "host-unsupported" | "error";
 
 // A failed raw-file fetch, carrying the honest HTTP status so the pane maps it
 // to the same guard/status contract the HTML variant enforces: 403 for a path
-// that escapes the session cwd, 404 for a missing file / unknown or non-local
-// session, and a generic error for anything else (doc_serve.go:57-73).
+// that escapes the session cwd, 404 for a missing file or unknown session, 501
+// for a session on a host whose hub predates remote document reads (S7,
+// cmd/evener-hub/doc_proxy.go), and a generic error for anything else.
 export class DocFileError extends Error {
   readonly kind: DocFileErrorKind;
   readonly status: number;
@@ -80,6 +92,7 @@ export interface DocPort {
 function errorKindForStatus(status: number): DocFileErrorKind {
   if (status === 403) return "forbidden";
   if (status === 404) return "not-found";
+  if (status === 501) return "host-unsupported";
   return "error";
 }
 
@@ -125,7 +138,26 @@ export async function readDocFile(session: string, path: string, port: DocPort):
   const parsedTotal = totalHeader === null ? Number.NaN : Number.parseInt(totalHeader, 10);
   const totalBytes = Number.isFinite(parsedTotal) ? parsedTotal : undefined;
   const text = binary ? "" : new TextDecoder().decode(buf);
-  return { text, binary, mediaType, truncated, sizeBytes, totalBytes };
+  const revision = etagRevision(res.headers.get("ETag"));
+  const modifiedAt = Number(res.headers.get("X-Doc-Modified-At") ?? Number.NaN);
+  return {
+    text,
+    binary,
+    mediaType,
+    truncated,
+    sizeBytes,
+    totalBytes,
+    ...(revision === undefined ? {} : { revision }),
+    ...(Number.isSafeInteger(modifiedAt) && modifiedAt > 0 ? { modifiedAt } : {}),
+  };
+}
+
+// etagRevision reads the revision out of an ETag. The hub sends the whole
+// file's sha256 as a strong tag (cmd/evener-hub/doc_serve.go writeDocFileRaw),
+// so only a quoted 64-character lowercase hex tag names one; a weak tag, or any
+// other, is no information.
+function etagRevision(etag: string | null): string | undefined {
+  return /^"([0-9a-f]{64})"$/.exec(etag?.trim() ?? "")?.[1];
 }
 
 // docImageURL builds the /doc/image href for a session-scoped, cwd-relative
@@ -134,4 +166,68 @@ export async function readDocFile(session: string, path: string, port: DocPort):
 // sessionID and rel.
 export function docImageURL(origin: string, session: string, path: string): string {
   return `${docBase(origin)}/doc/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+}
+
+export function docImageReadURL(origin: string, session: string, readTarget: string, generation: string): string {
+  return `${docImageURL(origin, session, readTarget)}&read=${encodeURIComponent(generation)}`;
+}
+
+// filenameOf returns the last segment of a slash path: a document's name when
+// it has no title of its own, on the web's doc pane tab and the phone's Reader.
+export function filenameOf(path: string): string {
+  return (
+    path
+      .split("/")
+      .filter((segment) => segment.length > 0)
+      .at(-1) ?? path
+  );
+}
+
+// isMarkdownPath reports whether a path renders as markdown: a case-insensitive
+// .md or .markdown extension only (the Go handler's rule, strings.EqualFold on
+// filepath.Ext).
+export function isMarkdownPath(path: string): boolean {
+  return /\.(?:md|markdown)$/i.test(path);
+}
+
+// isImagePath reports whether a path is an image the hub's /doc/image route
+// serves (output_images.go): png, jpeg, gif and webp. SVG is left out there
+// as an XSS guard, so an .svg opens as a file, its source shown as text.
+export function isImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp)$/i.test(path);
+}
+
+// fileURLToPath turns a session link's file URL (agent validation
+// canonicalizes them to file:///absolute) back into the filesystem path a
+// document read takes, percent-escapes decoded. It reads the string itself:
+// React Native's URL parses only http and https, so its pathname would be "/"
+// for every file URL. A URL naming another machine, a malformed escape, or
+// anything that isn't a file URL names no path, "".
+export function fileURLToPath(fileURL: string): string {
+  const match = /^file:\/\/(?:localhost)?(\/[^?#]*)/i.exec(fileURL.trim());
+  if (!match?.[1]) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
+}
+
+// cwdRelative expresses a file path relative to the session's folder, or
+// undefined when it isn't inside it. An absolute path loses the folder's
+// prefix; a relative one is already relative, unless a ".." segment climbs
+// out. The hub serves documents only from inside the folder
+// (cmd/evener-hub/doc_serve.go), so a path outside it earns no affordance.
+export function cwdRelative(filePath: string, cwd: string): string | undefined {
+  const p = filePath.trim();
+  if (p === "" || cwd === "") return undefined;
+  if (!p.startsWith("/")) {
+    return p.split("/").includes("..") ? undefined : p;
+  }
+  const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  if (!p.startsWith(prefix)) return undefined;
+  // The folder itself (with or without its trailing slash) is not a file, and
+  // a ".." segment could climb back out of it.
+  const rel = p.slice(prefix.length);
+  return rel === "" || rel.split("/").includes("..") ? undefined : rel;
 }

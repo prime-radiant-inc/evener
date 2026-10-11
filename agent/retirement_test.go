@@ -70,6 +70,7 @@ func retirementTestController(t *testing.T) (*RetirementController, *Session) {
 // A borrowed handler must finish before teardown, but must not delay Commit or
 // allow new admission after Commit. Releasing twice must not drain other readers.
 func TestRetirementBorrowedReadersDrainAfterCommit(t *testing.T) {
+	t.Parallel()
 	c, root := retirementTestController(t)
 	release, err := c.Borrow()
 	if err != nil {
@@ -132,6 +133,7 @@ func TestRetirementBorrowedReadersDrainAfterCommit(t *testing.T) {
 // Holding outer work while a claim attempts to win must not prevent nested
 // admission. Duplicate blocker projection must not collapse the actual leases.
 func TestRetirementNestedMutationsKeepIndependentLeases(t *testing.T) {
+	t.Parallel()
 	c, root := retirementTestController(t)
 	outer, err := c.BeginMutation(root.ID(), "input")
 	if err != nil {
@@ -183,6 +185,7 @@ func TestRetirementNestedMutationsKeepIndependentLeases(t *testing.T) {
 // settles, a status snapshot must not keep presenting the old refusal as
 // current evidence.
 func TestRetirementSettledBlockerIsNotReportedAsCurrent(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c := retirementEvidenceController(t, root)
@@ -238,6 +241,7 @@ func hasRetirementBlockerFor(blockers []RetirementBlocker, category, sessionID s
 // resident UI renders RetirementSnapshot.Blockers verbatim, so the observable
 // consequence is asserted on the returned snapshot content.
 func TestRetirementEarlyReturnDoesNotPresentResolvedBlocker(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c := retirementEvidenceController(t, root)
@@ -286,6 +290,7 @@ func TestRetirementEarlyReturnDoesNotPresentResolvedBlocker(t *testing.T) {
 // present only the new root's current obligations — never the previous root's
 // stale refusal (roborev r12, the different-generation/root leak).
 func TestRetirementEarlyReturnDoesNotLeakPreviousRootRefusal(t *testing.T) {
+	t.Parallel()
 	first := newQueuePersistTestSession(t, t.TempDir())
 	defer first.Close()
 	c := retirementEvidenceController(t, first)
@@ -343,6 +348,7 @@ func TestRetirementEarlyReturnDoesNotLeakPreviousRootRefusal(t *testing.T) {
 // current root, held while admitted work forces the early-return gate: the
 // snapshot must contain both that fresh "input" blocker and the live "turn" lease.
 func TestRetirementEarlyReturnReportsFreshNonLeaseObligation(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c := retirementEvidenceController(t, root)
@@ -377,6 +383,71 @@ func TestRetirementEarlyReturnReportsFreshNonLeaseObligation(t *testing.T) {
 	}
 }
 
+// TestRetirementEarlyReturnKeepsTheLeaseThatRefusedIt pins the #3009 load
+// flake's root: the pre-evidence early return builds its snapshot from the
+// non-blocking read plus a fresh c.active, so a lease that releases between the
+// admission predicate and that fresh read disappears and the refusal presents no
+// obligation at all. Under load the retirement-attention test hit exactly that
+// with the just-resumed attention-retry lease, reading an empty "missing
+// notification evidence" snapshot. The lease the claim was refused for must
+// survive the read.
+func TestRetirementEarlyReturnKeepsTheLeaseThatRefusedIt(t *testing.T) {
+	t.Parallel()
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	c := retirementEvidenceController(t, root)
+
+	// Admitted work forces the early return (len(c.active) != 0) instead of a
+	// full evidence read.
+	release, err := c.BeginMutation(root.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	// Release the lease inside the snapshot's non-blocking evidence read: the
+	// exact interleaving, present at the predicate and gone when the snapshot is
+	// assembled.
+	c.evidenceGate = func() { release() }
+
+	claim, snapshot, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("early-return claim: %v", err)
+	}
+	if claim != nil {
+		t.Fatalf("early return admitted a claim: %+v", snapshot)
+	}
+	if !hasRetirementBlockerFor(snapshot.Blockers, "turn", root.ID()) {
+		t.Fatalf("early-return snapshot lost the lease that refused it: %+v", snapshot.Blockers)
+	}
+
+	// Second case: the lease stays held, so it is captured under the predicate
+	// and read again from c.active when the snapshot is assembled. The sort +
+	// slices.Compact in snapshotWithBlockersLocked must collapse the two copies
+	// to one, or every ordinary refusal would double-report its lease.
+	c.evidenceGate = nil
+	holds, err := c.BeginMutation(root.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holds()
+	claim, snapshot, err = c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("held-lease claim: %v", err)
+	}
+	if claim != nil {
+		t.Fatalf("held lease admitted a claim: %+v", snapshot)
+	}
+	var turns int
+	for _, blocker := range snapshot.Blockers {
+		if blocker.Category == "turn" && blocker.SessionID == root.ID() {
+			turns++
+		}
+	}
+	if turns != 1 {
+		t.Fatalf("early-return snapshot reported the refusing lease %d times, want 1: %+v", turns, snapshot.Blockers)
+	}
+}
+
 // TestRetirementClaimSnapshotDoesNotMixSwappedRootEvidence drives the real
 // root-swap race: TryClaim captures the root and releases c.mu for the
 // non-blocking evidence read, and AttachRoot can replace the root and advance the
@@ -386,6 +457,7 @@ func TestRetirementEarlyReturnReportsFreshNonLeaseObligation(t *testing.T) {
 // so the swap is ordered strictly between them rather than raced; the assertion is
 // on snapshot content, not on any call count.
 func TestRetirementClaimSnapshotDoesNotMixSwappedRootEvidence(t *testing.T) {
+	t.Parallel()
 	first := newQueuePersistTestSession(t, t.TempDir())
 	defer first.Close()
 	c := retirementEvidenceController(t, first)
@@ -470,6 +542,7 @@ func TestRetirementClaimSnapshotDoesNotMixSwappedRootEvidence(t *testing.T) {
 // not be read rather than reporting the tree clear. The placeholder must not name
 // a delegate it never inspected.
 func TestRetirementNonBlockingEvidenceFailsClosedOnOwnerContention(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 
@@ -501,6 +574,7 @@ func TestRetirementNonBlockingEvidenceFailsClosedOnOwnerContention(t *testing.T)
 // Deliberately invalidate each private identity component to exercise the exact
 // claim check independently of pointer equality (ordinary callers cannot edit it).
 func TestRetirementRejectsInvalidClaimIdentity(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"commit", "abort"} {
 		for _, invalid := range []string{"nil", "copy", "controller", "root", "generation", "committed", "finished"} {
 			t.Run(operation+"/"+invalid, func(t *testing.T) {
@@ -550,6 +624,7 @@ func TestRetirementRejectsInvalidClaimIdentity(t *testing.T) {
 
 // Reusing an old claim after a root swap must not abort or commit a newer claim.
 func TestRetirementRootSwapRejectsStaleClaims(t *testing.T) {
+	t.Parallel()
 	c, first := retirementTestController(t)
 	old, _, err := c.TryClaim(true)
 	if err != nil || old == nil {
@@ -606,6 +681,7 @@ func TestRetirementRootSwapRejectsStaleClaims(t *testing.T) {
 
 // A failed drain or release after Commit must never restore a mutable resident.
 func TestRetirementFailureAfterCommitCannotAbort(t *testing.T) {
+	t.Parallel()
 	c, root := retirementTestController(t)
 	release, err := c.Borrow()
 	if err != nil {
@@ -650,6 +726,7 @@ func TestRetirementFailureAfterCommitCannotAbort(t *testing.T) {
 
 // Raw preparation errors must never enter the observable machine-category field.
 func TestRetirementAbortBoundsFailure(t *testing.T) {
+	t.Parallel()
 	c, _ := retirementTestController(t)
 	for _, tc := range []struct{ input, want string }{
 		{"prepare_failed", "prepare_failed"}, {"release_failed", "release_failed"},
@@ -676,6 +753,7 @@ func TestRetirementAbortBoundsFailure(t *testing.T) {
 // Missing roots cannot prove eligibility, and another process controller cannot
 // steal admission authority from an already-attached Session.
 func TestRetirementRootAttachmentFailsClosed(t *testing.T) {
+	t.Parallel()
 	c, err := NewRetirementController(0, clock.Real())
 	if err != nil {
 		t.Fatal(err)
@@ -705,6 +783,7 @@ func TestRetirementRootAttachmentFailsClosed(t *testing.T) {
 // Publication and claim creation must linearize together: a winning attach is
 // captured by the claim; a winning claim leaves the rejected root untouched.
 func TestRetirementAttachRootRacesClaim(t *testing.T) {
+	t.Parallel()
 	for range 16 {
 		c, first := retirementTestController(t)
 		second := newQueuePersistTestSession(t, t.TempDir())
@@ -745,6 +824,7 @@ func TestRetirementAttachRootRacesClaim(t *testing.T) {
 // positive timeouts require an existing, due interval. Establishing proof of that
 // interval belongs to the later predicate/timer task, not this primitive.
 func TestRetirementAutomaticClaimRequiresDueInterval(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		timeout   time.Duration
@@ -792,6 +872,7 @@ func TestRetirementAutomaticClaimRequiresDueInterval(t *testing.T) {
 
 // Invalid configuration must not silently enable an unusable timer/controller.
 func TestRetirementRejectsInvalidConfiguration(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		timeout time.Duration
 		clk     RetirementClock
@@ -807,6 +888,7 @@ func TestRetirementRejectsInvalidConfiguration(t *testing.T) {
 // Unknown categories stay bounded, passive reads/notifications do not reset
 // eligibility, and a new mutation does reset it and notifies without blocking.
 func TestRetirementChangesAndEligibilityReset(t *testing.T) {
+	t.Parallel()
 	c, root := retirementTestController(t)
 	for range 8 {
 		c.Changed()
@@ -861,6 +943,7 @@ func TestRetirementChangesAndEligibilityReset(t *testing.T) {
 // work read as unknown. Unknown values stay bounded, which
 // TestRetirementChangesAndEligibilityReset already pins with free text.
 func TestRetirementBeginMutationPreservesCallerCategories(t *testing.T) {
+	t.Parallel()
 	c, root := retirementTestController(t)
 	for _, category := range []string{
 		"turn", "input", "autonomous", "question", "job", "watch", "delegate",

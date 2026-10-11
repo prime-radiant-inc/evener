@@ -1070,3 +1070,101 @@ func TestMigrationTriggeredSaveFailureNamesNoPath(t *testing.T) {
 		t.Fatalf("err = %v, want it to name %s", err, marketplacesFileName)
 	}
 }
+
+// Browse parses the registered marketplace's catalog through ParseCatalog,
+// which builds "parsing <absolute path>: ..." - naming this machine's
+// plugin-store path directly. That is the read-side counterpart of every
+// write-path leak above (#1700), reached on the Browse RPC.
+func TestBrowseCorruptCatalogNamesNoPath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	src := makeMarketplaceRepo(t, "acme")
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	clone := m.marketplaceDir("acme")
+	if err := os.WriteFile(filepath.Join(clone, ".claude-plugin", "marketplace.json"), []byte("{ not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.Browse(ctx, "acme")
+	if err == nil {
+		t.Fatal("Browse = nil, want the corrupt catalog reported")
+	}
+	if strings.Contains(err.Error(), clone) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "acme") {
+		t.Fatalf("err = %v, want the marketplace named", err)
+	}
+	if !strings.Contains(err.Error(), "marketplace.json") {
+		t.Fatalf("err = %v, want it to name marketplace.json", err)
+	}
+}
+
+// AddMarketplace parses the freshly-fetched clone before it registers it, so a
+// corrupt catalog there names the staging directory under the store - the same
+// read-side leak on the AddMarketplace RPC.
+func TestAddMarketplaceCorruptCatalogNamesNoPath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	dir := filepath.Join(t.TempDir(), "corrupt-acme")
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"), []byte("{ not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeGitRepo(t, dir, "README.md", "mkt")
+
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	_, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: dir})
+	if err == nil {
+		t.Fatal("AddMarketplace = nil, want the corrupt catalog reported")
+	}
+	if strings.Contains(err.Error(), m.marketplaceDir(stagingCloneName)) || strings.Contains(err.Error(), m.marketplacesDir()) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "marketplace.json") {
+		t.Fatalf("err = %v, want it to name marketplace.json", err)
+	}
+}
+
+// catalogPlugin parses the marketplace's catalog on Install and Upgrade, so a
+// corrupt catalog there is the same read-side leak on those RPCs.
+func TestUpgradeCorruptCatalogNamesNoPath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(ctx, "widget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	clone := m.marketplaceDir(name)
+	if err := os.WriteFile(filepath.Join(clone, ".claude-plugin", "marketplace.json"), []byte("{ not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.Upgrade(ctx, "widget", name)
+	if err == nil {
+		t.Fatal("Upgrade = nil, want the corrupt catalog reported")
+	}
+	if strings.Contains(err.Error(), clone) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "marketplace.json") {
+		t.Fatalf("err = %v, want it to name marketplace.json", err)
+	}
+}

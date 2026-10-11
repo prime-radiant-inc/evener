@@ -45,15 +45,6 @@
   }
 }
 
-.orientation {
-  max-width: 36rem;
-  margin: var(--space-4) 0 0;
-  color: var(--ink-mid);
-  font-family: var(--font-prose);
-  font-size: var(--font-size-prose);
-  line-height: var(--line-height-body);
-}
-
 /* T6: a quiet hint row teaching the chords, below the task suggestions -
  * caption-size and ink-low/mid so it reads as an aside, not another action. */
 .hints {

@@ -24,6 +24,10 @@ import (
 func newRetirementDelegateController(t *testing.T) (*Session, *delegateTreeController, *RetirementController) {
 	t.Helper()
 	root := newQueuePersistTestSession(t, t.TempDir())
+	// These fixtures exercise whole-tree retirement and idle entrypoints over
+	// LIVE child runtimes; the per-delegate idle release is a separate subject
+	// with its own test, so keep the children deliberately warm here.
+	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.disableDelegateIdleRelease = true })
 	c, err := NewRetirementController(0, clock.Real())
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +42,7 @@ func newRetirementDelegateController(t *testing.T) (*Session, *delegateTreeContr
 }
 
 func TestRetirementColdDelegatePendingOutcomeBlocks(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	seedDelegateReclaimRuntime(t, tree, "cold-pending", "", time.Unix(1, 0), false, false)
@@ -60,6 +65,7 @@ func TestRetirementColdDelegatePendingOutcomeBlocks(t *testing.T) {
 }
 
 func TestRetirementDelegateCreateClaimFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	claim, state, err := c.TryClaim(true)
@@ -80,6 +86,7 @@ func TestRetirementDelegateCreateClaimFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateReservationClaimFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	claim, _, err := c.TryClaim(true)
@@ -97,6 +104,7 @@ func TestRetirementDelegateReservationClaimFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateCloseClaimFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	before, err := tree.store.Load()
@@ -124,6 +132,7 @@ func TestRetirementDelegateCloseClaimFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateCreatedChildInheritsController(t *testing.T) {
+	t.Parallel()
 	root, _, c := newRetirementDelegateController(t)
 	defer root.Close()
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "inherit-controller-sentinel"})
@@ -140,6 +149,7 @@ func TestRetirementDelegateCreatedChildInheritsController(t *testing.T) {
 }
 
 func TestRetirementDelegateWatchReceiptOrders(t *testing.T) {
+	t.Parallel()
 	t.Run("claim first", func(t *testing.T) {
 		root, tree, c := newRetirementDelegateController(t)
 		defer root.Close()
@@ -247,9 +257,14 @@ func retirementSettleDelegate(t *testing.T, root *Session, result delegateResult
 	if _, err := root.ProcessInput(context.Background(), "settle-root-sentinel", nil); err != nil {
 		t.Fatal(err)
 	}
+	// The child's task and the settle turn each launched their session's async
+	// namer, which holds an "autonomous" retirement lease until it finishes and
+	// is joined by neither the run's done channel nor ProcessInput.
+	joinRetirementTreeEmitters(root)
 }
 
 func TestRetirementDelegateRealIdleSource(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	result := retirementIdleDelegate(t, root)
@@ -266,7 +281,57 @@ func TestRetirementDelegateRealIdleSource(t *testing.T) {
 	}
 }
 
+// TestRetirementAfterIdleReleaseCoversReleasedMember: whole-tree retirement
+// must claim and commit over a member whose runtime the idle release already
+// released — production's shape after the grace period, which the fixtures
+// that keep children warm otherwise hide. The released member must not block
+// the claim, must keep its durable identity, and must not be torn down a
+// second time.
+func TestRetirementAfterIdleReleaseCoversReleasedMember(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	result := retirementIdleDelegate(t, root)
+	tree.mu.Lock()
+	live := tree.live[result.DelegateID]
+	tree.mu.Unlock()
+	if live == nil || live.runtime == nil {
+		t.Fatal("fixture delegate is not resident before the idle release")
+	}
+	runtime := live.runtime
+	if !runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("idle release refused the terminal fixture delegate")
+	}
+
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("whole-tree retirement refused over a released member: %+v %v", state, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = c.Abort(claim, "")
+		}
+	}()
+	if err := c.Commit(claim); err != nil {
+		t.Fatalf("commit whole-tree retirement over a released member: %v", err)
+	}
+	committed = true
+
+	tree.mu.Lock()
+	aggregate := tree.durable[result.DelegateID]
+	tree.mu.Unlock()
+	if aggregate == nil {
+		t.Fatal("released member lost its durable identity at retirement")
+	}
+	// The idle release already spent this runtime's one teardown pass;
+	// retirement over the released member must not have needed another.
+	if err := runtime.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("released runtime teardown pass after retirement: err = %v, want errRetirementTeardownSpent", err)
+	}
+}
+
 func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
+	t.Parallel()
 	for name, enter := range map[string]func(*Session, *delegateTreeController, delegateResult) error{
 		"attention open": func(_ *Session, tree *delegateTreeController, d delegateResult) error {
 			_, err := tree.openDelegateAttention(d.DelegateID, "original-attention-sentinel")
@@ -326,7 +391,7 @@ func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 			return err
 		},
 		"stop driver": func(root *Session, tree *delegateTreeController, d delegateResult) error {
-			_, _, _, err := tree.StopSubtreeAndDrive(rootDelegateActor(root.ID()), d.DelegateID)
+			_, _, _, err := tree.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.ID()), d.DelegateID)
 			return err
 		},
 		"close resumability": func(root *Session, tree *delegateTreeController, d delegateResult) error {
@@ -366,6 +431,7 @@ func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 }
 
 func TestRetirementColdDelegateEvidence(t *testing.T) {
+	t.Parallel()
 	for _, fault := range []string{"healthy", "descriptor", "wrong transcript ref", "transcript", "corrupt transcript", "recovery", "reservation", "open run", "shell work"} {
 		t.Run(fault, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -465,6 +531,7 @@ func TestRetirementColdDelegateEvidence(t *testing.T) {
 }
 
 func TestRetirementDelegateReclaimOwnsExactRuntime(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -587,6 +654,7 @@ func retirementPauseColdClaim(t *testing.T, c *RetirementController, path string
 }
 
 func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
+	t.Parallel()
 	for _, family := range []string{"outcome", "watch"} {
 		t.Run(family, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -681,7 +749,7 @@ func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			claim, state, err := c.TryClaim(true)
+			claim, state, err := retirementClaimAfterFirstTurn(root, c)
 			if err != nil || claim == nil {
 				t.Fatalf("settled source blocks eligibility: %+v %v", state, err)
 			}
@@ -727,10 +795,12 @@ func retirementAwait(t *testing.T, ready <-chan struct{}) {
 }
 
 func TestRetirementDelegateCreateBeforeReservation(t *testing.T) {
+	t.Parallel()
 	retirementCreateListingBarrier(t, true)
 }
 
 func TestRetirementDelegateCreateAfterReservationBeforeInstall(t *testing.T) {
+	t.Parallel()
 	retirementCreateListingBarrier(t, false)
 }
 
@@ -807,6 +877,7 @@ func retirementCreateListingBarrier(t *testing.T, beforeReservation bool) {
 }
 
 func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -867,6 +938,7 @@ func TestRetirementDelegateDescendantSendAdmittedFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -941,6 +1013,7 @@ func TestRetirementDelegateColdReconstructionAdmittedFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateEvidenceLeafFirstExactPointers(t *testing.T) {
+	t.Parallel()
 	root, tree, _ := newRetirementDelegateController(t)
 	defer root.Close()
 	parent := seedDelegateReclaimRuntime(t, tree, "parent", "", time.Unix(1, 0), true, false)
@@ -953,6 +1026,7 @@ func TestRetirementDelegateEvidenceLeafFirstExactPointers(t *testing.T) {
 }
 
 func TestRetirementDelegateStaleClaimCannotClearTreeFence(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	retirementIdleDelegate(t, root)
@@ -981,6 +1055,7 @@ func TestRetirementDelegateStaleClaimCannotClearTreeFence(t *testing.T) {
 }
 
 func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1044,6 +1119,7 @@ func TestRetirementDelegateIdleInstallationOwnerBoundary(t *testing.T) {
 }
 
 func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1082,6 +1158,77 @@ func TestRetirementDelegateCloseResumabilityReturnedOwner(t *testing.T) {
 		t.Fatalf("applied closure blocks retirement: %+v %v", state, err)
 	}
 	c.Abort(claim, "")
+}
+
+// A closed delegate can never act on a noted wake, so a wake whose item the
+// transcript already resolved (and whose clear failed before the closure)
+// must not hold the tree's retirement.
+func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	const attentionID = "attention-resolved-before-closure"
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-resolved-content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	tree.mu.Lock()
+	_, wakeKept := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
+	tree.mu.Unlock()
+	if !wakeKept {
+		t.Fatal("the resolved wake did not outlive the closure; the scenario is not the one under test")
+	}
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("a closed delegate's resolved wake blocks retirement: %+v %v", state, err)
+	}
+	c.Abort(claim, "")
+}
+
+// The other direction of the closed-delegate rule: ignoring a closed
+// delegate's wakes never lets unresolved attention in its transcript through,
+// whether its runtime is resident or not.
+func TestRetirementDelegateUnresolvedAttentionOfClosedDelegateBlocks(t *testing.T) {
+	t.Parallel()
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	d := retirementIdleDelegate(t, root)
+	sub := root.subagents.get(d.ChildSessionID)
+	const attentionID = "attention-unresolved-at-closure"
+	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-unresolved-content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := tree.CloseResumability(rootDelegateActor(root.ID()), d.DelegateID, "closure-sentinel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	claim, state, err := c.TryClaim(true)
+	if claim != nil {
+		c.Abort(claim, "")
+	}
+	if claim != nil || err != nil {
+		t.Fatalf("unresolved attention of a closed delegate escaped: %+v %v", state, err)
+	}
 }
 
 // Pause an actual read of fixture-owned persisted bytes. The original inode is
@@ -1151,6 +1298,7 @@ func retirementPauseFileRead(t *testing.T, path string, run func() error) func()
 }
 
 func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1211,7 +1359,7 @@ func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
 	if _, err := root.ProcessInput(context.Background(), "consume-ack-sentinel", nil); err != nil {
 		t.Fatal(err)
 	}
-	claim, state, err = c.TryClaim(true)
+	claim, state, err = retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("settled acknowledgement blocks: %+v %v", state, err)
 	}
@@ -1219,6 +1367,7 @@ func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
 }
 
 func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	cold := retirementIdleDelegate(t, root)
@@ -1245,7 +1394,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	}
 	tree.mu.Lock()
 	generation := tree.durable[d.DelegateID].Generation
-	_, pending := tree.attentionWakeIDs[d.DelegateID][attentionID]
+	_, pending := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
 	tree.mu.Unlock()
 	if !pending {
 		t.Fatal("original attention source was not populated")
@@ -1257,7 +1406,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 		t.Fatalf("populated attention entry not refused: added=%v emit=%v %v", added, emit, err)
 	}
 	tree.mu.Lock()
-	_, pending = tree.attentionWakeIDs[d.DelegateID][attentionID]
+	_, pending = attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
 	exact := tree.durable[d.DelegateID].Generation == generation
 	tree.mu.Unlock()
 	if !pending || !exact {
@@ -1297,6 +1446,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 // source is pending the tree must deny a claim, and only the real owner's
 // settlement of that exact source restores eligibility.
 func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1309,7 +1459,7 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	tree.mu.Lock()
-	_, pending := tree.attentionWakeIDs[d.DelegateID][attentionID]
+	_, pending := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
 	tree.mu.Unlock()
 	if !pending {
 		t.Fatal("original attention source was not populated")
@@ -1345,6 +1495,7 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 }
 
 func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1429,6 +1580,7 @@ func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {
 }
 
 func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1500,7 +1652,7 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 	if _, err := root.ProcessInput(context.Background(), "consume-caller-root-sentinel", nil); err != nil {
 		t.Fatal(err)
 	}
-	claim, state, err = c.TryClaim(true)
+	claim, state, err = retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("consumed root input blocks: %+v %v", state, err)
 	}
@@ -1508,6 +1660,7 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 }
 
 func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"stop driver"} {
 		t.Run(mode, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -1531,7 +1684,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			defer tree.AbortShellWork(work)
 			var stop *delegateStopState
 			var driver *delegateStopDriver
-			result, cancel, plans, err := tree.StopSubtreeAndDrive(rootDelegateActor(root.ID()), d.DelegateID)
+			result, cancel, plans, err := tree.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.ID()), d.DelegateID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1582,7 +1735,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			if _, err := root.ProcessInput(context.Background(), "consume-stop-driver-sentinel", nil); err != nil {
 				t.Fatal(err)
 			}
-			claim, state, err = c.TryClaim(true)
+			claim, state, err = retirementClaimAfterFirstTurn(root, c)
 			if err != nil || claim == nil {
 				t.Fatalf("settled driver blocks: %+v %v", state, err)
 			}
@@ -1593,6 +1746,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 }
 
 func TestRetirementDelegateTerminalCloseHandoff(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1633,6 +1787,7 @@ func TestRetirementDelegateTerminalCloseHandoff(t *testing.T) {
 }
 
 func TestRetirementDelegateReconcileReturnedOwner(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -1711,6 +1866,7 @@ func retirementDelegateDurableState(t *testing.T, tree *delegateTreeController) 
 }
 
 func TestRetirementDelegateReleaseExactRuntime(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"no fence", "exact", "replacement"} {
 		t.Run(mode, func(t *testing.T) {
 			root, tree, c := newRetirementDelegateController(t)
@@ -1763,6 +1919,7 @@ func TestRetirementDelegateReleaseExactRuntime(t *testing.T) {
 }
 
 func TestRetirementDelegateStopAdmittedFirst(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)

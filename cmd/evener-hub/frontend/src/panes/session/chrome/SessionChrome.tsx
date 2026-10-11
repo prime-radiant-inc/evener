@@ -1,64 +1,75 @@
 // SessionChrome: the session pane's chrome surface. Its default footer
 // presentation is ONE quiet status-bar row (cadence where needed, model ·
-// effort, context, live work, queue depth, and the goal chip when a goal is
-// set) with the session "⋯" menu pinned to the trailing edge. Its composer
-// presentation keeps the same StatusRow and menu owner but omits the
-// footer-only cadence and goal controls. Every real value (the ThreadModel,
-// capabilities, ...) is read from the threads store internally via
+// effort, context, live work, queue depth) with the session "⋯" menu pinned
+// to the trailing edge. Its composer presentation keeps the same StatusRow
+// and menu owner but omits the footer-only cadence. Every real value (the
+// ThreadModel, capabilities, ...) is read from the threads store internally via
 // useThreadsStore, same as every other pane-level component in this app
 // (mirrors Session.tsx's own model lookup).
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
-// menu-design): Details/Tasks/Activity and pane-only Verbosity lead it at every
+// menu-design): Overview and pane-only Verbosity lead it at every
 // width (there are no inline triggers and no narrow-collapse - the status
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The three
-// panels stay mounted triggerless so their imperative handles still open the
-// mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
-// the menu's "Activity · N" label reads the summary that refresh maintains.
+// and Shut down. The composer placement alone can also lead with the
+// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The
+// Overview count adds the subagents running at every depth
+// (useSubagentCounts) to the session summary's running jobs. The hidden
+// ActivityPanel retains discovery and refresh wiring. Overview opens the
+// shared sidebar at every viewport.
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
 // composer is where you act on this session"; the command palette only
-// hands off to it - design-system.md §9) - so GoalControl below is the
-// goal chip + clear popover only.
+// hands off to it - design-system.md §9). The former goal chip + clear
+// popover (GoalControl) is deleted entirely: Jesse's 2026-09-28 ruling on
+// the #1339 composer row dropped it from the composer placement, and the
+// footer mount that remained was production-dead (only the composer and
+// menu placements ever mount), so the component went rather than staying
+// dead code - the goal objective stays editable, and it and its live
+// status stay visible, through the composer's own CurrentWork goal row
+// and its inline /goal built-in; the iteration count the chip's popover
+// carried has no surface now.
 
 import type { NavigationSessionLocation } from "@evener/appwire-client";
-import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
+import { SHUT_DOWN_STATUSES, sessionActionError } from "@evener/appwire-client";
 import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
-import { useRef, useState } from "react";
+import { useState } from "react";
+import {
+  activitySidebarOpenFor,
+  activitySidebarStore,
+  useActivitySidebarOpenFor,
+} from "../../../shell/activitybar/activitySidebarStore";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
-import { navigate, paneToURL } from "../../../shell/routing";
-import { SessionMenu, type SessionMenuProps } from "../../../shell/sessionMenu/SessionMenu";
+import { isConfirmedCrashedSession } from "../../../shell/rail/sessionKind";
+import { navigate, paneToURL, refParam } from "../../../shell/routing";
+import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
-import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
-import { useActivitySummaryStore } from "../../../stores/activitySummary";
+import { useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
-import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
+import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionActivity";
+import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
-import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
-import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
-import { GoalControl } from "./GoalControl";
+import { ActivityPanel } from "./ActivityPanel";
+import { activityActionLabel } from "./activityFormat";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 import "../../sessionPanels";
 
 export type SessionChromePlacement = "footer" | "composer" | "menu";
 
 export interface SessionChromeProps {
   ref: string;
+  paneId?: string;
   placement?: SessionChromePlacement;
-  onOpenTasks?: () => void;
   /** Live session mounts opt into the hidden panel's initial activity discovery. */
   discoverActivity?: boolean;
   /**
@@ -69,6 +80,14 @@ export interface SessionChromeProps {
    * (issue #1335).
    */
   discoveryOnly?: boolean;
+  /**
+   * Turn verbs for the session menu, offered by the composer's narrow
+   * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). Only
+   * the composer placement forwards them: the footer and menu-only mounts
+   * share SessionMenu with the rail, where no draft exists for Steer to
+   * send. Composer.tsx owns presence, disablement, and the press handlers.
+   */
+  turnVerbs?: SessionMenuTurnVerbs;
 }
 
 const CLASS = {
@@ -86,21 +105,28 @@ const EMPTY_FRAME_TIMES: number[] = [];
 
 export function SessionChrome({
   ref: sessionRef,
+  paneId: owningPaneId,
   placement = "footer",
-  onOpenTasks,
   discoverActivity = false,
   discoveryOnly = false,
+  turnVerbs,
 }: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
+  const paneId = useWorkspaceStore(
+    (state) =>
+      owningPaneId ?? state.panes.find((pane) => pane.type === "session" && refParam(pane.params) === sessionRef)?.id,
+  );
   const isMobile = useIsMobile();
   const [verbosityOpen, setVerbosityOpen] = useState(false);
   const toasts = useToasts();
-  const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
-  const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
-  const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
-  const notesOpen = useTopNotesExpanded(sessionRef);
-  const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
+  // The Overview menu item's checked state is the sidebar open ON THIS
+  // SESSION (the shared predicate hook). The mobile overlay uses the same
+  // scope, so rail and session menus agree at every viewport.
+  const sidebarOpenHere = useActivitySidebarOpenFor(sessionRef);
+  const { snapshot: activitySnapshot } = useSessionActivity(sessionRef);
+  const subagents = useSubagentCounts(sessionRef);
+  const activitySummary = activitySnapshot?.summary;
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
   // no project is expanded merely to decide menu eligibility.
@@ -111,7 +137,7 @@ export function SessionChrome({
     : (locationResource?.data as NavigationSessionLocation | undefined);
   const navigationSession = location?.session;
   const fallbackSession = navigationSession ?? navigationSummaryFor(sessionRef, navigation);
-  const eligibleFallback = fallbackSession && !["subagent", "fork", "cluster"].includes(fallbackSession.kind);
+  const eligibleFallback = fallbackSession && !["subagent", "fork"].includes(fallbackSession.kind);
   const validIdentity =
     typeof fallbackSession?.host_id === "string" &&
     fallbackSession.host_id.trim() !== "" &&
@@ -127,6 +153,7 @@ export function SessionChrome({
           host_id: fallbackSession.host_id,
           session_id: fallbackSession.session_id,
           kind: fallbackSession.kind,
+          failure: fallbackSession.failure,
           top_level: location?.top_level ?? eligibleFallback,
           tier: location?.tier,
           pin_section_id: location?.pin_section_id,
@@ -146,9 +173,6 @@ export function SessionChrome({
   // downstream, not a ban on more than one clock owner upstream - see
   // liveness.ts's own useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
-  const detailsRef = useRef<DetailsPanelHandle>(null);
-  const tasksRef = useRef<TasksPanelHandle>(null);
-  const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
 
   // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
@@ -156,12 +180,8 @@ export function SessionChrome({
   // here; `discoveryOnly` is itself an opt-in (it exists for nothing else).
   const hiddenActivityPanel = (
     <ActivityPanel
-      ref={activityRef}
       sessionRef={sessionRef}
       model={model}
-      watches={fallbackSession?.watches}
-      omittedWatches={fallbackSession?.omitted_watches}
-      omittedArmedWatches={fallbackSession?.omitted_armed_watches}
       hideTrigger
       refreshWhenHidden
       discoverWhenHidden={discoverActivity || discoveryOnly}
@@ -179,32 +199,19 @@ export function SessionChrome({
   // and panes with no navigation identity. The one exclusion is a session
   // retained by its owning session - its notice directs the user to the owner
   // instead (same predicate as Session.tsx's recoveryOwnerRef).
-  const recoveryOwnerRef =
-    !mutationStateAuthoritative &&
-    model.status.type !== "notLoaded" &&
-    model.status.type !== "restartRequired" &&
-    model.parentRef?.startsWith("local:")
-      ? model.parentRef
-      : undefined;
+  const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
 
-  const openDetails = () => {
-    if (isMobile) detailsRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionDetails", { ref: sessionRef });
+  const openOverview = () => {
+    // Mobile and desktop share the activity sidebar. Desktop toggles only when
+    // the sidebar already shows THIS session; opening on another session
+    // re-scopes it here instead of closing it under the user.
+    if (!isMobile && activitySidebarOpenFor(sessionRef)) activitySidebarStore.getState().close();
+    else {
+      if (paneId) workspaceStore.getState().focusPane(paneId);
+      activitySidebarStore.getState().openFor(sessionRef);
+    }
   };
-  const openTasks = () => {
-    if (onOpenTasks) onOpenTasks();
-    else if (isMobile) tasksRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef });
-  };
-  const openActivity = () => {
-    if (isMobile) activityRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionActivity", { ref: sessionRef });
-  };
-  const openNotes = () => {
-    if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
-    topNotesStore.getState().toggleAndFocus(sessionRef);
-  };
-  const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
+  const overviewLabel = activityActionLabel(activitySummary, subagents, "Overview");
 
   // The menu's action adapters, shared by the composer and menu-only
   // placements so the failure convention (SessionMenu.tsx's header comment:
@@ -216,7 +223,7 @@ export function SessionChrome({
           try {
             await threadsStore.getState().forceStop(sessionRef);
           } catch (err) {
-            toasts.push("error", sessionActionError("Couldn't force stop session", err));
+            toasts.push("error", sessionActionError("Couldn't force shutdown session", err));
             throw err;
           }
           try {
@@ -309,10 +316,11 @@ export function SessionChrome({
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
-            {/* Production mounts ONLY this placement (Composer.tsx), so the
-              goal chip must ride here too — footer-only left it unreachable
-              in the real app. */}
-            <GoalControl sessionRef={sessionRef} model={model} />
+            {/* The goal chip is gone entirely (Jesse's 2026-09-28 ruling,
+                "drop goal inline in the composer"): the composer row is
+                status and menu alone, and the goal objective stays visible
+                and editable through the composer's own CurrentWork goal row
+                and its inline /goal built-in. */}
           </div>
         ) : placement === "menu" ? null : (
           /* .body owns compression (sessionchrome.module.css says why): its
@@ -323,34 +331,27 @@ export function SessionChrome({
               <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
             </span>
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
-            <GoalControl sessionRef={sessionRef} model={model} />
           </div>
         )}
         <div className={CLASS.right}>
-          <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
-          {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
           {hiddenActivityPanel}
           <SessionMenu
             sessionRef={sessionRef}
+            paneId={paneId}
             title={model.name}
             triggerLabel="Session actions"
             canRename={model.capabilities.rename}
             canShutdown={model.capabilities.shutdown}
-            canReadNotes={canReadSharedNotes(model)}
+            stopped={SHUT_DOWN_STATUSES.has(model.status.type) || isConfirmedCrashedSession(fallbackSession)}
             session={menuSession}
-            panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
-            // No taskLabel: the menu entry stays a plain "Tasks". Counts live
-            // inline and in the panel; even a condensed aggregate would crowd
-            // the menu's leading pane group.
-            activityLabel={activityLabel}
+            overviewOpen={sidebarOpenHere}
+            overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
+            // Composer placement only: the header comment on the prop says
+            // why the other placements must never carry turn verbs.
+            turnVerbs={placement === "composer" ? turnVerbs : undefined}
             actions={{
-              onOpenPane: (pane) => {
-                if (pane === "details") openDetails();
-                else if (pane === "tasks") openTasks();
-                else if (pane === "notes") openNotes();
-                else openActivity();
-              },
+              onOpenOverview: openOverview,
               onRename: async (name) => {
                 try {
                   await threadsStore.getState().rename(sessionRef, name);

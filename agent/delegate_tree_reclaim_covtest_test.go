@@ -7,6 +7,7 @@ import (
 // TestClaimRuntimeReclamation_NilController covers the nil-controller guard
 // (lines 38-39).
 func TestClaimRuntimeReclamation_NilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	_, err := c.ClaimRuntimeReclamation(1)
 	if err == nil {

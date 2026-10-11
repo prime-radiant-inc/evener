@@ -37,6 +37,7 @@ const closeParkBudget = 10 * time.Second
 // that: while a stand-in emitter holds responseSideEffectsMu and Close is parked,
 // a sample still returns.
 func TestCloseWaitsForResponseSideEffectsMuWithoutHoldingSessionMu(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 
 	// Stand in for the wedged emitter. A real one is blocked on the channel send

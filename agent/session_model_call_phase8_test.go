@@ -13,6 +13,7 @@ import (
 )
 
 func TestFallbackChain_ContinuationRejectionRetriesFullHistoryBeforeModelFallback(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -82,6 +83,7 @@ func TestFallbackChain_ContinuationRejectionRetriesFullHistoryBeforeModelFallbac
 }
 
 func TestFallbackChain_ContinuationRecoveryFailureThenModelFallback(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -237,6 +239,7 @@ func phase8FullHistory() []llm.Message {
 }
 
 func TestSession_PersistsImageToolResultFromExecResult(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})

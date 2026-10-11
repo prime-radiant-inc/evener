@@ -1,9 +1,9 @@
+import { stripRedundantCd } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { toolRendererFor } from "../toolRenderers";
-import { stripRedundantCd } from "./shellTool";
 import "./shellTool";
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
 
@@ -44,7 +44,9 @@ test("summary: leads with the command, no result suffix on a clean run", () => {
 });
 
 // A2: the exit code stops being the summary's headline. The failure glyph
-// (failed()) announces a nonzero exit; the number itself moves to detail().
+// (failed()) announces a nonzero exit; the number's one home is the real
+// text at the tail of the expanded body (the captured output's own
+// "[exit N]" footer, per agent/session_tools_shell.go's formatShellResult).
 
 test("summary: a nonzero exit is NOT in the summary text - the glyph carries that signal", () => {
   const d = toolRendererFor("shell");
@@ -67,34 +69,18 @@ test("failed: false when no exit code is detectable at all (still running/backgr
   expect(d.failed?.(withCommand("sleep 10", { output: "still going" }))).toBe(false);
 });
 
-test("detail: the exit code stays reachable as the row's hover title", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe("exit 1");
-});
-
-test("detail: a clean exit still reports its code (0 is a fact, not an absence)", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("true", { exitCode: 0 }))).toBe("exit 0");
-});
-
-test("detail: undefined when no exit code exists at all", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("sleep 10", { output: "still going" }))).toBeUndefined();
-});
-
 test("summary: no footer at all (still running, or backgrounded) shows no exit suffix", () => {
   const d = toolRendererFor("shell");
   expect(d.summary(withCommand("sleep 10", { output: "partial output so far" }))).toBe("Ran sleep 10");
 });
 
-test("detail: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
+test("failed: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
   // agent/session_tools_shell.go's runBufferedShell path (used when the
   // execution environment doesn't support streaming) has no StateResult/
   // bracketed footer at all - it ends in a bare
   // "exit_code=N duration_ms=N timed_out=bool" line instead.
   const d = toolRendererFor("shell");
   const out = "stdout here\nexit_code=2 duration_ms=15 timed_out=false";
-  expect(d.detail?.(withCommand("false", { output: out }))).toBe("exit 2");
   expect(d.failed?.(withCommand("false", { output: out }))).toBe(true);
 });
 
@@ -133,27 +119,17 @@ test("exec_command and run_shell_command alias to the same descriptor as shell",
   expect(toolRendererFor("run_shell_command")).toBe(shell);
 });
 
-// --- autoExpand ---------------------------------------------------------
+// --- autoExpand: none ---------------------------------------------------
+// A failed command does not auto-open its row: a failure earns the glyph and
+// data-attention, and the reader opens the row to read the output. The shell
+// descriptor therefore carries no autoExpand at all (the exit code still
+// drives failed(), so the row never loses its failure signal).
 
-test("autoExpand: true when the parsed exit code is nonzero", () => {
+test("autoExpand: the shell descriptor never auto-opens a row, clean or failed", () => {
   const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe(true);
-});
-
-test("autoExpand: false on a clean exit", () => {
-  const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("true", { output: "x\n[exit 0]" }))).toBe(false);
-});
-
-test("autoExpand: true for a nonzero exit reported via the buffered fallback's exit_code= trailer", () => {
-  const d = toolRendererFor("shell");
-  const out = "stdout\nexit_code=1 duration_ms=5 timed_out=false";
-  expect(d.autoExpand?.(withCommand("false", { output: out }))).toBe(true);
-});
-
-test("autoExpand: false when no exit code is detectable at all (no false failure signal)", () => {
-  const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("sleep 10", { output: "still going" }))).toBe(false);
+  expect(d.autoExpand).toBeUndefined();
+  // The failure signal itself is untouched.
+  expect(d.failed?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe(true);
 });
 
 // --- typed exitCode (wire-honesty spec Part A) ----------------------------
@@ -162,28 +138,17 @@ test("autoExpand: false when no exit code is detectable at all (no false failure
 // output-footer text heuristic above stays only as the old-daemon fallback
 // (every test above carries no exitCode, so those now exercise that fallback).
 
-test("detail: uses the typed exitCode directly, with no output footer to parse", () => {
-  const d = toolRendererFor("shell");
-  expect(d.detail?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe("exit 2");
-});
-
-test("detail/failed: the typed exitCode wins over a conflicting output footer", () => {
+test("failed: the typed exitCode wins over a conflicting output footer", () => {
   const d = toolRendererFor("shell");
   // Typed 0 (clean) must not be overridden by a stray bracketed "[exit 5]" in
   // the command's own output text — the structured field is authoritative.
   const clean = withCommand("make test", { exitCode: 0, output: "done\n[exit 5]" });
-  expect(d.detail?.(clean)).toBe("exit 0");
   expect(d.failed?.(clean)).toBe(false);
 });
 
-test("autoExpand: true from a typed nonzero exitCode with no footer text", () => {
+test("failed: true from a typed nonzero exitCode with no footer text", () => {
   const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe(true);
-});
-
-test("autoExpand: a typed exit 0 wins over a conflicting nonzero footer (no false auto-expand)", () => {
-  const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("make test", { exitCode: 0, output: "x\n[exit 5]" }))).toBe(false);
+  expect(d.failed?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe(true);
 });
 
 // --- body -----------------------------------------------------------------
@@ -208,6 +173,96 @@ test("body renders the raw formatted command above the existing output block", (
   expect(codes[0]?.textContent).toContain("printf '%s\\n' \"$HOME\"");
   expect(codes[1]?.textContent).toContain("ok");
   expect(container.textContent).not.toContain("$ ");
+});
+
+// The typed exit code's one home is the captured output's trailing footer — but
+// the wire carries the two independently, and an output can exist with NO exit
+// trailer of either shape while the typed ItemModel.exitCode is present (a
+// stored transcript predating footer-baking replayed by a newer daemon, a
+// buffered path that lost its line). With the row's hover title retired, the
+// body is the number's only home, so it synthesizes the daemon's own footer
+// shape for exactly that gap.
+test("body appends the daemon's exit footer when the typed exit code has no trailer in the output", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(<Body item={withCommand("false", { output: "boom", exitCode: 2 })} live={false} />);
+  expect(container.textContent).toContain("boom");
+  expect(container.textContent).toContain("[exit 2]");
+});
+
+test("body never duplicates the exit footer the output already carries", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(
+    <Body item={withCommand("false", { output: "done\n[exit 5]", exitCode: 5 })} live={false} />,
+  );
+  expect(container.textContent?.match(/\[exit 5\]/g)).toHaveLength(1);
+});
+
+test("body's synthesized exit footer is display-only - Copy output keeps the raw evidence", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const Body = toolRendererFor("shell").body!;
+  render(<Body item={withCommand("false", { output: "boom", exitCode: 2 })} live={false} />);
+
+  await user.click(screen.getByRole("button", { name: "Copy output" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith("boom");
+});
+
+// job-control.md:1012 - a signalled job (cancelled/stopped/run_timeout) carries
+// exit_code -1 as a SENTINEL, "not a shell code", and formatShellResult
+// deliberately omits it from the footer for exactly that reason. The synthesis
+// must respect the same line: a runtime-limited stop is told by its own footer
+// words, never fabricated as an ordinary exit.
+test("body never fabricates a footer for the -1 sentinel of a signalled job", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(
+    <Body item={withCommand("make build", { output: "partial output", exitCode: -1 })} live={false} />,
+  );
+  expect(container.textContent).toContain("partial output");
+  expect(container.textContent).not.toContain("exit -1");
+});
+
+// A command's own stdout can print "exit_code=N" mid-stream (a test runner
+// echoing its result token, say); that is not a trailer, and the shape-aware
+// gate must not let it suppress the authoritative typed footer.
+test("body still synthesizes when a bare exit_code= token is only echoed mid-stream", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(
+    <Body item={withCommand("false", { output: "checking exit_code=0 ok\nboom", exitCode: 2 })} live={false} />,
+  );
+  expect(container.textContent).toContain("exit_code=0");
+  expect(container.textContent).toContain("[exit 2]");
+});
+
+// The buffered-env trailer counts only as the output's FINAL line. When a
+// genuine one disagrees with the typed code, the raw text stays verbatim AND
+// the authoritative typed footer is synthesized beside it; when they agree,
+// nothing is added.
+test("body treats a genuine buffered trailer on the final line as authoritative only when it matches the typed code", () => {
+  const Body = toolRendererFor("shell").body!;
+  const disagree = render(
+    <Body
+      item={withCommand("false", {
+        output: "stdout here\nexit_code=0 duration_ms=15 timed_out=false",
+        exitCode: 2,
+      })}
+      live={false}
+    />,
+  );
+  expect(disagree.container.textContent).toContain("exit_code=0");
+  expect(disagree.container.textContent).toContain("[exit 2]");
+  disagree.unmount();
+
+  const agree = render(
+    <Body
+      item={withCommand("false", {
+        output: "stdout here\nexit_code=2 duration_ms=15 timed_out=false",
+        exitCode: 2,
+      })}
+      live={false}
+    />,
+  );
+  expect(agree.container.textContent).toContain("exit_code=2");
+  expect(agree.container.textContent).not.toContain("[exit 2]");
 });
 
 test("body copies the exact raw command", async () => {
@@ -440,14 +495,14 @@ test("body renders a LONG command in full - the command block never folds", () =
   expect(screen.queryByRole("button", { name: /earlier lines/ })).toBeNull();
 });
 
-// detail() carries the exit code ONLY - never the command as well: the
-// expanded body already shows the command pretty-printed, so a second copy
-// in detail() would duplicate the call on an open row.
-test("detail does NOT repeat the command", () => {
+// The summary carries the command, and only the command - the exit code lives
+// in the expanded body's captured output, never duplicated into the summary
+// (which would put a second copy of the call on an open row).
+test("summary does NOT repeat the exit code", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
   expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(100)}`);
-  expect(d.detail?.(withCommand(longCmd, { exitCode: 0 }))).toBe("exit 0");
+  expect(d.summary(withCommand(longCmd, { exitCode: 0 }))).toBe(`Ran ${"x".repeat(100)}`);
 });
 
 describe("stripRedundantCd", () => {

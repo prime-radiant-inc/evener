@@ -1,11 +1,12 @@
-import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel, TurnModel } from "@evener/appwire-client";
-import { buildEntityView, type EntityView } from "@evener/appwire-client";
+import type { ActivityJob, ActivityTree, ItemModel, TurnModel } from "@evener/appwire-client";
+import { buildEntityView, type EntityView, findEntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { EntityRef } from "./EntityRef";
+import { delegateView } from "./entityView.testFixture";
 
 beforeAll(async () => {
   await import("../");
@@ -64,13 +65,14 @@ function jobView(
       branch: {},
     },
   };
-  const view = buildEntityView({
+  const entities = buildEntityView({
     sessionRef: "local:s",
     tree,
     turns: [],
     stale: state.stale ?? false,
     ended: state.ended ?? false,
-  }).get(id);
+  });
+  const view = findEntityView(entities, "job", id, job.ownerRef);
   if (!view) throw new Error("expected job fixture to resolve");
   return view;
 }
@@ -98,45 +100,13 @@ function watchView(
     status: "completed",
   };
   const turns: TurnModel[] = [{ id: "turn-1", status: "completed", items: [item] }];
-  const view = buildEntityView({ sessionRef: "local:s", turns, stale: false, ended: false }).get(id);
+  const view = findEntityView(
+    buildEntityView({ sessionRef: "local:s", turns, stale: false, ended: false }),
+    "watch",
+    id,
+    "local:s",
+  );
   if (!view) throw new Error("expected watch fixture to resolve");
-  return view;
-}
-
-function delegateView(
-  id = "dlg_x",
-  state: { stale?: boolean; ended?: boolean } = {},
-  overrides: Partial<EvenerDelegateInfo> = {},
-): EntityView {
-  const view = buildEntityView({
-    sessionRef: "local:s",
-    delegates: [
-      {
-        ownerSessionId: "s",
-        rootSessionId: "s",
-        childSessionId: "child",
-        transcriptRef: "local:child",
-        type: "delegate",
-        lifecycle: "running",
-        phase: "running",
-        status: "running",
-        resumable: true,
-        needsAttention: false,
-        projectionRevision: 1,
-        task: "Review the first line\nthen continue",
-        agentType: "reviewer",
-        resolvedModel: "gpt-test",
-        runningForMs: 2_000,
-        usage: { inputTokens: 1_200, outputTokens: 300 },
-        ...overrides,
-        delegateId: id,
-      },
-    ],
-    turns: [],
-    stale: state.stale ?? false,
-    ended: state.ended ?? false,
-  }).get(id);
-  if (!view) throw new Error("expected delegate fixture to resolve");
   return view;
 }
 
@@ -360,12 +330,76 @@ test("focusing the OpenButton reveals the entity card after the shared delay", (
   expect(screen.getByRole("tooltip").textContent).toContain("Compile the frontend");
 });
 
+test("job card states an exited-nonzero run as Command failed", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_cen",
+    "Compile the frontend",
+    {},
+    {
+      status: "command_exited_nonzero",
+      outcome: "failure",
+      exitCode: 2,
+    },
+  );
+  render(<EntityRef view={view} id="job_cen" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  const card = screen.getByRole("tooltip");
+  expect(card.textContent).toContain("Command failed");
+  expect(card.textContent).not.toContain("command_exited_nonzero");
+});
+
+test("job card states a signal-killed run as Command killed", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_kil",
+    "Compile the frontend",
+    {},
+    {
+      status: "command_killed",
+      outcome: "failure",
+    },
+  );
+  render(<EntityRef view={view} id="job_kil" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  const card = screen.getByRole("tooltip");
+  expect(card.textContent).toContain("Command killed");
+  expect(card.textContent).not.toContain("command_killed");
+});
+
+test("job card joins a legacy failed record to the display word by its reason", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_legacy",
+    "Compile the frontend",
+    {},
+    {
+      status: "failed",
+      outcome: "failure",
+      reason: "exit_nonzero",
+      exitCode: 2,
+    },
+  );
+  render(<EntityRef view={view} id="job_legacy" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  expect(screen.getByRole("tooltip").textContent).toContain("Command failed");
+});
+
 test("falls back to the shared render-context entity map", () => {
   vi.useFakeTimers();
   const view = jobView("job_context", "From context");
   render(
-    <TranscriptRenderProvider entities={new Map([["job_context", view]])}>
-      <EntityRef id="job_context" />
+    <TranscriptRenderProvider sessionRef="local:s" entities={new Map([[view.id, view]])}>
+      <EntityRef kind="job" id="job_context" />
     </TranscriptRenderProvider>,
   );
 
@@ -378,7 +412,7 @@ test("an explicit view takes precedence over the context entity map", () => {
   const explicit = jobView("job_same", "Explicit view");
   const contextual = jobView("job_same", "Context view");
   render(
-    <TranscriptRenderProvider entities={new Map([["job_same", contextual]])}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={new Map([[contextual.id, contextual]])}>
       <EntityRef id="job_same" view={explicit} />
     </TranscriptRenderProvider>,
   );
@@ -412,7 +446,7 @@ test("delegate card carries status, mandate, agent/model, duration, and usage", 
   expect(text).toContain("reviewer");
   expect(text).toContain("gpt-test");
   expect(text).toContain("2s");
-  expect(text).toContain("↑1k ↓300");
+  expect(text).toContain("↑1.2K ↓300");
 });
 
 // A blank resolvedModel is absence, not a model name: the card falls through
@@ -496,4 +530,57 @@ test.each([
   const text = focusCard().textContent;
   expect(text).not.toContain("Source");
   expect(text).not.toContain("this session");
+});
+
+test("partial supplied usage renders without inventing absent counters", () => {
+  vi.useFakeTimers();
+  render(<EntityRef view={delegateView("dlg_partial", {}, { usage: { outputTokens: 300 } })} id="dlg_partial" />);
+  const card = focusCard();
+  expect(card.textContent).toContain("↓300");
+  expect(card.textContent).not.toContain("↑0");
+});
+
+test("context owner selects the authoritative action among identical logical IDs on different sources", () => {
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  const own = jobView(id, "selected", {}, { ownerRef: "local:s", transcriptRef: "job:own" });
+  const other = jobView(id, "other", {}, { ownerRef: "remote:other", transcriptRef: "job:other" });
+  render(
+    <TranscriptRenderProvider
+      sessionRef="local:s"
+      entities={
+        new Map([
+          [own.id, own],
+          [other.id, other],
+        ])
+      }
+    >
+      <EntityRef id={id} />
+    </TranscriptRenderProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open job log" }));
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual([
+    expect.objectContaining({ params: { ref: "job:own", parentRef: "local:s" } }),
+  ]);
+});
+
+test("ambiguous delegate evidence for one owner leaves the logical ID without an action", () => {
+  const id = "dlg_034HQ2kSDXfKFq1mm3idL1";
+  const first = delegateView(id, {}, { transcriptRef: "remote:first" }),
+    second = delegateView(id, {}, { transcriptRef: "remote:second" });
+  render(
+    <TranscriptRenderProvider
+      sessionRef="local:s"
+      entities={
+        new Map([
+          [first.id, first],
+          [second.id, second],
+        ])
+      }
+    >
+      <EntityRef id={id} />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.getByText(id)).toBeTruthy();
+  expect(screen.queryByTestId("entity-trigger")).toBeNull();
+  expect(screen.queryByRole("button")).toBeNull();
 });

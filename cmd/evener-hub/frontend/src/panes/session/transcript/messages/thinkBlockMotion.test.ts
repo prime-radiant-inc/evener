@@ -66,9 +66,10 @@ test("the motion is a fade, not a slide or a bounce", () => {
 // eyebrow both render at --font-size-body (the eyebrow joined with the draft
 // restyle, mockup #4: a caption-sized label was quiet through size, which the
 // design law bans). The live and settled BODIES both render through the
-// Markdown widget, whose root defaults to --font-size-body (see
-// widgets/markdown/markdown.module.css), so neither body may re-declare a
-// smaller size - quiet there comes from --markdown-ink alone.
+// Markdown widget, whose root composes with its host (1em fallback, see
+// widgets/markdown/markdown.module.css), so both inherit the ambient body
+// step - neither body may re-declare a size - quiet there comes from
+// --markdown-ink alone.
 test("settled and live thinking render at body size, not caption/ui", () => {
   const text = css();
   expect(text).toMatch(/\.summary\s*\{[^}]*font-size:\s*var\(--font-size-body\)/);

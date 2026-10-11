@@ -1,9 +1,7 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { ClientProvider, useClient } from "./clientContext";
-
-afterEach(cleanup);
 
 function Consumer() {
   const client = useClient();

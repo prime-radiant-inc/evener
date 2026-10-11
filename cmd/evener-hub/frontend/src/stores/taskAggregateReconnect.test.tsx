@@ -1,7 +1,7 @@
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { TasksPanel } from "../panes/session/chrome/TasksPanel";
 import { connectionStore } from "./connection";
 import { resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
@@ -51,19 +51,6 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetThreadsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
-  // The beforeEach above only resets threadsStore BEFORE each test. The test
-  // below calls ensureThread("ref_tasks") directly (not through a mounted
-  // pane's own lifecycle), so nothing ever calls releaseThread for it -
-  // without this, "ref_tasks" stays refcounted after the LAST test, and
-  // under isolate:false every later file's own connectionStore.connect()
-  // re-triggers threads.ts's rewireClient, which re-issues a stray
-  // thread/read for "ref_tasks" against whatever client that later file just
-  // connected.
   resetThreadsStoreForTests();
 });
 

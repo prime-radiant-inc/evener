@@ -18,15 +18,18 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/appwire"
 )
 
 func TestRetirementAcceptedStartBlocksBeforeRunnerWake(t *testing.T) {
+	t.Parallel()
 	testRetirementPendingStart(t, false)
 }
 
 func TestRetirementClaimedStartBlocksBeforeTurn(t *testing.T) {
+	t.Parallel()
 	testRetirementPendingStart(t, true)
 }
 
@@ -106,6 +109,7 @@ func retirementRefusalRoot(t *testing.T) (*Session, *RetirementController) {
 }
 
 func TestRetirementClaimFirstPreservesOriginalJournal(t *testing.T) {
+	t.Parallel()
 	input := []appwire.InputItem{{Type: "text", Text: "opaque-input"}}
 	cases := []struct {
 		name   string
@@ -174,6 +178,7 @@ func TestRetirementClaimFirstPreservesOriginalJournal(t *testing.T) {
 }
 
 func TestRetirementEffectRefusalReportsError(t *testing.T) {
+	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
 	effects, ok := any(root).(interface {
 		SetReasoningEffort(string) error
@@ -196,6 +201,7 @@ func TestRetirementEffectRefusalReportsError(t *testing.T) {
 }
 
 func TestRetirementAdmissionDirectEffects(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		effect func(*Session) error
@@ -239,6 +245,7 @@ func TestRetirementAdmissionDirectEffects(t *testing.T) {
 }
 
 func TestRetirementAdmissionNotificationStaysPending(t *testing.T) {
+	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
 	if root.enqueueSystemNotification("opaque-notice") {
 		t.Fatal("refused notification was acknowledged")
@@ -274,6 +281,7 @@ func (f *retirementBarrierFile) Write(data []byte) (int, error) {
 }
 
 func TestRetirementAdmissionFilesystemBarrier(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"start", "queue", "steer", "drain", "promote", "cancel", "interrupt", "pre-turn-claim"} {
 		t.Run(name, func(t *testing.T) {
 			root := newQueuePersistTestSession(t, t.TempDir())
@@ -424,6 +432,7 @@ func TestRetirementAdmissionFilesystemBarrier(t *testing.T) {
 }
 
 func TestRetirementStartReplayExecutesOnce(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	entered, resume := make(chan struct{}), make(chan struct{})
@@ -533,6 +542,7 @@ func TestRetirementStartReplayExecutesOnce(t *testing.T) {
 }
 
 func TestRetirementClaimFirstPrivateInputHandoffs(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"queue-claim", "steering-carrier-claim", "turn-owned-steer", "durable-caller-steer"} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := retirementRefusalRoot(t)
@@ -590,6 +600,7 @@ func drainRetirementTestEvents(root *Session) []events.EventKind {
 }
 
 func TestRetirementAdmissionFollowUp(t *testing.T) {
+	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
 	enqueue, ok := any(root).(interface{ FollowUp(string) error })
 	if !ok {
@@ -605,6 +616,7 @@ func TestRetirementAdmissionFollowUp(t *testing.T) {
 }
 
 func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	if err := root.FollowUp("opaque-followup"); err != nil {
@@ -624,6 +636,7 @@ func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
 }
 
 func TestRetirementReasoningPersistenceError(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	root.cfg.testOnly.metaFS = afero.NewReadOnlyFs(afero.NewOsFs())
@@ -633,4 +646,111 @@ func TestRetirementReasoningPersistenceError(t *testing.T) {
 	if root.ReasoningEffort() != "high" {
 		t.Fatal("setter must report save failure after mutation")
 	}
+}
+
+// The serve loop probes for a runnable durable start after every message it
+// processes, including right after the turn that just settled. A probe that
+// finds nothing to run is not admitted work: it must leave the settled instant,
+// and so the idle deadline, where the settlement put it. Counting it as work
+// restarted the interval at whenever the probe happened to run, which under
+// load was after virtual time had already moved on.
+func TestRetirementIdleStartProbeKeepsInterval(t *testing.T) {
+	t.Parallel()
+	root, c, settled := newSettledRetirementRoot(t)
+	if _, processed, err := root.ProcessClientMutationStart(context.Background(), nil); err != nil || processed {
+		t.Fatalf("idle probe = processed %v, err %v; want nothing to run", processed, err)
+	}
+	if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
+		t.Fatalf("idle probe moved the settled instant from %v to %v; it is not admitted work", settled, got)
+	}
+}
+
+// A queued-input wake that finds no queued message and no user steering is the
+// same kind of no-op as an idle start probe: it must not restart the idle
+// interval either. Wakes are unconditional and coalesce, so one can arrive
+// after the work it was sent for has already run.
+func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
+	t.Parallel()
+	root, c, settled := newSettledRetirementRoot(t)
+	if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
+		t.Fatalf("idle wake = processed %v, err %v; want nothing to run", processed, err)
+	}
+	if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
+		t.Fatalf("idle wake moved the settled instant from %v to %v; it is not admitted work", settled, got)
+	}
+}
+
+// User steering that a wake cannot carry -- parked by a failed attempt, or held
+// by a Stop -- makes the wake a no-op just as an empty queue does, so it must
+// not restart the idle interval either. The steer is a real durable one that a
+// wake would carry but for the block, so each case fails if its own gate goes.
+func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		block func(t *testing.T, root *Session)
+	}{
+		{"parked", func(_ *testing.T, root *Session) { root.parkSteering() }},
+		{"held", func(t *testing.T, root *Session) {
+			if err := root.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+				snapshot.SteeringHeld = true
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, c, _ := newSettledRetirementRoot(t)
+			if _, err := root.AcceptClientMutationSteer(appwire.TurnSteerParams{
+				ClientMutationID: "retirement-uncarriable-steer",
+				Input:            []appwire.InputItem{{Type: "text", Text: "opaque-steer"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !root.hasPendingUserInputToRun() {
+				t.Fatal("an accepted idle steer is not work for a wake; the block below would prove nothing")
+			}
+			tc.block(t, root)
+			// Accepting the steer was admitted work; settle again after it.
+			settled := settleRetirement(c)
+			if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
+				t.Fatalf("wake = processed %v, err %v; want the steer left for the user", processed, err)
+			}
+			if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
+				t.Fatalf("wake moved the settled instant from %v to %v; it ran nothing", settled, got)
+			}
+		})
+	}
+}
+
+// newSettledRetirementRoot returns an idle root with its client mutation store
+// open, attached to a controller whose settled instant is already recorded, so
+// the call under test is the only thing that can move it.
+func newSettledRetirementRoot(t *testing.T) (*Session, *RetirementController, time.Time) {
+	t.Helper()
+	root := newQueuePersistTestSession(t, t.TempDir())
+	t.Cleanup(root.Close)
+	if err := root.ensureClientMutationStore(); err != nil {
+		t.Fatal(err)
+	}
+	clk := agenttest.NewFakeClock()
+	c, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	return root, c, settleRetirement(c)
+}
+
+// settleRetirement records the controller's settled instant the way Run's
+// evaluate does, and returns it.
+func settleRetirement(c *RetirementController) time.Time {
+	settled := c.clock.Now()
+	c.mu.Lock()
+	c.eligibleSince = settled
+	c.mu.Unlock()
+	return settled
 }

@@ -312,23 +312,6 @@ func jcpOutputLifecycle(t *testing.T, root string, r *jcpReader) {
 	if total, start, err := OutputFileStats(publicPath); err != nil || total != int64(len("public ready\n")) || start != 0 {
 		t.Fatalf("OutputFileStats = %d/%d/%v", total, start, err)
 	}
-	for _, call := range []func() ([]Match, error){
-		func() ([]Match, error) { return GrepFileLimit(publicPath, regexp.MustCompile(`public`), 128, 0, 128) },
-		func() ([]Match, error) {
-			return GrepFileLimitAt(publicPath, regexp.MustCompile(`public`), 128, 0, 128, 10)
-		},
-	} {
-		matches, err := call()
-		if err != nil || len(matches) != 1 {
-			t.Fatalf("public grep = %#v/%v", matches, err)
-		}
-	}
-	if _, err := GrepFileLimit(publicPath, re, -1, 0, 8); !errors.Is(err, ErrInvalidLimit) {
-		t.Fatalf("GrepFileLimit negative = %v", err)
-	}
-	if matches, err := GrepFileLimit(publicPath, re, 0, 0, 8); err != nil || matches != nil {
-		t.Fatalf("GrepFileLimit zero = %#v/%v", matches, err)
-	}
 	if err := RemoveOutputArtifacts(publicPath); err != nil {
 		t.Fatalf("RemoveOutputArtifacts: %v", err)
 	}
@@ -493,6 +476,12 @@ func jcpOutputErrorPaths(t *testing.T, root string) {
 		{"Tail seek", func(o *OutputStore) error { _, _, _, err := o.Tail(2); return err }, func(fs *jcpHookFS) {
 			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, seekErr: jcpInjectedErr} }
 		}},
+		{"Head seek", func(o *OutputStore) error { _, _, _, err := o.Head(2); return err }, func(fs *jcpHookFS) {
+			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, seekErr: jcpInjectedErr} }
+		}},
+		{"Grep seek", func(o *OutputStore) error { _, err := o.Grep(regexp.MustCompile(`ready`), 32); return err }, func(fs *jcpHookFS) {
+			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, seekErr: jcpInjectedErr} }
+		}},
 		{"Tail read", func(o *OutputStore) error { _, _, _, err := o.Tail(2); return err }, func(fs *jcpHookFS) {
 			fs.wrap = func(f afero.File) afero.File { return &jcpHookFile{File: f, readErr: jcpInjectedErr} }
 		}},
@@ -516,7 +505,7 @@ func jcpOutputErrorPaths(t *testing.T, root string) {
 		jcpRequireError(t, operation.label, operation.call(o))
 	}
 	retainedTail := jcpReadOutput(t, []byte("ready\n"), func(*jcpHookFS) {})
-	retainedTail.retainedStart = 1
+	retainedTail.retainedStart, retainedTail.visibleStart = 1, 1
 	if _, _, truncated, err := retainedTail.Tail(32); err != nil || !truncated {
 		t.Fatalf("retained Tail = %v/%v", truncated, err)
 	}
@@ -696,9 +685,6 @@ func jcpOutputErrorPaths(t *testing.T, root string) {
 		t.Fatal("full hash accepted a read failure")
 	}
 
-	if _, err := GrepFileLimitAt(filepath.Join(root, "missing.log"), regexp.MustCompile(`ready`), 4, 0, 4, 0); err == nil {
-		t.Fatal("GrepFileLimitAt accepted a missing file")
-	}
 	if _, err := grepReaderLimit(bufio.NewReader(jcpErrorReader{}), regexp.MustCompile(`ready`), 16, 0, 16); err == nil {
 		t.Fatal("grepReaderLimit accepted a reader failure")
 	}

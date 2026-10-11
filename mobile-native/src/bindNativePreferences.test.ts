@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type {
-	AnyNotification,
-	InitializeResponse,
-} from "@evener/appwire-client";
-import {
-	bindNativePreferences,
-	type PreferencesClient,
-} from "./bindNativePreferences";
+import type { AnyNotification, InitializeResponse } from "@evener/appwire-client";
+import { bindNativePreferences, type PreferencesClient } from "./bindNativePreferences";
 import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
 import type { NativePreferences } from "./nativePreferences";
 
@@ -43,8 +37,10 @@ function fixture() {
 	const storage = nativeTranscriptDrafts("hub", {
 		get: () => null,
 		set: () => {},
+		insertIfAbsent: () => false,
 		delete: () => {},
 		deleteIf: () => false,
+		replaceIf: () => false,
 		createId: () => "test",
 	});
 	const hello = {

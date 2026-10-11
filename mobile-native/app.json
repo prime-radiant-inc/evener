@@ -2,7 +2,7 @@
   "expo": {
     "name": "Evener",
     "slug": "evener-native",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "orientation": "portrait",
     "icon": "./assets/evener-icon.png",
     "userInterfaceStyle": "automatic",
@@ -45,10 +45,21 @@
       ],
       "expo-sqlite",
       [
+        "expo-font",
+        {
+          "fonts": [
+            "./node_modules/@expo-google-fonts/source-serif-4/400Regular/SourceSerif4_400Regular.ttf",
+            "./node_modules/@expo-google-fonts/source-serif-4/400Regular_Italic/SourceSerif4_400Regular_Italic.ttf",
+            "./node_modules/@expo-google-fonts/source-serif-4/600SemiBold/SourceSerif4_600SemiBold.ttf",
+            "./node_modules/@expo-google-fonts/source-serif-4/600SemiBold_Italic/SourceSerif4_600SemiBold_Italic.ttf"
+          ]
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Choose images to attach to your Evener conversations.",
-          "cameraPermission": false,
+          "cameraPermission": "Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
           "microphonePermission": false
         }
       ],
@@ -59,6 +70,15 @@
           "image": "./assets/evener-icon.png",
           "imageWidth": 120,
           "resizeMode": "contain"
+        }
+      ],
+      "expo-web-browser",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
         }
       ]
     ],

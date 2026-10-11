@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"strings"
 	"testing"
@@ -19,12 +18,11 @@ import (
 // precisely so a test can do this; it is the only way to reach that path,
 // because the templates it renders are compiled into the binary.
 func forceSystemPromptRenderFailure(t *testing.T) {
-	t.Helper()
-	old := renderEmbeddedSystemPrompt
-	renderEmbeddedSystemPrompt = func(*sectionResolver, embed.FS, string, string, promptData) (string, []promptSource, error) {
-		return "", nil, errors.New("forced render failure")
+	old := executeSystemPromptTemplate
+	executeSystemPromptTemplate = func(promptData) (string, error) {
+		return "", errors.New("forced render failure")
 	}
-	t.Cleanup(func() { renderEmbeddedSystemPrompt = old })
+	t.Cleanup(func() { executeSystemPromptTemplate = old })
 }
 
 // awaitOrFail runs fn and fails loudly if it has not returned within the
@@ -226,6 +224,16 @@ func TestSwapEnvAndRefreshReportsRenderFailureWithoutSelfDeadlock(t *testing.T) 
 
 	select {
 	case ev := <-s.events:
+		changed, ok := ev.Data.(events.EnvironmentChangedData)
+		if ev.Kind != events.EventEnvironmentChanged || !ok || changed.WorkingDir != next.WorkingDirectory() {
+			t.Fatalf("installed cwd event = %#v, want EnvironmentChangedData for %q", ev, next.WorkingDirectory())
+		}
+	default:
+		t.Fatal("no installed cwd event emitted")
+	}
+
+	select {
+	case ev := <-s.events:
 		warning, ok := ev.Data.(events.WarningData)
 		if !ok {
 			t.Fatalf("emitted %T, want WarningData", ev.Data)
@@ -235,5 +243,10 @@ func TestSwapEnvAndRefreshReportsRenderFailureWithoutSelfDeadlock(t *testing.T) 
 		}
 	default:
 		t.Fatal("no warning emitted: the render failure was swallowed")
+	}
+	select {
+	case ev := <-s.events:
+		t.Fatalf("unexpected event after installed cwd and warning: %#v", ev)
+	default:
 	}
 }

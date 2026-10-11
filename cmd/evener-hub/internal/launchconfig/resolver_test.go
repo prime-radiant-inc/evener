@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/identifier"
 )
 
@@ -54,6 +56,43 @@ func TestResolveUserOnlyMergesGlobalAndLaunch(t *testing.T) {
 	// No directory means no project identity and no repo status.
 	if resolved.Project != (identifier.Project{}) || resolved.Repo != nil {
 		t.Fatalf("Project/Repo = %+v/%+v, want both unset", resolved.Project, resolved.Repo)
+	}
+}
+
+// TestResolveUserOnly_EmptyRootIgnoresRelativeLaunchToml pins the hub's
+// security contract: with no user config root, ResolveUserOnly must not read a
+// launch.toml resolved against the process working directory. "" joined with
+// "launch.toml" is the relative "launch.toml", exactly the file a repository
+// could supply.
+func TestResolveUserOnly_EmptyRootIgnoresRelativeLaunchToml(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	if err := afero.WriteFile(fs, "launch.toml", []byte("model = \"cwd-controlled\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveUserOnlyFS(fs, "", Layer{})
+	if err != nil {
+		t.Fatalf("resolveUserOnlyFS: %v", err)
+	}
+	if resolved.Effective.Model != "" {
+		t.Fatalf("Model = %q; an empty root must not read a cwd-relative launch.toml", resolved.Effective.Model)
+	}
+}
+
+// TestResolveWithProject_EmptyRootIgnoresRelativeLegacyProjectToml pins the
+// project-layer half of the same contract: the legacy project layer is stored
+// under the user config root, so "" must not resolve it against the process
+// working directory.
+func TestResolveWithProject_EmptyRootIgnoresRelativeLegacyProjectToml(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	if err := afero.WriteFile(fs, filepath.Join("projects", "p1", "launch.toml"), []byte("model = \"legacy-controlled\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveFSWithProject(fs, "", t.TempDir(), identifier.Project{ID: "p1"}, Layer{})
+	if err != nil {
+		t.Fatalf("resolveFSWithProject: %v", err)
+	}
+	if resolved.Effective.Model != "" {
+		t.Fatalf("Model = %q; an empty root must not read a cwd-relative legacy project layer", resolved.Effective.Model)
 	}
 }
 

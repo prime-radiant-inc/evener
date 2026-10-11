@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -115,7 +116,7 @@ func TestTerminalCatchupRejectsForwardedNestedTarget(t *testing.T) {
 
 	// The ownership rejection must hold even though the record is terminal: a
 	// nested-owned target is not catch-up-eligible.
-	if _, terminal, err := jm.terminalWatchTargetStatus("job_nested"); err != nil || terminal {
+	if _, _, terminal, err := jm.terminalWatchTargetStatus("job_nested"); err != nil || terminal {
 		t.Fatalf("terminalWatchTargetStatus(nested-owned terminal) = terminal:%v err:%v, want terminal:false", terminal, err)
 	}
 
@@ -307,6 +308,7 @@ func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsImpossibleConcreteJobEventWatches(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "watched"})
 	if err != nil {
@@ -754,7 +756,7 @@ func TestJobManagerCloseDurablyClearsActiveWatches(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 
-	if err := jm.closeRuntimeState(); err != nil {
+	if err := jm.closeRuntimeState(context.Background()); err != nil {
 		t.Fatalf("close runtime state: %v", err)
 	}
 	t.Cleanup(func() { _ = jm.closeStoreOnly() })

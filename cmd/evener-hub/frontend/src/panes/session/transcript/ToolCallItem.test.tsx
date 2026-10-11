@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 
-import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import type { ThreadItem } from "@evener/appwire-client";
+import { hydrateThread, makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import memoryCalls from "../../../../../../../agent/testdata/toolwire/memory.json?raw";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
   createTranscriptRenderContext,
@@ -17,12 +20,12 @@ import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
-import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
+import "./tools/shellTool"; // registers the real "shell" descriptor (failed() from the exit code)
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import * as paneActions from "../../../shell/paneActions";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
@@ -36,6 +39,7 @@ afterEach(() => {
   resetDisclosureStoreForTests();
   resetSubagentModuleStoreForTests();
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
@@ -43,6 +47,38 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
+
+test.each(["memory_read", "memory_search"])(
+  "renders real %s output and its artifact route through the generic body",
+  (name) => {
+    const fixture = JSON.parse(memoryCalls) as { cwd: string; items: ThreadItem[] };
+    const model = hydrateThread(
+      {
+        thread: wireThread("ref-memory", {
+          cwd: fixture.cwd,
+          turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: fixture.items }],
+        }),
+      },
+      "ref-memory",
+      0,
+    );
+    const recordedTurn = model.turns[0];
+    const step = recordedTurn?.items.find((entry) => entry.callId === `call_${name}`);
+    if (!step || !recordedTurn) throw new Error(`missing recorded ${name}`);
+    const ref = step.output?.match(/artifact:[a-zA-Z0-9]+/)?.[0];
+    expect(ref).toBeDefined();
+    renderAtLevel(
+      makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+      "test:memory",
+      <ToolCallItem item={step} turn={recordedTurn} live={false} />,
+    );
+    const body = screen.getByTestId("tool-call-body");
+    expect(body.textContent).toContain("opaque-delivery-040-");
+    expect(body.textContent).toContain(ref);
+    fireEvent.click(within(body).getByRole("button", { name: /Show \d+ earlier lines/ }));
+    expect(body.textContent).toContain("opaque-delivery-001-");
+  },
+);
 
 test.each(["running", "completed"])(
   "a historical %s receipt is not current lifecycle without an owner projection",
@@ -158,23 +194,39 @@ const intentConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "inten
 
 // One provider wrapper for the verbosity-level renders below; the two named
 // renderers keep each test reading in the level it is about.
-function renderAtLevel(config: TranscriptDisplayConfigV1, disclosureScope: string, node: ReactElement) {
+interface SourceFixture {
+  thread: ThreadModel;
+  sourcePaneId: string;
+}
+
+function renderAtLevel(
+  config: TranscriptDisplayConfigV1,
+  disclosureScope: string,
+  node: ReactElement,
+  source?: SourceFixture,
+) {
   return render(
-    <TranscriptRenderProvider config={config} surface="readOnly" disclosureScope={disclosureScope}>
+    <TranscriptRenderProvider
+      config={config}
+      surface="readOnly"
+      disclosureScope={disclosureScope}
+      thread={source?.thread}
+      sourcePaneId={source?.sourcePaneId}
+    >
       {node}
     </TranscriptRenderProvider>,
   );
 }
 
-function renderTools(node: ReactElement) {
-  return renderAtLevel(toolsConfig, "test:tools", node);
+function renderTools(node: ReactElement, source?: SourceFixture) {
+  return renderAtLevel(toolsConfig, "test:tools", node, source);
 }
 
 // Intent level (toolCalls=false) collapses every intent-bearing row's summary
 // line, leaving only the stated rationale - the view in which an open
 // affordance must NOT appear, because there is no tool-call line to ride.
-function renderIntentLevel(node: ReactElement) {
-  return renderAtLevel(intentConfig, "test:intent", node);
+function renderIntentLevel(node: ReactElement, source?: SourceFixture) {
+  return renderAtLevel(intentConfig, "test:intent", node, source);
 }
 
 // The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
@@ -199,7 +251,7 @@ test("falls back to the default descriptor (raw output body) for an unregistered
       live={false}
     />,
   );
-  expect(screen.getByText("tci_unregistered")).toBeTruthy(); // default summary = tool name
+  expect(screen.getByText("Used tci unregistered")).toBeTruthy(); // the tool in words, never its raw name
   // At activity level the body auto-expands (expandByDefault=true).
   const body = screen.getByTestId("tool-call-body");
   const blocks = body.querySelectorAll("pre > code");
@@ -346,7 +398,7 @@ test("suppress returning false renders the row normally", () => {
 // --- expand/collapse: collapsed by default, descriptor.autoExpand can pop
 // it open at settle (parity-m4-transcript.md's own Highlights: "every tool
 // row, including diffs, starts collapsed" - the default-expanded states are
-// a failed shell call and an image read whose picture IS its output) -------
+// an image read whose picture IS its output and a delegate card) ----------
 
 test("a row with a body starts collapsed", () => {
   registerToolRenderer({ match: "tci_collapsed", summary: () => "s", body: () => <div>body text</div> });
@@ -478,9 +530,9 @@ test("the same tool item id has independent disclosure state in different sessio
   expect(rowIsOpen(rows[1]!)).toBe(false);
 });
 
-test("shell: a failing exit code auto-expands the row once it settles (the real parseShellExitCode heuristic)", () => {
+test("shell: a failing exit code marks the row failed but does not auto-expand it (the real parseShellExitCode heuristic)", () => {
   const output = "stdout\n[exit 1]";
-  render(
+  renderTools(
     <ToolCallItem
       item={item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), output })}
       turn={turn}
@@ -488,7 +540,9 @@ test("shell: a failing exit code auto-expands the row once it settles (the real 
     />,
   );
   const details = screen.getByTestId("tool-call-item");
-  expect(rowIsOpen(details)).toBe(true);
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+  expect(rowIsOpen(details)).toBe(false);
 });
 
 test("shell: a clean exit does not auto-expand", () => {
@@ -506,12 +560,12 @@ test("shell: a clean exit does not auto-expand", () => {
   expect(rowIsOpen(details)).toBe(false);
 });
 
-test("manual collapse of an auto-expanded row sticks (wins over autoExpand)", () => {
+test("manual collapse of a row opened by the level default sticks", () => {
   const output = "stdout\n[exit 1]";
   const failing = item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), output });
   render(<ToolCallItem item={failing} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
-  expect(rowIsOpen(details)).toBe(true); // auto-expanded at settle
+  expect(rowIsOpen(details)).toBe(true); // opened by the activity level default
 
   toggleRow(details);
   expect(rowIsOpen(details)).toBe(false); // the user's own collapse wins
@@ -585,9 +639,9 @@ test("outputImages render even for a body-less descriptor (the row still becomes
 });
 
 // --- ItemModel.error rendering: a failed/denied tool call surfaces its
-// error text, force-expands, and earns a failure marker (parity-m4 §11:261
-// "only failure earns the eye"; §2:100 renderer-tools.js:589-594 force-open
-// on error). Keyed off item.error PRESENCE as primary (present on old-daemon
+// error text and earns a failure marker (parity-m4 §11:261 "only failure
+// earns the eye"). It does not force-expand; the reader opens the row to read
+// the error. Keyed off item.error PRESENCE as primary (present on old-daemon
 // reloads whose status is still "completed"), with the honest status:"failed"
 // as corroboration (appwire_projection.go:438 SettledToolStatus). ----------
 
@@ -603,10 +657,13 @@ test("a settled tool call carrying item.error surfaces the error text", () => {
   expect(screen.getByText("permission denied by sandbox")).toBeTruthy();
 });
 
-test("an errored tool row force-expands even for a descriptor with no autoExpand", () => {
+test("an errored tool row at tools level stays collapsed, then opens on the reader's click (no failure auto-open)", () => {
   registerToolRenderer({ match: "tci_err_expand", summary: () => "s", body: () => <div>body text</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_err_expand", error: "boom" })} turn={turn} live={false} />);
+  renderTools(<ToolCallItem item={item({ toolName: "tci_err_expand", error: "boom" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(rowIsOpen(details)).toBe(false);
+  expandRow();
   expect(rowIsOpen(details)).toBe(true);
 });
 
@@ -638,23 +695,27 @@ test("a descriptor's own failed() predicate marks the row even with no wire erro
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
 });
 
-test("a descriptor's detail() becomes the row's hover title, never its headline text", () => {
-  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false", detail: () => "exit 1" });
+test("a descriptor's summary stays the row's only hover-visible text - no row-level native title", () => {
+  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false" });
   render(<ToolCallItem item={item({ toolName: "tci_detail" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe("exit 1");
+  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe(null);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
 });
 
-test("a body-less descriptor still becomes an expandable details when the call errored (shows the error)", () => {
+test("a body-less errored row is still an expandable disclosure, collapsed until the reader opens it to read the error", () => {
   registerToolRenderer({ match: "tci_err_no_body", summary: () => "s" });
-  render(<ToolCallItem item={item({ toolName: "tci_err_no_body", error: "denied" })} turn={turn} live={false} />);
+  renderTools(<ToolCallItem item={item({ toolName: "tci_err_no_body", error: "denied" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(false);
+  expect(screen.queryByText("denied")).toBeNull();
+  expandRow();
   expect(rowIsOpen(details)).toBe(true);
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
 test("an expanded shell row swaps the one-line command for a placeholder - the body's block stays the single copy", () => {
-  // A nonzero exit auto-expands the row on settle (descriptor.autoExpand).
+  // At activity level the body opens through the config default, so an open
+  // shell row swaps its summary for the placeholder.
   render(
     <ToolCallItem
       item={item({
@@ -712,12 +773,138 @@ test("an expanded row of a descriptor WITHOUT summaryWhenExpanded keeps its summ
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
 });
 
+test("a function-form summaryWhenExpanded derives its swap text from the item", () => {
+  // The task card's expanded line recaps THIS call's change, so the swap
+  // text must be derivable per item, the way summary() itself is - the
+  // static string form still serves a descriptor whose placeholder is fixed
+  // (shell's "Ran a shell command").
+  registerToolRenderer({
+    match: "tci_summary_fn",
+    summary: () => "did a thing",
+    summaryWhenExpanded: (item) => `did a thing to ${item.id}`,
+    body: () => <div>body text</div>,
+    autoExpand: () => true,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_summary_fn" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing to item_1");
+});
+
+test("a foldByDefault descriptor settles folded even at activity level, and opens on click", () => {
+  // Activity (the app's default level) force-expands every body through the
+  // config default, so a card whose collapsed line already carries the news -
+  // the task card - needs a per-descriptor opt-out to land as one quiet
+  // line. The reader's own toggle still opens it, and it still wins afterward
+  // (the shared disclosure store), exactly like any other row.
+  registerToolRenderer({
+    match: "tci_fold_by_default",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_by_default" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+});
+
+test("foldByDefault still settles closed when the descriptor also sets autoExpand", () => {
+  // The two flags answer different questions: foldByDefault is the posture
+  // claim ("the collapsed line carries the news"), autoExpand the
+  // settle-moment nudge. The posture claim wins - a descriptor setting
+  // both must land folded, or "the fallback stays closed at every level"
+  // has an exception and the quiet-line contract is half-true.
+  registerToolRenderer({
+    match: "tci_fold_auto",
+    summary: () => "the news",
+    foldByDefault: true,
+    autoExpand: () => true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_auto" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+});
+
+test("an errored tool row stays folded under a foldByDefault descriptor (the reader opens it to read the error)", () => {
+  // foldByDefault's quiet-line posture holds for a failure too: the glyph and
+  // data-attention carry the news, and the body opens only on the reader's own
+  // toggle - a failure is attribution, not an auto-open.
+  registerToolRenderer({
+    match: "tci_fold_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(
+    <ToolCallItem item={item({ toolName: "tci_fold_fail", error: "task 9 not found" })} turn={turn} live={false} />,
+  );
+  const row = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(row)).toBe(false);
+  expect(row.getAttribute("data-failed")).toBe("true");
+  expandRow();
+  expect(screen.getByText("task 9 not found")).toBeTruthy();
+});
+
+test("a row whose failure is corroborated after it settled stays closed (a failure is not an auto-open)", () => {
+  // `failed` is read reactively (like superseded), not only stashed at the
+  // settle transition: a row that settled clean but later turns out to have
+  // failed gains the glyph and data-attention the moment the failure is known -
+  // but never an open body.
+  registerToolRenderer({
+    match: "tci_late_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  const view = render(<ToolCallItem item={item({ toolName: "tci_late_fail" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  view.rerender(
+    <ToolCallItem item={item({ toolName: "tci_late_fail", error: "late boom" })} turn={turn} live={false} />,
+  );
+  const row = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(row)).toBe(false);
+  expect(row.getAttribute("data-failed")).toBe("true");
+  expandRow();
+  expect(screen.getByText("late boom")).toBeTruthy();
+});
+
+test("a foldByDefault descriptor stays folded under the full preset's open baseline, and still opens on click", () => {
+  // Full is the strongest force-open the app has: entering the level
+  // establishes an open disclosure baseline for the whole scope, and only an
+  // explicit store entry outranks a baseline. foldByDefault is the
+  // descriptor's claim that its collapsed line already carries the news, so
+  // its posture must hold there too - settled folded, with the reader's own
+  // click still winning (the explicit entry beats everything).
+  registerToolRenderer({
+    match: "tci_fold_full",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+    "tci_fold_full_scope",
+    <ToolCallItem item={item({ toolName: "tci_fold_full" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+});
+
 test('honest status:"failed" corroborates a failure even with no error text', () => {
   registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);
+  renderTools(
+    <ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />,
+  );
   const details = screen.getByTestId("tool-call-item");
   expect(details.getAttribute("data-failed")).toBe("true");
-  expect(rowIsOpen(details)).toBe(true);
+  // The honest status marks the row; it does not open it.
+  expect(rowIsOpen(details)).toBe(false);
 });
 
 test('old-daemon reload: error present but status still "completed" is treated as failed (error presence is primary)', () => {
@@ -767,16 +954,17 @@ test("an empty-string error is not a failure (the wire only stamps failed when e
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-// --- kata hgm1: a self-corrected preval-only failure (never reached real
-// execution) collapses once the model's next call to the same tool
-// succeeds, but is still marked failed and reachable - "only failure earns
-// the eye" is untouched for every real execution failure/denial. ----------
+// --- failures settle collapsed, like any other row -------------------------
+// A real execution failure/denial and a self-corrected preval-only bounce are
+// alike: both are marked failed (glyph + data-failed) and reachable, and
+// neither auto-opens. At a level whose expand-details default is off (tools),
+// every one of them starts collapsed and opens only on the reader's toggle.
 
 function threadWith(items: ItemModel[]): ThreadModel {
   return { turns: [{ id: "t1", status: "completed", items }] } as unknown as ThreadModel;
 }
 
-test("a preval-only failure superseded by a later same-tool success starts collapsed", () => {
+test("a failed row stays collapsed at tools level and keeps its failure marker, whichever call follows", () => {
   registerToolRenderer({ match: "tci_preval_ok", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -793,19 +981,17 @@ test("a preval-only failure superseded by a later same-tool success starts colla
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  // At activity level the body auto-expands; use tools level to verify the
-  // superseded failure starts collapsed.
   renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
   const details = screen.getByTestId("tool-call-item");
   // Still attributable: the failure marker never goes away.
   expect(details.getAttribute("data-failed")).toBe("true");
   expect(screen.getByTestId("failure-glyph")).toBeTruthy();
-  // But no longer forced open, since the very next attempt succeeded.
+  // Never auto-open, whatever the later call did.
   expect(rowIsOpen(details)).toBe(false);
 });
 
-test("a preval-only failure with NO later success stays forced open (nothing corrected it)", () => {
+test("a preval-only failure with NO later success stays collapsed too (a failure is never an auto-open)", () => {
   registerToolRenderer({ match: "tci_preval_unfixed", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -815,12 +1001,12 @@ test("a preval-only failure with NO later success stays forced open (nothing cor
   });
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
 
-  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-test("a preval-only failure followed by ANOTHER preval-only failure stays forced open (recurring, not yet corrected)", () => {
+test("a preval-only failure followed by ANOTHER preval-only failure stays collapsed (recurring, not yet corrected)", () => {
   registerToolRenderer({ match: "tci_preval_recur", summary: () => "s" });
   const failed1 = item({
     id: "item_bad1",
@@ -839,12 +1025,12 @@ test("a preval-only failure followed by ANOTHER preval-only failure stays forced
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failed1, failed2])]]) });
 
-  render(<ToolCallItem item={failed1} turn={turn} live={false} sessionRef="ref_a" />);
+  renderTools(<ToolCallItem item={failed1} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-test("a REAL execution failure stays forced open even when the next same-tool call succeeds (shared contract untouched)", () => {
+test("a REAL execution failure stays collapsed even when the next same-tool call succeeds (the reader opens it)", () => {
   registerToolRenderer({ match: "tci_real_fail_then_ok", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -860,12 +1046,14 @@ test("a REAL execution failure stays forced open even when the next same-tool ca
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(rowIsOpen(details)).toBe(false);
 });
 
-test("supersession is reactive: a row already settled and rendered collapses once the correcting call lands", () => {
+test("a failure corroborated after settle does not open a row already rendered", () => {
   registerToolRenderer({ match: "tci_preval_reactive", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -875,10 +1063,8 @@ test("supersession is reactive: a row already settled and rendered collapses onc
   });
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
 
-  // At activity level the body auto-expands; use tools level so the only
-  // thing keeping the row open is the preval failure's autoExpand.
   renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 
   const okItem: ItemModel = {
     id: "item_ok",
@@ -894,7 +1080,7 @@ test("supersession is reactive: a row already settled and rendered collapses onc
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-test("a reader who manually reopened a superseded row keeps it open (explicit toggle still wins)", () => {
+test("a reader who opens a failed row keeps it open (explicit toggle wins)", () => {
   registerToolRenderer({ match: "tci_preval_manual_reopen", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -911,8 +1097,7 @@ test("a reader who manually reopened a superseded row keeps it open (explicit to
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  // At activity level the body auto-expands; use tools level so the
-  // superseded failure starts collapsed (autoDefault is false).
+  // At tools level the row starts collapsed; the reader's own toggle opens it.
   renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
@@ -921,8 +1106,10 @@ test("a reader who manually reopened a superseded row keeps it open (explicit to
   expect(rowIsOpen(details)).toBe(true);
 });
 
-test("a manual collapse of an errored row sticks (the reader's own choice wins over force-expand)", () => {
+test("a reader's collapse of an errored row sticks (the explicit toggle beats the level default)", () => {
   registerToolRenderer({ match: "tci_err_toggle", summary: () => "s", body: () => <div>body text</div> });
+  // At activity level the body opens through the config default, not failure;
+  // the reader's own collapse still wins afterward.
   render(<ToolCallItem item={item({ toolName: "tci_err_toggle", error: "boom" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(true);
@@ -954,86 +1141,161 @@ test("live -> settled transition applies autoExpand exactly once", () => {
 // openDocBeside with the cwd-relativized path. Non-file tools (grep/ls/glob)
 // opt out; out-of-cwd paths and a missing ref get no control. -------------
 
-function seedThreadCwd(ref: string, cwd: string): void {
-  threadsStore.setState({ threads: new Map([[ref, { ref, cwd, turns: [] } as unknown as ThreadModel]]) });
+function seedThreadCwd(ref: string, cwd: string): ThreadModel {
+  const thread = { ref, cwd, turns: [] } as unknown as ThreadModel;
+  threadsStore.setState({ threads: new Map([[ref, thread]]) });
+  return thread;
+}
+
+function seedSourceThread(ref: string, cwd: string): SourceFixture {
+  const thread = seedThreadCwd(ref, cwd);
+  const sourcePaneId = workspaceStore.getState().openPane("transcript", { ref });
+  return { thread, sourcePaneId };
+}
+
+function expectOpenedDocument(
+  sourcePaneId: string,
+  params: { session: string; path: string; kind: "file" | "image" },
+  reference: { path: string; cwd: string; readTarget: string; provenance: "absolute" },
+): void {
+  const panes = workspaceStore.getState().panes;
+  const source = panes.find((pane) => pane.id === sourcePaneId);
+  const documents = panes.filter((pane) => pane.type === "doc");
+  expect(documents).toHaveLength(1);
+  const document = documents[0];
+  if (!source || !document) throw new Error("actual opening action did not create source and document panes");
+  expect(document.params).toEqual(params);
+  expect(documentPaneState(document)?.origin).toBe(source);
+  expect(documentPaneState(document)?.reference).toEqual(reference);
 }
 
 test("a read_file card in the session cwd shows an Open beside control that opens the doc pane", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-file",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
-  expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "ref_a", path: "src/a.ts", kind: "file" } });
-  spy.mockRestore();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/a.ts", kind: "file" },
+    {
+      path: "src/a.ts",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/a.ts",
+      provenance: "absolute",
+    },
+  );
 });
 
 test("a read_file card OUTSIDE the session cwd shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-outside",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("a read_file card outside the session cwd renders no trailing-anchor wrapper", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-outside-wrapper",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByTestId("tool-row-trailing")).toBe(null);
 });
 
 test("a read_file card with no session ref shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
+  const context = createTranscriptRenderContext({
+    config: makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    surface: "readOnly",
+    thread: source.thread,
+    sourcePaneId: source.sourcePaneId,
+  });
   render(
-    <ToolCallItem
-      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
-      turn={turn}
-      live={false}
-    />,
+    <TranscriptRenderProvider value={context}>
+      <ToolCallItem
+        item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
+        turn={turn}
+        live={false}
+        thread={source.thread}
+        renderContext={context}
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
+});
+
+test("a read_file card with no owning source pane shows no Open beside control", () => {
+  resetThreadsStoreForTests();
+  const thread = seedThreadCwd("ref_a", "/home/proj");
+  const context = createTranscriptRenderContext({
+    config: makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    surface: "readOnly",
+    thread,
+  });
+  render(
+    <TranscriptRenderProvider value={context}>
+      <ToolCallItem
+        item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
+        turn={turn}
+        live={false}
+        sessionRef="ref_a"
+        thread={thread}
+        renderContext={context}
+      />
+    </TranscriptRenderProvider>,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("a grep card (a directory/pattern tool, not a single file) shows no Open beside control", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-grep",
     <ToolCallItem
       item={item({ toolName: "grep", argumentsJSON: JSON.stringify({ pattern: "foo", path: "/home/proj/src" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
 });
 
 test("clicking Open beside does not toggle the row open (the summary's own toggle is not fired)", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  const source = seedSourceThread("ref_a", "/home/proj");
   // At activity level the body auto-expands; use tools level to verify the
   // row starts collapsed and Open beside does not toggle it.
   renderTools(
@@ -1047,32 +1309,44 @@ test("clicking Open beside does not toggle the row open (the summary's own toggl
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
   expect(rowIsOpen(details)).toBe(false); // still collapsed - the open-beside click did not toggle it
-  vi.restoreAllMocks();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "a.ts", kind: "file" },
+    { path: "a.ts", cwd: "/home/proj", readTarget: "/home/proj/a.ts", provenance: "absolute" },
+  );
 });
 
 test("a read_file card on an image file opens beside as an image (DECISION C: kind:image)", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+    "test:open-beside-image",
     <ToolCallItem
       item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/assets/logo.png" }) })}
       turn={turn}
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
-  expect(spy).toHaveBeenCalledWith({
-    type: "doc",
-    params: { session: "ref_a", path: "assets/logo.png", kind: "image" },
-  });
-  spy.mockRestore();
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "assets/logo.png", kind: "image" },
+    {
+      path: "assets/logo.png",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/assets/logo.png",
+      provenance: "absolute",
+    },
+  );
 });
 
 // read_file's openBesideInline: the summary quotes the path verbatim between
@@ -1080,7 +1354,7 @@ test("a read_file card on an image file opens beside as an image (DECISION C: ki
 // name and the range it opens - not off at the end of the line.
 test("a read_file card's Open beside control rides inline between the file name and the line range", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
   // At activity level the body auto-expands (no head/tail split); use tools
   // level to test the collapsed summary's trailingAfter placement.
   renderTools(
@@ -1095,6 +1369,7 @@ test("a read_file card's Open beside control rides inline between the file name 
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   const button = screen.getByRole("button", { name: /open beside/i });
   const meta = screen.getByTestId("tool-row-summary-meta");
@@ -1107,6 +1382,17 @@ test("a read_file card's Open beside control rides inline between the file name 
   // is head+tail together - and the control sits right after it.
   expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe("Read /home/proj/src/widgets/sheet/sheet.test.tsx");
   expect(tail.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(button);
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/widgets/sheet/sheet.test.tsx", kind: "file" },
+    {
+      path: "src/widgets/sheet/sheet.test.tsx",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/widgets/sheet/sheet.test.tsx",
+      provenance: "absolute",
+    },
+  );
 });
 
 // The open affordance belongs to the tool-call summary line. When the row
@@ -1122,8 +1408,8 @@ const intentReadFileRow = item({
 
 test("an intent-bearing read_file row at intent level withholds Open beside", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderIntentLevel(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />, source);
   // Only the intent line survives at this level: no summary, no affordance.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Reading writeAndReload restore path");
   expect(screen.queryByTestId("tool-row-summary")).toBe(null);
@@ -1135,11 +1421,23 @@ test("an intent-bearing read_file row at intent level withholds Open beside", ()
 // its summary line, so the affordance rides it as before.
 test("the same read_file row at tools level still shows Open beside on its summary line", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
-  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />);
+  const source = seedSourceThread("ref_a", "/home/proj");
+  renderTools(<ToolCallItem item={intentReadFileRow} turn={turn} live={false} sessionRef="ref_a" />, source);
   expect(screen.getByTestId("tool-row-summary").textContent).toContain("Read /home/proj/src/a.ts");
   const trailing = screen.getByTestId("tool-row-trailing");
-  expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);
+  const button = screen.getByRole("button", { name: /open beside/i });
+  expect(trailing.contains(button)).toBe(true);
+  fireEvent.click(button);
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "src/a.ts", kind: "file" },
+    {
+      path: "src/a.ts",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/src/a.ts",
+      provenance: "absolute",
+    },
+  );
 });
 
 // --- The intent-only density hook (toolcallitem.module.css's
@@ -1240,7 +1538,7 @@ test("a delegate card at intent level keeps its Open transcript control", () => 
 // even with the summary line collapsed: the Open beside control stays.
 test("an auto-expanded image read at intent level keeps Open beside", () => {
   resetThreadsStoreForTests();
-  seedThreadCwd("ref_a", "/home/proj");
+  const source = seedSourceThread("ref_a", "/home/proj");
   renderIntentLevel(
     <ToolCallItem
       item={item({
@@ -1253,9 +1551,20 @@ test("an auto-expanded image read at intent level keeps Open beside", () => {
       live={false}
       sessionRef="ref_a"
     />,
+    source,
   );
   expect(screen.getByTestId("tool-call-body")).toBeTruthy();
-  expect(screen.getByRole("button", { name: /open beside/i })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
+  expectOpenedDocument(
+    source.sourcePaneId,
+    { session: "ref_a", path: "assets/logo.png", kind: "image" },
+    {
+      path: "assets/logo.png",
+      cwd: "/home/proj",
+      readTarget: "/home/proj/assets/logo.png",
+      provenance: "absolute",
+    },
+  );
 });
 
 // A delegate_send row's Open transcript control rides INLINE between the
@@ -1369,7 +1678,10 @@ test("task-only delegate intent previews preserve an emoji at the Unicode clippi
 });
 
 test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
-  seedCurrentDelegate("ref_current", "dlg_stable", "running");
+  seedCurrentDelegate("ref_current", "dlg_stable", "running", undefined, {
+    childSessionId: "sess_child",
+    transcriptRef: "local:sess_child",
+  });
   render(
     <>
       <ToolCallItem
@@ -1631,15 +1943,13 @@ test("defaults apply at each level; an explicit summary choice persists across l
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
-// --- failure force-open also opens the summary line (one-line tool call) ---
-// A failed row's body auto-opens at every verbosity level ("only failure earns
-// the eye"). That force-open must carry the summary line with it: otherwise a
-// chat/intent-level failure lands on a state that skips L1 - intent visible,
-// one-line tool call hidden, body open - instead of the complete L2. A clean
-// row is untouched (the level's own default still governs it).
+// --- a failed row follows the level's own summary/body defaults -------------
+// A failed row follows the level's own defaults exactly like a clean row: at
+// chat/intent it stays intent-only (summary line and body both closed), and the
+// reader opens them. A failure does not force anything open.
 
 test.each(["chat", "intent"] as const)(
-  "a failed row at the %s level auto-opens its summary line together with the body",
+  "a failed row at the %s level stays intent-only until the reader opens it",
   (level) => {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     renderWithConfig(
@@ -1652,18 +1962,21 @@ test.each(["chat", "intent"] as const)(
         output: "fatal: not a git repository\n[exit 128]",
       }),
     );
-    // The failure force-opens the body (unchanged).
-    expect(screen.getByTestId("tool-row-body-trigger").getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
-    // The summary line (the one-line tool call) opens with it, so the row reads
-    // as intent + call + body rather than skipping the call on its way down.
+    // No force-open: the row reads as its stated intent alone.
     expect(screen.getByTestId("tool-row-intent").textContent).toBe("Checking for stray process records");
-    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
-    expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(screen.queryByTestId("tool-call-body")).toBeNull();
+    // The failure is still marked.
+    const row = screen.getByTestId("tool-call-item");
+    expect(row.getAttribute("data-failed")).toBe("true");
+    expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+    // The reader opens the summary line, then reaches the body.
+    fireEvent.click(screen.getByTestId("tool-row-trigger"));
+    expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
   },
 );
 
-test("a manual collapse of a failure-opened summary line sticks (the reader's choice wins)", () => {
+test("a failed row's summary line obeys the reader's explicit choice (no failure auto-open)", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
   renderWithConfig(
     config,
@@ -1675,15 +1988,21 @@ test("a manual collapse of a failure-opened summary line sticks (the reader's ch
       output: "stdout\n[exit 1]",
     }),
   );
-  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+  // Chat level leaves the summary line closed; a failure does not force it open.
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 
-  // The intent trigger toggles the summary disclosure.
+  // The reader opens it...
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("true");
+
+  // ...and can close it again; the explicit choice wins.
   fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");
 });
 
-test("a superseded preval-only failure at the chat level leaves the summary line closed", () => {
+test("a failed preval-only row at the chat level leaves the summary line closed", () => {
   registerToolRenderer({ match: "tci_summary_preval", summary: () => "s", body: () => <div>b</div> });
   const failedItem = item({
     id: "summary_preval_bad",
@@ -1706,8 +2025,8 @@ test("a superseded preval-only failure at the chat level leaves the summary line
       <ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />
     </TranscriptRenderProvider>,
   );
-  // Superseded by the next same-tool success: neither the body nor the summary
-  // is forced open.
+  // A failure does not force the body or the summary open: both stay closed at
+  // the chat level.
   expect(screen.queryByTestId("tool-call-body")).toBeNull();
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
@@ -1728,8 +2047,8 @@ test("a non-failure auto-expand (image read) at the chat level leaves the summar
   // The picture's own auto-expand still opens the body...
   expect(screen.getByTestId("tool-row-body-trigger").getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByTestId("tool-call-body")).toBeTruthy();
-  // ...but the summary-open is scoped to FAILED rows, so an image read keeps
-  // its level's default (chat: L0, only the intent line).
+  // ...but the summary line still follows its level's own default, so an image
+  // read at chat keeps the intent line alone (L0).
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
@@ -1766,8 +2085,8 @@ test("a summary-only job_watch clear renders a non-expandable row (hasBody predi
 
 // --- #1173: a summary-less intent-bearing row stays single-level on failure ---
 // A delegate row deliberately renders no summary text (subagentModule owns its
-// presentation), so the failure force-open must not carry an empty summary line
-// open. The body disclosure chevron stays on the intent line
+// presentation), so the disclosure must never carry an empty summary line open.
+// The body disclosure chevron stays on the intent line
 // (data-body-trigger-intent), exactly as it does for a clean delegate row.
 test.each(["chat", "intent"] as const)(
   "a failed delegate row at the %s level renders no empty summary line (body trigger on the intent line)",
@@ -1783,7 +2102,7 @@ test.each(["chat", "intent"] as const)(
         error: "delegate activation failed",
       }),
     );
-    // The body force-opens (only failure earns the eye, unchanged).
+    // The body opens through the delegate descriptor's own autoExpand.
     expect(screen.getByTestId("tool-row-body-trigger").getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByTestId("tool-call-body")).toBeTruthy();
     // No summary text exists for a delegate row, so no summary line (empty or
@@ -1877,7 +2196,10 @@ test.each(["activity", "full"] as const)(
 //     the visible intent's accessible name and the status association the
 //     suppressed intent trigger used to provide.
 test("a summary-less delegate row names its sole body control from the intent and describes its status", () => {
-  seedCurrentDelegate("ref_current", "dlg_named", "running");
+  seedCurrentDelegate("ref_current", "dlg_named", "running", undefined, {
+    childSessionId: "sess_child",
+    transcriptRef: "local:sess_child",
+  });
   render(
     <ToolCallItem
       item={item({
@@ -1970,6 +2292,7 @@ function renderSummaryWithEntities(toolItem: ItemModel) {
       config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
       surface="readOnly"
       disclosureScope="test:summary-entities"
+      sessionRef="local:s"
       entities={summaryEntities()}
     >
       <ToolCallItem item={toolItem} turn={turn} live={false} />

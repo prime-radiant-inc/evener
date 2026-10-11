@@ -3,15 +3,42 @@ import { describe, expect, it } from "vitest";
 import {
   type ActivityBranchState,
   type ActivityDelegate,
+  type ActivityDisclosureState,
   type ActivitySessionNode,
   type ActivityTree,
   activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
   delegateHasActiveWork,
+  jobCommandLabel,
+  jobStatusDisplay,
+  parseActivityJob,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
+
+describe("jobStatusDisplay", () => {
+  it("states machine statuses raw", () => {
+    for (const status of ["running", "completed", "failed", "cancelled", "stopped", "exhausted"]) {
+      expect(jobStatusDisplay(status)).toBe(status);
+    }
+  });
+
+  it("renders the command-outcome statuses under the card's display words", () => {
+    expect(jobStatusDisplay("command_exited_nonzero")).toBe("Command failed");
+    expect(jobStatusDisplay("command_killed")).toBe("Command killed");
+  });
+
+  it("joins a legacy pre-split failed record to the display words by its reason", () => {
+    expect(jobStatusDisplay("failed", "exit_nonzero")).toBe("Command failed");
+    expect(jobStatusDisplay("failed", "killed_by_signal: terminated")).toBe("Command killed");
+  });
+
+  it("keeps a machinery failed status raw", () => {
+    expect(jobStatusDisplay("failed")).toBe("failed");
+    expect(jobStatusDisplay("failed", "wait_failed")).toBe("failed");
+  });
+});
 
 function branch(overrides: Partial<ActivityBranchState> = {}): ActivityBranchState {
   return { ...overrides };
@@ -618,9 +645,13 @@ describe("parseActivityTree", () => {
 
 describe("activityNodeID", () => {
   it("builds stable typed ids for sessions, delegates, and jobs", () => {
-    expect(activityNodeID({ kind: "session", sessionId: "root" })).toBe("session:root");
-    expect(activityNodeID({ kind: "delegate", delegateId: "dlg_1" })).toBe("delegate:dlg_1");
-    expect(activityNodeID({ kind: "shell", jobId: "job_1" })).toBe("job:job_1");
+    expect(activityNodeID({ kind: "session", ref: "root" })).toBe("session:root");
+    expect(activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" })).toBe(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
+    expect(activityNodeID({ kind: "shell", ownerRef: "ref_root", jobId: "job_1" })).toBe(
+      `job:${JSON.stringify(["ref_root", "job_1"])}`,
+    );
   });
 });
 
@@ -670,7 +701,11 @@ describe("activityDelegateDiagnostics", () => {
 describe("defaultExpandedIDs", () => {
   it("expands the root and every ancestor of active work, but not completed-only branches", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
-    expect(defaultExpandedIDs(tree)).toEqual(["session:sess_root", "delegate:dlg_1", "session:sess_child"]);
+    expect(defaultExpandedIDs(tree)).toEqual([
+      "session:ref_root",
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+      "session:ref_child",
+    ]);
   });
 
   it("uses active turns for turn-container expansion even after the container closes", () => {
@@ -700,7 +735,9 @@ describe("defaultExpandedIDs", () => {
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
     expect(delegateHasActiveWork(entry.delegate)).toBe(true);
-    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+    expect(defaultExpandedIDs(tree)).toContain(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
   });
 
   // The same shape as the closed container below, minus the type the wire is
@@ -715,7 +752,9 @@ describe("defaultExpandedIDs", () => {
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
     expect(delegateHasActiveWork(entry.delegate)).toBe(true);
-    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+    expect(defaultExpandedIDs(tree)).toContain(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
   });
 
   it("does not expand an empty closed turn container", () => {
@@ -726,7 +765,9 @@ describe("defaultExpandedIDs", () => {
     const entry = assertDefined(tree.root.entries[1], "expected root delegate entry");
     if (entry.kind !== "delegate") throw new Error("expected root delegate entry");
     expect(delegateHasActiveWork(entry.delegate)).toBe(false);
-    expect(defaultExpandedIDs(tree)).not.toContain("delegate:dlg_1");
+    expect(defaultExpandedIDs(tree)).not.toContain(
+      activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+    );
   });
 });
 
@@ -738,7 +779,7 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root"],
+          expandedIDs: ["session:ref_root"],
           selectedID: undefined,
           selectionPruned: false,
           tree: previous,
@@ -746,7 +787,7 @@ describe("reconcileActivityState", () => {
         next,
       ),
     ).toEqual({
-      expandedIDs: ["session:sess_root"],
+      expandedIDs: ["session:ref_root"],
       selectedID: undefined,
       selectionPruned: false,
     });
@@ -774,7 +815,7 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root"],
+          expandedIDs: ["session:ref_root"],
           selectedID: undefined,
           selectionPruned: false,
           tree: previous,
@@ -782,7 +823,11 @@ describe("reconcileActivityState", () => {
         next,
       ),
     ).toEqual({
-      expandedIDs: ["session:sess_root", "delegate:dlg_1", "session:sess_child"],
+      expandedIDs: [
+        "session:ref_root",
+        activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+        "session:ref_child",
+      ],
       selectedID: undefined,
       selectionPruned: false,
     });
@@ -923,25 +968,28 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root", "delegate:dlg_keep"],
-          selectedID: "session:sess_keep",
+          expandedIDs: [
+            "session:ref_root",
+            activityNodeID({ kind: "delegate", childRef: "ref_keep", delegateId: "dlg_keep" }),
+          ],
+          selectedID: "session:ref_keep",
           selectionPruned: false,
         },
         next,
       ),
     ).toEqual({
       expandedIDs: [
-        "session:sess_root",
-        "delegate:dlg_keep",
-        "session:sess_keep",
-        "delegate:dlg_new_active",
-        "session:sess_new",
+        "session:ref_root",
+        activityNodeID({ kind: "delegate", childRef: "ref_keep", delegateId: "dlg_keep" }),
+        "session:ref_keep",
+        activityNodeID({ kind: "delegate", childRef: "ref_new", delegateId: "dlg_new_active" }),
+        "session:ref_new",
       ],
-      selectedID: "session:sess_keep",
+      selectedID: "session:ref_keep",
       selectionPruned: false,
     });
 
-    expect(defaultExpandedIDs(previous)).toEqual(["session:sess_root"]);
+    expect(defaultExpandedIDs(previous)).toEqual(["session:ref_root"]);
   });
 
   it("falls a pruned selection back to the nearest surviving owner and marks selectionPruned", () => {
@@ -949,15 +997,23 @@ describe("reconcileActivityState", () => {
     expect(
       reconcileActivityState(
         {
-          expandedIDs: ["session:sess_root", "delegate:dlg_1", "session:sess_child"],
-          selectedID: "job:job_missing",
+          expandedIDs: [
+            "session:ref_root",
+            activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+            "session:ref_child",
+          ],
+          selectedID: activityNodeID({ kind: "shell", ownerRef: "ref_root", jobId: "job_missing" }),
           selectionPruned: false,
         },
         next,
       ),
     ).toEqual({
-      expandedIDs: ["session:sess_root", "delegate:dlg_1", "session:sess_child"],
-      selectedID: "session:sess_root",
+      expandedIDs: [
+        "session:ref_root",
+        activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_1" }),
+        "session:ref_child",
+      ],
+      selectedID: "session:ref_root",
       selectionPruned: true,
     });
   });
@@ -1151,5 +1207,468 @@ describe("lastOutputAt and usage wire fields", () => {
     // matching how other malformed fields behave.
     expect(tree?.root.entries).toHaveLength(0);
     expect(tree?.root.branch.error).toBeDefined();
+  });
+});
+
+// Edge cases for activityData.ts that close the remaining uncovered lines:
+// - parseStringArray with non-array and non-string elements
+// - parseWorktree with invalid input
+// - copyOptionalInteger with nullable=true and null value
+// - parseJob returns null when required fields are missing
+// - parseEntry with unknown kind
+// - parseDelegate with mandate that is not a string
+// - activityNodeID throw for unsupported identity
+// - nearestSurvivingOwner with a previous tree
+
+function delegateFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    delegateId: "dlg_1",
+    childSessionId: "sess_child",
+    childRef: "ref_child",
+    branch: {},
+    ...overrides,
+  };
+}
+
+describe("parseStringArray edge cases", () => {
+  it("rejects a string array with non-string elements", () => {
+    // A delegate with warnings containing a non-string element is rejected
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({ warnings: ["ok", 123] }),
+        },
+      ]),
+    );
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+
+  it("accepts a valid string array", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({ warnings: ["warn1", "warn2"] }),
+        },
+      ]),
+    );
+    expect(tree?.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { warnings: ["warn1", "warn2"] },
+    });
+  });
+});
+
+describe("parseWorktree edge cases", () => {
+  it("rejects a non-object worktree", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({ worktree: "not-an-object" }),
+        },
+      ]),
+    );
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+
+  it("rejects a worktree with missing required fields", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({ worktree: { path: "/tmp", branch: "main" } }),
+        },
+      ]),
+    );
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+
+  it("accepts a valid worktree", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({
+            worktree: { path: "/tmp", branch: "main", headSha: "abc", ahead: 0, dirty: false },
+          }),
+        },
+      ]),
+    );
+    expect(tree?.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { worktree: { path: "/tmp", branch: "main", headSha: "abc", ahead: 0, dirty: false } },
+    });
+  });
+});
+
+describe("copyOptionalInteger nullable", () => {
+  it("accepts null for nullable integer fields (runningForMs, quietForMs, durationMs)", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({
+            runningForMs: null,
+            quietForMs: null,
+            durationMs: null,
+          }),
+        },
+      ]),
+    );
+    expect(tree?.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { runningForMs: null, quietForMs: null, durationMs: null },
+    });
+  });
+
+  it("rejects a non-integer value for a nullable field", () => {
+    const tree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({ runningForMs: "abc" }),
+        },
+      ]),
+    );
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+});
+
+describe("parseJob missing required fields", () => {
+  it("rejects a job missing jobId", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ jobId: undefined }) }]));
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+
+  it("rejects a job missing ownerSessionId", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ ownerSessionId: undefined }) }]));
+    expect(tree?.root.entries).toHaveLength(0);
+  });
+
+  it("rejects a job with negative outputBytes", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ outputBytes: -1 }) }]));
+    expect(tree?.root.entries).toHaveLength(0);
+  });
+
+  it("rejects a job with non-integer outputBytes", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ outputBytes: 1.5 }) }]));
+    expect(tree?.root.entries).toHaveLength(0);
+  });
+
+  it("rejects a job with non-boolean terminal", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture({ terminal: "yes" }) }]));
+    expect(tree?.root.entries).toHaveLength(0);
+  });
+});
+
+describe("jobCommandLabel", () => {
+  it("prefers the command, then the task, then the description", () => {
+    expect(jobCommandLabel({ description: "make test-web" })).toBe("make test-web");
+    expect(jobCommandLabel({ description: "make test-web", task: "run the web gate" })).toBe("run the web gate");
+    expect(jobCommandLabel({ description: "make test-web", task: "run the web gate", command: "go test ./..." })).toBe(
+      "go test ./...",
+    );
+  });
+
+  it("falls through a blank field and returns undefined when nothing is left", () => {
+    expect(jobCommandLabel({ description: "make test-web", command: "   " })).toBe("make test-web");
+    expect(jobCommandLabel({ description: "  " })).toBeUndefined();
+  });
+});
+
+describe("parseActivityJob", () => {
+  // The job log pane's single-job read (evener/jobs/get) carries the same
+  // ActivityJob shape the tree's shell entries do, so it reuses this validator.
+  it("accepts a job payload and keeps its untruncated command", () => {
+    expect(parseActivityJob(jobFixture({ command: "go test ./... -run Foo -count=1" }))).toMatchObject({
+      jobId: "job_1",
+      type: "shell",
+      command: "go test ./... -run Foo -count=1",
+    });
+  });
+
+  it("rejects a payload that is not a job object", () => {
+    expect(parseActivityJob(null)).toBeNull();
+    expect(parseActivityJob([])).toBeNull();
+    expect(parseActivityJob("job_1")).toBeNull();
+    expect(parseActivityJob(jobFixture({ jobId: undefined }))).toBeNull();
+  });
+
+  it("rejects a wrongly typed optional field", () => {
+    expect(parseActivityJob(jobFixture({ command: 7 }))).toBeNull();
+    expect(parseActivityJob(jobFixture({ exitCode: 1.5 }))).toBeNull();
+  });
+});
+
+describe("parseEntry unknown kind", () => {
+  it("rejects an entry with an unknown kind", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "unknown", job: {} }]));
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+
+  it("rejects an entry that is not a plain object", () => {
+    const tree = parseActivityTree(treeFixture(["not-an-object"]));
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+});
+
+describe("parseDelegate missing required fields", () => {
+  it("rejects a delegate missing delegateId", () => {
+    const tree = parseActivityTree(
+      treeFixture([{ kind: "delegate", delegate: delegateFixture({ delegateId: undefined }) }]),
+    );
+    expect(tree?.root.entries).toHaveLength(0);
+  });
+
+  it("rejects a delegate missing childSessionId", () => {
+    const tree = parseActivityTree(
+      treeFixture([{ kind: "delegate", delegate: delegateFixture({ childSessionId: undefined }) }]),
+    );
+    expect(tree?.root.entries).toHaveLength(0);
+  });
+
+  it("rejects a delegate with invalid branch state", () => {
+    const tree = parseActivityTree(
+      treeFixture([{ kind: "delegate", delegate: delegateFixture({ branch: "invalid" }) }]),
+    );
+    expect(tree?.root.entries).toHaveLength(0);
+  });
+});
+
+describe("parseDelegate mandate validation", () => {
+  it("rejects a delegate with a non-string mandate", () => {
+    const tree = parseActivityTree(treeFixture([{ kind: "delegate", delegate: delegateFixture({ mandate: 123 }) }]));
+    expect(tree?.root.entries).toHaveLength(0);
+    expect(tree?.root.branch.error).toBe("incomplete");
+  });
+
+  it("accepts a delegate with a string mandate", () => {
+    const tree = parseActivityTree(
+      treeFixture([{ kind: "delegate", delegate: delegateFixture({ mandate: "do the thing" }) }]),
+    );
+    expect(tree?.root.entries[0]).toMatchObject({
+      kind: "delegate",
+      delegate: { mandate: "do the thing" },
+    });
+  });
+});
+
+describe("parseSession diagnostics", () => {
+  it("rejects a root whose diagnostics is not a string array", () => {
+    const tree = treeFixture([]) as { root: Record<string, unknown> };
+    tree.root.diagnostics = "not-an-array";
+    expect(parseActivityTree(tree)).toBeNull();
+  });
+
+  it("drops a rendered child whose diagnostics has a non-string element and marks the delegate incomplete", () => {
+    const child = {
+      sessionId: "sess_child",
+      ref: "ref_child",
+      label: "Child",
+      aggregate: "working",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      diagnostics: [42],
+      entries: [],
+      branch: {},
+    };
+    const tree = parseActivityTree(treeFixture([{ kind: "delegate", delegate: delegateFixture({ child }) }]));
+    const entry = tree?.root.entries[0];
+    expect(entry?.kind).toBe("delegate");
+    if (entry?.kind !== "delegate") return;
+    expect(entry.delegate.child).toBeUndefined();
+    expect(entry.delegate.branch.error).toBe("incomplete");
+  });
+
+  it("omits diagnostics when the wire omits them", () => {
+    const tree = parseActivityTree(treeFixture([]));
+    expect(tree?.root).not.toHaveProperty("diagnostics");
+  });
+});
+
+describe("parseDelegate depth limit", () => {
+  it("annotates and truncates the delegate at MAX_RECURSION_DEPTH", () => {
+    let child: Record<string, unknown> | undefined;
+    for (let i = 0; i < 70; i++) {
+      child = {
+        sessionId: `sess_${i}`,
+        ref: `ref_${i}`,
+        label: `Level ${i}`,
+        aggregate: "working",
+        counts: { active: 0, failed: 0, completed: 0, complete: true },
+        entries: child
+          ? [
+              {
+                kind: "delegate",
+                delegate: delegateFixture({ childSessionId: `sess_${i}`, childRef: `ref_${i}`, child }),
+              },
+            ]
+          : [],
+        branch: {},
+      };
+    }
+    const tree = parseActivityTree(treeFixture([{ kind: "delegate", delegate: delegateFixture({ child }) }]));
+
+    const delegates = [];
+    let session: ActivitySessionNode | undefined = tree?.root;
+    while (session) {
+      const entry = session.entries.find((candidate) => candidate.kind === "delegate");
+      if (entry?.kind !== "delegate") break;
+      delegates.push(entry.delegate);
+      session = entry.delegate.child;
+    }
+
+    expect(delegates).toHaveLength(64);
+    expect(delegates.at(-1)?.branch).toEqual({ truncated: true, error: "depth limit exceeded" });
+    expect(delegates.at(-1)?.child).toBeUndefined();
+  });
+});
+
+describe("activityNodeID", () => {
+  it("throws for an unsupported identity", () => {
+    expect(() => activityNodeID({ kind: "unsupported" } as never)).toThrow("unsupported activity node identity");
+  });
+});
+
+describe("reconcileActivityState with previous tree", () => {
+  it("finds nearest surviving owner when selectedID is removed from tree", () => {
+    const prevTree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({
+            delegateId: "dlg_old",
+            childSessionId: "sess_child",
+            childRef: "ref_child",
+            child: {
+              sessionId: "sess_child",
+              ref: "ref_child",
+              label: "Child",
+              aggregate: "working",
+              counts: { active: 0, failed: 0, completed: 0, complete: true },
+              entries: [],
+              branch: {},
+            },
+          }),
+        },
+      ]),
+    );
+    expect(prevTree).toBeTruthy();
+    if (!prevTree) return;
+
+    const prevState: ActivityDisclosureState = {
+      expandedIDs: [
+        activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_old" }),
+        "session:ref_child",
+      ],
+      selectedID: "session:ref_child",
+      selectionPruned: false,
+      tree: prevTree,
+    };
+
+    // New tree without the child session — selectedID is pruned
+    const nextTree = parseActivityTree(
+      treeFixture([
+        {
+          kind: "delegate",
+          delegate: delegateFixture({ delegateId: "dlg_old" }),
+        },
+      ]),
+    );
+    expect(nextTree).toBeTruthy();
+    if (!nextTree) return;
+
+    const result = reconcileActivityState(prevState, nextTree);
+    // The selectedID (session:ref_child) is gone; the nearest surviving
+    // owner (delegate:dlg_old) should be selected
+    expect(result.selectedID).toBe(activityNodeID({ kind: "delegate", childRef: "ref_child", delegateId: "dlg_old" }));
+    expect(result.selectionPruned).toBe(true);
+  });
+
+  it("returns root as fallback when neither selectedID nor ancestors survive", () => {
+    const prevTree = parseActivityTree(treeFixture([]));
+    expect(prevTree).toBeTruthy();
+    if (!prevTree) return;
+
+    const prevState: ActivityDisclosureState = {
+      expandedIDs: [],
+      selectedID: "delegate:gone",
+      selectionPruned: false,
+      tree: prevTree,
+    };
+
+    const nextTree = parseActivityTree(treeFixture([]));
+    expect(nextTree).toBeTruthy();
+    if (!nextTree) return;
+
+    const result = reconcileActivityState(prevState, nextTree);
+    expect(result.selectedID).toBe("session:ref_root");
+    expect(result.selectionPruned).toBe(true);
+  });
+
+  it("preserves selectedID when it survives in the next tree", () => {
+    const prevTree = parseActivityTree(treeFixture([]));
+    expect(prevTree).toBeTruthy();
+    if (!prevTree) return;
+
+    const prevState: ActivityDisclosureState = {
+      expandedIDs: ["session:ref_root"],
+      selectedID: "session:ref_root",
+      selectionPruned: false,
+      tree: prevTree,
+    };
+
+    const nextTree = parseActivityTree(treeFixture([]));
+    expect(nextTree).toBeTruthy();
+    if (!nextTree) return;
+
+    const result = reconcileActivityState(prevState, nextTree);
+    expect(result.selectedID).toBe("session:ref_root");
+    expect(result.selectionPruned).toBe(false);
+  });
+
+  it("handles undefined selectedID", () => {
+    const prevTree = parseActivityTree(treeFixture([]));
+    expect(prevTree).toBeTruthy();
+    if (!prevTree) return;
+
+    const prevState: ActivityDisclosureState = {
+      expandedIDs: [],
+      selectedID: undefined,
+      selectionPruned: false,
+      tree: prevTree,
+    };
+
+    const nextTree = parseActivityTree(treeFixture([]));
+    expect(nextTree).toBeTruthy();
+    if (!nextTree) return;
+
+    const result = reconcileActivityState(prevState, nextTree);
+    expect(result.selectedID).toBeUndefined();
+    expect(result.selectionPruned).toBe(false);
+  });
+
+  it("handles no previous tree", () => {
+    const nextTree = parseActivityTree(treeFixture([]));
+    expect(nextTree).toBeTruthy();
+    if (!nextTree) return;
+
+    const prevState: ActivityDisclosureState = {
+      expandedIDs: [],
+      selectedID: "session:ref_root",
+      selectionPruned: false,
+      tree: null,
+    };
+
+    const result = reconcileActivityState(prevState, nextTree);
+    expect(result.selectedID).toBe("session:ref_root");
   });
 });

@@ -127,6 +127,45 @@ func TestAuth_KeyResolutionHappensBeforeTheCredentialLock(t *testing.T) {
 	probe.assertResolvedBeforeTheLocks(t, "ApiKeySet")
 }
 
+// TestAuth_ConditionalSetResolvesTheKeyBeforeTheCredentialLock pins the
+// ApiKeyConditionalSet half of the same rule. The revision fence that call checks
+// is keyed with the hub's endpoint-fingerprint key, and that key is resolved
+// before credentialWriteConditional takes credMu. Resolving it is not a read - a
+// missing or unusable key file is repaired there, an inter-process lock and a
+// write (endpointFingerprintKeyState) - so a resolution inside the locked section
+// would hold every listing and credential op behind it. ApiKeySet and the
+// instances listing are already pinned for this; the conditional set is the third
+// caller that resolves the seam, and nothing covered it.
+func TestAuth_ConditionalSetResolvesTheKeyBeforeTheCredentialLock(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	stateDir := t.TempDir()
+	store, err := credentials.LoadStore(filepath.Join(stateDir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	c := newHubAuthControllerWithStore(stateDir, store)
+	attachTestRegistry(t, c)
+
+	probe := installKeyResolutionProbe(t, namedLock{name: "the credential lock (credMu)", lock: &c.credMu})
+	resp, err := c.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+		Provider: "anthropic",
+		Value:    "sk-ant-conditional-key-order",
+	})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet: %v", err)
+	}
+	// The write landed, so the call really drove its fence and its set rather than
+	// skipping before either: a skip would leave the resolution assertion below
+	// saying nothing about the path under test.
+	if resp.Action != appwire.ApiKeyConditionalSetActionAdded {
+		t.Fatalf("Action = %q, want %q (reason %q): the conditional set must reach its fence and write", resp.Action, appwire.ApiKeyConditionalSetActionAdded, resp.Reason)
+	}
+	if resp.Status.ActiveSource != "store" {
+		t.Fatalf("Status.ActiveSource = %q, want store: the write must have landed", resp.Status.ActiveSource)
+	}
+	probe.assertResolvedBeforeTheLocks(t, "ApiKeyConditionalSet")
+}
+
 // TestInstances_KeyResolutionHappensBeforeBothLocks pins the Remove half: its
 // exclusive section holds mu and credMu at once and keeps the credential
 // cleanup, the providers.toml rewrite and the reload inside it, so a key repair

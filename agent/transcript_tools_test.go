@@ -17,6 +17,7 @@ import (
 )
 
 func TestReadTranscriptReadsShellJobRef(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	rec, err := jm.createShell(createShellOpts{Command: "printf hello"})
@@ -55,6 +56,65 @@ func TestReadTranscriptReadsShellJobRef(t *testing.T) {
 	}
 	if strings.Contains(out.Content, "dropped_bytes:") {
 		t.Fatalf("complete output should not report dropped bytes: %q", out.Content)
+	}
+}
+
+// TestReadTranscriptReadsShellJobRefUnderSymlinkedTemp covers the host layout
+// where the process temp dir is reached through a symlink: macOS's /var →
+// /private/var is the real-world case. The job store lives under the temp dir
+// only when the session has no state dir, and the transcript read path must
+// bound its symlink refusal to that store's own root rather than walking up
+// through the host's symlinked temp prefix and refusing the read.
+func TestReadTranscriptReadsShellJobRefUnderSymlinkedTemp(t *testing.T) {
+	realRoot := t.TempDir()
+	linkRoot := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unsupported on this host: %v", err)
+	}
+	t.Setenv("TMPDIR", linkRoot)
+
+	s := newTestSession(t)
+	jm := s.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "printf hello"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	// The job store must live under the raw (symlinked) temp dir: the session
+	// has no state dir, so this read exercises localJobTrustedRoot's
+	// no-state-dir branch rather than the state-dir path. Assert it, so the
+	// test cannot silently start covering a different path.
+	if got := s.StateDir(); got != "" {
+		t.Fatalf("session state dir = %q, want empty so the job store uses the temp fallback", got)
+	}
+	owner, err := identifier.JobOwnerSessionID(rec.JobID)
+	if err != nil {
+		t.Fatalf("JobOwnerSessionID: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(os.TempDir(), "evener-jobs", owner, "jobs.jsonl")); statErr != nil {
+		t.Fatalf("job journal is not under the symlinked temp dir %q: %v", os.TempDir(), statErr)
+	}
+
+	run := runningJobByID(t, jm, rec.JobID)
+	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("hello\n")); err != nil {
+		t.Fatalf("appendJobOutput: %v", err)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "read_transcript",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s"}`, rec.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("read_transcript under symlinked TMPDIR returned error: %s", res.Output)
+	}
+	var out readMarkdownEnvelope
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal read_transcript: %v (output: %s)", err, res.Output)
+	}
+	if !strings.Contains(out.Content, "hello") {
+		t.Fatalf("content missing shell output: %q", out.Content)
 	}
 }
 
@@ -111,6 +171,7 @@ func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
 }
 
 func TestReadTranscriptPublicSurfaceOmitsLegacyReaderAndPrivateOptions(t *testing.T) {
+	t.Parallel()
 	registered := readTranscriptTool(&toolDeps{stateDir: t.TempDir(), sessionID: "current"})
 	properties := registered.Definition.Parameters["properties"].(map[string]any)
 	for _, name := range []string{"source", "attempt_id", "body", "max_bytes"} {
@@ -145,6 +206,7 @@ func TestReadTranscriptPublicSurfaceOmitsLegacyReaderAndPrivateOptions(t *testin
 // read_transcript_description_test.go is the half that keys to the var, so an
 // ADDED rejection still cannot land unannounced.
 func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"range", "expand_turn", "offset_bytes"} {
 		t.Run(name, func(t *testing.T) {
 			value := any(float64(1))
@@ -440,7 +502,8 @@ func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 // --- TestFind_QuerySearch ---
 
 // TestFind_QuerySearch verifies that:
-//   - a query matching session metadata returns that session without snippets
+//   - a query matching session metadata returns that session (metadata hits now
+//     carry a bounded prompt/title snippet)
 //   - a query matching only transcript content returns that session with snippets
 //   - scanned is set when a content scan ran
 func TestFind_QuerySearch(t *testing.T) {
@@ -948,6 +1011,58 @@ func TestRead_ExpandTurn(t *testing.T) {
 	}
 }
 
+// TestRead_ExpandTurnWithoutRangeRendersOnlyThatTurn pins expand_turn's
+// window: without an explicit range the markdown shows Turn N alone, not the
+// default last-40 window around it, and the meta reports that one-turn window.
+func TestRead_ExpandTurnWithoutRangeRendersOnlyThatTurn(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "02wMz5Txv733WHFsVy66ST"
+	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "expand alone", updated: now}, 5)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
+	env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"expand_turn":    float64(2),
+	}))
+	content, _ := env["content"].(string)
+	if !strings.Contains(content, "## Turn 2 ") {
+		t.Fatalf("expanded read is missing Turn 2:\n%s", content)
+	}
+	for _, other := range []int{0, 1, 3, 4} {
+		if strings.Contains(content, fmt.Sprintf("## Turn %d ", other)) {
+			t.Errorf("expand_turn=2 without range also rendered Turn %d:\n%s", other, content)
+		}
+	}
+	meta := readMetaMap(t, env)
+	if meta["range"] != "2-2" || meta["turns_rendered"] != float64(1) || meta["turns_total"] != float64(5) {
+		t.Errorf("meta = %v, want range 2-2 with 1 of 5 turns rendered", meta)
+	}
+}
+
+// TestRead_ExpandTurnWithMalformedRangeRendersTheDefault pins the fallback a
+// malformed range gets alongside expand_turn: the default window the warning
+// names, not the expansion-only window an omitted range gets.
+func TestRead_ExpandTurnWithMalformedRangeRendersTheDefault(t *testing.T) {
+	t.Parallel()
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "02wMz5Txv733WHFsVy66SU"
+	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "expand malformed", updated: now}, 5)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
+	env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"expand_turn":    float64(2),
+		"range":          "not-a-range",
+	}))
+	meta := readMetaMap(t, env)
+	if meta["range"] != "last:40" || meta["turns_rendered"] != float64(5) || meta["range_warning"] == nil {
+		t.Errorf("meta = %v, want the warned default window last:40 over all 5 turns", meta)
+	}
+}
+
 // --- TestRead_MetaTrimmed ---
 
 // TestRead_MetaTrimmed verifies the marshaled markdown meta has the required
@@ -1184,5 +1299,61 @@ func TestFind_ChildrenOf_ProjBucket(t *testing.T) {
 	wantRef := "proj:" + hash + ":02wMz5TxvKDoXaaLN6ENX1"
 	if ref, _ := matches[0]["transcript_ref"].(string); ref != wantRef {
 		t.Errorf("child ref = %q, want %q", ref, wantRef)
+	}
+}
+
+// --- roborev fix round 3: RED test for finding 4 ---
+
+// TestFind_ChildrenOf_BareIDResolvesCrossBucket asserts that children_of with a
+// bare session ID resolves the parent cross-bucket (mirroring resolveTranscript's
+// bare-ID semantics), not just the current bucket. A parent in a legacy-named
+// sibling bucket and its child in the same legacy bucket must be found when
+// children_of uses the parent's bare ID. Today parentBucketAndID returns
+// currentStateDir for bare IDs, so the search is scoped to the current bucket
+// and silently returns 0 matches — the wrong project.
+func TestFind_ChildrenOf_BareIDResolvesCrossBucket(t *testing.T) {
+	t.Parallel()
+	stateHome := newStateHome(t)
+	currentBucket := newBucketUnder(t, stateHome)
+	legacyBucket := filepath.Join(stateHome, "evener", "projects", "0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(legacyBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	parentID := "02wMz5TxvIl3yzzcpdlu4x"
+	childID := "02wMz5TxvKDoXaaLN6ENX1"
+
+	// Parent + one readable child, both in the LEGACY bucket. The parent needs
+	// a transcript file so parentBucketAndID's cross-bucket resolution (which
+	// stats the parent transcript) can locate it in the legacy bucket.
+	writeFindSession(t, legacyBucket, findMetaSpec{id: parentID, name: "legacy parent", updated: now.Add(-time.Hour)}, "legacy parent work")
+	writeFindSession(t, legacyBucket, findMetaSpec{
+		id:              childID,
+		name:            "legacy child",
+		parentSessionID: parentID,
+		updated:         now,
+	}, "legacy child work")
+
+	deps := &toolDeps{stateDir: currentBucket, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	b := marshalFind(t, deps, map[string]any{"children_of": parentID})
+	env := decodeEnvelope(t, b)
+
+	// Handle nil matches (the RED state: 0 matches found in the current bucket).
+	var matches []map[string]any
+	if raw, ok := env["matches"]; ok {
+		if ifaces, ok := raw.([]any); ok {
+			for _, v := range ifaces {
+				if m, ok := v.(map[string]any); ok {
+					matches = append(matches, m)
+				}
+			}
+		}
+	}
+
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 child in legacy bucket via bare-ID children_of, got %d", len(matches))
+	}
+	if title, _ := matches[0]["title"].(string); title != "legacy child" {
+		t.Errorf("child title = %q, want %q", title, "legacy child")
 	}
 }

@@ -1,6 +1,7 @@
 import { decodeLocalConfig, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import {
   clampSidebarWidth,
   dualWriteTranscriptDisplayLegacy,
@@ -19,29 +20,8 @@ import {
   writeLegacyBooleanPreference,
 } from "./prefs";
 
-// See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
-// real window.localStorage with its own (non-functional under vitest)
-// global, so every test file that touches localStorage needs this same
-// small in-memory stand-in. Scoped to this file only.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 // Every key this store reads/writes lives under this prefix - the plan's own
@@ -431,6 +411,36 @@ describe("stale sidebarMode key", () => {
     localStorage.setItem(KEY("sidebarMode"), "rail");
     resetPrefsStoreForTests();
     expect("sidebarMode" in prefsStore.getState()).toBe(false);
+  });
+});
+
+// sidebarGrouping: how the rail's session tree groups - "host-project"
+// (hosts are the top groups) or "project-host" (today's shape, hosts nested
+// inside projects). The default keeps single-host projects and hubs flat,
+// but a multi-host project changes shape out of the box - its rows sit
+// behind collapsed per-host branches - because the grouping is the
+// feature, not something the control must unlock first.
+describe("sidebarGrouping", () => {
+  test("defaults to project-host with nothing persisted", () => {
+    expect(prefsStore.getState().sidebarGrouping).toBe("project-host");
+  });
+
+  test("setSidebarGrouping persists the raw value and updates state", () => {
+    prefsStore.getState().setSidebarGrouping("host-project");
+    expect(localStorage.getItem(KEY("sidebarGrouping"))).toBe("host-project");
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+  });
+
+  test("round-trips a persisted grouping across a fresh load", () => {
+    prefsStore.getState().setSidebarGrouping("host-project");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+  });
+
+  test("an unrecognized stored value falls back to project-host", () => {
+    localStorage.setItem(KEY("sidebarGrouping"), "by-vibe");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarGrouping).toBe("project-host");
   });
 });
 

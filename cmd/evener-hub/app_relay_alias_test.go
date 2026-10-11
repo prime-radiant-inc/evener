@@ -67,18 +67,15 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	}
 	awaitLiveHubSubscriptions(t, appServer, 3)
 
-	params, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
-		ThreadID:     "root-thread",
-		Ref:          rootRef,
-		TurnID:       "turn-alias",
-		ItemID:       "item-alias",
-		SummaryIndex: 0,
-		Delta:        "one logical delta",
+	params, err := json.Marshal(appwire.OverlayDeltaParams{
+		ThreadID: "root-thread",
+		Ref:      rootRef,
+		Delta:    "one logical delta",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
+	pool.emit(t, appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: params})
 	// Every subscription is live, so each alias fanout has acknowledged and
 	// enqueued the delta on its connection before emit returns. This
 	// connection-wide marker is therefore an ordered drain barrier.
@@ -91,18 +88,15 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 		t.Fatalf("fresh root-only client received delta %d times, want once", got)
 	}
 
-	params, err = json.Marshal(appwire.ReasoningSummaryDeltaParams{
-		ThreadID:     "child-thread",
-		Ref:          childRef,
-		TurnID:       "turn-alias",
-		ItemID:       "item-alias-child",
-		SummaryIndex: 0,
-		Delta:        "one child delta",
+	params, err = json.Marshal(appwire.OverlayDeltaParams{
+		ThreadID: "child-thread",
+		Ref:      childRef,
+		Delta:    "one child delta",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
+	pool.emit(t, appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: params})
 	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 	if got := aliasDeltaCountUntilBarrier(t, longLived, "one child delta"); got != 1 {
 		t.Fatalf("long-lived root+child client received child delta %d times, want once", got)
@@ -237,30 +231,22 @@ func TestHubRelaySharedSessionAliasesEnrichUntargetedOutputImages(t *testing.T) 
 	}
 	awaitLiveHubSubscriptions(t, appServer, 2)
 
-	started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-		"turnId": "turn-image",
-		"item": appwire.ThreadItem{
-			Type:          "commandExecution",
-			ID:            "item-image",
-			ToolName:      "write_file",
-			CallID:        "call-image",
-			ArgumentsJSON: `{"file_path":"plot.png"}`,
-			Status:        appwire.TurnStatusInProgress,
-		},
-	}).Notification
-	pool.emit(t, *started)
-	completed := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-		"turnId": "turn-image",
-		"item": appwire.ThreadItem{
-			Type:     "commandExecution",
-			ID:       "item-image",
-			ToolName: "write_file",
-			CallID:   "call-image",
-			Output:   "wrote",
-			Status:   appwire.TurnStatusCompleted,
-		},
-	}).Notification
-	pool.emit(t, *completed)
+	pool.emit(t, overlayToolNotification(map[string]any{}, appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "item-image",
+		ToolName:      "write_file",
+		CallID:        "call-image",
+		ArgumentsJSON: `{"file_path":"plot.png"}`,
+		Status:        appwire.TurnStatusInProgress,
+	}))
+	pool.emit(t, overlayToolNotification(map[string]any{}, appwire.ThreadItem{
+		Type:     "commandExecution",
+		ID:       "item-image",
+		ToolName: "write_file",
+		CallID:   "call-image",
+		Output:   "wrote",
+		Status:   appwire.TurnStatusCompleted,
+	}))
 	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 
 	items := aliasCompletedItemsUntilBarrier(t, client, "item-image")
@@ -362,18 +348,15 @@ func TestHubRelayThreadIDReadUsesAuthoritativeResponseRef(t *testing.T) {
 		t.Fatalf("subscribe by thread id: %v", err)
 	}
 	awaitLiveHubSubscriptions(t, appServer, 1)
-	params, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
-		ThreadID:     "lookup-thread",
-		Ref:          "local:workspace-thread",
-		TurnID:       "turn-workspace",
-		ItemID:       "item-workspace",
-		SummaryIndex: 0,
-		Delta:        "authoritative workspace delta",
+	params, err := json.Marshal(appwire.OverlayDeltaParams{
+		ThreadID: "lookup-thread",
+		Ref:      "local:workspace-thread",
+		Delta:    "authoritative workspace delta",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
+	pool.emit(t, appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: params})
 	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 	if got := aliasDeltaCountUntilBarrier(t, client, "authoritative workspace delta"); got != 1 {
 		t.Fatalf("thread-id subscriber received authoritative-ref delta %d times, want once", got)
@@ -613,8 +596,8 @@ func aliasDeltaCountUntilBarrier(t *testing.T, client *appwire.Client, delta str
 			if notification.Method == "test/alias-barrier" {
 				return count
 			}
-			if notification.Method == appwire.NotifyReasoningSummaryDelta {
-				var params appwire.ReasoningSummaryDeltaParams
+			if notification.Method == appwire.NotifyOverlayDelta {
+				var params appwire.OverlayDeltaParams
 				if json.Unmarshal(notification.Params, &params) == nil && params.Delta == delta {
 					count++
 				}
@@ -662,16 +645,22 @@ func aliasCompletedItemsUntilBarrier(t *testing.T, client *appwire.Client, itemI
 			if notification.Method == "test/alias-barrier" {
 				return items
 			}
-			if notification.Method == appwire.NotifyItemCompleted {
-				var params struct {
-					Item appwire.ThreadItem `json:"item"`
-				}
-				if json.Unmarshal(notification.Params, &params) == nil && params.Item.ID == itemID {
-					items = append(items, params.Item)
+			if notification.Method == appwire.NotifyOverlayUpserted {
+				var params appwire.OverlayUpsertedParams
+				if json.Unmarshal(notification.Params, &params) == nil && params.Item.Item.ID == itemID && params.Item.Item.Status == appwire.TurnStatusCompleted {
+					items = append(items, params.Item.Item)
 				}
 			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for alias delivery barrier")
 		}
 	}
+}
+
+// overlayToolNotification is the overlay/upserted a daemon publishes for a
+// tool call's running state, with fields (a ref, a thread id) naming its
+// target.
+func overlayToolNotification(fields map[string]any, item appwire.ThreadItem) appwire.Notification {
+	fields["item"] = appwire.OverlayItem{Key: "tool:" + item.CallID, Kind: appwire.OverlayTool, CallID: item.CallID, Item: item}
+	return *appwire.NotificationMessage(appwire.NotifyOverlayUpserted, fields).Notification
 }

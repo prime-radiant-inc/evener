@@ -11,6 +11,11 @@ describe("readUrlPrefill (spec §5, ?dir=/?prompt=)", () => {
     });
   });
 
+  test("reads the launch host alongside dir and prompt", () => {
+    expect(readUrlPrefill("?dir=/x&host=devbox")).toEqual({ dir: "/x", host: "devbox" });
+    expect(readUrlPrefill("?host=devbox")).toEqual({ host: "devbox" });
+  });
+
   test("returns only the keys that are present", () => {
     expect(readUrlPrefill("?dir=/x")).toEqual({ dir: "/x" });
     expect(readUrlPrefill("?prompt=hi")).toEqual({ prompt: "hi" });

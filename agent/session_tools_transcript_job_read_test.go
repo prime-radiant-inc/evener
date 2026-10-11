@@ -113,6 +113,7 @@ func TestReadTranscriptLocalJobUsesDerivedOutputAfterStoreClose(t *testing.T) {
 }
 
 func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
+	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
@@ -353,6 +354,7 @@ func TestReadTranscriptJobRawPageRunningAppendContinuation(t *testing.T) {
 }
 
 func TestReadTranscriptJobContinuationOutrunByPruning(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -371,6 +373,7 @@ func TestReadTranscriptJobContinuationOutrunByPruning(t *testing.T) {
 }
 
 func TestReadTranscriptJobSearchDefersRunningEOFThenMatchesAfterAppend(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -401,6 +404,7 @@ func TestReadTranscriptJobSearchDefersRunningEOFThenMatchesAfterAppend(t *testin
 }
 
 func TestReadTranscriptJobSearchEvaluatesTerminalUnterminatedEOF(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -414,6 +418,7 @@ func TestReadTranscriptJobSearchEvaluatesTerminalUnterminatedEOF(t *testing.T) {
 }
 
 func TestReadTranscriptJobSearchPruneBoundaryHonesty(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                string
 		output              string
@@ -530,6 +535,7 @@ func TestReadTranscriptJobPageAndSearchRetainedFailuresArePathFree(t *testing.T)
 }
 
 func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -569,6 +575,7 @@ func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
 // markdown is the default view, so an explicit format=markdown must be
 // accepted alongside offset_bytes and output_match on job: refs.
 func TestReadTranscriptJobMarkdownWithPageAndSearchAccepted(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -586,6 +593,7 @@ func TestReadTranscriptJobMarkdownWithPageAndSearchAccepted(t *testing.T) {
 }
 
 func TestReadTranscriptJobOffsetBeforeRetentionReportsFirstAvailable(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)

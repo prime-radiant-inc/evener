@@ -22,17 +22,20 @@
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
+import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { navigate, paneToURL } from "../../shell/routing";
+import { navigate, paneToURL, refParam } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
+import { StatusBar } from "../../shell/statusbar/StatusBar";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { controlsFor } from "../../stores/liveControls";
+import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
+import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
@@ -41,9 +44,12 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { useBlockedMutationEntries } from "./composer/queue/pendingTurnsStore";
+import { carryComposerDraft } from "./composer/draft";
+import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
+import { RepoLocation } from "./composer/RepoLocation";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
+import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
@@ -53,8 +59,9 @@ import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
+import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
+import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
-import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
 import {
   TranscriptBody,
   transcriptAnchorEntriesForRows,
@@ -62,8 +69,18 @@ import {
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
+import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
+
+// Spec §1: held-steer surfaces render only while the session is live -
+// never on notLoaded or read-only surfaces. The read-only status family
+// matches the shared-notes surface's (humanNoteDrafts.ts): ended, closed,
+// notLoaded, restartRequired. Awaiting stays live: a hold parked at a
+// boundary delivers with the next turn. Two further read-only marks ride
+// outside status - a snapshot's resumeRequired and the recovery-fence
+// obligation - and are read where the live gate composes them below.
+const HELD_SURFACE_OFF_STATUSES = new Set(["ended", "closed", "notLoaded", "restartRequired"]);
 
 export interface SessionPaneParams {
   ref: string;
@@ -87,13 +104,24 @@ const EMPTY_THREADS = new Map<string, ThreadModel>();
 // user to send would ask them to redo what they just did, so that window
 // reports the wait instead and confirms the message arrived.
 //
+// Copy for the version-mismatch (degraded) state. The footer notice and the
+// empty transcript co-render for a fenced session with no saved messages, so
+// they must stay in step. Their one deliberate difference: the notice carries
+// the saved-work and interruption guarantees, which an empty session has no
+// saved work to promise about.
+const DEGRADED_VERSION_NOTICE =
+  "This session is still working, and everything already saved is kept. It's running a different Evener version than this app, so it can't receive new messages. To use it again, use Force shutdown in the session menu to stop it (interrupting anything still in progress), then send your next message to start it.";
+const DEGRADED_VERSION_EMPTY_TITLE = "This session is on a different Evener version";
+const DEGRADED_VERSION_EMPTY_HINT =
+  "To use it, stop it with Force shutdown in the session menu, then send a message to start it.";
+
 // `status.type === "active"` is the wire vocabulary's word for "a turn is
 // running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
-// exactly the mid-first-turn window. An incompatible session needs a restart;
-// other empty sessions invite their first message.
+// exactly the mid-first-turn window. An incompatible session is on a different
+// Evener version; other empty sessions invite their first message.
 function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
   if (restartRequired) {
-    return <EmptyState title="Session unavailable until restart" hint="Stop the daemon, then resume this session." />;
+    return <EmptyState title={DEGRADED_VERSION_EMPTY_TITLE} hint={DEGRADED_VERSION_EMPTY_HINT} />;
   }
   if (active) {
     return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
@@ -123,42 +151,15 @@ function RestartRequiredNotice({
     setRefreshing(true);
     setError(null);
     try {
-      let refreshedRef = sessionRef;
       if (resumeRequired) {
-        const { client, state } = connectionStore.getState();
-        if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
-        // Baseline every Stop generation BEFORE the resume starts: the resume
-        // may return a different identity, and that new ref can be named by a
-        // Stop while the resume RPC is still in flight (any surface already
-        // tracking the resumed ref records it). A fence captured after the
-        // resolve would take that Stop as its baseline and never fire, so both
-        // refs are checked against their pre-resume generations.
-        const stopBaseline = resumeStopBaseline();
-        // beforeRequest runs before the resumed identity is knowable, so a
-        // per-ref fence cannot name it: a Stop acknowledged against ANY ref in
-        // the reconnect window (the resumed identity among them) suppresses
-        // the resume RPC. Once the RPC resolves and the new identity exists,
-        // the checks below name both refs exactly.
-        const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopBaseline });
-        refreshedRef = thread.evener.ref;
-        // During the post-resume hydration the pane still shows the old ref
-        // (the navigate below has not run), so a Stop against EITHER ref must
-        // cancel it: the old ref is what the visible Stop names, the new one
-        // is what another holder of the resumed session names.
-        const identityFence = () => {
-          stopBaseline(sessionRef);
-          stopBaseline(refreshedRef);
-        };
-        identityFence();
-        await threadsStore.getState().refreshThread(refreshedRef, identityFence);
-        identityFence();
-        if (refreshedRef !== sessionRef) {
-          const url = paneToURL("session", { ref: refreshedRef });
-          if (url !== null) navigate(url, { replace: true });
-        }
-      } else {
-        await threadsStore.getState().refreshThread(refreshedRef);
+        // The store owns the ONE resume sequence. Its identity-follow effect
+        // carries the draft and navigates, and its resumeFailures slice (the
+        // composer's toast) is the one failure channel - so this branch keeps no
+        // inline sequence, navigation, or error of its own.
+        await threadsStore.getState().resumeSession(sessionRef);
+        return;
       }
+      await threadsStore.getState().refreshThread(sessionRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -171,11 +172,13 @@ function RestartRequiredNotice({
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
           ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
-          : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
+          : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      <Button disabled={refreshing} onClick={() => void refresh()}>
-        {resumeRequired ? "Resume session" : "Refresh session"}
-      </Button>
+      {(resumeRequired || ownerRef) && (
+        <Button disabled={refreshing} onClick={() => void refresh()}>
+          {resumeRequired ? "Resume session" : "Refresh session"}
+        </Button>
+      )}
       {error && <span>{error}</span>}
     </div>
   );
@@ -201,7 +204,7 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
   return (
     <>
       <Button variant="quiet" onClick={() => setOpen(true)}>
-        Force stop…
+        Force shutdown…
       </Button>
       <ForceStopDialog open={open} onClose={() => setOpen(false)} onConfirm={stop} />
       {error && <span role="alert">{error}</span>}
@@ -211,7 +214,14 @@ function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
 
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const isMobile = useIsMobile();
   const blockedMutations = useBlockedMutationEntries(ref);
+  const pane = useStore(workspaceStore, (state) =>
+    state.panes.find((record) => record.id === paneId && record.type === "session" && refParam(record.params) === ref),
+  );
+  const lifetime = pane ? conversationPaneLifetime(pane) : null;
+  const composerSource = lifetime?.composer ?? null;
+  const readView = lifetime ? retainedTranscriptReadView(lifetime, ref, "session") : null;
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -256,13 +266,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     };
   }, [ref]);
 
+  // S4: opening the pane marks its session seen on the hub, so the session's
+  // blue dot clears on the phone too.
+  useMarkSessionSeenOnOpen(ref);
+
   // Older-turn paging reports its own failures IN the transcript, not as a
   // toast: it is automatic (nobody pressed anything, so a toast would be a
   // notification about work the reader never asked for) and the failure belongs
   // at the exact spot in the scroll where history stops. LoadOlderRow renders
   // olderError with a Retry beside it - the recovery path, since Jesse ruled out
   // a standing "load more" button and silent failure is not an option.
-  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
+  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
+    ref,
+    readView,
+  );
 
   // A DELETED ref never hydrates: the hub durably fences every request
   // against a deleted target (cmd/evener-hub/app_sources.go's
@@ -270,18 +287,37 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // hubcore.DeletionStore never clears that fence once set). threads.ts's own
   // hydrateAndSubscribe records that specific rejection into `deletedRefs`
   // (its own doc comment) as it happens - the SAME thread/read attempt
-  // ensureThread's claim above already keeps retrying, not a second request
-  // from here - while still retrying exactly as it always has, since
-  // ensureThread's returned promise never settles for a deleted ref (its
-  // retry loop has no terminal state and cannot otherwise tell "the daemon
-  // is slow" apart from "this ref is gone"). Reading the flag here is what
-  // lets this pane render an honest terminal state instead of "Loading
-  // transcript…" forever.
-  const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
+  // ensureThread's claim above already makes, not a second request from
+  // here. That fence is terminal for the ref's hydration lifecycle
+  // (threads.ts retires it, settles the acquisition and arms no retry), so
+  // reading the flag here renders an honest terminal state instead of
+  // "Loading transcript…" forever. Deliberately independent of `model` - see
+  // the deleted-surface guard below.
+  const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
+  const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
   const navigation = useNavigationStore();
+  // Identity follow-up for a store-driven resume (a Send on the Send-resumes
+  // face): the store cannot navigate, so it publishes the resumed identity and
+  // this pane follows it. The transcript is already hydrated under the new ref
+  // (the driver's refreshThread), and navigate() replaces the route so the
+  // workspace opens the resumed session rather than leaving this one on a stale
+  // identity. Read at the top with the rest of the store hooks, ahead of the
+  // deleted/!model early returns, per the rules of hooks.
+  const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
+  useEffect(() => {
+    if (resumedIdentity === undefined) return;
+    threadsStore.getState().clearResumedIdentity(ref);
+    // Carry this pane's draft to the resumed identity before navigating: the
+    // incoming pane's composer is keyed by the new ref, so a message typed
+    // while the resume was in flight would otherwise be dropped (R09's "any
+    // newer draft is preserved").
+    carryComposerDraft(ref, resumedIdentity);
+    const url = paneToURL("session", { ref: resumedIdentity });
+    if (url !== null) navigate(url, { replace: true });
+  }, [resumedIdentity, ref]);
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -295,6 +331,42 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // The pending set's activation counter: the pill edge keys on this (not
   // the boolean) so an atomic pending-set replacement on resync re-fires it.
   const askEpoch = useAskDockActivationEpoch(ref);
+  // Held steering (steer/drain/promote ghosts - HeldSteerStack) renders as
+  // the transcript's second trailing-row tenant, below the AskDock when both
+  // exist (steering-ghost spec §1). Read ahead of the !model early return,
+  // per the rules of hooks, same as askPending/askEpoch above.
+  const pendingEntries = usePendingTurnEntries(ref);
+  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries), [pendingEntries]);
+  // Spec §1's live gate, complete: the read-only status family, plus the two
+  // fence marks that can hold a session read-only while its status still
+  // reads active/idle - a snapshot's resumeRequired (cleared only by an
+  // explicit thread/resume) and the restart-blocking recovery obligation
+  // (restartPending above, the same fence liveControls' press-time rule
+  // consults). Composed ahead of the epoch so the pill signal and ghost
+  // visibility agree: the epoch counts only VISIBLE arrivals.
+  const heldSurfaceLive =
+    model !== undefined &&
+    model.resumeRequired !== true &&
+    !restartPending &&
+    !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
+  const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
+  // One predicate decides the row and the count (spec §1): renderedRowCount
+  // derives from the trailingRow handed to the list - the same form
+  // TranscriptBody itself uses - so the count and the row cannot drift and
+  // jump-to-bottom/append-follow cannot land one row short.
+  const heldVisible = heldSurfaceLive && heldSteers.length > 0;
+  const trailingRow =
+    askPending || heldVisible
+      ? {
+          id: "live-edge",
+          content: (
+            <>
+              {askPending && <AskDock ref={ref} />}
+              {heldVisible && <HeldSteerStack ref={ref} />}
+            </>
+          ),
+        }
+      : undefined;
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
   const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
@@ -306,6 +378,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
   const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
   const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(renderRows), [renderRows]);
+  // The projection/rows/anchors trio travels to TranscriptBody as one prepared
+  // view: this pane already derives all three for its scroll manifest, so the
+  // body reuses them instead of deriving a second copy on every model revision.
+  const preparedView = useMemo(
+    () => (projection ? { projection, rows: renderRows, anchorEntries } : undefined),
+    [projection, renderRows, anchorEntries],
+  );
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -327,16 +406,31 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,
+    viewId: readView?.id ?? paneId,
+    keepViewRemount: () =>
+      workspaceStore
+        .getState()
+        .panes.some(
+          (pane) => pane.id === paneId && pane.type === "session" && (pane.params as SessionPaneParams).ref === ref,
+        ),
     model,
     listRef: virtualListRef,
+    initialViewCapture: readView?.getCapture(),
+    onReaderIntent: readView?.supersedePositioning,
+    onReaderMovement: readView?.syncPositioningMovement,
     loadOlder,
+    cancelOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    // The pending-questions dock is a real virtual row (trailingRow below),
-    // so every end-targeted scroll path - initial positioning, append-follow,
-    // jump-to-bottom - must count it or it lands one row short, leaving the
-    // answering surface below the viewport.
-    renderedRowCount: renderRows.length + (askPending ? 1 : 0),
+    // The transcript's trailing row - the ONE live-edge row the AskDock and
+    // the held-steer ghost stack share below - is a real virtual row
+    // (trailingRow below), so every end-targeted scroll path - initial
+    // positioning, append-follow, jump-to-bottom - must count it or it lands
+    // one row short, leaving the answering surface or the ghost below the
+    // viewport. The count derives from that same trailingRow value - the
+    // form TranscriptBody itself uses - so the row and the count cannot
+    // drift.
+    renderedRowCount: renderRows.length + (trailingRow !== undefined ? 1 : 0),
     sourceTurnRowIndexes,
     // ...and its activation is new content: an ask_user item completing
     // changes no turn/item shape, so without this signal a scrolled-away
@@ -346,6 +440,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     // the boolean never leaves true.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
+    // A held row mounts the transcript even when its only turn is the
+    // synthetic prelude. Keep the coordinator's mounted-content predicate
+    // aligned with the render branch below; ask-only dormant behavior stays
+    // unchanged.
+    heldVisible,
+    // ...and a held steer APPEARING is new content the same way an ask
+    // activation is: it changes no turn/item shape, so the pill's edge
+    // detector never sees it without this signal. Arrival is the only edge
+    // (useHeldSteerEpoch never bumps on removal - departures are announced
+    // by HeldSteerAnnouncements, not counted as new content).
+    heldEpoch,
   });
   // The transcript's keyboard scroll (Alt+Arrow/Alt+Shift+Arrow, Phase 3):
   // per-pane handlers against the shared registry that decline unless THIS
@@ -355,6 +460,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     listRef: virtualListRef,
     jumpToBottom: flow.jumpToBottom,
     markGesture: flow.markGesture,
+    onPositioningCommand: readView?.supersedePositioning,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
@@ -388,24 +494,46 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     workspaceStore.getState().closePane(paneId);
   }
 
-  if (!model) {
-    if (deletedRef) {
-      return (
-        <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
-          <EmptyState
-            title="This session was deleted"
-            hint="Its transcript is gone. You can close this pane."
-            action={
-              <Button variant="quiet" onClick={handleCloseDeleted}>
-                Close
-              </Button>
-            }
-          />
-        </PaneScaffold>
-      );
-    }
+  const footerCwd = !deletedRef && model ? model.cwd : null;
+  const edgeFooter = useMemo(() => {
+    if (isMobile) return undefined;
+    const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
+    return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
+  }, [footerCwd, isMobile, paneId, ref]);
+
+  // The deleted surface outranks any cached model: a durably deleted target
+  // can never hydrate a fresh one, and its last cached snapshot is stale.
+  if (deletedRef) {
     return (
-      <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
+      <PaneScaffold
+        paneId={paneId}
+        focused={paneFocused}
+        scaffoldMarker={`session:${ref}`}
+        title={title}
+        edgeFooter={edgeFooter}
+      >
+        <EmptyState
+          title="This session was deleted"
+          hint="Its transcript is gone. You can close this pane."
+          action={
+            <Button variant="quiet" onClick={handleCloseDeleted}>
+              Close
+            </Button>
+          }
+        />
+      </PaneScaffold>
+    );
+  }
+
+  if (!model) {
+    return (
+      <PaneScaffold
+        paneId={paneId}
+        focused={paneFocused}
+        scaffoldMarker={`session:${ref}`}
+        title={title}
+        edgeFooter={edgeFooter}
+      >
         <EmptyState
           title="Loading transcript…"
           hint={
@@ -419,18 +547,43 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     );
   }
 
-  const recoveryOwnerRef =
-    !mutationStateAuthoritative &&
-    model.status.type !== "notLoaded" &&
-    model.status.type !== "restartRequired" &&
-    model.parentRef?.startsWith("local:")
-      ? model.parentRef
-      : undefined;
+  // A held ghost is mounted content even on a turnless transcript: the
+  // dormant empty surface yields to the transcript subtree so the ghost
+  // stack and its announcements mount for an idle drain (steering-ghost
+  // spec §2).
+  const showDormantSurface = isDormantTranscript(model.turns) && !heldVisible;
+  const dormantSurface = showColdStartSkeleton ? (
+    <ColdStartSkeleton />
+  ) : (
+    <EmptyTranscript
+      active={model.status.type === "active"}
+      restartRequired={model.status.type === "restartRequired"}
+    />
+  );
 
+  const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
+
+  // Neither face of the fence that Send now drives needs the notice: the
+  // merely-resumable fold (the hub folds the resume into turn/start) and the
+  // Send-resumes face (the store's driver runs the resume the standalone button
+  // used to). Both drop the notice and the Resume control. The reasons that
+  // remain the notice's are shapes Send cannot drive - a restartRequired
+  // daemon, a session retained by its owner, a draining Stop, and a blocked-rows
+  // shape on a non-local ref. The uncertain-message signal is read here so a
+  // blocked-rows snapshot that Send CAN drive is distinguished from one it
+  // cannot.
+  const fence = recoveryFence(ref, model, restartPending, {
+    uncertainMessages: blockedMutations.length > 0,
+    stopInFlight: stopping,
+    queuedNonSend: hasQueuedNonSend(ref),
+    mutationStateAuthoritative,
+  });
   const showRestartNotice =
     model.status.type === "restartRequired" ||
-    restartPending ||
-    (blockedMutations.length > 0 && (model.status.type === "notLoaded" || !mutationStateAuthoritative));
+    (restartPending && !fence.sendDriven) ||
+    (blockedMutations.length > 0 &&
+      (model.status.type === "notLoaded" || !mutationStateAuthoritative) &&
+      !fence.sendDriven);
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 
@@ -451,10 +604,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <TranscriptBody
         model={model}
         config={displayConfig}
+        preparedView={preparedView}
         surface="live"
-        disclosureScope={`transcript:live:${ref}`}
+        disclosureScope={readView?.id ?? paneId}
         sessionRef={ref}
-        viewId={paneId}
+        sourcePaneId={paneId}
+        viewId={readView?.id}
+        initialViewCapture={readView?.getCapture()}
+        readView={readView ?? undefined}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
@@ -462,7 +619,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         showSeenDividerTurnId={seenDividerTurnId ?? undefined}
         loadOlderRow={
           model.olderCursor && (
-            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            <LoadOlderRow
+              onLoad={loadOlderReportingError}
+              loading={loadingOlder}
+              error={olderError}
+              scrollElement={() => virtualListRef.current?.getScrollElement() ?? null}
+            />
           )
         }
         liveOverlay={
@@ -478,14 +640,19 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
-        // The pending-questions dock is the transcript's last row while any
-        // batch is pending: it scrolls with the content (a reader scrolling
-        // back for context scrolls it away), its answer state lives in
-        // askDockStore so the virtual list unmounting the row loses nothing,
-        // and the list's end-anchoring surfaces a new question for a reader
-        // at the bottom without yanking one who scrolled up. Passed only
-        // while pending so no empty zero-height row pads the list otherwise.
-        trailingRow={askPending ? { id: "ask-dock", content: <AskDock ref={ref} /> } : undefined}
+        // The live-edge row is the transcript's last row while either
+        // bottom-dwelling tenant exists: the pending-questions dock while any
+        // batch is pending, and the held-steer ghost stack while any held
+        // steering is in flight, rendered below the dock when both exist
+        // (the one-row decision steering-ghost spec §1 makes). It scrolls
+        // with the content (a reader scrolling back for context scrolls it
+        // away), its tenants' interactive state lives in their own stores
+        // (askDockStore, the shared pendingTurnsStore) so the virtual list
+        // unmounting the row loses nothing, and the list's end-anchoring
+        // surfaces new content for a reader at the bottom without yanking
+        // one who scrolled up. Passed only while a tenant exists so no
+        // empty zero-height row pads the list otherwise.
+        trailingRow={trailingRow}
       />
       <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
         <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
@@ -503,6 +670,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     <PaneScaffold
       paneId={paneId}
       focused={paneFocused}
+      focusSelector='[data-composer] [role="textbox"]'
       scaffoldMarker={`session:${ref}`}
       title={title}
       cadence={cadence}
@@ -514,7 +682,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               now={now}
               active={model.status.type === "active"}
               sessionRef={ref}
-              turnId={model.activeTurnId}
+              // runningTurnId is the live-updated field (spec "Turn status":
+              // running state lives in the overlay/status frames, not a
+              // one-time read) - a v6 thread's activeTurnId is only ever
+              // refreshed by a fresh thread/read, so it can go stale between
+              // reads. Falls back to activeTurnId for a thread that has not
+              // (yet) hydrated through the v6 path, where runningTurnId is
+              // never set.
+              turnId={model.runningTurnId ?? model.activeTurnId}
               retry={model.modelRetry}
               primaryModel={model.model}
             />
@@ -532,29 +707,30 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
               !restartPending &&
-              !controlsFor(model).send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
+              !controlsFor(model).send && <SessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}
             <PendingChips sessionRef={ref} />
-            <Composer ref={ref} focused={paneFocused} />
+            {composerSource && <Composer ref={ref} paneId={paneId} source={composerSource} focused={paneFocused} />}
           </div>
         </div>
       }
+      edgeFooter={edgeFooter}
     >
       <div className={styles.contentColumn}>
-        <TopNotesPanel sessionRef={ref} model={model} />
+        <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={paneId} />
         <SandboxEscalationRail sessionRef={ref} />
-        {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
-          <ColdStartSkeleton />
-        ) : isDormantTranscript(model.turns) ? (
-          <EmptyTranscript
-            active={model.status.type === "active"}
-            restartRequired={model.status.type === "restartRequired"}
-          />
-        ) : (
-          transcript
-        )}
+        {/* The held-steer ghosts' ONE live region, same rule as the ask
+            dock's: outside the virtual list, announcing only real
+            appearance/delivery/departure transitions. It mounts here,
+            INDEPENDENT of the transcript subtree: a dormant transcript's
+            LAST departure unmounts that subtree in the same commit
+            (heldVisible flips false, the dormant empty surface takes
+            over), so a region inside it would never observe the departure
+            it must announce (spec §5). Live-gated per spec §1. */}
+        {heldSurfaceLive && <HeldSteerAnnouncements ref={ref} />}
+        {showDormantSurface ? dormantSurface : transcript}
       </div>
     </PaneScaffold>
   );

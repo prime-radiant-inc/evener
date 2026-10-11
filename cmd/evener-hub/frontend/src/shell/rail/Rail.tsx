@@ -4,8 +4,9 @@ import type {
   NavigationProjectResource,
   NavigationProjectSummary,
   NavigationSessionSummary,
+  Source,
 } from "@evener/appwire-client";
-import { canReadSharedNotes, errorText } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import {
   isSettledGone,
   keyID,
@@ -24,22 +25,31 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import {
+  type ArchivedList,
+  archivedListKey,
+  loadMoreArchivedList,
+  refreshArchivedList,
+  useArchivedLists,
+} from "../../stores/archivedList";
 import { useConnectionStore } from "../../stores/connection";
+import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
   selectAttentionSummary,
+  selectDisplaySources,
   selectPinSectionSummaries,
   selectPinSections,
   selectRailModel,
 } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
-import { topNotesStore } from "../../stores/topNotes";
 import {
   Badge,
   Button,
@@ -48,6 +58,8 @@ import {
   EmptyState,
   IconButton,
   Input,
+  Popover,
+  RadioGroup,
   Skeleton,
   Tooltip,
   useToasts,
@@ -55,12 +67,13 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
+import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
-import { workspaceStore } from "../workspace";
+import { currentSessionRef, useWorkspaceStore, workspaceStore } from "../workspace";
 import {
   assignSessionPin,
   deletePinSection,
@@ -79,23 +92,29 @@ import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
 import { loadExpansion, saveExpansion } from "./railExpansion";
-import { GearIcon, SearchIcon, SidebarIcon } from "./railIcons";
+import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
   catalogOverflowNode,
+  hostProjectNodes,
+  type IsExpanded,
+  liveNodesGroupedByHost,
   type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
   pinSectionDisclosureID,
   pinSectionOverflowNode,
-  projectNodeIdForSessionRef,
+  projectLoadExpansionKeys,
   projectNodes,
+  projectNodesWithHostBranches,
+  type RailGroupingMode,
   type RailNode,
   type RailPinSection,
   type RailProject,
   type RailSession,
+  revealExpansionIds,
   sectionOverflowNode,
   sessionNodes,
 } from "./railNodes";
@@ -117,6 +136,8 @@ const CLASS = {
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
+  organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
+  organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
   dialogField: requireClass(dialogStyles.dialogField, "railDialog.module.css", "dialogField"),
   dialogActions: requireClass(dialogStyles.dialogActions, "railDialog.module.css", "dialogActions"),
   pickerError: requireClass(dialogStyles.pickerError, "railDialog.module.css", "pickerError"),
@@ -154,6 +175,7 @@ interface RailSectionProps {
   onToggle: (node: RailNode) => void;
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
+  isRowSelected: (node: RailNode) => boolean | undefined;
   projectRetryCallback: (key: string) => () => void;
 }
 
@@ -182,6 +204,52 @@ function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: Sect
       </h3>
       {action !== undefined && <div className={CLASS.sectionHeadingAction}>{action}</div>}
     </div>
+  );
+}
+
+// The rail's organize-by switcher: an icon-only quiet trigger opening the
+// RadioGroup popover. The Tooltip carries the name the icon drops, and the
+// popover's checked option plus the re-titled section below state the
+// current mode, so nothing else on the row needs to. Rendered hard right in
+// its own row between the Live section and the Hosts/Projects section it
+// controls, so it reads as a toolbar for the section below and never as a
+// Live affordance.
+function OrganizeByControl({
+  mode,
+  onChange,
+}: {
+  mode: SidebarGroupingPref;
+  onChange: (mode: SidebarGroupingPref) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover
+      open={open}
+      onClose={() => setOpen(false)}
+      trigger={
+        <Tooltip label="Organize by">
+          <IconButton
+            label="Organize by"
+            icon={<TuneIcon />}
+            variant="quiet"
+            size="sm"
+            onClick={() => setOpen((current) => !current)}
+          />
+        </Tooltip>
+      }
+    >
+      <div className={CLASS.organizePanel}>
+        <RadioGroup
+          label="Organize by"
+          value={mode}
+          onChange={(value) => onChange(value as SidebarGroupingPref)}
+          options={[
+            { value: "host-project", label: "Host, then project" },
+            { value: "project-host", label: "Project, then host" },
+          ]}
+        />
+      </div>
+    </Popover>
   );
 }
 interface NavigationRailRowProps {
@@ -231,16 +299,53 @@ function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: stri
   );
 }
 function isPassiveRailNode(node: RailNode): boolean {
-  return (
-    node.kind === "loading" ||
-    node.kind === "job" ||
-    // A watch row is a leaf with no disclosure of its own: the wire row
-    // (active, cadence, note) is the whole truth, exactly like a job row. An
-    // Enter must not persist an expansion override for a row that cannot
-    // expand.
-    node.kind === "watch" ||
-    (node.kind === "overflow" && node.passive === true)
-  );
+  // The loading placeholder is the rail's one passive row: an Enter or expand
+  // chord on it must not persist an expansion override for a row that cannot
+  // expand.
+  return node.kind === "loading";
+}
+
+/** The catalogs' "+N more projects" row, appended to whatever the section's
+ * own nodes are - flat project rows today, host groups under the organize-by
+ * setting. */
+function withCatalogOverflow(
+  nodes: RailNode[],
+  overflow?: { remaining: number; offset: number; limit: number },
+  overflowId?: string,
+  overflowCatalog?: "projects" | "archived_projects" | "test_runs",
+): RailNode[] {
+  if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
+    return [
+      ...nodes,
+      ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
+    ];
+  }
+  return nodes;
+}
+
+/** The Projects tier under the organize-by setting: ONE decision pairs the
+ * section's title with its node shape, so they cannot drift apart (the same
+ * one-decision doctrine as projectPlacement below). Test runs stay flat -
+ * that tier is a catalog, not the work surface the setting addresses. */
+function projectsTierFor(
+  mode: RailGroupingMode,
+  projects: readonly RailProject[],
+  sources: readonly Source[],
+  isExpanded: IsExpanded,
+): { title: string; nodes: RailNode[] } {
+  switch (mode) {
+    case "host-project":
+      return { title: "Hosts", nodes: hostProjectNodes(projects, sources, isExpanded) };
+    case "project-host":
+      return { title: "Projects", nodes: projectNodesWithHostBranches(projects, sources, isExpanded) };
+    default:
+      // Flat rows name their launch host too: the display sources resolve
+      // it (a local project to this hub, a remote-owned one to its host),
+      // so a stale spawn draft cannot redirect the click and a host the
+      // manifest has not named cannot fall back to this hub with the
+      // remote working_dir.
+      return { title: "Projects", nodes: projectNodes(projects, isExpanded, sources) };
+  }
 }
 
 // One shared Tree wrapper for the rail's sections: the rail renders on
@@ -263,6 +368,7 @@ function RailSection({
   onToggle,
   onActivate,
   actions,
+  isRowSelected,
   projectRetryCallback,
 }: RailSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
@@ -270,7 +376,15 @@ function RailSection({
   return (
     <section className={CLASS.section}>
       <SectionHeading label={title} open={open} onToggleOpen={onToggleOpen} staticLabel />
-      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
+      {open && (
+        <RailTree
+          nodes={nodes}
+          onToggle={onToggle}
+          onActivate={onActivate}
+          renderRow={renderRow}
+          isSelected={isRowSelected}
+        />
+      )}
     </section>
   );
 }
@@ -278,7 +392,6 @@ interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes
   section: RailPinSection;
   onRename: () => void;
   onDelete: () => void;
-  isExpanded: ReturnType<typeof overrideLookup>;
   projectRetryCallback: (key: string) => () => void;
 }
 function PinnedRailSection({
@@ -287,10 +400,10 @@ function PinnedRailSection({
   onToggleOpen,
   onRename,
   onDelete,
-  isExpanded,
   onToggle,
   onActivate,
   actions,
+  isRowSelected,
   projectRetryCallback,
 }: PinnedRailSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
@@ -320,7 +433,7 @@ function PinnedRailSection({
       {open && (
         <RailTree
           nodes={[
-            ...sessionNodes(section.sessions ?? [], isExpanded),
+            ...sessionNodes(section.sessions ?? []),
             ...pinSectionOverflowNode(
               `pinsection:${section.id}`,
               section.id,
@@ -332,6 +445,7 @@ function PinnedRailSection({
           onToggle={onToggle}
           onActivate={onActivate}
           renderRow={renderRow}
+          isSelected={isRowSelected}
         />
       )}
     </section>
@@ -349,6 +463,7 @@ function ArchivedSection({
   onToggle,
   onActivate,
   actions,
+  isRowSelected,
   projectRetryCallback,
 }: ArchivedSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
@@ -356,7 +471,15 @@ function ArchivedSection({
   return (
     <section className={CLASS.section}>
       <SectionHeading label={label} open={open} onToggleOpen={onToggleOpen} staticLabel />
-      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
+      {open && (
+        <RailTree
+          nodes={nodes}
+          onToggle={onToggle}
+          onActivate={onActivate}
+          renderRow={renderRow}
+          isSelected={isRowSelected}
+        />
+      )}
     </section>
   );
 }
@@ -386,14 +509,20 @@ function summarySession(
   const context = `${scope}\0${tier ?? ""}\0${pinSectionID ?? ""}\0${projectKey ?? ""}`;
   const cached = sessionModelCache.get(summary as object)?.get(context);
   if (cached) return cached;
-  const children = summary.children.map((child) => summarySession(child, scope, tier, pinSectionID, projectKey));
   const result = {
     ...summary,
     row_id: `navigation:${scope}:${summary.ref}`,
     tier,
     pin_section_id: pinSectionID,
     project_key: projectKey,
-    children,
+    // Archived lists retain separate fork-original conversations. Delegate
+    // activity belongs to the scoped activity owner, not navigation rows.
+    children:
+      tier === "archived"
+        ? summary.children
+            .filter((child) => child.kind === "fork")
+            .map((child) => summarySession(child, scope, tier, pinSectionID, projectKey))
+        : [],
   };
   let entries = sessionModelCache.get(summary as object);
   if (!entries) {
@@ -439,7 +568,9 @@ function returnedRootRows(resource: ResourceState, slot: string, field: string):
   const rows = data?.[field];
   return Array.isArray(rows) ? rows.length : 0;
 }
-const PROJECT_TIERS = ["current", "recent", "archived"] as const;
+// The tiers a project resource serves rows for. Archived rows come from the
+// project's archived list (withArchivedList), not from navigation.
+const PROJECT_TIERS = ["current", "recent"] as const;
 function projectPageStates(
   pages: ReadonlyMap<string, ResourceState>,
   projectKey: string,
@@ -566,7 +697,7 @@ function projectFromSummary(
   const cached = cachedProject(summary, "compatibility", rootObject, pageDependencies, rootError);
   if (cached) return cached;
   const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const more: Partial<Record<"current" | "recent", number>> = {};
   const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
   for (const tier of PROJECT_TIERS) {
     const base = root?.[tier];
@@ -594,7 +725,6 @@ function projectFromSummary(
     sessions: all,
     more_current: more.current,
     more_recent: more.recent,
-    more_archived: more.archived,
   };
   return cacheProject(summary, "compatibility", rootObject, pageDependencies, result, rootError);
 }
@@ -629,7 +759,7 @@ function projectFromGraph(
   if (!projectEntity) return null;
   const metadata = normalized.graph.metadata;
   const all: RailSession[] = [];
-  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const more: Partial<Record<"current" | "recent", number>> = {};
   const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
   for (const tier of PROJECT_TIERS) {
     const container = normalized.graph.containers.get(navigationOwnedContainerKey(projectEntity.key, tier));
@@ -664,7 +794,6 @@ function projectFromGraph(
     nextOffsets,
     more_current: more.current,
     more_recent: more.recent,
-    more_archived: more.archived,
   });
 }
 function asArchivedProject(project: RailProject): RailProject {
@@ -674,6 +803,43 @@ function asArchivedProject(project: RailProject): RailProject {
   const archived = { ...project, is_archived: true };
   archivedProjectModelCache.set(project as object, archived);
   return archived;
+}
+// withArchivedList adds a project's loaded archived rows, from its archived
+// list, to the rows navigation served, and leaves more_archived as the archived
+// rows not loaded yet. The summary's more_archived is the whole archived count;
+// once the list has loaded, its own total is the fresher count. Cached per
+// built project and list entry so an unchanged pair keeps one identity.
+const archivedListProjectCache = new WeakMap<object, { list: ArchivedList | undefined; result: RailProject }>();
+function withArchivedList(project: RailProject, catalog: CatalogKind, list: ArchivedList | undefined): RailProject {
+  const cached = archivedListProjectCache.get(project);
+  if (cached && cached.list === list) return cached.result;
+  const rows = list ? sessions(list.rows, `project:${project.key}:archived`, "archived", undefined, project.key) : [];
+  const summaryTotal = project.more_archived ?? 0;
+  const total = list?.loaded ? list.total : summaryTotal;
+  const result = {
+    ...project,
+    catalog,
+    archived_total: summaryTotal,
+    // A session unarchived moments ago can be in navigation's rows and still
+    // in the list until the list refreshes.
+    sessions: dedupeSessions([...project.sessions, ...rows]),
+    more_archived: Math.max(0, total - rows.length),
+  };
+  archivedListProjectCache.set(project, { list, result });
+  return result;
+}
+function allRailProjects(resources: RailResources): RailProject[] {
+  return [...resources.projects, ...resources.archivedProjects, ...resources.testRuns];
+}
+function withArchivedLists(resources: RailResources, lists: Readonly<Record<string, ArchivedList>>): RailResources {
+  const apply = (projects: readonly RailProject[], catalog: CatalogKind) =>
+    projects.map((project) => withArchivedList(project, catalog, lists[archivedListKey(catalog, project.key)]));
+  return {
+    ...resources,
+    projects: apply(resources.projects, "projects"),
+    archivedProjects: apply(resources.archivedProjects, "archived_projects"),
+    testRuns: apply(resources.testRuns, "test_runs"),
+  };
 }
 function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
   const output: RailProject[] = [];
@@ -812,7 +978,10 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
     },
   };
 }
-export const adaptNavigationResources = railResources;
+export const adaptNavigationResources = (
+  state: ReturnType<typeof navigationStore.getState>,
+  lists: Readonly<Record<string, ArchivedList>> = {},
+): RailResources => withArchivedLists(railResources(state), lists);
 function nonEmpty(resources: RailResources): boolean {
   return (
     resources.live.length > 0 ||
@@ -885,8 +1054,34 @@ function NavigationRail({
   const resourcesState = useNavigationStore((state) => state.resources);
   const expanded = useNavigationStore((state) => state.expanded);
   const attention = useNavigationStore((state) => selectAttentionSummary(state));
+  // The rail's organize-by setting. Host grouping turns on only when the
+  // manifest has named a remote source, and the decision reads the DISPLAY
+  // list (last-known): grouping is a layout fact, and the settled list
+  // (selectSources) empties for the length of any revalidation, which would
+  // blink the whole rail flat and back. Launchability stays on the settled
+  // list where it belongs - the spawn picker reads it - so a host the fresh
+  // manifest removed is still never launchable; the rail's SHAPE merely
+  // keeps the last-known hosts until the read settles. The builders read
+  // the display list too: a host group's online flag and label are display
+  // facts, and a revalidation must not flip groups offline for the length
+  // of the refresh (the same sticky contract the session rows' host chips
+  // read). A hub with no configured hosts keeps today's rail exactly.
+  const grouping = usePrefsStore((state) => state.sidebarGrouping);
+  const setGrouping = usePrefsStore((state) => state.setSidebarGrouping);
+  const displaySources = useNavigationStore(selectDisplaySources);
+  const hostGrouping = displaySources.some((source) => source.id !== LOCAL_HOST);
+  const groupingMode: RailGroupingMode = hostGrouping ? grouping : "flat";
   const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
+  // The session the workspace is showing, if any, marks its row as the selected
+  // item. One subscription here, not one inside every section's Tree: a rail
+  // renders several Trees, and each would re-render its whole subtree on every
+  // pane open/focus/close. Only session rows are selectable - a project or
+  // host row returns undefined, leaving it without a selected state rather
+  // than asserting it is a non-selection.
+  const selectedSessionRef = useWorkspaceStore(currentSessionRef);
+  const isRowSelected = (node: RailNode): boolean | undefined =>
+    node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
   const [sectionRenameTarget, setSectionRenameTarget] = useState<RailPinSection | null>(null);
   const [sectionRenameValue, setSectionRenameValue] = useState("");
@@ -907,10 +1102,12 @@ function NavigationRail({
   const railRef = useRef<HTMLDivElement>(null);
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
-  const base = useMemo(
+  const archivedLists = useArchivedLists();
+  const navigationBase = useMemo(
     () => railResources({ ...navigationStore.getState(), resources: resourcesState }),
     [resourcesState],
   );
+  const base = useMemo(() => withArchivedLists(navigationBase, archivedLists), [navigationBase, archivedLists]);
   const resources = useMemo(
     () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
     [base, pending],
@@ -958,7 +1155,7 @@ function NavigationRail({
   }, [revealTarget, onRevealConsumed]);
 
   useEffect(() => {
-    if (navigationMode !== "v2") return;
+    if (navigationMode !== "v3") return;
     if (!manifest)
       void navigationStore
         .getState()
@@ -1036,22 +1233,22 @@ function NavigationRail({
   }, []);
   useEffect(() => {
     currentLoadProjectRoot.current = loadProjectRoot;
-    const ownedKeys = new Set(
-      [...resources.projects, ...resources.archivedProjects, ...resources.testRuns].map((project) => project.key),
-    );
+    const ownedKeys = new Set(allRailProjects(resources).map((project) => project.key));
     for (const key of projectRetryCallbacks.current.keys()) {
       if (!ownedKeys.has(key)) projectRetryCallbacks.current.delete(key);
     }
   }, [loadProjectRoot, resources]);
   useEffect(() => {
-    if (navigationMode !== "v2") return;
+    if (navigationMode !== "v3") return;
     const generation = navigationStore.getState().clientGenerationID;
     if (generation !== rootGeneration.current) {
       rootLoadsInFlight.current.clear();
       rootGeneration.current = generation;
     }
-    for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
-      const expanded = isExpanded(projectNodeExpansionKey(project.key), project.default_expanded ?? false);
+    for (const project of allRailProjects(resources)) {
+      const expanded = projectLoadExpansionKeys(project, groupingMode).some((id) =>
+        isExpanded(id, project.default_expanded ?? false),
+      );
       if (
         !expanded ||
         project.loaded === true ||
@@ -1064,7 +1261,32 @@ function NavigationRail({
         continue;
       loadProjectRoot(project.key);
     }
-  }, [navigationMode, resources, isExpanded, loadProjectRoot]);
+  }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
+  // A hydrated project with archived sessions loads its archived list. A
+  // loaded list refetches when the navigation count moves to a total the list
+  // does not hold: rows were archived or unarchived elsewhere (another client,
+  // the CLI, age). Reacting only to a move keeps two counts that disagree from
+  // refetching without end, and a list an action already refreshed holds the
+  // new total, so it is not fetched twice.
+  const archivedCountsSeen = useRef(new Map<string, number>());
+  useEffect(() => {
+    for (const project of allRailProjects(resources)) {
+      if (!project.loaded || !project.catalog) continue;
+      const total = project.archived_total ?? 0;
+      const key = archivedListKey(project.catalog, project.key);
+      const list = archivedLists[key];
+      // A move seen while the list loads waits for the answer, which may carry
+      // the old total.
+      if (list?.loading) continue;
+      const countMoved = archivedCountsSeen.current.get(key) !== total;
+      archivedCountsSeen.current.set(key, total);
+      if (!list) {
+        if (total > 0) void refreshArchivedList(project.catalog, project.key);
+      } else if (countMoved && (!list.loaded || list.total !== total)) {
+        void refreshArchivedList(project.catalog, project.key);
+      }
+    }
+  }, [resources, archivedLists]);
   useEffect(() => {
     if (!revealTarget) return;
     const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
@@ -1075,12 +1297,19 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    const projectID = projectNodeIdForSessionRef(
-      [...resources.projects, ...resources.testRuns, ...resources.archivedProjects],
-      revealTarget,
-    );
-    if (projectID && expandedOverrides.get(projectID) !== true) {
-      setExpanded(projectID, true);
+    // The chain must name folds that actually render: only the Projects
+    // section honors the grouping, so grouped ids apply to it alone while
+    // the always-flat tiers keep flat ids whatever the mode. A test run's
+    // archived rows still route to the archived-group fold; a whole-archived
+    // project renders every row under its own node instead.
+    const chain = [
+      ...revealExpansionIds(resources.projects, resources.live, revealTarget, groupingMode),
+      ...revealExpansionIds(resources.testRuns, [], revealTarget, "flat"),
+      ...revealExpansionIds(resources.archivedProjects, [], revealTarget, "flat", { rowsUnderProjectNode: true }),
+    ];
+    const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
+    if (nextFold) {
+      setExpanded(nextFold, true);
       return;
     }
     const currentState = navigationStore.getState();
@@ -1092,10 +1321,14 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
-      currentState,
-      locationKey,
-    );
+    const location = resourceData<{
+      project_key?: string;
+      tier?: string;
+      pin_section_id?: string;
+      session?: NavigationSessionSummary;
+      top_level?: boolean;
+      top_level_ref?: string;
+    }>(currentState, locationKey);
     if (!location) {
       if (revealLookupInFlight.current?.target !== revealTarget) {
         const target = revealTarget;
@@ -1120,6 +1353,34 @@ function NavigationRail({
       consumeReveal();
       return;
     }
+    // Delegate refs reveal their carrier in the flat navigation rail. An
+    // archived fork original has its own inline row; the loaded fold chain
+    // above reveals that row after its continuation arrives.
+    const carrierRef =
+      location.top_level === false && location.top_level_ref && location.top_level_ref !== revealTarget
+        ? location.top_level_ref
+        : null;
+    const archivedForkOriginal = location.tier === "archived" && location.session.kind === "fork";
+    if (carrierRef !== null && !archivedForkOriginal) {
+      const carrierRow = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
+        (element) => element.dataset.sessionRef === carrierRef,
+      );
+      if (carrierRow && revealCompletedTarget.current !== revealTarget) {
+        carrierRow.scrollIntoView({ block: "center", behavior: "smooth" });
+        consumeReveal();
+        return;
+      }
+      const carrierChain = [
+        ...revealExpansionIds(resources.projects, resources.live, carrierRef, groupingMode),
+        ...revealExpansionIds(resources.testRuns, [], carrierRef, "flat"),
+        ...revealExpansionIds(resources.archivedProjects, [], carrierRef, "flat", { rowsUnderProjectNode: true }),
+      ];
+      const nextCarrierFold = carrierChain.find((id) => expandedOverrides.get(id) !== true);
+      if (nextCarrierFold) {
+        setExpanded(nextCarrierFold, true);
+        return;
+      }
+    }
     if (location.project_key) {
       const projectState = resourceState(currentState, { kind: "project", projectKey: location.project_key });
       if (isSettledGone(projectState)) {
@@ -1142,6 +1403,38 @@ function NavigationRail({
       requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
         navigationStore.getState().loadProject(location.project_key as string),
       );
+      // An archived row lives in its project's archived list, not in a
+      // navigation resource: page the list until the row loads, then the fold
+      // chain above opens it. A list that ends without the row cannot reveal it.
+      if (location.tier === "archived") {
+        const project = allRailProjects(resources).find((candidate) => candidate.key === location.project_key);
+        const catalog = project?.catalog;
+        const list = catalog ? archivedLists[archivedListKey(catalog, location.project_key)] : undefined;
+        // A nested row (a fork original) is found through the row that carries
+        // it, the location's top_level_ref.
+        const rowRef = location.top_level === false ? location.top_level_ref : revealTarget;
+        // The count effect creates the list when navigation counts archived
+        // rows. A location can resolve to one while the count is still 0 (a
+        // lagging revision, a deep link ahead of the count), so fetch it here.
+        if (catalog && !list && (project?.archived_total ?? 0) === 0)
+          requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:first`, () =>
+            refreshArchivedList(catalog, location.project_key as string),
+          );
+        if (catalog && list && !list.loading && !list.rows.some((row) => row.ref === rowRef)) {
+          const cursor = list.nextCursor;
+          if (cursor)
+            requestRevealResource(revealTarget, `archived:${catalog}:${cursor}`, () =>
+              loadMoreArchivedList(catalog, location.project_key as string),
+            );
+          else if (list.error === null) consumeReveal();
+          // A failed first page has no cursor to page from, and the count
+          // effect skips it (the count has not moved). Ask once per reveal.
+          else
+            requestRevealResource(revealTarget, `archived:${catalog}:${location.project_key}:retry`, () =>
+              refreshArchivedList(catalog, location.project_key as string),
+            );
+        }
+      }
       return;
     }
     if (location.pin_section_id) {
@@ -1161,18 +1454,30 @@ function NavigationRail({
     revealTarget,
     resources,
     expandedOverrides,
+    groupingMode,
     consumeReveal,
     setExpanded,
     requestRevealResource,
     openRevealSection,
     projectPlacement,
+    archivedLists,
   ]);
 
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
     setExpanded(node.id, value);
-    if (!value && node.kind === "project") rootLoadsInFlight.current.delete(node.project.key);
+    if (!value && node.kind === "project") {
+      // The in-flight guard is project-wide but one project renders several
+      // nodes (host-first copies): clear it only when no other copy stays
+      // expanded, or the load effect re-fires a duplicate concurrent load.
+      // node.id is excluded because the memoized lookup still reads the
+      // pre-toggle map, where this copy counts as expanded.
+      const stillExpanded = projectLoadExpansionKeys(node.project, groupingMode).some(
+        (id) => id !== node.id && isExpanded(id, node.project.default_expanded ?? false),
+      );
+      if (!stillExpanded) rootLoadsInFlight.current.delete(node.project.key);
+    }
     if (
       value &&
       node.kind === "project" &&
@@ -1196,13 +1501,16 @@ function NavigationRail({
       return;
     }
     if (node.kind === "session") {
-      if (node.session.kind === "cluster") handleToggle(node);
-      else openSession(node.session);
+      openSession(node.session);
       return;
     }
     handleToggle(node);
   }
   async function loadOverflowPage(page: OverflowPage): Promise<void> {
+    if (page.projectKey && page.tier === "archived" && page.catalog) {
+      await loadMoreArchivedList(page.catalog, page.projectKey);
+      return;
+    }
     if (page.projectKey && page.tier) {
       await navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit);
       return;
@@ -1265,23 +1573,9 @@ function NavigationRail({
   );
   const rowActions = useMemo<RailRowActions>(
     () => ({
-      onOpenSessionPane: (session, pane) => {
-        // A menu rendered while the session still had the notes capability
-        // can be clicked before React processes the revocation, so the notes
-        // action rechecks the capability - the same guard SessionChrome's
-        // own Notes entry applies. Without it a stale click leaves expanded
-        // and focus state for a panel that cannot render.
-        if (pane === "notes" && !canReadSharedNotes(threadsStore.getState().threads.get(session.ref))) return;
-        const workspace = workspaceStore.getState();
-        workspace.openPane("session", { ref: session.ref });
-        if (pane === "notes") {
-          // Idempotent open, like the sibling branches below: the rail
-          // navigates, it does not toggle - closing notes belongs to the
-          // panel's own header and the palette's Toggle command.
-          topNotesStore.getState().openAndFocus(session.ref);
-        } else {
-          workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
-        }
+      onOpenOverview: (session) => {
+        workspaceStore.getState().openPane("session", { ref: session.ref });
+        activitySidebarStore.getState().openFor(session.ref);
       },
       onRenameSession: (session, name) =>
         runAction(
@@ -1293,7 +1587,7 @@ function NavigationRail({
       onForceStopSession: async (session) => {
         await runAction(
           () => threadsStore.getState().forceStop(session.ref),
-          "Couldn't force stop session",
+          "Couldn't force shutdown session",
           undefined,
           true,
         );
@@ -1560,8 +1854,9 @@ function NavigationRail({
           .map((p) => [p.key, p]),
       ),
       isExpanded,
+      displaySources,
     ),
-    ...archivedSessionGroups(unarchived, isExpanded),
+    ...archivedSessionGroups(unarchived, isExpanded, displaySources),
   ];
   if (resources.catalogOverflow?.archived_projects) {
     const ov = resources.catalogOverflow.archived_projects;
@@ -1569,22 +1864,82 @@ function NavigationRail({
       ...catalogOverflowNode("catalog:archived_projects", "archived_projects", ov.remaining, ov.offset, ov.limit),
     );
   }
-  const projectRailNodes = (
-    projects: readonly RailProject[],
-    overflow?: { remaining: number; offset: number; limit: number },
-    overflowId?: string,
-    overflowCatalog?: "projects" | "archived_projects" | "test_runs",
-  ): RailNode[] => {
-    const nodes: RailNode[] = projectNodes(projects, isExpanded);
-    if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
-      nodes.push(
-        ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
-      );
+  const projectsTier = projectsTierFor(groupingMode, resources.projects, displaySources, isExpanded);
+  const projectsSectionNodes = withCatalogOverflow(
+    projectsTier.nodes,
+    resources.catalogOverflow?.projects,
+    "catalog:projects",
+    "projects",
+  );
+  // A host-grouping fold born mid-session opens itself: a project-first
+  // host branch, or a host-first copy that just gained rows. Left closed,
+  // the branch hides rows that were visible a render ago (the project's
+  // flat children) and the copy hides rows the reveal just brought -
+  // either reads as data loss. Only folds born after the first render:
+  // the first render keeps the collapsed per-host shape the grouping
+  // ships with, and a fold that leaves and returns still respects an
+  // explicit collapse from its earlier life. A layout effect so the rows
+  // never paint a frame behind a closed fold.
+  const seenHostFolds = useRef<ReadonlySet<string> | null>(null);
+  const hostFoldIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const node of projectsSectionNodes) {
+      // Project-first: the host branches inside a project row. A branch
+      // renders only once it holds loaded rows, so its id arrives together
+      // with the rows it must not hide.
+      if (node.kind === "project") {
+        for (const child of node.children) if (child.kind === "host") ids.add(child.id);
+        continue;
+      }
+      // Host-first: the project copies inside a host group. A copy renders
+      // as soon as the project claims the host, empty or not, so gate on
+      // the rows: a copy with no session rows folds nothing away, while
+      // one that just gained them must not stay closed.
+      if (node.kind === "host") {
+        for (const copy of node.children) {
+          if (copy.kind === "project" && copy.children.some((row) => row.kind === "session")) {
+            ids.add(copy.id);
+          }
+        }
+      }
     }
-    return nodes;
-  };
+    return ids;
+  }, [projectsSectionNodes]);
+  useLayoutEffect(() => {
+    const handled = seenHostFolds.current;
+    if (handled === null) {
+      // The first DATA-BEARING render is the at-rest shape: nothing
+      // auto-opens. The rail mounts before navigation data arrives (the
+      // store starts with no manifest and no resources), so seeding on
+      // the empty first commit would mark every fold that lands with
+      // the data as a birth and auto-open the whole section on every
+      // fresh load.
+      if (projectsSectionNodes.length === 0) return;
+      seenHostFolds.current = new Set(hostFoldIds);
+      return;
+    }
+    // One fold per pass, the reveal idiom: setExpanded closes over this
+    // render's override map, so a second call in one pass would clobber the
+    // first. The override change re-runs this effect and opens the rest,
+    // all before paint.
+    const next = [...hostFoldIds].find((id) => !handled.has(id) && expandedOverrides.get(id) !== false);
+    if (next) {
+      seenHostFolds.current = new Set([...handled, next]);
+      setExpanded(next, true);
+      return;
+    }
+    // Nothing pending: every current fold is handled, and ids that left
+    // the tree drop out so a fold that returns re-opens (its rows came
+    // back).
+    seenHostFolds.current = new Set(hostFoldIds);
+  }, [projectsSectionNodes, hostFoldIds, expandedOverrides, setExpanded]);
   const liveNodes = [
-    ...sessionNodes(resources.live, isExpanded),
+    // Live answers "which machine" the same way in either mode: rows group
+    // under host subheaders exactly while they span more than one host
+    // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
+    ...(groupingMode !== "flat"
+      ? liveNodesGroupedByHost(sessionNodes(resources.live), displaySources, isExpanded)
+      : sessionNodes(resources.live)),
     ...sectionOverflowNode(
       "section:live",
       "live",
@@ -1595,7 +1950,7 @@ function NavigationRail({
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    navigationMode === "unknown" || (navigationMode === "v2" && (!manifest || manifest.loading || resourceLoading));
+    navigationMode === "unknown" || (navigationMode === "v3" && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
   const loadError =
@@ -1609,6 +1964,8 @@ function NavigationRail({
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
       ref={railRef}
+      data-testid="rail"
+      data-sidebar-rail
       style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
     >
       {width !== undefined && onWidthChange && (
@@ -1684,6 +2041,7 @@ function NavigationRail({
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
               {pinSections.map((section) => (
@@ -1694,32 +2052,33 @@ function NavigationRail({
                   onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
                   onRename={() => openSectionRename(section)}
                   onDelete={() => void requestSectionDelete(section)}
-                  isExpanded={isExpanded}
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}
+                  isRowSelected={isRowSelected}
                   projectRetryCallback={projectRetryCallback}
                 />
               ))}
+              {hostGrouping && (
+                <div className={CLASS.organizeRow}>
+                  <OrganizeByControl mode={grouping} onChange={setGrouping} />
+                </div>
+              )}
               <RailSection
-                title="Projects"
-                nodes={projectRailNodes(
-                  resources.projects,
-                  resources.catalogOverflow?.projects,
-                  "catalog:projects",
-                  "projects",
-                )}
+                title={projectsTier.title}
+                nodes={projectsSectionNodes}
                 open={isExpanded(PROJECTS_SECTION_KEY, true)}
                 onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
               <RailSection
                 title="Test runs"
-                nodes={projectRailNodes(
-                  resources.testRuns,
+                nodes={withCatalogOverflow(
+                  projectNodes(resources.testRuns, isExpanded, displaySources),
                   resources.catalogOverflow?.test_runs,
                   "catalog:test_runs",
                   "test_runs",
@@ -1729,6 +2088,7 @@ function NavigationRail({
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
               {archivedNodes.length > 0 && (
@@ -1740,6 +2100,7 @@ function NavigationRail({
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}
+                  isRowSelected={isRowSelected}
                   projectRetryCallback={projectRetryCallback}
                 />
               )}
@@ -1818,7 +2179,7 @@ function NavigationRail({
             </div>
           }
         >
-          <p>{`Permanently delete every session in "${deleteTarget.name}"? This removes their transcripts and cannot be undone.`}</p>
+          <p>{`Permanently delete every session in "${deleteTarget.name}", including their subagents? This removes their transcripts and cannot be undone.`}</p>
         </Dialog>
       )}
     </div>

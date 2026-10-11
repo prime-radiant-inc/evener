@@ -10,7 +10,14 @@
 // or malformed JSON), it falls back to HeadClippedOutputBody — the previous
 // behavior — so the renderer never regresses for non-delegate targets.
 
-import { formatClockTime, formatElapsed, scopedDisclosureId, splitMandate } from "@evener/appwire-client";
+import {
+  delegateEndingText,
+  delegateNotResumableText,
+  formatClockTime,
+  formatElapsed,
+  scopedDisclosureId,
+  splitMandate,
+} from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
@@ -74,7 +81,7 @@ interface DelegateStatusState {
   running_for_ms?: number;
   quiet_for_ms?: number;
   duration_ms?: number;
-  last_outcome?: { status?: string; ended_at?: string; reason?: string };
+  last_outcome?: { status?: string; ended_at?: string; reason?: string; error?: string };
   cwd?: string;
   isolation?: string;
   sandbox_mode?: string;
@@ -101,6 +108,7 @@ function normalizeDelegateStatus(raw: Record<string, unknown>): DelegateStatusSt
           status: strOrUndef((lo as Record<string, unknown>).status),
           ended_at: strOrUndef((lo as Record<string, unknown>).ended_at),
           reason: strOrUndef((lo as Record<string, unknown>).reason),
+          error: strOrUndef((lo as Record<string, unknown>).error),
         }
       : undefined;
   return {
@@ -142,7 +150,7 @@ function isDelegateStatus(raw: unknown): raw is DelegateStatusState {
   return true;
 }
 
-// Map a delegate's status + needs_attention to a Chip tone, reusing
+// Map a delegate's status to a Chip tone, reusing
 // classifyJobStatus's status vocabulary so failed→danger (not neutral).
 // An idle delegate whose last run failed should still show danger —
 // the lifecycle is idle, but the outcome is the most recent fact.
@@ -159,7 +167,6 @@ function isExhausted(status: string | undefined): boolean {
 }
 
 function statusToTone(state: DelegateStatusState): ChipTone {
-  if (state.needs_attention) return "attention";
   if (state.status === "idle") {
     // Idle lifecycle: show the last run's outcome, not "running".
     if (state.last_outcome?.status) {
@@ -176,7 +183,6 @@ function statusToTone(state: DelegateStatusState): ChipTone {
 }
 
 function statusLabel(state: DelegateStatusState): string {
-  if (state.needs_attention) return "Needs attention";
   return state.status ?? "unknown";
 }
 
@@ -300,6 +306,14 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
   const envRows = environmentRows(state);
   const tools = state.tools ?? [];
   const transcriptRef = state.transcript_ref;
+  // The last run's reason is a code; say it in words (#3327).
+  const lastEnding = delegateEndingText({
+    outcome: state.last_outcome?.status,
+    reason: state.last_outcome?.reason,
+    error: state.last_outcome?.error,
+  });
+  // The not-resumable reason is a code too; say it in words (#3362).
+  const notResumable = delegateNotResumableText(state.not_resumable_reason);
   // Copy the structured state, not item.output: the output text may carry
   // breaker/annotation text appended after the JSON, so re-serializing the
   // validated state gives the reader valid JSON on paste.
@@ -346,31 +360,27 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
       {/* Diagnostics: not-resumable reason and/or last outcome reason.
           All non-success terminal outcomes render their reason: failed→danger,
           exhausted/cancelled/stopped→neutral (soft stops, not errors). */}
-      {state.not_resumable_reason && (
+      {notResumable && (
         <div className={CLASS.diagnostic} data-testid="delegate-not-resumable">
-          <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>
-            Not resumable: {state.not_resumable_reason}
-          </div>
+          <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>Not resumable: {notResumable}</div>
         </div>
       )}
       {state.last_outcome?.reason && isExhausted(state.last_outcome.status) && (
         <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
-          <div className={CLASS.diagnosticBody}>Last run exhausted: {state.last_outcome.reason}</div>
+          <div className={CLASS.diagnosticBody}>Last run exhausted: {lastEnding}</div>
         </div>
       )}
       {state.last_outcome?.reason &&
         !isExhausted(state.last_outcome.status) &&
         classifyJobStatus(state.last_outcome.status) === "failed" && (
           <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
-            <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>
-              Last run failed: {state.last_outcome.reason}
-            </div>
+            <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>Last run failed: {lastEnding}</div>
           </div>
         )}
       {state.last_outcome?.reason && classifyJobStatus(state.last_outcome.status) === "stopped" && (
         <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
           <div className={CLASS.diagnosticBody}>
-            Last run {state.last_outcome.status === "cancelled" ? "cancelled" : "stopped"}: {state.last_outcome.reason}
+            Last run {state.last_outcome.status === "cancelled" ? "cancelled" : "stopped"}: {lastEnding}
           </div>
         </div>
       )}

@@ -28,8 +28,8 @@ export default function TranscriptSurfaceSection() {
       <h2>Transcript</h2>
       <p className={styles.note}>
         A fixed user request, successful and failed tool calls, reasoning, an agent response, and optional metrics and
-        system events, plus durable collaborators with attention, failure, exhaustion, and unavailable lifecycle data.
-        Rendered through the production TranscriptBody preview surface with no store or network.
+        system events, plus durable collaborators with failure, exhaustion, and unavailable lifecycle data. Rendered
+        through the production TranscriptBody preview surface with no store or network.
       </p>
       <ThemeFlip>
         <TranscriptBody

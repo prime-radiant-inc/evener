@@ -3,8 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"io"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -85,30 +83,19 @@ func TestNewHubSourceRegistryEmptyRefDefaultsLocal(t *testing.T) {
 }
 
 func TestNewHubSourceRegistrySkipsHostsWithoutClient(t *testing.T) {
-	original := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Stderr = original
-		_ = readEnd.Close()
+	var registry *appsource.Registry
+	diagnostic := captureHubStderr(t, func() {
+		registry = newHubSourceRegistry(hubcore.WebConfig{
+			RemoteHosts: []hostreg.Host{
+				{Name: "h1", SSH: "h1.example"},
+				{Name: "h2", SSH: "h2.example"},
+			},
+		})
 	})
-	os.Stderr = writeEnd
-	registry := newHubSourceRegistry(hubcore.WebConfig{
-		RemoteHosts: []hostreg.Host{
-			{Name: "h1", SSH: "h1.example"},
-			{Name: "h2", SSH: "h2.example"},
-		},
-	})
-	_ = writeEnd.Close()
-	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
 
 	if _, ok := registry.Source("h1"); ok {
 		t.Fatal("h1 registered without a remote host client")
 	}
-	diagnostic := string(data)
 	if !strings.Contains(diagnostic, "h1") || !strings.Contains(diagnostic, "h2") {
 		t.Fatalf("diagnostic = %q, want it to name both skipped hosts", diagnostic)
 	}
@@ -189,6 +176,21 @@ func TestHostRegistryEntriesCarryEveryHostField(t *testing.T) {
 	if !ok {
 		t.Fatal("alpha missing from the registry built from the config")
 	}
+	// The differences from the configured literal are exactly the fields the
+	// registry owns: Add stamps the insert generation, and (registry spec 08 §1)
+	// mints the incarnation id and the first presence epoch beside it, so a
+	// byte-identical re-add of the name is a different identity. Everything else
+	// must round-trip unchanged, and the minted pair itself must have the
+	// shape the spec pins.
+	if len(registered.IncarnationID) != 36 {
+		t.Fatalf("registry.Get(alpha).IncarnationID = %q, want a minted 36-byte incarnation id", registered.IncarnationID)
+	}
+	if registered.PresenceEpoch != 1 {
+		t.Fatalf("registry.Get(alpha).PresenceEpoch = %d, want the first presence value 1", registered.PresenceEpoch)
+	}
+	want.Generation = 1
+	want.IncarnationID = registered.IncarnationID
+	want.PresenceEpoch = registered.PresenceEpoch
 	if !reflect.DeepEqual(registered, want) {
 		t.Fatalf("registry.Get(%q) = %+v, want %+v", "alpha", registered, want)
 	}

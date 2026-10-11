@@ -153,7 +153,7 @@ func TestHubRPCForkCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T) {
 		}
 		server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
 		registerThreadHandlers(server, cfg, newHubSourceRegistry(cfg), hubRelayFunctions{}, nil)
-		params, err := json.Marshal(appwire.ThreadForkParams{Ref: "local:" + alias, SourceTurnID: "turn_1", EditedInput: "forked input"})
+		params, err := json.Marshal(appwire.ThreadForkParams{Ref: "local:" + alias, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input"})
 		if err != nil {
 			t.Fatal(err)
 		}

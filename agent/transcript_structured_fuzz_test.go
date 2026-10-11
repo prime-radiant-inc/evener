@@ -60,7 +60,7 @@ func FuzzTranscriptReplayStructured(f *testing.F) {
 		if err := os.WriteFile(inPath, raw, 0o644); err != nil {
 			t.Fatalf("write input transcript: %v", err)
 		}
-		d, err := readTranscriptFull(inPath)
+		d, err := readTranscriptFull(inPath, "")
 		if err != nil {
 			return // no header / unreadable: no-panic floor proven, stop
 		}
@@ -69,9 +69,9 @@ func FuzzTranscriptReplayStructured(f *testing.F) {
 		assertResumeHistoryIdempotent(t, d.Entries)
 
 		sid := d.Header.SessionID
-		_, _ = readStrictChildTranscript(inPath, sid, transcriptJSONLMaxLineBytes)
-		_, _ = validateStrictChildTranscript(inPath, sid, transcriptJSONLMaxLineBytes)
-		_, _ = readStrictChildTranscript(inPath, sid+"_mismatch", transcriptJSONLMaxLineBytes)
-		_, _ = readStrictChildTranscript(inPath, sid, 4)
+		_, _ = readStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
+		_, _ = validateStrictChildTranscript(inPath, "", sid, transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid+"_mismatch", transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, "", sid, 4)
 	})
 }

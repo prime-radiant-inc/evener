@@ -136,7 +136,7 @@ func worktreeFaultDelegateRollbackProgram(t *testing.T, program []byte) {
 	delegateID := faultName(program, "dlg")
 	before := h.s.currentEnv().WorkingDirectory()
 
-	path, branch, base, mainRoot, project, err := h.s.createDelegateWorktree(context.Background(), delegateID)
+	path, branch, base, mainRoot, project, err := h.s.createDelegateWorktree(context.Background(), delegateID, delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}
@@ -158,7 +158,7 @@ func worktreeFaultDelegateRollbackProgram(t *testing.T, program []byte) {
 		t.Fatalf("delegate sidecar = %+v", sc)
 	}
 
-	h.s.rollbackFreshDelegateWorktree(delegateID, path, project)
+	h.s.rollbackFreshDelegateWorktree(delegateID, delegateID, path, project)
 	if h.git.entry(path) != nil {
 		t.Fatalf("rollback left delegate entry %q", path)
 	}
@@ -1242,7 +1242,7 @@ func worktreeFaultBoundaryHelperProgram(t *testing.T, program []byte) {
 		if _, err := h.s.worktreeCreate(context.Background(), "lane", ""); err == nil {
 			t.Fatal("create accepted a non-local environment")
 		}
-		if _, _, _, _, _, err := h.s.createDelegateWorktree(context.Background(), "delegate"); err == nil {
+		if _, _, _, _, _, err := h.s.createDelegateWorktree(context.Background(), "delegate", "delegate"); err == nil {
 			t.Fatal("delegate worktree creation accepted a non-local environment")
 		}
 		if _, err := h.s.worktreeSwitchByName(context.Background(), "lane"); err == nil {
@@ -1260,7 +1260,7 @@ func worktreeFaultBoundaryHelperProgram(t *testing.T, program []byte) {
 		if _, err := h.s.worktreePrune(context.Background()); err == nil {
 			t.Fatal("prune accepted a non-local environment")
 		}
-		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
+		h.s.rollbackFreshDelegateWorktree("delegate", "delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 		h.requireAtRoot(t)
 
 		run := h.s.newWorktreeGitRunner(context.Background(), env)
@@ -1315,6 +1315,7 @@ func worktreeFaultCreateAndSwitchTailProgram(t *testing.T, program []byte) {
 			context.Background(),
 			active,
 			name,
+			name,
 			"",
 			worktree.EvLeave,
 			worktree.FormatSessionMarker(h.s.id),
@@ -1359,7 +1360,7 @@ func worktreeFaultCreateAndSwitchTailProgram(t *testing.T, program []byte) {
 		h, faults := newWorktreeFaultSession(t)
 		name := faultName(program, "delegate-version")
 		faults.versionErr = errors.New("scripted delegate version failure")
-		if _, _, _, _, _, err := h.s.createDelegateWorktree(context.Background(), name); err == nil {
+		if _, _, _, _, _, err := h.s.createDelegateWorktree(context.Background(), name, name); err == nil {
 			t.Fatal("delegate create accepted a failed version preflight")
 		}
 		h.requireNoSidecar(t, name)

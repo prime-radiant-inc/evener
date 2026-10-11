@@ -244,7 +244,9 @@ prefix, and summarize replaces the checkpoint. The old cached prefix is gone reg
 Deterministic, no LLM call required. Extracts structured state from old history:
 
 - Original task (propagated through repeated checkpoints)
-- Files modified (from `edit_file`, `write_file`, `apply_patch` tool calls)
+- Files modified (from `edit_file`, `write_file`, `apply_patch` tool calls whose
+  paired result confirmed success; failed or result-missing attempts render
+  under a distinct `Files attempted but not applied:` line, never as modified)
 - Tool call counts (sorted deterministically)
 - Last 3 shell command results with exit codes
 
@@ -270,6 +272,21 @@ enough space (>= 95% after checkpoint). The prompt is capped at ~80K chars to
 bound summarization input across model context windows.
 
 The summary turn uses `TurnSummary` kind and `llm.RoleUser` role.
+
+A reply that is not a summary counts as a summarizer failure. A configured
+cheap model's rejected reply falls through to the active model, as a failed
+cheap call does. If that reply is rejected too, the layer emits the "LLM
+summarization failed" warning and the checkpoint stands. Not a summary means
+empty, or, under the default prompt, holding no section with content: a
+heading (`#` markup or `**bold**`) naming one of the prompt's `##` sections,
+with text after the name on its line (`## Progress: fixed it`) or on a later
+line other than another section heading. The `[CONTEXT SUMMARY]` and
+`[END SUMMARY]` markers never count as content, whether on the heading's line
+or below it.
+Subheadings and bold labels inside a section are content. Weak models sometimes
+answer in character ("I'll read the plan, then...") instead of summarizing.
+Under caller instructions, which replace the sections, only an empty reply is
+rejected.
 
 ## ForceCompact
 

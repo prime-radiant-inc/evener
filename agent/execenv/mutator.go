@@ -1,9 +1,11 @@
 package execenv
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/spf13/afero"
 )
@@ -12,11 +14,11 @@ import (
 // routes its file mutations through the same enforcement seam as the other file
 // tools. When the environment carries a file-tool-confined sandbox policy, each
 // method uses the fd-anchored, symlink-refusing layer (e.sandbox()); otherwise it
-// confines to the working root via resolveWrite — the same containment the plain
-// off-mode write_file/edit_file tools use, which replaces apply_patch's old
-// lexical safeJoin check.
+// resolves relative paths against the working directory without restricting
+// unrestricted off sessions to that root. Allocated scratch keeps its own
+// fd-anchored contract.
 
-// ReadFileRaw returns the raw bytes of path, confined to the working root.
+// ReadFileRaw returns the raw bytes of path subject to the active policy.
 func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
@@ -35,7 +37,7 @@ func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 }
 
 // WriteFileRaw writes data to path, creating missing parents, confined to the
-// working root (sandboxed: atomic temp+renameat beneath a writable root).
+// active policy (sandboxed: atomic temp+renameat beneath a writable root).
 func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm os.FileMode) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
@@ -57,7 +59,9 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 }
 
 // RemovePath deletes path best-effort (a missing target is not an error), but an
-// out-of-policy target is a denial.
+// out-of-policy target is a denial. Any other remove failure — permission, a
+// read-only filesystem, a nonempty directory — is surfaced, so a delete that did
+// not happen is never reported as success (issue #2376).
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
@@ -72,12 +76,22 @@ func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if err != nil {
 		return err
 	}
-	_ = e.filesystem().Remove(abs)
+	if err := e.filesystem().Remove(abs); err != nil && !isAbsentRemove(err) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
 	return nil
 }
 
+// isAbsentRemove reports whether a remove error means the target is already
+// absent: ENOENT (missing target or parent) or ENOTDIR (an ancestor is not a
+// directory). Those are the only remove failures a best-effort delete may treat
+// as a no-op success; every other failure must propagate (issue #2376).
+func isAbsentRemove(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
 // RenamePath moves oldPath to newPath, creating newPath's parents. Both endpoints
-// are confined to the working root.
+// must satisfy the active policy.
 func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()

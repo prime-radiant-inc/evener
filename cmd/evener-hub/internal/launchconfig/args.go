@@ -48,9 +48,6 @@ func ToArgs(r Resolved) []string {
 	if e.MaxRetainedTerminal != nil {
 		add("--max-retained-terminal", strconv.Itoa(*e.MaxRetainedTerminal))
 	}
-	if e.NoProjectPrompts != nil && *e.NoProjectPrompts {
-		out = append(out, "--no-project-prompts")
-	}
 	if e.NonInteractive != nil && *e.NonInteractive {
 		out = append(out, "--non-interactive")
 	}

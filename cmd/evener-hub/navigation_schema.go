@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"slices"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 )
 
@@ -55,6 +55,7 @@ type navigationLocationMetadata struct {
 	Revision     uint64 `json:"revision"`
 	Ref          string `json:"ref"`
 	TopLevelRef  string `json:"top_level_ref"`
+	Catalog      string `json:"catalog,omitempty"`
 	ProjectKey   string `json:"project_key,omitempty"`
 	TopLevel     bool   `json:"top_level"`
 	Tier         string `json:"tier,omitempty"`
@@ -128,6 +129,10 @@ func validateNavigationResourceSnapshot(
 				return navigationSchemaError("graph")
 			}
 			if !navigationOwnedSlotAllowed(key.Kind, kind, container.Owner.EntityKey == projectAnchor, container.Owner.Slot) {
+				return navigationSchemaError("graph")
+			}
+			// Session summaries are flat; the empty owned slot preserves graph structure.
+			if kind == "session" && len(container.Children) > 0 {
 				return navigationSchemaError("graph")
 			}
 			if kind == "session" && len(container.Children) > maxNavigationChildren || kind == "project" && len(container.Children) > maxNavigationSectionRows {
@@ -231,7 +236,7 @@ func validateNavigationMetadata(key navigationResourceKey, generation string, re
 			!validVersion(metadata.GenerationID, metadata.Revision) || metadata.Ref != key.ID ||
 			!navigationSchemaIdentity(metadata.Ref, false) || !navigationSchemaIdentity(metadata.TopLevelRef, false) ||
 			!navigationSchemaIdentity(metadata.ProjectKey, true) || !navigationSchemaIdentity(metadata.Tier, true) ||
-			!navigationSchemaIdentity(metadata.PinSectionID, true) {
+			!navigationSchemaIdentity(metadata.PinSectionID, true) || !validLocationCatalog(metadata.Catalog, metadata.ProjectKey) {
 			return nil, navigationSchemaError("metadata")
 		}
 		return metadata, nil
@@ -289,6 +294,13 @@ func validateNavigationEntity(key navigationResourceKey, metadata any, entity hu
 	return value.Ref, false, nil
 }
 
+// strictNavigationDecode refuses unknown fields. The hub validates what it
+// produces, so an unknown field here is a hub bug: a map built by hand, or a
+// field added to a navigation type without its bound below. The client codec
+// deliberately accepts and drops unknown value-record fields
+// (appwire-client/typescript/state/navigation/codec.ts), so an older app keeps
+// reading pages that carry a field added after it was built; the two agree on
+// every known field's bounds.
 func strictNavigationDecode(raw json.RawMessage, required []string, destination any) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
@@ -415,79 +427,70 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		!navigationSchemaIdentity(value.Kind, false) || len(value.Project) > maxNavigationIdentityBytes ||
 		!utf8.ValidString(value.Project) || utf8.RuneCountInString(value.Title) > maxNavigationTitleRunes ||
 		utf8.RuneCountInString(value.Branch) > maxNavigationLabelRunes || len(value.Children) != 0 ||
-		!navigationIntCount(value.ClusterCount) || !navigationIntCount(value.MoreSubagents) ||
-		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
-		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {
+		!navigationSchemaIdentity(value.ApprovalTool, true) ||
+		utf8.RuneCountInString(value.ApprovalTarget) > maxNavigationLabelRunes ||
+		appwire.Excerpt(value.LastMessage, appwire.MaxMessageExcerptRunes) != value.LastMessage ||
+		utf8.RuneCountInString(value.ModelName) > maxNavigationLabelRunes ||
+		!navigationIntCount(value.MoreSubagents) ||
+		!navigationIntCount(value.OmittedDescendants) ||
+		!navigationIntCount(value.RunningJobCount) || !navigationIntCount(value.WatchCount) ||
+		!navigationIntCount(value.ArmedWatchCount) || value.ArmedWatchCount > value.WatchCount ||
+		utf8.RuneCountInString(value.RunningJobCommand) > maxNavigationLabelRunes {
 		return false
 	}
-	for _, jobs := range []hubapi.NavigationArray[hubapi.NavigationJobSummary]{value.RunningJobs, value.CompletedJobs} {
-		for _, job := range jobs {
-			if !navigationSchemaIdentity(job.JobID, false) || !navigationSchemaIdentity(job.JobType, false) ||
-				!navigationSchemaIdentity(job.Status, false) || utf8.RuneCountInString(job.Command) > maxNavigationLabelRunes ||
-				utf8.RuneCountInString(job.Task) > maxNavigationLabelRunes || utf8.RuneCountInString(job.Reason) > maxNavigationLabelRunes ||
-				utf8.RuneCountInString(job.Intent) > maxNavigationLabelRunes || utf8.RuneCountInString(job.FullCommand) > maxNavigationFullCommandRunes {
-				return false
-			}
-		}
+	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&
+		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents)) &&
+		(value.Question == nil || navigationQuestionValid(*value.Question)) &&
+		(value.Failure == nil || navigationFailureValid(*value.Failure))
+}
+
+// navigationFailureValid mirrors the web codec's failureValue: something to
+// say (a title or a cause kind), cause identities within the identity bound,
+// and a safe non-negative status. The hub also holds the title to be an
+// excerpt at its bound, which the projector's cut always yields. The projector
+// drops a failure this refuses rather than failing the whole resource.
+func navigationFailureValid(failure hubapi.NavigationFailure) bool {
+	return (failure.Title != "" || failure.CauseKind != "") &&
+		appwire.Excerpt(failure.Title, appwire.MaxFailureTitleRunes) == failure.Title &&
+		navigationSchemaIdentity(failure.CauseKind, true) && navigationSchemaIdentity(failure.Provider, true) &&
+		navigationIntCount(failure.Status)
+}
+
+// navigationQuestionValid mirrors the web codec's questionValue: text that is
+// not empty, at least one question counted, and at most five labels, none of
+// them empty. The hub also holds each text to be an excerpt at its bound
+// (appwire.Excerpt leaves it unchanged: valid UTF-8, one trimmed line, within
+// the bound), which the projector's cut always yields. The projector drops a
+// question this refuses rather than failing the whole resource.
+func navigationQuestionValid(question hubapi.NavigationQuestion) bool {
+	if question.Text == "" || appwire.Excerpt(question.Text, appwire.MaxQuestionTextRunes) != question.Text ||
+		question.Count < 1 || !navigationIntCount(question.Count) || len(question.Options) > appwire.MaxQuestionOptions {
+		return false
 	}
-	for _, watch := range value.Watches {
-		if !navigationWatchValueValid(watch) {
+	for _, label := range question.Options {
+		if label == "" || appwire.Excerpt(label, appwire.MaxQuestionOptionRunes) != label {
 			return false
 		}
 	}
 	return true
 }
 
-// navigationWatchValueValid mirrors the web codec's watch row validation for one
-// wire watch summary. The codec validates a watch as part of the session entity,
-// so one malformed row fails the whole navigation resource; every producer of a
-// NavigationWatchSummary (the projector included) reads this one predicate
-// rather than an ad-hoc subset.
-func navigationWatchValueValid(watch hubapi.NavigationWatchSummary) bool {
-	if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) ||
-		!navigationIntCount(watch.Deliveries) || utf8.RuneCountInString(watch.Target) > maxNavigationLabelRunes ||
-		utf8.RuneCountInString(watch.SendTo) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.Note) > maxNavigationLabelRunes ||
-		utf8.RuneCountInString(watch.OutputMatch) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.CreatedAt) > maxNavigationLabelRunes ||
-		utf8.RuneCountInString(watch.EndReason) > maxNavigationLabelRunes {
-		return false
-	}
-	for _, cadence := range watch.Cadence {
-		// Mirror the web codec's watchCadenceValue: kind is a required,
-		// non-empty identity bounded to maxNavigationIdentityBytes, a present
-		// seconds value must be finite and non-negative, every is a safe
-		// non-negative count, and filter is bounded like every other rendered
-		// label.
-		if !navigationSchemaIdentity(cadence.Kind, false) ||
-			!navigationCadenceSeconds(cadence.Seconds) ||
-			!navigationIntCount(cadence.Every) ||
-			utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes ||
-			(cadence.DerivedNextFireAt != "" && !validNavigationTimestamp(cadence.DerivedNextFireAt)) {
-			return false
-		}
-	}
-	for _, event := range watch.Events {
-		if utf8.RuneCountInString(event) > maxNavigationLabelRunes {
-			return false
-		}
-	}
-	// The codec validates created_at and each delivery_times entry as strict
-	// RFC3339 and fails the whole snapshot on one bad value, so reject it
-	// here before a malformed instant can reach the client.
-	if !validNavigationTimestamp(watch.CreatedAt) {
-		return false
-	}
-	for _, at := range watch.DeliveryTimes {
-		if !validNavigationTimestamp(at) {
-			return false
-		}
-	}
-	return true
+// navigationTaskProgressValid mirrors the web codec's tasksValue: every count is
+// a safe non-negative integer, no more tasks are done and cancelled than exist,
+// and the current task's description fits the label bound. The projector drops
+// progress this refuses rather than failing the whole resource over it.
+func navigationTaskProgressValid(tasks hubapi.NavigationTaskProgress) bool {
+	return navigationIntCount(tasks.Total) && navigationIntCount(tasks.Done) &&
+		navigationIntCount(tasks.Cancelled) && navigationIntCount(tasks.CurrentID) &&
+		tasks.Done <= tasks.Total && tasks.Cancelled <= tasks.Total-tasks.Done &&
+		utf8.RuneCountInString(tasks.Current) <= maxNavigationLabelRunes
 }
 
-// navigationCadenceSeconds mirrors the web codec's cadence seconds rule: an
-// absent value is zero, and a present one must be finite and non-negative.
-func navigationCadenceSeconds(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
+// navigationSubagentTallyValid mirrors the web codec's subagentTallyValue: every
+// count is a safe non-negative integer. The projector drops a tally this
+// refuses rather than failing the whole resource over it.
+func navigationSubagentTallyValid(tally hubapi.NavigationSubagentTally) bool {
+	return navigationIntCount(tally.Running) && navigationIntCount(tally.Failed) && navigationIntCount(tally.Done)
 }
 
 func navigationProjectSummaryValid(value hubapi.NavigationProjectSummary) bool {
@@ -593,4 +596,14 @@ func navigationRootChildrenWithinBounds(key navigationResourceKey, count int) bo
 	default:
 		return count == 0
 	}
+}
+
+// validLocationCatalog accepts a location's catalog: absent (as an older
+// hub's always is), or one of the catalogs beside a project key.
+func validLocationCatalog(catalog, projectKey string) bool {
+	if catalog == "" {
+		return true
+	}
+	_, err := parseNavigationCatalog(catalog)
+	return err == nil && projectKey != ""
 }

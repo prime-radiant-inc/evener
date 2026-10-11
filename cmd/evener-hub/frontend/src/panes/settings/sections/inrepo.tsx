@@ -7,12 +7,13 @@
 import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
-import { directoryActions, extensionsStore } from "../../../stores/extensions";
-import { launchConfigStore } from "../../../stores/launchConfig";
+import { LOCAL_HOST } from "../../../stores/hostRouting";
+import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { Button, FormRow, Loader, PathField } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./inrepo.module.css";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "inrepo.module.css", "root"),
@@ -40,9 +41,20 @@ export interface InRepoSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The host whose own in-repo .evener/launch.toml this section resolves and
+   * trusts (component 07b). Defaults to the local hub, so a direct render is
+   * today's local section. */
+  host?: string;
 }
 
-export function InRepoSection(_props: InRepoSectionProps) {
+export function InRepoSection({ host = LOCAL_HOST }: InRepoSectionProps) {
+  // The launch-config gateway for the selected host: the controller's own store
+  // for the local hub, a per-host instance (over evener/host/request) for a
+  // remote one. Resolved per render; the instance is stable per host. Every
+  // read and write below - resolve(), trustRepo(), and the validate/complete
+  // helpers the picker uses - goes through it, so a remote selection asks THAT
+  // host's filesystem rather than this hub's (component 07b).
+  const store = launchConfigStoreForHost(host);
   const [cwd, setCwd] = useState(() => localStorage.getItem("lastCwd") ?? "");
   const [status, setStatus] = useState<Status>({ phase: "empty" });
   const [trustError, setTrustError] = useState<string | null>(null);
@@ -57,7 +69,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
     }
     setStatus({ phase: "loading" });
     try {
-      const resolved: LaunchConfigResolved = await launchConfigStore.getState().resolve(trimmed);
+      const resolved: LaunchConfigResolved = await store.getState().resolve(trimmed);
       setStatus({ phase: "resolved", repo: resolved.repo });
     } catch (err) {
       setStatus({ phase: "error", message: friendlyErrorMessage(err) });
@@ -70,8 +82,18 @@ export function InRepoSection(_props: InRepoSectionProps) {
     cwdRef.current = cwd;
   }, [cwd]);
 
-  // Defer initial resolution until the client is ready.
-  useConnectedEffect(() => refresh(cwdRef.current), []);
+  // Defer initial resolution until the client is ready, and re-run when the
+  // selected host changes - or comes back after being away - so this pane
+  // resolves against THAT host rather than leaving this one's on screen or its
+  // own failure standing (the same [store] idiom the other host-scoped sections
+  // use; a []-deps effect could reload on neither).
+  const { reload } = useHostScopedLoad(host, () => refresh(cwdRef.current), [store]);
+
+  // A change to the SELECTED host's launch config - the working directory's own
+  // launch.toml, or a trust decision made elsewhere - must reach this pane
+  // rather than leaving a stale resolution on screen. `reload` re-resolves the
+  // working directory the user has committed.
+  useLaunchConfigRefresh(host, reload);
 
   function handleCommit(path: string): void {
     setCwd(path);
@@ -82,7 +104,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
     setTrusting(true);
     setTrustError(null);
     try {
-      await launchConfigStore.getState().trustRepo(cwd.trim(), hash);
+      await store.getState().trustRepo(cwd.trim(), hash);
       await refresh(cwd);
     } catch (err) {
       setTrustError(`Trust failed: ${friendlyErrorMessage(err)}`);
@@ -103,8 +125,11 @@ export function InRepoSection(_props: InRepoSectionProps) {
           id="inrepo-cwd"
           value={cwd}
           onChange={handleCommit}
-          directory={directoryActions}
-          complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+          directory={{
+            validatePath: (path, kind) => store.getState().validatePath(path, kind),
+            createDirectory: (path) => store.getState().createDirectory(path),
+          }}
+          complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
           placeholder="Choose a directory"
         />
       </FormRow>
@@ -157,4 +182,13 @@ function ResolvedStatus({
       )}
     </>
   );
+}
+
+/** InRepoHostScope is the In-repo config settings section scoped to the
+ * settings route's selected host (component 07b): the one shared HostPicker
+ * plus InRepoSection, whose resolve/trust calls and path helpers are all that
+ * host's own. Local renders today's section byte-for-byte; a remote host's
+ * calls go through evener/host/request. */
+export function InRepoHostScope({ sectionId }: InRepoSectionProps) {
+  return <HostScopedSurface>{(host) => <InRepoSection sectionId={sectionId} host={host} />}</HostScopedSurface>;
 }

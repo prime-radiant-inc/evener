@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 // ProtocolVersion is compared exactly at the handshake
@@ -14,6 +15,12 @@ import (
 // mutation state: a client cannot safely release uncertain sends from a peer
 // that does not supply that evidence.
 //
+// v7 serves job output as lossless byte pages, with explicit retention bounds
+// and an optional exclusive end selector that preserves zero.
+// v6 serves history only as history/updated from recorded entries and live
+// unrecorded state only as overlay/* notifications: turn/started,
+// turn/completed, item/* and evener/steering/injected are gone, and a client
+// announcing an older version is refused with upgradeRequired.
 // v4 makes transcript reads item-only and rejects retired paging fields. v3
 // dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
 // turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
@@ -22,7 +29,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v5"
+const ProtocolVersion = "evener-appwire-v7"
 
 // ThreadStatusRestartRequired identifies a live daemon that cannot serve this
 // hub's protocol. Its current activity is unavailable until explicitly restarted.
@@ -62,11 +69,17 @@ const (
 	MethodEvenerTasksList                = "evener/tasks/list"
 	MethodEvenerJobsList                 = "evener/jobs/list"
 	MethodEvenerJobsOutput               = "evener/jobs/output"
+	MethodEvenerJobsGet                  = "evener/jobs/get"
 	MethodEvenerDaemonList               = "evener/daemon/list"
 	MethodEvenerDaemonRetire             = "evener/daemon/retire"
 	MethodEvenerDaemonStatus             = "evener/daemon/status"
+	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
+	MethodEvenerThreadActivityRead       = "evener/thread/activity/read"
+	MethodEvenerThreadDelegatesList      = "evener/thread/delegates/list"
+	MethodEvenerThreadJobsList           = "evener/thread/jobs/list"
+	MethodEvenerThreadWatchesList        = "evener/thread/watches/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
 	MethodEvenerPathsComplete            = "evener/paths/complete"
 	MethodEvenerDirsCreate               = "evener/dirs/create"
@@ -83,7 +96,11 @@ const (
 	MethodEvenerPinSectionDelete         = "evener/pin-section/delete"
 	MethodEvenerSessionPinAssign         = "evener/session-pin/assign"
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
+	MethodEvenerSessionSeenSet           = "evener/session/seen/set"
 	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerArchivedList             = "evener/archived/list"
+	MethodEvenerActivityRead             = "evener/activity/read"
+	MethodEvenerNoticesList              = "evener/notices/list"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
 	MethodEvenerUpgrade                  = "evener/upgrade"
 	MethodEvenerUpdateCheck              = "evener/update/check"
@@ -96,6 +113,7 @@ const (
 	MethodEvenerAuthList                 = "evener/auth/list"
 	MethodEvenerAuthApiKeySet            = "evener/auth/apiKey/set"
 	MethodEvenerAuthApiKeyClear          = "evener/auth/apiKey/clear"
+	MethodEvenerAuthApiKeyConditionalSet = "evener/auth/apiKey/conditionalSet"
 	MethodEvenerAuthCredentialJsonSet    = "evener/auth/credentialJson/set"
 	MethodEvenerAuthDeviceStart          = "evener/auth/device/start"
 	MethodEvenerAuthDevicePoll           = "evener/auth/device/poll"
@@ -127,6 +145,7 @@ const (
 	MethodEvenerPluginEnable             = "evener/plugin/enable"
 	MethodEvenerPluginDisable            = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
+	MethodEvenerPluginCheckUpdates       = "evener/plugin/checkUpdates"
 	MethodEvenerCommandList              = "evener/command/list"
 	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
 
@@ -140,6 +159,12 @@ const (
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
 	// the model.
 	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
+	// MethodEvenerDelegateStop ends one subagent's current run at the user's
+	// request (S6): that subagent alone, never the subagents it started. It
+	// targets the root session (ref/threadId) and names the delegate.
+	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
+	// request, never advertised to the model.
+	MethodEvenerDelegateStop = "evener/delegate/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
@@ -149,6 +174,97 @@ const (
 	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
 	// seam; every other remote path is attached-only. See HostAttachParams.
 	MethodEvenerHostAttach = "evener/host/attach"
+	// MethodEvenerHostAdd registers one host entry (component 08 slice 1: name
+	// + SSH address + key path). The entry is written into the machine-managed
+	// hub.toml; a duplicate of a live name is refused. See HostAddParams.
+	MethodEvenerHostAdd = "evener/host/add"
+	// MethodEvenerHostList returns every known host with truthful online state
+	// (component 08 slice 1). Attached rows report live channel facts; rows
+	// without a live channel render last-known state as offline. See
+	// HostListResponse.
+	MethodEvenerHostList = "evener/host/list"
+	// MethodEvenerHostStatus returns one host's row (component 08 slice 1): the
+	// same HostRow evener/host/list serves, for a single named host. Never
+	// dials. See HostStatusParams.
+	MethodEvenerHostStatus = "evener/host/status"
+	// MethodEvenerHostRemove deregisters one live host entry (component 08
+	// slice 1): its supervisor stops, its channel drops, and the name is gone
+	// until re-added. Every live host is removable here. See
+	// HostRemoveParams.
+	MethodEvenerHostRemove = "evener/host/remove"
+	// MethodEvenerHostUpdate edits one live host entry in place: every field
+	// except the name is mutable, the name is the request's target, and the
+	// entry's advancement of the registry generation retires the host's
+	// channel. Every live host is editable here. See HostUpdateParams.
+	MethodEvenerHostUpdate = "evener/host/update"
+	// MethodEvenerHostPlan plans one deploy against a named host and mints the
+	// single-use confirmation token evener/host/deploy consumes (deploy pipeline
+	// 08b §10). It is a mutation — it persists the token — so it admits like the
+	// settings mutations and refuses a remote origin. Its result is the
+	// HostPlanResult union: the plan plus token, or the no-token arm naming why
+	// nothing was minted. See HostPlanParams.
+	MethodEvenerHostPlan = "evener/host/plan"
+	// MethodEvenerHostDeploy consumes a plan's confirmation token and starts
+	// the deploy operation it names (deploy pipeline 08b §6, §10): dedup-first
+	// on the client operation ID, the confirmed token's single use, and a
+	// durable operation record whose worker runs outside the RPC. It is a
+	// mutation and admits like the settings mutations; it refuses a remote
+	// origin. See HostDeployParams.
+	MethodEvenerHostDeploy = "evener/host/deploy"
+	// MethodEvenerHostRestart starts a restart operation for one named host
+	// (deploy pipeline 08b §6, §10): no token — restart has no install step —
+	// but the same durable record, dedup and gate model as deploy, with the
+	// request naming the intended (generation, incarnation id) pair. See
+	// HostRestartParams.
+	MethodEvenerHostRestart = "evener/host/restart"
+	// MethodEvenerHostOperations reads the operation store's records (deploy
+	// pipeline 08b §8, §10): one bounded page ascending by the
+	// controller-assigned id, resumed by an opaque cursor, either host-pinned
+	// or unfiltered across hosts. It is a read — no gate, no dial, no registry
+	// resolution — so a removed host's retained history stays readable, and it
+	// admits like the rest of the host surface: controller-local, refusing a
+	// remote origin. See HostOperationsParams.
+	MethodEvenerHostOperations = "evener/host/operations"
+	// MethodEvenerHostTeardownRetry resumes one named teardown remnant
+	// (registry spec 08 §6/§11): it looks the remnant up by its opaque id — the
+	// lookup never requires a current live entry — try-acquires the host's
+	// gate, claims under the mutation lock, runs the pinned teardown to
+	// completion with no lock held, and finalizes from the observed result. Its
+	// result is the six-arm `outcome` x `hostKind` union. See
+	// HostTeardownRetryParams.
+	MethodEvenerHostTeardownRetry = "evener/host/teardown-retry"
+	// MethodEvenerHostTeardownRecover clears a remnant whose pinned target is
+	// unresolvable, on an authenticated operator's audited attestation
+	// (registry spec 08 §6/§11): gate first, the safety checks immediately
+	// before the clearing write, and the attestation recorded on the original
+	// receipt beside `remnantResolvedAt`. See HostTeardownRecoverParams.
+	MethodEvenerHostTeardownRecover = "evener/host/teardown-recover"
+	// MethodEvenerHostRunning serves one hub's own running build and health to
+	// the controller probing it (deploy pipeline 08b §6 step 2, §10). It is
+	// served locally by every hub and admitted only over an attached controller
+	// session peered by the handshake; its params carry the caller's fencing
+	// epoch (required on the wire, never a default) and its response is the
+	// local build revision, the authoritative health flag, and the local process
+	// start time when known. See HostRunningParams.
+	MethodEvenerHostRunning = "evener/host/running"
+	// MethodEvenerHostPushCredentials copies the controller's local
+	// provider-instance keys to one named remote host (component 07c). The unit
+	// of the push is the local credentials-store entry; each key is sent
+	// verbatim as the Provider value only to the two provider-keyed auth
+	// methods, and the host's own conditional set does the write. See
+	// HostPushCredentialsParams.
+	MethodEvenerHostPushCredentials = "evener/host/pushCredentials"
+	// MethodEvenerSessionImage fetches one image out of the recipient hub's own
+	// local session state (multi-host component 05). The controller's
+	// host-qualified image routes proxy through it when the route id names
+	// another source, so bytes stamped by a remote hub never resolve against
+	// the controller's filesystem. See SessionImageParams.
+	MethodEvenerSessionImage = "evener/session/image"
+	// MethodEvenerSessionDocument reads one document out of the recipient hub's
+	// own local session state (S7): the controller's /doc/file proxies through
+	// it when the session id names another source, as the image routes do
+	// through MethodEvenerSessionImage. See SessionDocumentParams.
+	MethodEvenerSessionDocument = "evener/session/document"
 )
 
 const (
@@ -166,23 +282,15 @@ const (
 	// NotifyThreadVisionModelChanged pushes a mid-session vision-model change.
 	// See ThreadVisionModelChangedParams.
 	NotifyThreadVisionModelChanged    = "thread/vision-model/changed"
-	NotifyTurnStarted                 = "turn/started"
-	NotifyTurnCompleted               = "turn/completed"
-	NotifyItemStarted                 = "item/started"
-	NotifyItemCompleted               = "item/completed"
-	NotifyAgentMessageDelta           = "item/agentMessage/delta"
-	NotifyAgentMessageReset           = "item/agentMessage/reset"
-	NotifyReasoningSummaryDelta       = "item/reasoning/summaryTextDelta"
-	NotifyToolOutputDelta             = "item/toolOutput/delta"
 	NotifyWarning                     = "warning"
 	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
 	NotifyEvenerThreadResync          = "evener/thread/resync"
+	NotifyEvenerThreadActivityChanged = "evener/thread/activity/changed"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerNotesUpdated          = "evener/notes/updated"
 	NotifyEvenerUrlsUpdated           = "evener/urls/updated"
-	NotifyEvenerSteeringInjected      = "evener/steering/injected"
 	NotifyEvenerJobStarted            = "evener/job/started"
 	NotifyEvenerJobFinished           = "evener/job/finished"
 	NotifyEvenerDelegateUpdated       = "evener/delegate/updated"
@@ -193,6 +301,7 @@ const (
 	NotifyEvenerNavigationInvalidated = "evener/navigation/invalidated"
 	NotifyEvenerMarketplaceUpdated    = "evener/marketplace/updated"
 	NotifyEvenerPluginUpdated         = "evener/plugin/updated"
+	NotifyEvenerNoticesChanged        = "evener/notices/changed"
 	// NotifyEvenerSandboxEscalationRequested pushes a harness-raised, human-gated
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
 	// blocks until the client answers with MethodEvenerSandboxEscalationResolve.
@@ -268,17 +377,21 @@ type NavigationCapability struct {
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	RepresentationVersion uint8               `json:"representationVersion"`
-	Resource              string              `json:"resource"`
-	Section               string              `json:"section,omitempty"`
-	SectionID             string              `json:"sectionId,omitempty"`
-	Catalog               string              `json:"catalog,omitempty"`
-	ProjectKey            string              `json:"projectKey,omitempty"`
-	Tier                  string              `json:"tier,omitempty"`
-	Ref                   string              `json:"ref,omitempty"`
-	Offset                *uint32             `json:"offset,omitempty"`
-	Limit                 *uint32             `json:"limit,omitempty"`
-	Base                  *NavigationReadBase `json:"base,omitempty"`
+	RepresentationVersion uint8  `json:"representationVersion"`
+	Resource              string `json:"resource"`
+	Section               string `json:"section,omitempty"`
+	SectionID             string `json:"sectionId,omitempty"`
+	// Catalog names a catalog read's catalog. On a project or project_page
+	// read it narrows the read to that catalog's project, as a location's
+	// catalog names it; an older hub refuses it there, and sends no location
+	// catalog to take it from.
+	Catalog    string              `json:"catalog,omitempty"`
+	ProjectKey string              `json:"projectKey,omitempty"`
+	Tier       string              `json:"tier,omitempty"`
+	Ref        string              `json:"ref,omitempty"`
+	Offset     *uint32             `json:"offset,omitempty"`
+	Limit      *uint32             `json:"limit,omitempty"`
+	Base       *NavigationReadBase `json:"base,omitempty"`
 }
 
 func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
@@ -311,11 +424,11 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid navigation base")
 		}
 	}
-	if decoded.RepresentationVersion != 2 {
-		return errors.New("representationVersion must be 2")
+	if decoded.RepresentationVersion != 3 {
+		return errors.New("representationVersion must be 3")
 	}
 	if _, present := fields["etag"]; present {
-		return errors.New("etag is not a v2 field")
+		return errors.New("etag is not a navigation field")
 	}
 	*params = NavigationReadParams(decoded)
 	return nil
@@ -544,12 +657,100 @@ type SessionPinUnpinResponse struct {
 	Navigation NavigationMutation        `json:"navigation"`
 }
 
+// SessionSeenSetParams marks sessions seen or unread on the hub (S4), so the
+// Board's Finished and Idle agree on every device.
+type SessionSeenSetParams struct {
+	Sessions []SessionSeenMark `json:"sessions"`
+}
+
+// SessionSeenMark is one session's mark, addressed by the ref its row carries.
+// It sets exactly one of SeenThrough and Unread. SeenThrough is a hub or
+// daemon timestamp the client showed, in Unix milliseconds: the row's
+// turn_ended_at, or the session's lastMovedAt from an activity read taken
+// while the session was on screen; never a client clock. The hub keeps the
+// newest it has been sent. Unread is "Mark as
+// unread", which lasts until the next SeenThrough mark.
+type SessionSeenMark struct {
+	Ref         string `json:"ref"`
+	SeenThrough int64  `json:"seenThrough,omitempty"`
+	Unread      bool   `json:"unread,omitempty"`
+}
+
+// SessionSeenSetResponse acknowledges the marks. Changed reports whether any
+// mark moved a stored marker; Navigation carries the committed invalidation
+// targets, empty when nothing changed.
+type SessionSeenSetResponse struct {
+	OK         bool               `json:"ok"`
+	Changed    bool               `json:"changed"`
+	Navigation NavigationMutation `json:"navigation"`
+}
+
+// ArchivedListParams names the project whose archived sessions to list: its
+// key, and the catalog its row came from ("projects", "archived_projects" or
+// "test_runs") as a hint. The same key can exist in more than one catalog, so
+// the hub reads the hinted catalog when it holds the key; a project that moved
+// between Projects and Archived projects is read from the one holding it now
+// (a test-runs hint has no such fallback); with no hint, the first of
+// projects, archived_projects and test_runs holding the key. Cursor is the
+// previous page's NextCursor, bound to the same hint and key; Limit defaults
+// to 50.
+type ArchivedListParams struct {
+	Catalog    string `json:"catalog,omitempty"`
+	ProjectKey string `json:"projectKey"`
+	Cursor     string `json:"cursor,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	// Revision is the revision of the list the caller holds (a response's
+	// Revision). When it is still the list's, the response says Unchanged and
+	// carries no rows. An older hub ignores it and answers the page.
+	Revision string `json:"revision,omitempty"`
+}
+
+// ArchivedListResponse is one page of a project's archived sessions, newest
+// first. Sessions is a JSON array of hubapi.NavigationSessionSummary: appwire
+// cannot import hubapi, so the rows travel as raw JSON the way a navigation
+// read's data does. NextCursor is empty on the last page. Total counts every
+// archived session of the project. Catalog is the catalog the hub read; it is
+// absent when none of the catalogs the hint allows holds the key, and the page
+// is empty.
+type ArchivedListResponse struct {
+	Sessions   json.RawMessage `json:"sessions"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+	Total      int             `json:"total"`
+	Catalog    string          `json:"catalog,omitempty"`
+	// Revision fingerprints the whole list read, the same on every page of it;
+	// it changes when any row a page could show changes. An older hub sends
+	// none. It vouches for the rows a client holds only when every page it
+	// holds carried this same revision; a client whose pages carried
+	// different revisions holds none, and reads again.
+	Revision string `json:"revision,omitempty"`
+	// Unchanged is true when the request's Revision is still the list's: the
+	// response then carries no rows, and Total, Catalog and Revision stand.
+	Unchanged bool `json:"unchanged,omitempty"`
+}
+
 // SearchParams selects matching live and past sessions for the hub command
 // palette. An empty query returns the most recent past sessions and all live
 // sessions, matching the palette's initial result set.
 type SearchParams struct {
 	Query string `json:"query,omitempty"`
+	// Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
+	// (the default when absent), SearchScopeLive or SearchScopeArchived. An
+	// older hub ignores it and answers as for all; SearchResponse.Scope says
+	// whether it was applied.
+	Scope string `json:"scope,omitempty"`
 }
+
+// The search scopes (S14, spec 7.4).
+const (
+	// SearchScopeAll is every session.
+	SearchScopeAll = "all"
+	// SearchScopeLive is the sessions the Board's Live section holds: live and
+	// not archived.
+	SearchScopeLive = "live"
+	// SearchScopeArchived is the sessions the rail files as archived, live or
+	// ended.
+	SearchScopeArchived = "archived"
+)
 
 // SearchResult is one session hit from the hub's live or past search index.
 // Ref is the qualified session reference that clients use to open the hit.
@@ -560,6 +761,40 @@ type SearchResult struct {
 	State   string `json:"state"`
 	Age     string `json:"age"`
 	Ref     string `json:"ref"`
+	// AskPending and ApprovalPending carry the flags a navigation row does: a
+	// live session is waiting on an answer to an ask_user question, or on a
+	// person to allow or deny a sandbox escalation (M7). State keeps its real
+	// value ("active" while an escalation blocks mid-turn), so a pending
+	// approval shows only in ApprovalPending. A past (ended) result carries
+	// neither. Additive: an older hub omits both, decoding as false.
+	AskPending      bool `json:"askPending,omitempty"`
+	ApprovalPending bool `json:"approvalPending,omitempty"`
+	// Archived says the rail files the session as archived: its own archive
+	// decision, its project's, or two weeks without activity (S14). Absent
+	// when it is not, and from an older hub.
+	Archived bool `json:"archived,omitempty"`
+	// Hits are the session's newest messages that match the search, newest
+	// first, and HitCount how many match in all. Only an InSessions result
+	// carries them (S14).
+	Hits     []SearchHit `json:"hits,omitempty"`
+	HitCount int         `json:"hitCount,omitempty"`
+}
+
+// SearchHit is one message that matches a search (S14).
+type SearchHit struct {
+	// TranscriptKey and Position name the transcript item the message is, as
+	// a thread read's items carry them, so a client opens the session at it.
+	TranscriptKey string             `json:"transcriptKey"`
+	Position      ThreadItemPosition `json:"position"`
+	// Snippet is the message around its first match, one line, in parts: a
+	// part with match set is text the search matched.
+	Snippet []SearchSnippetPart `json:"snippet"`
+}
+
+// SearchSnippetPart is one run of a snippet's text.
+type SearchSnippetPart struct {
+	Text  string `json:"text"`
+	Match bool   `json:"match,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted
@@ -567,11 +802,114 @@ type SearchResult struct {
 type SearchResponse struct {
 	Live []SearchResult `json:"live"`
 	Past []SearchResult `json:"past"`
+	// InSessions lists the sessions whose messages match, each with its hits
+	// (S14), newest session first: live sessions, then ended ones. Absent when
+	// none match, and from an older hub.
+	InSessions []SearchResult `json:"inSessions,omitempty"`
+	// Scope is the scope the answer applied. An older hub leaves it out, so a
+	// client knows it offers no Archived scope and no message hits.
+	Scope string `json:"scope,omitempty"`
 }
 
+// ActivityReadParams selects the sessions evener/activity/read reports. Refs
+// names sessions by the refs their Live rows carry; empty reads every live
+// top-level session of the hub and of its attached hosts.
+type ActivityReadParams struct {
+	Refs []string `json:"refs,omitempty"`
+}
+
+// ActivityReadResponse is one read of the pulse meters. A session whose daemon
+// predates the meter, or whose host did not answer in time, is absent, and a
+// client keeps its fallback for it until the next read.
+type ActivityReadResponse struct {
+	Sessions []SessionActivity `json:"sessions"`
+}
+
+// SessionActivity is one live top-level session's activity (spec 13.1, 16.4).
+type SessionActivity struct {
+	// Ref is the session's navigation ref, the one its Live row carries.
+	Ref string `json:"ref"`
+	// Minutes holds seven one-minute counts over the session's whole tree,
+	// oldest first, the last ending when the hub last probed its daemon: the
+	// transcript items that finished and the tool output events in each.
+	Minutes []int `json:"minutes"`
+	// RunningSubagents counts the session's subagents, at every depth, whose
+	// run is open: SubagentTally.Running, the count its Live row shows.
+	RunningSubagents int `json:"runningSubagents"`
+	// QuietForMS is how long the session's whole tree has gone without
+	// transcript motion, as of this read. It is present only while the session
+	// is working and none of its subagents runs: an agent waiting on subagents
+	// is never quiet or stuck (Jesse's ruling for S5), and a subagent inside
+	// one long model call emits nothing for minutes.
+	QuietForMS *int64 `json:"quietForMs,omitempty"`
+	// LatestIntent is what the session's own root turn last set out to do
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the daemon's own tool-call intent, re-cut here. Absent when this turn has
+	// stated none, which is most of a session's life before its first tool
+	// call, and when the daemon predates the field.
+	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is the Unix-millisecond time of the tree's newest transcript
+	// motion (ThreadActivity.LastMovedAt). A client compares it with the
+	// session's seen_through to tell whether anything moved since the person
+	// last looked, mid-turn included. Absent until the tree has moved since
+	// its daemon began serving it, and from an older hub or daemon.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
+}
+
+// The kinds of hub notice (S11, spec 7.1).
+const (
+	// NoticeKindSignInRequired: a provider instance on this hub needs signing
+	// in again before it can serve a request.
+	NoticeKindSignInRequired = "signInRequired"
+	// NoticeKindHostOffline: a host this hub manages is not attached, so its
+	// sessions are out of reach.
+	NoticeKindHostOffline = "hostOffline"
+	// NoticeKindPluginBroken: an installed plugin fails validation.
+	NoticeKindPluginBroken = "pluginBroken"
+)
+
+// HubNotice is one hub-level problem that blocks sessions (S11, spec 7.1).
+type HubNotice struct {
+	// ID is the notice's identity, stable while the problem lasts:
+	// "<kind>:<subject>", and "<kind>:<plugin>@<marketplace>" for a plugin.
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// Subject is what the notice names and what its action routes by: the
+	// provider instance (an evener/auth/list row's provider), the host's source
+	// ID (a manifest source's id), or the plugin's name.
+	Subject string `json:"subject"`
+	// Marketplace is a plugin notice's marketplace: two marketplaces can each
+	// ship a plugin of the same name.
+	Marketplace string `json:"marketplace,omitempty"`
+	// AffectedSessions counts the live top-level sessions the problem blocks:
+	// for a sign-in, this hub's live sessions whose current model runs on the
+	// provider instance; for a host, the host's sessions that were live when it
+	// was last reached. Absent when there are none, and on a plugin notice,
+	// since no row says which plugins a session runs.
+	AffectedSessions int `json:"affectedSessions,omitempty"`
+}
+
+// NoticesListResponse is evener/notices/list's answer and
+// evener/notices/changed's payload: every notice the hub derives now, sign-ins
+// first, then hosts, then plugins.
+type NoticesListResponse struct {
+	Notices []HubNotice `json:"notices"`
+}
+
+// ServerInfo names the serving hub and its machine: Name and Version identify
+// the build, while OS, Arch and Roots describe the hub's own machine — the same
+// system and project-root facts a HostRow carries for a host the hub reaches
+// over SSH. A client that already shows the hub's own machine (the phone's
+// Hosts) renders those fields instead of leaving the machine's system and roots
+// unknown. OS and Arch name the machine's system and are absent when a server
+// does not report them; Roots is the machine's project roots, absent when it
+// has none.
 type ServerInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	OS      string   `json:"os,omitempty"`
+	Arch    string   `json:"arch,omitempty"`
+	Roots   []string `json:"roots,omitempty"`
 }
 
 type FeatureSet struct {
@@ -652,12 +990,22 @@ type TaskAggregate struct {
 type EvenerThread struct {
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
-	ResumeRequired bool   `json:"resumeRequired,omitempty"`
-	Ref            string `json:"ref"`
-	InstanceID     string `json:"instanceId,omitempty"`
-	ParentRef      string `json:"parentRef,omitempty"`
-	Kind           string `json:"kind,omitempty"`
-	Profile        string `json:"profile,omitempty"`
+	ResumeRequired bool `json:"resumeRequired,omitempty"`
+	// ResumeOnlyFoldable means a turn/start sent on this connection right now
+	// would be admitted under the resume-only carve-out: the session merely needs
+	// its resume, which the send folds into itself. The hub stamps it only when
+	// that admission would actually succeed, so a client can offer Send from the
+	// hub's own answer instead of inferring the shape from ResumeRequired plus a
+	// missing send capability, which this same overlay also sets for a Stop drain,
+	// an unconfirmed force-stop exit, the connection-recovery fence, and a daemon
+	// on an incompatible protocol - four shapes whose turn/start the hub still
+	// refuses.
+	ResumeOnlyFoldable bool   `json:"resumeOnlyFoldable,omitempty"`
+	Ref                string `json:"ref"`
+	InstanceID         string `json:"instanceId,omitempty"`
+	ParentRef          string `json:"parentRef,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	Profile            string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
@@ -687,13 +1035,13 @@ type EvenerThread struct {
 	// bespoke transport — like Queue, it is structured per-session state read
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
-	// HumanNote carries the human's one-paragraph session whiteboard when set,
-	// else empty. It powers the shared-notes display without a bespoke
+	// HumanNote carries the human's session whiteboard, line breaks kept, when
+	// set, else empty. It powers the shared-notes display without a bespoke
 	// transport — like Goal, it is structured per-session state read from the
 	// already-fetched thread snapshot.
 	HumanNote string `json:"humanNote,omitempty"`
-	// AgentNote carries the agent's one-paragraph session whiteboard when set,
-	// else empty. It is read from the already-fetched thread snapshot like
+	// AgentNote carries the agent's session whiteboard, line breaks kept, when
+	// set, else empty. It is read from the already-fetched thread snapshot like
 	// HumanNote.
 	AgentNote string `json:"agentNote,omitempty"`
 	// SessionURLs carries the session's shared-notes URL list when set, else
@@ -761,6 +1109,17 @@ type EvenerThread struct {
 	// absent on old daemons and source-backed threads that omit the field,
 	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// PendingQuestion is the first question of the session's pending ask and
+	// how many the ask holds (S1b). The daemon reads both from one sample of
+	// the pending set, so it is present exactly when AskPending is true; it is
+	// absent from an older daemon. Snapshot-only: thread/status/changed
+	// carries AskPending, and nothing carries the question's text.
+	PendingQuestion *PendingQuestion `json:"pendingQuestion,omitempty"`
+	// Failure summarizes the failed turn the session rests on (S1c). It is
+	// present only while the thread's status is systemError, and absent from
+	// an older daemon and for a failure that recorded no diagnostic.
+	// Snapshot-only: no notification carries it.
+	Failure *ThreadFailure `json:"failure,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session
@@ -781,6 +1140,102 @@ type EvenerThread struct {
 	// a model ref. Snapshot-only like the effort fields beside it; live updates
 	// arrive as thread/vision-model/changed.
 	VisionModel string `json:"visionModel,omitempty"`
+	// Activity is the pulse meter of a live root session's whole tree (spec
+	// 16.4, S5): the root and every in-process descendant. It rides thread/list
+	// rows only, never a thread/read snapshot, because nothing announces its
+	// changes to a subscriber; the hub serves it through evener/activity/read,
+	// never navigation. Absent on descendant rows and from an older daemon.
+	Activity *ThreadActivity `json:"activity,omitempty"`
+	// LastTurnEndedAt is when the session's last turn ended, in Unix
+	// milliseconds (S4); absent before any turn has ended and from an older
+	// daemon. The hub compares it with its seen-through marker to tell a
+	// Finished session from an Idle one. Snapshot-only: no notification
+	// carries it.
+	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
+	// LastMessage is the opening of the session's last agent message (S1d):
+	// one line of at most MaxMessageExcerptRunes, the agent's own words only,
+	// never its reasoning or a tool's output. Absent until the session has
+	// written a message, and from an older daemon. Snapshot-only: no
+	// notification carries it.
+	LastMessage string `json:"lastMessage,omitempty"`
+	// Subagents tallies a live root session's whole delegate tree (S3), read
+	// from the root's delegate controller when the row is listed. It rides
+	// thread/list root rows only, when the tree has at least one subagent, and
+	// never a thread/read snapshot: no notification announces its changes.
+	Subagents *SubagentTally `json:"subagents,omitempty"`
+	// Access is what the session's sandbox lets it reach (S15): the sandbox
+	// mode it started under and whether that sandbox allows the network. Every
+	// current producer sets it; it is absent from an older daemon or hub, which
+	// a client reads as "not known". Snapshot-only: a session's sandbox is
+	// fixed when it starts, so no notification carries it.
+	Access *ThreadAccess `json:"access,omitempty"`
+}
+
+// ThreadAccess is a session's sandbox mode and network setting (spec 8.6,
+// S15). Sandbox is the mode name a session starts with ("off", "read-only",
+// "workspace-write" or "restricted"). Network is true when the session may use
+// the network: always for "off", and for a sandboxed session unless it started
+// with the network turned off.
+type ThreadAccess struct {
+	Sandbox string `json:"sandbox"`
+	Network bool   `json:"network"`
+}
+
+// ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
+// counts, oldest first, the last ending when the row was listed; each counts
+// the transcript items that finished and the tool output events in that minute.
+// LastActivityAt is the Unix-millisecond time of the tree's newest transcript
+// motion (a turn or item starting, a message or reasoning summary streaming, an
+// item finishing, a tool writing output), or the time the daemon began serving
+// this session when nothing has moved since.
+type ThreadActivity struct {
+	Minutes        []int `json:"minutes"`
+	LastActivityAt int64 `json:"lastActivityAt"`
+	// LatestIntent is the newest intent a tool call of the session's own root
+	// turn stated ("Reading the board's row tests."), one line of at most
+	// MaxIntentRunes. A Working row shows it in place of the job it is
+	// running, because it says what the job is for. Empty until this turn's
+	// first tool call that stated one, cleared when a turn begins, and absent
+	// from a daemon that predates it.
+	LatestIntent string `json:"latestIntent,omitempty"`
+	// LastMovedAt is LastActivityAt counting only real motion: absent until
+	// the tree has moved since the daemon began serving the session, so a
+	// daemon restart is not news to a client comparing it with a seen mark.
+	LastMovedAt int64 `json:"lastMovedAt,omitempty"`
+}
+
+// SubagentTally counts a live root session's subagents, at every depth, by how
+// each one's latest run stands (spec 9, S3). Running: no run has ended yet, or
+// a run is open again after the last one ended. Failed: the latest run ended
+// failed or exhausted. Done: it ended any other way (completed, cancelled or
+// stopped), including a subagent idle between runs.
+type SubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
+}
+
+// ThreadFailure summarizes the failed turn a session rests on (S1c): the
+// failure's headline (the diagnostic classifier's title, such as "Provider
+// error" or "Usage limit reached", cut to one line of MaxFailureTitleRunes)
+// and its structured cause. It never carries the failure's message, which can
+// quote a provider's error body; the transcript's error row has that.
+type ThreadFailure struct {
+	Title string           `json:"title,omitempty"`
+	Cause *DiagnosticCause `json:"cause,omitempty"`
+}
+
+// PendingQuestion is the first question of a session's pending ask (S1b): what
+// its Needs you row says ("Question · keep or drop the implied options?") and
+// the option labels a long-press preview lists. The daemon cuts Question and
+// each label to one line (Excerpt, at MaxQuestionTextRunes and
+// MaxQuestionOptionRunes) and sends at most MaxQuestionOptions labels. Count
+// is how many questions the pending ask holds, so a client can say "Question
+// 1 of 2".
+type PendingQuestion struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	Count    int      `json:"count"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -841,6 +1296,12 @@ type QueueState struct {
 	// missing SkillNames as "selections unavailable", never as "no
 	// selections".
 	SkillNames [][]string `json:"skillNames,omitempty"`
+	// CommandNames is FIFO-aligned with Preview and retains exact command
+	// identities independently from skill selections when editing or returning.
+	CommandNames [][]string `json:"commandNames,omitempty"`
+	// Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
+	// and UTF-16 location. It is editing metadata, not activation authority.
+	Mentions [][]InputMention `json:"mentions,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
@@ -925,14 +1386,6 @@ type UrlsUpdatedParams struct {
 	URLs     []SessionURL `json:"urls,omitempty"`
 }
 
-// TurnCompletedParams is the payload of a turn/completed notification: the
-// completed turn.
-type TurnCompletedParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	Turn     Turn   `json:"turn"`
-}
-
 // SandboxEscalationRequested is the payload of a
 // evener/sandbox/escalation/requested notification (M7): a harness-raised approval
 // card for a single sandbox denial. It carries only what the human needs to decide
@@ -973,6 +1426,32 @@ type SandboxEscalationResolved struct {
 	ThreadID     string `json:"threadId"`
 	Ref          string `json:"ref"`
 	EscalationID string `json:"escalationId"`
+}
+
+// DelegateStopParams is the request shape for evener/delegate/stop: the root
+// session that owns the delegate tree (ThreadID/Ref, as every turn mutation
+// names it) and the delegate to stop (EvenerDelegateInfo.DelegateID).
+type DelegateStopParams struct {
+	ThreadID   string `json:"threadId,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	DelegateID string `json:"delegateId"`
+}
+
+// DelegateStopOutcome is what evener/delegate/stop did.
+type DelegateStopOutcome string
+
+const (
+	// DelegateStopStopping: the subagent's run was cancelled. It ends as
+	// cancelled, which evener/delegate/updated reports.
+	DelegateStopStopping DelegateStopOutcome = "stopping"
+	// DelegateStopNotRunning: the subagent had no run to stop, because it was
+	// idle, finished, or already finishing. A repeated stop answers this.
+	DelegateStopNotRunning DelegateStopOutcome = "notRunning"
+)
+
+// DelegateStopResponse is the result of evener/delegate/stop.
+type DelegateStopResponse struct {
+	Outcome DelegateStopOutcome `json:"outcome"`
 }
 
 // SandboxEscalationResolveParams is the request shape for
@@ -1020,10 +1499,29 @@ type ThreadCapabilities struct {
 	// meta); false for non-local/source-backed threads that do not advertise it.
 	Rename bool `json:"rename"`
 	// SkillInput advertises support for canonical {type:"skill", name} input
-	// items on the input-bearing turn mutations. False everywhere until
-	// runtime consumption is wired per endpoint; ValidateSkillInputSupport
-	// keeps skill items rejected wherever this capability is false.
+	// items on the input-bearing turn mutations. A live daemon advertises it
+	// when all of those endpoints are wired; the hub's cold projections
+	// (past reads, close and gave-up frames, and list rows) advertise the same
+	// current-daemon floor, since each input-bearing mutation re-verifies
+	// against the live daemon. ValidateSkillInputSupport keeps skill items
+	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// CommandInput advertises canonical {type:"command", name} consumption
+	// on input-bearing mutations, with empty args and exact catalog identity.
+	CommandInput bool `json:"commandInput,omitempty"`
+	// StopSubagent advertises evener/delegate/stop on a root session (S6):
+	// true while its daemon wires the stop and the session is open. Absent
+	// from an older daemon, from a session with no daemon running (it runs no
+	// subagents), and from a subagent's own thread: the stop targets the root
+	// that owns the tree.
+	StopSubagent bool `json:"stopSubagent,omitempty"`
+	// PageBefore advertises that thread/turns/list pages this thread from a
+	// before position, with or without a cursor: a client that trimmed rows
+	// from the top of its window can page them back. The hub answers for its
+	// own local and saved threads. A thread on another host stays masked until
+	// the hub can join such a page to its remote paging window (#3176); an
+	// older hub never sends it.
+	PageBefore bool `json:"pageBefore,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.
@@ -1035,10 +1533,13 @@ type EvenerHookEventStatus struct {
 }
 
 type EvenerDiagnostics struct {
+	// Commands is this owning session's loaded, path-free command inventory.
+	// Nil is unreported, an explicit empty slice is an authoritative empty inventory.
+	Commands   []CommandDescriptor     `json:"commands,omitzero"`
 	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
-	Plugins    []EvenerPluginInfo      `json:"plugins,omitempty"`
+	Plugins    []EvenerPluginInfo      `json:"plugins,omitzero"` // nil (a source that cannot report plugins) is absent; empty is sent as []
 	HookEvents []EvenerHookEventStatus `json:"hookEvents,omitempty"`
 	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
@@ -1060,31 +1561,6 @@ type EvenerDiagnostics struct {
 	// SkillDiagnostics is the explicit source-detail view, so the two never
 	// borrow each other's identity.
 	SkillDiagnostics []EvenerSkillDiagnostic `json:"skillDiagnostics,omitempty"`
-}
-
-// MarshalJSON preserves an explicit empty plugin inventory while keeping a
-// nil inventory absent for old or unwired sources that cannot report it.
-func (d EvenerDiagnostics) MarshalJSON() ([]byte, error) {
-	type alias EvenerDiagnostics
-	a := alias(d)
-	a.Plugins = nil
-	raw, err := json.Marshal(a)
-	if err != nil {
-		return nil, err
-	}
-	if d.Plugins == nil {
-		return raw, nil
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, err
-	}
-	plugins, err := json.Marshal(d.Plugins)
-	if err != nil {
-		return nil, err
-	}
-	fields["plugins"] = plugins
-	return json.Marshal(fields)
 }
 
 type EvenerToolInfo struct {
@@ -1220,6 +1696,8 @@ type EvenerWatchInfo struct {
 // notifications and thread diagnostics. It contains no activation job fields
 // and no call-scoped wait result.
 type EvenerDelegateInfo struct {
+	// RunGeneration identifies the current activation; zero means no run has started.
+	RunGeneration       uint64               `json:"runGeneration"`
 	DelegateID          string               `json:"delegateId"`
 	OwnerSessionID      string               `json:"ownerSessionId"`
 	RootSessionID       string               `json:"rootSessionId"`
@@ -1232,6 +1710,7 @@ type EvenerDelegateInfo struct {
 	Status              string               `json:"status"`
 	Outcome             string               `json:"outcome,omitempty"`
 	Reason              string               `json:"reason,omitempty"`
+	Error               string               `json:"error,omitempty"`
 	Terminal            bool                 `json:"terminal,omitempty"`
 	Resumable           bool                 `json:"resumable"`
 	NeedsAttention      bool                 `json:"needsAttention"`
@@ -1293,11 +1772,18 @@ const (
 )
 
 // ThreadItemPosition is an absolute position in the decoded transcript and
-// the final visible projected item slice for that entry.
+// the final visible projected item slice for that entry. Sub orders notices
+// anchored at the same (Entry, Item) position; it is omitted at zero.
 type ThreadItemPosition struct {
 	Entry uint64 `json:"entry"`
 	Item  uint32 `json:"item"`
+	Sub   uint32 `json:"sub,omitempty"`
 }
+
+// NoticeAnchorItem is the Item value of every notice anchor: past every real
+// content part index, so a notice's position always sorts after the entry's
+// real items.
+const NoticeAnchorItem uint32 = 1 << 30
 
 type Turn struct {
 	ID        string        `json:"id"`
@@ -1305,6 +1791,9 @@ type Turn struct {
 	ItemsView TurnItemsView `json:"itemsView"`
 	Status    string        `json:"status"`
 	Error     *TurnError    `json:"error,omitempty"`
+	// Version is the highest contributing entry ordinal + 1 (0 means an
+	// overlay-only turn with no recorded history yet).
+	Version uint64 `json:"version,omitempty"`
 	// HasEarlierItems and HasLaterItems describe completeness at the item
 	// boundaries of a fragment. They are omitted by legacy/full responses.
 	HasEarlierItems bool `json:"hasEarlierItems,omitempty"`
@@ -1346,12 +1835,10 @@ const SystemPreludeTurnID = "turn_system"
 // entry-index numbering owns. A session accumulates transcript entries
 // several times faster than it accumulates client mutations, so a reservation
 // numbered off the mutation counter always names a LOW number — one that an
-// unrelated early entry already owns once a restart reseeds the served
-// snapshot from the transcript. The reply then merges into that entry's turn,
-// taking the whole agent response with it (kata rk09).
+// unrelated early legacy entry already owns. The reply would then merge into
+// that entry's turn, taking the whole agent response with it (kata rk09).
 //
-// Raising the counter the way internal/appprojector fences its own live
-// counter (SeedPersistedTurns, kata eptj) cannot fix this: the entry index
+// Raising the counter above the entry count cannot fix this: the entry index
 // outgrows the mutation counter, so a fenced reservation falls behind and
 // collides again within a few turns. Only a disjoint namespace closes it.
 func ClientMutationTurnID(sequence uint64) string {
@@ -1369,11 +1856,12 @@ type TurnError struct {
 }
 
 // DiagnosticCause is the wire-level structured cause attached to a
-// warning/error notification. Today the only Kind is "provider" (an HTTP
-// failure from an LLM adapter); consumers can typed-branch on Kind
-// instead of substring-matching the message (kata cmfz). The agent's
-// events.ErrorCause projects to this shape; absence is signaled by an
-// omitted/nil pointer on the carrying envelope.
+// warning/error notification. Kinds today are "provider" (an HTTP failure
+// from an LLM adapter) and "signInRequired" (the user must sign in to a
+// provider instance again); consumers can typed-branch on Kind instead of
+// substring-matching the message (kata cmfz). The agent's events.ErrorCause
+// projects to this shape; absence is signaled by an omitted/nil pointer on
+// the carrying envelope.
 type DiagnosticCause struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider,omitempty"`
@@ -1417,9 +1905,30 @@ const (
 	ThreadItemEventKindEnvironment ThreadItemEventKind = "environment"
 	// ThreadItemEventKindNotesContext marks the systemMessage item a reloaded
 	// transcript renders for a schema.TurnNotesContext turn: the harness's
-	// shared-notes snapshot block. Same visibility contract as environment —
-	// harness chrome, never hidden by a toggle.
+	// shared-notes snapshot block. Web and native hide it at Conversation;
+	// elsewhere System events controls visibility and it starts folded.
 	ThreadItemEventKindNotesContext ThreadItemEventKind = "notes-context"
+	// ThreadItemEventKindWarning marks a live overlay notice for a session
+	// warning. Warnings are never recorded, so only the overlay shows them.
+	ThreadItemEventKindWarning ThreadItemEventKind = "warning"
+	// ThreadItemEventKindInterrupted marks the live overlay notice a model
+	// round collapses into when it ended with streamed content or running
+	// tools that were never recorded.
+	ThreadItemEventKindInterrupted ThreadItemEventKind = "interrupted"
+	// ThreadItemEventKindApprovalDecision marks the systemMessage item a
+	// human's Allow or Deny on a sandbox escalation leaves in history (S16).
+	// apptranscript.ApprovalDecisionAnnouncement documents its Raw.
+	ThreadItemEventKindApprovalDecision ThreadItemEventKind = "approval_decision"
+	// ThreadItemEventKindMemoryContext marks each systemMessage item a
+	// schema.TurnMemoryContext turn projects: one per section of the
+	// boundary's memory notification (a scope's index, its index changes, or
+	// a notice of read pages another session changed). apptranscript owns the
+	// split, each item's exact recorded section text, and the Raw
+	// ({"memoryContext": {...}}) that only index sections carry; change and
+	// page sections, and a message that does not decode, carry no Raw and
+	// clients show their text. The web and native renderers own presenting
+	// each as a collapsed steering-style notification.
+	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1442,6 +1951,10 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindError),
 	string(ThreadItemEventKindEnvironment),
 	string(ThreadItemEventKindNotesContext),
+	string(ThreadItemEventKindWarning),
+	string(ThreadItemEventKindInterrupted),
+	string(ThreadItemEventKindApprovalDecision),
+	string(ThreadItemEventKindMemoryContext),
 }
 
 type ThreadItem struct {
@@ -1512,6 +2025,20 @@ type ThreadItem struct {
 	// non-steering items and on steering items the daemon didn't classify.
 	SteeringKind     string `json:"steeringKind,omitempty"`
 	ClientMutationID string `json:"clientMutationId,omitempty"`
+	// Version is the highest entry ordinal (below) among the entries that
+	// contributed to this item, stored and sent as ordinal + 1 so 0 means "no
+	// history version" (an overlay item). The higher version wins.
+	Version uint64 `json:"version,omitempty"`
+	// RoundID names the round an ASSISTANT-projected item belongs to. Empty
+	// for items that are not projected from an ASSISTANT entry.
+	RoundID string `json:"roundId,omitempty"`
+	// CompletedAtEntry is, on a tool item, the entry ordinal + 1 of the
+	// TOOL_RESULTS entry that completed it (the spec's `completedAt`
+	// metadata; CompletedAt is the completion timestamp). 0 until results
+	// are recorded. Key and position stay the opener's, so the item never
+	// moves when it completes; a client drops the overlay's execution state
+	// for the item's key once it holds a non-zero value.
+	CompletedAtEntry uint64 `json:"completedAtEntry,omitempty"`
 }
 
 type OutputImage struct {
@@ -1524,9 +2051,18 @@ type OutputImage struct {
 	Path      string `json:"path,omitempty"`
 }
 
+// InputMention records one visible selection's UTF-16 offset in a text item.
+// Canonical skill/command items remain the sole activation authority.
+type InputMention struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Offset int    `json:"offset"`
+}
+
 type InputItem struct {
 	Type      string            `json:"type"`
 	Text      string            `json:"text,omitempty"`
+	Mentions  []InputMention    `json:"mentions,omitempty"`
 	URL       string            `json:"url,omitempty"`
 	MediaType string            `json:"mediaType,omitempty"`
 	Data      []byte            `json:"data,omitempty"`
@@ -1544,6 +2080,11 @@ type ThreadListParams struct {
 	Statuses         []string `json:"statuses,omitempty"`
 	SourceIDs        []string `json:"sourceIds,omitempty"`
 	IncludeSubagents bool     `json:"includeSubagents,omitempty"`
+	// StatusOnly asks a daemon for the diagnostics a liveness probe reads and
+	// nothing else: each row's Diagnostics carries only Jobs, Watches, and
+	// Delegates reduced to delegateId, childSessionId and lifecycle. A daemon
+	// that predates the field, and a hub, ignore it and return the full answer.
+	StatusOnly bool `json:"statusOnly,omitempty"`
 }
 
 type ThreadListResponse struct {
@@ -1560,6 +2101,14 @@ type ThreadReadParams struct {
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
 	ItemLimit           int    `json:"itemLimit,omitempty"`
+	// RequestGeneration is the client's own read-request counter, echoed back
+	// on ThreadReadResponse so a client can discard a stale reply that
+	// resolves after a newer request it already issued.
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
+	// HeldSnapshot names what the client's currently held read was projected
+	// from, so the server can answer with HistoryChanges instead of a full
+	// re-read when nothing outside the client's window changed.
+	HeldSnapshot *SnapshotIdentity `json:"heldSnapshot,omitempty"`
 }
 
 type ThreadReadResponse struct {
@@ -1568,6 +2117,142 @@ type ThreadReadResponse struct {
 	// to thread/turns/list to fetch the page just before the window. Empty means
 	// the response already includes the oldest item.
 	OlderCursor string `json:"olderCursor,omitempty"`
+	// RequestGeneration echoes ThreadReadParams.RequestGeneration.
+	RequestGeneration uint64 `json:"requestGeneration,omitempty"`
+	// BootGeneration is the serving daemon's boot generation for this thread:
+	// its counter for its root thread, "<n>@<rootSessionID>" for a descendant
+	// (DescendantBootGeneration), or DaemonlessBootGeneration for the hub's
+	// own read. See CompareBootGeneration.
+	BootGeneration string `json:"bootGeneration,omitempty"`
+	// Epoch is the history epoch this response was projected under; it
+	// advances on a replacement (a new incarnation, a resync epoch, or an
+	// authoritative daemonless read).
+	Epoch uint64 `json:"epoch,omitempty"`
+	// Snapshot names what this read was projected from.
+	Snapshot *SnapshotIdentity `json:"snapshot,omitempty"`
+	// Overlay carries the live, not-yet-recorded state (streams, previews,
+	// running tools, notices) alongside the recorded thread.
+	Overlay []OverlayItem `json:"overlay,omitempty"`
+	// Authoritative is true when this response can settle uncertain state
+	// (a live daemon read), false for a saved-transcript read that cannot.
+	Authoritative bool `json:"authoritative,omitempty"`
+	// Changes carries items and turns outside the client's held window whose
+	// version grew since HeldSnapshot, in place of a full re-read.
+	Changes *HistoryChanges `json:"changes,omitempty"`
+}
+
+// SnapshotIdentity names what a history read or update was projected from:
+// the incarnation (identity of the recorded history line, changed by a
+// replacement) and its length at projection time.
+type SnapshotIdentity struct {
+	Incarnation string `json:"incarnation"`
+	Length      int64  `json:"length"`
+}
+
+const NotifyHistoryUpdated = "history/updated"
+
+// HistoryUpdatedParams carries the full current form of every item and turn
+// whose recorded entries changed. Turns carry no Items — the reducer merges
+// them against items it already holds by key.
+type HistoryUpdatedParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	// BootGeneration is the publishing daemon's boot generation for this
+	// thread: its counter for its root thread, "<n>@<rootSessionID>" for a
+	// descendant (DescendantBootGeneration). See CompareBootGeneration.
+	BootGeneration string           `json:"bootGeneration"`
+	Epoch          uint64           `json:"epoch"`
+	Snapshot       SnapshotIdentity `json:"snapshot"`
+	Turns          []Turn           `json:"turns,omitempty"`
+	Items          []ThreadItem     `json:"items,omitempty"`
+}
+
+// OverlayKind discriminates the four shapes of live, not-yet-recorded state
+// an OverlayItem can carry.
+type OverlayKind string
+
+const (
+	OverlayStream  OverlayKind = "stream"
+	OverlayPreview OverlayKind = "preview"
+	OverlayTool    OverlayKind = "tool"
+	OverlayNotice  OverlayKind = "notice"
+)
+
+// OverlayItem is one piece of live state that is not recorded history: a
+// streaming assistant/reasoning run, a tool-call preview, a running tool, or
+// an ephemeral notice.
+type OverlayItem struct {
+	// Key identifies this overlay slot: "stream:<streamId>:<agentMessage|reasoning>",
+	// "preview:<callId>", "tool:<historyKey>", or a notice key. Notice keys
+	// are opaque: a daemon's are "notice:<n>", and the hub mints its own
+	// (such as "notice:hub:relay-gave-up").
+	Key        string              `json:"key"`
+	Kind       OverlayKind         `json:"kind"`
+	TurnID     string              `json:"turnId,omitempty"`
+	RoundID    string              `json:"roundId,omitempty"`
+	StreamID   string              `json:"streamId,omitempty"`
+	CallID     string              `json:"callId,omitempty"`
+	HistoryKey string              `json:"historyKey,omitempty"` // tool: the call item's transcriptKey
+	Anchor     *ThreadItemPosition `json:"anchor,omitempty"`     // notice
+	Item       ThreadItem          `json:"item"`                 // the display form
+}
+
+const (
+	NotifyOverlayUpserted = "overlay/upserted" // OverlayUpsertedParams
+	NotifyOverlayDelta    = "overlay/delta"    // OverlayDeltaParams
+	NotifyOverlayReset    = "overlay/reset"    // OverlayResetParams
+	NotifyOverlayEnd      = "overlay/end"      // OverlayEndParams
+)
+
+// OverlayUpsertedParams is the payload of overlay/upserted: one overlay item
+// was created or replaced.
+type OverlayUpsertedParams struct {
+	ThreadID string      `json:"threadId"`
+	Ref      string      `json:"ref"`
+	Item     OverlayItem `json:"item"`
+}
+
+// OverlayDeltaField selects which field of a targeted overlay item an
+// OverlayDeltaParams appends to.
+type OverlayDeltaField string
+
+const (
+	OverlayDeltaText   OverlayDeltaField = "text"
+	OverlayDeltaOutput OverlayDeltaField = "output"
+)
+
+// OverlayDeltaParams is the payload of overlay/delta: an incremental chunk
+// appended to one overlay item's text or output.
+type OverlayDeltaParams struct {
+	ThreadID string            `json:"threadId"`
+	Ref      string            `json:"ref"`
+	Key      string            `json:"key"`
+	Field    OverlayDeltaField `json:"field"`
+	Delta    string            `json:"delta"`
+}
+
+// OverlayResetParams is the payload of overlay/reset: discard the named
+// stream's in-progress overlay item (a retry replaces it).
+type OverlayResetParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	StreamID string `json:"streamId"`
+}
+
+// OverlayEndParams is the payload of overlay/end: the named round's overlay
+// state (previews, running tools) is final and about to be replaced by
+// recorded history.
+type OverlayEndParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref"`
+	RoundID  string `json:"roundId"`
+}
+
+// HistoryChanges are items and turns outside a daemonless latest window whose
+// version grew since the snapshot the client held.
+type HistoryChanges struct {
+	Turns []Turn       `json:"turns,omitempty"`
+	Items []ThreadItem `json:"items,omitempty"`
 }
 
 func decodeStrictJSON(data []byte, dst any) error {
@@ -1597,11 +2282,31 @@ type ThreadTurnsListParams struct {
 	Cursor    string `json:"cursor,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
 	ItemLimit int    `json:"itemLimit,omitempty"`
+	// Before, when set, ends the page just before this position. With a
+	// Cursor it moves the cursor's boundary, keeping the cursor's identity
+	// fence; with none the source mints a cursor there under the thread's
+	// current identity. A client that dropped rows from the top of its window
+	// names the oldest row it kept and pages the dropped rows back.
+	Before *ThreadItemPosition `json:"before,omitempty"`
 }
 
+// ThreadTurnsListResponse is one backfill page. It carries no request
+// generation: backfill pages accumulate within their snapshot in any arrival
+// order, and only latest-window reads are ordered by generation.
 type ThreadTurnsListResponse struct {
 	Data       []Turn `json:"data"`
 	NextCursor string `json:"nextCursor,omitempty"`
+	// BootGeneration is the serving daemon's boot generation for this thread,
+	// as on ThreadReadResponse. See CompareBootGeneration.
+	BootGeneration string `json:"bootGeneration,omitempty"`
+	// Epoch is the history epoch this page was projected under; see
+	// ThreadReadResponse.Epoch.
+	Epoch uint64 `json:"epoch,omitempty"`
+	// Snapshot names what this page was projected from.
+	Snapshot *SnapshotIdentity `json:"snapshot,omitempty"`
+	// Authoritative is true when this page can settle uncertain state; see
+	// ThreadReadResponse.Authoritative.
+	Authoritative bool `json:"authoritative,omitempty"`
 }
 
 func (p *ThreadTurnsListParams) UnmarshalJSON(data []byte) error {
@@ -1625,6 +2330,57 @@ type ThreadTurnItemsListParams struct {
 type ThreadTurnItemsListResponse struct {
 	Data       []ThreadItem `json:"data"`
 	NextCursor string       `json:"nextCursor,omitempty"`
+}
+
+// SessionImageParams selects one image from the recipient hub's own local
+// session state. Exactly one selector must be set, matching the two URL forms a
+// hub stamps into its own thread snapshots:
+//
+//   - SHA addresses the replayed-input form /s/<session>/images/<sha>, whose
+//     bytes are re-scanned out of the session transcript;
+//   - Path is a relative or current-root absolute file path for the file-backed
+//     form /doc/image?session=<session>&path=<path>, resolved inside the
+//     session's current working directory. Absolute paths outside that root are
+//     refused.
+//
+// Both set, or neither, is InvalidParams. SessionID names the session in the
+// recipient hub's own namespace; it is never a routing field for another source.
+type SessionImageParams struct {
+	SessionID string `json:"sessionId"`
+	SHA       string `json:"sha,omitempty"`
+	Path      string `json:"path,omitempty"`
+}
+
+// SessionImageResponse is one session image: the raw bytes (base64 inside the
+// JSON frame), their re-derived media type, the byte length, and the lowercase
+// hex sha256 of Data. The media type is never the value stored in a transcript.
+type SessionImageResponse struct {
+	MediaType string `json:"mediaType"`
+	Size      int64  `json:"size"`
+	SHA       string `json:"sha,omitempty"`
+	Data      []byte `json:"data"`
+}
+
+// SessionDocumentParams names one file in a session's working directory on the
+// recipient hub. SessionID names the session in the recipient's own namespace
+// and is never a routing field for another source. Path is resolved exactly as
+// the local /doc/file route resolves it: relative to the session's working
+// directory, or absolute inside it, and refused when it or a symlink along it
+// leads outside.
+type SessionDocumentParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path"`
+}
+
+// SessionDocumentResponse is one read of a session document: at most the first
+// 512 KiB of the file (base64 inside the JSON frame), the file's true size, the
+// lowercase hex sha256 of the whole file (absent for a file too large to hash),
+// and its modification time in Unix milliseconds.
+type SessionDocumentResponse struct {
+	Data       []byte `json:"data"`
+	TotalSize  int64  `json:"totalSize"`
+	Revision   string `json:"revision,omitempty"`
+	ModifiedAt int64  `json:"modifiedAt,omitempty"`
 }
 
 type ThreadTranscriptListParams struct {
@@ -1687,16 +2443,7 @@ type ThreadResumeResponse struct {
 }
 
 type ThreadForkParams struct {
-	Ref string `json:"ref"`
-	// SourceTurnID names the divergence position as a 1-based index into the
-	// parent transcript's ENTRY list — every entry, not just the ones that
-	// opened a turn — optionally spelled with a "turn_" prefix. Despite the
-	// name it is NOT a turn id: the hub parses it with parseSourceTurnID and
-	// hands the number straight to agent.ForkSessionAtUserTurn. Send
-	// ThreadItem.TranscriptEntryIndex, never Turn.ID; the two coincide only on
-	// a transcript replayed from disk, because every live turn minter numbers
-	// turns off its own counter (kata 0jhh).
-	SourceTurnID  string `json:"sourceTurnId"`
+	Ref           string `json:"ref"`
 	EditedInput   string `json:"editedInput,omitempty"`
 	Label         string `json:"label,omitempty"`
 	ModelProvider string `json:"modelProvider,omitempty"`
@@ -1711,9 +2458,22 @@ type ThreadForkParams struct {
 	// Aside forks a local evener thread at its tip instead of at a source turn:
 	// the child is a complete copy of the parent session (same permissions and
 	// config via the inherited session meta) and opens as a side thread. Aside
-	// is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
+	// is mutually exclusive with SourceItemKey, EditedInput, DeferInput, and
 	// Label, and is only supported for local evener threads.
 	Aside bool `json:"aside,omitempty"`
+	// SourceItemKey names the divergence position as an item key
+	// (transcriptindex.ItemKey): a 0-based entry ordinal into the parent
+	// transcript's ENTRY list — every entry, not just the ones that opened a
+	// turn — plus the content part that opened the item. The hub parses it
+	// with parseSourceItemKey, which turns the ordinal into the matching
+	// 1-based entry index and hands that straight to
+	// agent.ForkSessionAtUserTurn. Despite embedding a turn id, the key is
+	// NOT read as one for this: send ThreadItem.TranscriptKey, never Turn.ID;
+	// the entry ordinal a live turn's own id implies coincides with its
+	// transcript entry index only on a transcript replayed from disk,
+	// because every live turn minter numbers turns off its own counter (kata
+	// 0jhh). Required unless Aside.
+	SourceItemKey string `json:"sourceItemKey,omitempty"`
 }
 
 type ThreadForkResponse struct {
@@ -1863,14 +2623,16 @@ type TurnDrainAsSteerResponse struct {
 // turn/promoteQueuedAsSteer (issue #22 per-message promote). Index selects
 // one entry of the session's FIFO input queue (matching the position shown
 // in the queue preview); the daemon removes just that entry and injects it
-// as a user-sourced steering message into the in-flight turn, leaving the
+// as a user-sourced steering message into the in-flight turn — or, when no
+// turn is running, as pending steering the next turn delivers — leaving the
 // other queued messages in place. ExpectedEntryID, when non-empty, must
 // match the id the daemon minted for that entry (surfaced via
 // QueueState.IDs): the queue head can be consumed mid-turn, so a bare index
 // from an older snapshot may point at a different message — a mismatch is a
 // Conflict, not a wrong-message promote (review F1). The daemon returns
-// Conflict when no turn is in flight, the index is out of range, or the
-// expected id no longer matches.
+// Conflict when the index is out of range or the expected id no longer
+// matches. Unlike turn/steer, no turn needs to be in flight: a queue a Stop
+// parked is promoteable as the queue strip's "run this now".
 type TurnPromoteQueuedAsSteerParams struct {
 	Ref                string `json:"ref"`
 	Index              int    `json:"index"`
@@ -2014,7 +2776,10 @@ type TaskListParams struct {
 }
 
 type TaskListResponse struct {
-	Data any `json:"data"`
+	// Data is nil when task data is unavailable and non-nil (possibly empty)
+	// for an authoritative list. The nullable annotation preserves that
+	// distinction in the generated SDK without a pointer to the slice.
+	Data []Task `json:"data" appwire:"nullable"`
 }
 
 type JobsListParams struct {
@@ -2084,6 +2849,7 @@ type JobActivityDelegate struct {
 	ProjectionRevision  uint64                 `json:"projectionRevision,omitempty"`
 	Outcome             string                 `json:"outcome,omitempty"`
 	Reason              string                 `json:"reason,omitempty"`
+	Error               string                 `json:"error,omitempty"`
 	Terminal            bool                   `json:"terminal,omitempty"`
 	Resumable           bool                   `json:"resumable,omitempty"`
 	NotResumableReason  string                 `json:"notResumableReason,omitempty"`
@@ -2178,32 +2944,45 @@ var AllJobActivityTypes = []any{
 	JobActivityBranchState{},
 }
 
-// JobOutputTail is the evener/jobs/output payload: one window of a job's
-// durable output plus the bookkeeping a client needs to say "showing last N
-// of M bytes" and to page backwards through the log.
-type JobOutputTail struct {
-	Tail          string `json:"tail"`
-	TotalBytes    int64  `json:"totalBytes"`
-	RetainedStart int64  `json:"retainedStart"`
-	Truncated     bool   `json:"truncated"`
-	// HasEarlier is true when retained output exists before the window: a
-	// follow-up read with beforeBytes=RetainedStart returns the previous page.
-	HasEarlier bool `json:"hasEarlier,omitempty"`
+// JobOutputPage describes exact lifetime bytes [OffsetBytes,
+// OffsetBytes+BytesReturned). Data is lossless utf8 or standard base64.
+type JobOutputPage struct {
+	OffsetBytes        int64  `json:"offsetBytes"`
+	BytesReturned      int64  `json:"bytesReturned"`
+	TotalBytes         int64  `json:"totalBytes"`
+	RetainedStartBytes int64  `json:"retainedStartBytes"`
+	Encoding           string `json:"encoding"`
+	Data               string `json:"data"`
 }
 
-// JobsOutputParams reads a byte window of one job's durable output. MaxBytes
-// defaults server-side (4 KiB) and is capped (64 KiB). BeforeBytes > 0 pages
-// backwards: the window ends at that lifetime output offset (exclusive)
-// instead of at the end of the log.
+// JobsOutputParams reads up to MaxBytes ending at BeforeBytes, exclusively.
+// An omitted BeforeBytes selects the latest page. Explicit zero selects the
+// empty page at zero when zero is retained. MaxBytes defaults to 4 KiB and is
+// capped at 64 KiB; a calculated page start is clipped to the retention floor.
 type JobsOutputParams struct {
 	Ref         string `json:"ref,omitempty"`
 	JobID       string `json:"jobId"`
 	MaxBytes    int64  `json:"maxBytes,omitempty"`
-	BeforeBytes int64  `json:"beforeBytes,omitempty"`
+	BeforeBytes *int64 `json:"beforeBytes,omitempty"`
 }
 
 type JobsOutputResponse struct {
-	Data any `json:"data"`
+	Data JobOutputPage `json:"data"`
+}
+
+// JobsGetParams reads ONE job's metadata (the activity-tree job shape),
+// including its untruncated command. Ref names the owning session; JobID names
+// the job.
+type JobsGetParams struct {
+	Ref   string `json:"ref,omitempty"`
+	JobID string `json:"jobId"`
+}
+
+// JobsGetResponse carries an appwire.JobActivityJob in Data: the same job node
+// the activity tree renders, so a client can show the job's full command beside
+// its output.
+type JobsGetResponse struct {
+	Data JobActivityJob `json:"data"`
 }
 
 // PathsCompleteParams asks for path completions of Prefix. IncludeFiles adds
@@ -2404,7 +3183,30 @@ type AuthStatusResponse struct {
 	WorkspaceID    string `json:"workspaceId,omitempty"`
 	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
-	Error          string `json:"error,omitempty"`
+	// RefreshRejected is true when the issuer permanently refused this
+	// instance's stored refresh token (authopenai.RefreshRejected, #2479):
+	// the access token may still be valid, but the session needs a fresh
+	// sign-in before its next refresh. It is why NeedsLogin can be true for a
+	// record whose access token has not expired, so a client must not read
+	// NeedsLogin alone as "the access token expired".
+	RefreshRejected bool   `json:"refreshRejected,omitempty"`
+	Error           string `json:"error,omitempty"`
+	// ConfigRevision is this instance's effective credential-configuration
+	// revision: a stable, keyed MAC the host re-resolves from the same state a
+	// credential write lands in (cmd/evener-hub/app_auth.go +
+	// hubcore.CredentialConfigRevision). It is keyed with the hub-held secret
+	// the endpoint fingerprints use, so a reader who can see it cannot recover a
+	// secret the covered destination carries - a base URL can hold one in its
+	// userinfo or query string, which this field must not expose. The remote
+	// credential push captures it from this read and echoes it as
+	// ApiKeyConditionalSetParams.ExpectedRevision, so the host can refuse a
+	// write prepared against a configuration that has since changed. It is
+	// deliberately empty (JSON-omitted) when the host cannot resolve the
+	// instance or cannot key a revision: the zero value asserts no revision
+	// fence to a client, but a host that cannot key one refuses the conditional
+	// set rather than reading that zero as permission, and the source fence
+	// still applies.
+	ConfigRevision string `json:"configRevision,omitempty"`
 }
 
 type AuthLoginStartParams struct {
@@ -2560,39 +3362,9 @@ type ThreadStatusChangedParams struct {
 	// A client that read the daemon's own all-false set there would lose the
 	// follow-up composer for a session the hub would happily resume (kata pk2d).
 	Capabilities *ThreadCapabilities `json:"capabilities,omitempty"`
-}
-
-type AgentMessageDeltaParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
-	Delta    string `json:"delta"`
-}
-
-// ReasoningSummaryDeltaParams is the params shape for the
-// item/reasoning/summaryTextDelta notification: an incremental chunk of the
-// model's reasoning summary for the named reasoning item. The hub preserves
-// source-provided compatible fields without claiming a Codex bridge, so the web
-// UI can render thinking live.
-type ReasoningSummaryDeltaParams struct {
-	ThreadID     string `json:"threadId"`
-	Ref          string `json:"ref"`
-	TurnID       string `json:"turnId"`
-	ItemID       string `json:"itemId"`
-	SummaryIndex int    `json:"summaryIndex"`
-	Delta        string `json:"delta"`
-}
-
-// AgentMessageResetParams is the params shape for the item/agentMessage/reset
-// notification: the named in-progress assistant item should be discarded so a
-// retried model call's output replaces, rather than appends to, the partial
-// that was already streamed.
-type AgentMessageResetParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
+	// ActiveTurnID is the currently running turn's id, empty when none. See
+	// EvenerThread.ActiveTurnID.
+	ActiveTurnID string `json:"activeTurnId,omitempty"`
 }
 
 // ThreadModelRetryParams is the params shape for the evener/thread/modelRetry
@@ -2632,18 +3404,6 @@ type ThreadModelRetryParams struct {
 	AttemptCap     int    `json:"attemptCap"`
 }
 
-// ToolOutputDeltaParams is the params shape for the item/toolOutput/delta
-// notification. ItemID identifies the tool-call item; CallID is the legacy
-// alias kept for clients that still key on it.
-type ToolOutputDeltaParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId,omitempty"`
-	ItemID   string `json:"itemId"`
-	CallID   string `json:"callId"`
-	Delta    string `json:"delta"`
-}
-
 // ThreadStartedParams is the params shape for the thread/started
 // notification: the new session's initial Thread snapshot, so a client can
 // render the session without a follow-up thread/read.
@@ -2665,42 +3425,12 @@ type ThreadClosedParams struct {
 type ThreadResyncParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
-}
-
-// TurnStartedParams is the params shape for the turn/started notification:
-// the newly opened (inProgress) turn.
-type TurnStartedParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	Turn     Turn   `json:"turn"`
-}
-
-// ItemLifecycleParams is the params shape shared by the item/started and
-// item/completed notifications — one thread item entering or leaving its
-// streaming state. Both carry the identical envelope, so they share one type
-// rather than two copies that could drift; consumers distinguish them by the
-// notification method, not by shape.
-type ItemLifecycleParams struct {
-	ThreadID string     `json:"threadId"`
-	Ref      string     `json:"ref"`
-	TurnID   string     `json:"turnId"`
-	Item     ThreadItem `json:"item"`
-	// FailedToolCalls carries the session's running failure count (kata 895d),
-	// same field and meaning as ThreadStatusChangedParams.FailedToolCalls —
-	// only ever populated on item/completed (never item/started: a failure
-	// lands at completion), and only on the item whose completion actually
-	// moved the figure since the last one that carried it. thread/status/
-	// changed already carries the count unconditionally at every turn
-	// boundary, but a live watcher on a long turn sees nothing move however
-	// many tool calls fail inside it; this rides the finer-grained
-	// per-item notification instead so the count moves the instant a failure
-	// lands. Gating on "changed since last stamp" is what keeps this from
-	// resending an unchanged figure on the many item/completed notifications
-	// a turn with no new failures still produces.
-	//
-	// Absent means "no change" here, same as on ThreadStatusChangedParams —
-	// never "nobody counted".
-	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
+	// BootGeneration is the publishing daemon's boot generation for this
+	// thread, as on HistoryUpdatedParams. Empty on a resync the hub pushes
+	// itself. See CompareBootGeneration.
+	BootGeneration string `json:"bootGeneration,omitempty"`
+	// Epoch is the history epoch a client should resync to, when known.
+	Epoch uint64 `json:"epoch,omitempty"`
 }
 
 // WarningParams is the params shape for the warning notification: a
@@ -2718,27 +3448,11 @@ type WarningParams struct {
 	Ref      string           `json:"ref"`
 	Message  string           `json:"message,omitempty"`
 	Source   string           `json:"source,omitempty"`
+	Code     string           `json:"code,omitempty"`
 	Title    string           `json:"title,omitempty"`
 	Hint     string           `json:"hint,omitempty"`
 	Warning  any              `json:"warning,omitempty"`
 	Cause    *DiagnosticCause `json:"cause,omitempty"`
-}
-
-// EvenerSteeringInjectedParams is the params shape for the
-// evener/steering/injected notification. Text is pre-substituted server-side
-// with an image placeholder when a steer carries only images. Source is
-// "user" for human-sent steering (rendered as a user message) and omitted
-// entirely for daemon-originated steering (issue #24).
-type EvenerSteeringInjectedParams struct {
-	// StartedAt is the server event timestamp in epoch milliseconds.
-	StartedAt        *int64      `json:"startedAt,omitempty"`
-	ThreadID         string      `json:"threadId"`
-	Ref              string      `json:"ref"`
-	Text             string      `json:"text,omitempty"`
-	Images           []InputItem `json:"images,omitempty"`
-	Source           string      `json:"source,omitempty"`
-	Kind             string      `json:"kind,omitempty"`
-	ClientMutationID string      `json:"clientMutationId,omitempty"`
 }
 
 // EvenerJobParams is the params shape shared by the evener/job/started and
@@ -3026,6 +3740,60 @@ type AuthApiKeyClearParams struct {
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
+// ApiKeyConditionalSetParams is the params for
+// evener/auth/apiKey/conditionalSet: the host-side conditional (compare-and-set)
+// credential write (design §07 "credential push"). It replaces the racy
+// read-evener/auth/status, classify, then evener/auth/apiKey/set pair: the host
+// re-resolves the instance's credential source and effective-configuration
+// revision inside one credentialWrite critical section and applies the write
+// only when they still match what the client observed. Provider is the
+// instance name, and the write lands in the host's own store under it.
+type ApiKeyConditionalSetParams struct {
+	Provider string `json:"provider"`
+	Value    string `json:"value"`
+	// ExpectedSource is the ActiveSource the client observed for Provider when
+	// it prepared this write (AuthStatusResponse.ActiveSource /
+	// InstanceEntry.ActiveSource). The host re-resolves the source under its
+	// credential write lock and refuses a non-empty value that no longer
+	// matches; empty asserts no source fence. The resolved source also decides
+	// the classification (see ApiKeyConditionalSetResponse.Action).
+	ExpectedSource string `json:"expectedSource,omitempty"`
+	// ExpectedRevision is the ConfigRevision the client observed for Provider.
+	// The host re-resolves it under the same lock and refuses a non-empty value
+	// that no longer matches, so a write prepared against a configuration that
+	// changed underneath it is never applied. Empty asserts no revision fence;
+	// the source fence still applies.
+	ExpectedRevision string `json:"expectedRevision,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast a landed write triggers, so the originator
+	// can recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without an
+	// id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
+}
+
+// The Action values of ApiKeyConditionalSetResponse: what the host did with a
+// conditional set. A "skipped" is a successful typed response, not a wire
+// error — the host refused to write because the instance's live credential is
+// one a pushed file-layer key must not shadow, and Reason says why.
+const (
+	ApiKeyConditionalSetActionAdded   = "added"
+	ApiKeyConditionalSetActionUpdated = "updated"
+	ApiKeyConditionalSetActionSkipped = "skipped"
+)
+
+// ApiKeyConditionalSetResponse is the result of
+// evener/auth/apiKey/conditionalSet. Action is one of the
+// ApiKeyConditionalSetAction* values, Reason is a human-readable explanation
+// (chiefly for a skip), and Status is the instance's post-write
+// AuthStatusResponse — the state the host resolved under the same lock, which a
+// skip leaves unchanged.
+type ApiKeyConditionalSetResponse struct {
+	Action string             `json:"action"`
+	Reason string             `json:"reason,omitempty"`
+	Status AuthStatusResponse `json:"status"`
+}
+
 // AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
 // a Google credential JSON (service-account key or application-default
 // authorized_user file) for a gcp-adc instance.
@@ -3057,7 +3825,11 @@ type AuthDeviceStartResponse struct {
 	UserCode        string `json:"userCode"`
 	VerificationURL string `json:"verificationUrl"`
 	IntervalSeconds int    `json:"intervalSeconds"`
-	Fallback        bool   `json:"fallback,omitempty"`
+	// ExpiresInSeconds is how long the user code stays valid, so a client can
+	// say when it expires instead of repeating the hub's own TTL. Optional:
+	// zero (absent) leaves the client on its own wording.
+	ExpiresInSeconds int  `json:"expiresInSeconds,omitempty"`
+	Fallback         bool `json:"fallback,omitempty"`
 }
 
 // AuthDevicePollParams is the params for evener/auth/device/poll.
@@ -3143,6 +3915,13 @@ type InstanceEntry struct {
 	// it.
 	RenameLeavesRow bool   `json:"renameLeavesRow,omitempty"`
 	StoredEmail     string `json:"storedEmail,omitempty"`
+	// ConfigRevision is the same effective credential-configuration revision
+	// AuthStatusResponse.ConfigRevision carries for this instance (see its doc).
+	// The remote credential push can capture it from an evener/instance/list
+	// entry instead of a separate evener/auth/status read (the
+	// implicit-provider fallback) and echo it as
+	// ApiKeyConditionalSetParams.ExpectedRevision.
+	ConfigRevision string `json:"configRevision,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
 	// look for at all — auth = none or optional-bearer — so an absent
 	// credential is not a missing one. It is never omitted: false is the
@@ -3153,9 +3932,9 @@ type InstanceEntry struct {
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
 	// Models is the instance's known models with their effective
-	// disabled state, for the sheet's per-model toggles: exact catalog
-	// rows plus cached live ids, alias rows included. Empty for an
-	// instance with no rows.
+	// disabled state, for the sheet's per-model toggles: live ids plus
+	// additive overlay/config rows when usable, otherwise static fallback
+	// rows, with aliases included. Empty for an instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 
@@ -3318,7 +4097,7 @@ type InstanceSetDefaultParams struct {
 
 // InstanceRefreshModelsParams is the params for
 // evener/instance/refreshModels: fetch the instance's live listing, then
-// answer with the updated list (exact catalog rows plus cached live ids).
+// answer with its live-authoritative or static-fallback model list.
 type InstanceRefreshModelsParams struct {
 	Name string `json:"name"`
 	// OriginClientId is the client identity the hub echoes into the
@@ -3382,7 +4161,6 @@ type LaunchConfigLayer struct {
 	MaxSubagentDepth            *int              `json:"maxSubagentDepth,omitempty"`
 	MaxConcurrentDelegateTurns  *int              `json:"maxConcurrentDelegateTurns,omitempty"`
 	MaxRetainedTerminal         *int              `json:"maxRetainedTerminal,omitempty"`
-	NoProjectPrompts            *bool             `json:"noProjectPrompts,omitempty"`
 	NonInteractive              *bool             `json:"nonInteractive,omitempty"`
 	AppReplaySize               *int              `json:"appReplaySize,omitempty"`
 	SkillsDirs                  []string          `json:"skillsDirs,omitempty"`
@@ -3690,6 +4468,14 @@ type PluginEntry struct {
 	GitCommitSha string `json:"gitCommitSha,omitempty"`
 	InstalledAt  int64  `json:"installedAt"`
 	LastUpdated  int64  `json:"lastUpdated"`
+	// UpdateAvailable is true when the last evener/plugin/checkUpdates found a
+	// newer version: a newer remote commit for a git-backed plugin, or new
+	// contents in its marketplace, which the check refreshes first, for one
+	// stored in its marketplace's own repo. Absent means no known update: no check has run,
+	// the check found the plugin current or could not read its source, or the
+	// plugin is used in place from a directory. Clients offer Upgrade only when
+	// it is true.
+	UpdateAvailable bool `json:"updateAvailable,omitempty"`
 }
 
 // PluginListResponse is the result of evener/plugin/list. Every plugin
@@ -3918,6 +4704,50 @@ type HostRequestParams struct {
 // through", never as an empty result.
 type HostForwardedResult struct{}
 
+// HostPushCredentialsParams is the evener/host/pushCredentials payload
+// (component 07c): the component-03 source ID of one configured remote host to
+// copy the controller's local provider-instance keys to. The push reads the
+// controller's local store and writes only the host's; the unit of the push is
+// the local credentials-store entry, whose key is the instance name.
+type HostPushCredentialsParams struct {
+	Host string `json:"host"`
+}
+
+// HostPushCredentialsResponse is the per-instance report of one push: exactly
+// one HostCredentialPushResult for every entry the local credentials store
+// listed, in the store's sorted name order, plus the host the push targeted. An
+// entry whose value was cleared before it could be read is still reported (a
+// skip), so the row count always matches the store's entry count — a report
+// that silently omitted an entry would read as "nothing was there to push".
+type HostPushCredentialsResponse struct {
+	Host    string                     `json:"host"`
+	Results []HostCredentialPushResult `json:"results"`
+}
+
+// HostCredentialPushResult is one local entry's outcome. Action is one of the
+// HostCredentialPush* values; Reason explains a skip or names the failure and
+// is empty for a write that landed.
+type HostCredentialPushResult struct {
+	Instance string `json:"instance"`
+	// Action is "added" | "updated" | "skipped" | "failed". "added" and
+	// "updated" are the host's own conditional-set actions; "skipped" is the
+	// host's classification (a source a pushed key must not shadow, or a scheme
+	// that reads no key), or a controller-side skip whose Reason names why (no
+	// matching instance on the host, or a local value that is not an API key);
+	// "failed" is a per-instance failure (chiefly a refused or stale-revision
+	// conditional set) that does not abort the remaining entries.
+	Action string `json:"action"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// The Action values of HostCredentialPushResult.
+const (
+	HostCredentialPushAdded   = "added"
+	HostCredentialPushUpdated = "updated"
+	HostCredentialPushSkipped = "skipped"
+	HostCredentialPushFailed  = "failed"
+)
+
 // HostAttachParams is the evener/host/attach payload (component 06's Connect
 // action): the component-03 source ID of one configured remote host to attach.
 //
@@ -3953,6 +4783,494 @@ type HostAttachResponse struct {
 	Features        *FeatureSet `json:"features,omitempty"`
 }
 
+// HostEntry is one host's effective configuration as a mutation carries it
+// (component 08 slice 2): the six mutable HostConfig fields under slice 1's
+// wire spellings — Address is the schema's `ssh`, EvenerPath the schema's
+// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the SSH
+// identity file the dial uses. The machine-managed hub.toml stores KeyPath as
+// `key_path` (registry spec 08 §6), so a host with one round-trips through a
+// rewrite.
+//
+// Name is carried by the ADD entry, which has no other place to put the new
+// host's name. The update entry omits it: a rename is not a thing this wire
+// offers, and the update's target is HostUpdateParams.Name. Both paths accept
+// the same field set, so the dialog's inputs and a refusal's field name are the
+// same strings on both sides.
+type HostEntry struct {
+	Name       string   `json:"name,omitempty"`
+	Address    string   `json:"address"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+}
+
+// HostAddParams is the evener/host/add payload (component 08 slice 1, reshaped
+// by slice 2): one host entry. The nested entry is the design record's
+// own shape, so the guard fields the pipeline slice adds land on a wire this
+// slice already matches instead of reshaping it a second time. The handler
+// validates exactly like hub.toml loading, writes the machine-managed hub.toml,
+// and refuses a name the live set already holds.
+//
+// MutationID, when set, is the client's idempotency key (registry spec 08 §1,
+// §4): opaque, non-empty, at most 128 bytes. A keyless add skips dedup and is
+// non-retryable as a continuation (§5); a keyed replay returns the recorded
+// receipt instead of adding a second time.
+type HostAddParams struct {
+	Entry      HostEntry `json:"entry"`
+	MutationID string    `json:"mutationId,omitempty"`
+}
+
+// HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
+// name of the live entry to edit, and the entry that replaces it. Name
+// is the immutable target — it identifies which host to edit, and nothing in the
+// request can rename one. Every live host is editable; unknown names are
+// InvalidParams.
+//
+// MutationID, ExpectedGeneration, and ExpectedIncarnationID are the guarded
+// mutation's idempotency key and (generation, incarnation id) guard (registry
+// spec 08 §4, §11): all three are required together, and a request missing any
+// is a validation refusal before the dedup lookup. The pair is checked against
+// the target's current pair under the mutation lock; a mismatch on either is
+// the typed `stale-entry` refusal committing nothing. A keyed replay returns
+// the recorded receipt without re-applying.
+type HostUpdateParams struct {
+	Name                  string    `json:"name"`
+	Entry                 HostEntry `json:"entry"`
+	MutationID            string    `json:"mutationId"`
+	ExpectedGeneration    uint64    `json:"expectedGeneration"`
+	ExpectedIncarnationID string    `json:"expectedIncarnationId"`
+}
+
+// HostUpdateResponse is evener/host/update's result: the updated row, which the
+// dialog's caller re-reads like every other mutation's result. An edit never
+// dials, so the row's live state is whatever the teardown left it.
+type HostUpdateResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostRow is one host as evener/host/list and evener/host/status render it
+// (component 08 slice 2): the effective entry plus live state. A dialog prefills
+// from this row, and list/status remain the one source of truth for what a host
+// currently is. Origin names the entry's source and is `hub.toml` on every
+// row: the storage decision (registry spec 08 §6/§19) made that file the
+// machine-managed store every host lives in, so there is no second origin to
+// distinguish (the field is retained for wire compatibility). Attached reports
+// a live channel right now; offline rows carry the last-known facts below when
+// any were recorded.
+// Optional entry fields and facts stay absent — never null — when unknown.
+type HostRow struct {
+	Name       string   `json:"name"`
+	Address    string   `json:"address,omitempty"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+	Origin     string   `json:"origin"`
+	// Generation and IncarnationID are the live entry's current
+	// (generation, incarnation id) pair — the guarded-mutation identity
+	// `update`/`remove` require back as expectedGeneration /
+	// expectedIncarnationId (registry spec 08 §1, §11). The UI echoes both
+	// values from the list/status row it holds. Tombstone rows carry the
+	// removed entry's pair (S11).
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+	Attached      bool   `json:"attached"`
+	ServerName    string `json:"serverName,omitempty"`
+	ServerVersion string `json:"serverVersion,omitempty"`
+	HubVersion    string `json:"hubVersion,omitempty"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	LastAttachErr string `json:"lastAttachError,omitempty"`
+	MidAttach     bool   `json:"midAttach"`
+	Removed       bool   `json:"removed"`
+	// RetainedRows and RowsTruncated are the tombstone row's retained-projection
+	// fields (registry spec 08 §11, §15): RetainedRows is present on tombstone
+	// rows only — the count of rows the tombstone's bounded projection kept —
+	// and RowsTruncated is present as true exactly on tombstone rows whose
+	// projection was truncated at the persistence bound (absent everywhere
+	// else, per the absent-when-unknown rule). A nil RetainedRows renders as an
+	// absent key, so a live row never claims a retained count and a tombstone
+	// with a zero-row projection still renders `retainedRows: 0`.
+	RetainedRows  *int `json:"retainedRows,omitempty"`
+	RowsTruncated bool `json:"rowsTruncated,omitempty"`
+	// OpenRemnantID is present exactly on rows — live or tombstone — whose name
+	// holds an open remnant: the blocking remnant's id the remnant fence's
+	// `remnant-open` refusal also names (registry spec 08 §11).
+	OpenRemnantID string `json:"openRemnantId,omitempty"`
+	// EscalationAgeSec is present only on rows — live or tombstone — whose name
+	// holds an open remnant past the escalation bound: the escalation age the
+	// expiry-escalation rule promises, in whole seconds. Absent everywhere else
+	// per the absent-when-unknown rule.
+	EscalationAgeSec *int64 `json:"escalationAgeSec,omitempty"`
+}
+
+// HostListResponse is evener/host/list's result (component 08 slice 1): every
+// known host in name-sorted order — the registry's own order; the origin field
+// is `hub.toml` on every row. It never dials: attached
+// rows read the live channel, offline rows render last-known state.
+type HostListResponse struct {
+	Hosts []HostRow `json:"hosts"`
+}
+
+// HostStatusParams is the evener/host/status payload (component 08 slice 1):
+// the component-03 source ID of one known host. Unknown names are
+// InvalidParams. Never dials.
+type HostStatusParams struct {
+	Name string `json:"name"`
+}
+
+// HostStatusResponse is evener/host/status's result (component 08 slice 1):
+// the host's list row.
+type HostStatusResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostRemoveParams is the evener/host/remove payload (component 08 slice 1):
+// the component-03 source ID of one live host, any of which is removable here;
+// unknown names are InvalidParams. Removing an
+// attached host stops its supervisor and drops its channel.
+//
+// MutationID, ExpectedGeneration, and ExpectedIncarnationID carry the same
+// guarded-mutation contract as HostUpdateParams (registry spec 08 §4, §11):
+// all three required together, presence validated before the dedup lookup, the
+// pair checked under the mutation lock with the typed `stale-entry` refusal on
+// a mismatch, and a keyed replay returning the recorded receipt.
+type HostRemoveParams struct {
+	Name                  string `json:"name"`
+	MutationID            string `json:"mutationId"`
+	ExpectedGeneration    uint64 `json:"expectedGeneration"`
+	ExpectedIncarnationID string `json:"expectedIncarnationId"`
+}
+
+// HostRemoveResponse is evener/host/remove's result (component 08 slice 1):
+// the removed row, rendered detached. Removed stays removed: the name is gone
+// until re-added.
+type HostRemoveResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostPlanParams is the evener/host/plan payload (deploy pipeline 08b §10): the
+// component-03 source ID of the host to plan against. plan is a mutation — it
+// mints the token deploy consumes — so it admits like the settings mutations
+// and refuses a remote origin. Unknown names are InvalidParams.
+type HostPlanParams struct {
+	Name string `json:"name"`
+}
+
+// HostPlan is what the human confirms before a deploy (deploy pipeline 08b
+// §10): the host, the registry generation the plan was built from, the resolved
+// deploy target, the controller's own revision, whether a restart follows the
+// push, the digest and capture time of the refreshed preflight facts, the
+// host's own hub.toml entry fingerprint, and the probed running state.
+// Timestamps are RFC3339; `factsAgeSec` is how old the facts were when the plan
+// was built, in whole seconds. `runningProcessStartTime` is absent — never null
+// — when the probe carried none.
+type HostPlan struct {
+	Host                    string `json:"host"`
+	Generation              uint64 `json:"generation"`
+	TargetPath              string `json:"targetPath"`
+	ControllerRevision      string `json:"controllerRevision"`
+	RestartFollows          bool   `json:"restartFollows"`
+	FactsRevision           string `json:"factsRevision"`
+	HubTOMLFingerprint      string `json:"hubTomlFingerprint"`
+	FactsCapturedAt         string `json:"factsCapturedAt"`
+	FactsAgeSec             int64  `json:"factsAgeSec"`
+	RunningVersion          string `json:"runningVersion"`
+	RunningHealthy          bool   `json:"runningHealthy"`
+	RunningProcessStartTime string `json:"runningProcessStartTime,omitempty"`
+}
+
+// HostPlanStaleFacts is the no-token arm's explanation (deploy pipeline 08b
+// §10): the human-readable message, whether the host was attached when the plan
+// refused, and the machine-readable reason a client branches on.
+type HostPlanStaleFacts struct {
+	Message  string `json:"message"`
+	Attached bool   `json:"attached"`
+	Reason   string `json:"reason"`
+}
+
+// HostPlanPlanned is evener/host/plan's planned arm (deploy pipeline 08b §10):
+// the plan the human confirms plus the single-use token deploy consumes.
+type HostPlanPlanned struct {
+	Outcome string   `json:"outcome"`
+	Plan    HostPlan `json:"plan"`
+	Token   string   `json:"token"`
+}
+
+// HostPlanNoToken is evener/host/plan's no-token arm (deploy pipeline 08b §10):
+// nothing was minted. `terminal` is true exactly on the arms a retry cannot
+// clear on its own (controller-dirty, target-unwritable, target-missing-prereq,
+// target-unit-findings) and false on the retryable ones (unattached,
+// refresh-failed, probe-failed, handler-absent, remnant-open). `remnantId` is
+// present — never null — exactly on the remnant-open arm.
+type HostPlanNoToken struct {
+	Outcome    string             `json:"outcome"`
+	StaleFacts HostPlanStaleFacts `json:"staleFacts"`
+	Terminal   bool               `json:"terminal"`
+	RemnantID  string             `json:"remnantId,omitempty"`
+}
+
+// HostPlanResult is evener/host/plan's result union (deploy pipeline 08b §10):
+// exactly one arm is set. The embedded pointers make the union marshal as the
+// arm it carries — so `plan` and `token` are absent, never null, on the
+// no-token arm — while the catalog still carries one named Go struct per arm
+// (Methods' ResultArms).
+type HostPlanResult struct {
+	*HostPlanPlanned
+	*HostPlanNoToken
+}
+
+// MarshalJSON renders the one arm the union carries. The explicit marshaller is
+// what makes the wire honest: both arms carry an `outcome` field, and
+// encoding/json drops a field two same-depth embedded structs both declare — so
+// without this the discriminator would silently vanish from the bytes a client
+// branches on. Exactly one arm must be set; nothing is a programming error no
+// response may hide.
+func (u HostPlanResult) MarshalJSON() ([]byte, error) {
+	switch {
+	case u.HostPlanPlanned != nil && u.HostPlanNoToken != nil:
+		return nil, errors.New("appwire: evener/host/plan result carries both arms")
+	case u.HostPlanPlanned != nil:
+		return json.Marshal(u.HostPlanPlanned)
+	case u.HostPlanNoToken != nil:
+		return json.Marshal(u.HostPlanNoToken)
+	}
+	return nil, errors.New("appwire: evener/host/plan result carries no arm")
+}
+
+// UnmarshalJSON reads the arm the discriminator names, and refuses anything
+// else: a result whose `outcome` is neither value is not a plan this protocol
+// defines, so a client fails loudly instead of reading a zero-valued arm.
+func (u *HostPlanResult) UnmarshalJSON(raw []byte) error {
+	var probe struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	switch probe.Outcome {
+	case HostPlanOutcomePlanned:
+		arm := HostPlanPlanned{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostPlanPlanned, u.HostPlanNoToken = &arm, nil
+	case HostPlanOutcomeNoToken:
+		arm := HostPlanNoToken{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostPlanNoToken, u.HostPlanPlanned = &arm, nil
+	default:
+		return fmt.Errorf("appwire: evener/host/plan result carries outcome %q, want %q or %q",
+			probe.Outcome, HostPlanOutcomePlanned, HostPlanOutcomeNoToken)
+	}
+	return nil
+}
+
+// The two outcome values evener/host/plan's arms carry (deploy pipeline 08b
+// §10).
+const (
+	HostPlanOutcomePlanned = "planned"
+	HostPlanOutcomeNoToken = "no-token"
+)
+
+// The no-token reasons evener/host/plan's no-token arm carries (deploy pipeline
+// 08b §10), exactly as the spec spells them.
+const (
+	HostPlanReasonUnattached          = "unattached"
+	HostPlanReasonRefreshFailed       = "refresh-failed"
+	HostPlanReasonProbeFailed         = "probe-failed"
+	HostPlanReasonHandlerAbsent       = "handler-absent"
+	HostPlanReasonRemnantOpen         = "remnant-open"
+	HostPlanReasonControllerDirty     = "controller-dirty"
+	HostPlanReasonTargetUnwritable    = "target-unwritable"
+	HostPlanReasonTargetMissingPrereq = "target-missing-prereq"
+	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
+)
+
+// FencingEpoch is the epoch wire shape (deploy pipeline 08b §10): the controller
+// boot id plus the per-host monotonic op sequence. `evener/host/running` requires
+// it — absent or malformed is a typed `probe-failed` refusal, never an unfenced
+// write. The name is retained historical wire vocabulary; a `probeEpoch` rename
+// is a wire-compat follow-up.
+type FencingEpoch struct {
+	BootID string `json:"bootId"`
+	OpSeq  uint64 `json:"opSeq"`
+}
+
+// HostDeployParams is the evener/host/deploy payload (deploy pipeline 08b
+// §10): the host name, the single-use confirmation token the plan minted, and
+// the client's own operation ID — opaque, non-empty, at most 128 bytes, no
+// required structure — that makes the call idempotent.
+type HostDeployParams struct {
+	Name        string `json:"name"`
+	Token       string `json:"token"`
+	OperationID string `json:"operationId"`
+}
+
+// HostDeployResponse is evener/host/deploy's result (deploy pipeline 08b
+// §10): the controller-assigned record id, the caller's operation ID echoed
+// back, and the record's state — `pending` on the fresh create that consumed
+// the token, the existing record's actual state on a dedup hit.
+type HostDeployResponse struct {
+	ID                string         `json:"id"`
+	ClientOperationID string         `json:"clientOperationId"`
+	State             OperationState `json:"state"`
+}
+
+// HostRestartParams is the evener/host/restart payload (deploy pipeline 08b
+// §10): the host name, the client operation ID, and the intended
+// (generation, incarnation id) pair. A lost-response retry repeats the old
+// pair and replays the retained record; a reuse of the same operation ID for a
+// new incarnation names the new pair and opens fresh; a pair older than the
+// registry's current one refuses `stale-entry` (§4).
+type HostRestartParams struct {
+	Name          string `json:"name"`
+	OperationID   string `json:"operationId"`
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+}
+
+// HostRestartResponse is evener/host/restart's result (deploy pipeline 08b
+// §10): the fresh create reports `pending`, a dedup hit the existing record's
+// state.
+type HostRestartResponse struct {
+	ID                string         `json:"id"`
+	ClientOperationID string         `json:"clientOperationId"`
+	State             OperationState `json:"state"`
+}
+
+// HostOperationsParams is the evener/host/operations payload (deploy pipeline
+// 08b §10): every filter is optional, and empty params list the first
+// unfiltered cross-host page. `operationId` matches the client-supplied
+// clientOperationId, never the controller-assigned `id`; `generation` selects
+// the incarnation after client operation-ID reuse (omitted: the current
+// generation) and `incarnationId` narrows that selection to the exact
+// incarnation, required alongside `generation` whenever the caller names a
+// superseded pair; `id` is the detail filter for the controller-assigned
+// record id; `limit` defaults to 50 and caps at 200; `cursor` is the opaque
+// continuation the previous page returned.
+type HostOperationsParams struct {
+	Name          string         `json:"name,omitempty"`
+	OperationID   string         `json:"operationId,omitempty"`
+	State         OperationState `json:"state,omitempty"`
+	Generation    uint64         `json:"generation,omitempty"`
+	IncarnationID string         `json:"incarnationId,omitempty"`
+	ID            string         `json:"id,omitempty"`
+	Limit         int            `json:"limit,omitempty"`
+	Cursor        string         `json:"cursor,omitempty"`
+}
+
+// HostBoundary is one host's boundary in an operations page's hostBoundaries
+// map (deploy pipeline 08b §10): the {generation, incarnationId,
+// presenceEpoch} object. The map's value is the union of this object and the
+// literal "absent" string (HostBoundaryAbsent), carried as `unknown` in the
+// generated client — the generator has no value-union emission, so the
+// protocol-shapes test pins both arms' bytes instead.
+type HostBoundary struct {
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+	PresenceEpoch uint64 `json:"presenceEpoch"`
+}
+
+// HostBoundaryAbsent is the literal string §10's hostBoundaries union encodes
+// a host with no records in the query as — never an omission.
+const HostBoundaryAbsent = "absent"
+
+// HostOperationsResponse is evener/host/operations' result (deploy pipeline
+// 08b §10): the bounded page of records plus the identity the client pages
+// under. `generation`/`incarnationId` are present exactly on host-pinned pages
+// (the single host named by the request) and absent on unfiltered cross-host
+// pages, where `hostBoundaries` is authoritative instead: one boundary per
+// every host in the query at cursor creation, the object triple or the literal
+// "absent" (HostBoundaryAbsent) for hosts with no records. `nextCursor` is
+// present exactly when the page listed at least one record.
+type HostOperationsResponse struct {
+	Operations     []OperationRecord `json:"operations"`
+	Generation     uint64            `json:"generation,omitempty"`
+	IncarnationID  string            `json:"incarnationId,omitempty"`
+	HostBoundaries map[string]any    `json:"hostBoundaries,omitempty"`
+	NextCursor     string            `json:"nextCursor,omitempty"`
+}
+
+// OperationState is one durable operation record's lifecycle state (deploy
+// pipeline 08b §4, §10). The set is closed; the wire carries the exact string.
+type OperationState string
+
+const (
+	OperationStatePending          OperationState = "pending"
+	OperationStateRunning          OperationState = "running"
+	OperationStateComplete         OperationState = "complete"
+	OperationStateFailed           OperationState = "failed"
+	OperationStateInterrupted      OperationState = "interrupted"
+	OperationStateOrphanUnverified OperationState = "orphan-unverified"
+)
+
+// OperationProgressEntry is one timestamped progress line on an operation
+// record (deploy pipeline 08b §10): RFC3339 UTC plus the line's message,
+// bounded per record.
+type OperationProgressEntry struct {
+	TS      string `json:"ts"`
+	Message string `json:"message"`
+}
+
+// OperationResult is a record's terminal result (deploy pipeline 08b §10).
+type OperationResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// OperationRecord is the controller-side durable record of one deploy/restart
+// (deploy pipeline 08b §4, §10). `incarnationId` is the pinned incarnation the
+// record ran against; `result` is present exactly on terminal records;
+// `hostRemoved` marks a record whose pinned incarnation a removal tombstoned.
+// `compacted: true` is present exactly on a replay the operation store
+// answered from a dedup tombstone — the terminal record itself was compacted
+// (§4) — and absent on every retained record.
+type OperationRecord struct {
+	ID                string                   `json:"id"`
+	ClientOperationID string                   `json:"clientOperationId"`
+	Host              string                   `json:"host"`
+	Generation        uint64                   `json:"generation"`
+	IncarnationID     string                   `json:"incarnationId"`
+	Kind              string                   `json:"kind"`
+	State             OperationState           `json:"state"`
+	Progress          []OperationProgressEntry `json:"progress,omitempty"`
+	Result            *OperationResult         `json:"result,omitempty"`
+	CreatedAt         string                   `json:"createdAt"`
+	UpdatedAt         string                   `json:"updatedAt"`
+	HostRemoved       bool                     `json:"hostRemoved"`
+	Compacted         bool                     `json:"compacted,omitempty"`
+}
+
+// HostRunningParams is the evener/host/running payload (deploy pipeline 08b
+// §10): the calling worker's persisted fencing epoch, which the caller minted
+// and persisted before the probe. The field is required on the wire — the
+// generated client carries it, so no well-formed call omits it — and an epoch
+// absent or malformed is refused with typed `probe-failed` ("no epoch
+// presented"), never served as an unfenced write.
+type HostRunningParams struct {
+	FencingEpoch FencingEpoch `json:"fencingEpoch"`
+}
+
+// HostRunningResponse is evener/host/running's result (deploy pipeline 08b
+// §10): the serving hub's own build revision (from the same source as the
+// controllerBuild plan input), its authoritative health flag, and its process
+// start time — present exactly when the serving hub knows it, absent otherwise
+// per the absent-when-unknown rule. An unverifiable revision ("dev" or a dirty
+// "<sha>-dirty") never proves currency by revision equality.
+type HostRunningResponse struct {
+	BuildRevision    string `json:"buildRevision"`
+	Healthy          bool   `json:"healthy"`
+	ProcessStartTime string `json:"processStartTime,omitempty"`
+}
+
 // HostNotificationParams is the evener/host/notification payload (component
 // 07a): one host-owned config notification re-emitted to the controller's
 // browser clients, tagged with the source host. It is the Go-side fan-out
@@ -3979,4 +5297,454 @@ type HostNotificationParams struct {
 	Host   string          `json:"host"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// The mutation-result union (registry spec 08 §11)
+// ---------------------------------------------------------------------------
+
+// HostMutationOutcome identifies a host mutation result arm.
+type HostMutationOutcome string
+
+// The four discriminator values the mutation-result union carries.
+const (
+	HostMutationOutcomeCommitted        HostMutationOutcome = "committed"
+	HostMutationOutcomeTeardownFailure  HostMutationOutcome = "committed-with-teardown-failure"
+	HostMutationOutcomeCollisionDropped HostMutationOutcome = "collision-dropped"
+	HostMutationOutcomeAmbiguous        HostMutationOutcome = "ambiguous"
+)
+
+// RemovedRow is evener/host/remove's dedicated removed-row arm (registry spec
+// 08 §11): `{name, removed: true, retainedRows}` plus the tombstone's retained
+// effective HostConfig fields, `attached: false`, `midEnsure: false`, and the
+// removed entry's `origin`, `generation`, and `incarnationId` per `list`
+// tombstone values. It is NOT a HostRow: the catalog and the regenerated client
+// carry it as its own interface, and both it and HostRow carry `incarnationId`,
+// so the UI can always construct the guarded-mutation pair.
+type RemovedRow struct {
+	Name       string   `json:"name"`
+	Address    string   `json:"address,omitempty"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+	Origin     string   `json:"origin"`
+	// Generation and IncarnationID are the removed entry's pair — what a
+	// re-add mints strictly above.
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+	// Removed is always true on this arm; Attached and MidEnsure are always
+	// false, per `list`'s tombstone values.
+	Removed   bool `json:"removed"`
+	Attached  bool `json:"attached"`
+	MidEnsure bool `json:"midEnsure"`
+	// RetainedRows is the tombstone's retained-projection count; a nil renders
+	// as an absent key, exactly as HostRow's tombstone arm does.
+	RetainedRows  *int `json:"retainedRows,omitempty"`
+	RowsTruncated bool `json:"rowsTruncated,omitempty"`
+	// EscalationAgeSec is present only when the row's name holds an escalated
+	// open remnant, mirroring HostRow.
+	EscalationAgeSec *int64 `json:"escalationAgeSec,omitempty"`
+	// OpenRemnantID is present exactly on rows whose name holds an open
+	// remnant, mirroring HostRow.
+	OpenRemnantID string `json:"openRemnantId,omitempty"`
+}
+
+// HostMutationCommitted is the union's clean arm: the mutation landed and every
+// planned teardown completed. `host` is a HostRow for add/update and a
+// RemovedRow for remove's clean path.
+type HostMutationCommitted struct {
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    HostRow             `json:"host"`
+}
+
+// HostMutationCommittedRemoved is remove's clean arm: the same outcome with the
+// dedicated removed-row shape.
+type HostMutationCommittedRemoved struct {
+	Outcome HostMutationOutcome `json:"outcome"`
+	Host    RemovedRow          `json:"host"`
+}
+
+// HostMutationTeardownFailure is the union's failure arm: the mutation is
+// committed but a post-commit teardown failed. `seam` names the failed rebind
+// step and `remnantId` is mandatory — the retry handle
+// `evener/host/teardown-retry` resumes. The committed row is always present so
+// the UI renders it with a teardown-retry affordance.
+type HostMutationTeardownFailure struct {
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      HostRow             `json:"host"`
+}
+
+// HostMutationTeardownFailureRemoved is remove's teardown-failure arm, carrying
+// the removed-row shape for the same reason.
+type HostMutationTeardownFailureRemoved struct {
+	Outcome   HostMutationOutcome `json:"outcome"`
+	Seam      string              `json:"seam"`
+	RemnantID string              `json:"remnantId"`
+	Host      RemovedRow          `json:"host"`
+}
+
+// HostMutationCollisionDropped is the union's dropped arm: the post-rename
+// reconcile observed a foreign write that replaced the just-committed staged
+// entry, so the file's bytes won. `droppedEntry` is the staged effective config
+// "in the same lowerCamel shape as `HostRow`'s config fields — never a literal
+// `HostConfig`", and `winningFingerprint` is the winning hub.toml fingerprint.
+// `host` is the authoritative row whenever the file still holds the name; when
+// the re-read finds the name gone entirely (a hand-edit deletion) the arm
+// carries no `host` and sets `removed: true`.
+type HostMutationCollisionDropped struct {
+	Outcome            HostMutationOutcome `json:"outcome"`
+	DroppedEntry       HostRow             `json:"droppedEntry"`
+	WinningFingerprint string              `json:"winningFingerprint"`
+	Host               *HostRow            `json:"host,omitempty"`
+	Removed            bool                `json:"removed,omitempty"`
+}
+
+// HostMutationAmbiguous is the union's keyless-ambiguous arm (registry spec 08
+// §5): "returned only by a keyless `add` retry that observes its intended row —
+// the row may be the caller's committed mutation, a pre-existing identical row,
+// or another client's remove/re-add, so the response claims no commit and
+// carries no receipt semantics".
+type HostMutationAmbiguous struct {
+	Outcome     HostMutationOutcome `json:"outcome"`
+	ObservedRow HostRow             `json:"observedRow"`
+}
+
+// HostMutationResult is the mutation-result union evener/host/add,
+// evener/host/update, and evener/host/remove return (registry spec 08 §11):
+// exactly one arm is set. The embedded pointers make the union marshal as the
+// arm it carries — never as a merged shape with optional-ified fields the
+// absent-when-unknown rule cannot distinguish — while the catalog still carries
+// one named Go struct per arm (MethodResultArms).
+type HostMutationResult struct {
+	*HostMutationCommitted
+	*HostMutationCommittedRemoved
+	*HostMutationTeardownFailure
+	*HostMutationTeardownFailureRemoved
+	*HostMutationCollisionDropped
+	*HostMutationAmbiguous
+}
+
+// MarshalJSON renders the one arm the union carries. The arms are disjoint
+// shapes with distinct discriminators, but several of them declare `outcome` —
+// encoding/json drops a field two same-depth embedded structs both declare, so
+// without this marshaller the discriminator would silently vanish from the
+// bytes a client branches on. Exactly one arm must be set; nothing is a
+// programming error no response may hide.
+func (u HostMutationResult) MarshalJSON() ([]byte, error) {
+	arms := make([]any, 0, 6)
+	for _, arm := range []any{
+		u.HostMutationCommitted, u.HostMutationCommittedRemoved,
+		u.HostMutationTeardownFailure, u.HostMutationTeardownFailureRemoved,
+		u.HostMutationCollisionDropped, u.HostMutationAmbiguous,
+	} {
+		if arm != nil && !isNilArm(arm) {
+			arms = append(arms, arm)
+		}
+	}
+	if len(arms) == 0 {
+		return nil, errors.New("appwire: host mutation result carries no arm")
+	}
+	if len(arms) > 1 {
+		return nil, errors.New("appwire: host mutation result carries more than one arm")
+	}
+	return json.Marshal(arms[0])
+}
+
+// isNilArm reports whether a typed arm pointer is nil.
+func isNilArm(arm any) bool {
+	value := reflect.ValueOf(arm)
+	return value.Kind() == reflect.Ptr && value.IsNil()
+}
+
+// UnmarshalJSON reads the arm the discriminator names, and refuses anything
+// else: a result whose `outcome` is none of the four values is not a mutation
+// result this protocol defines, so a client fails loudly instead of reading a
+// zero-valued arm.
+func (u *HostMutationResult) UnmarshalJSON(raw []byte) error {
+	var probe struct {
+		Outcome HostMutationOutcome `json:"outcome"`
+		Host    json.RawMessage     `json:"host"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	*u = HostMutationResult{}
+	hasHost := len(probe.Host) > 0 && string(probe.Host) != "null"
+	// Which row shape the arm carries is read off the host object itself: the
+	// dedicated removed row carries `midEnsure` and never `midAttach`, while a
+	// live row is the other way round (each is non-optional on its own shape).
+	// A remove's arms always carry the removed shape and add/update's never do,
+	// so a client that knows its method can narrow on the discriminator alone;
+	// this keeps the union decodable on its own too.
+	removed := false
+	if hasHost {
+		var shape map[string]json.RawMessage
+		if err := json.Unmarshal(probe.Host, &shape); err == nil {
+			_, removed = shape["midEnsure"]
+		}
+	}
+	switch probe.Outcome {
+	case HostMutationOutcomeCommitted:
+		if removed {
+			arm := HostMutationCommittedRemoved{}
+			if err := json.Unmarshal(raw, &arm); err != nil {
+				return err
+			}
+			u.HostMutationCommittedRemoved = &arm
+			return nil
+		}
+		arm := HostMutationCommitted{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationCommitted = &arm
+		return nil
+	case HostMutationOutcomeTeardownFailure:
+		if removed {
+			arm := HostMutationTeardownFailureRemoved{}
+			if err := json.Unmarshal(raw, &arm); err != nil {
+				return err
+			}
+			u.HostMutationTeardownFailureRemoved = &arm
+			return nil
+		}
+		arm := HostMutationTeardownFailure{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationTeardownFailure = &arm
+		return nil
+	case HostMutationOutcomeCollisionDropped:
+		arm := HostMutationCollisionDropped{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationCollisionDropped = &arm
+		return nil
+	case HostMutationOutcomeAmbiguous:
+		arm := HostMutationAmbiguous{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationAmbiguous = &arm
+		return nil
+	default:
+		return fmt.Errorf("appwire: host mutation result carries outcome %q, want one of %q, %q, %q, %q",
+			probe.Outcome, HostMutationOutcomeCommitted, HostMutationOutcomeTeardownFailure,
+			HostMutationOutcomeCollisionDropped, HostMutationOutcomeAmbiguous)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// evener/host/teardown-retry and evener/host/teardown-recover (registry §11)
+// ---------------------------------------------------------------------------
+
+// HostTeardownRetryParams is the evener/host/teardown-retry payload (registry
+// spec 08 §6/§11): the opaque id of the remnant whose pinned teardown to
+// resume. Lookup is by id alone — "lookup never requires a current live entry
+// and later mutations cannot strand it".
+type HostTeardownRetryParams struct {
+	RemnantID string `json:"remnantId"`
+}
+
+// The three outcomes the retry's six declared arms cross with the two host
+// shapes (registry spec 08 §11: "three outcomes crossed with both host
+// shapes").
+const (
+	HostTeardownOutcomeComplete  = "teardown-complete"
+	HostTeardownOutcomeCleared   = "already-cleared"
+	HostTeardownOutcomeFailed    = "committed-with-teardown-failure"
+	HostTeardownOutcomeRecovered = "recovered-cleared"
+)
+
+// The two host shapes the retry and recover arms carry.
+const (
+	HostKindLive    = "live"
+	HostKindRemoved = "removed"
+)
+
+// HostTeardownRetryCompleteLive is `teardown-complete` for a remnant whose
+// pinned generation is still live: the teardown is done and the row renders.
+type HostTeardownRetryCompleteLive struct {
+	Outcome          string  `json:"outcome"`
+	HostKind         string  `json:"hostKind"`
+	Host             HostRow `json:"host"`
+	RemnantID        string  `json:"remnantId"`
+	EscalationAgeSec *int64  `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryCompleteRemoved is `teardown-complete` for a remnant whose
+// pinned generation was removed.
+type HostTeardownRetryCompleteRemoved struct {
+	Outcome          string     `json:"outcome"`
+	HostKind         string     `json:"hostKind"`
+	Host             RemovedRow `json:"host"`
+	RemnantID        string     `json:"remnantId"`
+	EscalationAgeSec *int64     `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryClearedLive is the `already-cleared` idempotent-replay arm
+// for a live generation: "a retry naming an already-cleared remnant returns the
+// already-cleared success arm, a receipt-returned no-op".
+type HostTeardownRetryClearedLive struct {
+	Outcome          string  `json:"outcome"`
+	HostKind         string  `json:"hostKind"`
+	Host             HostRow `json:"host"`
+	RemnantID        string  `json:"remnantId"`
+	EscalationAgeSec *int64  `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryClearedRemoved is the `already-cleared` replay arm for a
+// removed generation.
+type HostTeardownRetryClearedRemoved struct {
+	Outcome          string     `json:"outcome"`
+	HostKind         string     `json:"hostKind"`
+	Host             RemovedRow `json:"host"`
+	RemnantID        string     `json:"remnantId"`
+	EscalationAgeSec *int64     `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryFailedLive is the timeout arm for a live generation: "the
+// same failure outcome as the mutation-result union, carrying the still-open
+// remnant's details for a later retry", with `seam` naming the failed seam.
+type HostTeardownRetryFailedLive struct {
+	Outcome          string  `json:"outcome"`
+	HostKind         string  `json:"hostKind"`
+	Host             HostRow `json:"host"`
+	RemnantID        string  `json:"remnantId"`
+	Seam             string  `json:"seam"`
+	EscalationAgeSec *int64  `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryFailedRemoved is the timeout arm for a removed generation.
+type HostTeardownRetryFailedRemoved struct {
+	Outcome          string     `json:"outcome"`
+	HostKind         string     `json:"hostKind"`
+	Host             RemovedRow `json:"host"`
+	RemnantID        string     `json:"remnantId"`
+	Seam             string     `json:"seam"`
+	EscalationAgeSec *int64     `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryResult is evener/host/teardown-retry's six-arm result union
+// (registry spec 08 §11): three outcomes crossed with both host shapes, exactly
+// one arm set.
+type HostTeardownRetryResult struct {
+	*HostTeardownRetryCompleteLive
+	*HostTeardownRetryCompleteRemoved
+	*HostTeardownRetryClearedLive
+	*HostTeardownRetryClearedRemoved
+	*HostTeardownRetryFailedLive
+	*HostTeardownRetryFailedRemoved
+}
+
+// MarshalJSON renders the one arm the retry union carries.
+func (u HostTeardownRetryResult) MarshalJSON() ([]byte, error) {
+	arms := make([]any, 0, 6)
+	for _, arm := range []any{
+		u.HostTeardownRetryCompleteLive, u.HostTeardownRetryCompleteRemoved,
+		u.HostTeardownRetryClearedLive, u.HostTeardownRetryClearedRemoved,
+		u.HostTeardownRetryFailedLive, u.HostTeardownRetryFailedRemoved,
+	} {
+		if arm != nil && !isNilArm(arm) {
+			arms = append(arms, arm)
+		}
+	}
+	if len(arms) == 0 {
+		return nil, errors.New("appwire: teardown-retry result carries no arm")
+	}
+	if len(arms) > 1 {
+		return nil, errors.New("appwire: teardown-retry result carries more than one arm")
+	}
+	return json.Marshal(arms[0])
+}
+
+// UnmarshalJSON reads the arm the `outcome`/`hostKind` pair names. An unknown
+// pair is refused: a client fails loudly rather than reading a zero arm.
+func (u *HostTeardownRetryResult) UnmarshalJSON(raw []byte) error {
+	var probe struct {
+		Outcome  string `json:"outcome"`
+		HostKind string `json:"hostKind"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	*u = HostTeardownRetryResult{}
+	decode := func(target any) error { return json.Unmarshal(raw, target) }
+	switch probe.Outcome + "/" + probe.HostKind {
+	case HostTeardownOutcomeComplete + "/" + HostKindLive:
+		arm := HostTeardownRetryCompleteLive{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryCompleteLive = &arm
+	case HostTeardownOutcomeComplete + "/" + HostKindRemoved:
+		arm := HostTeardownRetryCompleteRemoved{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryCompleteRemoved = &arm
+	case HostTeardownOutcomeCleared + "/" + HostKindLive:
+		arm := HostTeardownRetryClearedLive{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryClearedLive = &arm
+	case HostTeardownOutcomeCleared + "/" + HostKindRemoved:
+		arm := HostTeardownRetryClearedRemoved{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryClearedRemoved = &arm
+	case HostTeardownOutcomeFailed + "/" + HostKindLive:
+		arm := HostTeardownRetryFailedLive{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryFailedLive = &arm
+	case HostTeardownOutcomeFailed + "/" + HostKindRemoved:
+		arm := HostTeardownRetryFailedRemoved{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryFailedRemoved = &arm
+	default:
+		return fmt.Errorf("appwire: teardown-retry result carries outcome %q with hostKind %q, want one of the six declared arms",
+			probe.Outcome, probe.HostKind)
+	}
+	return nil
+}
+
+// HostTeardownAttestation is the audited recovery attestation (registry spec 08
+// §6/§11): the operator's identity, the one statement this build accepts, and
+// the instant the absence was observed.
+type HostTeardownAttestation struct {
+	Operator   string `json:"operator"`
+	Statement  string `json:"statement"`
+	ObservedAt string `json:"observedAt"`
+}
+
+// HostTeardownRecoverParams is the evener/host/teardown-recover payload
+// (registry spec 08 §6/§11).
+type HostTeardownRecoverParams struct {
+	RemnantID   string                  `json:"remnantId"`
+	Attestation HostTeardownAttestation `json:"attestation"`
+}
+
+// HostTeardownRecoverResult is evener/host/teardown-recover's result (registry
+// spec 08 §11): `{outcome: "recovered-cleared", remnantId, clearedName,
+// clearedAt, hostKind}` — "the response carries no live row because the recover
+// clears a remnant whose teardown never produced one". A retry naming an
+// already-recovered id replays the same shape from the persisted record.
+type HostTeardownRecoverResult struct {
+	Outcome     string `json:"outcome"`
+	RemnantID   string `json:"remnantId"`
+	ClearedName string `json:"clearedName"`
+	ClearedAt   string `json:"clearedAt"`
+	HostKind    string `json:"hostKind"`
 }

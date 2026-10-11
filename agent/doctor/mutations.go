@@ -172,21 +172,28 @@ type clientMutationStoreFile struct {
 }
 
 type clientMutationStoreRecord struct {
-	ClientMutationID    string                        `json:"client_mutation_id"`
-	Method              string                        `json:"method"`
-	Payload             json.RawMessage               `json:"payload"`
-	Preconditions       json.RawMessage               `json:"preconditions"`
-	StableTurnID        string                        `json:"stable_turn_id"`
-	StableQueueEntryIDs []string                      `json:"stable_queue_entry_ids"`
-	PayloadHash         string                        `json:"payload_hash"`
-	OperationState      string                        `json:"operation_state"`
-	ExecutionState      string                        `json:"execution_state"`
-	ProjectionState     string                        `json:"projection_state"`
-	Result              json.RawMessage               `json:"result"`
-	Rejection           *clientMutationStoreRejection `json:"rejection"`
-	Failure             json.RawMessage               `json:"failure"`
-	AttemptGeneration   uint64                        `json:"attempt_generation"`
-	SteeringKind        string                        `json:"steering_kind"`
+	ClientMutationID    string                                  `json:"client_mutation_id"`
+	Method              string                                  `json:"method"`
+	Payload             json.RawMessage                         `json:"payload"`
+	Preconditions       json.RawMessage                         `json:"preconditions"`
+	StableTurnID        string                                  `json:"stable_turn_id"`
+	StableQueueEntryIDs []string                                `json:"stable_queue_entry_ids"`
+	PayloadHash         string                                  `json:"payload_hash"`
+	OperationState      string                                  `json:"operation_state"`
+	ExecutionState      string                                  `json:"execution_state"`
+	ProjectionState     string                                  `json:"projection_state"`
+	Result              json.RawMessage                         `json:"result"`
+	Rejection           *clientMutationStoreRejection           `json:"rejection"`
+	Failure             json.RawMessage                         `json:"failure"`
+	AttemptGeneration   uint64                                  `json:"attempt_generation"`
+	SteeringKind        string                                  `json:"steering_kind"`
+	CommandPreparations []clientMutationStoreCommandPreparation `json:"command_preparations"`
+}
+
+type clientMutationStoreCommandPreparation struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	Body  string `json:"body"`
 }
 
 type clientMutationStoreRejection struct {
@@ -320,4 +327,11 @@ func plural(n int, noun string) string {
 		return "entries"
 	}
 	return noun + "s"
+}
+
+// scannedUnder renders the not-found error tail every doctor miss carries:
+// the state root that was swept and how many buckets the scan covered, so a
+// miss is always distinguishable from a sweep that looked too narrowly.
+func scannedUnder(stateRoot string, scanned int) string {
+	return fmt.Sprintf("under %s (%d %s scanned)", stateRoot, scanned, plural(scanned, "bucket"))
 }

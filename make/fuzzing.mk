@@ -68,6 +68,17 @@ fuzz-seeds:
 # (primeradiant.com/evener/invariant) are live: a tripped invariant panics and the
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
+# Step 1 builds the agent module with -run '^$' — compile-only, deliberately.
+# The agent module's non-Fuzz suite is ~14k tests and measured well past the
+# whole `make test` budget under the tag, so the gate does not run it tagged.
+# That is safe rather than a gap: every agent-side invariant.Hold site is
+# reached under the tag by a registered fuzz or rapid target this same gate
+# replays — jobstore's fold/notify monotonicity by TestJobstoreSeqFuzz
+# (rapid-replay.sh) and history_repair.go's post-repair rescan by
+# FuzzFc1RepairOrphanedToolResults (FUZZ_SEED_REPLAY). A new agent invariant
+# must clear the same bar: prove a registered tagged target reaches it (add a
+# seed or target if not), per "Internal invariants under evenerfuzz" in
+# docs/developing-evener/fuzzing.md.
 # Steps 2-5 run every NON-Fuzz test, skipping the FuzzXxx corpus: the
 # FUZZ_SEED_REPLAY step below replays exactly that set (proven by
 # `go test -tags evenerfuzz --list '^Fuzz'` per module — the replay list is
@@ -109,14 +120,24 @@ fuzz:
 # commit the diff. See docs/developing-evener/fuzzing.md ("Choosing an oracle").
 # The third line is the same idea one layer up: the hub's recorded credential-
 # wire answers, which the TUI and the React pane decode instead of hand-building
-# InstanceEntry/AuthStatusResponse values of their own.
-## Regenerate the decode SNAPSHOT goldens from the current decoders, and the
-## hub credential-wire fixtures its clients decode. Run ONLY after an intended
-## change, then commit the diff.
+# InstanceEntry/AuthStatusResponse values of their own. The fourth records the
+# daemon's delegate and job notification frames as steering items, which the
+# AppWire package and the phone parse instead of hand-building frames; the
+# fifth records a coordinator's delegate and other tool calls as history
+# carries them, which the phone's subagent rows read. The last two pin the
+# agent's memory guidance and memory tool descriptions, per capability shape,
+# and the compaction summary prompts, per shape.
+## Regenerate the decode SNAPSHOT goldens from the current decoders, the
+## hub credential-wire, notification-frame and tool-call fixtures its clients
+## decode, and the memory and summary prompt goldens. Run ONLY after an intended change,
+## then commit the diff.
 fuzz-goldens:
 	@sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 	@sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 	@sh -c "go test -run '^TestAuthWireFixtures' ./cmd/evener-hub -update-authwire"
+	@sh -c "cd agent && go test -run 'WireFixtures\$$' . -update-wire"
+	@sh -c "cd agent && go test -run 'TestMemoryGuidanceFollowsCapabilities\$$' . -update-prompt"
+	@sh -c "cd agent && go test -run 'TestSummaryPromptGolden\$$' ./internal/contextmgr -update-prompt"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.

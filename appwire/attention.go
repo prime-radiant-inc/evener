@@ -13,6 +13,16 @@ type AttentionEntry struct {
 	Project    string `json:"project"`
 	Level      string `json:"level"`
 	AskPending bool   `json:"askPending,omitempty"`
+	// ApprovalPending is true while the session is blocked on a sandbox
+	// escalation a human must allow or deny (M7). It is why an
+	// escalation-promoted session's Level is needs_you; AskPending is the
+	// question's equivalent.
+	ApprovalPending bool `json:"approvalPending,omitempty"`
+	// NeedsResponse is true while the session rests awaiting with no pending
+	// question: its turn ended with end_reason needs_response, asking for a
+	// reply. A plain reply rests idle and never carries it. Additive: an
+	// older hub omits it, decoding as false.
+	NeedsResponse bool `json:"needsResponse,omitempty"`
 }
 
 // AttentionSummary is the authoritative badge count set, computed over the

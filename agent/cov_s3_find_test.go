@@ -24,7 +24,7 @@ func TestS3Cov_FindBuckets_AllProjects(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	buckets, scope := findBuckets(current, scopeAllProjects)
+	buckets, scope, _ := findBuckets(current, scopeAllProjects)
 	if scope != scopeAllProjects {
 		t.Fatalf("scope = %q, want all_projects", scope)
 	}
@@ -101,7 +101,7 @@ func TestS3Cov_FindBuckets(t *testing.T) {
 
 	t.Run("non-all scope is current project", func(t *testing.T) {
 		t.Parallel()
-		buckets, scope := findBuckets("/state/dir", scopeCurrentProject)
+		buckets, scope, _ := findBuckets("/state/dir", scopeCurrentProject)
 		if scope != scopeCurrentProject || len(buckets) != 1 || buckets[0] != "/state/dir" {
 			t.Fatalf("got buckets=%v scope=%q", buckets, scope)
 		}
@@ -111,7 +111,7 @@ func TestS3Cov_FindBuckets(t *testing.T) {
 		t.Parallel()
 		// A dir with no recognizable state-home layout → stateHomeFor == "" →
 		// degrade to current project.
-		buckets, scope := findBuckets(t.TempDir(), scopeAllProjects)
+		buckets, scope, _ := findBuckets(t.TempDir(), scopeAllProjects)
 		if scope != scopeCurrentProject || len(buckets) != 1 {
 			t.Fatalf("got buckets=%v scope=%q", buckets, scope)
 		}

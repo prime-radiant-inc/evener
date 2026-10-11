@@ -37,7 +37,7 @@ func restoreSessionWithOrigin(t *testing.T, origin string) *Session {
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		Origin:    origin,
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 	}
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
 	if err != nil {

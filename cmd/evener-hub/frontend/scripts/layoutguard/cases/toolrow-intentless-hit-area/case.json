@@ -1,0 +1,20 @@
+{
+  "name": "toolrow-intentless-hit-area",
+  "description": "An intent-less expandable ToolRow keeps its visible summary line and its inline controls as SIBLINGS of the disclosure button, and the button still owns the whole row: toolcallitem.module.css's .row:not([data-intent=\"true\"]) .trigger overlay (position: absolute; inset: 0) covers the summary line, the summary line itself ignores pointer input, and real links and buttons inside it opt back in. So a click on plain summary text reaches the disclosure trigger, a click on the summary's link reaches the link, and a click on an inline Open control reaches that control. Two shapes, both ToolRow's current render copied from its jsdom output: web_fetch's linked summary ('Fetched <a>url</a>') and a write row with a trailing OpenButton. These hit-area checks lived inside the deleted rdry-toolrow-contrast case; no other case covers intent-less rows.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 600, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: .row:not([data-intent=\"true\"]) .trigger { position: absolute; inset: 0; width: 100%; height: 100%; justify-content: flex-end } (rule deleted)",
+    "verified": "2026-09-24",
+    "expect": "fail",
+    "note": "Three rules mutated one at a time, each restored before the next. Deleting the .trigger overlay fails both fixtures: the trigger no longer covers the row or the summary, and plain summary text lands on div.row. Dropping the summary line's pointer-events: none fails both with plain text landing on the summary span instead of the trigger. Dropping the a/button pointer-events: auto rule fails both with the link and the Open control swallowed by the trigger (button#trigger-web, svg inside button#trigger-write). The deleted rdry-toolrow-contrast harness failed the first mutation too (triggerContainsSummary and summaryHitTrigger false), and no other case failed it."
+  }
+}

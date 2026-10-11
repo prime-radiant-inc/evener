@@ -206,9 +206,13 @@ func runProvidersProbe(args []string, stdout, stderr io.Writer) error {
 
 // probeInstance is `providers probe` against a registry the caller already
 // loaded: `providers add` probes what its own write reloaded, so the notices
-// are announced once and the entry is read once.
+// are announced once and the entry is read once. The instance resolves the
+// way the listing and each probe request themselves resolve — through the
+// default model's row when there is one — so the candidates tried, the
+// endpoint check, and the reported verdicts all describe the protocol the
+// requests really speak.
 func probeInstance(r *registry.Registry, name string, write bool, stdout io.Writer) error {
-	res, err := r.ResolveInstance(name)
+	res, err := r.ResolveInstanceListing(name)
 	if err != nil {
 		return err
 	}

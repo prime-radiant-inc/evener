@@ -1,7 +1,7 @@
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { translateAttachmentMarkers } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -12,7 +12,6 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetToastStoreForTests();
 });
-afterEach(cleanup);
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_u", turnId: "turn_1", type: "userMessage", text: "do the thing", ...overrides };

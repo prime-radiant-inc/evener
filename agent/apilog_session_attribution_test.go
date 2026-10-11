@@ -60,6 +60,7 @@ func (*sessionAttributionAdapter) Stream(context.Context, llm.Request) (llm.Stre
 }
 
 func TestSessionAuxiliaryModelCallsAttributeToSessionAPILog(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		response string
@@ -110,7 +111,6 @@ func TestSessionAuxiliaryModelCallsAttributeToSessionAPILog(t *testing.T) {
 
 			s := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5.2")), withConfig(SessionConfig{
 				MaxSubagentDepth: 1,
-				NoProjectPrompts: true,
 				StateDir:         stateDir,
 				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 			}))
@@ -162,7 +162,6 @@ func TestSideCallsAttributeToSessionAPILog(t *testing.T) {
 
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -252,6 +251,7 @@ func assertSessionAPILogAttributed(t *testing.T, stateDir, sessionID string) {
 // cfg.spawn.sessionID — and only fall back to the shared unattributed bucket
 // when no id genuinely exists yet, as for a brand-new root session.
 func TestPreSessionLiveModelListingAttribution(t *testing.T) {
+	t.Parallel()
 	t.Run("restore attributes to the restored session id", func(t *testing.T) {
 		stateDir := t.TempDir()
 		client := llm.NewClient()
@@ -266,7 +266,7 @@ func TestPreSessionLiveModelListingAttribution(t *testing.T) {
 			ID:        "restored-attribution-session",
 			ProfileID: "openai",
 			Model:     "gpt-5.2",
-			Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+			Config:    (SessionConfig{}).toSnapshot(),
 		}
 		restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
 			StateDir: stateDir,
@@ -302,7 +302,6 @@ func TestPreSessionLiveModelListingAttribution(t *testing.T) {
 		childID := identifier.MustNewSessionID()
 		cfg := SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			StateDir:         stateDir,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}
@@ -334,7 +333,6 @@ func TestPreSessionLiveModelListingAttribution(t *testing.T) {
 
 		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			StateDir:         stateDir,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		})
@@ -417,7 +415,6 @@ func TestNewSessionReleasesPreSessionAPILogRouteOnMembershipFailure(t *testing.T
 	childID := identifier.MustNewSessionID()
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
@@ -453,6 +450,7 @@ func TestNewSessionReleasesPreSessionAPILogRouteOnMembershipFailure(t *testing.T
 // a pure oversight, not a structural gap like NewSession's own pre-session
 // listing.
 func TestNewSessionAttributesOtherProviderStartupListingToSessionAPILog(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
@@ -465,7 +463,6 @@ func TestNewSessionAttributesOtherProviderStartupListingToSessionAPILog(t *testi
 
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
@@ -495,7 +492,6 @@ func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir
 	t.Helper()
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
@@ -523,6 +519,7 @@ func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir
 // just the shared helper: a fix applied to two of the three call sites would
 // still leave the third silently unattributed.
 func TestModelSwitchLiveListingAttribution(t *testing.T) {
+	t.Parallel()
 	t.Run("SetModel", func(t *testing.T) {
 		stateDir := t.TempDir()
 		client := llm.NewClient()
@@ -613,6 +610,7 @@ func TestModelSwitchLiveListingAttribution(t *testing.T) {
 }
 
 func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	client := llm.NewClient()
 	logger, err := llm.NewSessionAPILogger(stateDir)
@@ -624,7 +622,6 @@ func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		LLMRetryPolicy:   &policy,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -680,7 +677,6 @@ func TestSessionCloseReleasesAPILogRoute(t *testing.T) {
 
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -711,6 +707,7 @@ func TestSessionCloseReleasesAPILogRoute(t *testing.T) {
 // selectSubagentModel with exactly the ctx a turn hands it and holds the whole
 // chain below the stamp under test.
 func TestPluginAgentModelListingAttribution(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	var listings atomic.Int64
 	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.3")
@@ -782,6 +779,7 @@ func TestPluginAgentModelListingAttribution(t *testing.T) {
 // refused only because the selection landed on the plugin's gpt-5.3 rather than
 // the session's own gpt-5.2.
 func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	var listings atomic.Int64
 	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.3")
@@ -818,7 +816,6 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}

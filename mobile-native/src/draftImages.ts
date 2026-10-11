@@ -23,8 +23,7 @@ export function imageInput(image: DraftImage, data: string): InputAttachment {
 
 export function parseImages(raw: string): DraftImage[] {
 	const images: unknown = JSON.parse(raw);
-	if (!Array.isArray(images) || images.length > MAX_ATTACHMENTS)
-		throw new Error("Invalid saved images.");
+	if (!Array.isArray(images) || images.length > MAX_ATTACHMENTS) throw new Error("Invalid saved images.");
 	const ids = new Set<string>();
 	const markers = new Set<number>();
 	for (const image of images) {

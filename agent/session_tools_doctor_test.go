@@ -2,17 +2,23 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -36,9 +42,8 @@ func doctorToolForTest(t *testing.T, stateHome string) tool.RegisteredTool {
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		StateDir:         stateHome,
-		NoProjectPrompts: true,
-		clock:            agenttest.NewFakeClock(),
+		StateDir: stateHome,
+		clock:    agenttest.NewFakeClock(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -393,6 +398,7 @@ func TestDoctorEvener_SessionsRowCapDisclosed(t *testing.T) {
 // the single-source list both the schema and the dispatcher derive from —
 // the definition must carry exactly that list in its schema.
 func TestDoctorEvener_EnumSinglesource(t *testing.T) {
+	t.Parallel()
 	def := tool.DefDoctorEvener()
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
@@ -450,6 +456,179 @@ func TestDoctorEvener_EveryCommandDispatches(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "unknown doctor command") {
 			t.Errorf("command %q has no dispatch case", command)
+		}
+	}
+}
+
+// TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct proves a locate
+// miss surfaces as an error result — the error text naming where the sweep
+// looked — and never as the zero Paths struct. The tool layer renders a
+// non-nil erroring value as the tool-result content, so returning the zero
+// struct alongside the error printed an all-empty JSON object to the model:
+// a miss was indistinguishable from a resolver that found nothing to say.
+func TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	writeDoctorFixtureSession(t, bucket)
+	missing := doctorTestSID(t)
+
+	rt := doctorToolForTest(t, stateHome)
+	out, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command": "locate", "selector": missing,
+	})
+	if err == nil {
+		t.Fatal("locate of a missing session should error")
+	}
+	if out != nil {
+		t.Errorf("locate miss returned %T (%v), want nil — the zero struct marshals as an all-empty result", out, out)
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("err = %v, want a not-found error naming the search scope", err)
+	}
+}
+
+// TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct widens the
+// error-result contract from locate to every selector-taking command: a miss
+// must surface the doctor's explicit not-found text, never the command
+// function's zero struct — the tool layer renders a non-nil erroring value
+// as the result content, so a zero struct would print an all-empty JSON
+// object and hide where the sweep looked.
+func TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	writeDoctorFixtureSession(t, bucket)
+	missing := doctorTestSID(t)
+
+	rt := doctorToolForTest(t, stateHome)
+	cases := []map[string]any{
+		{"command": "locate", "selector": missing},
+		{"command": "transcript", "selector": missing},
+		{"command": "transcript", "selector": missing, "count": "read_file"},
+		{"command": "transcript", "selector": missing, "health": true},
+		{"command": "apilog", "selector": missing},
+		{"command": "apilog", "selector": missing, "validate": true},
+		{"command": "apilog", "selector": missing, "health": true},
+		{"command": "jobs", "selector": missing},
+		{"command": "mutations", "selector": missing},
+		{"command": "watches", "selector": missing},
+		{"command": "tree", "selector": missing},
+	}
+	for _, args := range cases {
+		out, err := rt.Exec(context.Background(), nil, args)
+		if err == nil {
+			t.Errorf("%v: want not-found error, got nil (out=%v)", args, out)
+			continue
+		}
+		if out != nil {
+			t.Errorf("%v: miss returned %T (%v), want nil so the error text is the result content", args, out, out)
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("%v: err = %v, want the explicit not-found text", args, err)
+		}
+	}
+}
+
+// TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets proves the
+// daemon's own invocation shape (the session's state dir is its project
+// bucket directory — see userdirs.StateHomeForBucketDir): a bare-id locate
+// with no state_dir argument must still resolve a session living in a
+// sibling project bucket — the forensic scenario the doctoring diagnosis
+// hit, where a sibling-bucket session was invisible to every bare-id lookup.
+func TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucketA := newBucketUnder(t, stateHome)
+	bucketB := newBucketUnder(t, stateHome)
+	sidA := writeDoctorFixtureSession(t, bucketA)
+	writeDoctorFixtureSession(t, bucketB)
+
+	// The session's own state dir is bucketB — the per-project bucket shape.
+	rt := doctorToolForTest(t, bucketB)
+	out, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command": "locate", "selector": sidA,
+	})
+	if err != nil {
+		t.Fatalf("doctor_evener locate from bucket state dir: %v", err)
+	}
+	paths, ok := out.(doctor.Paths)
+	if !ok {
+		t.Fatalf("locate result = %T, want doctor.Paths", out)
+	}
+	if want := filepath.Join(bucketA, "sessions", sidA+".transcript.jsonl"); paths.TranscriptPath != want {
+		t.Errorf("transcript_path = %q, want sibling-bucket path %q", paths.TranscriptPath, want)
+	}
+	if paths.ProjectID != filepath.Base(bucketA) {
+		t.Errorf("project_id = %q, want sibling bucket dir name %q", paths.ProjectID, filepath.Base(bucketA))
+	}
+}
+
+// TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript pins one coordinate
+// system for both transcript readers. doctor_evener's transcript rows carry
+// read_transcript's turn numbers, its range selects by them, and an entry
+// read_transcript omits (here a notice) carries no turn number. A number read
+// in one tool and passed to the other names the same turn.
+func TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	sid := doctorTestSID(t)
+	tw, err := transcript.NewWriter(transcriptPath(bucket, sid), transcript.Header{SessionID: sid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first ask")),
+		{Kind: schema.TurnNotice, Notice: &schema.NoticeInfo{
+			Kind:       schema.NoticeToolRepair,
+			ToolRepair: &schema.ToolRepairNotice{ToolName: "shell", CallID: "call_shell_1", Changes: []string{"drop_unknown:timeout:dropped timeout"}},
+		}},
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("the reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second ask")),
+	} {
+		if err := tw.Append(turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, bucket, findMetaSpec{id: sid, name: "coordinates", updated: time.Now().UTC()})
+
+	whole, err := doctor.Transcript(stateHome, sid, doctor.TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, row := range whole.Turns {
+		number := "-"
+		if row.Turn != nil {
+			number = strconv.Itoa(*row.Turn)
+		}
+		got = append(got, number+" "+row.Text)
+	}
+	want := []string{"0 first ask", "- ", "1 the reply", "2 second ask"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("doctor rows = %q, want %q", got, want)
+	}
+	if whole.TurnsTotal != 3 || whole.TurnsRendered != 3 || whole.Elided != 0 {
+		t.Fatalf("doctor counts total/rendered/elided = %d/%d/%d, want 3/3/0", whole.TurnsTotal, whole.TurnsRendered, whole.Elided)
+	}
+
+	deps := &toolDeps{stateDir: bucket, sessionID: "02wMz5TxvFpYrooBkiqxAp"}
+	for _, row := range whole.Turns {
+		if row.Turn == nil {
+			continue
+		}
+		window := fmt.Sprintf("%d-%d", *row.Turn, *row.Turn)
+		narrowed, err := doctor.Transcript(stateHome, sid, doctor.TranscriptOpts{Range: window})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(narrowed.Turns) == 0 || narrowed.Turns[0].Turn == nil || *narrowed.Turns[0].Turn != *row.Turn || narrowed.TurnsRendered != 1 {
+			t.Fatalf("doctor range %s = %+v, want turn %d first and alone among turns", window, narrowed.Turns, *row.Turn)
+		}
+		env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{"transcript_ref": "local:" + sid, "range": window}))
+		content, _ := env["content"].(string)
+		if !strings.Contains(content, fmt.Sprintf("## Turn %d ", *row.Turn)) || !strings.Contains(content, row.Text) {
+			t.Errorf("read_transcript range %s does not show doctor's turn %d (%q):\n%s", window, *row.Turn, row.Text, content)
 		}
 	}
 }

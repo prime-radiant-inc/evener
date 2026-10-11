@@ -2,24 +2,35 @@
 
 import { describe, expect, test } from "vitest";
 import appwireErrorsGo from "../../appwire/errors.go?raw";
+import appwireTypesGo from "../../appwire/types.go?raw";
 import {
   ClientNotReadyError,
   ConnectionClosedError,
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
+  ErrorTranscriptHistoryFailed,
+  ErrorUpgradeRequired,
   errorKind,
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
+  HostMutationOutcomeError,
+  hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
+  isMethodNotFound,
+  isTranscriptHistoryFailedError,
+  isUpgradeRequiredError,
+  refusedBeforeRunning,
   sessionActionError,
   sessionActionHeadline,
   WireError,
   wireRejectionPayload,
 } from "./errors";
+import { goConstantValue } from "./testing/goConstants";
 
 function decodeUpper(value: unknown): string | undefined {
   return typeof value === "string" ? value.toUpperCase() : undefined;
@@ -42,16 +53,39 @@ test("wireRejectionPayload returns undefined for a non-WireError, or when decode
 });
 
 // goErrorInfo reads one ErrorInfo constant's value out of appwire/errors.go, the
-// file the hub stamps every evenerErrorInfo from. Reading the source (the way
-// mobile/src/services/conversation.test.ts binds its decoder literals to
-// appwire/types.go) is what makes the binding real: renaming the constant or
-// changing its value in Go fails here, rather than leaving every client matching
-// a discriminator the hub no longer sends.
+// file the hub stamps every evenerErrorInfo from (goConstants.ts's own header
+// says why reading the source is what makes the binding real).
 function goErrorInfo(name: string): string {
-  const match = appwireErrorsGo.match(new RegExp(`${name}\\s+ErrorInfo\\s*=\\s*"([^"]+)"`));
-  if (!match) throw new Error(`appwire/errors.go has no ${name} ErrorInfo constant`);
-  return match[1]!;
+  return goConstantValue(appwireErrorsGo, name, "appwire/errors.go");
 }
+
+test("hostFieldError reads the blamed input off the hub's own discriminant", () => {
+  // The binding: the Go constant's value is what this module matches on.
+  expect(ErrorInvalidHostField).toBe(goErrorInfo("ErrorInvalidHostField"));
+  const blamed = new WireError('host "m4": missing ssh destination', -32602, {
+    evenerErrorInfo: ErrorInvalidHostField,
+    field: "address",
+  });
+  expect(hostFieldError(blamed)).toBe("address");
+  // A plain validation refusal carries no field, a form-level refusal carries an
+  // empty one, and a non-WireError carries nothing at all.
+  expect(hostFieldError(new WireError("boom", -32602, { evenerErrorInfo: "invalidParams" }))).toBeUndefined();
+  expect(hostFieldError(new WireError("boom", -32602, { evenerErrorInfo: ErrorInvalidHostField }))).toBeUndefined();
+  expect(hostFieldError(new Error("boom"))).toBeUndefined();
+});
+
+test("the host entry's wire spellings are the ones refusals and inputs share", () => {
+  // The dialog's inputs and a refusal's field are the same strings because both
+  // are HostEntry's json names; this pins that vocabulary against the Go tags so
+  // a rename on one side cannot leave the other looking for a missing input.
+  // Each name is matched as a whole json tag — the name followed by a closing
+  // quote or an omitempty comma — not as a prefix, so "addr" cannot be satisfied
+  // by the "address" tag. "name" is the field hostEntryField blames for an
+  // invalid or reserved host name, so it belongs in the pinned set too.
+  for (const name of ["name", "address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]) {
+    expect(appwireTypesGo).toMatch(new RegExp(`json:"${name}("|,)`));
+  }
+});
 
 // The persisted rename discriminator (a rename that stood in the config but
 // could not finish) is the one place a client decides whether to report a
@@ -102,6 +136,30 @@ describe("the marketplace remove-applied discriminator is bound to appwire/error
 describe("the endpoint-conflict discriminator is bound to appwire/errors.go", () => {
   test("the exported value is the hub's own constant", () => {
     expect(ErrorEndpointConflict).toBe(goErrorInfo("ErrorEndpointConflict"));
+  });
+});
+
+// A read of a thread whose history failed keeps the client's held history and
+// shows one diagnostic, and a daemon refusing an old client's protocol names the
+// fix. Both are recognized only by their discriminant, which must stay the hub's.
+describe("the history-failed and upgrade-required discriminators are bound to appwire/errors.go", () => {
+  test("the exported values are the hub's own constants", () => {
+    expect(ErrorTranscriptHistoryFailed).toBe(goErrorInfo("ErrorTranscriptHistoryFailed"));
+    expect(ErrorUpgradeRequired).toBe(goErrorInfo("ErrorUpgradeRequired"));
+  });
+
+  test("each predicate reads only its own discriminator", () => {
+    const historyFailed = new WireError("thread history failed at entry 7", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+      bootGeneration: "4",
+      epoch: 2,
+    });
+    const upgradeRequired = new WireError("upgrade required", -32600, { evenerErrorInfo: ErrorUpgradeRequired });
+    expect(isTranscriptHistoryFailedError(historyFailed)).toBe(true);
+    expect(isTranscriptHistoryFailedError(upgradeRequired)).toBe(false);
+    expect(isUpgradeRequiredError(upgradeRequired)).toBe(true);
+    expect(isUpgradeRequiredError(historyFailed)).toBe(false);
+    expect(isTranscriptHistoryFailedError(new Error("thread history failed at entry 7"))).toBe(false);
   });
 });
 
@@ -185,6 +243,18 @@ test("friendlyErrorMessage keeps a WireError's own message untouched", () => {
 
 test("friendlyErrorMessage falls back to a generic sentence for a WireError with no message text", () => {
   expect(friendlyErrorMessage(new WireError("", -32013))).toBe("Something went wrong.");
+});
+
+// committedMutationRow (hostMutations.ts) throws a HostMutationOutcomeError for
+// a non-commit arm of the host mutation-result union. Its message is written
+// for a person - it names what happened and, for a teardown failure, the
+// remnantId to repair - so friendlyErrorMessage shows it rather than the
+// generic sentence it would give an arbitrary JS exception.
+test("friendlyErrorMessage keeps a HostMutationOutcomeError's own message", () => {
+  const message =
+    "evener/host/remove: the mutation committed but its rebind teardown failed; " +
+    "the entry is committed and its repair handle is remnantId r1";
+  expect(friendlyErrorMessage(new HostMutationOutcomeError(message, "committed-with-teardown-failure"))).toBe(message);
 });
 
 test("friendlyErrorMessage maps ConnectionClosedError to a plain sentence naming the hub, not the class", () => {
@@ -365,4 +435,35 @@ test("friendlyLaunchErrorMessage keeps every other WireError's own message untou
 
 test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sentence friendlyErrorMessage would", () => {
   expect(friendlyLaunchErrorMessage(new Error("switch boom"))).toBe("Something went wrong.");
+});
+
+// The codes are Go ints, which goConstantValue (strings only) doesn't read.
+function code(name: string): number {
+  const value = appwireErrorsGo.match(new RegExp(`\\n\\s*${name}\\s*=\\s*(-?\\d+)`))?.[1];
+  if (value === undefined) throw new Error(`appwire/errors.go has no ${name} constant`);
+  return Number(value);
+}
+
+describe("a refusal before running is bound to appwire/errors.go's codes", () => {
+  test("a validation refusal or a malformed request ran nothing", () => {
+    expect(refusedBeforeRunning(new WireError("cwd is required", code("CodeInvalidParams")))).toBe(true);
+    expect(refusedBeforeRunning(new WireError("bad request", code("CodeInvalidRequest")))).toBe(true);
+  });
+  test("any other failure may have run", () => {
+    expect(refusedBeforeRunning(new WireError("internal", code("CodeInternalError")))).toBe(false);
+    expect(refusedBeforeRunning(new WireError("unavailable", code("CodeUnavailable")))).toBe(false);
+    expect(refusedBeforeRunning(new Error("socket closed"))).toBe(false);
+  });
+});
+
+describe("method-not-found is bound to appwire/errors.go", () => {
+  test("an older hub's refusal of a method it lacks, by code or by discriminator", () => {
+    expect(isMethodNotFound(new WireError("method not found", code("CodeMethodNotFound")))).toBe(true);
+    const info = goErrorInfo("ErrorMethodNotFound");
+    expect(isMethodNotFound(new WireError("method not found", -32000, { evenerErrorInfo: info }))).toBe(true);
+  });
+  test("any other failure is not", () => {
+    expect(isMethodNotFound(new WireError("internal", code("CodeInternalError")))).toBe(false);
+    expect(isMethodNotFound(new Error("socket closed"))).toBe(false);
+  });
 });

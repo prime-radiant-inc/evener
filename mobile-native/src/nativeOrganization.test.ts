@@ -47,12 +47,32 @@ describe("native organization persistence", () => {
 		expect(drafts.load()).toEqual(newDraft);
 		const first = organizationJournal("hub").begin(operation);
 		const journalKey = "evener.native.navigation-action.hub";
-		storage.set(
-			journalKey,
-			JSON.stringify({ id: "new", operation, receipt: null }),
-		);
+		storage.set(journalKey, JSON.stringify({ id: "new", operation, receipt: null }));
 		expect(organizationJournal("hub").finish(first)).toBe(false);
 		expect(storage.has(journalKey)).toBe(true);
+	});
+	it("removes a draft stored with a different key order, matching it by value not bytes", () => {
+		const drafts = sectionDrafts("hub", "section");
+		const saved = drafts.save("Rename");
+		// Bytes an older build could have written: same record, key order that
+		// is not the backend's canonical re-encoding. A byte-for-byte compare
+		// refuses to clear it; the shared backend's canonical comparison does.
+		storage.set(drafts.key, JSON.stringify({ name: "Rename", id: saved.id }));
+		expect(drafts.removeIf(saved)).toBe(true);
+		expect(drafts.load()).toBeNull();
+	});
+	it("treats a stored JSON null as a present, invalid record rather than no draft", () => {
+		const drafts = sectionDrafts("hub", "section");
+		// The shared backend tags stored JSON null (and unparseable bytes) as a
+		// present-but-invalid record, the way the preference drafts do. The
+		// organization repositories already block corrupt storage instead of
+		// silently overwriting it (see pinSectionDrafts' "blocks corrupt
+		// storage" case), so load and save throw here rather than reading the
+		// null record as absent and replacing it.
+		storage.set(drafts.key, "null");
+		expect(() => drafts.load()).toThrow();
+		expect(() => drafts.save("Rename")).toThrow();
+		expect(storage.get(drafts.key)).toBe("null");
 	});
 	it("removes one hub's records while retaining other and unrelated storage", () => {
 		pinDrafts("hub-a", "s-a").save({ kind: "existing", sectionId: "a" });
@@ -82,9 +102,7 @@ describe("native organization persistence", () => {
 		expect(forkJournal("hub-b", "parent").load()).toEqual(savedFork);
 		expect(pinDrafts("hub-b", "s-b").load()).not.toBeNull();
 		expect(organizationJournal("hub-b").load()).not.toBeNull();
-		expect(
-			storage.get('evener.native.pin-assignment.["hub-a","malformed'),
-		).toBe("keep");
+		expect(storage.get('evener.native.pin-assignment.["hub-a","malformed')).toBe("keep");
 		expect(storage.get("unrelated")).toBe("keep");
 	});
 });

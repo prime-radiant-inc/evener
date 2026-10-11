@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +20,9 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -56,113 +57,26 @@ var (
 	}
 )
 
+// startRefused is a thread/start refusal that came before the hub spawned
+// anything: no session exists, so it says the start was not accepted and a
+// client may let the person start that draft again (#3184). Like any refusal
+// marked so, it asks for no automatic retry: the same start would be refused
+// the same way.
+func startRefused(err error) (appwire.ThreadStartResponse, error) {
+	return appwire.ThreadStartResponse{}, appserver.WireError(err).NotAccepted("")
+}
+
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	if err := validateAppWireInputItems(params.Input); err != nil {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
-	}
-	sourceID := strings.TrimSpace(params.Source)
-	// Forward the normalized routing value, not the verbatim field the lookup
-	// trimmed: a source must not observe surrounding whitespace the hub already
-	// stripped to resolve it. A harness-routed start leaves Source empty, as the
-	// caller sent it, because the harness is the routing field in that case.
-	forward := params
-	forward.Source = sourceID
-	if sourceID == "" {
-		sourceID = launchSourceID(params)
-	}
-	if sourceID != "" && sourceID != "local" {
-		source, ok := sources.Source(sourceID)
-		if !ok || source == nil {
-			return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
-		}
-		return source.StartThread(ctx, forward)
-	}
-	if cfg.Spawner == nil {
-		return appwire.ThreadStartResponse{}, appwire.Unavailable("spawner not configured")
-	}
-	workingDir := params.CWD
-	if workingDir != "" {
-		resolved, err := hubCanonicalizeDir(workingDir)
-		if err != nil {
-			return appwire.ThreadStartResponse{}, appwire.InvalidParams("cwd: " + err.Error())
-		}
-		workingDir = resolved
-	}
-	var overrides launchconfig.Layer
-	if params.LaunchOverrides != nil {
-		overrides = launchconfig.FromWire(*params.LaunchOverrides)
-	}
-	// Legacy scalar fields win over launchOverrides (per spec §5.4).
-	if params.Model != "" {
-		model := params.Model
-		if params.ModelProvider != "" && !strings.HasPrefix(params.Model, params.ModelProvider+"/") {
-			model = params.ModelProvider + "/" + params.Model
-		}
-		modelRef, err := hubParseModelRef(model)
-		if err != nil {
-			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
-		}
-		overrides.Model = modelRef.Qualified()
-	}
-	if params.Profile != "" {
-		overrides.Agent = params.Profile
-	}
-	if params.ReasoningEffort != "" {
-		overrides.ReasoningEffort = params.ReasoningEffort
-	}
-	if params.NonInteractive != nil {
-		v := *params.NonInteractive
-		overrides.NonInteractive = &v
-	}
-	// launch.toml is user-editable configuration (Hub UI's Launch settings
-	// tab, or hand-edited), so its root is the config root, not
-	// cfg.HubStateRoot (machine-generated state: auth-token, index.db,
-	// deletions/).
-	spawnResolved, resolveErr := hubResolveLaunch(hubLaunchConfigRoot(cfg), workingDir, overrides)
-	if resolveErr != nil {
-		return appwire.ThreadStartResponse{}, resolveErr
-	}
-	// The env floor (EVENER_MODEL etc.) applies to the spawn decision too,
-	// matching the agent's own flag > env fallback: a session started now
-	// would run with the env model, so the required-model gate must accept
-	// it and the spawned child must receive it. Layers and per-launch
-	// overrides still win — the floor only fills what nothing else set.
-	// Env only, deliberately NOT the builtin floor: the agent applies its
-	// own builtins, and pinning them in the hub's argv would skew across
-	// versions (ApplyEnvDefaults' doc comment).
-	spawnResolved = launchconfig.ApplyEnvDefaults(spawnResolved, os.Getenv, launchconfig.LaunchOptionSchema())
-	resolvedModel := strings.TrimSpace(spawnResolved.Effective.Model)
-	if resolvedModel == "" {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams("model is required")
-	}
-	modelRef, err := hubParseModelRef(resolvedModel)
+	remote, forward, err := routeThreadStart(ctx, sources, params)
 	if err != nil {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		return startRefused(err)
 	}
-	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
-		return appwire.ThreadStartResponse{}, err
+	if remote != nil {
+		return remote.StartThread(ctx, forward)
 	}
-	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins, cfg.PluginManager)
-	if pluginErr != nil {
-		// A resolver failure is fatal when a selection has to be honoured, and
-		// always when the failure IS the caller leaving: the next thing this
-		// handler does is detach from the request context and spawn, so a
-		// cancellation walked past here becomes a session started for a client
-		// that has gone. Everything else falls through to a launch with
-		// whatever the resolver could list.
-		if spawnResolved.Effective.EnabledPlugins != nil ||
-			errors.Is(pluginErr, context.Canceled) || errors.Is(pluginErr, context.DeadlineExceeded) {
-			return appwire.ThreadStartResponse{}, appwire.HubLaunchError(pluginErr.Error())
-		}
-	} else if err := pluginResolution.ValidateSelection(); err != nil {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
-	}
-	// One last look at the connection before the handler stops listening to
-	// it. Everything above is validation, and a request the caller abandoned
-	// while it ran must not become a session: past the detach below, nothing
-	// asks about the caller again.
-	if err := ctx.Err(); err != nil {
-		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
+	plan, err := prepareLocalSpawn(ctx, cfg, params)
+	if err != nil {
+		return startRefused(err)
 	}
 	// The mutation is admitted here: every validation has passed and the spawn
 	// is about to happen. From this point the outcome must not depend on the
@@ -176,12 +90,12 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
 	defer cancelDetached()
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
-		Project:       spawnResolved.Project,
-		Resolved:      spawnResolved,
-		WorkingDir:    workingDir,
+		Project:       plan.resolved.Project,
+		Resolved:      plan.resolved,
+		WorkingDir:    plan.workingDir,
 		PluginRoot:    cfg.PluginRoot,
 		AgentsDocPath: hubAgentsDocPath(cfg),
-		Provider:      modelRef.Provider,
+		Provider:      plan.modelRef.Provider,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
@@ -226,13 +140,13 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			ID:            entry.ThreadID,
 			SessionID:     entry.SessionID,
 			Preview:       entry.SessionID,
-			ModelProvider: modelRef.Provider,
-			CWD:           workingDir,
+			ModelProvider: plan.modelRef.Provider,
+			CWD:           plan.workingDir,
 			Source:        "local",
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Evener:        appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
-		thread = applyHubForkCapability(cfg, thread)
+		thread = applyHubCapabilities(cfg, thread)
 		annotateThreadProjects([]appwire.Thread{thread})
 		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
@@ -261,12 +175,12 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	if err != nil {
 		threadResp.Thread = appwire.Thread{
-			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: workingDir,
+			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: plan.workingDir,
 			Source: "local", Evener: appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
 	}
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
-	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
+	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
@@ -279,6 +193,10 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		// (gateSkillInputOnClient), covering a replacement or resumed daemon.
 		if err := appwire.ValidateSkillInputSupport(params.Input, threadResp.Thread.Evener.Capabilities.SkillInput); err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		}
+		if err := appwire.ValidateCommandInputSupport(params.Input, threadResp.Thread.Evener.Capabilities.CommandInput); err != nil {
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+
 		}
 		clientMutationID, err := identifier.NewClientMutationID()
 		if err != nil {
@@ -311,6 +229,153 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	return appwire.ThreadStartResponse{Thread: threadResp.Thread, Turn: turn}, nil
 }
 
+// routeThreadStart checks a thread/start's input and routing, and names the
+// source it goes to: another host's (with the params to forward), or nil for
+// this hub's own spawner. Everything it refuses, it refuses before any session
+// exists.
+func routeThreadStart(ctx context.Context, sources *appsource.Registry, params appwire.ThreadStartParams) (appsource.Source, appwire.ThreadStartParams, error) {
+	if err := validateAppWireInputItems(params.Input); err != nil {
+		return nil, appwire.ThreadStartParams{}, appwire.InvalidParams(err.Error())
+	}
+	sourceID := strings.TrimSpace(params.Source)
+	// Forward the normalized routing value, not the verbatim field the lookup
+	// trimmed: a source must not observe surrounding whitespace the hub already
+	// stripped to resolve it. A harness-routed start leaves Source empty, as the
+	// caller sent it, because the harness is the routing field in that case.
+	forward := params
+	forward.Source = sourceID
+	if sourceID == "" {
+		sourceID = launchSourceID(params)
+	}
+	// The harness is the caller's backend selection, not a host selector: a
+	// harness value naming a registered non-local source is refused rather than
+	// resolved (or forwarded to a source that would resolve it against its own
+	// registry). The launchSourceID fallback above is retained for every other
+	// harness value (component 06, §"Write contract (session targeting)").
+	if err := refuseHarnessNamingHost(sources, params.Harness); err != nil {
+		return nil, appwire.ThreadStartParams{}, err
+	}
+	// A request that arrived over a peer hub's attach bridge resolves only to
+	// this hub's local state (design §2 "Topology"; component 05, §"The
+	// receiving hub must reject a non-local resolution for a remote-originated
+	// thread/start"), so a preserved harness naming one of this hub's own
+	// configured hosts cannot fan the spawn out to that host.
+	if err := guardRemoteSpawnSource(ctx, sourceID); err != nil {
+		return nil, appwire.ThreadStartParams{}, err
+	}
+	if sourceID != "" && sourceID != "local" {
+		source, ok := sources.Source(sourceID)
+		if !ok || source == nil {
+			return nil, appwire.ThreadStartParams{}, appwire.Unavailable("spawn source is not available: " + sourceID)
+		}
+		return source, forward, nil
+	}
+	return nil, appwire.ThreadStartParams{}, nil
+}
+
+// localSpawnPlan is what a local thread/start spawns with, once every check
+// before the spawn has passed.
+type localSpawnPlan struct {
+	workingDir string
+	resolved   launchconfig.Resolved
+	modelRef   cmdutil.ModelRef
+}
+
+// prepareLocalSpawn runs every check a local thread/start makes before it
+// spawns: the working directory, the launch config, the model and plugins, and
+// a caller still waiting. Everything it refuses, it refuses before any session
+// exists.
+func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadStartParams) (localSpawnPlan, error) {
+	if cfg.Spawner == nil {
+		return localSpawnPlan{}, appwire.Unavailable("spawner not configured")
+	}
+	workingDir := params.CWD
+	if workingDir != "" {
+		resolved, err := hubCanonicalizeDir(workingDir)
+		if err != nil {
+			return localSpawnPlan{}, appwire.InvalidParams("cwd: " + err.Error())
+		}
+		workingDir = resolved
+	}
+	var overrides launchconfig.Layer
+	if params.LaunchOverrides != nil {
+		overrides = launchconfig.FromWire(*params.LaunchOverrides)
+	}
+	// Legacy scalar fields win over launchOverrides (per spec §5.4).
+	if params.Model != "" {
+		model := params.Model
+		if params.ModelProvider != "" && !strings.HasPrefix(params.Model, params.ModelProvider+"/") {
+			model = params.ModelProvider + "/" + params.Model
+		}
+		modelRef, err := hubParseModelRef(model)
+		if err != nil {
+			return localSpawnPlan{}, appwire.InvalidParams(err.Error())
+		}
+		overrides.Model = modelRef.Qualified()
+	}
+	if params.Profile != "" {
+		overrides.Agent = params.Profile
+	}
+	if params.ReasoningEffort != "" {
+		overrides.ReasoningEffort = params.ReasoningEffort
+	}
+	if params.NonInteractive != nil {
+		v := *params.NonInteractive
+		overrides.NonInteractive = &v
+	}
+	// launch.toml is user-editable configuration (Hub UI's Launch settings
+	// tab, or hand-edited), so its root is the config root, not
+	// cfg.HubStateRoot (machine-generated state: auth-token, index.db,
+	// deletions/).
+	spawnResolved, resolveErr := hubResolveLaunch(hubLaunchConfigRoot(cfg), workingDir, overrides)
+	if resolveErr != nil {
+		return localSpawnPlan{}, resolveErr
+	}
+	// The env floor (EVENER_MODEL etc.) applies to the spawn decision too,
+	// matching the agent's own flag > env fallback: a session started now
+	// would run with the env model, so the required-model gate must accept
+	// it and the spawned child must receive it. Layers and per-launch
+	// overrides still win — the floor only fills what nothing else set.
+	// Env only, deliberately NOT the builtin floor: the agent applies its
+	// own builtins, and pinning them in the hub's argv would skew across
+	// versions (ApplyEnvDefaults' doc comment).
+	spawnResolved = launchconfig.ApplyEnvDefaults(spawnResolved, os.Getenv, launchconfig.LaunchOptionSchema())
+	resolvedModel := strings.TrimSpace(spawnResolved.Effective.Model)
+	if resolvedModel == "" {
+		return localSpawnPlan{}, appwire.InvalidParams("model is required")
+	}
+	modelRef, err := hubParseModelRef(resolvedModel)
+	if err != nil {
+		return localSpawnPlan{}, appwire.InvalidParams(err.Error())
+	}
+	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
+		return localSpawnPlan{}, err
+	}
+	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins, cfg.PluginManager)
+	if pluginErr != nil {
+		// A resolver failure is fatal when a selection has to be honoured, and
+		// always when the failure IS the caller leaving: the next thing this
+		// handler does is detach from the request context and spawn, so a
+		// cancellation walked past here becomes a session started for a client
+		// that has gone. Everything else falls through to a launch with
+		// whatever the resolver could list.
+		if spawnResolved.Effective.EnabledPlugins != nil ||
+			errors.Is(pluginErr, context.Canceled) || errors.Is(pluginErr, context.DeadlineExceeded) {
+			return localSpawnPlan{}, appwire.HubLaunchError(pluginErr.Error())
+		}
+	} else if err := pluginResolution.ValidateSelection(); err != nil {
+		return localSpawnPlan{}, appwire.InvalidParams(err.Error())
+	}
+	// One last look at the connection before the handler stops listening to
+	// it. Everything above is validation, and a request the caller abandoned
+	// while it ran must not become a session: past the detach below, nothing
+	// asks about the caller again.
+	if err := ctx.Err(); err != nil {
+		return localSpawnPlan{}, appwire.HubLaunchError(err.Error())
+	}
+	return localSpawnPlan{workingDir: workingDir, resolved: spawnResolved, modelRef: modelRef}, nil
+}
+
 func localSpawnWorkspaceRef(entry rendezvous.Entry) string {
 	if ref, err := appwire.ParseRef(strings.TrimSpace(entry.WorkspaceRef)); err == nil && ref.SourceID == "local" {
 		return ref.String()
@@ -337,14 +402,37 @@ func localSpawnInstanceID(entry rendezvous.Entry, thread appwire.Thread) string 
 }
 
 func launchSourceID(params appwire.ThreadStartParams) string {
-	harness := strings.TrimSpace(params.Harness)
-	if harness != "" {
-		if harness == "evener" {
-			return "local"
-		}
-		return harness
+	return harnessSourceID(params.Harness)
+}
+
+// harnessSourceID resolves a legacy harness value to the source ID it names:
+// "evener" is the hub's own backend and resolves to local, any other non-empty
+// value is read as a source ID, and an empty harness names no source.
+func harnessSourceID(harness string) string {
+	harness = strings.TrimSpace(harness)
+	if harness == "" {
+		return ""
 	}
-	return ""
+	if harness == "evener" {
+		return "local"
+	}
+	return harness
+}
+
+// refuseHarnessNamingHost refuses a harness value that names a registered
+// non-local source: the harness fallback would otherwise resolve it as a source
+// ID and silently retarget the spawn — or forward it to a source that
+// re-resolves it against its own registry. Only the host-naming case is refused
+// (component 06, §"Write contract (session targeting)").
+func refuseHarnessNamingHost(sources *appsource.Registry, harness string) error {
+	sourceID := harnessSourceID(harness)
+	if sourceID == "" || sourceID == "local" {
+		return nil
+	}
+	if _, ok := sources.Source(sourceID); ok {
+		return appwire.InvalidParams(fmt.Sprintf("harness %q names a registered host source; use source to select a host", sourceID))
+	}
+	return nil
 }
 
 func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
@@ -490,7 +578,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 				// The response was projected while this resume still held the
 				// recovery fence. Re-project so it reports the fork authority a
 				// read issued after the clear reports.
-				response.Thread = applyHubForkCapability(cfg, response.Thread)
+				response.Thread = applyHubCapabilities(cfg, response.Thread)
 			}
 			cfg.ResumeLocks.RecordResolvedSession(requestedID, sessionID, epoch)
 		}()
@@ -699,7 +787,7 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
 			annotateThreadProjects([]appwire.Thread{read.Thread})
-			read.Thread = applyHubForkCapability(cfg, read.Thread)
+			read.Thread = applyHubCapabilities(cfg, read.Thread)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
 		if refreshErr != nil && !cfg.Roster.HasConfirmedEntry(entry) {
@@ -931,7 +1019,7 @@ func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, source
 		return appwire.ThreadResumeResponse{}, err
 	}
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
-	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
+	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 
@@ -1186,7 +1274,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		childID, err = hubForkSession(stateDir, sessionID, turn, params.EditedInput, params.Label)
 	}
 	if err != nil {
-		return appwire.ThreadForkResponse{}, err
+		return appwire.ThreadForkResponse{}, forkDivergencePositionWireError(err)
 	}
 	if cfg.Past != nil {
 		_, _ = cfg.Past.Rebuild()
@@ -1209,12 +1297,12 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 // daemon ownership or resolving the target's transcript.
 func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
 	if params.Aside {
-		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
-			return 0, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
+		if strings.TrimSpace(params.SourceItemKey) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
+			return 0, appwire.InvalidParams("aside does not accept sourceItemKey, editedInput, deferInput, or label")
 		}
 		return 0, nil
 	}
-	turn, err := parseSourceTurnID(params.SourceTurnID)
+	turn, err := parseSourceItemKey(params.SourceItemKey)
 	if err != nil {
 		return 0, appwire.InvalidParams(err.Error())
 	}
@@ -1549,22 +1637,45 @@ func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
-	return strings.TrimSpace(params.SourceTurnID) != "" ||
+	return strings.TrimSpace(params.SourceItemKey) != "" ||
 		strings.TrimSpace(params.EditedInput) != "" ||
 		strings.TrimSpace(params.Label) != "" ||
 		params.DeferInput
 }
 
-func parseSourceTurnID(raw string) (int, error) {
-	raw = strings.TrimSpace(strings.TrimPrefix(raw, "turn_"))
+// parseSourceItemKey resolves a transcriptKey (transcriptindex.ItemKey) to the
+// 1-based transcript entry index agent.ForkSessionAtUserTurn and
+// agent.ForkSession divergence on. The key's turn id is not otherwise
+// validated here: whether the named entry exists, and whether it is a
+// USER_INPUT entry, is answered downstream when the fork actually reads the
+// parent transcript.
+func parseSourceItemKey(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return 0, errors.New("sourceTurnId is required")
+		return 0, errors.New("sourceItemKey is required")
 	}
-	turn, err := strconv.Atoi(raw)
-	if err != nil || turn < 1 {
-		return 0, errors.New("sourceTurnId must be a positive turn number")
+	_, position, err := transcriptindex.ParseItemKey(raw)
+	if err != nil {
+		return 0, fmt.Errorf("sourceItemKey is not a valid transcript item key: %w", err)
 	}
-	return turn, nil
+	if position.Entry == 0 {
+		return 0, errors.New("sourceItemKey names the transcript header, which is not a turn")
+	}
+	return int(position.Entry), nil
+}
+
+// forkDivergencePositionWireError maps agent.ErrDivergencePositionOutOfRange
+// and agent.ErrDivergencePositionNotUserInput to appwire.InvalidParams: the
+// sourceItemKey named an entry the parent transcript doesn't have, or one
+// that isn't a USER_INPUT entry. Both are refusals of the client's chosen
+// item, not a hub failure, so they must not fall through to InternalError.
+// Any other error (a missing parent, an I/O failure, ...) is returned
+// unchanged.
+func forkDivergencePositionWireError(err error) error {
+	if errors.Is(err, agent.ErrDivergencePositionOutOfRange) || errors.Is(err, agent.ErrDivergencePositionNotUserInput) {
+		return appwire.InvalidParams(err.Error())
+	}
+	return err
 }
 
 // readSpawnedLocalThread keeps pre-admission reads in the same recovery scope

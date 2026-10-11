@@ -3,6 +3,7 @@ package hubcore
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,14 @@ type ArchiveStore struct {
 	// onChange, when set via SetOnChange, is fired after a successful Set or
 	// Delete. Nil is a safe no-op (existing tests construct stores without it).
 	onChange func()
+
+	// cache holds the last successful Decisions read. Every Set and Delete
+	// through this store is the only writer of the table, so a write bumps
+	// writes and drops the cache; a read stores its result only if no write
+	// landed while it was reading.
+	cacheMu sync.Mutex
+	cache   map[ArchiveKey]bool
+	writes  uint64
 }
 
 // NewArchiveStore returns a store backed by the SQLite file at dbPath. An empty
@@ -124,7 +133,7 @@ func (s *ArchiveStore) open() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := ensureDecisionSourceColumn(db, "archive", createArchiveTable, "archived"); err != nil {
+	if err := ensureIndexSchema(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -153,12 +162,41 @@ func (s *ArchiveStore) Set(source, kind, id string, archived bool, now time.Time
 	if err != nil {
 		return err
 	}
+	s.invalidateCache()
 	s.fireChange()
 	return nil
 }
 
-// Decisions returns every explicit decision. Empty when no DB / no table.
+func (s *ArchiveStore) invalidateCache() {
+	s.cacheMu.Lock()
+	s.writes++
+	s.cache = nil
+	s.cacheMu.Unlock()
+}
+
+// Decisions returns every explicit decision as a copy the caller may keep or
+// edit. Empty when no DB / no table.
 func (s *ArchiveStore) Decisions() (map[ArchiveKey]bool, error) {
+	s.cacheMu.Lock()
+	if s.cache != nil {
+		out := maps.Clone(s.cache)
+		s.cacheMu.Unlock()
+		return out, nil
+	}
+	seen := s.writes
+	s.cacheMu.Unlock()
+	out, err := s.readDecisions()
+	if err == nil {
+		s.cacheMu.Lock()
+		if s.writes == seen {
+			s.cache = maps.Clone(out)
+		}
+		s.cacheMu.Unlock()
+	}
+	return out, err
+}
+
+func (s *ArchiveStore) readDecisions() (map[ArchiveKey]bool, error) {
 	out := make(map[ArchiveKey]bool)
 	if s.dbPath == "" {
 		return out, nil
@@ -203,104 +241,21 @@ func (s *ArchiveStore) Delete(source, kind, id string) error {
 	if err != nil {
 		return err
 	}
+	s.invalidateCache()
 	s.fireChange()
 	return nil
 }
 
 // decisionSourceColumn is the SQLite column carrying the host/source dimension
 // of a decision key. Legacy index.db files predate multi-host federation and
-// lack it; ensureDecisionSourceColumn rebuilds those tables.
+// lack it; ensureIndexSchema rebuilds those tables.
 const decisionSourceColumn = "source"
-
-var (
-	// decisionMigrationMu serializes the legacy-table rebuild within this
-	// process so two opens cannot both decide to migrate before either has
-	// taken SQLite's write lock.
-	decisionMigrationMu sync.Mutex
-	// decisionMigrationInterleave runs between the schema pre-check and the
-	// serialized rebuild. It is a deterministic test seam for a competing
-	// migrator; nil in production.
-	decisionMigrationInterleave func()
-)
-
-// ensureDecisionSourceColumn upgrades a legacy (kind, id) table to the
-// (source, kind, id) key. A freshly created table already carries the column,
-// so this is a one-time no-op for new databases.
-//
-// The rebuild is serialized two ways. decisionMigrationMu keeps two in-process
-// opens from both deciding to migrate before either takes the write lock, and
-// the immediate transaction that follows takes SQLite's write lock before the
-// schema is rechecked, so a migrator in another connection or process that won
-// the race is observed and its already-upgraded table is left alone. Rebuilding
-// an upgraded table would insert its source-qualified rows under the controller
-// source, collapsing two hosts' same-ID decisions into one. Every legacy row is
-// a controller-local decision, so it migrates under the empty source key.
-func ensureDecisionSourceColumn(db *sql.DB, table, createTable, valueColumn string) error {
-	has, err := tableHasColumn(db, table, decisionSourceColumn)
-	if err != nil || has {
-		return err
-	}
-	if decisionMigrationInterleave != nil {
-		decisionMigrationInterleave()
-	}
-	decisionMigrationMu.Lock()
-	defer decisionMigrationMu.Unlock()
-
-	ctx := context.Background()
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
-	// BEGIN IMMEDIATE, not database/sql's deferred Begin: the recheck below must
-	// run while this connection already holds the write lock.
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
-		}
-	}()
-	if has, err := tableHasColumnContext(ctx, conn, table, decisionSourceColumn); err != nil {
-		return err
-	} else if has {
-		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-			return err
-		}
-		committed = true
-		return nil
-	}
-	legacy := table + "_legacy"
-	statements := []string{
-		"DROP TABLE IF EXISTS " + legacy,
-		"ALTER TABLE " + table + " RENAME TO " + legacy,
-		createTable,
-		"INSERT INTO " + table + " (source, kind, id, " + valueColumn + ", decided_at) SELECT '', kind, id, " + valueColumn + ", decided_at FROM " + legacy,
-		"DROP TABLE " + legacy,
-	}
-	for _, statement := range statements {
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return err
-	}
-	committed = true
-	return nil
-}
-
-// tableHasColumn reports whether table already carries the named column.
-func tableHasColumn(db *sql.DB, table, column string) (bool, error) {
-	return tableHasColumnContext(context.Background(), db, table, column)
-}
 
 // rowQuerier is the query surface shared by *sql.DB and the dedicated *sql.Conn
 // the migration recheck runs on.
 type rowQuerier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 func tableHasColumnContext(ctx context.Context, q rowQuerier, table, column string) (bool, error) {

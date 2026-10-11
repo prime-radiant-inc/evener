@@ -72,7 +72,6 @@ func newScriptedLaneRepoWithConfig(t *testing.T, cfg SessionConfig) *scriptedLan
 
 	git := newScriptedWorktreeGit(root)
 	cfg.StateDir = stateDir
-	cfg.NoProjectPrompts = true
 	if cfg.MaxSubagentDepth == 0 {
 		cfg.MaxSubagentDepth = 1
 	}
@@ -293,7 +292,7 @@ func (r *scriptedLaneRepo) sawGitCommand(prefix ...string) bool {
 func (r *scriptedLaneRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	path, _, _, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	path, _, _, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}
@@ -397,7 +396,6 @@ func (r *scriptedLaneRepo) restoreSessionOn(env execenv.ExecutionEnvironment, me
 	if meta.Model == "" {
 		meta.Model = "gpt-5.2"
 	}
-	meta.Config.NoProjectPrompts = true
 	return RestoreSessionFromMetaWithConfig(w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"), env, meta, cfg)
 }
 

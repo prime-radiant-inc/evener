@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -259,7 +260,7 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 	}
 }
 
-// TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus covers kata
+// TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus covers kata
 // hen0: kata r6y9 already made a genuine (non-cancelled) turn failure correct
 // the session's own State() to idle, but processInputKindWithProvenance's
 // genuine-failure fall-through emitted no EventSessionEnd to carry that
@@ -267,8 +268,10 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 // the loop (the cancellation branch right above it, and the successful-settle
 // tail), which each emit one. A live subscriber saw turn/completed(Failed)
 // and then silence; its belief that a turn was still running leaked until it
-// left and re-entered the session.
-func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing.T) {
+// left and re-entered the session. The failure exit announces systemError: the
+// session is idle inside and takes the next message, and the wire reports it
+// resting on a failed turn (RestingWireState).
+func TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -312,23 +315,23 @@ func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing
 	if found == nil {
 		t.Fatalf("expected a SESSION_END with Reason=turn_failed restoring status, got events=%+v", *eventsPtr)
 	}
-	if found.State != string(SessionIdle) {
-		t.Fatalf("turn_failed SESSION_END State=%q, want %q", found.State, SessionIdle)
+	if found.State != appwire.ThreadStatusSystemError {
+		t.Fatalf("turn_failed SESSION_END State=%q, want %q", found.State, appwire.ThreadStatusSystemError)
 	}
 	if found.Interrupted {
 		t.Fatalf("genuine failure incorrectly marked Interrupted=true: %+v", *found)
 	}
 }
 
-// TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus is the
+// TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfFailedStatus is the
 // end-to-end kata hen0 repro: it feeds the session's real events through the
 // real appwire projector, exactly as server.RecordAppEvent does for a live
-// subscriber, and asserts a thread/status/changed(idle) notification follows
-// turn/completed(Failed) — without re-reading the thread. It also pins that
-// the specific failure text lands on turn/completed unaltered (Jesse,
-// 2026-07-30): the new status notification carries no message of its own, so
+// subscriber, and asserts a thread/status/changed(systemError) notification
+// follows the failed execution -- without re-reading the thread. It also pins
+// that the specific failure text reaches clients unaltered (Jesse,
+// 2026-07-30): the status notification carries no message of its own, so
 // there is nothing to bury or duplicate it with.
-func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing.T) {
+func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -356,9 +359,9 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 		t.Fatal("expected genuine provider failure")
 	}
 	// Close so doneCh signals the collector has drained every buffered event
-	// (the established race-free pattern in this file); the projector below
-	// sees Close()'s own session_closed SESSION_END too, harmless since it
-	// projects a "closed" status, not "idle".
+	// (the established race-free pattern in this file). Close() emits no
+	// session_closed SESSION_END here: the failure exit's turn_failed
+	// SESSION_END already claimed the sessionEndEmitted gate.
 	sess.Close()
 	<-doneCh
 
@@ -366,59 +369,39 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 	evs := append([]events.SessionEvent{}, (*eventsPtr)...)
 	mu.Unlock()
 
-	projector := appprojector.NewAppEventProjector(sess.ID(), "local:"+sess.ID())
-	var notifications []appprojector.AppNotification
+	// The failure text reaches clients unaltered on its error event: the
+	// TURN_FAILURE entry a session with a transcript records, or else the
+	// overlay's error notice.
+	carried := false
 	for _, ev := range evs {
-		notifications = append(notifications, projector.Project(ev)...)
+		if data, ok := ev.Data.(events.ErrorData); ok && strings.Contains(data.Error, marker) {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Fatalf("no error event carries the unaltered marker %q", marker)
 	}
 
-	turnCompletedIdx := -1
-	for i, n := range notifications {
-		if n.Method != appwire.NotifyTurnCompleted {
-			continue
+	// A live subscriber is told the thread went idle once the failed
+	// execution ended, and nothing reports it active again before Close().
+	projector := appprojector.NewAppEventProjector(sess.ID(), "local:"+sess.ID())
+	ended := false
+	var afterEnd []string
+	for _, ev := range evs {
+		for _, n := range projector.Project(ev) {
+			if params, ok := n.Params.(appwire.ThreadStatusChangedParams); ok && ended {
+				afterEnd = append(afterEnd, params.Status.Type)
+			}
 		}
-		params, ok := n.Params.(map[string]any)
-		if !ok {
-			continue
-		}
-		turn, ok := params["turn"].(appwire.Turn)
-		if !ok || turn.Status != appwire.TurnStatusFailed {
-			continue
-		}
-		turnCompletedIdx = i
-		if turn.Error == nil || !strings.Contains(turn.Error.Message, marker) {
-			t.Fatalf("turn/completed error message=%+v, want it to contain the unaltered marker %q", turn.Error, marker)
+		if data, ok := ev.Data.(events.ExecutionEndedData); ok && data.Status == string(schema.TurnFailed) {
+			ended = true
 		}
 	}
-	if turnCompletedIdx == -1 {
-		t.Fatalf("no failed turn/completed notification in stream: %+v", notifications)
+	if !ended {
+		t.Fatal("the failed execution never ended")
 	}
-
-	// Exactly one idle status notification follows the failure, immediately
-	// adjacent to it (EventTurnEnded, the only event between them, is a
-	// projector no-op once the turn is already closed). Filtering on Type ==
-	// idle (not just presence) excludes the later "closed" status change
-	// Close() legitimately produces further down the same stream.
-	idleAfterFailure := 0
-	for i, n := range notifications {
-		if i <= turnCompletedIdx || n.Method != appwire.NotifyThreadStatusChanged {
-			continue
-		}
-		params, ok := n.Params.(appwire.ThreadStatusChangedParams)
-		if ok && params.Status.Type == appwire.ThreadStatusIdle {
-			idleAfterFailure++
-		}
-	}
-	if idleAfterFailure != 1 {
-		t.Fatalf("expected exactly 1 idle status notification after the failed turn, got %d: %+v", idleAfterFailure, notifications)
-	}
-	next := notifications[turnCompletedIdx+1]
-	if next.Method != appwire.NotifyThreadStatusChanged {
-		t.Fatalf("notification immediately after turn/completed(Failed)=%q, want %q: %+v", next.Method, appwire.NotifyThreadStatusChanged, notifications)
-	}
-	statusParams, ok := next.Params.(appwire.ThreadStatusChangedParams)
-	if !ok || statusParams.Status.Type != appwire.ThreadStatusIdle {
-		t.Fatalf("status immediately after failure=%+v, want idle", next.Params)
+	if len(afterEnd) == 0 || afterEnd[0] != appwire.ThreadStatusSystemError || slices.Contains(afterEnd, appwire.ThreadStatusActive) {
+		t.Fatalf("statuses after the failed execution ended = %v, want systemError and never active again", afterEnd)
 	}
 }
 
@@ -1854,6 +1837,7 @@ func TestSession_TerminalBoundaryReachesNoJobWatch(t *testing.T) {
 // strand an entry no wake will ever run again. It runs, awaiting or not, and
 // outranks a pending notification the way a text entry does.
 func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   drainInputs
@@ -1872,5 +1856,69 @@ func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
 				t.Fatalf("selectDrainNextAction(%+v) = (%v,%v), want (%v,%v)", tc.in, got, skip, tc.want, tc.skip)
 			}
 		})
+	}
+}
+
+// Close's environment-work join waits on exactly the admissions it can name:
+// ending one admission's handle twice must not let the join past another that
+// is still live. The seam runs on the joining goroutine just before it blocks,
+// so ending the second admission there is the only way the join returns.
+func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
+	t.Parallel()
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	first, ok := s.beginEnvWork("first")
+	if !ok {
+		t.Fatal("first environment work was refused")
+	}
+	second, ok := s.beginEnvWork("second")
+	if !ok {
+		t.Fatal("second environment work was refused")
+	}
+	s.endEnvWork(first)
+	s.endEnvWork(first)
+	if got := s.outstandingEnvWork(); !slices.Equal(got, []string{"second"}) {
+		t.Fatalf("outstanding after ending first twice = %q, want [second]", got)
+	}
+	waited := false
+	s.cfg.testOnly.closeAwaitingEnvWork = func() {
+		waited = true
+		s.endEnvWork(second)
+	}
+	s.joinEnvWorkWithinCloseBudget(context.Background())
+	if !waited {
+		t.Fatal("the join returned without waiting for the admission still live")
+	}
+	if got := s.outstandingEnvWork(); len(got) != 0 {
+		t.Fatalf("outstanding after the join = %q, want none", got)
+	}
+}
+
+// closeAwaitingEnvWork is the fence tests' signal that a close is waiting at
+// its environment-work join, so the join must actually wait once it has fired.
+// Spending the budget from inside the seam proves it: a join parked in its
+// select can only leave through the budget arm, which names the held work in a
+// warning, while a join that fired the seam and then walked on would return
+// with the work still held and say nothing.
+func TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds(t *testing.T) {
+	t.Parallel()
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	held, ok := s.beginEnvWork("held work")
+	if !ok {
+		t.Fatal("environment work was refused")
+	}
+	defer s.endEnvWork(held)
+	drainBufferedWarnings(s)
+	ctx, spendBudget := context.WithCancel(context.Background())
+	defer spendBudget()
+	s.cfg.testOnly.closeAwaitingEnvWork = spendBudget
+	s.joinEnvWorkWithinCloseBudget(ctx)
+	if ctx.Err() == nil {
+		t.Fatal("the join never signalled it was waiting on the held work")
+	}
+	warnings := fenceWarnings(drainBufferedWarnings(s))
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "held work") {
+		t.Fatalf("fence warnings = %q, want one naming the held work", warnings)
 	}
 }

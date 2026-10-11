@@ -11,18 +11,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
+import { type ToolWireCall, toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { toolRendererFor } from "../toolRenderers";
 import "../tools";
 import "./jobWatch";
-
-afterEach(() => {
-  cleanup();
-});
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -51,6 +48,17 @@ const TIMER_RAW = {
   replaced_existing: false,
   fired: false,
 };
+
+// Each recorded job_watch call (agent/testdata/toolwire), as its row's line.
+test.each<[ToolWireCall, string]>([
+  ["call_watch_timer", "Remind me in 5m · Check the deploy finished."],
+  ["call_watch_repeat", "Reminds every 10m · Look over the open PRs."],
+  ["call_watch_list", "Listed watches (2 active)"],
+  ["call_watch_inspect", "Inspected watch_fixture_1 · watching"],
+  ["call_watch_clear", "Cleared watch_fixture_1"],
+])("says the recorded %s as %s", (call, summary) => {
+  expect(toolRendererFor("job_watch").summary(toolWireStep(call))).toBe(summary);
+});
 
 // --- §A: create timer -----------------------------------------------------
 
@@ -176,11 +184,12 @@ test("list body renders one row per watch with a status chip and the watch id", 
   expect(rows).toHaveLength(3);
   const text = screen.getByTestId("job-watch-body").textContent ?? "";
   // Ids no longer clip: the row prints the full id (a clipped id is not even
-  // detectable as an entity, so the card could never attach), and the hover
-  // title still carries it verbatim.
+  // detectable as an entity, so the card could never attach). The id's hover
+  // card carries it, so the row carries no native title alongside it - the
+  // entity trigger is the one floating surface on it.
   expect(text).toContain("watch_034KEfjYFbfoUaPeHJcLXY");
   expect(text).not.toContain("…");
-  expect(screen.getByTitle("watch_034KEfjYFbfoUaPeHJcLXY")).toBeTruthy();
+  expect(screen.getByTestId("job-watch-body").querySelector("[title]")).toBeNull();
   expect(text).toContain("watch_09QmWzRtNvxK");
   expect(text).toContain("watching");
   expect(text).toContain("ended");
@@ -202,7 +211,7 @@ test("list watch IDs are full-id entity triggers with no open control or navigat
     ended: false,
   });
   render(
-    <TranscriptRenderProvider entities={entities}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={entities}>
       <Body item={listed} live={false} />
     </TranscriptRenderProvider>,
   );
@@ -235,7 +244,7 @@ test("detail-bearing watch IDs are embedded triggers and the row remains the dis
     ended: false,
   });
   render(
-    <TranscriptRenderProvider entities={entities}>
+    <TranscriptRenderProvider sessionRef="local:s" entities={entities}>
       <Body item={listed} live={false} />
     </TranscriptRenderProvider>,
   );

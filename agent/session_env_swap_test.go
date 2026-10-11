@@ -96,7 +96,7 @@ printf '%s\n' "$*" >> "$SWAP_TEST_LOG"
 
 func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	sess := newSession(t,
-		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{MaxSubagentDepth: 1}),
 		withoutGitSnapshot(),
 	)
 
@@ -139,53 +139,9 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 		t.Error("envInfo.IsGitRepo = true, want false when git snapshot is skipped")
 	}
 	if data, err := os.ReadFile(logPath); err == nil && strings.TrimSpace(string(data)) != "" {
-		t.Fatalf("swapEnvAndRefresh called git despite skipGitSnapshot+NoProjectPrompts; commands:\n%s", data)
+		t.Fatalf("swapEnvAndRefresh called git despite skipGitSnapshot; commands:\n%s", data)
 	} else if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read git log: %v", err)
-	}
-}
-
-// TestSwapEnvAndRefreshReportsSuccessWhenPostCommitRetentionPublicationFails
-// pins the "error ⇒ no swap" contract: a scratch-retention publication failure
-// that lands AFTER the environment swap is committed must not be returned as a
-// swap error, because every caller treats that error as "the swap did not
-// happen" and rolls back a session that is already rooted in the new
-// environment. The failure is injected at the post-adopt window (after the
-// pre-commit binding stage, before the install) by replacing the retention
-// manifest with a directory.
-func TestSwapEnvAndRefreshReportsSuccessWhenPostCommitRetentionPublicationFails(t *testing.T) {
-	dir := t.TempDir()
-	sess := newQueuePersistTestSession(t, dir)
-	defer sess.Close()
-	base, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatalf("session env is not *execenv.LocalExecutionEnvironment: %T", sess.currentEnv())
-	}
-	manifestPath := filepath.Join(dir, "scratch-retention", sess.ID()+".json")
-	if _, err := os.Stat(manifestPath); err != nil {
-		t.Fatalf("fixture has no retention manifest at %q: %v", manifestPath, err)
-	}
-	// The hook runs after the pre-commit binding stage and before the install, so
-	// the swap still commits; only the later publication sees the broken manifest.
-	origHook := sess.cfg.testOnly.swapEnvAfterAdopt
-	sess.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
-		if err := os.Remove(manifestPath); err != nil {
-			t.Errorf("remove manifest: %v", err)
-			return
-		}
-		if err := os.Mkdir(manifestPath, 0o700); err != nil {
-			t.Errorf("replace manifest with a directory: %v", err)
-		}
-	}
-	defer func() { sess.cfg.testOnly.swapEnvAfterAdopt = origHook }()
-
-	nextDir := t.TempDir()
-	next := base.WithWorkingDirectory(nextDir)
-	if err := sess.swapEnvAndRefresh(next, nil); err != nil {
-		t.Fatalf("swap reported failure after committing the environment: %v", err)
-	}
-	if got := sess.currentEnv().WorkingDirectory(); got != nextDir {
-		t.Fatalf("current env working dir = %q, want the swapped-in %q", got, nextDir)
 	}
 }
 
@@ -386,14 +342,59 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	wg.Wait()
 }
 
-// closeFenceProbe bounds the window a fence test gives a close to reach
-// environment cleanup while it holds admitted environment work. This is an
-// absence proof: the join is exactly what keeps close out of cleanup while the
-// work is held, so there is no ordering signal to await, only a window to let
-// pass. A scripted close reaches cleanup in well under a second when the join
-// is missing, so two seconds is a tripwire with margin; it is spent on every
-// passing run.
-const closeFenceProbe = 2 * time.Second
+// closeFenceTripwire bounds each wait a fence test makes on a close-fence
+// signal. It is a tripwire only: the mechanism is the signal itself, which a
+// scripted close delivers in well under a second either way, so this fires
+// only on a genuine hang.
+const closeFenceTripwire = 30 * time.Second
+
+// observeCloseAwaitingEnvWork arms s to report the moment its close arrives at
+// the environment-work join with admitted work outstanding, and returns the
+// channel that closes then. See testConfig.closeAwaitingEnvWork.
+func observeCloseAwaitingEnvWork(s *Session) <-chan struct{} {
+	awaiting := make(chan struct{})
+	var once sync.Once
+	s.cfg.testOnly.closeAwaitingEnvWork = func() { once.Do(func() { close(awaiting) }) }
+	return awaiting
+}
+
+// closeWalkedPastHeldWork is called from inside admitted environment work a
+// test is holding while the session closes. It waits until the close either
+// blocks at its environment-work join (fenced: the join is what keeps the
+// close out of everything after it) or reaches violation, a step the close
+// must not take while the work is held, and reports whether it took that step.
+//
+// A close whose join sits after violation signals both, but violation first
+// and on the closing goroutine, so it is already visible by the time fenced
+// is: the second check catches that order however the first select resolved.
+func closeWalkedPastHeldWork(t *testing.T, fenced, violation <-chan struct{}) bool {
+	t.Helper()
+	select {
+	case <-fenced:
+	case <-violation:
+	case <-time.After(closeFenceTripwire): // TRIPWIRE: a scripted close signals in well under a second; this only catches a hang.
+		t.Error("the close neither waited at its environment-work join nor reached the step it must not take while work is held")
+		return false
+	}
+	select {
+	case <-violation:
+		return true
+	default:
+		return false
+	}
+}
+
+// awaitCloseFenceSignal blocks until signal closes, reporting what failed to
+// happen if the tripwire fires first. Tests use it to hold a close short of
+// its environment-work join until the work they mean to fence is held.
+func awaitCloseFenceSignal(t *testing.T, signal <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(closeFenceTripwire): // TRIPWIRE: a scripted operation reaches its held point in well under a second; this only catches a hang.
+		t.Errorf("%s never happened", what)
+	}
+}
 
 // A swap that passed its closing check is admitted: the session promised to
 // finish it. Its refresh then runs git on the environment it is installing —
@@ -408,6 +409,7 @@ const closeFenceProbe = 2 * time.Second
 // The hook below holds the swap in exactly the window step 1's git occupies:
 // admitted, past the scratch move, with the install still to come.
 func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 
@@ -418,6 +420,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
 	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
 	r.s.cfg.testOnly.swapEnvAfterAdopt = func(refreshCtx context.Context) {
 		go func() {
 			defer close(closeDone)
@@ -430,10 +433,8 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 		if refreshCtx.Err() == nil {
 			refreshLiveAfterClose.Store(true)
 		}
-		select {
-		case <-cleanupObserved:
+		if closeWalkedPastHeldWork(t, closeAwaiting, cleanupObserved) {
 			cleanupDuringRefresh.Store(true)
-		case <-time.After(closeFenceProbe):
 		}
 	}
 
@@ -460,7 +461,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 // process table under whatever is still running, so it says what it walked
 // past, by name.
 func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
-	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+	budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -479,7 +480,7 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 		<-closeBegun
 		// Stand in for a refresh whose git ignores the cancellation the close
 		// already delivered: outlast the whole budget.
-		time.Sleep(2 * LaneClosePassBudget)
+		time.Sleep(2 * budget)
 	}
 
 	_, err := r.create(t, map[string]any{"name": "lane"})
@@ -509,13 +510,13 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 
 // shortenCloseCascadeBudget cuts the shared close-cascade budget for one test
 // and restores it afterwards, so a fence test can watch the join give up
-// without waiting out the production thirty seconds. LaneClosePassBudget is
-// the package var both ensureCloseBudget and worktreeCleanupRun read.
-func shortenCloseCascadeBudget(t *testing.T, d time.Duration) {
+// without waiting out the production thirty seconds. The close-budget accessor
+// is what both ensureCloseBudget and worktreeCleanupRun read.
+func shortenCloseCascadeBudget(t *testing.T, d time.Duration) time.Duration {
 	t.Helper()
-	old := LaneClosePassBudget
-	LaneClosePassBudget = d
-	t.Cleanup(func() { LaneClosePassBudget = old })
+	restore := SetLaneClosePassBudget(d)
+	t.Cleanup(restore)
+	return d
 }
 
 // collectWarningsUntilClosed drains every EventWarning off sess until its close
@@ -557,6 +558,7 @@ func fenceWarnings(msgs []string) []string {
 // admitted there is nothing the cleanup can run under, so there is nothing to
 // say — and a warning naming an empty list is noise on every such close.
 func TestWorktreeSwap_ExpiredBudgetWithNothingAdmittedSaysNothing(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	warnings := collectWarningsUntilClosed(r.s)

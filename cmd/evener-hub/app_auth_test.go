@@ -166,20 +166,54 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 	tests := []struct {
 		name         string
 		expiry       time.Time
+		refreshToken string
 		wantSignedIn bool
 		wantRefresh  bool
 		wantLogin    bool
+		// refused notes the issuer's permanent refusal of the stored refresh
+		// token, as a daemon's failed refresh does (#2479).
+		refused bool
 	}{
 		{
 			name:         "refreshable",
 			expiry:       now.Add(2 * time.Minute),
+			refreshToken: "stored-refresh-token",
 			wantSignedIn: true,
 			wantRefresh:  true,
 		},
 		{
-			name:      "expired",
-			expiry:    now.Add(-time.Minute),
-			wantLogin: true,
+			// Expired, but the stored record still carries its refresh token:
+			// routine and expected, ResolveRuntimeCredentials refreshes it on
+			// the next use, so this reports the same refreshable state as the
+			// not-yet-expired case above rather than needsLogin (issue #2468).
+			name:         "expired with refresh token still on file",
+			expiry:       now.Add(-time.Minute),
+			refreshToken: "stored-refresh-token",
+			wantSignedIn: true,
+			wantRefresh:  true,
+		},
+		{
+			// A whitespace-only refresh token passes
+			// authopenai.AuthRecord.Validate (which refuses only the exact
+			// empty string), so - unlike a record with no refresh token at
+			// all - this one does reach Status: it just has nothing
+			// ResolveRuntimeCredentials can use, so an expired access token
+			// genuinely needs a fresh login (issue #2483).
+			name:         "expired with unusable (blank) refresh token",
+			expiry:       now.Add(-time.Minute),
+			refreshToken: "   ",
+			wantLogin:    true,
+		},
+		{
+			// The access token is still good, but the issuer refused the
+			// refresh token for good the last time a daemon tried it: the
+			// session fails at its next refresh, so signing in again is
+			// needed now (#2479).
+			name:         "refresh token refused by the issuer",
+			expiry:       now.Add(time.Hour),
+			refreshToken: "stored-refresh-token",
+			refused:      true,
+			wantLogin:    true,
 		},
 	}
 
@@ -189,7 +223,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 			ctrl.stateDir = t.TempDir()
 			attachTestRegistry(t, ctrl)
 			ctrl.now = func() time.Time { return now }
-			if err := authopenai.SaveAuth(ctrl.stateDir, "openai-codex", authopenai.AuthRecord{
+			record := authopenai.AuthRecord{
 				Version:      1,
 				Provider:     "openai",
 				Source:       authopenai.AuthSourceOAuth,
@@ -197,11 +231,17 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 				TokenType:    "Bearer",
 				Scope:        "openid profile email",
 				AccessToken:  "stored-access-token",
-				RefreshToken: "stored-refresh-token",
+				RefreshToken: tc.refreshToken,
 				Expiry:       tc.expiry,
 				Email:        "stored@example.com",
-			}); err != nil {
+			}
+			if err := authopenai.SaveAuth(ctrl.stateDir, "openai-codex", record); err != nil {
 				t.Fatal(err)
+			}
+			if tc.refused {
+				if err := authopenai.RecordRefreshRejection(ctrl.stateDir, "openai-codex", record, now); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
@@ -632,7 +672,7 @@ func TestAuth_Codex_StoredKeyIsNotACredential(t *testing.T) {
 		t.Fatalf("status=%+v, want no stored OAuth", got)
 	}
 	// And the gate in front of the launch agrees.
-	if err := validateProviderCredentials("openai-codex", c.reg); err == nil {
+	if err := validateProviderCredentials("openai-codex", "", c.reg); err == nil {
 		t.Fatal("the spawn gate accepted a Codex instance whose only key is in the store")
 	}
 }
@@ -690,6 +730,51 @@ func TestAuth_Codex_Status_CorruptOAuthIsNoCredential(t *testing.T) {
 	}
 	if !got.HasStoredFile {
 		t.Errorf("status=%+v, want HasStoredFile as a diagnostic", got)
+	}
+}
+
+// TestAuth_Codex_Status_UnreadableOAuthRecordIsAnErrorRow pins that a Codex
+// instance whose stored OAuth record cannot be read at all (neither absent nor
+// corrupt) is reported as a status row carrying Error, rather than dropped from
+// the answer. It is one source of AuthStatusResponse.Error, beside a
+// credential the provider rejected (app_credential_rejection.go), and together
+// they let a client show the redesign spec's "Error" provider status
+// (section 12).
+func TestAuth_Codex_Status_UnreadableOAuthRecordIsAnErrorRow(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	attachTestRegistry(t, c)
+	c.loadAuth = func(string, string) (authopenai.AuthRecord, error) {
+		return authopenai.AuthRecord{}, errors.New("the auth record could not be read")
+	}
+
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.Provider != "openai-codex" {
+		t.Fatalf("status=%+v, want the row named for the instance asked about", got)
+	}
+	if got.Error == "" {
+		t.Fatalf("status=%+v, want Error set when the stored credential cannot be read", got)
+	}
+	if got.SignedIn || got.ActiveSource != "none" {
+		t.Fatalf("status=%+v, want signed out with source none", got)
+	}
+	if got.RefreshRejected {
+		t.Errorf("status=%+v, want RefreshRejected false: the record could not be read, so no refresh is known to have been refused", got)
+	}
+
+	// The listing marks the row in place rather than dropping it.
+	list, err := c.List(appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if row := authRowOf(t, list, "openai-codex"); row.Error == "" {
+		t.Errorf("List row %+v, want Error set", row)
 	}
 }
 
@@ -823,10 +908,12 @@ func TestAuth_Codex_Status_ExpiredOAuthStaysTheSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	// Expired OAuth stays the source the registry resolves (the record exists),
-	// with NeedsLogin carrying the "sign in again" signal.
-	if got.ActiveSource != authopenai.AuthSourceOAuth || !got.NeedsLogin {
-		t.Fatalf("status=%+v, want oauth active + NeedsLogin (expired record must not fall back to file)", got)
+	// Expired OAuth stays the source the registry resolves (the record
+	// exists, so it does not fall back to the shadowed file key). The stored
+	// record still carries its refresh token, so this is the routine
+	// refreshable state, not a login prompt (issue #2468).
+	if got.ActiveSource != authopenai.AuthSourceOAuth || got.NeedsLogin || !got.NeedsRefresh {
+		t.Fatalf("status=%+v, want oauth active + refreshable, not needsLogin (expired record must not fall back to file)", got)
 	}
 	if !got.HasStoredFile {
 		t.Errorf("status=%+v, want HasStoredFile true (file shadowed beneath expired oauth)", got)
@@ -867,6 +954,24 @@ func TestAuth_DeviceStart_ReturnsCodeAndStoresFlow(t *testing.T) {
 	}
 	if got.Fallback || got.UserCode != "USER-1" || got.VerificationURL == "" || got.IntervalSeconds != 5 || got.FlowID == "" {
 		t.Fatalf("resp=%+v, want code fields + interval 5 + flowId", got)
+	}
+}
+
+func TestAuth_DeviceStart_ReportsTheFlowTTL(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	attachTestRegistry(t, c)
+	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "USER-1", VerificationURL: "https://auth.openai.com/codex/device", DeviceAuthID: "dev-1", Interval: 5 * time.Second}, nil
+	}
+	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	if want := int(hubAuthFlowTTL / time.Second); got.ExpiresInSeconds != want {
+		t.Fatalf("ExpiresInSeconds = %d, want %d (the flow's TTL)", got.ExpiresInSeconds, want)
 	}
 }
 

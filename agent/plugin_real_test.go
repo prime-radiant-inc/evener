@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -260,12 +261,9 @@ func TestRealPlugin_Superpowers_PromptFormatting(t *testing.T) {
 		t.Fatalf("plugin.Load: %v", err)
 	}
 
-	prompt := renderAvailableAgentsSectionForTest(t, lp.Agents)
-	if !strings.Contains(prompt, "superpowers:code-reviewer") {
-		t.Error("prompt should contain 'superpowers:code-reviewer'")
-	}
-	if !strings.Contains(prompt, "<available_agents>") {
-		t.Error("prompt should contain <available_agents> tag")
+	entries := availableAgentEntriesForTest(t, lp.Agents, -1, nil)
+	if !slices.ContainsFunc(entries, func(e agentEntry) bool { return e.Name == "superpowers:code-reviewer" }) {
+		t.Error("available agents should include superpowers:code-reviewer")
 	}
 }
 
@@ -615,14 +613,11 @@ func TestRealPlugin_AggregateAgents(t *testing.T) {
 		}
 	}
 
-	// All agents should format correctly in prompt
-	prompt := renderAvailableAgentsSectionForTest(t, allAgents)
-	if !strings.Contains(prompt, "<available_agents>") {
-		t.Error("prompt should contain <available_agents> tag")
-	}
+	// Every agent reaches the prompt's available-agents input.
+	entries := availableAgentEntriesForTest(t, allAgents, -1, nil)
 	for _, name := range expectedAgents {
-		if !strings.Contains(prompt, name) {
-			t.Errorf("prompt should contain agent %q", name)
+		if !slices.ContainsFunc(entries, func(e agentEntry) bool { return e.Name == name }) {
+			t.Errorf("available agents should include %q", name)
 		}
 	}
 }

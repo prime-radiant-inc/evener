@@ -1,6 +1,7 @@
 package envctx
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -82,5 +83,64 @@ func TestCollectNilProbesReadNominal(t *testing.T) {
 	got := c.Collect(Inputs{Cwd: "/w"})
 	if got.Pressure != (Pressure{}) {
 		t.Fatalf("nil probes must read nominal: %+v", got.Pressure)
+	}
+}
+
+// TestCollectReProbesDiskOnWorkspaceChange pins that a change of cwd
+// invalidates the disk-pressure cache, while the host-wide load and memory
+// caches keep their bounded cadence. Disk pressure depends on the cwd's
+// filesystem, so a reading taken in one workspace must never be served for
+// another.
+func TestCollectReProbesDiskOnWorkspaceChange(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_754_000_000, 0)
+	diskByCwd := map[string]string{
+		"/full":    "disk pressure: volume 95% full",
+		"/healthy": "",
+	}
+	var diskPaths []string
+	var loadCalls, memCalls int
+	p := Probes{
+		Now:       func() time.Time { return now },
+		GitBranch: func(string) string { return "" },
+		Load:      func() string { loadCalls++; return "load pressure: high" },
+		Memory:    func() string { memCalls++; return "memory pressure: warn level" },
+		Disk: func(path string) string {
+			diskPaths = append(diskPaths, path)
+			return diskByCwd[path]
+		},
+	}
+	c := NewCollector(p)
+
+	// A full volume at /full is observed.
+	if got := c.Collect(Inputs{Cwd: "/full"}); got.Pressure.Disk != diskByCwd["/full"] {
+		t.Fatalf("first disk reading: %+v", got.Pressure)
+	}
+	// Same cwd within the interval reuses the cached disk reading.
+	c.Collect(Inputs{Cwd: "/full"})
+	if len(diskPaths) != 1 {
+		t.Fatalf("same-cwd disk reading not reused: %v", diskPaths)
+	}
+
+	// Switching to a healthy workspace within the interval must refresh disk
+	// rather than serve /full's warning, while load/memory stay cached.
+	got := c.Collect(Inputs{Cwd: "/healthy"})
+	if got.Pressure.Disk != "" {
+		t.Fatalf("stale disk pressure survived workspace change: %+v", got.Pressure)
+	}
+	if got.Pressure.Load != "load pressure: high" || got.Pressure.Memory != "memory pressure: warn level" {
+		t.Fatalf("host-wide readings lost on workspace change: %+v", got.Pressure)
+	}
+	if loadCalls != 1 || memCalls != 1 {
+		t.Fatalf("load/memory must stay cached: load=%d mem=%d", loadCalls, memCalls)
+	}
+
+	// Returning to /full must refresh disk again, not serve the healthy cache.
+	got = c.Collect(Inputs{Cwd: "/full"})
+	if got.Pressure.Disk != diskByCwd["/full"] {
+		t.Fatalf("disk not re-probed on return to full volume: %+v", got.Pressure)
+	}
+	if want := []string{"/full", "/healthy", "/full"}; !slices.Equal(diskPaths, want) {
+		t.Fatalf("disk probe paths: got %v, want %v", diskPaths, want)
 	}
 }

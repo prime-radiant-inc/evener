@@ -304,3 +304,9 @@
   border: none;
   border-top: 1px solid var(--edge);
 }
+
+/* The sheet's focus-rehome root: a box for the hook's ref that adds no
+   layout of its own. */
+.focusRoot {
+  display: contents;
+}

@@ -6,9 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/fuzz/reflectfill"
 	"primeradiant.com/evener/llm"
 )
 
@@ -568,7 +570,7 @@ func TestPrettyJSON_NoHTMLEscaping(t *testing.T) {
 // marshalDelegateSendResult (the "delegate_send" tool, via the same
 // tool.StateResult path session_tool_round.go actually persists) — and asserts
 // every top-level key either marshaler ever emits is present in
-// jobResultKnownKeys. fillEveryField (agent/session_client_mutation_doctor_drift_test.go)
+// jobResultKnownKeys. reflectfill.Fill (fuzz/reflectfill)
 // sets every field to a non-zero value via reflection, so a field added to
 // either struct tomorrow is populated and checked with no edit to this test —
 // the next drift fails CI, named, instead of silently degrading rendering to a
@@ -578,7 +580,7 @@ func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 
 	t.Run("stableDelegateCreateResult via marshalStableDelegateCreateResult", func(t *testing.T) {
 		var out stableDelegateCreateResult
-		fillEveryField(t, reflect.ValueOf(&out).Elem(), "stableDelegateCreateResult")
+		reflectfill.Fill(t, reflect.ValueOf(&out).Elem(), "stableDelegateCreateResult")
 		// maxChars<=0 is unbounded (marshalBoundedJSON), so the fit-downgrade
 		// path never drops a field out of the fully-populated fixture.
 		wire, err := marshalStableDelegateCreateResult(out, 0)
@@ -590,7 +592,7 @@ func TestJobResultKnownKeysCoversLiveDelegateShapes(t *testing.T) {
 
 	t.Run("delegate_send result via marshalDelegateSendResult", func(t *testing.T) {
 		var res sendMessageResult
-		fillEveryField(t, reflect.ValueOf(&res).Elem(), "sendMessageResult")
+		reflectfill.Fill(t, reflect.ValueOf(&res).Elem(), "sendMessageResult")
 		value, err := marshalDelegateSendResult(res, 0)
 		if err != nil {
 			t.Fatalf("marshalDelegateSendResult: %v", err)
@@ -753,5 +755,147 @@ func TestRenderMarkdown_DelegateCreateErrorSurfaces(t *testing.T) {
 	}
 	if strings.Contains(out, `"delegate_id":`) {
 		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
+	}
+}
+
+// TestRenderMarkdown_DelegateCreateArtifactsDirSurfaces pins that the artifacts
+// directory stays visible in the condensed status line instead of becoming a
+// known-but-invisible key the moment the raw-JSON fallback stops firing.
+func TestRenderMarkdown_DelegateCreateArtifactsDirSurfaces(t *testing.T) {
+	t.Parallel()
+	body, err := marshalStableDelegateCreateResult(stableDelegateCreateResult{
+		DelegateID:   "dlg_artifacts",
+		Type:         "delegate",
+		Status:       "created",
+		ArtifactsDir: "/state/sessions/sess_child/artifacts",
+	}, 0)
+	if err != nil {
+		t.Fatalf("marshalStableDelegateCreateResult: %v", err)
+	}
+
+	out := renderToolCardForResult("delegate", "call_artifacts", body)
+
+	if !strings.Contains(out, "artifacts_dir=/state/sessions/sess_child/artifacts") {
+		t.Errorf("artifacts_dir must stay visible in the condensed rendering, got:\n%s", out)
+	}
+	if strings.Contains(out, `"delegate_id":`) {
+		t.Errorf("delegate create result rendered as a raw JSON dump instead of the condensed status line, got:\n%s", out)
+	}
+}
+
+// A delegate_send reply that carries earlier, not yet delivered results
+// renders its own status line first, so its ref survives truncation, then each
+// earlier result as a reply renders, then its own output (#3906).
+func TestJobResultBodyRendersEarlierResults(t *testing.T) {
+	t.Parallel()
+	raw := `{"delegate_id":"dlg_1","status":"completed","action":"completed","running_in_background":false,"output":"second","earlier_results":[{"delegate_id":"dlg_1","status":"failed","reason":"boom","action":"completed","running_in_background":false,"truncated":true,"output":"first","structured_result":{"ok":false}}]}`
+	body, ok := jobResultBody(raw)
+	if !ok {
+		t.Fatalf("jobResultBody(%s) fell back", raw)
+	}
+	want := "job_id=dlg_1 status=completed transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 action=completed running_in_background=false\n" +
+		"earlier result 1 of 1, not delivered before:\n" +
+		"job_id=dlg_1 status=failed reason=boom transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 action=completed running_in_background=false truncated=true\n" +
+		"first\n" +
+		"structured_result:\n{\n  \"ok\": false\n}\n" +
+		"latest result:\n" +
+		"second\n"
+	if body != want {
+		t.Fatalf("body =\n%s\nwant\n%s", body, want)
+	}
+}
+
+// An earlier result carrying evidence the projection doesn't capture, or
+// nesting earlier results of its own, sends the whole body to the JSON
+// fallback, as an unknown top-level key does.
+func TestJobResultBodyFallsBackOnUncapturedEarlierEvidence(t *testing.T) {
+	t.Parallel()
+	for _, element := range []string{
+		`{"delegate_id":"dlg_1","status":"completed","surprise":1}`,
+		`{"delegate_id":"dlg_1","status":"completed","earlier_results":[{"delegate_id":"dlg_1","status":"completed"}]}`,
+	} {
+		raw := `{"delegate_id":"dlg_1","status":"completed","earlier_results":[` + element + `]}`
+		if body, ok := jobResultBody(raw); ok {
+			t.Fatalf("jobResultBody(%s) = %q, want the JSON fallback", raw, body)
+		}
+	}
+}
+
+// A long earlier result can't push the reply's ref out of a condensed card:
+// the card is truncated, and the ref is still on it, ahead of the elision.
+func TestJobResultBodyKeepsRefAheadOfLongEarlierResults(t *testing.T) {
+	t.Parallel()
+	childRef := "local:child-ref"
+	longOutput, err := json.Marshal(makeNumberedLines(resultBodyWholeMax + 100))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	res := delegateSendToolResult(t, "call_send", sendMessageResult{
+		DelegateID: "dlg_1", Type: "delegate", Status: jobstore.StatusCompleted, Action: "completed",
+		TranscriptRef: childRef, Output: "second",
+		Earlier: []delegatestore.TerminalPacket{{Kind: delegatestore.PacketReported, Message: longOutput}},
+	}, 0)
+	out := renderMarkdown(transcript.Header{}, []transcript.Entry{
+		toolCallEntry(call("call_send", "delegate_send", `{}`)),
+		toolResultEntry(res),
+	}, 0, renderOpts{})
+	// The condensed card's status line, not the fallback's delegate_send text.
+	if !strings.Contains(out, "job_id=dlg_1 status=completed transcript_ref="+childRef) {
+		t.Fatalf("want the condensed job-result card, got:\n%s", out)
+	}
+	refIdx, elideIdx := strings.Index(out, childRef), strings.Index(out, "lines elided")
+	if elideIdx < 0 || refIdx < 0 || refIdx > elideIdx {
+		t.Fatalf("ref at %d, elision at %d: want a truncated card with the ref ahead of the elision:\n%s", refIdx, elideIdx, out)
+	}
+}
+
+// Several earlier results are numbered oldest first, each ahead of the next,
+// and the reply's own output follows the latest-result label.
+func TestJobResultBodyNumbersSeveralEarlierResults(t *testing.T) {
+	t.Parallel()
+	raw := `{"delegate_id":"dlg_1","status":"completed","output":"OUT-3","earlier_results":[{"delegate_id":"dlg_1","status":"failed","output":"OUT-1"},{"delegate_id":"dlg_1","status":"stopped","output":"OUT-2"}]}`
+	body, ok := jobResultBody(raw)
+	if !ok {
+		t.Fatalf("jobResultBody(%s) fell back", raw)
+	}
+	assertOrdered(t, "jobResultBody", body, "status=completed",
+		"earlier result 1 of 2", "status=failed", "OUT-1",
+		"earlier result 2 of 2", "status=stopped", "OUT-2",
+		"latest result:", "OUT-3")
+}
+
+// An update a delegate_send reply carries ahead of its result settled
+// nothing, so its block in the transcript claims no status (an empty field
+// reads "(none)", as job_id and transcript_ref do): the metadata line says it
+// is an update and its message follows.
+func TestJobResultBodyRendersAnEarlierUpdateWithoutAStatus(t *testing.T) {
+	t.Parallel()
+	raw, err := json.Marshal(delegateSendResultFrom(sendMessageResult{
+		DelegateID: "dlg_1",
+		Type:       delegateResourceType,
+		Action:     "completed",
+		Status:     "completed",
+		Output:     "done",
+		Earlier:    []delegatestore.TerminalPacket{{Kind: delegatestore.PacketUpdate, Message: json.RawMessage(`"which table?"`)}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := jobResultBody(string(raw))
+	if !ok {
+		t.Fatalf("jobResultBody(%s) fell back", raw)
+	}
+	want := "job_id=dlg_1 status=completed transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 type=delegate action=completed running_in_background=false truncated=false\n" +
+		"earlier result 1 of 1, not delivered before:\n" +
+		"job_id=dlg_1 status=(none) transcript_ref=(none)\n" +
+		"metadata: delegate_id=dlg_1 type=delegate action=update running_in_background=false truncated=false\n" +
+		"which table?\n" +
+		"latest result:\n" +
+		"done\n"
+	if body != want {
+		t.Fatalf("body =\n%s\nwant\n%s", body, want)
 	}
 }

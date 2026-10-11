@@ -17,7 +17,7 @@ var fixedTreeClock = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // []schema.SessionMeta (the persisted sessions), []LiveEntry (the live daemons),
 // and the archive decisions map — and projects them into the navigation Tree.
 // This exercises project grouping, fork/subagent nesting, tier classification,
-// repeated-title clustering, rollups, and all the ordering comparators. The
+// rollups, and all the ordering comparators. The
 // oracle is floor "no panic" plus re-serializability of the resulting Tree
 // (it is rendered to the web client, so it must marshal cleanly).
 func FuzzBuildTree(f *testing.F) {

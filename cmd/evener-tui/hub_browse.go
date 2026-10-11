@@ -101,8 +101,8 @@ func (m *hubModel) moveBrowsePage(direction int) {
 // moveBrowseSelection moves the browse cursor to the next renderable message in
 // the given direction (skipping ones that render empty) and scrolls the viewport
 // so the newly-selected row stays visible. Moving the selection is the only way
-// to reach a user message to fork; f forks the selected user message. At either
-// end the selection is left unchanged.
+// to reach a user message to fork; ctrl+f forks the selected user message. At
+// either end the selection is left unchanged.
 func (m *hubModel) moveBrowseSelection(direction int) {
 	if len(m.session.messages) == 0 {
 		m.browseSelected = -1
@@ -205,9 +205,9 @@ func (m *hubModel) toggleAllBrowseDetails() {
 // startForkDraft arms a fork diverging at the selected user message.
 //
 // The divergence position is the message's TRANSCRIPT ENTRY INDEX, never its
-// turn index: thread/fork reads sourceTurnId as a 1-based index into the
-// parent's entry list and forks there, and only a transcript replayed from
-// disk numbers turn_N off that same index. A live turn is numbered off its
+// turn index: sendHubFork packs it into a sourceItemKey naming that same
+// 1-based index into the parent's entry list, and only a transcript replayed
+// from disk numbers turn_N off that same index. A live turn is numbered off its
 // minter's own counter, so past the first turn or two its id names a different
 // entry than the message it carries. A message with no entry index names no
 // position at all, and guessing an entry is the one outcome that must never

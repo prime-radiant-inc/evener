@@ -10,19 +10,19 @@ func TestFailureLedger_NilGuards(t *testing.T) {
 	var l *failureLedger
 
 	// check on nil ledger returns zeros.
-	failStreak, repeatStreak, snippets := l.check(newDispatchKey("tool", []byte("{}")))
+	failStreak, repeatStreak, snippets := l.check(newDispatchKey("tool", []byte("{}"), nil))
 	if failStreak != 0 || repeatStreak != 0 || snippets != nil {
 		t.Errorf("nil check = (%d, %d, %v), want (0, 0, nil)", failStreak, repeatStreak, snippets)
 	}
 
 	// record on nil ledger returns zeros.
-	failStreak, repeatStreak = l.record(newDispatchKey("tool", []byte("{}")), true, "error")
+	failStreak, repeatStreak = l.record(newDispatchKey("tool", []byte("{}"), nil), true, "error")
 	if failStreak != 0 || repeatStreak != 0 {
 		t.Errorf("nil record = (%d, %d), want (0, 0)", failStreak, repeatStreak)
 	}
 
 	// clearFailures on nil ledger is a no-op (should not panic).
-	l.clearFailures(newDispatchKey("tool", []byte("{}")))
+	l.clearFailures(newDispatchKey("tool", []byte("{}"), nil))
 }
 
 // TestClearFailures_NoEntry covers the branch where clearFailures is called on
@@ -30,7 +30,7 @@ func TestFailureLedger_NilGuards(t *testing.T) {
 func TestClearFailures_NoEntry(t *testing.T) {
 	l := newFailureLedger()
 	// Clear a signature that doesn't exist — should be a safe no-op.
-	l.clearFailures(newDispatchKey("nonexistent", []byte("{}")))
+	l.clearFailures(newDispatchKey("nonexistent", []byte("{}"), nil))
 }
 
 // TestFirstNonBlankLine_AllBlank covers the return-empty path when all lines

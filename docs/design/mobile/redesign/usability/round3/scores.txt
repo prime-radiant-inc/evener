@@ -1,0 +1,17 @@
+
+p1
+  T2b  success   19 actions
+  T3   success   15 actions
+  T10  success    6 actions
+
+p2
+  T1   success    7 actions
+  T2b  success   16 actions
+  T10  success   10 actions
+
+p3
+  T4   success   19 actions
+  T7   success    4 actions
+  T13  success    4 actions
+
+total: 9 success, 0 partial, 0 fail

@@ -69,9 +69,9 @@ func TestWriter_HeaderOnNilWriterReturnsZeroHeader(t *testing.T) {
 	}
 }
 
-// --- Fix 1: seq increment after successful write ---
+// --- Fix 1: a failed write consumes its seq, never an ordinal ---
 
-func TestWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
+func TestWriter_FailedWriteConsumesSeqButNotOrdinal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -111,8 +111,8 @@ func TestWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	w.file = f
 	w.mu.Unlock()
 
-	// The next successful write should use seq 1 (not seq 2, which would
-	// indicate the failed write incremented seq).
+	// The next successful write uses seq 2: the failed write consumed seq 1,
+	// though it recorded nothing and so took no entry ordinal.
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after failure"))); err != nil {
 		t.Fatalf("Append after reopen: %v", err)
 	}
@@ -135,8 +135,11 @@ func TestWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	if entry0.Seq != 0 {
 		t.Errorf("entry0 seq = %d, want 0", entry0.Seq)
 	}
-	if entry1.Seq != 1 {
-		t.Errorf("entry1 seq = %d, want 1 (no gap from failed write)", entry1.Seq)
+	if entry1.Seq != 2 {
+		t.Errorf("entry1 seq = %d, want 2 (the failed write consumed 1)", entry1.Seq)
+	}
+	if w.tail.nextOrdinal != 2 {
+		t.Errorf("next ordinal = %d, want 2: only the two recorded lines took ordinals", w.tail.nextOrdinal)
 	}
 }
 

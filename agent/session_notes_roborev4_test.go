@@ -61,6 +61,7 @@ drain:
 }
 
 func TestFailedNoteSaveRetryDelivers(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error { return errors.New("failed rename") }
 	if _, err := s.SetHumanNote("save", "sentinel"); err == nil {
@@ -128,6 +129,7 @@ drain:
 }
 
 func TestNotesSingleIdentitySurvivesAcceptedRestart(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	s.clientMutations.faults.AfterEffectSnapshotRename = func() error { return errors.New("lost response") }
 	if _, err := s.SetHumanNote("save", "sentinel"); err == nil {

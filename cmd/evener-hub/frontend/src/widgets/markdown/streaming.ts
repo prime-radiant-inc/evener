@@ -377,7 +377,12 @@ function scanQuotedListChild(
 }
 
 export function closeOpenMarkdown(source: string): string {
-  const lines = source.split("\n");
+  // Scan line copies with any single trailing "\r" stripped: every boundary
+  // predicate below anchors at end-of-line, and "\r" defeats those anchors
+  // (glued fence closers, phantom fences, stray emphasis closers - see the
+  // CRLF tests). The source itself is never rewritten; closers append to it
+  // unchanged, and appended closers are LF-style as before.
+  const lines = source.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   let fence: OpenFence | null = null;
   let stack: OpenMarker[] = [];
   let paragraph: "none" | "paragraph" | "blockquote" = "none";

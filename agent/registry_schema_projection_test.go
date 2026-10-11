@@ -17,6 +17,7 @@ import (
 )
 
 func TestProjectToolSchemaBehaviorMatrix(t *testing.T) {
+	t.Parallel()
 	base := projectionFixture([]string{"a", "b", "c"}, []string{"b", "c"})
 	projection, err := projectToolSchema(base)
 	if err != nil {
@@ -51,6 +52,7 @@ func TestProjectToolSchemaBehaviorMatrix(t *testing.T) {
 // excluded by a conditional.) projectToolSchema itself stays covered by
 // TestProjectToolSchemaBehaviorMatrix with synthetic fixtures.
 func TestProjectToolSchemaUsesRealCapableToolShape(t *testing.T) {
+	t.Parallel()
 	defs := coreToolSchemaDefs(t)
 	if len(defs) == 0 {
 		t.Fatal("capable fixture exposed no tool schemas")
@@ -70,6 +72,7 @@ func TestProjectToolSchemaUsesRealCapableToolShape(t *testing.T) {
 }
 
 func TestProjectedToolGeneratorRejectsUnsupportedShapeSynchronously(t *testing.T) {
+	t.Parallel()
 	schema := projectionFixture([]string{"a", "b"}, []string{"b"})
 	schema["oneOf"].([]any)[1].(map[string]any)["required"] = []string{"mode"}
 	original := compileProjectionSchema(t, schema)
@@ -82,6 +85,7 @@ func TestProjectedToolGeneratorRejectsUnsupportedShapeSynchronously(t *testing.T
 }
 
 func TestProjectToolSchemaRemovesOptionalEmptyIntersection(t *testing.T) {
+	t.Parallel()
 	schema := projectionFixture([]string{"a"}, []string{"a"})
 	schema["properties"].(map[string]any)["optional"] = map[string]any{
 		"type": "string",
@@ -107,6 +111,7 @@ func TestProjectToolSchemaRemovesOptionalEmptyIntersection(t *testing.T) {
 }
 
 func TestProjectToolSchemaRejectsUnsupportedShapes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		edit func(map[string]any)
@@ -134,6 +139,7 @@ func TestProjectToolSchemaRejectsUnsupportedShapes(t *testing.T) {
 }
 
 func TestProjectToolSchemaRemovesUnsatisfiableArms(t *testing.T) {
+	t.Parallel()
 	conflicting := projectionFixture([]string{"a"}, []string{"b"})
 	projection, err := projectToolSchema(conflicting)
 	if err != nil {

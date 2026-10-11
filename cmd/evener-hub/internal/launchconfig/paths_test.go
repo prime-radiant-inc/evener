@@ -61,6 +61,22 @@ func TestPathsFor_NonexistentPathReturnsError(t *testing.T) {
 	}
 }
 
+// TestPathsFor_EmptyRootHasNoUserPaths pins that an unavailable config root -
+// what the hub passes when neither XDG_CONFIG_HOME nor a home directory
+// resolves - yields no user-level layer paths. Joining "" with "launch.toml"
+// gives the relative "launch.toml", which afero reads from the process working
+// directory, so a repository could control the global launch config.
+func TestPathsFor_EmptyRootHasNoUserPaths(t *testing.T) {
+	paths, err := PathsFor("", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.Global != "" || paths.LegacyProject != "" || paths.Meta != "" {
+		t.Fatalf("PathsFor(\"\") = Global %q, LegacyProject %q, Meta %q; want all empty",
+			paths.Global, paths.LegacyProject, paths.Meta)
+	}
+}
+
 func checkValidateRepoPath(t *testing.T) {
 	cases := []struct {
 		repo string

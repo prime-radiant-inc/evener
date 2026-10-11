@@ -26,9 +26,12 @@ func (m hubModel) dashboardView() string {
 	}
 	topBar := dashboardHeader(m.hubURL, liveCount, width, needsYouBadge(needsYouCount(m.rows)))
 	var b strings.Builder
-	if m.err != nil {
-		b.WriteString(tuitext.TruncateText(fmt.Sprintf("error: %v", m.err), width))
-		b.WriteString("\n\n")
+	if errs := m.prominentErrors(); len(errs) > 0 {
+		for _, err := range errs {
+			b.WriteString(tuitext.TruncateText(fmt.Sprintf("error: %v", err), width))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
 	}
 	if notices := m.renderNotices(); notices != "" {
 		b.WriteString(notices)
@@ -420,11 +423,15 @@ func dashboardFooter(width int) string {
 }
 
 func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
-	if m.err != nil {
+	if errs := m.prominentErrors(); len(errs) > 0 {
+		messages := make([]string, len(errs))
+		for i, err := range errs {
+			messages[i] = err.Error()
+		}
 		return renderDetailsPane(strings.Join([]string{
 			"details",
 			"Diagnostic",
-			"Message:  " + m.err.Error(),
+			"Message:  " + strings.Join(messages, "\nMessage:  "),
 			"Next:     refresh dashboard or check Hub health",
 		}, "\n"), width)
 	}
@@ -585,8 +592,9 @@ func projectSummary(project hubRow, rows []hubRow) string {
 		if row.kind != hubRowSession || dashboardGroupKey(row) != dashboardGroupKey(project) {
 			continue
 		}
-		if attentionRankLabel(row.state) > attentionRankLabel(worstState) {
-			worstState = row.state
+		contribution := rollupContribution(row.state, row.isSubagent)
+		if rollupRankLabel(contribution) > rollupRankLabel(worstState) {
+			worstState = contribution
 			worstAsk = row.askPending
 		}
 	}
@@ -602,4 +610,11 @@ func projectSummary(project hubRow, rows []hubRow) string {
 // on ordering (Track A rank consolidation).
 func attentionRankLabel(state string) int {
 	return hubapi.AttentionRank(stateLabel(state))
+}
+
+// rollupRankLabel normalizes state via stateLabel, then delegates to the
+// shared hubapi.RollupRank table — the ordering for a project's rollup dot and
+// summary, where a warning outranks a merely-active child.
+func rollupRankLabel(state string) int {
+	return hubapi.RollupRank(stateLabel(state))
 }

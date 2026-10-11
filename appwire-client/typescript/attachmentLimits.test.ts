@@ -1,6 +1,12 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
+import {
+  admissionRejection,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS,
+  rejectionReason,
+  sizeRejection,
+} from "./attachmentLimits";
 
 // parity-m5-composer.md §G: max 8 attachments, max 8 MiB per file, the
 // 8-count cap cumulative across the whole composer session (paste + drag +
@@ -46,4 +52,19 @@ test("count cap is checked before the size cap", () => {
   expect(rejectionReason({ type: "image/png", size: MAX_ATTACHMENT_BYTES + 1, name: "x.png" }, MAX_ATTACHMENTS)).toBe(
     "x.png (maximum 8 images)",
   );
+});
+
+// The two checks behind rejectionReason, for a caller that makes them at
+// different moments: the phone admits a picked image by type and count, and
+// measures its size only after scaling it (#3166).
+test("admits an image by type and count alone, whatever its size", () => {
+  expect(admissionRejection({ type: "image/png" }, 0)).toBeUndefined();
+  expect(admissionRejection({ type: "text/plain" }, 0)).toBe("notImage");
+  expect(admissionRejection({ type: "image/png" }, MAX_ATTACHMENTS)).toBe("tooMany");
+  expect(admissionRejection({ type: "text/plain" }, MAX_ATTACHMENTS)).toBe("notImage");
+});
+
+test("measures size alone, up to and including the limit", () => {
+  expect(sizeRejection(MAX_ATTACHMENT_BYTES)).toBeUndefined();
+  expect(sizeRejection(MAX_ATTACHMENT_BYTES + 1)).toBe("tooLarge");
 });

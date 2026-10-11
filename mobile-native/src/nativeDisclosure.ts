@@ -10,9 +10,26 @@ export const nativeDisclosureStore = createDisclosureStore();
 
 /** Reactive: re-renders the caller when this id's open state changes. */
 export function useDisclosureOpen(id: string, fallback: boolean): boolean {
-	return useStore(nativeDisclosureStore, (s) =>
-		isDisclosureOpenIn(s, id, fallback),
-	);
+	return useStore(nativeDisclosureStore, (s) => isDisclosureOpenIn(s, id, fallback));
+}
+
+/** Reactive, for a disclosure stored under several ids (a run, under each of
+ * its steps): the latest explicit choice among them, else the first id's
+ * default. */
+export function useDisclosureOpenAmong(ids: readonly string[], fallback: boolean): boolean {
+	return useStore(nativeDisclosureStore, (s) => {
+		let latest: { open: boolean; revision: number } | undefined;
+		for (const id of ids) {
+			const choice = s.open.get(id);
+			if (choice && (latest === undefined || choice.revision > latest.revision)) latest = choice;
+		}
+		return latest?.open ?? isDisclosureOpenIn(s, ids[0] ?? "", fallback);
+	});
+}
+
+/** Records one choice under every id a disclosure is stored under. */
+export function setDisclosureOpenAll(ids: readonly string[], open: boolean): void {
+	for (const id of ids) nativeDisclosureStore.setOpen(id, open);
 }
 
 export const toggleDisclosure = nativeDisclosureStore.toggle;

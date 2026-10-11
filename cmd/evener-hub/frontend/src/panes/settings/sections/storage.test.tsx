@@ -1,7 +1,7 @@
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
 import { StorageSection } from "./storage";
@@ -16,8 +16,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetSettingsOverviewStoreForTests();
 });
-
-afterEach(cleanup);
 
 test("renders State dir (from storage, not hub), Run dir (from hub), and the static hub.toml row", async () => {
   const fake = connectFakeClient();

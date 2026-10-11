@@ -52,7 +52,7 @@ export interface ApplyPendingOptions {
   pinSources?: PinSourceIndex;
 }
 
-const NON_TOP_LEVEL_KINDS = new Set(["fork", "subagent", "cluster"]);
+const NON_TOP_LEVEL_KINDS = new Set(["fork", "subagent"]);
 const identity = (node: Pick<RailSession, "row_id" | "ref">) => `${node.row_id}\0${node.ref}`;
 
 function mapNodes(nodes: readonly RailSession[], fn: (node: RailSession) => RailSession | null): RailSession[] {

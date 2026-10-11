@@ -8,10 +8,11 @@
 
 import type { MarketplaceSourceInput } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
+import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type FormEvent, useId, useState } from "react";
-import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chevron, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -34,7 +35,10 @@ export interface MarketplacesSectionProps {
 }
 
 export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
-  const marketplaces = useExtensionsStore((s) => s.marketplaces) ?? [];
+  const store = useExtensionsHostStore();
+  const directory = useHostDirectoryActions();
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
+  const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const toasts = useToasts();
 
   const [addOpen, setAddOpen] = useState(false);
@@ -43,7 +47,6 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
   const [repoValue, setRepoValue] = useState("");
   const [pathValue, setPathValue] = useState("");
   const [nameValue, setNameValue] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
   const urlId = useId();
   const repoId = useId();
@@ -66,18 +69,14 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) return;
-    setSubmitting(true);
     const trimmedName = nameValue.trim();
     try {
-      await extensionsStore.getState().addMarketplace({ name: trimmedName, source: buildSource() });
+      await store.getState().addMarketplace({ name: trimmedName, source: buildSource() });
       setAddOpen(false);
       resetAddForm();
       toasts.push("success", `Added marketplace${trimmedName ? ` ${trimmedName}` : ""}`);
     } catch (err) {
-      toasts.push("error", `Add marketplace failed: ${errorText(err)}`);
-    } finally {
-      setSubmitting(false);
+      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Add marketplace failed: ${errorText(err)}`);
     }
   }
 
@@ -141,12 +140,12 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
             <FormRow label="Local path" htmlFor={pathId}>
               <PathField
                 ariaLabel="Local path"
-                directory={directoryActions}
+                directory={directory}
                 id={pathId}
                 value={pathValue}
                 onChange={setPathValue}
                 kind="dir"
-                complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+                complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
                 placeholder="/absolute/path"
               />
             </FormRow>
@@ -160,10 +159,10 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
             />
           </FormRow>
           <div className={CLASS.formActions}>
-            <Button type="submit" disabled={submitting}>
+            <Button type="submit" disabled={hubWriteBusy}>
               Add
             </Button>
-            <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={submitting}>
+            <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={hubWriteBusy}>
               Cancel
             </Button>
           </div>

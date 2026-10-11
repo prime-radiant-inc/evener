@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -162,6 +163,7 @@ func (e *cancellationGrepEnv) Grep(ctx context.Context, _ string, _ string, _ st
 }
 
 func TestGrepFilesExecToolPassesCancellationContext(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	env := &cancellationGrepEnv{
 		started: make(chan struct{}, 1),
@@ -664,6 +666,18 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	s := newShellToolTestSession(t, SessionConfig{StateDir: stateDir})
 	sessionID := s.ID()
 
+	// Close marks the running shell cancelled, signals it, then joins its real
+	// durable completion before the environment cleanup can reap the process.
+	// Wait on that real completion with production's graceful-shutdown window
+	// rather than the shared 200ms test window: under full-suite load a killed
+	// shell's finalization can outlast the short window, and closeRuntimeState
+	// then abandons the job — leaving the record "running" instead of the
+	// cancellation this test exists to pin. The join returns as soon as the
+	// shell finalizes, so the wider window costs nothing on a normal run.
+	// TRIPWIRE: production's defaultCloseGrace (agent/jobs.go, 5s) only fires
+	// on a genuine finalization hang.
+	s.jobManager.closeGrace = 5 * time.Second
+
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
@@ -1015,6 +1029,7 @@ func TestShellToolCwdEscapingSandboxRootRejected(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	root := s.env.WorkingDirectory()
+	s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 	// The "resolved" path per this kata is the joined+cleaned path (not a
 	// symlink-canonicalized one) — resolveShellWorkingDir joins raw against
 	// env.WorkingDirectory() and filepath.Clean's the result before validating.
@@ -1430,6 +1445,38 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 	}
 }
 
+// TestFormatShellResultBackgroundReminderOneShot pins #2644: the background-job
+// reminder must not promise a wake that a one-shot run cannot deliver. Under
+// `evener run` (TurnEndsProcess) the process exits once the turn's work drains,
+// and a background job still running then is stopped unless a job_watch is set.
+// The serve-mode reminder keeps its notify-and-wake wording.
+func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
+	t.Parallel()
+	direct := shellToolResult{
+		JobID:  "job_bg",
+		Type:   "shell",
+		Status: string(jobstore.StatusRunning),
+		Mode:   "background",
+	}
+
+	normal := formatShellResult(direct)
+	if !strings.Contains(normal, "You do not need to wait for it explicitly") {
+		t.Fatalf("serve-mode reminder = %q, want the notify-and-wake wording", normal)
+	}
+
+	direct.TurnEndsProcess = true
+	oneShot := formatShellResult(direct)
+	if strings.Contains(oneShot, "You do not need to wait for it explicitly") {
+		t.Fatalf("one-shot reminder = %q, must not claim no wait is needed", oneShot)
+	}
+	if !strings.Contains(oneShot, "job_watch") {
+		t.Fatalf("one-shot reminder = %q, want it to name the job_watch remedy", oneShot)
+	}
+	if strings.Contains(normal, "job_watch") {
+		t.Fatalf("serve-mode reminder = %q, must not mention the one-shot job_watch remedy", normal)
+	}
+}
+
 // TestFormatShellResultRunTimeoutFooter pins the wording for a genuine
 // stopped/run_timeout terminal result (job-control.md:212, :214): the process
 // was stopped by evener's own runtime limit, not by failing on its own. The
@@ -1494,4 +1541,46 @@ func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func TestShellToolSandboxOffCwdOutsideWorkingDirectory(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd is POSIX-only")
+	}
+	for _, explicit := range []bool{false, true} {
+		base := t.TempDir()
+		root := filepath.Join(base, "workspace")
+		if err := os.Mkdir(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		s := newSession(t, withDir(root), withoutGitSnapshot())
+		if explicit {
+			s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff}
+		}
+		want, err := filepath.EvalSymlinks(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, cwd := range []string{base, ".."} {
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{ID: "c1", Name: "shell", Arguments: json.RawMessage(fmt.Sprintf(`{"command":"pwd","cwd":%q}`, cwd))})
+			if res.IsError || !strings.Contains(res.Output, want) {
+				t.Fatalf("cwd %q returned error=%v, output=%q; want %s", cwd, res.IsError, res.Output, want)
+			}
+		}
+	}
+}
+
+func TestShellToolConfinedCwdOutsideWorkingDirectory(t *testing.T) {
+	t.Parallel()
+	for _, policy := range []sandbox.ResolvedPolicy{
+		{Mode: sandbox.ModeReadOnly}, {Mode: sandbox.ModeWorkspaceWrite}, {Mode: sandbox.ModeRestricted}, {Mode: sandbox.ModeOff, WriteBlocked: true},
+	} {
+		env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+		t.Cleanup(env.Cleanup)
+		env.Sandbox = &policy
+		if _, err := resolveShellWorkingDir(env, t.TempDir()); err == nil {
+			t.Fatalf("policy %+v accepted external cwd", policy)
+		}
+	}
 }

@@ -1,10 +1,12 @@
 # kata nbcf: diagnosis-to-action phase-transition eval (scaffold)
 
-Kata nbcf's acceptance has two halves. The first — positive phase-transition
-prompting in `agent/prompts/sections/workflow.md.tmpl`,
-`communicate.md.tmpl`, and `verification.md` — is implemented and covered by
-deterministic tests in `agent/section_resolver_test.go`. This directory is
-the **scaffold** for the second half: an opt-in agentic eval that measures
+Kata nbcf's acceptance has two halves. The first half, positive
+phase-transition prompting in the system prompt's workflow, communicate, and
+verification guidance, is implemented. Its phrase-pinning tests were removed
+under the testing policy (`docs/developing-evener/testing.md`, "Prompt Prose
+Is Not a Test Oracle"), so the behavior itself is what this eval measures.
+This directory is the **scaffold** for the second half: an opt-in agentic
+eval that measures
 whether the new prompting actually reduces analysis-churn on a seeded
 configuration-path failure, without a live model run happening in this
 worktree (kata rule: no live LLM API calls from an implementer).

@@ -6,12 +6,15 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 import "../../panes/sessionPanels";
 import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -35,27 +38,11 @@ import { RECENT_COMMANDS_KEY } from "./recentCommands";
 // /project calls the rail's imperative reveal seam (PIN-A); T5 produces the
 // real body, so this stream tests against a stub of the SEAM only.
 //
-// A hoisted vi.mock("../rail/railController", () => ({ revealSessionInRail:
-// vi.fn() })) used to sit here, replacing the WHOLE module (dropping
-// setRailRevealHandler entirely) in the shared module registry - under
-// isolate:false that registry is shared by every file in the worker, so this
-// would poison every other file that imports railController.ts (Rail.test.tsx,
-// RailHost.test.tsx, railController.test.ts) for the rest of the worker's
-// life, not just while this file's own tests run. vi.spyOn mutates only the
-// one property this file cares about, on the SAME shared module object every
-// other file also reads from, and mockRestore() in afterAll hands the real
-// revealSessionInRail back for whatever file runs next.
-//
 // Re-spied in beforeEach below, not just once here: this file's own afterEach
-// (like several sibling rail test files) calls vi.restoreAllMocks(), which is
-// a GLOBAL operation - it un-does this spy (handing the real
-// revealSessionInRail back onto the shared module object) the moment ANY
-// test anywhere in the worker restores mocks, not just this file's own. A
-// one-time spy at module scope would silently stop taking effect after that.
+// calls vi.restoreAllMocks(), which strips the spy and hands the real
+// revealSessionInRail back, so a one-time spy at module scope would stop
+// taking effect after the first test.
 let revealSessionInRail = vi.spyOn(railController, "revealSessionInRail").mockImplementation(() => {});
-afterAll(() => {
-  revealSessionInRail.mockRestore();
-});
 
 // Minimal test-only "session" pane registration so /aside's openPane hop has
 // a real registry entry - mirrors SessionActionsMenu.test.tsx's setup.
@@ -67,27 +54,8 @@ afterAll(
   }),
 );
 
-// See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage with a
-// non-functional global, so every localStorage-touching test file needs this.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const CAPS: ThreadCapabilities = {
@@ -283,34 +251,22 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   localStorage.clear();
   window.history.pushState({}, "", "/");
   pushes.length = 0;
   // Keep viewport tests isolated from direct matchMedia assignments.
   // @ts-expect-error jsdom baseline has no matchMedia.
   delete window.matchMedia;
-  // vi.restoreAllMocks() in this file's own afterEach (or any other test
-  // file's, sharing this worker) strips the spy - see this file's own
-  // comment on the vi.spyOn call above.
+  // vi.restoreAllMocks() in this file's own afterEach strips the spy - see
+  // this file's own comment on the vi.spyOn call above.
   revealSessionInRail = vi.spyOn(railController, "revealSessionInRail").mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  // Direct assignments are not spies, so restoreAllMocks cannot remove the
-  // mobile viewport fake from the final test in this shared worker.
-  // @ts-expect-error jsdom baseline has no matchMedia.
-  delete window.matchMedia;
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
+  resetActivitySidebarStoreForTests();
 });
 
 // --- scope gating (search.js:581-588) ---
@@ -553,7 +509,7 @@ test("/steer sends turn/steer when a turn is active", async () => {
   const c = cmd("steer");
   if (c.args?.kind !== "free") throw new Error("expected free args");
   await c.args.run(runContext(), "go left");
-  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((call) => call.method === "turn/steer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
 });
@@ -573,7 +529,8 @@ test("/steer sends turn/steer while the session is active with no open turn row 
   const c = cmd("steer");
   if (c.args?.kind !== "free") throw new Error("expected free args");
   await c.args.run(runContext(), "go left");
-  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true);
 });
 
 // The handler applies the same rule the menu does (Command.available, from
@@ -680,7 +637,7 @@ test("/interrupt sends turn/interrupt for a working session whose turn has no na
 
   await cmd("interrupt").run?.(runContext());
 
-  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/interrupt")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   expect(fake.calls.find((call) => call.method === "turn/interrupt")?.params).toMatchObject({ ref: "ref_a" });
 });
 
@@ -844,7 +801,7 @@ test("next-needs-you is a global command", () => {
 test("next-needs-you opens the first needs-you session when nothing is focused", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     resources: new Map([
       [
         keyID(key),
@@ -901,7 +858,7 @@ test("next-needs-you opens the first needs-you session when nothing is focused",
 test("v1 next-needs-you ignores stale legacy tree rows", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     resources: new Map([
       [
         keyID(key),
@@ -945,7 +902,7 @@ test("v1 next-needs-you ignores stale legacy tree rows", () => {
 test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     resources: new Map([
       [
         keyID(key),
@@ -1026,21 +983,20 @@ test("copyToClipboard prefers the async Clipboard API", async () => {
   expect(writeText).toHaveBeenCalledWith("hello");
 });
 
-test("/tasks and /status toggle the focused session panes at every viewport", () => {
+test("/tasks toggles its pane and /status opens About for the focused session", () => {
   focusSession("ref_a");
   seedModel("ref_a");
 
   cmd("tasks").run?.(runContext());
   cmd("status").run?.(runContext());
   expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } }),
-      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_a" } }),
-    ]),
+    expect.arrayContaining([expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } })]),
   );
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "about", ref: "ref_a" });
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });
 
-test("/tasks and /status toggle-close already-open panes", () => {
+test("/tasks toggle-closes while repeated /status preserves About and a saved Details pane", () => {
   focusSession("ref_a");
   seedModel("ref_a");
   workspaceStore.getState().openPane("sessionTasks", { ref: "ref_a" });
@@ -1048,8 +1004,16 @@ test("/tasks and /status toggle-close already-open panes", () => {
 
   cmd("tasks").run?.(runContext());
   cmd("status").run?.(runContext());
+  cmd("status").run?.(runContext());
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionTasks")).toBe(false);
-  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(true);
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "about", ref: "ref_a" });
+});
+
+test("/status advertises Overview and remains findable by details and info", () => {
+  expect(cmd("status").title).toBe("Show session details in Overview");
+  expect(cmd("status").keywords).toEqual(["details", "info"]);
+  expect(cmd("status").scope).toBe("session");
 });
 
 test("/notes toggles the top notes panel and requests focus", () => {
@@ -1112,7 +1076,7 @@ test('the keyboard-shortcuts command is findable by keyword "hotkey"', () => {
   expect(cmd("help").keywords).toContain("hotkey");
 });
 
-test("/tasks and /status still toggle the workspace panes on a mobile viewport", () => {
+test("mobile /tasks toggles its pane and /status opens About", () => {
   window.matchMedia = vi.fn(() => ({
     matches: true,
     addEventListener: vi.fn(),
@@ -1123,13 +1087,9 @@ test("/tasks and /status still toggle the workspace panes on a mobile viewport",
 
   cmd("tasks").run?.(runContext());
   cmd("status").run?.(runContext());
-  // The unified SessionMenu owns Details/Tasks at every width, so the chrome
-  // trigger buttons the legacy mobile path clicked no longer render - the
-  // commands open the workspace panes directly, exactly as on desktop.
   expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } }),
-      expect.objectContaining({ type: "sessionDetails", params: { ref: "ref_a" } }),
-    ]),
+    expect.arrayContaining([expect.objectContaining({ type: "sessionTasks", params: { ref: "ref_a" } })]),
   );
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "about", ref: "ref_a" });
+  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });

@@ -1,10 +1,8 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { DirectoryPicker, type DirectoryPickerProps } from "./index";
-
-afterEach(cleanup);
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
   const props: DirectoryPickerProps = {
@@ -34,6 +32,12 @@ test("navigation and recent folders stay draft until explicitly selected", async
   await user.click(screen.getByRole("button", { name: "Open recent /recent/app" }));
   await user.click(screen.getByRole("button", { name: "Use this folder" }));
   expect(onPick).toHaveBeenCalledWith("/recent/app");
+});
+
+test("recent rows carry the full path on hover after the sidebar truncates it", async () => {
+  setup();
+  const row = await screen.findByRole("button", { name: "Open recent /recent/app" });
+  expect(row.title).toBe("/recent/app");
 });
 
 test("typed paths are validated and canonicalized before selection", async () => {

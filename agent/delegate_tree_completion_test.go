@@ -32,6 +32,7 @@ func TestDelegateGenerationEvidenceInitialRequirement(t *testing.T) {
 }
 
 func TestDelegateEntryRequiresReport(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		kind EntryKind

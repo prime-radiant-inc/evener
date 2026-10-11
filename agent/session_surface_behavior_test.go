@@ -7,7 +7,6 @@ package agent
 // moved off this axis entirely — see session_openai_prompt_cache_test.go.
 
 import (
-	_ "embed"
 	"strings"
 	"testing"
 
@@ -16,26 +15,6 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
-
-// openAISectionContent holds the raw content of the embedded OpenAI-specific
-// tools prompt section. The section resolver loads this file when
-// provider="openai"; tests verify its presence or absence in rendered system
-// prompts by comparing against the actual file content rather than a
-// hardcoded phrase, so they track prose changes automatically.
-//
-//go:embed prompts/sections/tools.provider-openai_append.md.tmpl
-var openAISectionContent string
-
-// openAISectionLiteral is the leading literal run of that section — everything
-// before its first template action. The tail is gated on the session's tool
-// surface, so only the prefix is comparable verbatim against a render.
-func openAISectionLiteral() string {
-	body := openAISectionContent
-	if i := strings.Index(body, "{{"); i >= 0 {
-		body = body[:i]
-	}
-	return strings.TrimRight(body, "\n")
-}
 
 // ── Site 2: registerCoreTools (gemini web_search) ─────────────────────────
 
@@ -197,68 +176,43 @@ func TestWebSearchToolAbsentOnTheOpenAISurface(t *testing.T) {
 	}
 }
 
-// ── Site 3: renderSystemPrompt sectionResolver surface ────────────────────
+// ── Site 3: renderSystemPrompt surface ─────────────────────────────────────
 
-// TestSystemPromptLoadsTheOpenAISectionForANamedInstance verifies that a
-// session on an openai instance under a user-assigned name (id "work") still
-// renders the tools.provider-openai_append.md section: sectionResolver keys on
-// the surface, so the section follows the vendor rather than the name.
-func TestSystemPromptLoadsTheOpenAISectionForANamedInstance(t *testing.T) {
+// TestSystemPromptSurfaceFollowsTheVendorForANamedInstance: a session on an
+// openai instance under a user-assigned name (id "work") renders its prompt
+// for the openai surface. The prompt keys on the surface, so it follows the
+// vendor rather than the name.
+func TestSystemPromptSurfaceFollowsTheVendorForANamedInstance(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "work", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
-	}}
-	c.Register(f)
-
-	// An openai instance under a user-assigned name: id="work".
+	c.Register(&fakeAdapter{name: "work"})
 	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.5")
-	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-
-	// The embedded tools.provider-openai_append.md content is present verbatim
-	// in the rendered system prompt only when sectionResolver.surface="openai".
-	// We compare against the actual file content so the test tracks prose
-	// changes automatically rather than coupling to a specific phrase.
-	openAISection := openAISectionLiteral()
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if !strings.Contains(prompt, openAISection) {
-		t.Fatalf("system prompt missing openai section — sectionResolver.surface must be %q, not %q (the instance ID)",
-			renamedProfile.Surface(), renamedProfile.ID())
+	data, _ := sess.buildPromptData(sess.env)
+	if got := data.Surface; got != registry.SurfaceOpenAI {
+		t.Fatalf("prompt surface = %q, want %q for instance %q", got, registry.SurfaceOpenAI, renamedProfile.ID())
 	}
 }
 
-// TestSystemPromptOmitsTheOpenAISectionOnTheGenericSurface verifies that a
-// chat-completions instance does NOT render the
-// tools.provider-openai_append.md section.
-func TestSystemPromptOmitsTheOpenAISectionOnTheGenericSurface(t *testing.T) {
+// TestSystemPromptSurfaceIsGenericForACompatInstance: a chat-completions
+// instance renders its prompt for the generic surface, so it gets none of the
+// openai-only guidance.
+func TestSystemPromptSurfaceIsGenericForACompatInstance(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai-compatible", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return finalResponse("ok") },
-	}}
-	c.Register(f)
-
+	c.Register(&fakeAdapter{name: "openai-compatible"})
 	compatProfile := testOpenAICompatProfile("openai-compatible", "gpt-4o", 128_000)
-
-	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-
-	openAISection := openAISectionLiteral()
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, openAISection) {
-		t.Fatalf("system prompt contains openai section — openai-compatible must NOT load the openai section")
+	data, _ := sess.buildPromptData(sess.env)
+	if got := data.Surface; got != registry.SurfaceGeneric {
+		t.Fatalf("prompt surface = %q, want %q", got, registry.SurfaceGeneric)
 	}
 }

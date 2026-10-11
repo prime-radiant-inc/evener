@@ -82,7 +82,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	deps := stoolCommunicateDeps()
 	committed := false
-	deps.setCommunicateTerminal = func(context.Context, string, string, string, any) bool {
+	deps.setCommunicateTerminal = func(context.Context, string, string, string, any, string) bool {
 		committed = true
 		return true
 	}
@@ -114,11 +114,9 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	var emitted int
 	var deferred []steeringMessage
 	deps.emit = func(kind events.EventKind, data events.EventData) {
-		if kind != events.EventCommunicate {
-			t.Fatalf("communicate emitted unexpected event %q", kind)
-		}
-		emitted++
+		t.Fatalf("communicate emitted unexpected event %q", kind)
 	}
+	deps.deliverCommunicate = func(events.CommunicateData) error { emitted++; return nil }
 	deps.drainSteering = func() []steeringMessage {
 		return []steeringMessage{
 			{Text: "steer " + token},
@@ -126,7 +124,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		}
 	}
 	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
-	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any) bool {
+	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any, _ string) bool {
 		resultMessage, resultReply, resultOutput = message, reply, output
 		structured = raw
 		return true
@@ -216,11 +214,12 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 func stoolCommunicateDeps() *toolDeps {
 	return &toolDeps{
 		emit:                   func(events.EventKind, events.EventData) {},
+		deliverCommunicate:     func(events.CommunicateData) error { return nil },
 		abort:                  func(context.Context) error { return nil },
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
+		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 	}
 }
 

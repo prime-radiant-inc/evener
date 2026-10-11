@@ -1,7 +1,4 @@
-export type PinAssignmentSelection =
-	| { kind: "existing"; sectionId: string }
-	| { kind: "new"; name: string }
-	| null;
+export type PinAssignmentSelection = { kind: "existing"; sectionId: string } | { kind: "new"; name: string } | null;
 export interface PinAssignmentDraft {
 	id: string;
 	selection: PinAssignmentSelection;
@@ -24,9 +21,7 @@ function selection(value: unknown): PinAssignmentSelection {
 	const record = value as Record<string, unknown>;
 	if (record.kind === "existing") {
 		valid(
-			Object.keys(record).length === 2 &&
-				typeof record.sectionId === "string" &&
-				record.sectionId.trim().length > 0,
+			Object.keys(record).length === 2 && typeof record.sectionId === "string" && record.sectionId.trim().length > 0,
 		);
 		return { kind: "existing", sectionId: record.sectionId };
 	}
@@ -39,21 +34,13 @@ function selection(value: unknown): PinAssignmentSelection {
 function draft(value: unknown): PinAssignmentDraft {
 	valid(value !== null && typeof value === "object" && !Array.isArray(value));
 	const record = value as Record<string, unknown>;
-	valid(
-		Object.keys(record).length === 2 &&
-			typeof record.id === "string" &&
-			record.id.length > 0,
-	);
+	valid(Object.keys(record).length === 2 && typeof record.id === "string" && record.id.length > 0);
 	return { id: record.id, selection: selection(record.selection) };
 }
 function same(left: unknown, right: unknown): boolean {
 	return JSON.stringify(left) === JSON.stringify(right);
 }
-export function pinAssignmentDrafts(
-	hubScope: string,
-	sessionRef: string,
-	backend: PinAssignmentDraftBackend,
-) {
+export function pinAssignmentDrafts(hubScope: string, sessionRef: string, backend: PinAssignmentDraftBackend) {
 	valid(hubScope.trim().length > 0 && sessionRef.trim().length > 0);
 	const key = `evener.native.pin-assignment.${JSON.stringify([hubScope, sessionRef])}`;
 	const load = (): PinAssignmentDraft | null => {

@@ -144,7 +144,7 @@ func TestHubForkRetiresARedirectWhoseTargetEnded(t *testing.T) {
 				Roster: hubcore.NewRosterWithEntries(), ResumeLocks: locks,
 			}
 			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if tc.stopTarget {
 				if !isSessionRecoveryAdmissionError(err) {
@@ -172,7 +172,7 @@ func TestHubForkRetiresARedirectWhoseTargetEnded(t *testing.T) {
 			// Retiring the alias's redirect does not unfence the ended
 			// target itself: a fork of it is still refused.
 			if _, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + targetID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + targetID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			}); !isSessionRecoveryAdmissionError(err) {
 				t.Fatalf("fork of the ended target error=%v, want the recovery refusal", err)
 			}

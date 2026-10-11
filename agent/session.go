@@ -35,6 +35,8 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -56,6 +58,9 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 		}
 	}
 	s.emitWithProvenance(kind, data, p)
+	if kind == events.EventJobStarted || kind == events.EventJobFinished {
+		s.emitSessionActivityChanged(s.ID(), appwire.SessionActivityResourceJobs)
+	}
 }
 
 // noteJobTreeShapeChange moves the activity clock for a change that adds or
@@ -102,24 +107,18 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id  string
-	cfg SessionConfig
-	// retainedScratch, when non-nil, is the root-owned pool of scratch handles
-	// reacquired by prepareRetainedScratch before root/child initialization
-	// launches work. It holds historical or not-yet-reconstructed handles until
-	// adoption or release. It is an atomic pointer (a single swapped reference,
-	// never held across work), so it is not a sampling-relevant mutex.
-	retainedScratch atomic.Pointer[retainedScratchPool]
-	// scratchRetentionErr records the first sticky scratch-retention
-	// publication failure this session observed after an environment swap: the
-	// durable manifest diverged from the live environment and no later swap
-	// repaired it, so preparation must fail closed rather than trust the
-	// manifest. Guarded by mu.
-	scratchRetentionErr      error
-	delegateController       *delegateTreeController
-	delegateRootSessionID    string
-	owningDelegateID         string
-	ownsDelegateController   bool
+	id                     string
+	cfg                    SessionConfig
+	delegateController     *delegateTreeController
+	delegateRootSessionID  string
+	owningDelegateID       string
+	ownsDelegateController bool
+	// subagentTallyForTest overrides SubagentTally's answer when set. A fresh
+	// session with no subagents reports the same empty tally as any other, so
+	// a cross-package test that needs to tell two sessions' tally seams apart
+	// (SubagentTallyForTest) has no real value to seed short of running a
+	// whole delegate tree; this gives it one.
+	subagentTallyForTest     *appwire.SubagentTally
 	artifactStore            artifactStore
 	ownsArtifactStore        bool
 	client                   *llm.Client
@@ -251,6 +250,32 @@ type Session struct {
 	// from restored history on resume alongside notesLastProjected.
 	// Guarded by mu.
 	notesEverProjected bool
+
+	// Memory environments are independent of workspace policy and cwd.
+	memoryMu            sync.Mutex
+	memoryEnvs          map[string]*execenv.LocalExecutionEnvironment
+	memoryRoots         map[string]*execenv.ConfinedFileRoot
+	memoryEnvUsers      map[*execenv.LocalExecutionEnvironment]int
+	memoryEnvFlights    map[string]*memoryEnvironmentFlight
+	memoryClosed        bool
+	memoryLastProjected map[string]memoryProjection
+	memoryEverProjected map[string]bool
+	// memoryBaseline holds, per scope, the index the session already knows: the
+	// last current one projected to it, or the one it wrote or deleted itself.
+	// Compaction and any non-current projection clear it; a resumed session
+	// starts without one.
+	memoryBaseline map[string]memoryIndexBaseline
+	// memoryReadPages holds, per scope and page path, what the session last
+	// knew of each page it read with memory_read; only these pages get change
+	// notices. Compaction keeps them; a resumed session starts without any.
+	memoryReadPages map[string]map[string]memoryPageRecord
+	// memoryReadPageOrder lists, per scope, the tracked pages from least to
+	// most recently read with memory_read; it bounds memoryReadPages.
+	memoryReadPageOrder map[string][]string
+	memoryIndexFlights  map[string]*memoryIndexFlight
+	// The sole automatic reader per scope owns cleanup until it returns.
+	// Admission and retirement share memoryMu, including the pre-read window.
+	memoryIndexReaders map[string]*execenv.LocalExecutionEnvironment
 
 	// --- Synchronization / lock discipline ---
 	//
@@ -386,8 +411,8 @@ type Session struct {
 	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
 	disposeRetirement             []func()                             // anonymous same-session admissions; guarded by mu, including work begun before controller attachment
 	sweepWG                       sync.WaitGroup                       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
-	envWorkWG                     sync.WaitGroup                       // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using
-	envWork                       map[envWorkID]envWorkRecord          // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
+	envWork                       map[envWorkID]envWorkRecord          // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; admitted under mu gated on closing so the admission happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using. Each record's label lets a close whose bounded join gives up name what it walked past; guarded by mu
+	envWorkDrained                chan struct{}                        // closed when the last envWork admission ends, and nil while none is live, so Close()'s join waits on exactly the admissions envWork records; guarded by mu
 	abandonedEnvs                 []*execenv.LocalExecutionEnvironment // environments swapped away from that are neither current nor parked (the clone between two enters); a child sharing one can still mint scratch on it, so close retains each; one entry per environment; guarded by mu
 	envWorkSeq                    uint64                               // last envWork handle issued; guarded by mu
 	laneSweepTimer                clock.Timer                          // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
@@ -401,6 +426,8 @@ type Session struct {
 	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
 	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
+	lastTurnEndedAt               time.Time // when the last turn ended (stamped by endTurnLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu, like workMillis.
+	lastMessage                   string    // the opening of the last agent message the session wrote (S1d, noteAgentMessageLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu.
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
@@ -519,6 +546,73 @@ type Session struct {
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
 	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// recoveredTurnID is the ActiveTurnID the durable client-mutation snapshot
+	// named when this process restored the session, and only when the pending
+	// execution that owns it is a client turn/start. That start is the user
+	// turn a dead process left mid-flight, which restore reclaims and re-runs;
+	// a follow-up turn/start behind it is the user speaking again, so
+	// AcceptClientMutationStart admits it once the inherited turn is actually
+	// running (see recoveredTurnRunning).
+	//
+	// A queue-origin turn (a queued message that was mid-run at the crash)
+	// deliberately leaves this empty even though it also leaves ActiveTurnID
+	// set: no follow-up is admitted behind it. The claim path prefers starts,
+	// so a follow-up start admitted behind an inherited queue turn would wait
+	// for a claim that can never come. It stays refused, which is the pre-fix
+	// behaviour.
+	//
+	// It is a per-process fact and is deliberately never persisted. A turn id
+	// is never reused, so the field needs no clearing: once the inherited turn
+	// ends, no later active turn can equal it again.
+	recoveredTurnID string
+	// execution is the running execution's bookkeeping (session_execution.go).
+	execution executionState
+	// failedClosed is set when a served session fails closed
+	// (session_fail_closed.go).
+	failedClosed failClosedState
+	// transcriptCreateErr is why the session's transcript could not be
+	// created, nil when it was (or none was wanted). Set once at construction.
+	transcriptCreateErr error
+	// userInputEntry is the 1-based entry index of the latest USER_INPUT
+	// entry the session recorded, 0 before one is; guarded by mu.
+	userInputEntry int
+	// lastRecorded is the entry ordinal of the session's latest transcript
+	// write, unset when it recorded nothing; guarded by mu and meaningful only
+	// inside the attentionMu hold that made the write.
+	lastRecorded recordedOrdinal
+	// openPendingExecutions holds the executions restore found open and left
+	// open because pending client work owns them; guarded by mu.
+	openPendingExecutions map[string]bool
+	// recordedExecutions holds the TurnID of every execution turn this
+	// session's transcript records, so one that runs again reopens; guarded
+	// by mu.
+	recordedExecutions map[string]bool
+	// roundID names the open model round, "" when none is open; guarded by
+	// mu. See roundIDForModelCall.
+	roundID string
+	// lastRoundID is the latest round the session opened, and lastRoundEnded
+	// whether its EventRoundEnded was emitted; guarded by mu.
+	lastRoundID    string
+	lastRoundEnded bool
+	// sessionStarted is set once SESSION_START is emitted; guarded by mu.
+	// Restore can run an execution before then; it is recorded whole before
+	// any consumer learns the session exists, so it is not announced.
+	sessionStarted bool
+	// executionStarted is called with each execution's TurnID before its
+	// first entry is recorded; guarded by mu. See SetExecutionStartedFunc.
+	executionStarted func(turnID string)
+	// transcriptRecorded is the recorded-entry hook installed on every writer
+	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
+	transcriptRecorded func(transcript.Record)
+	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
+	// in-process retry. The first failure of the inherited turn before its prompt
+	// is recorded hands its claim back, and the runner wake drives the immediate
+	// retry; a SECOND consecutive failure of the same turn leaves the claim
+	// claimed, so restart recovery owns it rather than the process spinning on a
+	// failure that is plainly not transient. Like recoveredTurnID it is a
+	// per-process fact and is deliberately never persisted -- the turn id it
+	// guards is never reused, so it needs no clearing.
+	recoveredTurnClaimReturned bool
 	// clientMutationAppendedTurn flags that a restore-time client-mutation
 	// recovery appended turns to the transcript file. Restore consults it
 	// after the recovery pass to decide whether the retained transcript
@@ -541,6 +635,41 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
+	// emit atomic against a turn advancing restGeneration: either the turn
+	// starts first and the rest stays idle, or the announcement reaches the
+	// event feed before anything the turn emits.
+	// LOCK ORDER: restMu > delegateDeliveryMu > mu.
+	restMu sync.Mutex
+	// restGeneration counts turn starts and drain-loop settles. A
+	// needs_response rest arms awaiting only if neither happened during its
+	// quiet period. Guarded by s.mu.
+	restGeneration uint64
+	// restBeforeInput is the resting state the session had when the current
+	// input started, read only by finishNotificationNoop: a notification wake
+	// that turns out to have nothing to deliver runs no turn, so it settles
+	// back to it. Guarded by s.mu.
+	restBeforeInput SessionState
+	// restOwedGeneration is the restGeneration of the settle that last found a
+	// needs_response turn with output (or a wake that resumed its rest),
+	// whether it scheduled the quiet period or something held the session
+	// idle; 0 before any. A fresh
+	// session's restGeneration is 0 too, so 0 never counts as owed. Guarded
+	// by s.mu.
+	restOwedGeneration uint64
+	// quietRestBeforeInput records that the current input started while that
+	// rest was still owed: no turn or settle since, and the session idle. The
+	// input's turn start cancelled it. Guarded by s.mu.
+	quietRestBeforeInput bool
+	// endReasonBeforeInput is the communicate end reason the current input's
+	// turn start reset. A wake that runs no turn puts it back, so the
+	// drain-loop settle reads the end reason of the last turn that ran.
+	// Guarded by s.mu.
+	endReasonBeforeInput string
+	// resumeQuietRest tells the drain-loop settle that a wake which ran no
+	// turn left that cancelled rest standing, so the settle arms it again.
+	// Guarded by s.mu.
+	resumeQuietRest bool
 
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
@@ -565,6 +694,21 @@ type Session struct {
 	// part of persisted SessionMeta.
 	askPending []askQuestion
 
+	// askPendingCallArgs holds each pending ask_user call's own arguments
+	// (already normalized, spec §5.1's shape), one entry per call, in call
+	// order — appended alongside askPending by registerAskTool's Exec and
+	// cleared alongside it (clearAskPending). It exists for an external
+	// ask-responder (evener run --ask-responder, PendingAskArguments) that
+	// needs the full question detail (option details included) a live call
+	// carried: Session.Events() is best-effort (session_events.go: "a full
+	// buffer drops"), so a caller for whom missing a call would leave state
+	// permanently wrong — a real pending question it never answers — must
+	// read durable session state instead of the event stream. Guarded by
+	// mu, like askPending above. Not persisted or restored: a resumed
+	// session's pending questions are read back from askPending/the
+	// transcript, and this feature does not (yet) support --resume.
+	askPendingCallArgs [][]byte
+
 	// steeringCarrierClaimClientMutationID is the client mutation id of the
 	// steer a claimed steering-carrier turn (acceptSteeringCarrierInput) is
 	// currently draining, set for the duration of that one call. It tells
@@ -576,6 +720,19 @@ type Session struct {
 	// restore.
 	// Guarded by mu, like askPending above.
 	steeringCarrierClaimClientMutationID string
+
+	// steeringCarrierStoodDowns is the set of steering-carrier turn ids that
+	// stood down without running a model turn (processOneInput's swallow of
+	// errSteeringCarrierStoodDown). ProcessPendingUserInput reads it to report
+	// ran=false truthfully for the carrier it claimed -- a stood-down carrier
+	// ran nothing, so the daemon must not keep an interrupt runner armed for it
+	// (issue #185 item 3). A SET, not a single slot: one ProcessPendingUserInput
+	// call can process more than one carrier (the drain ladder may claim an
+	// inline carrier behind the claimed one), so a later stand-down must not
+	// erase an earlier one. Reset at the start of each ProcessPendingUserInput
+	// carrier run; a stand-down marked elsewhere lingers harmlessly until then
+	// (turn ids are unique). Guarded by mu, like askPending above.
+	steeringCarrierStoodDowns map[string]struct{}
 
 	// pendingEscalations holds one waiter per in-flight sandbox-exemption escalation
 	// (M7), keyed by its opaque id — the channel its tool-exec goroutine parks on
@@ -627,6 +784,11 @@ type Session struct {
 	// in s.fork. Empty on the fresh-session path. Read without a lock, like cfg —
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaParentSessionID string
+	// restoredScratchTreeRoot is the root whose scratch tree a delegate resumed
+	// on its own keeps its scratch in (restoredScratchTreeRoot in
+	// session_init.go). Set once during restore and read like cfg; empty
+	// otherwise.
+	restoredScratchTreeRoot string
 
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.
@@ -667,6 +829,11 @@ type Session struct {
 	// context management
 	contextMgr *contextmgr.Manager
 	strategy   contextmgr.Strategy
+	// strategyDegraded reports that the strategy's last AfterAction returned
+	// an error. While true, a repeat is suppressed so a persistently failing
+	// opt-in memory strategy cannot flood the warning channel; a successful
+	// AfterAction clears it so a later failure warns again. Guarded by mu.
+	strategyDegraded bool
 
 	// skills discovered at session startup
 	skills skill.Catalog
@@ -769,10 +936,6 @@ type Session struct {
 	// task list (lazy-init)
 	taskStore     *task.TaskStore
 	taskStoreOnce sync.Once
-	// taskStoreLoadErr records whether the session's persisted task store could
-	// be loaded. It is published by taskStoreOnce before any snapshot reads use
-	// it, so aggregate producers can distinguish unavailable data from zero tasks.
-	taskStoreLoadErr error
 
 	// goal store (lazy-init)
 	goalStore     *goal.Store
@@ -812,7 +975,6 @@ type Session struct {
 	// task reminder tracking
 	taskToolLastRound int  // totalRounds value at last task_list tool call
 	taskToolEverUsed  bool // whether task_list has ever been called
-	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
 	totalRounds       int  // cumulative tool rounds across all inputs
 
 	// self-compaction state (compact tool). The transient round request is the
@@ -823,7 +985,7 @@ type Session struct {
 	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
 	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	// shared-notes state (human/agent whiteboards plus URL list)
-	agentNote   string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	agentNote   string              // agent's session whiteboard (a short capsule in lines); persisted via Meta().AgentNote. Guarded by mu.
 	sessionURLs []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
 	// notesCommitted is the last committed notes cut — human note, agent note,
 	// URL list, and ever-projected flag installed together. Readers (Meta, the
@@ -861,27 +1023,37 @@ type Session struct {
 	delegateDeliveryMu        sync.Mutex
 	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
 	pendingDelegateDeliveries []delegateDeliveryPlan
+	// attentionFoldCursor is the incremental fold of this Session's own
+	// transcript behind its attention reads. Guarded by attentionMu.
+	attentionFoldCursor delegateAttentionFoldCursor
 	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
 	// attention IDs from the root transcript. The transcript fold remains the
 	// sole durable authority; restart rebuilds this map from that fold.
 	rootAttentionWakeIDs map[string]struct{}
 	rootAttentionWake    bool
 	rootAttentionRetry   notificationRetry
-	// rootAttentionCoveredIDs is the running turn's coverage set. Stage it per
+	// rootAttentionPaused records that a permanent provider failure deferred
+	// the pending root attention and the session has said so (see
+	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
+	// the episode. Guarded by attentionMu.
+	rootAttentionPaused bool
+	// attentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
-	// lives on stageRootDelegateAttentionCoverage and
-	// unionCoveredRootDelegateAttention. Reset at each turn start.
-	rootAttentionCoveredIDs map[string]struct{}
-	// rootAttentionStagedIDs is one round's candidate coverage: the attention
+	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
+	// Reset at each turn start.
+	attentionCoveredIDs map[string]struct{}
+	// attentionStagedIDs is one round's candidate coverage: the attention
 	// the round's built request presents. The round loop promotes it into
-	// rootAttentionCoveredIDs only when the round's call settles, so a failed
+	// attentionCoveredIDs only when the round's call settles, so a failed
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
-	rootAttentionStagedIDs map[string]struct{}
-	// rootAttentionPreTurnArmIDs snapshots rootAttentionWakeIDs at turn start
-	// (resetRootDelegateAttentionCoverage). Marking consults it to separate
-	// deliveries armed mid-turn from attention already owed a dedicated wake.
-	rootAttentionPreTurnArmIDs map[string]struct{}
+	attentionStagedIDs map[string]struct{}
+	// attentionPreTurnIDs snapshots rootAttentionWakeIDs at turn start
+	// (resetAttentionCoverage). Marking consults it to separate the root's
+	// deliveries armed mid-turn from attention already owed a dedicated
+	// notification turn. A delegate session arms no root wakes, so for it
+	// the snapshot is empty.
+	attentionPreTurnIDs map[string]struct{}
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
@@ -905,7 +1077,17 @@ type Session struct {
 	// runningTurnReleaseRetry paces re-attempts of a release write the client
 	// mutation store refused. See scheduleRunningTurnReleaseRetry
 	// (session_active_turn.go).
-	runningTurnReleaseRetry   runningTurnReleaseRetryState
+	runningTurnReleaseRetry runningTurnReleaseRetryState
+	// outputReductionMu guards outputReductionWarned alone: the output clamp
+	// the session last warned about (see warnOutputReduction), empty while no
+	// clamp applies.
+	outputReductionMu     sync.Mutex
+	outputReductionWarned string
+	// delegateAttentionWarnMu guards delegateAttentionWarned alone: per
+	// failing delegate-attention action and delegate, the error the session
+	// last warned about (see warnDelegateAttentionFailed).
+	delegateAttentionWarnMu   sync.Mutex
+	delegateAttentionWarned   map[delegateAttentionWarning]string
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry
@@ -919,22 +1101,6 @@ type Session struct {
 	// and its turns are dropped rather than accumulated. Guarded by s.mu.
 	transcriptReady        bool
 	pendingTranscriptTurns []schema.Turn
-
-	// restoredTranscript holds the decoded transcript a RESUME read while
-	// validating the session it was asked to restore: the header (with its
-	// SessionID already checked against this session's id) and the retained
-	// entries. It exists so serve's app-identity projection can reuse that
-	// one strict decode instead of re-reading and re-decoding the whole
-	// append-only file; it is populated only on the restore path, after any
-	// delegate-delivery refresh, and is never updated after construction.
-	// Guarded by s.mu.
-	restoredTranscriptHeader transcript.Header
-	restoredTranscript       []transcript.Entry
-
-	// restoredTranscriptOpened is the ok flag RestoredTranscript reports:
-	// whether restore opened a transcript, captured at the open so a later
-	// refresh cannot flip it. Guarded by s.mu.
-	restoredTranscriptOpened bool
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -1162,7 +1328,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
@@ -1270,6 +1436,7 @@ type communicateResult struct {
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
+	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -1564,6 +1731,7 @@ func (s *Session) SetModel(model string) error {
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
+	s.resumeRootAttentionAfterModelSwitch()
 	return nil
 }
 
@@ -1763,6 +1931,14 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 	return s.comm.structured, s.comm.structured != nil
 }
 
+// communicateEndReason is why this input's terminal communicate call ended
+// the turn: "" when none was accepted, or on a delegate.
+func (s *Session) communicateEndReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.endReason
+}
+
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
 // communicate tool (issue #570). A call's message, reply, canonical output,
 // and raw structured value are accepted together under s.mu — the first
@@ -1771,7 +1947,7 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 // still-empty structured slot. It returns whether this call won; losers report
 // accepted:false. The stable-delegate lease, when the context carries one, is
 // recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any) bool {
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
 	s.mu.Lock()
 	if s.comm.called {
 		s.mu.Unlock()
@@ -1783,6 +1959,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		reply:      reply,
 		output:     output,
 		structured: structured,
+		endReason:  endReason,
 	}
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
@@ -1802,7 +1979,10 @@ func (s *Session) extractOriginalPrompt() string {
 	}
 	for _, t := range s.history {
 		if t.Kind == schema.TurnUserInput {
-			return t.Message.Text()
+			// The first user input may carry machinery note parts (the
+			// attachment persistence note); OriginalPrompt feeds titles and
+			// search, so project the user's own words only.
+			return apptranscript.UserFacingText(t.Message)
 		}
 	}
 	return s.cfg.spawn.subagentTask
@@ -2026,12 +2206,16 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 	// what keeps an owner from discarding its state and re-appending; the
 	// retained diagnostic is on the writer's warning queue, surfaced outside the
 	// lock by the caller's surfaceTranscriptWarnings.
+	s.mu.Lock()
+	s.lastRecorded = recordedOrdinal{}
+	s.mu.Unlock()
 	if err := write(); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
 		return err
 	}
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
+	s.markLastPairOrdinalLocked()
 	s.mu.Unlock()
 	return nil
 }
@@ -2042,6 +2226,23 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 // prunes the log at every successful publication.
 func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
+}
+
+// markLastPairOrdinalLocked stamps the most recently logged pair with the
+// entry ordinal and model its write was recorded with, when it was: the copy
+// a fold re-appends after its markers carries them as OriginalOrdinal and
+// Model. The caller holds
+// s.mu inside the attentionMu hold that cleared lastRecorded before the pair's
+// write, so lastRecorded is that write's own record.
+func (s *Session) markLastPairOrdinalLocked() {
+	n := len(s.persistedAppendLog)
+	if n == 0 || !s.lastRecorded.recorded {
+		return
+	}
+	ordinal := s.lastRecorded.ordinal
+	s.persistedAppendLog[n-1].OriginalOrdinal = &ordinal
+	// The copy keeps the model its original was recorded with.
+	s.persistedAppendLog[n-1].Model = s.lastRecorded.model
 }
 
 // tombstoneLastPairPersistedLocked replaces the most recently logged pair with
@@ -2098,17 +2299,22 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // (append first, then the entry), for the same publication-transaction
 // wholeness appendTurnAfterTranscriptWrite documents. The two turns differ
 // only when a tool exposes explicitly private evidence; every other caller
-// passes the same turn twice.
-func (s *Session) recordTurn(live, persisted schema.Turn) {
+// passes the same turn twice. It reports the entry's record.
+func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	s.history = append(s.history, live)
 	s.logPairPersistedLocked(persisted)
+	s.lastRecorded = recordedOrdinal{}
 	s.mu.Unlock()
-	err := s.writeTranscriptLocked(persisted)
-	if err != nil {
+	rec, err := s.recordTranscriptLocked(persisted, transcript.DoorBuffered, transcript.PlaceSession)
+	if err == nil {
+		s.mu.Lock()
+		s.markLastPairOrdinalLocked()
+		s.mu.Unlock()
+	} else {
 		// The write recorded nothing: the ordinary Append door returns an
 		// error only when no complete line was recorded (a whole line that
 		// landed but did not sync returns nil and is retained), so the pair
@@ -2124,6 +2330,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
+	return rec
 }
 
 // The transcript writer cannot exist for the whole of a session's life. Its
@@ -2167,10 +2374,51 @@ func (s *Session) writeTranscript(t schema.Turn) error {
 // other writer's entry can interleave between the publish and the fold's
 // compaction markers.
 func (s *Session) writeTranscriptLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
+	_, err := s.recordTranscriptLocked(t, transcript.DoorBuffered, transcript.PlaceSession)
+	return err
+}
+
+// recordTranscriptLocked is the one door every session write to its transcript
+// goes through, with attentionMu held: it stamps the entry with the session's
+// configured model, holds a buffered or durable write made before the writer
+// is attached (see holdTurnUntilTranscriptReady; the synced door refuses one
+// instead), and otherwise appends through door with the given placement,
+// reporting whether the entry was recorded. A held turn reports not recorded,
+// with no error.
+func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, place transcript.Placement) (transcript.Record, error) {
+	t = s.withEntryModel(t)
+	if door == transcript.DoorSynced {
+		s.mu.Lock()
+		ready := s.transcriptReady
+		s.mu.Unlock()
+		if !ready {
+			return transcript.Record{}, errors.New("transcript not ready: a synced write cannot be held before attach")
+		}
+	} else if s.holdTurnUntilTranscriptReady(t) {
+		return transcript.Record{}, nil
 	}
-	return s.attachedTranscript().Append(t)
+	writer := s.attachedTranscript()
+	rec, err := writer.Record(t, transcript.RecordOptions{Door: door, Place: place})
+	if err != nil && writer.Poisoned() {
+		// The writer refuses everything from here: a served session stops.
+		_ = s.failClosed(errTranscriptRefusesRecords())
+	}
+	s.mu.Lock()
+	s.noteRecordedLocked(rec)
+	s.mu.Unlock()
+	return rec, err
+}
+
+// withEntryModel stamps t with the model the session is configured with, so
+// the entry's usage can be priced from the entry alone, unless t already
+// names one.
+func (s *Session) withEntryModel(t schema.Turn) schema.Turn {
+	if t.Model == "" {
+		if profile := s.currentProfile(); profile != nil {
+			t.Model = profile.Model()
+		}
+	}
+	return t
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
@@ -2188,10 +2436,8 @@ func (s *Session) writeTranscriptDurable(t schema.Turn) error {
 // already holding attentionMu — an append/write pair
 // (appendTurnAfterTranscriptWrite) or the fold publication transaction.
 func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
-	}
-	return s.attachedTranscript().AppendDurable(t)
+	_, err := s.recordTranscriptLocked(t, transcript.DoorDurable, transcript.PlaceSession)
+	return err
 }
 
 // writeTranscriptSyncedLocked is the durability owner's write: it records AND
@@ -2209,13 +2455,8 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 // attach — the tracker guard and the delegate seed's read-back both preclude it
 // — so this is a fail-closed guard, not a live path.)
 func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) error {
-	s.mu.Lock()
-	ready := s.transcriptReady
-	s.mu.Unlock()
-	if !ready {
-		return errors.New("transcript not ready: a synced write cannot be held before attach")
-	}
-	return s.attachedTranscript().AppendSynced(t)
+	_, err := s.recordTranscriptLocked(t, transcript.DoorSynced, transcript.PlaceSession)
+	return err
 }
 
 func (s *Session) attachedTranscript() *transcript.Writer {
@@ -2242,6 +2483,7 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 // callers have already released the transcript locks.
 func (s *Session) surfaceTranscriptWarnings() {
 	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(events.EventWarning, w) })
+	s.announceFailClosed()
 }
 
 func (s *Session) closeAttachedTranscript() error {
@@ -2271,13 +2513,13 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // accumulating for the session's lifetime.
 func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.mu.Lock()
-	s.transcript = w
+	s.setTranscriptLocked(w)
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
 	for _, t := range held {
-		if err := w.Append(t); err != nil {
+		if _, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession}); err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
@@ -2306,7 +2548,10 @@ func (s *Session) sclock() clock.Clock {
 }
 
 // assistantHistoryMessage makes malformed tool arguments replayable in semantic
-// history without changing the provider response used for tool validation.
+// history without changing the provider response used for tool validation: the
+// raw bytes are kept in RawArguments so the durable record still shows what
+// the model actually sent, while Arguments carries the {} form every provider
+// round-trip needs.
 func assistantHistoryMessage(message llm.Message) llm.Message {
 	var content []llm.ContentPart
 	for i, part := range message.Content {
@@ -2317,6 +2562,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
+		call.RawArguments = string(call.Arguments)
 		call.Arguments = json.RawMessage(`{}`)
 		content[i].ToolCall = &call
 	}
@@ -2346,11 +2592,19 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
+		RoundID:                         s.roundIDForModelCall(),
 	}
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },
-		func() { s.history = append(s.history, t) },
+		func() {
+			s.history = append(s.history, t)
+			// The round's entry is recorded: the next model call is a new
+			// round (a pause_turn continuation, a bare-text retry, the next
+			// tool round).
+			s.roundID = ""
+			s.noteAgentMessageLocked(lastAgentText(t.Message))
+		},
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
@@ -2421,30 +2675,4 @@ func (s *Session) TranscriptPath() string {
 		return ""
 	}
 	return filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-}
-
-// setRestoredTranscript installs the final restore-time transcript view. It
-// runs once, at the end of restore construction, with the entry list that any
-// delegate-delivery replay already refreshed from disk. opened reports
-// whether restore opened a transcript at all, independent of the entry
-// slice's emptiness.
-func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
-	s.mu.Lock()
-	s.restoredTranscriptHeader = header
-	s.restoredTranscript = entries
-	s.restoredTranscriptOpened = opened
-	s.mu.Unlock()
-}
-
-// RestoredTranscript returns the header and decoded entry list this resume
-// validated, for a caller (serve's app-identity projection) that would
-// otherwise re-read the transcript file. ok is true exactly when restore
-// opened a transcript, including a header-only one; the slice aliases
-// retained state and must be treated as read-only.
-func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, bool) {
-	s.mu.Lock()
-	header, entries := s.restoredTranscriptHeader, s.restoredTranscript
-	opened := s.restoredTranscriptOpened
-	s.mu.Unlock()
-	return header, entries, opened
 }

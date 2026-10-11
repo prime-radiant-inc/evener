@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -312,6 +313,82 @@ func checkHandleAuth_RejectsExternalNext(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != "/" {
 		t.Errorf("Location = %q, want / (external next rejected)", loc)
 	}
+}
+
+// checkHandleAuth_NextStaysOnOrigin pins WIRE-05: a next value that a browser
+// would resolve to a foreign origin must be replaced with "/". The string
+// guard alone misses two WHATWG normalizations — a backslash is folded to "/"
+// for http(s), so "/\evil" becomes the network-path reference "//evil"; and
+// the URL parser strips ASCII tab and newline before parsing, so "/\t/evil"
+// collapses to "//evil". Every accepted Location is resolved under the same
+// browser semantics and must keep the hub's own origin. The legitimate local
+// cases (including a percent-encoded backslash, which the parser leaves
+// encoded) must survive untouched.
+func checkHandleAuth_NextStaysOnOrigin(t *testing.T) {
+	const base = "http://hub.invalid/"
+	h := HandleAuth("secret")
+	cases := []struct {
+		name string
+		next string
+		want string
+	}{
+		{"local path", "/settings/launch", "/settings/launch"},
+		{"local path with query and fragment", "/a/b?x=1#frag", "/a/b?x=1#frag"},
+		{"bare slash", "/", "/"},
+		{"percent-encoded backslash stays local", "/%5Cevil.example.com/", "/%5Cevil.example.com/"},
+		{"absolute external", "http://evil.example.com/", "/"},
+		{"protocol relative", "//evil.example.com/", "/"},
+		{"slash backslash external", `/\evil.example.com/`, "/"},
+		{"slashes and backslashes external", `/\\evil.example.com/`, "/"},
+		{"tab collapsed to network path", "/\t/evil.example.com/", "/"},
+		{"newline collapsed to network path", "/\n/evil.example.com/", "/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The query is percent-encoded on the wire; a backslash arrives as
+			// %5C and a tab as %09, so this also covers the encoded forms the
+			// browser-facing URL carries.
+			target := "/auth/secret?" + url.Values{"next": {tc.next}}.Encode()
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			rec := httptest.NewRecorder()
+			h(rec, req)
+			if rec.Code != http.StatusFound {
+				t.Fatalf("code = %d, want 302", rec.Code)
+			}
+			loc := rec.Header().Get("Location")
+			if loc != tc.want {
+				t.Fatalf("Location = %q, want %q", loc, tc.want)
+			}
+			if got := whatwgOriginForTest(base, loc); got != "hub.invalid" {
+				t.Fatalf("Location %q resolves to origin %q under browser semantics, want hub.invalid", loc, got)
+			}
+		})
+	}
+}
+
+// whatwgOriginForTest resolves a redirect Location against base the way a
+// browser does: it drops ASCII tab and newline (the URL parser removes them),
+// folds backslashes to forward slashes for the special http(s) scheme, then
+// resolves the reference. A reference that escapes base yields the foreign
+// host, which is what the WIRE-05 check forbids.
+func whatwgOriginForTest(base, ref string) string {
+	ref = strings.Map(func(r rune) rune {
+		switch r {
+		case '\t', '\n', '\r':
+			return -1
+		}
+		return r
+	}, ref)
+	ref = strings.ReplaceAll(ref, `\`, "/")
+	b, err := url.Parse(base)
+	if err != nil {
+		panic(err)
+	}
+	u, err := b.Parse(ref)
+	if err != nil {
+		return "<parse error>"
+	}
+	return u.Host
 }
 
 func checkAuthURLFor(t *testing.T) {

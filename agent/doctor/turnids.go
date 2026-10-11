@@ -77,12 +77,12 @@ type UnreadableTranscript struct {
 // not session-scoped: the question it answers is "which sessions on this
 // machine carry the shape", so it enumerates rather than resolving a selector.
 func ScanTurnIDs(stateBase string) (TurnIDScan, error) {
-	sessions, err := allSessions(stateBase)
+	sessions, stateRoot, err := allSessions(stateBase)
 	if err != nil {
 		return TurnIDScan{}, err
 	}
 	scan := TurnIDScan{
-		StateBase:       stateBase,
+		StateBase:       stateRoot,
 		SessionsScanned: len(sessions),
 		Sessions:        []TurnIDSession{},
 		Unreadable:      []UnreadableTranscript{},
@@ -131,16 +131,16 @@ func entryIndexReservedTurns(doc transcriptDoc) []ReservedTurn {
 // allSessions enumerates every session that has a transcript under stateBase,
 // across every bucket, ordered by bucket then session id so two sweeps of an
 // unchanged state root produce the same list.
-func allSessions(stateBase string) ([]Paths, error) {
-	buckets, err := resolveBuckets(stateBase)
+func allSessions(stateBase string) ([]Paths, string, error) {
+	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var all []Paths
 	for _, b := range buckets {
 		matches, err := filepath.Glob(filepath.Join(b.dir, "sessions", "*"+transcriptFileSuffix))
 		if err != nil {
-			return nil, fmt.Errorf("glob sessions in %s: %w", b.dir, err)
+			return nil, "", fmt.Errorf("glob sessions in %s: %w", b.dir, err)
 		}
 		for _, match := range matches {
 			sid := strings.TrimSuffix(filepath.Base(match), transcriptFileSuffix)
@@ -158,7 +158,7 @@ func allSessions(stateBase string) ([]Paths, error) {
 		}
 		return all[i].SessionID < all[j].SessionID
 	})
-	return all, nil
+	return all, stateRoot, nil
 }
 
 const transcriptFileSuffix = ".transcript.jsonl"
@@ -174,7 +174,7 @@ func RenderTurnIDScan(scan TurnIDScan) string {
 		fmt.Fprintf(&b, "%d %s %s a reserved turn id in the transcript's entry-index namespace:\n",
 			len(scan.Sessions), plural(len(scan.Sessions), "session"), verb(len(scan.Sessions), "carries", "carry"))
 		for _, session := range scan.Sessions {
-			fmt.Fprintf(&b, "  · %s  (%s)\n", session.TranscriptRef, session.TranscriptPath)
+			fmt.Fprintf(&b, "  · %s  (%s)\n", session.SessionID, renderRefAndPath(session.TranscriptRef, session.TranscriptPath))
 			for _, reserved := range session.ReservedTurns {
 				fmt.Fprintf(&b, "      %s  entry %d  %s\n", reserved.TurnID, reserved.EntryIndex, reserved.Kind)
 			}
@@ -184,10 +184,25 @@ func RenderTurnIDScan(scan TurnIDScan) string {
 		fmt.Fprintf(&b, "%d %s could not be read — those sessions are neither cleared nor condemned:\n",
 			len(scan.Unreadable), plural(len(scan.Unreadable), "transcript"))
 		for _, unreadable := range scan.Unreadable {
-			fmt.Fprintf(&b, "  · %s — %s\n", unreadable.TranscriptRef, unreadable.Error)
+			if unreadable.TranscriptRef != "" {
+				fmt.Fprintf(&b, "  · %s  (%s) — %s\n", unreadable.SessionID, unreadable.TranscriptRef, unreadable.Error)
+			} else {
+				fmt.Fprintf(&b, "  · %s  — %s\n", unreadable.SessionID, unreadable.Error)
+			}
 		}
 	}
 	return b.String()
+}
+
+// renderRefAndPath renders the parenthetical tail of the affected-session line.
+// The ref can be empty for a legacy-named bucket whose name refFor cannot
+// consume; the session id is already the line's leading identity, so the tail
+// never repeats it.
+func renderRefAndPath(ref, path string) string {
+	if ref == "" {
+		return path
+	}
+	return ref + "  " + path
 }
 
 // verb returns the verb form the count takes, so one session "carries" and two

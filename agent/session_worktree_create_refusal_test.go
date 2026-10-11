@@ -95,6 +95,7 @@ func assertLaneRolledBack(t *testing.T, sr *scriptedLaneRepo, r *wtRepo, name, p
 // dir, so the rollback must use the dir the create wrote to, not one derived
 // from the lane path.
 func TestWorktreeCreate_RefusedMidSwapLeavesNoLaneBehind(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"lane", "sub/lane"} {
 		t.Run(name, func(t *testing.T) {
 			sr := newScriptedLaneRepo(t)
@@ -117,6 +118,7 @@ func TestWorktreeCreate_RefusedMidSwapLeavesNoLaneBehind(t *testing.T) {
 // git runner is bound to, so a rollback through that runner fails silently.
 // The rollback has to run on an independent, bounded control context.
 func TestWorktreeCreate_RefusedMidSwapRollsBackOnACancelledRequestContext(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	contextBoundScriptedGit(sr)
@@ -137,6 +139,7 @@ func TestWorktreeCreate_RefusedMidSwapRollsBackOnACancelledRequestContext(t *tes
 // Any failure after the create core succeeded leaves the same lane, branch,
 // and sidecar behind as the refusal does, so every one of them rolls back.
 func TestWorktreeCreate_FailureAfterTheCoreRollsBack(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	path, sidecar := createLaneExpectations(t, r, "lane")
@@ -157,6 +160,7 @@ func TestWorktreeCreate_FailureAfterTheCoreRollsBack(t *testing.T) {
 // just for the swap: walk past it and the environment is torn down mid-rollback,
 // leaving behind the very lane the rollback was removing.
 func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	path, sidecar := createLaneExpectations(t, r, "lane")
@@ -164,6 +168,8 @@ func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
 	cleanupObserved := make(chan struct{})
 	var cleanupDuringRollback, holding atomic.Bool
 	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
+	rollbackHeld := make(chan struct{})
 
 	// Hold the rollback at its first command — the lane unlock — and watch for
 	// the close reaching environment cleanup while it is held. The wait happens
@@ -175,10 +181,9 @@ func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
 		return func(args ...string) (string, error) {
 			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == path &&
 				holding.CompareAndSwap(false, true) {
-				select {
-				case <-cleanupObserved:
+				close(rollbackHeld)
+				if closeWalkedPastHeldWork(t, closeAwaiting, cleanupObserved) {
 					cleanupDuringRollback.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -186,6 +191,15 @@ func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
 	}
 
 	closeDone := armCloseDuringSwap(r, nil)
+	// The swap is refused as soon as the close begins, and the rollback only
+	// starts after it. Hold the close short of its environment-work join until
+	// the rollback's git is held, so the join it then arrives at can only be
+	// blocked by an admission that covers the rollback.
+	armedCloseBegun := r.s.cfg.testOnly.closeAfterDisposeSweepJoin
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() {
+		armedCloseBegun()
+		awaitCloseFenceSignal(t, rollbackHeld, "the refused create holding its rollback")
+	}
 
 	_, err := r.create(t, map[string]any{"name": "lane"})
 	<-closeDone
@@ -208,7 +222,7 @@ func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
 // than the cleanup that is actually running on the environment it is about to
 // reap — pointing whoever reads the warning at the wrong thing.
 func TestWorktreeCreate_FenceWarningNamesTheRollbackOnceItHasStarted(t *testing.T) {
-	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+	budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	path, _ := createLaneExpectations(t, r, "lane")
@@ -229,7 +243,7 @@ func TestWorktreeCreate_FenceWarningNamesTheRollbackOnceItHasStarted(t *testing.
 			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == path &&
 				holding.CompareAndSwap(false, true) {
 				close(rollbackStarted)
-				time.Sleep(2 * LaneClosePassBudget)
+				time.Sleep(2 * budget)
 			}
 			return inner(args...)
 		}

@@ -59,6 +59,12 @@ type threadEnvelope struct {
 	HumanNote   string
 	AgentNote   string
 	SessionURLs []appwire.SessionURL
+	// WorkingDir is the installed session environment's cwd. The direct
+	// environment carrier and SessionMeta checkpoints share this field; the
+	// generation prevents an older in-flight checkpoint from replacing a newer
+	// carrier commit.
+	WorkingDir           string
+	cwdCarrierGeneration uint64
 	// Carrier generations are internal per-identity fences. A sampled checkpoint
 	// captures them before leaving s.mu and cannot overwrite a newer direct patch.
 	taskCarrierGeneration uint64
@@ -80,7 +86,10 @@ type threadEnvelope struct {
 	WorkMillis            int64
 	ActiveTurnStartedAt   int64
 	FailedToolCalls       *int
-	AskPending            bool
+	PendingQuestion       *appwire.PendingQuestion
+	// Failure summarizes the failed turn the session rests on (S1c). The
+	// snapshot shows it only while the status is systemError.
+	Failure               *appwire.ThreadFailure
 	PendingEscalations    []appwire.SandboxEscalationRequested
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
@@ -88,14 +97,24 @@ type threadEnvelope struct {
 	// VisionModel is the session's vision side-channel setting ("", "off", or
 	// a model ref), sampled under its own facet beside reasoning's trio.
 	VisionModel string
-	// Name and Preview are the only two things appThread reads out of
-	// schema.SessionMeta. Storing the two strings rather than the whole struct is
-	// deliberate: SessionMeta has roughly a dozen other fields (turn counts,
-	// pinned notes, worktree paths) that change constantly and silently, and
-	// storing them would create a dozen values this envelope claims to keep
-	// current and does not.
-	Name    string
-	Preview string
+	// Name, Preview, LastTurnEndedAt and LastMessage are the facetMeta fields
+	// appThread reads out of schema.SessionMeta. Storing them rather than the
+	// whole struct is deliberate: SessionMeta has roughly a dozen other fields
+	// (turn counts, pinned notes, worktree paths) that change constantly and
+	// silently, and storing them would create a dozen values this envelope
+	// claims to keep current and does not. LastTurnEndedAt (Unix ms, 0 before
+	// any turn has ended) is current by construction: only a turn ending moves
+	// it, and TURN_ENDED re-samples every facet, facetMeta included.
+	// LastMessage can move mid-turn and lag until the turn ends, which is when
+	// a row shows it (S1d): a Finished row is a session whose turn ended.
+	Name            string
+	Preview         string
+	LastTurnEndedAt int64
+	LastMessage     string
+	// Access is the session's sandbox mode and network setting (S15), from
+	// the sandbox request its meta persists. A session's sandbox is fixed when
+	// it starts, so the seed at identity install is the sample that matters.
+	Access *appwire.ThreadAccess
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
@@ -124,7 +143,12 @@ type ThreadEnvelopeSource interface {
 	TaskAggregate() *appwire.TaskAggregate
 	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
-	AskPending() bool
+	// PendingQuestion is the first question of the session's pending ask, nil
+	// while none waits. The thread's AskPending is its presence.
+	PendingQuestion() *appwire.PendingQuestion
+	// RestingFailure summarizes the failed turn the session rests on, nil
+	// when it rests on none.
+	RestingFailure() *appwire.ThreadFailure
 	PendingEscalations() []appwire.SandboxEscalationRequested
 	ReasoningInfo() (effort string, levels []string, supportsReasoning bool)
 	VisionModel() string
@@ -153,13 +177,19 @@ const (
 	facetReasoning
 	facetVision
 	facetMeta
+	// facetTurnFailure is the summary of the failed turn the session rests on
+	// (S1c). No row of facetsByEvent names it on its own: a failed turn ends
+	// with TURN_ENDED, which samples every facet (the failed-turn path emits
+	// nothing else), and a snapshot shows the summary only while the status
+	// is systemError, so one left over once the next turn starts is never read.
+	facetTurnFailure
 )
 
 // facetAll is every facet. Used for the seed at identity install, which is the
 // one moment every value changes at once because the session itself changed.
 const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 	facetGoal | facetWork | facetFailures | facetAsk | facetEscalations |
-	facetReasoning | facetVision | facetMeta
+	facetReasoning | facetVision | facetMeta | facetTurnFailure
 
 // facetsByEvent maps a session event to the envelope facets it can have moved.
 //
@@ -328,6 +358,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	sourceID := s.appSourceID
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
 	goalCarrierGeneration := s.appEnvelope.goalCarrierGeneration
+	cwdCarrierGeneration := s.appEnvelope.cwdCarrierGeneration
 	notesCarrierGeneration := s.appEnvelope.notesCarrierGeneration
 	urlsCarrierGeneration := s.appEnvelope.urlsCarrierGeneration
 	ref := s.appRef
@@ -371,7 +402,10 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		}
 	}
 	if facets&facetAsk != 0 {
-		next.AskPending = src.AskPending()
+		next.PendingQuestion = src.PendingQuestion()
+	}
+	if facets&facetTurnFailure != 0 {
+		next.Failure = src.RestingFailure()
 	}
 	if facets&facetEscalations != 0 {
 		next.PendingEscalations = src.PendingEscalations()
@@ -393,8 +427,14 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&(facetMeta|facetGoal) != 0 {
 		meta := src.SessionMeta()
 		if facets&facetMeta != 0 {
+			next.WorkingDir = meta.EnvInfo.WorkingDir
 			next.Name = strings.TrimSpace(meta.Name)
 			next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
+			if !meta.LastTurnEndedAt.IsZero() {
+				next.LastTurnEndedAt = meta.LastTurnEndedAt.UnixMilli()
+			}
+			next.LastMessage = meta.LastMessage
+			next.Access = appwire.SessionAccess(meta.Config.Sandbox, meta.Config.SandboxNet)
 		}
 		if facets&facetGoal != 0 {
 			if meta.Goal != nil {
@@ -438,6 +478,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		if assignFacets&facetGoal != 0 && s.appEnvelope.goalCarrierGeneration != goalCarrierGeneration {
 			assignFacets &^= facetGoal
 		}
+		cwdStale := s.appEnvelope.cwdCarrierGeneration != cwdCarrierGeneration
 		// The notes and URLs carriers ride the goal facet's sample (SessionMeta
 		// holds Goal, HumanNote, AgentNote, and SessionURLs together), so the
 		// guard cannot clear the whole facet the way the task/goal guards do —
@@ -448,7 +489,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		// their independent carriers.
 		notesStale := s.appEnvelope.notesCarrierGeneration != notesCarrierGeneration
 		urlsStale := s.appEnvelope.urlsCarrierGeneration != urlsCarrierGeneration
-		s.appEnvelope.assign(assignFacets, next, notesStale, urlsStale)
+		s.appEnvelope.assign(assignFacets, next, cwdStale, notesStale, urlsStale)
 	}
 	s.mu.Unlock()
 }
@@ -467,7 +508,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 // place: a field added to the struct without a line here is a field that is
 // sampled and then dropped, which is far easier to see in six lines of
 // assignment than spread across the sampler.
-func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notesStale, urlsStale bool) {
+func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdStale, notesStale, urlsStale bool) {
 	if facets&facetContext != 0 {
 		e.ContextPressure = next.ContextPressure
 		e.ContextMetrics = next.ContextMetrics
@@ -502,7 +543,10 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 		e.FailedToolCalls = next.FailedToolCalls
 	}
 	if facets&facetAsk != 0 {
-		e.AskPending = next.AskPending
+		e.PendingQuestion = next.PendingQuestion
+	}
+	if facets&facetTurnFailure != 0 {
+		e.Failure = next.Failure
 	}
 	if facets&facetEscalations != 0 {
 		e.PendingEscalations = next.PendingEscalations
@@ -516,7 +560,13 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 		e.VisionModel = next.VisionModel
 	}
 	if facets&facetMeta != 0 {
+		if !cwdStale {
+			e.WorkingDir = next.WorkingDir
+		}
 		e.Name = next.Name
 		e.Preview = next.Preview
+		e.LastTurnEndedAt = next.LastTurnEndedAt
+		e.LastMessage = next.LastMessage
+		e.Access = next.Access
 	}
 }

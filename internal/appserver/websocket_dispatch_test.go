@@ -58,29 +58,35 @@ func waitFor[T any](t *testing.T, what string, ch <-chan T) T {
 	}
 }
 
-// dispatchSlowFastServer builds a server whose thread/read handler — a
-// slow-read method that dispatches concurrently — blocks until released, plus
-// an http server speaking AppWire over WebSocket. The returned release is
-// idempotent and also runs at test cleanup, so a parked handler can never
-// outlive the test.
-func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
+// parkedMethodServer builds a server whose method handler blocks until
+// released and then answers reply, plus an http server speaking AppWire over
+// WebSocket. The returned release is idempotent and also runs at test
+// cleanup, so a parked handler can never outlive the test.
+func parkedMethodServer[P, R any](t *testing.T, method string, reply R) (*Server, *httptest.Server, chan struct{}, func()) {
 	t.Helper()
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	HandleTyped(server.Router(), method, func(_ context.Context, _ P) (R, error) {
 		select {
 		case <-handlerStarted:
 		default:
 			close(handlerStarted)
 		}
 		<-releaseHandler
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
+		return reply, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	release := sync.OnceFunc(func() { close(releaseHandler) })
 	t.Cleanup(release)
 	return server, httpServer, handlerStarted, release
+}
+
+// dispatchSlowFastServer is parkedMethodServer for thread/read, a slow-read
+// method that dispatches concurrently.
+func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
+	t.Helper()
+	return parkedMethodServer[appwire.ThreadReadParams](t, appwire.MethodThreadRead, appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}})
 }
 
 // TestServeWebSocketSlowHandlerDoesNotDelayPing pins the fix itself: with one
@@ -158,6 +164,56 @@ func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 		t.Fatalf("slow handler completed before it was released: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
+}
+
+// requireSlowMethodDoesNotHoldOrderedRequests parks a handler for method,
+// then requires an ordered request issued behind it on the same connection to
+// answer before the parked one is released.
+func requireSlowMethodDoesNotHoldOrderedRequests[P, R any](t *testing.T, method string, params P, reply R) {
+	t.Helper()
+	server, httpServer, started, release := parkedMethodServer[P](t, method, reply)
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+
+	slowDone := make(chan error, 1)
+	go func() {
+		var out R
+		slowDone <- client.Request(ctx, method, params, &out)
+	}()
+	waitFor(t, method+" to start", started)
+
+	orderedDone := make(chan error, 1)
+	go func() {
+		orderedDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+	}()
+	if err := waitFor(t, "an ordered request to answer while "+method+" is parked", orderedDone); err != nil {
+		t.Fatalf("ordered request failed: %v", err)
+	}
+
+	release()
+	if err := waitFor(t, method+" to answer once released", slowDone); err != nil {
+		t.Fatalf("%s failed: %v", method, err)
+	}
+}
+
+// TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests pins why
+// evener/activity/read dispatches concurrently: the hub's read can wait out
+// its per-host budget on a slow attached host, and a phone polls it every ten
+// seconds on the same connection its sends ride.
+func TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests(t *testing.T) {
+	requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerActivityRead, appwire.ActivityReadParams{}, appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{}})
+}
+
+// TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests pins why
+// evener/jobs/list dispatches concurrently: for a delegate-heavy session the
+// tree build takes seconds and returns megabytes, and run inline it held
+// every later request on the browser's socket (navigation, unsubscribe, turn
+// lists) behind it.
+func TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests(t *testing.T) {
+	requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerJobsList, appwire.JobsListParams{Ref: "local:th_1"}, appwire.JobsListResponse{})
 }
 
 // TestServeWebSocketRejectsRequestsBeforeInitialize pins the initialize
@@ -298,6 +354,11 @@ func TestServeWebSocketBurstOfConcurrentRequestsAllPairCorrectly(t *testing.T) {
 // silently acquire (or lose) a member.
 func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 	slowReads := map[string]bool{
+		appwire.MethodEvenerThreadActivityRead:  true,
+		appwire.MethodEvenerThreadDelegatesList: true,
+		appwire.MethodEvenerThreadJobsList:      true,
+		appwire.MethodEvenerThreadWatchesList:   true,
+
 		appwire.MethodThreadRead:            true,
 		appwire.MethodThreadTurnsList:       true,
 		appwire.MethodEvenerSubagentPreview: true,
@@ -312,6 +373,18 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		// lock fail a concurrent apply fast, and the restart waits on
 		// its own response flush rather than connection order.
 		appwire.MethodEvenerUpdateApply: true,
+		// evener/activity/read waits up to its per-host budget on each
+		// attached host; a phone polls it on the connection its sends ride
+		// (TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests).
+		appwire.MethodEvenerActivityRead: true,
+		// evener/jobs/list builds the whole activity tree, seconds and
+		// megabytes for a delegate-heavy session
+		// (TestServeWebSocketSlowJobsListDoesNotHoldOrderedRequests).
+		appwire.MethodEvenerJobsList: true,
+		// evener/plugin/checkUpdates waits on every plugin's git remote,
+		// each under its own timeout; it changes nothing installed, and each
+		// answer replaces the last.
+		appwire.MethodEvenerPluginCheckUpdates: true,
 	}
 	for _, spec := range appwire.Methods {
 		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {
@@ -782,4 +855,19 @@ func TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured(t *testing.T) 
 	if !strings.Contains(buf.String(), "panic handling thread/list: boom") {
 		t.Fatalf("standard logger output = %q, want the panic line", buf.String())
 	}
+}
+
+func TestSessionActivityReadsDoNotHoldOrderedRequests(t *testing.T) {
+	t.Run("summary", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadActivityRead, appwire.SessionActivityReadParams{Ref: "local:child"}, appwire.SessionActivitySummary{})
+	})
+	t.Run("delegates", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadDelegatesList, appwire.SessionActivityListParams{Ref: "local:child"}, appwire.SessionDelegatesResponse{})
+	})
+	t.Run("jobs", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadJobsList, appwire.SessionActivityListParams{Ref: "local:child"}, appwire.SessionJobsResponse{})
+	})
+	t.Run("watches", func(t *testing.T) {
+		requireSlowMethodDoesNotHoldOrderedRequests(t, appwire.MethodEvenerThreadWatchesList, appwire.SessionActivityListParams{Ref: "local:child"}, appwire.SessionWatchesResponse{})
+	})
 }

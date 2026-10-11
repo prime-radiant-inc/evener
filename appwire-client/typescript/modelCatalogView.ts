@@ -79,10 +79,9 @@ export function formatCost(entry: ModelCatalogEntry): string | null {
   return `${parts.join(" · ")} /Mtok`;
 }
 
-/** The context window abbreviated (200k, 1M), or null when unknown. */
+/** The context window abbreviated as every token count is (200K, 1M), or
+ * null when unknown. */
 export function contextWindowLabel(entry: ModelCatalogEntry): string | null {
   const cw = entry.contextWindow;
-  if (cw === undefined) return null;
-  if (cw >= 1_000_000) return `${cw / 1_000_000}M`;
-  return formatTokenCount(cw);
+  return cw === undefined ? null : formatTokenCount(cw);
 }

@@ -12,6 +12,7 @@ import (
 // decide terminal catch-up eligibility. When that load fails (corrupt log), the
 // store error propagates out of configureWatch rather than being swallowed.
 func TestW2Watch_configureWatchOutputMatchStoreLoadError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	// createShell forces the jobs.jsonl to exist before we append garbage.
 	if _, err := jm.createShell(createShellOpts{Command: "x"}); err != nil {
@@ -29,6 +30,7 @@ func TestW2Watch_configureWatchOutputMatchStoreLoadError(t *testing.T) {
 // one-shot catch-up, but a bad send target must still be rejected: the terminal
 // branch re-validates the send target and returns its error.
 func TestW2Watch_configureWatchTerminalCatchupRejectsBadSendTarget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := terminalShellWithOutput(t, jm, "ready\n")
 
@@ -46,6 +48,7 @@ func TestW2Watch_configureWatchTerminalCatchupRejectsBadSendTarget(t *testing.T)
 // event; when that append fails the install aborts with the error and the watch
 // is not added to the live set.
 func TestW2Watch_configureWatchRegisteredAppendError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	realAppendEvents := jm.appendEvents
 	appendErr := errors.New("registered append failed")

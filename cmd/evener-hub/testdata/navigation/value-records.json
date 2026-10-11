@@ -1,0 +1,135 @@
+{
+  "session": {
+    "ref": "local:01FIXTURE",
+    "host_id": "local",
+    "session_id": "01FIXTURE",
+    "title": "Fixture session",
+    "project": "evener-0123456789",
+    "state": "active",
+    "kind": "session",
+    "branch": "main",
+    "favorite": true,
+    "rename": true,
+    "live": true,
+    "ask_pending": true,
+    "approval_pending": true,
+    "approval_tool": "write_file",
+    "approval_target": "/home/me/sites/docs/index.md",
+    "question": {
+      "text": "Keep or drop the implied options?",
+      "options": [
+        "Drop them",
+        "Keep them"
+      ],
+      "count": 2
+    },
+    "failure": {
+      "title": "Provider error",
+      "cause_kind": "provider",
+      "provider": "codex-jesse-fsck.com",
+      "status": 401
+    },
+    "last_message": "Three layouts are ready for review. I recommend B.",
+    "model_name": "Gpt 5.6",
+    "dormant": true,
+    "offline": true,
+    "updated_at": "2026-09-26T12:00:00Z",
+    "turn_ended_at": "2026-09-26T11:58:00.123Z",
+    "unseen": true,
+    "seen_through": "2026-09-26T11:50:00Z",
+    "more_subagents": 3,
+    "subagents": {
+      "running": 2,
+      "failed": 1,
+      "done": 5
+    },
+    "omitted_descendants": 4,
+    "tasks": {
+      "total": 7,
+      "done": 2,
+      "cancelled": 1,
+      "current_id": 4,
+      "current": "Fix the settle/drain race"
+    },
+    "children": [],
+    "running_job_count": 1,
+    "running_job_command": "command-sentinel",
+    "watch_count": 3,
+    "armed_watch_count": 2
+  },
+  "project": {
+    "key": "evener-0123456789",
+    "name": "evener",
+    "working_dir": "/Users/jesse/git/evener",
+    "rollup_state": "working",
+    "rollup_live": 2,
+    "rollup_attn": 1,
+    "default_expanded": true,
+    "more_current": 1,
+    "more_recent": 2,
+    "more_archived": 3,
+    "worktrees": 2,
+    "is_archived": true,
+    "favorite": true,
+    "sources": [
+      "local",
+      "paradise-park"
+    ],
+    "session_count": 7
+  },
+  "pin_section": {
+    "id": "release",
+    "name": "Release",
+    "count": 2
+  },
+  "manifest": {
+    "generation_id": "g",
+    "revision": 1,
+    "sources": [
+      {
+        "id": "local",
+        "label": "magic-kingdom",
+        "kind": "local",
+        "online": true
+      }
+    ],
+    "attentionSummary": {
+      "needsYou": 4,
+      "error": 1,
+      "working": 9
+    },
+    "sections": {
+      "live": {
+        "count": 20
+      },
+      "needs_you": {
+        "count": 4
+      },
+      "pin_sections": {
+        "count": 2
+      }
+    },
+    "catalogs": {
+      "projects": {
+        "count": 14
+      },
+      "archived_projects": {
+        "count": 3
+      },
+      "test_runs": {
+        "count": 1
+      }
+    }
+  },
+  "location": {
+    "generation_id": "g",
+    "revision": 1,
+    "ref": "local:01FIXTURE",
+    "top_level_ref": "local:01FIXTURE",
+    "catalog": "projects",
+    "project_key": "evener-0123456789",
+    "top_level": true,
+    "tier": "current",
+    "pin_section_id": "release"
+  }
+}

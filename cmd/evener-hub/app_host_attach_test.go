@@ -228,6 +228,21 @@ func TestHostAttachTimedOutDeployIsHubLaunchError(t *testing.T) {
 			info:      appwire.ErrorHubLaunch,
 		},
 		{
+			// The cross-target default refusal is terminal and deploy-family:
+			// it must reach the browser as hubLaunch, not as a generic internal
+			// error, even though it is not wrapped in ErrDeploy.
+			name:      "cross-target own-executable refusal",
+			attachErr: fmt.Errorf("%w: host %q: this controller's own executable targets linux/amd64 but the host runs darwin/arm64, and the installer fallback has no published artifact to pin for this controller's build; set Options.BuildSource", sshconn.ErrOwnExecutableCannotServe, "alpha"),
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			// The deploy-disabled refusal is terminal and deploy-family too,
+			// and its remedy (DeployHelp) is only useful if it is typed.
+			name:      "deploy-disabled refusal",
+			attachErr: fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; run this hub without -no-deploy", sshconn.ErrDeployDisabled, "alpha"),
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
 			name:      "genuine transport timeout",
 			attachErr: fmt.Errorf("attach alpha: %w", context.DeadlineExceeded),
 			info:      appwire.ErrorSessionUnavailable,
@@ -366,6 +381,34 @@ func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
 		{
 			name:      "dirty controller refused",
 			attachErr: fmt.Errorf("%w: host %q", sshconn.ErrControllerDirty, "alpha"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			// A run target that cannot serve a hub is the same shape: the
+			// controller can never install a binary the hub can run at that
+			// path, so it is a typed hub-launch failure rather than a generic
+			// internal error.
+			name:      "unservable run target refused",
+			attachErr: fmt.Errorf("%w: host %q evener_path %q", sshconn.ErrRunTargetUnservable, "alpha", "/opt/evener/bin/evener-dev"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			// The deploy ran but left a build that is not this controller's:
+			// retrying re-pushes the same artifact, so it is the same terminal
+			// hub-launch shape as the refusals above.
+			name:      "deployed build not stamped by the controller refused",
+			attachErr: fmt.Errorf("%w: host %q still reports version %q", sshconn.ErrDeployUnstamped, "alpha", "othersha"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			// The operator's -deploy-binary targets another platform, so it can
+			// never be installed on this host and every retry re-reads the same
+			// file: the same terminal hub-launch shape as the refusals above.
+			name:      "wrong-platform deploy artifact refused",
+			attachErr: fmt.Errorf("host %q build linux/amd64: %w: -deploy-binary %q targets linux/arm64, but the host needs linux/amd64", "alpha", sshconn.ErrDeployArtifactUnusable, "/tmp/evener"),
 			code:      appwire.CodeUnavailable,
 			info:      appwire.ErrorHubLaunch,
 		},

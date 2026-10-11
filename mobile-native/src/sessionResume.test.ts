@@ -1,10 +1,8 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { AnyNotification, Thread, WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
-import {
-	createConversationStore,
-	type LiveActivitySink,
-} from "../../mobile/src/state/conversation";
+import { createConversationStore, type LiveActivitySink } from "../../mobile/src/state/conversation";
 import { createHubClient } from "./connection";
 import { SessionControls } from "./sessionControls";
 
@@ -46,7 +44,7 @@ const thread: Thread = {
 
 const initialize = {
 	serverInfo: { name: "scripted", version: "1" },
-	protocolVersion: "evener-appwire-v5" as const,
+	protocolVersion: APPWIRE_PROTOCOL_VERSION,
 	sourceId: "local",
 	features: Object.fromEntries(
 		[
@@ -91,11 +89,10 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 		this.methods.push(request.method);
 		const result = async () => {
 			if (request.method === "initialize") return initialize;
-			if (request.method === "initialized") return {};
+			if (request.method === "initialized" || request.method === "thread/unsubscribe") return {};
 			if (request.method === "thread/read") {
 				this.state.readCount += 1;
-				if (this.state.readBarrier && this.state.readCount === 2)
-					await this.state.readBarrier;
+				if (this.state.readBarrier && this.state.readCount === 2) await this.state.readBarrier;
 				return {
 					thread: {
 						...thread,
@@ -141,10 +138,7 @@ const sink: LiveActivitySink = {
 	reset: () => {},
 };
 
-async function connectedFixture(
-	readBarrier?: Promise<void>,
-	ackBarrier?: Promise<void>,
-) {
+async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promise<void>) {
 	const sockets: ExternalScriptedWebSocket[] = [];
 	const state = { readBarrier, ackBarrier, readCount: 0, resumed: false };
 	const client = createHubClient("https://hub.test", "", () => {
@@ -166,10 +160,7 @@ describe("native resume recovery integration", () => {
 		async (navigateAway) => {
 			const barrier = deferred<void>();
 			const ack = deferred<void>();
-			const { client, service, store, sockets, state } = await connectedFixture(
-				barrier.promise,
-				ack.promise,
-			);
+			const { client, service, store, sockets, state } = await connectedFixture(barrier.promise, ack.promise);
 			let controls!: SessionControls;
 			let refreshes = 0;
 			const ready = deferred<void>();
@@ -178,12 +169,8 @@ describe("native resume recovery integration", () => {
 			const bindingGeneration = store.getState().conversationGeneration;
 			const refresh = async () => {
 				refreshes += 1;
-				if (store.getState().status === "open")
-					await store.getState().rehydrate(service, sink);
-				else
-					await store
-						.getState()
-						.resumeProjected(service, sink, "local:thread-1");
+				if (store.getState().status === "open") await store.getState().rehydrate(service, sink);
+				else await store.getState().resumeProjected(service, sink, "local:thread-1");
 			};
 			const unsubscribe = client.onStateChange((connectionState) => {
 				if (connectionState === "reconnecting") {
@@ -201,9 +188,7 @@ describe("native resume recovery integration", () => {
 				refresh,
 				() => {},
 				(scope) =>
-					destination &&
-					(scope === "destination" ||
-						store.getState().conversationGeneration === bindingGeneration),
+					destination && (scope === "destination" || store.getState().conversationGeneration === bindingGeneration),
 				() => null,
 				() => false,
 			);
@@ -219,18 +204,14 @@ describe("native resume recovery integration", () => {
 				expect(state.readCount).toBe(2);
 				expect(store.getState().status).toBe("open");
 				expect(store.getState().conversation?.resumeRequired).toBe(true);
-				expect(store.getState().conversationGeneration).not.toBe(
-					bindingGeneration,
-				);
+				expect(store.getState().conversationGeneration).not.toBe(bindingGeneration);
 				// Navigation can retire the destination while the daemon acknowledgement is held.
 				destination = !navigateAway;
 				ack.resolve();
 				await resume;
 				expect(state.readCount).toBe(navigateAway ? 2 : 3);
 				expect(refreshes).toBe(navigateAway ? 1 : 2);
-				expect(store.getState().conversation?.resumeRequired).toBe(
-					navigateAway,
-				);
+				expect(store.getState().conversation?.resumeRequired).toBe(navigateAway);
 				expect(controls.getSnapshot().notice).toBe(null);
 			} finally {
 				barrier.resolve();

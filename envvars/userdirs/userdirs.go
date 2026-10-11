@@ -1,4 +1,5 @@
-// Package userdirs resolves Evener's user-level configuration paths.
+// Package userdirs resolves Evener's user-level configuration and state
+// paths.
 package userdirs
 
 import (
@@ -33,7 +34,55 @@ func Subdir(root, name string) string {
 	return filepath.Join(root, name)
 }
 
+// PluginStore is Evener's plugin store under a config root.
+func PluginStore(root string) string { return Subdir(root, "plugins") }
+
+// The plugin store's directories of installed plugin files: copies fetched from
+// marketplaces, and the plugins Evener bundles. The rest of the store is
+// metadata (the registries and marketplace clones).
+const (
+	PluginCacheDirName   = "cache"
+	PluginBundledDirName = "bundled"
+)
+
+// PluginContentDirs are the store's directories of installed plugin files.
+func PluginContentDirs(store string) []string {
+	return []string{Subdir(store, PluginCacheDirName), Subdir(store, PluginBundledDirName)}
+}
+
+// UserSkills is the user's own skills directory under a config root.
+func UserSkills(root string) string { return Subdir(root, "skills") }
+
 // DefaultConfigRoot resolves the user config root from the process environment.
 func DefaultConfigRoot() string {
 	return ConfigRoot(envvars.XDGConfigHome.Getenv(), os.UserHomeDir)
+}
+
+// StateHomeForBucketDir reports the XDG-style state home that a project
+// bucket directory lives under, or "" when stateDir is not laid out as
+// <stateHome>/evener/projects/<project-id>.
+//
+// The daemon runs every session with its state dir set to that bucket
+// directory — what agent.RuntimeDir computes and what EVENER_STATE_DIR
+// carries — so anything sweeping a whole state root from such a base must
+// up-walk to the state home before it can see the sibling buckets. The two
+// path components checked (evener, projects) are the runtime's own
+// structural layout, not a bucket-naming assumption: any directory under
+// <stateHome>/evener/projects is a bucket whatever its name looks like.
+func StateHomeForBucketDir(stateDir string) string {
+	// Clean first: a trailing separator defeats a Dir-based walk (Dir of
+	// "…/b/" is "…/b", so Base would read the bucket's own name where the
+	// walk expects "projects"). Cleaning here keeps every caller honest —
+	// both the agent's and the doctor's sweeps spell the state dir, and
+	// "--state-dir $DIR/" is a trivial spelling to hit.
+	stateDir = filepath.Clean(stateDir)
+	projects := filepath.Dir(stateDir)
+	if filepath.Base(projects) != "projects" {
+		return ""
+	}
+	evener := filepath.Dir(projects)
+	if filepath.Base(evener) != "evener" {
+		return ""
+	}
+	return filepath.Dir(evener)
 }

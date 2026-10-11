@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import {
   createMutationProjectionFence,
@@ -5,6 +7,7 @@ import {
   type MutationPersistenceSnapshot,
   replaceTargetRecords,
 } from "./projection";
+import type { MutationAttachmentRef, MutationOutboxRecord } from "./records";
 import { outboxRecord, recoveryRecord } from "./testing";
 
 function emptySnapshot(): MutationPersistenceSnapshot {
@@ -38,7 +41,78 @@ describe("replaceTargetRecords", () => {
     const next = replaceTargetRecords(current, new Set(["ref-b"]), []);
     expect(next.get("cmid-1")).toEqual(current.get("cmid-1"));
   });
+
+  test("returns the current map itself when a fresh read of every target says the same thing", () => {
+    const current = new Map([["cmid-1", readRecord()]]);
+    // ref-b has no records on either side.
+    expect(replaceTargetRecords(current, new Set(["ref-a", "ref-b"]), [readRecord()])).toBe(current);
+  });
+
+  test.each<[string, Partial<MutationOutboxRecord<HostAttachment>>]>([
+    ["state changed", { state: "blockedUnknown" }],
+    ["payload changed", { payload: { ref: "ref-a", input: [{ type: "text", text: "edited" }] } }],
+    ["attachment was restaged under a new presentationId", { attachments: [hostAttachment("presentation-2")] }],
+  ])("a record whose %s lands in a new map", (_change, overrides) => {
+    const current = new Map([["cmid-1", readRecord()]]);
+    const changed = readRecord(overrides);
+    const next = replaceTargetRecords(current, new Set(["ref-a"]), [changed]);
+    expect(next).not.toBe(current);
+    expect(next.get("cmid-1")).toBe(changed);
+  });
+
+  // Both hold each target's records in intent-sequence order, but an
+  // all-targets read interleaves the targets in its own order.
+  test("an all-targets read that lists the targets in another order finds nothing changed", () => {
+    const refA = readRecord({ clientMutationId: "cmid-a", targetRef: "ref-a" });
+    const refB = readRecord({ clientMutationId: "cmid-b", targetRef: "ref-b" });
+    const current = new Map([
+      ["cmid-a", refA],
+      ["cmid-b", refB],
+    ]);
+    const next = replaceTargetRecords(current, new Set(["ref-a", "ref-b"]), [
+      readRecord({ clientMutationId: "cmid-b", targetRef: "ref-b" }),
+      readRecord({ clientMutationId: "cmid-a", targetRef: "ref-a" }),
+    ]);
+    expect(next).toBe(current);
+  });
+
+  test("a record added to a target's read lands in a new map", () => {
+    const current = new Map([["cmid-1", readRecord()]]);
+    const next = replaceTargetRecords(current, new Set(["ref-a"]), [
+      readRecord(),
+      readRecord({ clientMutationId: "cmid-2", intentSequence: 1 }),
+    ]);
+    expect([...next.keys()]).toEqual(["cmid-1", "cmid-2"]);
+  });
 });
+
+// An attachment as a host stores it: the reference fields every host shares,
+// and the bytes only this host can read (the web's Blob).
+interface HostAttachment extends MutationAttachmentRef {
+  bytes: Blob;
+}
+
+// A fresh attachment on every call: new bytes, the same content.
+function hostAttachment(presentationId = "presentation-1"): HostAttachment {
+  return { presentationId, marker: 1, name: "a.png", mediaType: "image/png", bytes: new Blob(["png"]) };
+}
+
+// One outbox record as a read of storage hands it back: every call builds new
+// objects throughout, the attachment's bytes included, with the same content.
+function readRecord(
+  overrides: Partial<MutationOutboxRecord<HostAttachment>> = {},
+): MutationOutboxRecord<HostAttachment> {
+  return {
+    ...outboxRecord({
+      clientMutationId: "cmid-1",
+      targetRef: "ref-a",
+      payload: { ref: "ref-a", input: [{ type: "text", text: "hello" }] },
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+    }),
+    attachments: [hostAttachment()],
+    ...overrides,
+  };
+}
 
 describe("createMutationProjectionFence", () => {
   test("accepts a fresh refresh for its own single target", async () => {
@@ -208,5 +282,42 @@ describe("createMutationProjectionFence", () => {
     const before = fence.epoch();
     fence.reset();
     expect(fence.epoch()).toBe(before + 1);
+  });
+
+  // stillOwns is the live ownership query a caller reads at the moment it
+  // decides whether a resolved read is still this target's current word -
+  // unlike a cached apply() result, it answers at call time, so a live commit
+  // or a newer refresh landing after the read resolved is still seen.
+  test("stillOwns is true for a target this refresh is still the current word on", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    expect(result.stillOwns("ref-a")).toBe(true);
+  });
+
+  test("stillOwns is false once a newer specific refresh for the target has started", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    // A newer refresh of the same target starts but never resolves: the older
+    // read is no longer the current word for the target the moment it starts.
+    void fence.refresh({ read: () => new Promise(() => {}) }, "ref-a");
+    expect(result.stillOwns("ref-a")).toBe(false);
+  });
+
+  test("stillOwns is false once advance lands for the target", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    fence.advance("ref-a");
+    expect(result.stillOwns("ref-a")).toBe(false);
+  });
+
+  test("stillOwns is false after reset()", async () => {
+    const fence = createMutationProjectionFence();
+    const result = await fence.refresh(fakePort(emptySnapshot()), "ref-a");
+    if (result === false) throw new Error("expected the refresh to be accepted");
+    fence.reset();
+    expect(result.stillOwns("ref-a")).toBe(false);
   });
 });

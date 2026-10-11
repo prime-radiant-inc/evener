@@ -22,6 +22,9 @@ import (
 const (
 	trenderCurrentProject = "project-a-0123456789"
 	trenderOtherProject   = "project-b-0123456789"
+	// trenderLegacyBucket is a pure-hex name with no '-' separator, so
+	// ValidateProjectID rejects it — exercising the empty-ref path.
+	trenderLegacyBucket   = "0123456789abcdef"
 	trenderCurrentSession = "02wMz5TxvEMoJEDTDGOTil"
 	trenderLocalSession   = "02wMz5Txv2enqVTitaig6F"
 	trenderSharedSession  = "02wMz5Txv733WHFsVy66SR"
@@ -29,6 +32,15 @@ const (
 	trenderMissingSession = "02wMz5TxvBRJC3228LTWod"
 	trenderParentSession  = "02wMz5TxvCu3kdckfnw0Gh"
 )
+
+// trenderLegacySession lives only in the legacy-named bucket; a bare-id
+// lookup for it resolves to the legacy bucket with an empty ref. It is a
+// fixed 22-char base62 literal (a valid UUIDv7 payload that passes
+// ValidateSessionID) so the fuzz seed corpus is deterministic. The prior
+// const literal was 21 chars — one short of the 22-char base62 width
+// ValidateSessionID requires — so the seed was rejected before bucket
+// resolution and the empty-ref/legacy-bucket oracle branch was dead.
+const trenderLegacySession = "034UFS34rc5EKcH0qp1gaT"
 
 // This file fuzzes four transcript-rendering/lookup seams that unit tests
 // exercise but no fuzz target reaches:
@@ -91,8 +103,9 @@ func trender_isSubsequence(want, have []string) bool {
 // so a render that RETAINED a private key cannot match its source line and the
 // subsequence check still fails on the leak.
 func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
-	// An ATTENTION_RESOLUTION entry is not redacted by publicTranscriptLine, it
-	// is OMITTED (include=false, session_tools_transcript.go). Leaving those
+	// An ATTENTION_RESOLUTION entry, like a transcript-only one, is not redacted
+	// by publicTranscriptLine, it is OMITTED (include=false,
+	// session_tools_transcript.go). Leaving those
 	// lines among the source candidates lets a render that emitted one find a
 	// matching source line and satisfy the subsequence check, so the oracle
 	// would accept the exact leak it exists to catch. A rendered entry of that
@@ -103,7 +116,7 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 	}
 	have := make([]string, 0, len(fileLines))
 	for _, line := range fileLines {
-		if trender_isAttentionResolution(line) {
+		if trender_isOmittedKind(line) {
 			continue
 		}
 		have = append(have, trender_canonicalEntry(line, true))
@@ -111,10 +124,11 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 	return trender_isSubsequence(want, have)
 }
 
-// trender_isAttentionResolution reports whether a JSONL entry line carries the
-// private turn kind publicTranscriptLine refuses to render. A line that is not a
-// decodable entry is not one, which leaves it to the ordinary comparison.
-func trender_isAttentionResolution(line string) bool {
+// trender_isOmittedKind reports whether a JSONL entry line carries a turn kind
+// publicTranscriptLine refuses to render (TurnKind.PublicTranscript). A line that
+// is not a decodable entry is not one, which leaves it to the ordinary
+// comparison.
+func trender_isOmittedKind(line string) bool {
 	var entry map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
 		return false
@@ -127,7 +141,7 @@ func trender_isAttentionResolution(line string) bool {
 	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
 		return false
 	}
-	return kind == schema.TurnAttentionResolution
+	return !kind.PublicTranscript()
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection
@@ -208,6 +222,8 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 	// changes nothing, so the rendered copy matches its source and the
 	// subsequence check accepts a record the projection must never emit.
 	resolution := `{"kind":"entry","seq":%d,"turn":{"kind":"ATTENTION_RESOLUTION"}}`
+	// Transcript-only kinds are omitted the same way.
+	communicate := `{"kind":"entry","seq":%d,"turn":{"kind":"COMMUNICATE"}}`
 	at := func(tmpl string, seq int) string { return fmt.Sprintf(tmpl, seq) }
 
 	tests := []struct {
@@ -250,6 +266,18 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:     "transcript-only entry emitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(communicate, 1)},
+			rendered: []string{at(entryA, 0), at(communicate, 1)},
+			want:     false,
+		},
+		{
+			name:     "transcript-only entry omitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(communicate, 1), at(entryB, 2)},
+			rendered: []string{at(entryA, 0), at(entryB, 1)},
+			want:     true,
+		},
+		{
 			name:     "attention resolution omitted by the render",
 			file:     []string{trenderHeader, at(entryA, 0), at(resolution, 1), at(entryB, 2)},
 			rendered: []string{at(entryA, 0), at(entryB, 1)},
@@ -287,6 +315,7 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 // ok=false (rather than silently returning a truncated line list) when a
 // single line exceeds transcriptJSONLMaxLineBytes.
 func TestTrenderScanLines_ScanError(t *testing.T) {
+	t.Parallel()
 	tooLong := bytes.Repeat([]byte("x"), transcriptJSONLMaxLineBytes+10)
 	content := append([]byte("short line\n"), tooLong...)
 	lines, ok := trender_scanLines(content)
@@ -340,7 +369,7 @@ not json
 			t.Fatalf("write temp transcript: %v", err)
 		}
 
-		result, lines, skipped, truncated, err := rawLinesForRange(path, startSeq, endSeq)
+		result, lines, skipped, truncated, err := rawLinesForRange(path, "", startSeq, endSeq)
 		if err != nil {
 			return // open/empty/scan error: no-panic floor proven for this input
 		}
@@ -608,7 +637,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 	want := trenderExpectedPairedExpansionJSONL(t, path, entries, *opt.fullResultFor)
 
 	const pageBytes = 64
-	firstAny, err := readMarkdownPage(path, "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
+	firstAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +665,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatalf("first continuation = %#v, want offset %d", first.Continuation, len(firstBytes))
 	}
 
-	secondAny, err := readMarkdownPage(path, "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
+	secondAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,8 +920,11 @@ func trenderUTF8Prefix(value string, maxBytes int) string {
 //   - never panics on any selector (traversal, malformed refs, arbitrary bytes);
 //   - CONSISTENT POST-STATE: whenever it succeeds for anything other than the
 //     current-session shortcut ("" / "current"), the returned path exists on
-//     disk and the returned ref is non-empty. (The current-session case is
-//     documented to skip the stat, so it is excluded from the existence claim.)
+//     disk. The returned ref is non-empty EXCEPT when the match is in a
+//     legacy-named bucket whose name fails ValidateProjectID — refFor
+//     suppresses the ref for such buckets, so an empty ref with a valid path
+//     is a legitimate outcome. (The current-session case is documented to
+//     skip the stat, so it is excluded from the existence claim.)
 func FuzzResolveTranscript(f *testing.F) {
 	seeds := []string{
 		"", "current",
@@ -900,6 +932,7 @@ func FuzzResolveTranscript(f *testing.F) {
 		"proj:" + trenderCurrentProject + ":" + trenderSharedSession,
 		"proj:" + trenderOtherProject + ":" + trenderSharedSession,
 		trenderSharedSession, trenderLocalSession, trenderMissingSession,
+		trenderLegacySession,
 		"proj:" + trenderCurrentProject + ":" + trenderMissingSession,
 		"local:" + trenderMissingSession,
 		"../etc/passwd", "a/b", `a\b`, "bad token", "..",
@@ -913,21 +946,30 @@ func FuzzResolveTranscript(f *testing.F) {
 	f.Fuzz(func(t *testing.T, selector string) {
 		base := t.TempDir()
 		// The shared session lives in both valid project buckets (ambiguous by bare
-		// ID); the local session lives only in the current bucket.
+		// ID); the local session lives only in the current bucket. The legacy
+		// session lives only in the legacy-named bucket (refFor returns "" for it).
 		currentStateDir := filepath.Join(base, "evener", "projects", trenderCurrentProject)
 		trender_makeTranscript(t, currentStateDir, trenderSharedSession)
 		trender_makeTranscript(t, currentStateDir, trenderLocalSession)
 		trender_makeTranscript(t, filepath.Join(base, "evener", "projects", trenderOtherProject), trenderSharedSession)
+		trender_makeTranscript(t, filepath.Join(base, "evener", "projects", trenderLegacyBucket), trenderLegacySession)
 
 		path, ref, err := resolveTranscript(selector, currentStateDir, trenderCurrentSession)
 		if err != nil {
 			return // resolution error is a valid outcome; no-panic floor proven
 		}
-		if ref == "" {
-			t.Fatalf("resolveTranscript returned empty ref with nil error (selector=%q)", selector)
-		}
 		if selector == "" || selector == "current" {
 			return // current session: stat intentionally skipped, no existence claim
+		}
+		// An empty ref is legitimate when the match is in a legacy-named
+		// bucket whose name ValidateProjectID rejects (refFor suppresses
+		// the ref). For all other matches the ref must be non-empty.
+		if ref == "" {
+			// The only path to an empty ref with nil error is a bare-id
+			// match in a legacy-named sibling bucket.
+			if !strings.Contains(path, trenderLegacyBucket) {
+				t.Fatalf("resolveTranscript returned empty ref with nil error for non-legacy match (selector=%q, path=%q)", selector, path)
+			}
 		}
 		if _, statErr := os.Stat(path); statErr != nil {
 			t.Fatalf("resolveTranscript returned a non-existent path for selector=%q: path=%q err=%v",

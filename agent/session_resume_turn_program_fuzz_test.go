@@ -147,12 +147,11 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 	pluginDir := rttWriteResumeHookPlugin(t, root)
 	clk := agenttest.NewFakeClock()
 	cfg := SessionConfig{
-		StateDir:         stateDir,
-		MaxTurns:         program.maxTurns,
-		PluginDirs:       []string{pluginDir},
-		NoProjectPrompts: true,
-		clock:            clk,
-		testOnly:         rttTestConfig(),
+		StateDir:   stateDir,
+		MaxTurns:   program.maxTurns,
+		PluginDirs: []string{pluginDir},
+		clock:      clk,
+		testOnly:   rttTestConfig(),
 	}
 
 	// The initial session creates the real metadata/transcript pair. Its plugin

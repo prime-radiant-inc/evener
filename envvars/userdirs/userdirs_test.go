@@ -65,3 +65,29 @@ func TestDefaultConfigRootUsesXDGConfigHome(t *testing.T) {
 		t.Fatalf("DefaultConfigRoot() = %q, want %q", got, want)
 	}
 }
+
+func TestStateHomeForBucketDir(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{name: "project bucket dir", dir: "/xdg/evener/projects/home-jesse-fSbf9SeZqM", want: "/xdg"},
+		{name: "state home itself", dir: "/xdg", want: ""},
+		{name: "projects dir, not a bucket", dir: "/xdg/evener/projects", want: ""},
+		{name: "override root under projects-named parent", dir: "/tmp/projects/root", want: ""},
+		{name: "flat scratch root", dir: "/tmp/scratch", want: ""},
+		{name: "trailing separator", dir: "/xdg/evener/projects/home-jesse-fSbf9SeZqM/", want: "/xdg"},
+		{name: "doubled separators", dir: "/xdg/evener//projects//b", want: "/xdg"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StateHomeForBucketDir(tc.dir); got != tc.want {
+				t.Fatalf("StateHomeForBucketDir(%q) = %q, want %q", tc.dir, got, tc.want)
+			}
+		})
+	}
+}

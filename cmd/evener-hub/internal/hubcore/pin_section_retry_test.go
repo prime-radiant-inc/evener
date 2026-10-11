@@ -165,7 +165,7 @@ func setupLockedStore(t *testing.T) *PinSectionStore {
 	initLockedDriver()
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	seed := NewPinSectionStore(dbPath)
-	if _, _, err := seed.CreateOrReuseAndAssign("Seed", "seed-session", time.Unix(1, 0)); err != nil {
+	if _, _, err := seed.CreateOrReuseAndAssign("Seed", "", "seed-session", time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
 	store := NewPinSectionStore(dbPath)
@@ -187,13 +187,13 @@ func resetLockedCounters() {
 // continue branch in Assign.
 func TestPinSectionStoreAssignBeginTxRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("Research", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetLockedCounters()
 	lockedBeginFailures.Store(1)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("Assign with retryable BeginTx should succeed after retry: %v", err)
 	}
@@ -203,13 +203,13 @@ func TestPinSectionStoreAssignBeginTxRetryable(t *testing.T) {
 // continue branch in Assign.
 func TestPinSectionStoreAssignQueryRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("Research", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetLockedCounters()
 	lockedTxQueryFails.Store(1)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("Assign with retryable query should succeed after retry: %v", err)
 	}
@@ -219,13 +219,13 @@ func TestPinSectionStoreAssignQueryRetryable(t *testing.T) {
 // retryable continue branch in Assign.
 func TestPinSectionStoreAssignExecRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("Research", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetLockedCounters()
 	lockedTxExecFails.Store(1)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("Assign with retryable exec should succeed after retry: %v", err)
 	}
@@ -235,13 +235,13 @@ func TestPinSectionStoreAssignExecRetryable(t *testing.T) {
 // continue branch in Assign.
 func TestPinSectionStoreAssignCommitRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("Research", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetLockedCounters()
 	lockedTxCommitFails.Store(1)
-	_, _, err = store.Assign(section.ID, "session-x", time.Unix(2, 0))
+	_, _, err = store.Assign(section.ID, "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("Assign with retryable commit should succeed after retry: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestPinSectionStoreCreateOrReuseBeginTxRetryable(t *testing.T) {
 	store := setupLockedStore(t)
 	resetLockedCounters()
 	lockedBeginFailures.Store(1)
-	_, _, err := store.CreateOrReuseAndAssign("NewSection", "session-x", time.Unix(2, 0))
+	_, _, err := store.CreateOrReuseAndAssign("NewSection", "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("CreateOrReuseAndAssign with retryable BeginTx should succeed: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestPinSectionStoreCreateOrReuseExecRetryable(t *testing.T) {
 	store := setupLockedStore(t)
 	resetLockedCounters()
 	lockedTxExecFails.Store(1)
-	_, _, err := store.CreateOrReuseAndAssign("NewSection2", "session-x", time.Unix(2, 0))
+	_, _, err := store.CreateOrReuseAndAssign("NewSection2", "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("CreateOrReuseAndAssign with retryable exec should succeed: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestPinSectionStoreCreateOrReuseQueryRetryable(t *testing.T) {
 	store := setupLockedStore(t)
 	resetLockedCounters()
 	lockedTxQueryFails.Store(1)
-	_, _, err := store.CreateOrReuseAndAssign("NewSection3", "session-x", time.Unix(2, 0))
+	_, _, err := store.CreateOrReuseAndAssign("NewSection3", "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("CreateOrReuseAndAssign with retryable query should succeed: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestPinSectionStoreCreateOrReuseCommitRetryable(t *testing.T) {
 	store := setupLockedStore(t)
 	resetLockedCounters()
 	lockedTxCommitFails.Store(1)
-	_, _, err := store.CreateOrReuseAndAssign("NewSection4", "session-x", time.Unix(2, 0))
+	_, _, err := store.CreateOrReuseAndAssign("NewSection4", "", "session-x", time.Unix(2, 0))
 	if err != nil {
 		t.Fatalf("CreateOrReuseAndAssign with retryable commit should succeed: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestPinSectionStoreCreateOrReuseCommitRetryable(t *testing.T) {
 // continue branch in Rename.
 func TestPinSectionStoreRenameBeginTxRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("OldName", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("OldName", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestPinSectionStoreRenameBeginTxRetryable(t *testing.T) {
 // continue branch in Rename.
 func TestPinSectionStoreRenameQueryRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("OldName2", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("OldName2", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestPinSectionStoreRenameQueryRetryable(t *testing.T) {
 // continue branch in Rename.
 func TestPinSectionStoreRenameExecRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("RenameMe", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("RenameMe", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func TestPinSectionStoreRenameExecRetryable(t *testing.T) {
 // continue branch in Rename.
 func TestPinSectionStoreRenameCommitRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("CommitMe", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("CommitMe", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestPinSectionStoreRenameCommitRetryable(t *testing.T) {
 // retryable continue branch in DeleteSection.
 func TestPinSectionStoreDeleteSectionBeginTxRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("ToDelete", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("ToDelete", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestPinSectionStoreDeleteSectionBeginTxRetryable(t *testing.T) {
 // retryable continue branch in DeleteSection.
 func TestPinSectionStoreDeleteSectionQueryRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("ToDelete2", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("ToDelete2", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestPinSectionStoreDeleteSectionQueryRetryable(t *testing.T) {
 // retryable continue branch in DeleteSection.
 func TestPinSectionStoreDeleteSectionExecRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("ToDelete3", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("ToDelete3", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +411,7 @@ func TestPinSectionStoreDeleteSectionExecRetryable(t *testing.T) {
 // continue branch in DeleteSection.
 func TestPinSectionStoreDeleteSectionCommitRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	section, _, err := store.CreateOrReuseAndAssign("ToDelete4", "seed-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("ToDelete4", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,13 +427,13 @@ func TestPinSectionStoreDeleteSectionCommitRetryable(t *testing.T) {
 // retryable continue branch in DeleteSession.
 func TestPinSectionStoreDeleteSessionBeginTxRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	_, _, err := store.CreateOrReuseAndAssign("Section", "session-x", time.Unix(1, 0))
+	_, _, err := store.CreateOrReuseAndAssign("Section", "", "session-x", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetLockedCounters()
 	lockedBeginFailures.Store(1)
-	_, err = store.DeleteSession("session-x")
+	_, err = store.DeleteSession("", "session-x")
 	if err != nil {
 		t.Fatalf("DeleteSession with retryable BeginTx should succeed: %v", err)
 	}
@@ -443,13 +443,13 @@ func TestPinSectionStoreDeleteSessionBeginTxRetryable(t *testing.T) {
 // retryable continue branch in DeleteSession.
 func TestPinSectionStoreDeleteSessionExecRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	_, _, err := store.CreateOrReuseAndAssign("Section", "session-y", time.Unix(1, 0))
+	_, _, err := store.CreateOrReuseAndAssign("Section", "", "session-y", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetLockedCounters()
 	lockedTxExecFails.Store(1)
-	_, err = store.DeleteSession("session-y")
+	_, err = store.DeleteSession("", "session-y")
 	if err != nil {
 		t.Fatalf("DeleteSession with retryable exec should succeed: %v", err)
 	}
@@ -459,13 +459,13 @@ func TestPinSectionStoreDeleteSessionExecRetryable(t *testing.T) {
 // continue branch in DeleteSession.
 func TestPinSectionStoreDeleteSessionCommitRetryable(t *testing.T) {
 	store := setupLockedStore(t)
-	_, _, err := store.CreateOrReuseAndAssign("Section", "session-z", time.Unix(1, 0))
+	_, _, err := store.CreateOrReuseAndAssign("Section", "", "session-z", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resetLockedCounters()
 	lockedTxCommitFails.Store(1)
-	_, err = store.DeleteSession("session-z")
+	_, err = store.DeleteSession("", "session-z")
 	if err != nil {
 		t.Fatalf("DeleteSession with retryable commit should succeed: %v", err)
 	}
@@ -477,14 +477,14 @@ func TestPinSectionStoreRetryLimitReached(t *testing.T) {
 	store := setupLockedStore(t)
 	resetLockedCounters()
 	lockedBeginFailures.Store(100)
-	_, _, err := store.Assign("x", "y", time.Unix(1, 0))
+	_, _, err := store.Assign("x", "", "y", time.Unix(1, 0))
 	if err == nil || !strings.Contains(err.Error(), "retry limit reached") {
 		t.Fatalf("Assign retry limit err = %v, want retry limit reached", err)
 	}
 
 	resetLockedCounters()
 	lockedBeginFailures.Store(100)
-	_, _, err = store.CreateOrReuseAndAssign("Z", "y", time.Unix(1, 0))
+	_, _, err = store.CreateOrReuseAndAssign("Z", "", "y", time.Unix(1, 0))
 	if err == nil || !strings.Contains(err.Error(), "retry limit reached") {
 		t.Fatalf("CreateOrReuseAndAssign retry limit err = %v", err)
 	}
@@ -505,7 +505,7 @@ func TestPinSectionStoreRetryLimitReached(t *testing.T) {
 
 	resetLockedCounters()
 	lockedBeginFailures.Store(100)
-	_, err = store.DeleteSession("y")
+	_, err = store.DeleteSession("", "y")
 	if err == nil || !strings.Contains(err.Error(), "retry limit reached") {
 		t.Fatalf("DeleteSession retry limit err = %v", err)
 	}
@@ -515,11 +515,11 @@ func TestPinSectionStoreRetryLimitReached(t *testing.T) {
 // Rename where another section already has the same key.
 func TestPinSectionStoreRenameConflictError(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section1, _, err := store.CreateOrReuseAndAssign("First", "s1", time.Unix(1, 0))
+	section1, _, err := store.CreateOrReuseAndAssign("First", "", "s1", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = store.CreateOrReuseAndAssign("Second", "s2", time.Unix(2, 0))
+	_, _, err = store.CreateOrReuseAndAssign("Second", "", "s2", time.Unix(2, 0))
 	if err != nil {
 		t.Fatal(err)
 	}

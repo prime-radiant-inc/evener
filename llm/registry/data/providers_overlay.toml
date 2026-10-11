@@ -207,7 +207,7 @@ api_key_env = []
 base_url = "{BASE_URL}"
 vars = { "BASE_URL" = "https://chatgpt.com/backend-api/codex" }
 vars_env = { "BASE_URL" = "OPENAI_CODEX_BASE_URL" }
-models_endpoint = "/models?client_version=0.0.0"
+models_endpoint = "/models?client_version=0.156.1"
 count_tokens_endpoint = "-"
 headers = { "OpenAI-Organization" = "", "OpenAI-Project" = "" }
 default_model = "gpt-5.6"
@@ -261,6 +261,41 @@ thinking_always_on = true
 image_detail = "original"
 reasoning_summary = "detailed"
 body = { "reasoning.context" = "all_turns", "text.verbosity" = "low", parallel_tool_calls = false }
+
+[providers."openai-codex".models."gpt-6-luna"]
+context_window = 272000
+tools = true
+structured_output = true
+sampling = false
+reasoning = true
+effort_values = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "medium"
+input_modalities = ["text", "image"]
+responses_lite = true
+thinking_always_on = true
+image_detail = "original"
+reasoning_summary = "detailed"
+body = { "reasoning.context" = "all_turns", "text.verbosity" = "low", parallel_tool_calls = false }
+
+[providers."openai-codex".models."gpt-6.1-sol"]
+context_window = 272000
+tools = true
+structured_output = true
+sampling = false
+reasoning = true
+effort_values = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "low"
+input_modalities = ["text", "image"]
+responses_lite = true
+thinking_always_on = true
+image_detail = "original"
+reasoning_summary = "detailed"
+body = { "reasoning.context" = "all_turns", "text.verbosity" = "low", parallel_tool_calls = false }
+
+[providers."openai-codex".models."gpt-6.1-sol-1m"]
+alias_of = "gpt-6.1-sol"
+wire_id = "gpt-6.1-sol"
+context_window = 872000
 
 # ---------------------------------------------------------------------------
 # Azure (§9.2)

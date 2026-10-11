@@ -20,7 +20,10 @@ import (
 //     reason through verbatim; below it, a timeout beats a wait error beats the
 //     exit code;
 //   - totality: the result status is always a terminal status, and (when no stop
-//     is set) the reason is one of the fixed non-empty literals.
+//     is set) the reason is one of the fixed non-empty literals. A reaped
+//     nonzero exit is the COMMAND's outcome (command_exited_nonzero /
+//     command_killed), not a job failure — only supervision failures stay
+//     failed.
 func FuzzFc2ShellTerminalDecision(f *testing.F) {
 	f.Add(uint8(0), "", 0, false, false)              // clean exit
 	f.Add(uint8(0), "", 1, false, false)              // nonzero exit
@@ -64,9 +67,9 @@ func FuzzFc2ShellTerminalDecision(f *testing.F) {
 		case exitCode == 0:
 			wantStatus, wantReason = jobstore.StatusCompleted, "exit_zero"
 		case exitCode < 0:
-			wantStatus, wantReason = jobstore.StatusFailed, "killed_by_signal"
+			wantStatus, wantReason = jobstore.StatusCommandKilled, "killed_by_signal"
 		default:
-			wantStatus, wantReason = jobstore.StatusFailed, "exit_nonzero"
+			wantStatus, wantReason = jobstore.StatusCommandExitedNonzero, "exit_nonzero"
 		}
 		if status != wantStatus || reason != wantReason {
 			t.Fatalf("precedence: inputs(timedOut=%v,waitErr=%v,exit=%d) got (%q,%q), want (%q,%q)",

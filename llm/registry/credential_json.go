@@ -47,20 +47,6 @@ func CredentialJSONType(raw []byte) string {
 	return f.Type
 }
 
-// CheckCredentialJSON is the pre-parse gate every stored or pasted Google
-// credential must pass before anything mints a token from it: valid JSON,
-// then an allowed "type", then the fields that type needs to mint a token,
-// and for a service account that its private_key is key material the signer
-// can use.
-// The registry runs it when a gcp-adc instance's credentials-store entry
-// resolves; the tokenauth authenticator and the hub's
-// evener/auth/credentialJson/set run the identical check, so a value the
-// registry resolves is one the authenticator will accept.
-//
-// A refusal that quotes the value it refused bounds what it quotes
-// (clipEcho): the document may be anything a user pasted, and callers render
-// the message.
-//
 // clipEcho shows enough of a refused value to identify it and no more, with
 // nothing in it a terminal would obey. The TUI's credential prompt keeps such
 // a message on screen after the prompt closes, so an unbounded echo would put
@@ -82,6 +68,19 @@ func clipEcho(s string) string {
 	return string(r[:limit]) + "…"
 }
 
+// CheckCredentialJSON is the pre-parse gate every stored or pasted Google
+// credential must pass before anything mints a token from it: valid JSON,
+// then an allowed "type", then the fields that type needs to mint a token,
+// and for a service account that its private_key is key material the signer
+// can use.
+// The registry runs it when a gcp-adc instance's credentials-store entry
+// resolves; the tokenauth authenticator and the hub's
+// evener/auth/credentialJson/set run the identical check, so a value the
+// registry resolves is one the authenticator will accept.
+//
+// A refusal that quotes the value it refused bounds what it quotes
+// (clipEcho): the document may be anything a user pasted, and callers render
+// the message.
 func CheckCredentialJSON(raw []byte) error {
 	if !json.Valid(raw) {
 		return errors.New("not valid JSON")

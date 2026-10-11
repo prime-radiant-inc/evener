@@ -9,6 +9,7 @@ import (
 )
 
 func TestURLRemoveReservationCrashUnknownTarget(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	fault := errors.New("reservation interrupted")
 	s.clientMutations.faults.AfterReservation = func() error { return fault }
@@ -29,6 +30,7 @@ func TestURLRemoveReservationCrashUnknownTarget(t *testing.T) {
 }
 
 func TestURLRemoveExistingTargetRecovery(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"none", "reservation", "receipt"} {
 		t.Run(boundary, func(t *testing.T) {
 			s := newDurableHumanNoteSession(t)

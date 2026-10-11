@@ -1,8 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { FailureGlyph } from "./index";
-
-afterEach(cleanup);
 
 test("carries a real accessible name rather than a bare glyph character", () => {
   render(<FailureGlyph />);

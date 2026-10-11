@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 // Regression test for the live attention-wake leak observed in production: a
@@ -82,7 +83,7 @@ func TestDelegateAttention_LiveStopCompletionDiscardsLateBoundWake(t *testing.T)
 		aggregate.LatestOutcome.Reason != "stopped_by_parent" {
 		t.Fatalf("settled stop aggregate = %#v", aggregate)
 	}
-	if got := len(c.attentionWakeIDs[delegateID]); got != 0 {
+	if got := len(attentionWakeIDsOf(c, delegateID)); got != 0 {
 		t.Fatalf("stop-gated delegate retained %d attention wake IDs", got)
 	}
 	if c.hasPendingDelegateAttention() {
@@ -150,7 +151,7 @@ func TestDelegateAttention_LiveStopSettlementDiscardsBoundAttention(t *testing.T
 		t.Fatalf("settled stop aggregate = %#v", aggregate)
 	}
 
-	if got := len(c.attentionWakeIDs[delegateID]); got != 0 {
+	if got := len(attentionWakeIDsOf(c, delegateID)); got != 0 {
 		t.Fatalf("stop-gated delegate retained %d attention wake IDs", got)
 	}
 	if c.hasPendingDelegateAttention() {
@@ -162,5 +163,73 @@ func TestDelegateAttention_LiveStopSettlementDiscardsBoundAttention(t *testing.T
 	}
 	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
 		t.Fatalf("live stop attention disposition = %q, want %q", got, delegateAttentionDiscarded)
+	}
+}
+
+// A stop's discard whose line landed but whose fsync failed leaves a readable
+// marker that is not yet durable. The cleanup's retry finds the item already
+// resolved; it must renew the durability barrier for that marker before it
+// forgets the wake and lets the stop complete, or a crash could lose the
+// discard and let the attention restart the delegate after recovery.
+func TestDelegateAttention_StopRetryRenewsDurabilityOfAnUnsyncedDiscard(t *testing.T) {
+	const (
+		delegateID     = "dlg_target"
+		childSessionID = "child-dlg_target"
+		attentionID    = "attention-discard-unsynced"
+	)
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, delegateID, "")
+	writeDelegateAttentionTranscript(t, transcriptPath(c.stateDir, childSessionID), childSessionID, attentionID)
+	fs := newAttentionAmbiguousSyncFS()
+	c.attentionOpen = func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
+		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
+	}
+
+	result, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), delegateID)
+	if err != nil {
+		t.Fatalf("StopSubtree: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+	lease := delegateLease{delegateID: delegateID, generation: 1}
+	if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "cancelled"}); err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	c.noteDelegateAttention(delegateID, attentionID)
+
+	// First pass: the discard's line lands, its fsync fails.
+	plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(plans.attention) != 1 {
+		t.Fatalf("stop attention cleanup plans = %#v, want one discard", plans.attention)
+	}
+	fs.failNextAmbiguousDurability(3)
+	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err == nil {
+		t.Fatal("discard with a failed fsync unexpectedly succeeded")
+	}
+
+	// Retry passes run until the stop completes.
+	for range 4 {
+		plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
+		if err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		for _, plan := range plans.attention {
+			if err := c.executeDelegateAttentionCleanup(plan); err != nil {
+				t.Fatalf("retry discard %q: %v", plan.attentionID, err)
+			}
+		}
+		if delegateStopDone(c.stop) {
+			break
+		}
+	}
+	select {
+	case <-result.done:
+	default:
+		t.Fatal("stop did not complete")
+	}
+	if got := fs.successfulSyncsAfterFailure(); got == 0 {
+		t.Fatal("the stop completed without renewing durability for the unsynced discard")
 	}
 }

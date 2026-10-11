@@ -1,7 +1,4 @@
-import {
-	isInstanceRemoveApplied,
-	isInstanceRenamePersisted,
-} from "@evener/appwire-client";
+import { isInstanceRemoveApplied, isInstanceRenamePersisted } from "@evener/appwire-client";
 
 /** The provider-instance writes the hub reports as applied before a later step
  * failed: evener/instance/remove's ErrorInstanceRemoveApplied and
@@ -16,9 +13,7 @@ export type AppliedInstanceWrite = "remove" | "rename";
  * writes, or null for every ordinary failure. The appwire client's own
  * discriminator helpers are the one definition of the wire strings, so this
  * matches on data.evenerErrorInfo and never on a message or a code. */
-export function appliedInstanceWrite(
-	err: unknown,
-): AppliedInstanceWrite | null {
+export function appliedInstanceWrite(err: unknown): AppliedInstanceWrite | null {
 	if (isInstanceRemoveApplied(err)) return "remove";
 	if (isInstanceRenamePersisted(err)) return "rename";
 	return null;

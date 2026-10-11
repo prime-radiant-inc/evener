@@ -17,6 +17,8 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
@@ -59,20 +61,20 @@ func (a *closedStreamAdapter) calls() (stream, complete int) {
 type idlePublicationServer struct {
 	*server.Server
 
-	mu             sync.Mutex
-	sawProcessing  bool
-	sawNotProcess  bool
-	idlePublished  chan struct{}
-	publishedState string
-	publishOnce    sync.Once
+	mu            sync.Mutex
+	sawProcessing bool
+	passFinished  chan struct{}
+	publishOnce   sync.Once
+	// stateWrites counts SetState calls once an input pass has started: the
+	// serve loop must leave the stored state to the session's own events.
+	stateWrites int
 
-	// One turn writes the status thread/read returns from two goroutines. The
-	// serve loop writes it synchronously at the tail of every input pass; the
-	// event bridge writes it again as it projects that turn's carriers --
-	// active when the user-input carrier lands
-	// (server/appwire_runtime.go:439), idle again when the session-end carrier
-	// does (server/bridge.go:223-228). The bridge drains a buffered feed on its
-	// own goroutine, so the loop's idle write is not the end of the publication
+	// One turn's status is published from two goroutines. The serve loop
+	// ends processing at the tail of every input pass, which publishes an
+	// idle placeholder while the turn's end is still on the feed; the event
+	// bridge projects that turn's carriers on its own goroutine -- active
+	// when the user-input carrier lands, and the state the session-end
+	// carrier states. So the loop's finish is not the end of the publication
 	// a reader observes.
 	turnProjected     chan struct{}
 	turnProjectedOnce sync.Once
@@ -86,22 +88,21 @@ type idlePublicationServer struct {
 func newIdlePublicationServer(cfg server.ServerConfig) *idlePublicationServer {
 	return &idlePublicationServer{
 		Server:         server.NewServer(cfg),
-		idlePublished:  make(chan struct{}),
+		passFinished:   make(chan struct{}),
 		turnProjected:  make(chan struct{}),
 		releaseCarrier: make(chan struct{}),
 	}
 }
 
 // holdTurnCarrier parks the bridge on the turn's opening carrier until the serve
-// loop has published its post-turn state, which is the ordering CI reached on
-// its own: the carrier's projection republishes active after the loop wrote
-// idle.
+// loop has ended processing, which is the ordering CI reached on its own: the
+// carrier's projection republishes active after the loop's finish.
 func (s *idlePublicationServer) holdTurnCarrier(ev events.SessionEvent) {
 	if ev.Kind != events.EventUserInput {
 		return
 	}
 	select {
-	case <-s.idlePublished:
+	case <-s.passFinished:
 	case <-s.releaseCarrier:
 	}
 }
@@ -124,33 +125,33 @@ func (s *idlePublicationServer) SetProcessingTurn(turnID string) {
 	s.observeProcessing(true)
 }
 
-func (s *idlePublicationServer) observeProcessing(processing bool) {
-	s.mu.Lock()
-	if processing {
-		s.sawProcessing = true
-	} else if s.sawProcessing {
-		s.sawNotProcess = true
-	}
-	s.mu.Unlock()
-}
-
+// observeProcessing opens passFinished the first time processing ends after
+// it started: the serve loop's finish of the turn's input pass.
 func (s *idlePublicationServer) SetState(state string) {
 	s.Server.SetState(state)
 	s.mu.Lock()
-	postTurn := s.sawProcessing && s.sawNotProcess
-	if postTurn {
-		s.publishedState = state
+	if s.sawProcessing {
+		s.stateWrites++
 	}
 	s.mu.Unlock()
-	if postTurn {
-		s.publishOnce.Do(func() { close(s.idlePublished) })
-	}
 }
 
-func (s *idlePublicationServer) postTurnState() string {
+func (s *idlePublicationServer) stateWritesAfterStart() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.publishedState
+	return s.stateWrites
+}
+
+func (s *idlePublicationServer) observeProcessing(processing bool) {
+	s.mu.Lock()
+	finished := !processing && s.sawProcessing
+	if processing {
+		s.sawProcessing = true
+	}
+	s.mu.Unlock()
+	if finished {
+		s.publishOnce.Do(func() { close(s.passFinished) })
+	}
 }
 
 type sessionControlIdentityServer struct {
@@ -206,35 +207,18 @@ func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIde
 	}
 }
 
-// SetProcessingTurn records the claim of a durable turn. It is the daemon's one
-// call that publishes a client-mutation turn's stable identity, so it is the
-// signal the processing gate below waits on.
+// SetProcessingTurn holds the daemon inside the claimed turn. It is the call
+// that publishes a running execution's stable identity -- the session makes it
+// once the claim committed, before the execution records anything -- so it is
+// the moment the processing gate waits on. Active state alone is not: a
+// durable start the loop has accepted but not yet claimed reads active while
+// nothing has published its stable identity.
 func (s *sessionControlIdentityServer) SetProcessingTurn(turnID string) {
 	s.Server.SetProcessingTurn(turnID)
 	s.mu.Lock()
 	s.claimedTurnID = turnID
+	s.processing = true
 	s.mu.Unlock()
-}
-
-// SetState holds the daemon inside the claimed turn. Active state alone is not
-// that moment: the serve loop publishes the live session's wire state at the
-// tail of every input pass, and that state reads active for a durable start the
-// loop has accepted but not yet claimed, whose stable identity nothing has
-// published. Only a claim opens this gate.
-func (s *sessionControlIdentityServer) SetState(state string) {
-	s.Server.SetState(state)
-	if state != string(agent.SessionProcessing) {
-		return
-	}
-	s.mu.Lock()
-	claimed := s.claimedTurnID != ""
-	if claimed {
-		s.processing = true
-	}
-	s.mu.Unlock()
-	if !claimed {
-		return
-	}
 	s.processingStartOnce.Do(func() { close(s.processingStarted) })
 	<-s.releaseProcessing
 }
@@ -424,15 +408,6 @@ func readSessionControlThread(t *testing.T, lifecycle *sessionControlLifecycle, 
 func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) {
 	t.Run("steer and incorporate", func(t *testing.T) {
 		lifecycle := startSessionControlLifecycle(t, &closedStreamAdapter{})
-		lifecycle.server.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
-			Data:      events.UserInputData{Text: "stale projected turn"},
-		})
-		staleProjectedTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
-		if staleProjectedTurnID == "" {
-			t.Fatal("failed to prime a stale projected active turn")
-		}
 		start := startHeldClientMutationTurn(t, lifecycle, "stable-start", "pending user input")
 		thread := readSessionControlThread(t, lifecycle, false)
 		activeTurnID := thread.Evener.ActiveTurnID
@@ -475,10 +450,9 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 	})
 
 	// Stop runs with an unclaimed input pass held across turn/start. The serve
-	// loop publishes the live session's wire state at the tail of every input
-	// pass, including one that claimed nothing, and that state reads active
-	// from the moment turn/start durably accepts a start -- before the loop
-	// claims it and publishes its stable identity. This subtest reached that
+	// loop ends processing at the tail of every input pass, including one that
+	// claimed nothing, while turn/start may have durably accepted a start the
+	// loop has not yet claimed or published the stable identity of. This subtest reached that
 	// ordering on its own under CI load; holding the pass makes it every run,
 	// so the claimed identity below is pinned against the wake that produced
 	// the intermittent failure.
@@ -544,11 +518,13 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 	})
 }
 
-// TestRunServe_StreamErrorPublishesIdleStatus proves the real serve input loop
-// publishes owning Session state after an exhausted streaming failure. The
-// wrapper observes the production true -> false -> SetState boundary while
-// forwarding every state mutation to the real AppWire server projection.
-func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
+// TestRunServe_StreamErrorPublishesSystemErrorStatus proves the real serve
+// input loop publishes owning Session state after an exhausted streaming
+// failure: the session rests on a failed turn, so it reports systemError until
+// its next turn (agent RestingWireState). The wrapper observes the production
+// processing start and finish while forwarding every state mutation to the
+// real AppWire server projection.
+func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
@@ -621,27 +597,27 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	select {
-	case <-observedServer.idlePublished:
+	case <-observedServer.passFinished:
 	case <-ctx.Done():
-		t.Fatalf("post-turn state publication: %v", ctx.Err())
+		t.Fatalf("post-turn finish: %v", ctx.Err())
 	}
 
-	if got := observedServer.postTurnState(); got != string(agent.SessionIdle) {
-		t.Fatalf("published post-turn state = %q, want %q", got, agent.SessionIdle)
-	}
 	// Everything below reads the server's published status, which the loop's
-	// write above does not settle: the bridge projects the same turn's carriers
-	// on its own goroutine, republishing active for the user-input carrier and
-	// idle again only for the session-end one. Wait for that last write rather
-	// than for the loop's.
+	// finish does not settle: the bridge projects the same turn's carriers on
+	// its own goroutine, republishing active for the user-input carrier and
+	// the session-end carrier's systemError last. Wait for that last write
+	// rather than for the loop's.
 	select {
 	case <-observedServer.turnProjected:
 	case <-ctx.Done():
 		t.Fatalf("post-turn terminal projection: %v", ctx.Err())
 	}
 
-	if got := observedServer.GetStatus().State; got != string(agent.SessionIdle) {
-		t.Fatalf("stored server state = %q, want %q", got, agent.SessionIdle)
+	if got := observedServer.GetStatus().State; got != appwire.ThreadStatusSystemError {
+		t.Fatalf("stored server state = %q, want %q", got, appwire.ThreadStatusSystemError)
+	}
+	if got := observedServer.stateWritesAfterStart(); got != 0 {
+		t.Fatalf("the serve loop wrote the stored state %d times during the pass, want none: it comes from the session's events", got)
 	}
 	streamCalls, completeCalls := adapter.calls()
 	if streamCalls != 1 || completeCalls != 0 {
@@ -652,10 +628,10 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	// Queue and Interrupt advertise harness support, so an idle thread on this
-	// wired daemon reads them true (#1375); the client applies the status.
-	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || !thread.Thread.Evener.Capabilities.Queue || !thread.Thread.Evener.Capabilities.Interrupt {
-		t.Fatalf("thread/read = status %q, capabilities %+v; want idle with send/queue/interrupt advertised (queue and interrupt are harness support)", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
+	// Queue and Interrupt advertise harness support, so a resting thread on
+	// this wired daemon reads them true (#1375); the client applies the status.
+	if thread.Thread.Status.Type != appwire.ThreadStatusSystemError || !thread.Thread.Evener.Capabilities.Send || !thread.Thread.Evener.Capabilities.Queue || !thread.Thread.Evener.Capabilities.Interrupt {
+		t.Fatalf("thread/read = status %q, capabilities %+v; want systemError with send/queue/interrupt advertised (queue and interrupt are harness support)", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
 	}
 
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
@@ -674,12 +650,12 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 // TestHoldServeStateForAwaitingWake proves holdServeStateForAwaitingWake mirrors
 // the session-level entry gate's refusal predicate (agent/session_lifecycle.go's
 // `len(s.askPending) > 0 && kind != EntryUserInput`, spec §5.3): the input loop
-// must hold its status shadow write for exactly the (kind, hasPendingAsk) pairs
+// must skip marking processing for exactly the (kind, hasPendingAsk) pairs
 // where ProcessInputKind will refuse before any state transition, and flip as
 // before everywhere else. Keyed on hasPendingAsk rather than raw SessionState
-// (attention-status-model v5 reconciliation): a session generally awaiting with
-// no pending ask must NOT be held — async wakes re-arm by design there — only a
-// genuine pending question is a stronger stop than the wake.
+// (SessionAwaiting alone does not imply a pending question): a needs_response
+// rest with no pending ask must NOT be held — async wakes may move it on — only
+// a genuine pending question is a stronger stop than the wake.
 func TestHoldServeStateForAwaitingWake(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -773,6 +749,10 @@ type clearIdentityServer struct {
 	// through. Capturing it lets this test observe WHICH session the daemon
 	// resolves after thread/clear, which is what the meta callback used to prove.
 	envelopeSource server.ThreadEnvelopeSource
+	// subagentTally and subagentTallyInstalls record the tally seam serve
+	// installs for each session it bridges.
+	subagentTally         func() (appwire.SubagentTally, bool)
+	subagentTallyInstalls int
 }
 
 func (s *clearIdentityServer) ReplaceAppIdentity(prepared server.PreparedAppIdentity, activate func()) {
@@ -805,6 +785,12 @@ func (s *clearIdentityServer) SetShutdownFunc(fn func()) {
 func (s *clearIdentityServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
 	s.envelopeSource = src
 	s.Server.SetThreadEnvelopeSource(src)
+}
+
+func (s *clearIdentityServer) SetSubagentTallyFunc(fn func() (appwire.SubagentTally, bool)) {
+	s.subagentTally = fn
+	s.subagentTallyInstalls++
+	s.Server.SetSubagentTallyFunc(fn)
 }
 
 // newClearServeDeps builds a real serve run whose LLM boundary is scripted and
@@ -869,10 +855,9 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	args := []string{
 		"--model", "openai/gpt-test",
 		"--addr", "127.0.0.1:0",
-		"--dir", t.TempDir(),
-		"--state-dir", t.TempDir(),
-		"--run-dir", t.TempDir(),
-		"--no-project-prompts",
+		"--dir", resolvedTempDir(t),
+		"--state-dir", resolvedTempDir(t),
+		"--run-dir", resolvedTempDir(t),
 	}
 	return deps, state, args
 }
@@ -904,13 +889,20 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
 		oldSess := state.session(0)
 		obs.oldSessionID = oldSess.ID()
-		// Put a turn on the OLD thread so a snapshot that survives replacement
-		// shows up as content rather than as an identifier mismatch.
-		state.srv.RecordAppEvent(events.SessionEvent{
-			Kind:      events.EventUserInput,
-			SessionID: oldSess.ID(),
-			Data:      events.UserInputData{Text: oldClearInputMarker},
-		})
+		// Put a turn on the OLD thread's transcript so history that survives
+		// replacement shows up as content rather than as an identifier
+		// mismatch. A second writer on the file shares the session writer's
+		// append tail and recorded-entry hook.
+		writer, _, err := transcript.OpenWriterForSession(oldSess.TranscriptPath(), oldSess.ID())
+		if err != nil {
+			t.Fatalf("open the old transcript: %v", err)
+		}
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(oldClearInputMarker))); err != nil {
+			t.Fatalf("record the old thread's turn: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close the old transcript writer: %v", err)
+		}
 
 		before := len(state.recorded())
 		obs.clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
@@ -1058,6 +1050,37 @@ func TestRunServeClearRendezvousFailureKeepsOldIdentity(t *testing.T) {
 	assertClearKeptOldIdentity(t, obs)
 	if len(obs.steps) < 2 || obs.steps[0] != "prepare" || obs.steps[1] != "rendezvous" {
 		t.Fatalf("clear steps = %v, want prepare then rendezvous before any install", obs.steps)
+	}
+}
+
+// The fresh session serve launches picks its ID while provisioning, into the
+// config the clear copies. The cleared session must still get an ID of its own,
+// and its scratch must be named after that ID rather than the old session's.
+func TestRunServeClearPicksANewSessionIDForItsScratch(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var clearID, clearScratchRoot string
+	newClearSession := deps.newClearSession
+	deps.newClearSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		clearID = cfg.SessionID
+		if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+			clearScratchRoot, _ = local.ScratchIdentity()
+		}
+		return newClearSession(client, profile, env, cfg)
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+
+	if obs.clearErr != nil {
+		t.Fatalf("clear: %v", obs.clearErr)
+	}
+	if clearID == "" || clearID == obs.oldSessionID {
+		t.Fatalf("cleared session config SessionID = %q, want a fresh ID distinct from the old session %q", clearID, obs.oldSessionID)
+	}
+	if obs.currentSessionID != clearID {
+		t.Errorf("current session = %q, want the picked ID %q", obs.currentSessionID, clearID)
+	}
+	if clearScratchRoot != clearID {
+		t.Errorf("cleared session scratch is named for root %q, want %q", clearScratchRoot, clearID)
 	}
 }
 

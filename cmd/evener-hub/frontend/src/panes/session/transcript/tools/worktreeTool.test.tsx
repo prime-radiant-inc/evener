@@ -1,10 +1,8 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./worktreeTool";
 import type { ItemModel } from "@evener/appwire-client";
-
-afterEach(cleanup);
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -184,10 +182,12 @@ test("dispose: an already-disposed result never claims a dirty-discard even if f
 
 // --- defensive fallback ------------------------------------------------
 
-test("an unrecognized operation still renders a non-crashing, tool-name-prefixed summary", () => {
+test("an unrecognized operation still says which one it was, in words, never the raw tool name", () => {
   const d = toolRendererFor("manage_worktree");
   const args = JSON.stringify({ operation: "reticulate" });
-  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe("manage_worktree: reticulate");
+  expect(d.summary(item({ toolName: "manage_worktree", argumentsJSON: args }))).toBe(
+    "Used manage worktree: reticulate",
+  );
 });
 
 // --- shared body: manage_worktree's own output is real JSON (its Exec
@@ -233,7 +233,7 @@ test("find_session_transcripts: a settled result appends the match count parsed 
     "   root · ~15 turns · updated 2026-07-20 14:32\n\n" +
     "1 match (scope: current_project)";
   expect(d.summary(item({ toolName: "find_session_transcripts", argumentsJSON: args, output }))).toBe(
-    'Searched sessions for "parser regression" · 1 matches',
+    'Searched sessions for "parser regression" · 1 match',
   );
 });
 
@@ -253,7 +253,7 @@ test("find_session_transcripts: a settled catalog result uses its own noun (sess
     "   root · ~5 turns · updated 2026-07-20 14:32\n\n" +
     "1 match (scope: current_project)";
   expect(d.summary(item({ toolName: "find_session_transcripts", argumentsJSON: "{}", output }))).toBe(
-    "Listed recent sessions · 1 sessions",
+    "Listed recent sessions · 1 session",
   );
 });
 

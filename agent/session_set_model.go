@@ -110,7 +110,7 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 // (spec §7.3 — an id off the Codex allowlist is the only such case) reports
 // the resolver's own error. Everything else is checked against the listing the
 // caller already fetched (resolveModelSwitchTarget), and only when that listing
-// is live: a registry-only listing is not evidence of absence. The listing's
+// is usable: a static fallback is not evidence of absence. The listing's
 // rows are already filtered by the §5 visibility rule, so no second visibility
 // pass runs here; fail-open-on-listing-error is handled by the caller, before
 // this is called.
@@ -122,8 +122,8 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 		_, err := client.Resolve(profile.ID() + "/" + profile.Model())
 		return err
 	}
-	if !listing.Live {
-		return nil // registry-only listing: every id resolves (spec §7.3, §8.1)
+	if !listing.Usable {
+		return nil // static fallback: every servable id is accepted (spec §7.3, §8.1)
 	}
 	if _, ok := liveModelFor(listing.Models, profile.Model()); ok {
 		return nil

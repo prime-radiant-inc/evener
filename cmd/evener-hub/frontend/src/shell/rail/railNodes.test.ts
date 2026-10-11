@@ -1,24 +1,78 @@
 // @vitest-environment node
 
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { EvenerWatchInfo, Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { OverflowRailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
+import type { HostRailNode, RailNode, RailPinSection, RailProject, RailSession, SessionRailNode } from "./railNodes";
 import {
   activeWatchCount,
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
   displayState,
-  needsYouDescendantCount,
+  hostProjectNodes,
+  liveNodesGroupedByHost,
   overrideLookup,
   pinSectionDisclosureID,
-  projectNodeIdForSessionRef,
   projectNodes,
+  projectNodesWithHostBranches,
+  revealExpansionIds,
   sessionNodes,
-  topLevelAncestorRef,
+  subagentIsCurrent,
   watchCountLabel,
-  workingDescendantCount,
 } from "./railNodes";
+
+describe("subagentIsCurrent", () => {
+  test("a descendant in any current state makes the subagent current, not only an active one", () => {
+    // The direct level accepts the whole current set (awaiting counts); the
+    // subtree must read the same set, or the Agents tab folds an idle
+    // subagent whose own child is waiting on the user.
+    const grandchild = session({ ref: "local:grandchild", state: "awaiting" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("a descendant's running job makes the subagent current", () => {
+    const grandchild = session({
+      ref: "local:grandchild",
+      state: "idle",
+      running_job_count: 1,
+    });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("an idle subagent with a quiet subtree is not current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(false);
+  });
+
+  test("approval_pending makes an idle subagent current (it displays as awaiting)", () => {
+    // displayState folds approval_pending into "awaiting" - the rail's badge
+    // counts such a node as needs-you, so the activity surfaces must not
+    // fold it as inactive about the same node.
+    expect(subagentIsCurrent(session({ state: "idle", approval_pending: true }))).toBe(true);
+  });
+
+  test("a descendant's approval_pending makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "idle", approval_pending: true });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+
+  test("an errored subagent is current (a failure needs the user more than a warning does)", () => {
+    // The fold hides work that is done; an errored subagent is not done in
+    // that sense - its row paints danger, and warning (the less severe
+    // signal) is already current.
+    expect(subagentIsCurrent(session({ state: "errored" }))).toBe(true);
+  });
+
+  test("a descendant's errored state makes the subagent current", () => {
+    const grandchild = session({ ref: "local:grandchild", state: "errored" });
+    const child = session({ ref: "local:child", state: "idle", children: [grandchild] });
+    expect(subagentIsCurrent(child)).toBe(true);
+  });
+});
 
 function session(overrides: Partial<RailSession> = {}): RailSession {
   return {
@@ -38,56 +92,77 @@ function session(overrides: Partial<RailSession> = {}): RailSession {
 function project(overrides: Partial<RailProject> = {}): RailProject {
   return { key: "p1", name: "Proj", sessions: [], ...overrides };
 }
-function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
+function watch(overrides: Partial<EvenerWatchInfo> = {}): EvenerWatchInfo {
   return {
     id: "w1",
     source: "self",
     deliveries: 0,
-    created_at: "2026-09-12T19:00:00Z",
+    createdAt: "2026-09-12T19:00:00Z",
     active: true,
     ...overrides,
   };
 }
 const closed = () => false;
+// The archived builders' launch-host resolution needs the manifest's
+// sources; the cache-and-children tests below don't care about hosts, so
+// they pass the empty manifest shape.
+const NO_SOURCES: readonly Source[] = [];
 
-test("adapts resource-local session summaries into stable recursive rail rows", () => {
-  const child = session({ row_id: "navigation:child", ref: "child", kind: "subagent", state: "active" });
-  const rows = sessionNodes([session({ row_id: "navigation:parent", ref: "parent", children: [child] })], closed);
+test("adapts resource-local session summaries into stable flat rail rows", () => {
+  const rows = sessionNodes([session({ row_id: "navigation:parent", ref: "parent" })]);
   expect(rows[0]).toMatchObject({ id: "navigation:parent", kind: "session", session: { ref: "parent" } });
-  expect(rows[0]?.children[0]).toMatchObject({ id: "navigation:child", kind: "session" });
 });
 
-test("session node memo dependencies are complete and bottom-up", () => {
+test("a summary's nested sessions, jobs, and watches build no rail rows", () => {
+  // The rail's rows are flat top-level rows with gloss and chips: a session's
+  // subagents live in the activity sidebar's Agents tab and its jobs and
+  // watches on the row's own summary figures, so nothing nests anymore.
+  const root = session({
+    ref: "root",
+    row_id: "root",
+    state: "active",
+    children: [
+      session({ ref: "done", row_id: "done", kind: "fork", state: "ended" }),
+      session({ ref: "working", row_id: "working", kind: "subagent", state: "active" }),
+    ],
+    running_job_count: 1,
+    watch_count: [watch({ id: "w1" })].length + 0,
+    armed_watch_count: [watch({ id: "w1" })].filter((w) => w.active).length + 0,
+  });
+  const [node] = sessionNodes([root]);
+  expect(node?.children).toEqual([]);
+});
+
+test("session node identity tracks the session object, per tier shape", () => {
   const unchangedSibling = session({ row_id: "sibling", ref: "sibling", title: "Sibling", state: "active" });
-  const grandchild = session({ row_id: "grandchild", ref: "grandchild", title: "Before", state: "active" });
-  const child = session({ row_id: "child", ref: "child", state: "active", children: [grandchild] });
-  const parent = session({ row_id: "parent", ref: "parent", state: "active", children: [child] });
-  const before = sessionNodes([parent, unchangedSibling], closed);
-  const repeated = sessionNodes([parent, unchangedSibling], closed);
+  const parent = session({ row_id: "parent", ref: "parent", state: "active" });
+  const before = sessionNodes([parent, unchangedSibling]);
+  const repeated = sessionNodes([parent, unchangedSibling]);
 
   expect(repeated[0]).toBe(before[0]);
   expect(repeated[0]?.children).toBe(before[0]?.children);
   expect(repeated[1]).toBe(before[1]);
 
-  const changedGrandchild = { ...grandchild, title: "After" };
-  const changedChild = { ...child, children: [changedGrandchild] };
-  const changedParent = { ...parent, children: [changedChild] };
-  const after = sessionNodes([changedParent, unchangedSibling], closed);
+  const changedParent = { ...parent, title: "After" };
+  const after = sessionNodes([changedParent, unchangedSibling]);
 
   expect(after[0]).not.toBe(before[0]);
-  expect(after[0]?.children).not.toBe(before[0]?.children);
-  expect(after[0]?.children[0]).not.toBe(before[0]?.children[0]);
-  expect(after[0]?.children[0]).toMatchObject({ children: [{ session: { title: "After" } }] });
+  expect(after[0]).toMatchObject({ session: { title: "After" } });
   expect(after[1]).toBe(before[1]);
-  expect(after[1]?.children).toBe(before[1]?.children);
+});
 
-  const expandedChild = (_id: string, defaultExpanded: boolean) => defaultExpanded;
-  const lookupBefore = sessionNodes([changedParent], expandedChild)[0];
-  const lookupAfter = sessionNodes([changedParent], (id, defaultExpanded) =>
-    id === changedChild.row_id ? true : defaultExpanded,
-  )[0];
-  expect(lookupAfter).not.toBe(lookupBefore);
-  expect(lookupAfter?.children[0]).toMatchObject({ id: changedChild.row_id, expanded: true });
+test("sessionNodes marks its rows as cross-project tier roots; projects do not", () => {
+  const root = session({ ref: "root", row_id: "root" });
+  const [live] = sessionNodes([root]);
+  expect(live?.crossProjectTier).toBe(true);
+  // A Projects-tier session always nests under its own ProjectRow, which
+  // already names the project - no cross-project line there. The mark splits
+  // the node cache too: one session renders as both shapes without either
+  // serving the other's cached node.
+  const [projectRow] = projectNodes([project({ key: "p", sessions: [root] })], closed);
+  const nested = projectRow?.children.find((child): child is SessionRailNode => child.kind === "session");
+  expect(nested?.crossProjectTier).toBeUndefined();
+  expect(nested).not.toBe(live);
 });
 
 describe("resource projection semantics", () => {
@@ -101,260 +176,22 @@ describe("resource projection semantics", () => {
     expect(section.sessions.map((row) => row.ref)).toEqual(["a", "b"]);
     expect(pinSectionDisclosureID(section.id)).toBe("pinsection:opaque");
   });
-  test("folds inactive descendants while retaining current order and counts", () => {
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      state: "active",
-      children: [
-        session({ ref: "done", row_id: "done", state: "ended" }),
-        session({ ref: "working", row_id: "working", state: "active" }),
-      ],
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["session", "inactiveFold"]);
-    expect(node?.children[1]).toMatchObject({ count: 1, expanded: false });
-  });
 
-  test("keeps active jobs inline and puts idle subagents and completed jobs in separate folds", () => {
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      state: "idle",
-      children: [
-        session({ ref: "idle-child", row_id: "idle-child", kind: "subagent", state: "idle" }),
-        session({ ref: "active-child", row_id: "active-child", kind: "subagent", state: "active" }),
-      ],
-    });
-    Object.assign(root, {
-      running_jobs: [{ job_id: "job-running", job_type: "shell", status: "running" }],
-      completed_jobs: [{ job_id: "job-completed", job_type: "shell", status: "completed" }],
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["session", "job", "inactiveFold", "completedJobsFold"]);
-    expect(node?.children[1]).toMatchObject({ kind: "job", job: { job_id: "job-running" } });
-    expect(node?.children[2]).toMatchObject({ kind: "inactiveFold", count: 1 });
-    expect(node?.children[3]).toMatchObject({ kind: "completedJobsFold", count: 1 });
+  test("displayState passes a plain awaiting session through as needing you", () => {
+    expect(displayState(session({ state: "awaiting" }))).toBe("awaiting");
   });
-
-  test("keeps an idle subagent with active work in the inline list", () => {
-    const child = session({ ref: "child", row_id: "child", kind: "subagent", state: "idle" });
-    Object.assign(child, { running_jobs: [{ job_id: "job-child", job_type: "shell", status: "running" }] });
-    const [node] = sessionNodes([session({ ref: "root", row_id: "root", children: [child] })], closed);
-    expect(node?.children.map((entry) => entry.kind)).toEqual(["session"]);
-    expect(node?.children[0]).toMatchObject({ children: [{ kind: "job", job: { job_id: "job-child" } }] });
+  // An approval blocks its turn mid-tool, so the row's wire state stays
+  // "active"; approval_pending is the only thing saying a person is needed.
+  test("an approval presents as needing you on any state but a failure", () => {
+    expect(displayState(session({ state: "active", approval_pending: true }))).toBe("awaiting");
+    expect(displayState(session({ state: "idle", approval_pending: true }))).toBe("awaiting");
+    expect(displayState(session({ state: "errored", approval_pending: true }))).toBe("errored");
   });
-
-  test("keeps a session's own watch rows inline, after its running jobs", () => {
-    const root = session({ ref: "root", row_id: "root", state: "idle" });
-    Object.assign(root, {
-      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
-      watches: [watch({ id: "w1" }), watch({ id: "w2" })],
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["job", "watch", "watch"]);
-    // The row id is namespaced off the parent, the way job rows are, so two
-    // sessions carrying a same-id watch (each its own receiver) get distinct
-    // tree ids.
-    expect(node?.children[1]).toMatchObject({ id: "watch:root:w1", kind: "watch", watch: { id: "w1" } });
-  });
-
-  test("renders no watch rows for a session whose wire list is absent or empty", () => {
-    const [node] = sessionNodes([session({ ref: "root", row_id: "root" })], closed);
-    expect(node?.children).toEqual([]);
-  });
-
-  test("caps the inline watch rows and notes the remainder in the overflow grammar", () => {
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: ["w1", "w2", "w3", "w4", "w5"].map((id) => watch({ id })),
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["watch", "watch", "watch", "overflow"]);
-    expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", count: 2, suffix: "more watches", pages: [] });
-  });
-
-  test("marks the watch overflow row passive: it can reveal nothing by activating", () => {
-    // The inline cap is local to the rail and the wire already carried every
-    // watch, so there is no page behind "+N more watches". The row must be an
-    // honest count, not a control that looks actionable and no-ops.
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: ["w1", "w2", "w3", "w4", "w5"].map((id) => watch({ id })),
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.at(-1)).toMatchObject({ kind: "overflow", suffix: "more watches", pages: [], passive: true });
-  });
-
-  test("counts watches the projector omitted in the fold-out overflow, even under the inline cap", () => {
-    // The hub caps its per-session watch list and reports the rows it dropped
-    // as omitted_watches; the summary line already says "+4 more". A fold-out
-    // that showed only the one retained row would silently contradict it, so
-    // the omitted rows are part of the fold-out's hidden count.
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: [watch({ id: "w1" })],
-      omitted_watches: 4,
-    });
-    const [node] = sessionNodes([root], closed);
-    expect(node?.children.map((child) => child.kind)).toEqual(["watch", "overflow"]);
-    expect(node?.children.at(-1)).toMatchObject({
-      kind: "overflow",
-      count: 4,
-      suffix: "more watches",
-      pages: [],
-      passive: true,
-    });
-  });
-
-  test("the summary line's watch count and the fold-out's hidden count agree", () => {
-    // One total per session: retained rows plus the projector's omitted count.
-    // The fold-out shows the inline head of the retained rows and counts
-    // everything else - retained beyond the cap plus the omitted rows - so the
-    // two surfaces cannot disagree about how many watches the session holds.
-    const cases = [
-      { retained: 1, omitted: 4, label: "1 watch · 1 armed total · +4 more" },
-      { retained: 3, omitted: 0, label: "3 watches" },
-      { retained: 5, omitted: 3, label: "5 watches · 5 armed total · +3 more" },
-      { retained: 2, omitted: 1, label: "2 watches · 2 armed total · +1 more" },
-    ];
-    for (const c of cases) {
-      const watches = Array.from({ length: c.retained }, (_, i) => watch({ id: `w${i}` }));
-      const root = session({ ref: "root", row_id: "root", watches, omitted_watches: c.omitted });
-      const [node] = sessionNodes([root], closed);
-      const children = node?.children ?? [];
-      const shown = children.filter((child) => child.kind === "watch").length;
-      const overflow = children.find((child) => child.kind === "overflow") as OverflowRailNode | undefined;
-      const hidden = overflow?.count ?? 0;
-      // Every retained row is armed in this matrix, so the summary line counts
-      // all of them; the fold-out plus its overflow must add up to the same
-      // number the line's total implies.
-      expect(shown + hidden).toBe(c.retained + c.omitted);
-      expect(shown).toBe(Math.min(c.retained, 3));
-      const label = watchCountLabel(activeWatchCount(root), c.retained, c.omitted);
-      // An all-armed list keeps the bare count when nothing was omitted; once
-      // rows were omitted the figure is labelled a total covering them.
-      expect(label).toBe(c.label);
-    }
-  });
-
-  test("the summary line's total includes retained-but-inactive watches", () => {
-    // A fired one-shot whose teardown is still pending projects inactive, so a
-    // session can hold retained rows that are not armed. The summary line used
-    // to count only the armed rows (`2 watches`) while the fold-out listed all
-    // five, so the two surfaces disagreed. One total now: the retained count,
-    // with the armed count beside it.
-    const inactive = (id: string) => watch({ id, active: false });
-    const cases = [
-      // 2 armed + 3 inactive, nothing omitted: 5 total, 2 armed.
-      {
-        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
-        omitted: 0,
-        label: "5 watches · 2 armed",
-      },
-      // Same, plus 3 rows the projector omitted.
-      {
-        watches: [watch({ id: "w1" }), watch({ id: "w2" }), inactive("w3"), inactive("w4"), inactive("w5")],
-        omitted: 3,
-        label: "5 watches · 2 armed total · +3 more",
-      },
-      // All-inactive: 3 retained, 0 armed - still one total of 3.
-      {
-        watches: [inactive("w1"), inactive("w2"), inactive("w3")],
-        omitted: 0,
-        label: "3 watches · 0 armed",
-      },
-    ];
-    for (const c of cases) {
-      const root = session({ ref: "root", row_id: "root", watches: c.watches, omitted_watches: c.omitted });
-      const [node] = sessionNodes([root], closed);
-      const children = node?.children ?? [];
-      const shown = children.filter((child) => child.kind === "watch").length;
-      const overflow = children.find((child) => child.kind === "overflow") as OverflowRailNode | undefined;
-      const hidden = overflow?.count ?? 0;
-      const label = watchCountLabel(activeWatchCount(root), root.watches?.length ?? 0, c.omitted);
-      expect(label).toBe(c.label);
-      // The summary's total - the retained base plus the omitted "+N more" -
-      // is exactly the fold-out's shown-plus-hidden total.
-      expect((root.watches?.length ?? 0) + c.omitted).toBe(shown + hidden);
-    }
-  });
-
-  test("counts a session's own armed watches once, never a descendant's", () => {
-    const child = session({
-      ref: "child",
-      row_id: "child",
-      watches: [watch({ id: "c1" }), watch({ id: "c2" })],
-    });
-    const parent = session({
-      ref: "parent",
-      row_id: "parent",
-      children: [child],
-      watches: [watch({ id: "p1" }), watch({ id: "p2", active: false })],
-    });
-    // The parent counts only what its own summary carries - a receiver watch
-    // belongs to the session whose summary carries it - and only while armed.
-    expect(activeWatchCount(parent)).toBe(1);
-    expect(activeWatchCount(child)).toBe(2);
-    expect(activeWatchCount(session({ ref: "none", row_id: "none" }))).toBe(0);
-  });
-
-  test("adds omitted armed rows to the armed total and labels what the number covers", () => {
-    // A session with more armed watches than the hub's per-session cap: 32
-    // retained, 8 more omitted and all of them armed. The retained rows alone
-    // would report 32, understating the session's armed total of 40.
-    const retained = Array.from({ length: 32 }, (_, i) => watch({ id: `w${i}` }));
-    const root = session({
-      ref: "root",
-      row_id: "root",
-      watches: retained,
-      omitted_watches: 8,
-      omitted_armed_watches: 8,
-    });
-    expect(activeWatchCount(root)).toBe(40);
-    expect(watchCountLabel(activeWatchCount(root), retained.length, 8)).toBe("32 watches · 40 armed total · +8 more");
-    // Even when none of the omitted rows were armed, the figure is still
-    // labelled a total: the panel cannot show which of the omitted rows were
-    // armed, so the number must say what it covers.
-    const mixed = session({
-      ref: "mixed",
-      row_id: "mixed",
-      watches: [watch({ id: "a" }), watch({ id: "b", active: false })],
-      omitted_watches: 3,
-      omitted_armed_watches: 0,
-    });
-    expect(watchCountLabel(activeWatchCount(mixed), 2, 3)).toBe("2 watches · 1 armed total · +3 more");
-
-    // The byte fitter can shed every retained row: the label then drops the base
-    // count rather than leading with "0 watches" beside a nonzero armed total.
-    expect(watchCountLabel(40, 0, 8)).toBe("40 armed total · +8 more");
-    expect(watchCountLabel(0, 0, 8)).toBe("0 armed total · +8 more");
-  });
-
-  test("handles cluster disclosure without a second inactive fold", () => {
-    const cluster = session({
-      kind: "cluster",
-      row_id: "cluster",
-      ref: "cluster",
-      children: [session({ row_id: "member", ref: "member", state: "ended" })],
-    });
-    expect(sessionNodes([cluster], closed)[0]?.children.map((child) => child.id)).toEqual(["member"]);
-  });
-  test("derives attention and working counts from recursive summaries", () => {
-    const root = session({
-      state: "active",
-      children: [
-        session({ ref: "ask", state: "awaiting" }),
-        session({ ref: "worker", state: "active", children: [session({ ref: "worker2", state: "active" })] }),
-      ],
-    });
-    expect(needsYouDescendantCount(root)).toBe(1);
-    expect(workingDescendantCount(root)).toBe(2);
-    expect(displayState(session({ kind: "subagent", state: "awaiting" }))).toBe("idle");
-    expect(displayState(session({ kind: "subagent", state: "awaiting", ask_pending: true }))).toBe("awaiting");
+  test("a project's session waiting on an approval sorts ahead of its working sibling", () => {
+    const working = session({ row_id: "working", ref: "working", state: "active" });
+    const approval = session({ row_id: "approval", ref: "approval", state: "active", approval_pending: true });
+    const [node] = projectNodes([project({ sessions: [working, approval] })], closed);
+    expect(node?.children.map((child) => child.id)).toEqual(["approval", "working"]);
   });
   test("projects current/recent rows and deterministic bounded overflow pages", () => {
     const rows = [
@@ -383,7 +220,7 @@ describe("resource projection semantics", () => {
       "frontend (repoA)",
       "frontend (repoB)",
     ]);
-    expect(archivedSessionGroups([a], closed)[0]?.children[0]).toMatchObject({ id: "navigation:old-a" });
+    expect(archivedSessionGroups([a], closed, NO_SOURCES)[0]?.children[0]).toMatchObject({ id: "navigation:old-a" });
   });
   test("counts archived rows plus archived remainder in active and test projects", () => {
     const active = project({ sessions: [session({ tier: "archived" })], more_archived: 4 });
@@ -391,14 +228,18 @@ describe("resource projection semantics", () => {
   });
   test("keeps archived stubs visible with a loading child and hydrated roots projectable", () => {
     const stub = project({ key: "archived", is_archived: true, session_count: 3 });
-    expect(archivedProjectNodes([stub], new Map(), closed)[0]?.children[0]).toMatchObject({ kind: "loading" });
+    expect(archivedProjectNodes([stub], new Map(), closed, NO_SOURCES)[0]?.children[0]).toMatchObject({
+      kind: "loading",
+    });
     const hydrated = project({
       ...stub,
       sessions: [session({ ref: "old", row_id: "navigation:old" })],
       more_archived: 2,
     });
     expect(
-      archivedProjectNodes([stub], new Map([["archived", hydrated]]), closed)[0]?.children.map((row) => row.id),
+      archivedProjectNodes([stub], new Map([["archived", hydrated]]), closed, NO_SOURCES)[0]?.children.map(
+        (row) => row.id,
+      ),
     ).toEqual(["navigation:old", "projectnode:archived:overflow"]);
     expect(archivedCount([stub], [])).toBe(3);
     expect(archivedCount([hydrated], [])).toBe(3);
@@ -434,13 +275,13 @@ describe("resource projection semantics", () => {
     expect(activeRepeated).toBe(activeBefore);
     expect(activeRepeated?.children).toBe(activeBefore?.children);
 
-    const groupBefore = archivedSessionGroups([archivedInActive], closed)[0];
-    const groupRepeated = archivedSessionGroups([archivedInActive], closed)[0];
+    const groupBefore = archivedSessionGroups([archivedInActive], closed, NO_SOURCES)[0];
+    const groupRepeated = archivedSessionGroups([archivedInActive], closed, NO_SOURCES)[0];
     expect(groupRepeated).toBe(groupBefore);
     expect(groupRepeated?.children).toBe(groupBefore?.children);
 
-    const archivedBefore = archivedProjectNodes([archivedStub, archivedSibling], details, closed);
-    const archivedRepeated = archivedProjectNodes([archivedStub, archivedSibling], details, closed);
+    const archivedBefore = archivedProjectNodes([archivedStub, archivedSibling], details, closed, NO_SOURCES);
+    const archivedRepeated = archivedProjectNodes([archivedStub, archivedSibling], details, closed, NO_SOURCES);
     expect(archivedRepeated[0]).toBe(archivedBefore[0]);
     expect(archivedRepeated[0]?.children).toBe(archivedBefore[0]?.children);
     expect(archivedRepeated[1]).toBe(archivedBefore[1]);
@@ -456,20 +297,479 @@ describe("resource projection semantics", () => {
         [archivedSibling.key, siblingDetail],
       ]),
       closed,
+      NO_SOURCES,
     );
     expect(archivedAfter[0]).not.toBe(archivedBefore[0]);
     expect(archivedAfter[0]?.children[0]).toMatchObject({ session: { title: "After" } });
     expect(archivedAfter[1]).toBe(archivedBefore[1]);
     expect(archivedAfter[1]?.children).toBe(archivedBefore[1]?.children);
   });
-  test("uses persisted overrides and location membership for deep-link reveal", () => {
-    const p = project({
-      key: "p1",
-      sessions: [session({ ref: "top", row_id: "top", children: [session({ ref: "child", row_id: "child" })] })],
-    });
+  test("uses persisted overrides and flat membership for deep-link reveal", () => {
+    const p = project({ key: "p1", sessions: [session({ ref: "top", row_id: "top" })] });
     expect(overrideLookup(new Map([["x", true]]))("x", false)).toBe(true);
-    expect(projectNodeIdForSessionRef([p], "child")).toBe("projectnode:p1");
-    expect(topLevelAncestorRef([p], "child")).toBe("top");
-    expect(topLevelAncestorRef([p], "missing")).toBeNull();
+    expect(revealExpansionIds([p], [], "top", "flat")).toEqual(["projectnode:p1"]);
+    expect(revealExpansionIds([p], [], "missing", "flat")).toEqual([]);
   });
+});
+
+// Host grouping (the rail's organize-by setting): the pure reshaping of the
+// same project/session nodes over the manifest's sources. Host-first makes
+// hosts the top groups; project-first inserts host branches inside each
+// project; the Live section groups under host subheaders whenever its rows
+// span more than one host. No wire data beyond session host_id and each
+// project's sources.
+describe("host grouping (organize by)", () => {
+  const sources: Source[] = [
+    { id: "local", label: "this host", kind: "local", online: true },
+    { id: "devbox", label: "devbox", kind: "appwire", online: true },
+    { id: "render-farm", label: "render-farm", kind: "appwire", online: true },
+    { id: "ci-runner", label: "ci-runner", kind: "appwire", online: false },
+  ];
+  const on = (host: string, ref: string, overrides: Partial<RailSession> = {}) =>
+    session({
+      row_id: `navigation:${host}:${ref}`,
+      ref: `${host}:${ref}`,
+      session_id: ref,
+      host_id: host,
+      ...overrides,
+    });
+  // The grouped-row assertions read children ids through kind guards (a
+  // plain "children" in check cannot narrow the base type's optional
+  // property), so the guard itself lives here once.
+  const childIds = (node: RailNode | undefined): string[] =>
+    (node?.kind === "project" || node?.kind === "host" ? node.children : []).map((child) => child.id);
+
+  test("hostProjectNodes orders hosts this host first, then online alphabetically, offline last, and hides empty hosts", () => {
+    const render = project({ key: "render", sources: ["render-farm"], sessions: [on("render-farm", "r1")] });
+    const ci = project({ key: "ci", sources: ["ci-runner"], sessions: [on("ci-runner", "c1")] });
+    const dev = project({ key: "dev", sources: ["devbox"], sessions: [on("devbox", "d1")] });
+    const home = project({ key: "home", sources: ["local"], sessions: [on("local", "h1")] });
+    const nodes = hostProjectNodes([render, ci, dev, home], sources, closed);
+    expect(nodes.map((node) => node.id)).toEqual(["host:local", "host:devbox", "host:render-farm", "host:ci-runner"]);
+  });
+
+  test("hostProjectNodes nests a copy of each project under every owning host, holding only that host's sessions", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1"), on("devbox", "d2", { state: "awaiting" })],
+    });
+    const nodes = hostProjectNodes([evener], sources, closed);
+    const local = nodes.find((node) => node.id === "host:local");
+    const devbox = nodes.find((node) => node.id === "host:devbox");
+    expect(local?.kind).toBe("host");
+    expect(local?.children.map((child) => child.id)).toEqual(["projectnode:evener@local"]);
+    const localCopy = local?.children[0];
+    expect(localCopy).toMatchObject({ kind: "project", project: { key: "evener" } });
+    expect(childIds(localCopy)).toEqual(["navigation:local:l1"]);
+    // The needs-you-first sort survives the per-host filter.
+    expect(devbox?.children.map((child) => child.id)).toEqual(["projectnode:evener@devbox"]);
+    const devboxCopy = devbox?.children[0];
+    expect(childIds(devboxCopy)).toEqual(["navigation:devbox:d2", "navigation:devbox:d1"]);
+  });
+
+  test("hostProjectNodes re-ids the project's overflow under the one copy that carries it", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+      more_current: 7,
+    });
+    const nodes = hostProjectNodes([evener], sources, closed);
+    const localCopy = nodes.find((node) => node.id === "host:local")?.children[0];
+    const devboxCopy = nodes.find((node) => node.id === "host:devbox")?.children[0];
+    const localOverflow = localCopy?.kind === "project" ? localCopy.children.at(-1) : undefined;
+    expect(localOverflow).toMatchObject({ id: "projectnode:evener@local:overflow", kind: "overflow", count: 7 });
+    // The overflow is the project's, so exactly one copy - the first in rail
+    // order - carries it; the other host's copy keeps only its own rows.
+    expect(devboxCopy?.kind === "project" ? childIds(devboxCopy) : []).toEqual(["navigation:devbox:d1"]);
+  });
+
+  test("hostProjectNodes keeps the loading placeholder on an unloaded project's copies and places projects missing sources by their sessions", () => {
+    const unloaded = project({ key: "unloaded", sources: ["local", "devbox"], session_count: 2 });
+    const noSources = project({ key: "bare", sessions: [on("devbox", "d1")] });
+    const nodes = hostProjectNodes([unloaded, noSources], sources, closed);
+    const local = nodes.find((node) => node.id === "host:local");
+    const devbox = nodes.find((node) => node.id === "host:devbox");
+    const unloadedUnderLocal = local?.children.find((child) => child.id === "projectnode:unloaded@local");
+    expect(unloadedUnderLocal?.kind === "project" ? unloadedUnderLocal.children : []).toEqual([
+      { id: "projectnode:unloaded@local:loading", kind: "loading" },
+    ]);
+    const unloadedUnderDevbox = devbox?.children.find((child) => child.id === "projectnode:unloaded@devbox");
+    expect(unloadedUnderDevbox?.kind === "project" ? unloadedUnderDevbox.children : []).toEqual([
+      { id: "projectnode:unloaded@devbox:loading", kind: "loading" },
+    ]);
+    // No sources field: placement falls back to the hosts its own rows name.
+    expect(local?.children.some((child) => child.id === "projectnode:bare@local")).toBe(false);
+    expect(devbox?.children.map((child) => child.id)).toContain("projectnode:bare@devbox");
+  });
+
+  test("projectNodesWithHostBranches inserts host branches inside a loaded project, overflow stays at the project level", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+      more_current: 7,
+    });
+    const [node] = projectNodesWithHostBranches([evener], sources, closed);
+    expect(node?.children.map((child) => child.id)).toEqual([
+      "projectnode:evener@host:local",
+      "projectnode:evener@host:devbox",
+      "projectnode:evener:overflow",
+    ]);
+    const localBranch = node?.children[0];
+    expect(localBranch).toMatchObject({ kind: "host", host: { id: "local" } });
+    expect(childIds(localBranch)).toEqual(["navigation:local:l1"]);
+  });
+
+  test("projectNodesWithHostBranches leaves an unloaded project's loading placeholder alone", () => {
+    const [node] = projectNodesWithHostBranches([project({ key: "p1", session_count: 2 })], sources, closed);
+    expect(node?.children).toEqual([{ id: "projectnode:p1:loading", kind: "loading" }]);
+  });
+
+  test("project-first keeps single-host rows flat, and host-first renders the project overflow on one copy only", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1")],
+      more_current: 7,
+    });
+    // Project-first: only one host has loaded rows, so the project keeps
+    // today's flat children - a lone "this host" branch would bury every
+    // session one expansion deeper for no grouping gained.
+    const [branchNode] = projectNodesWithHostBranches([evener], sources, closed);
+    expect(childIds(branchNode)).toEqual(["navigation:local:l1", "projectnode:evener:overflow"]);
+    // Host-first: the overflow is the PROJECT's, so it renders once - on the
+    // first copy in rail order - instead of claiming "+7" under every host.
+    // The empty devbox copy stays: revealed rows land under their hosts, and
+    // a deep link still expands it.
+    const hosts = hostProjectNodes([evener], sources, closed);
+    const localCopy = hosts.find((node) => node.id === "host:local")?.children[0];
+    const devboxCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
+    expect(childIds(localCopy)).toEqual(["navigation:local:l1", "projectnode:evener@local:overflow"]);
+    expect(childIds(devboxCopy)).toEqual([]);
+  });
+
+  test("liveNodesGroupedByHost groups rows under hosts only while more than one host is in play", () => {
+    const rows = sessionNodes([on("local", "l1"), on("devbox", "d1")]);
+    const grouped = liveNodesGroupedByHost(rows, sources, overrideLookup(new Map()));
+    expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
+    const local = grouped[0];
+    expect(local).toMatchObject({ kind: "host", host: { id: "local", online: true }, expanded: true });
+    expect(childIds(local)).toEqual(["navigation:local:l1"]);
+  });
+
+  // A deep-link reveal has to walk the same ids the grouped builders mint,
+  // or the row it targets stays hidden behind a group that never opens.
+  test("revealExpansionIds walks the host-first chain: the host group, then the project's copy", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("devbox", "d1"), on("local", "l1")],
+    });
+    expect(revealExpansionIds([evener], [], "devbox:d1", "host-project")).toEqual([
+      "host:devbox",
+      "projectnode:evener@devbox",
+    ]);
+    expect(revealExpansionIds([evener], [], "devbox:d1", "flat")).toEqual(["projectnode:evener"]);
+  });
+
+  test("revealExpansionIds walks the project-first chain: the project, then its per-host branch", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    expect(revealExpansionIds([evener], [], "devbox:d1", "project-host")).toEqual([
+      "projectnode:evener",
+      "projectnode:evener@host:devbox",
+    ]);
+    // Single-host rows render flat children, so the chain stops at the
+    // project fold - a branch id would name a fold that does not exist.
+    const solo = project({ key: "solo", sources: ["local", "devbox"], sessions: [on("devbox", "d1")] });
+    expect(revealExpansionIds([solo], [], "devbox:d1", "project-host")).toEqual(["projectnode:solo"]);
+  });
+
+  test("revealExpansionIds does not walk nested summaries: a subagent ref names no rail row", () => {
+    // The rail's lists carry top-level rows only, so a ref that exists only as
+    // a nested summary (a subagent, a fork original) finds nothing here. Its
+    // reveal resolves through the location lookup instead, which names the
+    // top-level carrier (top_level_ref) whose row renders.
+    const nested = project({
+      key: "evener",
+      sources: ["local"],
+      sessions: [session({ ref: "root", row_id: "root", host_id: "local", children: [on("devbox", "child")] })],
+    });
+    expect(revealExpansionIds([nested], [], "devbox:child", "host-project")).toEqual([]);
+    expect(revealExpansionIds([nested], [], "devbox:child", "flat")).toEqual([]);
+  });
+
+  test("revealExpansionIds opens the project fold for a top-level row, adding the host branch only when rows span hosts", () => {
+    const carrier = on("local", "root");
+    const solo = project({ key: "evener", sources: ["local"], sessions: [carrier] });
+    expect(revealExpansionIds([solo], [], "local:root", "flat")).toEqual(["projectnode:evener"]);
+    expect(revealExpansionIds([solo], [], "local:root", "project-host")).toEqual(["projectnode:evener"]);
+    // A project whose rows span hosts adds its per-host branch first.
+    const spread = project({
+      key: "spread",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d2"), carrier],
+    });
+    expect(revealExpansionIds([spread], [], "local:root", "project-host")).toEqual([
+      "projectnode:spread",
+      "projectnode:spread@host:local",
+    ]);
+  });
+
+  test("revealExpansionIds routes an archived-tier row to the archived group fold", () => {
+    const archived = project({ key: "old", sessions: [on("local", "achild", { tier: "archived" })] });
+    expect(revealExpansionIds([archived], [], "local:achild", "host-project")).toEqual(["archivedgroup:old"]);
+    expect(revealExpansionIds([archived], [], "local:achild", "flat", { rowsUnderProjectNode: true })).toEqual([
+      "projectnode:old",
+    ]);
+  });
+
+  test("revealExpansionIds opens a Live host subheader only while Live renders grouped", () => {
+    const twoHosts = [on("local", "l1"), on("devbox", "d1")];
+    expect(revealExpansionIds([], twoHosts, "devbox:d1", "project-host")).toEqual(["livehost:devbox"]);
+    expect(revealExpansionIds([], [on("local", "l1")], "local:l1", "project-host")).toEqual([]);
+    // Flat mode renders Live ungrouped, so no subheader exists to expand.
+    expect(revealExpansionIds([], twoHosts, "devbox:d1", "flat")).toEqual([]);
+  });
+
+  test("revealExpansionIds is empty for a ref nothing loaded holds (the location path owns it)", () => {
+    expect(revealExpansionIds([], [], "missing", "host-project")).toEqual([]);
+    // A single host (or none) keeps today's flat list, byte for byte.
+    const single = sessionNodes([on("local", "l1"), on("local", "l2")]);
+    expect(liveNodesGroupedByHost(single, sources, closed)).toBe(single);
+    expect(liveNodesGroupedByHost([], sources, closed)).toEqual([]);
+  });
+
+  test("host-first copies carry the host they nest under; the first speaks for the project", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    const hosts = hostProjectNodes([evener], sources, closed);
+    const localCopy = hosts.find((node) => node.id === "host:local")?.children[0];
+    const devboxCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
+    // The first copy in rail order is the project's canonical copy: the
+    // one that renders the project's aggregate facts (overflow, rollup)
+    // instead of duplicating them under every host.
+    expect(localCopy).toMatchObject({ kind: "project", spawnHost: "local", canonicalCopy: true });
+    expect(devboxCopy).toMatchObject({ kind: "project", spawnHost: "devbox" });
+    expect(devboxCopy).not.toHaveProperty("canonicalCopy");
+    const [flat] = projectNodes([evener], closed);
+    expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
+  });
+
+  test("the canonical copy is the first host in rail order that has loaded rows", () => {
+    // The hub sorts first in rail order but owns no loaded rows here: the
+    // project's overflow must not render inside an empty host group, where
+    // collapsing the group hides the project's only "+N older".
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("devbox", "d1"), on("devbox", "d2")],
+    });
+    const hosts = hostProjectNodes([evener], sources, closed);
+    const emptyCopy = hosts.find((node) => node.id === "host:local")?.children[0];
+    const rowsCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
+    expect(emptyCopy).not.toHaveProperty("canonicalCopy");
+    expect(rowsCopy).toMatchObject({ kind: "project", spawnHost: "devbox", canonicalCopy: true });
+    // A project with no loaded rows anywhere (a stub) keeps the first host
+    // in rail order, so the anchor is stable until rows land somewhere.
+    const stub = project({ key: "stub", sources: ["local", "devbox"], sessions: [] });
+    const stubHosts = hostProjectNodes([stub], sources, closed);
+    expect(stubHosts.find((node) => node.id === "host:local")?.children[0]).toMatchObject({
+      kind: "project",
+      canonicalCopy: true,
+    });
+  });
+
+  test("project-first rows name the host a launch targets, so a remote directory cannot fall back to this hub", () => {
+    const hubbed = project({
+      key: "hubbed",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    const remote = project({ key: "remote", sources: ["devbox"], sessions: [on("devbox", "d1")] });
+    const rows = projectNodesWithHostBranches([hubbed, remote], sources, closed);
+    // The hub owns the merged record, so its row launches here explicitly -
+    // a remembered remote host cannot survive the click. The row stays the
+    // project's ONE aggregate row, rollup and overflow included.
+    expect(rows.find((node) => node.id === "projectnode:hubbed")).toMatchObject({
+      spawnHost: "local",
+      canonicalCopy: true,
+    });
+    // A remote-owned project names its host: the spawn draft prefills it
+    // instead of silently launching a remote working_dir on this hub.
+    expect(rows.find((node) => node.id === "projectnode:remote")).toMatchObject({ spawnHost: "devbox" });
+    // The no-sources call stays hostless - the builder's contract for
+    // callers with no manifest to read; the rail's flat tier passes its
+    // display sources, so its rows do name a host (Rail.test.tsx pins
+    // the launch URL).
+    const [flat] = projectNodes([remote], closed);
+    expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
+  });
+
+  test("archived and test-run rows name their launch host, whatever the grouping", () => {
+    const remote = project({
+      key: "remote",
+      sources: ["devbox"],
+      sessions: [on("devbox", "a1", { tier: "archived" })],
+    });
+    // The Archived sessions section's group row and the whole-archived
+    // project row both name the host: a remote-owned directory must not
+    // fall back to this hub from an archived row either.
+    expect(archivedSessionGroups([remote], closed, sources)[0]).toMatchObject({
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    });
+    const whole = project({ key: "old", sources: ["devbox"], session_count: 3 });
+    expect(archivedProjectNodes([whole], new Map(), closed, sources)[0]).toMatchObject({
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    });
+    // Test-run project rows render flat but still name the host.
+    const run = project({ key: "run", sources: ["devbox"], sessions: [on("devbox", "t1")] });
+    expect(projectNodes([run], closed, sources)[0]).toMatchObject({
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    });
+    // The no-sources call keeps the hostless contract even though no rail
+    // tier uses it anymore: every tier passes its display sources.
+    expect(projectNodes([run], closed)[0]).not.toHaveProperty("spawnHost");
+  });
+
+  test("an archived row re-renders its launch host when the project's ownership changes in place", () => {
+    const owned = project({
+      key: "remote",
+      sources: ["devbox"],
+      sessions: [on("devbox", "a1", { tier: "archived" })],
+    });
+    const before = archivedSessionGroups([owned], closed, sources)[0];
+    expect(before).toMatchObject({ spawnHost: "devbox" });
+    // Ownership flips while the global sources and the row's children stay
+    // identical: the cache must not serve the old node's host - the same
+    // compare cachedProjectNode does for the other tiers.
+    owned.sources = ["local", "devbox"];
+    const after = archivedSessionGroups([owned], closed, sources)[0];
+    expect(after).toMatchObject({ spawnHost: "local" });
+    expect(after).not.toBe(before);
+
+    const stub = project({ key: "old", sources: ["devbox"], session_count: 3 });
+    const stubBefore = archivedProjectNodes([stub], new Map(), closed, sources)[0];
+    stub.sources = ["local", "devbox"];
+    const stubAfter = archivedProjectNodes([stub], new Map(), closed, sources)[0];
+    expect(stubAfter).toMatchObject({ spawnHost: "local" });
+    expect(stubAfter).not.toBe(stubBefore);
+  });
+
+  test("a reveal routes an archived-tier row to the archived group fold, whatever the grouping", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["devbox"],
+      sessions: [on("devbox", "a1", { tier: "archived" })],
+    });
+    expect(revealExpansionIds([evener], [], "devbox:a1", "flat")).toEqual(["archivedgroup:evener"]);
+    expect(revealExpansionIds([evener], [], "devbox:a1", "host-project")).toEqual(["archivedgroup:evener"]);
+  });
+
+  test("a whole-archived project's rows reveal under its own node, not the archived group", () => {
+    // archivedProjectNodes renders every row (whatever its tier) under the
+    // project's own node, so the reveal must not route to the group fold.
+    const old = project({ key: "old", sessions: [on("devbox", "a1", { tier: "archived" })] });
+    expect(revealExpansionIds([old], [], "devbox:a1", "flat", { rowsUnderProjectNode: true })).toEqual([
+      "projectnode:old",
+    ]);
+  });
+
+  test("hosts order by their display labels, ties broken by id", () => {
+    const labeled: Source[] = [
+      { id: "local", label: "this host", kind: "local", online: true },
+      { id: "zz-host", label: "Alpha box", kind: "appwire", online: true },
+      { id: "mm-host", label: "Alpha box", kind: "appwire", online: true },
+      { id: "aa-host", label: "Zeta farm", kind: "appwire", online: true },
+    ];
+    const alpha = project({ key: "alpha", sources: ["zz-host"], sessions: [on("zz-host", "z1")] });
+    const twin = project({ key: "twin", sources: ["mm-host"], sessions: [on("mm-host", "m1")] });
+    const zeta = project({ key: "zeta", sources: ["aa-host"], sessions: [on("aa-host", "a1")] });
+    expect(hostProjectNodes([zeta, alpha, twin], labeled, closed).map((node) => node.id)).toEqual([
+      "host:mm-host",
+      "host:zz-host",
+      "host:aa-host",
+    ]);
+  });
+
+  test("a project-first host branch rebuilds when the manifest's source facts change", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    const devboxBranch = (nodes: readonly RailNode[]): HostRailNode | undefined =>
+      nodes.find((child): child is HostRailNode => child.kind === "host" && child.host.id === "devbox");
+    const local = (label: string): Source => ({ id: "local", label, kind: "local", online: true });
+    const devbox = (label: string): Source => ({ id: "devbox", label, kind: "appwire", online: true });
+    const before = projectNodesWithHostBranches([evener], [local("this host"), devbox("devbox")], closed);
+    expect(devboxBranch(before[0]?.children ?? [])).toMatchObject({ host: { id: "devbox", label: "devbox" } });
+    const after = projectNodesWithHostBranches([evener], [local("this host"), devbox("renamed box")], closed);
+    expect(devboxBranch(after[0]?.children ?? [])).toMatchObject({ host: { id: "devbox", label: "renamed box" } });
+  });
+
+  test("an unchanged manifest refresh reuses the branch children it already built", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    const local = (): Source => ({ id: "local", label: "this host", kind: "local", online: true });
+    const devbox = (): Source => ({ id: "devbox", label: "devbox", kind: "appwire", online: true });
+    const first = projectNodesWithHostBranches([evener], [local(), devbox()], closed);
+    // A revalidation hands back a NEW array carrying the SAME facts; the
+    // cache must reuse the children, not mint a variant per refresh.
+    const second = projectNodesWithHostBranches([evener], [local(), devbox()], closed);
+    expect(second[0]?.children).toBe(first[0]?.children);
+  });
+
+  test("the overflow follows the first host in rail order when that order changes", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["devbox", "render-farm"],
+      sessions: [on("devbox", "d1"), on("render-farm", "r1")],
+      more_current: 7,
+    });
+    const online = (): Source[] => [
+      { id: "devbox", label: "devbox", kind: "appwire", online: true },
+      { id: "render-farm", label: "Alpha box", kind: "appwire", online: true },
+    ];
+    const offline = (): Source[] => [
+      { id: "devbox", label: "devbox", kind: "appwire", online: true },
+      { id: "render-farm", label: "Alpha box", kind: "appwire", online: false },
+    ];
+    // "Alpha box" sorts ahead of "devbox", so it carries the overflow.
+    const first = hostProjectNodes([evener], online(), closed);
+    const alphaCopy = first.find((node) => node.id === "host:render-farm")?.children[0];
+    const devboxCopy = first.find((node) => node.id === "host:devbox")?.children[0];
+    expect(childIds(alphaCopy)).toEqual(["navigation:render-farm:r1", "projectnode:evener@render-farm:overflow"]);
+    expect(childIds(devboxCopy)).toEqual(["navigation:devbox:d1"]);
+    // The farm drops offline and behind devbox; the overflow must move
+    // with the new first host instead of duplicating or disappearing.
+    const second = hostProjectNodes([evener], offline(), closed);
+    const devboxAfter = second.find((node) => node.id === "host:devbox")?.children[0];
+    const alphaAfter = second.find((node) => node.id === "host:render-farm")?.children[0];
+    expect(childIds(devboxAfter)).toEqual(["navigation:devbox:d1", "projectnode:evener@devbox:overflow"]);
+    expect(childIds(alphaAfter)).toEqual(["navigation:render-farm:r1"]);
+  });
+});
+
+test("compact receiver counts include all watches without loading descendant detail", () => {
+  const child = session({ ref: "child", watch_count: 40, armed_watch_count: 40 });
+  const root = session({ ref: "parent", watch_count: 5, armed_watch_count: 2, children: [child] });
+  expect(activeWatchCount(root)).toBe(2);
+  expect(activeWatchCount(child)).toBe(40);
+  expect(watchCountLabel(2, 5)).toBe("5 watches · 2 armed");
+  expect(watchCountLabel(40, 40)).toBe("40 watches");
 });

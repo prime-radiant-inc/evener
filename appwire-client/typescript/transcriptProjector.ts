@@ -1,18 +1,47 @@
-import { hasFailureStatus, hasItemFailure, isActiveItem, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+import { APPROVAL_DECISION_EVENT_KIND } from "./approvalDecision";
+import {
+  hasFailureStatus,
+  hasItemFailure,
+  isActiveItem,
+  isInProgressStatus,
+  isNonZeroExit,
+  isTurnError,
+} from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import { hasWarningText } from "./reducer";
+import { comparePositions } from "./reducer";
+import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
   type ContentVector,
+  contentVectorForConfig,
   type HookExitDetail,
+  hidesDaemonSteering,
+  informationalNoticesVisible,
   normalizeConfig,
-  presetContent,
+  sharedNotesVisible,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+import { isInformationalWarning } from "./warnings";
+import { hasWarningText } from "./warningText";
 
 export const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 
 export type ProjectedEntry =
-  | { kind: "item"; id: string; turnId: string; sourceIndex: number; item: ItemModel; isMessage: boolean }
+  | {
+      kind: "item";
+      id: string;
+      /**
+       * The stable key a renderer keys this row by, when it differs from the
+       * source item's id (see displayKeyFor): a streaming reply keeps one key
+       * from its first streamed frame through the recording of its round. A
+       * hand-built entry may leave it off; read it through entryDisplayKey.
+       */
+      displayKey?: string;
+      turnId: string;
+      sourceIndex: number;
+      item: ItemModel;
+      isMessage: boolean;
+    }
   | {
       /**
        * A content-free placeholder for a reasoning item that is the turn's
@@ -90,35 +119,29 @@ export interface TranscriptProjection {
 
 const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 
-// Keep this vocabulary in step with protocol/types.gen.ts. The projector treats
-// a value outside this set as an unknown event and deliberately renders it.
-// `environment` and `notes-context` are intentionally routine low-level system
-// events: their visibility is governed by Advanced.systemEvents, just like the
-// other known diagnostic announcements.
-const KNOWN_EVENT_KINDS = new Set([
-  "system_prompt",
-  "plugin_loaded",
-  "skill_activated",
-  "hook_completed",
-  "prompt_loaded",
-  "context_compaction",
-  "compaction",
-  "turn_limit",
-  "loop_detection",
-  "goal_ended",
-  "fork_summary",
-  "round_timings",
-  "tool_repair",
-  "model_switch",
-  "error",
-  "environment",
-  "notes-context",
-]);
+// The daemon's event-kind vocabulary, generated from appwire's
+// AllThreadItemEventKinds, so a new kind is known (and governed by the
+// system-events gate) the moment it is generated. The projector treats a value
+// outside this set as an unknown event and deliberately renders it.
+const KNOWN_EVENT_KINDS: ReadonlySet<string> = new Set(THREAD_ITEM_EVENT_KINDS);
 
-const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
+// The prompt events: system_prompt is the full prompt scaffold, prompt_loaded
+// the quiet "Loaded prompt X (N B)" line naming the same event. Both answer to
+// one "Prompt loaded" setting on every client.
+export const PROMPT_EVENT_KINDS: ReadonlySet<string> = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
-const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "tool_repair"]);
+// The system events shown at every level: a persisted turn failure, a warning
+// notice, and an interrupted-turn notice are the rows a reader hunts for. This
+// decides visibility only; each client chooses how to draw them.
+const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
+const TOOL_REPAIR_EVENT_KIND = "tool_repair";
+// The automatic memory refresh (agent/session_memory.go's MEMORY_CONTEXT turn).
+// It is a standalone, collapsed notification a reader can always reach, so it
+// stays visible at every level regardless of the system-events gate, and it
+// opts out of the expand-everything baseline (see eligibleDisclosure below and
+// SteeringDivider's ignoreBaseline read).
+const MEMORY_CONTEXT_EVENT_KIND = "memory-context";
 
 // ask_user is the current interaction tool. The other names are protocol/tool
 // vocabulary used by compatible clients; matching exact names keeps this typed
@@ -131,10 +154,6 @@ const INTERACTION_TOOL_NAMES = new Set([
   "sandbox_approval",
   "sandbox_escalation",
 ]);
-
-function contentVector(config: TranscriptDisplayConfigV1): ContentVector {
-  return config.content.kind === "preset" ? presetContent(config.content.level) : config.content;
-}
 
 function isMessage(item: ItemModel): boolean {
   return MESSAGE_TYPES.has(item.type);
@@ -169,7 +188,7 @@ function itemSummary(item: ItemModel): string {
   if (warningTitle) return warningTitle;
   const text = item.text.trim();
   if (text) return text;
-  if (item.eventKind === "error") return "Turn failed";
+  if (item.eventKind === ERROR_EVENT_KIND) return "Turn failed";
   if (item.type === "systemMessage") return "System event";
   return ACTION_SUMMARY_UNAVAILABLE;
 }
@@ -178,10 +197,38 @@ function toolSummary(item: ItemModel): string {
   return item.description?.trim() || ACTION_SUMMARY_UNAVAILABLE;
 }
 
-function itemEntry(item: ItemModel, turnId: string, sourceIndex: number): ProjectedEntry {
+// A streaming reply is an overlay item ("stream:<round>/<attempt>:agentMessage")
+// until its round is recorded, when it becomes a history item with a new id.
+// Both carry the round's id, so the round's first reply takes a round display
+// key that the stream and the recorded item share, and a renderer that keys rows
+// by it reconciles the reply instead of remounting it. Only the first takes it
+// (a round can record two replies); a call-bearing communicate preview takes
+// none (its message records with no round id). Everything else keys by its id.
+function displayKeyFor(item: ItemModel, keyedRounds: Set<string>): string | undefined {
+  if (item.type !== "agentMessage" || !item.roundId || item.callId) return undefined;
+  const key = `round:${item.roundId}:agentMessage`;
+  if (keyedRounds.has(key)) return undefined;
+  keyedRounds.add(key);
+  return key;
+}
+
+// The stable key a renderer keys an entry by: an item entry's round display key
+// when it has one, otherwise the entry's own id. A hand-built entry without a
+// displayKey keys by its id.
+export function entryDisplayKey(entry: ProjectedEntry): string {
+  return entry.kind === "item" ? (entry.displayKey ?? entry.id) : entry.id;
+}
+
+function itemEntry(
+  item: ItemModel,
+  turnId: string,
+  sourceIndex: number,
+  displayKey: string | undefined,
+): ProjectedEntry {
   return {
     kind: "item",
     id: item.id,
+    displayKey,
     turnId,
     sourceIndex,
     item,
@@ -234,11 +281,43 @@ function criticalEntry(
 
 type Decision = "item" | "intent" | "critical" | "thinking" | "hidden";
 
-function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1): Decision {
+// A tool-repair notice (EventToolCallRepaired on the hub wire): the repair
+// already succeeded by the time the notice exists, so it is informational
+// the same way a coded context-budget warning is - quiet detail, not an
+// actionable failure. Classification is by the typed wire eventKind, never
+// the notice's prose.
+function isToolRepairNotice(item: ItemModel): boolean {
+  return item.type === "systemMessage" && item.eventKind === TOOL_REPAIR_EVENT_KIND;
+}
+
+// A daemon steer: instructions the daemon sent the agent, never a steer the
+// human wrote (source "user", the human-note kind included).
+function isDaemonSteer(item: ItemModel): boolean {
+  return item.type === "steering" && item.source !== "user";
+}
+
+function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vector: ContentVector): Decision {
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
 
+  // A memory refresh is inspectable at every level and is never hidden by the
+  // system-events gate: its compact disclosure is how a reader sees recall
+  // happened. See eligibleDisclosure for its baseline opt-out.
+  if (eventKind === MEMORY_CONTEXT_EVENT_KIND) return "item";
+
+  // A repair notice, and a coded "no action needed" warning notice (the
+  // daemon's context-budget notices arrive this way), show only where
+  // informationalNoticesVisible says so, at full. Where a repair does show,
+  // the systemMessage renderer already gives it the quiet one-liner every
+  // lifecycle notice gets (SystemNoticeItem's plain line).
+  if (isToolRepairNotice(item) || isInformationalWarning(item)) {
+    return informationalNoticesVisible(vector) ? "critical" : "hidden";
+  }
+
   if (CRITICAL_SYSTEM_EVENT_KINDS.has(eventKind)) return "critical";
+  // A human's Allow or Deny is a decision they made, like a question's
+  // answer: its history row shows at every level.
+  if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "item";
 
   if (eventKind === HOOK_EVENT_KIND) {
     if (config.advanced.hookExits === "all") return "item";
@@ -249,6 +328,10 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1): Dec
 
   if (PROMPT_EVENT_KINDS.has(eventKind)) return config.advanced.promptEvents ? "item" : "hidden";
   if (eventKind === TURN_TIMING_EVENT_KIND) return config.advanced.roundTimings ? "item" : "hidden";
+  // Shared-notes snapshots are internal: they stay out of the chat preset even
+  // when Advanced.systemEvents is enabled (sharedNotesVisible).
+  if (eventKind === "notes-context") return sharedNotesVisible(config) ? "item" : "hidden";
+  // Everything else, environment snapshots included, is a routine diagnostic.
   return config.advanced.systemEvents ? "item" : "hidden";
 }
 
@@ -294,11 +377,25 @@ function decisionFor(
     return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
   }
 
-  if (item.type === "systemMessage") return systemDecision(item, config);
+  if (item.type === "systemMessage") return systemDecision(item, config, vector);
 
   // These live item types are always actionable/attention-worthy. Keeping the
   // check by type also makes warnings and steering independent of their prose.
-  if (item.type === "warning" || item.type === "steering") return "critical";
+  // One exception: an informational warning (a coded "no action needed"
+  // notice - budget arithmetic, not a failure) is quiet detail, so it shows
+  // only where informationalNoticesVisible says so: the full preset, or a
+  // custom vector that matches full on every field.
+  if (item.type === "warning") {
+    if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
+    return "critical";
+  }
+  // Daemon steering hides at the chat preset; see hidesDaemonSteering for the
+  // one rule. A steer the human wrote is the human's own words and stays
+  // critical at every level.
+  if (item.type === "steering") {
+    if (!isDaemonSteer(item)) return "critical";
+    return hidesDaemonSteering(config.content) ? "hidden" : "critical";
+  }
 
   // Future item types render through the raw renderer instead of disappearing.
   return "item";
@@ -306,6 +403,10 @@ function decisionFor(
 
 function eligibleDisclosure(item: ItemModel): boolean {
   if (item.type === "commandExecution" || item.type === "reasoning") return true;
+  // A memory refresh ignores every general expansion baseline, including
+  // Full's open-everything baseline; only an explicit reader choice opens it.
+  // Keeping it out of the baseline inventory is that posture's other half.
+  if (item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND) return false;
   // A visible system item may be a scaffold or a grouped diagnostic row. Keep
   // its source id available to the disclosure layer; grouping happens after
   // this projection and therefore sees only surviving rows.
@@ -333,22 +434,68 @@ function terminalFallbackEntry(
   turn: TurnModel,
   sourceIndexByItem: ReadonlyMap<ItemModel, number>,
   vector: ContentVector,
+  config: TranscriptDisplayConfigV1,
 ): ProjectedCriticalEntry | undefined {
   if (!isTerminalTurn(turn)) return undefined;
   const sourceItem = turn.items.at(-1);
   if (!sourceItem) return undefined;
   const sourceIndex = sourceIndexByItem.get(sourceItem);
   if (sourceIndex === undefined) return undefined;
+  // The fallback exists so a terminal turn never renders empty - but it
+  // must not resurrect an informational notice decisionFor just hid (a
+  // failed turn whose only item is a context-budget warning or a
+  // tool-repair notice). The trade holds only where a failure end cap will
+  // actually render, which both this gate and the renderer decide by
+  // isTurnError (the web's TurnFailureEndCap renders from asTurnError, the
+  // same narrowing). An errorless or malformed-error terminal turn renders
+  // no end cap, so its fallback keeps the never-empty guarantee.
+  const hiddenInformationalNotice =
+    (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
+  if (hiddenInformationalNotice && isTurnError(turn.error)) {
+    return undefined;
+  }
+  // A daemon steer the chat preset hid never comes back, not even as the
+  // fallback of an errorless terminal turn: such a turn renders empty at
+  // chat, exactly as the phone renders it (Jesse, 2026-10-03). The
+  // informational-notice trade above keeps its narrower shape, trading only
+  // where the error end cap renders.
+  if (isDaemonSteer(sourceItem) && hidesDaemonSteering(config.content)) {
+    return undefined;
+  }
+  // A hidden snapshot cannot explain a failure and must not defeat filtering.
+  if (sourceItem.type === "systemMessage" && sourceItem.eventKind === "notes-context" && !sharedNotesVisible(config)) {
+    return undefined;
+  }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
+}
+
+// Ranks every item across every turn by its real document position, not by
+// turn-then-item array order: turns sort by their OWN first item's position,
+// but two turns' items can themselves interleave (reducer.ts's
+// noticeHistoryTurn: "turns can interleave" - a delegate turn's items landing
+// between a parent turn's, say). sourceIndex is a scroll anchor's identity
+// across renders (useTranscriptScroll), so it must track real position, not
+// this turn's own array slot. Array.prototype.sort is stable, so an item with
+// no position (a legacy, pre-v6 thread) keeps today's turn-then-item order -
+// comparePositions sorts every unpositioned item equal.
+function sourceIndexRanks(turns: readonly TurnModel[]): Map<ItemModel, number> {
+  const all: ItemModel[] = [];
+  for (const turn of turns) for (const item of turn.items) all.push(item);
+  all.sort((left, right) => comparePositions(left.position, right.position));
+  const ranks = new Map<ItemModel, number>();
+  for (const [index, item] of all.entries()) ranks.set(item, index);
+  return ranks;
 }
 
 export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
   const normalized = normalizeConfig(config);
-  const vector = contentVector(normalized);
+  const vector = contentVectorForConfig(normalized);
   const turns: ProjectedTurn[] = [];
   const anchors: ProjectedAnchor[] = [];
   const eligibleDisclosureIds: string[] = [];
-  let sourceIndex = 0;
+  const sourceIndexRank = sourceIndexRanks(model.turns);
+  // Rounds whose first reply already took the round key (see displayKeyFor).
+  const keyedRounds = new Set<string>();
   let projectedIndex = 0;
 
   for (const turn of model.turns) {
@@ -356,15 +503,16 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
     const visibleItems: ItemModel[] = [];
     const sourceIndexByItem = new Map<ItemModel, number>();
     for (const item of turn.items) {
-      const itemSourceIndex = sourceIndex;
-      sourceIndex += 1;
+      // Always present: sourceIndexRanks just built this map from these same
+      // turns. The fallback is never taken; it only avoids a non-null assertion.
+      const itemSourceIndex = sourceIndexRank.get(item) ?? 0;
       sourceIndexByItem.set(item, itemSourceIndex);
       const decision = decisionFor(item, turn, normalized, vector);
       if (decision === "hidden") continue;
 
       let entry: ProjectedEntry;
       if (decision === "item") {
-        entry = itemEntry(item, turn.id, itemSourceIndex);
+        entry = itemEntry(item, turn.id, itemSourceIndex, displayKeyFor(item, keyedRounds));
       } else if (decision === "thinking") {
         entry = { kind: "thinking", id: item.id, turnId: turn.id, sourceIndex: itemSourceIndex, item };
       } else if (decision === "intent") {
@@ -387,7 +535,7 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       }
     }
     if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector);
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized);
       if (fallback) {
         visibleItems.push(fallback.item);
         entries.push(fallback);

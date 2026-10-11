@@ -1,9 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { ConfirmDialog } from "./index";
-
-afterEach(cleanup);
 
 test("renders nothing when closed", () => {
   render(

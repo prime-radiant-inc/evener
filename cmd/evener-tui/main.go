@@ -41,44 +41,66 @@ var (
 	}
 )
 
-// Run is the library entry point used by the `evener tui` subcommand. It
-// temporarily installs args/stdout/stderr onto the package-level swappable
-// vars that run() and the tests already use, so the existing test hooks
-// (processArgs, standardError, standardOutput, exitProcess) keep working
-// unchanged.
-func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
-	oldArgs, oldOut, oldErr := processArgs, standardOutput, standardError
-	processArgs = func() []string { return append([]string{"evener-tui"}, args...) }
-	standardOutput = stdout
-	standardError = stderr
-	defer func() {
-		processArgs = oldArgs
-		standardOutput = oldOut
-		standardError = oldErr
-	}()
-	return run()
+// runConfig carries the injected streams for one TUI invocation. Threading
+// them through runWith instead of assigning the package-level stdio seams lets
+// Run honor a caller's stdin and keeps concurrent Run calls from racing on
+// shared state.
+type runConfig struct {
+	args   []string
+	stdin  io.Reader
+	stdout io.Writer
+	stderr io.Writer
 }
 
+// Run is the library entry point used by the `evener tui` subcommand. args are
+// the subcommand arguments without argv[0]; stdin feeds the Bubble Tea program;
+// stdout and stderr receive the TUI's own output and diagnostics.
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runWith(runConfig{
+		args:   args,
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
+	})
+}
+
+// run is the process-bound entry point: it reads the process args and the
+// package-level stdio seams so the in-package test hooks keep working. Run
+// does not go through here.
 func run() int {
 	args := processArgs()
 	if len(args) > 0 {
 		args = args[1:]
 	}
-	startupOpts, err := parseStartupOptions(args, processGetenv)
+	return runWith(runConfig{
+		args:   args,
+		stdout: standardOutput,
+		stderr: standardError,
+	})
+}
+
+func runWith(cfg runConfig) int {
+	stdout, stderr := cfg.stdout, cfg.stderr
+	startupOpts, err := parseStartupOptions(cfg.args, processGetenv, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			// Usage has already been printed by the flag package via fs.Usage.
 			return 0
 		}
-		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-tui: %v\n", err)
 		return 2
 	}
 	if err := ensureUserConfigDirs(); err != nil {
-		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-tui: %v\n", err)
 		return 1
 	}
 
-	ctx := context.Background()
+	// Run owns this context. Reconnect backoff and dialing hang off it, so
+	// quitting the TUI cancels an in-flight retry instead of letting it dial
+	// (and, with autostart on, launch a hub) after the model is gone. A hub that
+	// was already launched is a detached child and is not tied to this context.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	hubConfig := hubstart.HubStartConfig{
 		RawAddr:           startupOpts.HubAddr,
 		HubBin:            startupOpts.HubBin,
@@ -108,7 +130,7 @@ func run() int {
 	}
 	runtime, frames, err := dialHub(ctx)
 	if err != nil {
-		_, _ = fmt.Fprint(standardError, hubstart.StartupErrorScreen(err))
+		_, _ = fmt.Fprint(stderr, hubstart.StartupErrorScreen(err))
 		return 1
 	}
 
@@ -121,6 +143,7 @@ func run() int {
 	defer resetTerminalBg()
 
 	m := newHubModel(runtime.Client, runtime.Address.BaseURL, startupOpts.StateDir)
+	m.lifecycleCtx = ctx
 	m.frames = frames
 	m.dialHub = func(ctx context.Context) (*appwire.Client, *hubFrameFeed, error) {
 		replacement, frames, err := dialHub(ctx)
@@ -130,25 +153,50 @@ func run() int {
 	if !startupOpts.Debug {
 		programOpts = append(programOpts, tea.WithAltScreen())
 	}
+	// Route the renderer and the reader to the caller's streams. Bubble Tea
+	// already defaults to os.Stdout/os.Stdin, so only a genuinely injected
+	// stream needs an explicit option. Leaving os.Stdin alone matters: with
+	// customInput Bubble Tea skips the default non-TTY fallback that reopens
+	// /dev/tty, so a redirected stdin (evener tui </dev/null) would otherwise
+	// lose keyboard input.
+	if cfg.stdout != nil && cfg.stdout != io.Writer(os.Stdout) {
+		programOpts = append(programOpts, tea.WithOutput(cfg.stdout))
+	}
+	if cfg.stdin != nil && cfg.stdin != io.Reader(os.Stdin) {
+		programOpts = append(programOpts, tea.WithInput(cfg.stdin))
+	}
 	program := newTUIProgram(m, programOpts...)
 	if m.pending != nil {
 		m.pending.SetSend(program.Send)
 	}
 	finalModel, err := program.Run()
+	// The model ends on whichever connection it runs on: a reconnect replaces
+	// the client dialHub first returned, and it closes the superseded one
+	// itself. Close the model's current client on every exit path, so a normal
+	// quit does not leave the read loop to the transport's own cleanup.
+	defer closeHubClientFromModel(finalModel)
 	// Clear the terminal title on every exit. A model-driven quit clears it via
 	// quitCmd, but bubbletea's signal handler pushes QuitMsg/InterruptMsg into
 	// the event loop without calling Update, so SIGTERM (or SIGINT with stdin
 	// not a TTY) would otherwise leave the session title on the terminal after
 	// the process exits. The escape is a no-op when the title is already empty.
-	_, _ = fmt.Fprint(standardOutput, "\x1b]2;\x07")
+	_, _ = fmt.Fprint(stdout, "\x1b]2;\x07")
 	if err != nil {
-		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-tui: %v\n", err)
 		return 1
 	}
 	if message := postQuitMessageFromModel(finalModel); message != "" {
-		_, _ = fmt.Fprintln(standardOutput, message)
+		_, _ = fmt.Fprintln(stdout, message)
 	}
 	return 0
+}
+
+// closeHubClientFromModel releases the hub connection the TUI ended on. The
+// model owns the current client; run only borrows it to close it at exit.
+func closeHubClientFromModel(model tea.Model) {
+	if m, ok := model.(hubModel); ok && m.client != nil {
+		_ = m.client.Close()
+	}
 }
 
 func postQuitMessageFromModel(model tea.Model) string {

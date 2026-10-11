@@ -1,5 +1,6 @@
 import type { SessionURL, ThreadModel } from "@evener/appwire-client";
-import { canReadSharedNotes, sessionActionError, WireError } from "@evener/appwire-client";
+import { canReadSharedNotes, isSessionResting, sessionActionError, WireError } from "@evener/appwire-client";
+import { fileURLToPath } from "@evener/appwire-client/docContent";
 import { useEffect, useRef } from "react";
 import {
   blurHumanNote,
@@ -18,29 +19,6 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
 import styles from "./notespanel.module.css";
 
-// Session file URLs canonicalize to file:///absolute forms (agent
-// validation); the open-beside flow takes a filesystem path, so decode the
-// URL path back (percent-escapes from delimiter filenames included).
-export function fileURLToPath(fileURL: string): string {
-  let url: URL;
-  try {
-    url = new URL(fileURL);
-  } catch {
-    // Not a URL at all: give the open-beside flow no path rather than the raw
-    // string it would treat as one.
-    return "";
-  }
-  try {
-    return decodeURIComponent(url.pathname);
-  } catch {
-    // A malformed escape yields no path: the URL names something this system
-    // cannot interpret, and its literal bytes could name a different file than
-    // the entry means. Canonical file URLs always encode "%", so this only
-    // refuses input that did not come from url canonicalization.
-    return "";
-  }
-}
-
 function isFileHref(href: string): boolean {
   return /^file:\/\//.test(href);
 }
@@ -56,6 +34,7 @@ export function hasNoteText(text: string): boolean {
 export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  sourcePaneId?: string;
   editorRef?: React.Ref<HTMLTextAreaElement>;
 }
 
@@ -140,7 +119,7 @@ function isMissingURLEntryError(err: unknown): boolean {
   );
 }
 
-export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyProps) {
+export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: NotesPanelBodyProps) {
   const toasts = useToasts();
   const owner = useRef(Symbol("notes editor"));
   const state = useHumanNoteDraft(sessionRef);
@@ -157,7 +136,7 @@ export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyP
   // Editability here tracks the store's own write gate: rendering controls that
   // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
   const live = canWriteHumanNote(model);
-  const idleWake = live && model.status.type === "idle";
+  const idleWake = live && isSessionResting(model.status.type);
   useEffect(() => {
     syncHumanNote(sessionRef, model.humanNote);
   }, [sessionRef, model.humanNote]);
@@ -265,7 +244,12 @@ export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyP
                     // text but no affordance.
                     <span>
                       {url.label || url.url} <span className={CLASS.linkUrl}>{url.url}</span>{" "}
-                      <FileOpenBesideButton absPath={fileURLToPath(url.url)} sessionRef={sessionRef} cwd={model.cwd} />
+                      <FileOpenBesideButton
+                        absPath={fileURLToPath(url.url)}
+                        sessionRef={sessionRef}
+                        cwd={model.cwd}
+                        sourcePaneId={sourcePaneId}
+                      />
                     </span>
                   ) : (
                     <span>

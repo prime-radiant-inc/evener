@@ -17,6 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestFormatQuietWindow(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		window time.Duration
 		want   string
@@ -40,6 +41,7 @@ func TestFormatQuietWindow(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestQuietWatchdogMessage(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
 	msg := quietWatchdogMessage(10*time.Minute, now)
 	if !strings.Contains(msg, "10m") {
@@ -55,6 +57,7 @@ func TestQuietWatchdogMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchEndedUnfiredMessage(t *testing.T) {
+	t.Parallel()
 	msg := watchEndedUnfiredMessage("job_123", "completed", "exit 0", 5000)
 	if !strings.Contains(msg, "job_123") {
 		t.Fatalf("expected target in message: %q", msg)
@@ -78,6 +81,7 @@ func TestWatchEndedUnfiredMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchLostAtRestartMessage(t *testing.T) {
+	t.Parallel()
 	msg := watchLostAtRestartMessage("job_456", "running")
 	if !strings.Contains(msg, "job_456") {
 		t.Fatalf("expected target in message: %q", msg)
@@ -95,6 +99,7 @@ func TestWatchLostAtRestartMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchLostAtRestartSessionMessage(t *testing.T) {
+	t.Parallel()
 	msg := watchLostAtRestartSessionMessage()
 	if !strings.Contains(msg, "session restarted") {
 		t.Fatalf("expected 'session restarted' in message: %q", msg)
@@ -109,6 +114,7 @@ func TestWatchLostAtRestartSessionMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchLostAtRestartStableDelegateMessage(t *testing.T) {
+	t.Parallel()
 	msg := watchLostAtRestartStableDelegateMessage("dlg_abc")
 	if !strings.Contains(msg, "dlg_abc") {
 		t.Fatalf("expected source in message: %q", msg)
@@ -123,6 +129,7 @@ func TestWatchLostAtRestartStableDelegateMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchBudgetClearedMessage(t *testing.T) {
+	t.Parallel()
 	msg := watchBudgetClearedMessage("job_789")
 	if !strings.Contains(msg, "job_789") {
 		t.Fatalf("expected target in message: %q", msg)
@@ -137,6 +144,7 @@ func TestWatchBudgetClearedMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCallbackWatchesCancelledAtRestartMessage(t *testing.T) {
+	t.Parallel()
 	if !strings.Contains(callbackWatchesCancelledAtRestartMessage, "agent restarted") {
 		t.Fatalf("expected 'agent restarted' in constant")
 	}
@@ -147,6 +155,7 @@ func TestCallbackWatchesCancelledAtRestartMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNormalizeWatchSource(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		_, err := normalizeWatchSource("")
 		if err == nil || !strings.Contains(err.Error(), "source is required") {
@@ -226,6 +235,7 @@ func TestNormalizeWatchSource(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchPublicSource(t *testing.T) {
+	t.Parallel()
 	t.Run("non-empty source", func(t *testing.T) {
 		if got := watchPublicSource("self", "job_123"); got != "self" {
 			t.Fatalf("expected 'self', got %q", got)
@@ -248,6 +258,7 @@ func TestWatchPublicSource(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsWatchSessionTarget(t *testing.T) {
+	t.Parallel()
 	if !isWatchSessionTarget(runtimeMessageAliasCaller) {
 		t.Fatalf("expected true for caller alias")
 	}
@@ -270,6 +281,7 @@ func TestIsWatchSessionTarget(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchTargetNotFoundError(t *testing.T) {
+	t.Parallel()
 	err := watchTargetNotFoundError("job_123")
 	if !errors.Is(err, errWatchTargetNotFound) {
 		t.Fatalf("expected errWatchTargetNotFound, got %v", err)
@@ -280,6 +292,7 @@ func TestWatchTargetNotFoundError(t *testing.T) {
 }
 
 func TestWatchTargetTerminalError(t *testing.T) {
+	t.Parallel()
 	err := watchTargetTerminalError("job_456", "completed")
 	if !strings.Contains(err.Error(), "job_456") {
 		t.Fatalf("expected target in error: %v", err)
@@ -297,6 +310,7 @@ func TestWatchTargetTerminalError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchArgsHasCondition(t *testing.T) {
+	t.Parallel()
 	t.Run("output_match", func(t *testing.T) {
 		if !watchArgsHasCondition(watchArgs{OutputMatch: "ERROR"}) {
 			t.Fatalf("expected true for output_match")
@@ -324,6 +338,7 @@ func TestWatchArgsHasCondition(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchArgsIsOutputMatchOnly(t *testing.T) {
+	t.Parallel()
 	t.Run("output_match only", func(t *testing.T) {
 		if !watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "ERROR"}) {
 			t.Fatalf("expected true for output_match only")
@@ -361,6 +376,7 @@ func TestWatchArgsIsOutputMatchOnly(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateWatchEventArgs(t *testing.T) {
+	t.Parallel()
 	t.Run("valid wildcard", func(t *testing.T) {
 		if err := validateWatchEventArgs(watchArgs{Events: []string{"*"}}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -442,6 +458,7 @@ func TestValidateWatchEventArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateWatchTriggerShape(t *testing.T) {
+	t.Parallel()
 	t.Run("progress with session events", func(t *testing.T) {
 		err := validateWatchTriggerShape(watchArgs{ProgressIntervalMS: 1000, Events: []string{"job.notification"}, Target: runtimeMessageAliasCaller})
 		if err == nil || !strings.Contains(err.Error(), "session event watches use events") {
@@ -465,6 +482,7 @@ func TestValidateWatchTriggerShape(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsSupportedWatchEventKind(t *testing.T) {
+	t.Parallel()
 	for _, kind := range modelEventKinds {
 		if !isSupportedWatchEventKind(kind) {
 			t.Errorf("expected %q to be supported", kind)
@@ -505,6 +523,7 @@ func TestCanonicalWatchEvents(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveEventKinds(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		kinds, wildcard := resolveEventKinds(nil)
 		if len(kinds) != 0 || wildcard {
@@ -536,6 +555,7 @@ func TestResolveEventKinds(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloneWatchEventFilter(t *testing.T) {
+	t.Parallel()
 	t.Run("nil", func(t *testing.T) {
 		if cloneWatchEventFilter(nil) != nil {
 			t.Fatalf("expected nil for nil filter")
@@ -560,6 +580,7 @@ func TestCloneWatchEventFilter(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchEventFilterSnapshot(t *testing.T) {
+	t.Parallel()
 	t.Run("nil", func(t *testing.T) {
 		if watchEventFilterSnapshot(nil) != nil {
 			t.Fatalf("expected nil for nil filter")
@@ -579,6 +600,7 @@ func TestWatchEventFilterSnapshot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloneWatchSendArgs(t *testing.T) {
+	t.Parallel()
 	t.Run("nil", func(t *testing.T) {
 		if cloneWatchSendArgs(nil) != nil {
 			t.Fatalf("expected nil for nil send")
@@ -602,6 +624,7 @@ func TestCloneWatchSendArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStableWatchSourceID(t *testing.T) {
+	t.Parallel()
 	t.Run("explicit delegate ID", func(t *testing.T) {
 		if id := stableWatchSourceID(watchArgs{SourceDelegateID: "dlg_1"}); id != "dlg_1" {
 			t.Fatalf("expected 'dlg_1', got %q", id)
@@ -629,6 +652,7 @@ func TestStableWatchSourceID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStableWatchSourceSnapshot(t *testing.T) {
+	t.Parallel()
 	t.Run("no stable source", func(t *testing.T) {
 		if snap := stableWatchSourceSnapshot(watchArgs{}); snap != "" {
 			t.Fatalf("expected empty for no stable source, got %q", snap)
@@ -651,6 +675,7 @@ func TestStableWatchSourceSnapshot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApplyStableReceiverWatchSend(t *testing.T) {
+	t.Parallel()
 	t.Run("nil args", func(t *testing.T) {
 		applyStableReceiverWatchSend(nil) // should be a no-op
 	})
@@ -688,6 +713,7 @@ func TestApplyStableReceiverWatchSend(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchSendStateLess(t *testing.T) {
+	t.Parallel()
 	t1 := time.Now()
 	t2 := t1.Add(time.Second)
 	a := &jobstore.WatchSendState{CreatedAt: t1, UpdatedAt: t1, UpdateSeq: 1, Key: jobstore.WatchSendKey{VisibleSessionID: "a"}}
@@ -705,6 +731,7 @@ func TestWatchSendStateLess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchSendKeyLess(t *testing.T) {
+	t.Parallel()
 	a := jobstore.WatchSendKey{VisibleSessionID: "a", WatchTarget: "t1"}
 	b := jobstore.WatchSendKey{VisibleSessionID: "b", WatchTarget: "t2"}
 	if !watchSendKeyLess(a, b) {
@@ -720,6 +747,7 @@ func TestWatchSendKeyLess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchKeyMatchesClearRequest(t *testing.T) {
+	t.Parallel()
 	t.Run("exact match", func(t *testing.T) {
 		candidate := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
 		request := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "dlg_1"}
@@ -734,6 +762,7 @@ func TestWatchKeyMatchesClearRequest(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAvailableEventKindNames(t *testing.T) {
+	t.Parallel()
 	names := availableEventKindNames()
 	if len(names) == 0 {
 		t.Fatalf("expected non-empty event kind names")
@@ -752,6 +781,7 @@ func TestAvailableEventKindNames(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchEventFilterStruct(t *testing.T) {
+	t.Parallel()
 	f := watchEventFilter{ToolName: "exec_command", Status: "ok"}
 	if f.ToolName != "exec_command" || f.Status != "ok" {
 		t.Fatalf("struct wrong: %+v", f)
@@ -763,6 +793,7 @@ func TestWatchEventFilterStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchSendArgsStruct(t *testing.T) {
+	t.Parallel()
 	s := watchSendArgs{To: "dlg_1", Message: "msg", IncludeExcerpt: true}
 	if s.To != "dlg_1" || s.Message != "msg" || !s.IncludeExcerpt {
 		t.Fatalf("struct wrong: %+v", s)
@@ -774,6 +805,7 @@ func TestWatchSendArgsStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchResultStruct(t *testing.T) {
+	t.Parallel()
 	r := watchResult{
 		WatchID:            "watch_1",
 		Source:             "self",
@@ -793,6 +825,7 @@ func TestWatchResultStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatchKeyStruct(t *testing.T) {
+	t.Parallel()
 	k := watchKey{
 		VisibleSessionID:   "sess_1",
 		Target:             "job_1",
@@ -810,6 +843,7 @@ func TestWatchKeyStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestErrWatchTargetNotFound(t *testing.T) {
+	t.Parallel()
 	if errWatchTargetNotFound == nil {
 		t.Fatalf("expected non-nil sentinel")
 	}

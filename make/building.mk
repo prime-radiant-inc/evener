@@ -1,7 +1,19 @@
 .PHONY: build build-runtime build-go build-hub web-preflight build-web build-dev build-all build-linux build-llmcall dist install install-home install-system test-install
 
+# GitDirty is content-true: status compares content, not index stats,
+# because the build path byte-identically rewrites tracked files —
+# build-web wipes and rewrites the tracked dist/PLACEHOLDER, and `make
+# generate` rewrites its tracked outputs — and a stat-based check such
+# as diff-files reads those stale-stat rewrites as modified forever
+# (issue #3665): diff-files never refreshes the index, and the build
+# runs no index-writing command. --no-optional-locks keeps status from
+# writing the index; -uno keeps untracked files out of the flag as
+# before; staged edits count, matching the content-true dirtiness check
+# scripts/ops/deploy-hub.sh runs before the hub build it deploys. A git
+# failure (no repository, unreadable HEAD) falls through to "true" and
+# fails dirty as diff-files did: an unreadable tree is not a clean one.
 LDFLAGS := -X primeradiant.com/evener/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
-           -X primeradiant.com/evener/buildinfo.GitDirty=$$(git --no-optional-locks diff-files --quiet && echo "" || echo "true") \
+           -X primeradiant.com/evener/buildinfo.GitDirty=$$(out=$$(git --no-optional-locks status --porcelain -uno) && test -z "$$out" && echo "" || echo "true") \
            -X primeradiant.com/evener/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
            -X primeradiant.com/evener/buildinfo.Channel=$(BUILD_CHANNEL)
 
@@ -9,7 +21,7 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 EVENER_SHARE_BINDIR ?= $(PREFIX)/share/evener/bin
 INSTALL_BUILD_DIR ?= .build/install
-EVENER_INSTALL_BINS := evener evener-dev
+EVENER_INSTALL_BINS := evener
 BUILD_CHANNEL ?=
 
 ## Build the evener binary with a fresh embedded SPA. The default goal.
@@ -91,8 +103,12 @@ build-llmcall:
 ## module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
 ## tomlcheck, transcript-v2-upgrade). Not installed for
 ## end users; used by make targets and go run ./cmd/evener-dev/bin.
+# The build's wall time is printed after it: in CI it is part of the web gates'
+# step time, alongside the checks' own timed verdicts.
 build-dev:
-	go build -o evener-dev ./cmd/evener-dev/bin/
+	@echo 'go build -o evener-dev ./cmd/evener-dev/bin/'; start="$$(date +%s)"; \
+	status=0; go build -o evener-dev ./cmd/evener-dev/bin/ || status=$$?; \
+	printf 'build evener-dev: exit %s (%ss)\n' "$$status" "$$(($$(date +%s) - $$start))"; exit $$status
 
 # build-all builds both the runtime binary and the dev binary.
 ## Build every binary: the evener runtime binary and the evener-dev
@@ -118,15 +134,15 @@ dist:
 
 # An installed evener must embed a fresh SPA, not the tracked PLACEHOLDER
 # (install-home/install-system inherit via install).
-## Install the evener and evener-dev binaries into PREFIX (default ~/.local),
-## building a fresh SPA first so the installed evener never embeds the
-## tracked placeholder.
+## Install the evener binary into PREFIX (default ~/.local), building a fresh
+## SPA first so the installed evener never embeds the tracked placeholder.
+##   evener-dev, the dev tooling binary, is not installed: build it with
+##   `make build-dev`.
 install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/evener" ./cmd/evener/
-	go build -o "$(INSTALL_BUILD_DIR)/evener-dev" ./cmd/evener-dev/bin/
 	install -d "$(EVENER_SHARE_BINDIR)" "$(BINDIR)"
-	@for bin in $(EVENER_INSTALL_BINS); do \
+	@set -e; for bin in $(EVENER_INSTALL_BINS); do \
 		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \
 		ln -sfn "$(EVENER_SHARE_BINDIR)/$$bin" "$(BINDIR)/$$bin"; \
 	done
@@ -150,7 +166,7 @@ test-install:
 # makes the workspace-wide compile contract explicit for CI and local
 # diagnostics.
 ## Compile every non-fuzz Go workspace module.
-## proves: All packages in the seven GO_MODULES compile, including packages
+## proves: All packages in the eight GO_MODULES compile, including packages
 ##   root-level `go build ./...` does not visit under go.work.
 ## trigger: Required CI build job; local compile diagnostic.
 ## requires: Deterministic Go compilation; no provider calls or

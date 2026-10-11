@@ -6,10 +6,14 @@
 // decision, cache strategy, and enforcing backend that every backend (bwrap,
 // Seatbelt) is later held to via the exported contract harness.
 //
-// M1 carries the policy but enforces nothing: no file tool or spawned command
-// consults a ResolvedPolicy yet. Enforcement arrives in M2 (in-process file
-// tools) and M3 (Linux kernel wrapper); the user-facing --sandbox flag stays
-// gated off until M5. See docs/superpowers/specs/2026-07-08-sandboxing-design.md.
+// A resolved policy is live: cmd/evener turns a non-off --sandbox mode into an
+// enforced session environment at session start, confining the in-process file
+// tools and, on a backend the host can serve, every spawned command through the
+// kernel wrapper. The milestone sequence that staged this (policy first, then
+// file tools, then the kernel wrapper, then the flag flip) is not this package's
+// contract; it lives in
+// docs/superpowers/specs/2026-07-08-sandboxing-design.md with the rest of the
+// dated design.
 package sandbox
 
 import (
@@ -20,12 +24,13 @@ import (
 
 // Mode is the sandbox enforcement mode, selected once at session start and
 // immutable for the session's lifetime — no tool call can relax it. The zero
-// value is ModeOff, so an absent or nil policy is exactly today's behavior.
+// value is ModeOff, so an absent or nil policy applies no sandbox.
 type Mode int
 
 const (
-	// ModeOff applies no sandbox: exactly today's behavior (reads anywhere,
-	// writes confined to the working root as they are now). The zero value.
+	// ModeOff applies no kernel sandbox or workspace boundary to file tools
+	// and command cwd. A derived WriteBlocked role retains its file-tool scope.
+	// The zero value.
 	ModeOff Mode = iota
 	// ModeReadOnly denies all file-tool writes (session tmp excepted) and
 	// confines spawned-process writes to tmp; reads are anywhere minus the

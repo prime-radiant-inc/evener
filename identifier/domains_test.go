@@ -106,6 +106,7 @@ func TestMustGeneratedIDDomains(t *testing.T) {
 		"watch delivery": MustNewWatchDeliveryID, "agent call": MustNewAgentCallID,
 		"API attempt": MustNewAPIAttemptID, "synthetic call": MustNewSyntheticCallID,
 		"client mutation": MustNewClientMutationID, "terminal generation": MustNewTerminalGeneration,
+		"turn": MustNewTurnID, "round": MustNewRoundID,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := newID(); got == "" {

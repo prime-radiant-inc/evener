@@ -9,6 +9,16 @@ func (s *Session) beginRetirementMutation(category string) (func(), error) {
 	return func() {}, nil
 }
 
+// beginNamingRetirementMutation is beginRetirementMutation for a session namer
+// naming this session, which a manual retire waits for rather than being
+// refused over (RetirementController.TryManualClaim).
+func (s *Session) beginNamingRetirementMutation() (func(), error) {
+	if c := s.retirementController.Load(); c != nil {
+		return c.BeginNamingMutation(s.id)
+	}
+	return func() {}, nil
+}
+
 // retirementInputBlockers is the root-only predicate. The full runtime-tree
 // proof is supplied by later retirement tasks; this does not enable retirement.
 // The caller has closed admission, but holds no controller or session lock.
@@ -34,13 +44,10 @@ func (s *Session) retirementInputBlockers() []RetirementBlocker {
 // retirementDelegateBlockers reads only this runtime's local delivery and
 // child-manager obligations. It must not recursively scan the shared tree.
 func (s *Session) retirementDelegateBlockers() []RetirementBlocker {
-	blocked := false
-	s.delegateDeliveryMu.Lock()
-	blocked = len(s.pendingDelegateDeliveries) != 0 || s.delegateDeliveryPumping || s.delegateDeliveryWake || s.delegateDeliveryRetry.active
-	s.delegateDeliveryMu.Unlock()
+	blocked := s.delegateDeliveryResiduePending()
 	if m := s.subagents; m != nil {
 		m.mu.Lock()
-		blocked = blocked || m.closing || len(m.reconstructing) != 0 || m.activeRestoreSideEffects != 0
+		blocked = blocked || len(m.reconstructing) != 0 || m.closeOrRestoreResiduePending()
 		for _, sub := range m.subs {
 			sub.mu.Lock()
 			blocked = blocked || sub.running || sub.driving || sub.finalizing

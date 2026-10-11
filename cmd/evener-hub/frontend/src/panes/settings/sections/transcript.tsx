@@ -104,10 +104,9 @@ export function TranscriptSection() {
     else void transcriptDisplayStore.getState().refreshHubDefaults();
   }
 
-  const layoutIssue =
-    Object.values(hubErrors).some((message) => message !== undefined) ||
-    Object.values(pending).some((state) => state?.state === "saving" || state?.state === "error");
-  const serverIssue = hubError !== null && !layoutIssue;
+  // A write failure rides hubErrors[layout]; only a failed hub read sets the
+  // store-wide hubError, so a set hubError is always the read's to report.
+  const serverIssue = hubError !== null;
   const disabled = hubSupport !== "supported" || hubLoading || serverIssue;
   let status: string | undefined;
   if (hubSupport === "unknown") {

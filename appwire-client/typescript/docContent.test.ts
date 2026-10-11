@@ -1,12 +1,18 @@
 // @vitest-environment node
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  cwdRelative,
   DOC_FILE_MAX_BYTES,
   type DocFetch,
   DocFileError,
   type DocPort,
   docFileRawURL,
+  docImageReadURL,
   docImageURL,
+  filenameOf,
+  fileURLToPath,
+  isImagePath,
+  isMarkdownPath,
   readDocFile,
 } from "./docContent";
 
@@ -46,6 +52,19 @@ test("docImageURL escapes query-hostile characters in both values", () => {
   expect(docImageURL(SAME_ORIGIN, "a b&c", "dir/one two.png")).toBe(
     "/doc/image?session=a%20b%26c&path=dir%2Fone%20two.png",
   );
+});
+
+test("docImageReadURL appends an escaped read generation to the ordinary image URL", () => {
+  expect(docImageReadURL(HUB, "a b&c", "dir/one two.png", "viewer seed/2")).toBe(
+    "https://hub.test/doc/image?session=a%20b%26c&path=dir%2Fone%20two.png&read=viewer%20seed%2F2",
+  );
+});
+
+test("adding read generations does not change ordinary transcript-image preview URLs", () => {
+  const ordinary = docImageURL(SAME_ORIGIN, "sess_1", "out/pic.png");
+  expect(docImageReadURL(SAME_ORIGIN, "sess_1", "out/pic.png", "first")).toBe(`${ordinary}&read=first`);
+  expect(docImageReadURL(SAME_ORIGIN, "sess_1", "out/pic.png", "second")).toBe(`${ordinary}&read=second`);
+  expect(docImageURL(SAME_ORIGIN, "sess_1", "out/pic.png")).toBe("/doc/image?session=sess_1&path=out%2Fpic.png");
 });
 
 test("docFileRawURL builds the raw variant with format=raw and both values escaped", () => {
@@ -153,6 +172,76 @@ describe("readDocFile", () => {
     expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES);
   });
 
+  test("the revision comes from the ETag and the modification time from X-Doc-Modified-At (S9)", async () => {
+    const port = respondWith(
+      new Response("# Plan", {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          ETag: '"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"',
+          "X-Doc-Modified-At": "1790000000123",
+        },
+      }),
+    );
+    const doc = await readDocFile("s1", "plan.md", port);
+    expect(doc.revision).toBe("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08");
+    expect(doc.modifiedAt).toBe(1790000000123);
+  });
+
+  test("only a strong sha256 ETag names a revision; any other tag is no information", async () => {
+    // The hub sends the whole file's sha256 as a strong tag. A weak tag, or one
+    // that is not a sha256, could name a version the file does not have, so
+    // the caller falls back to comparing what it was shown.
+    const sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    for (const etag of [`W/"${sha}"`, '"abc123"', sha, `"${sha.toUpperCase()}"`]) {
+      const port = respondWith(
+        new Response("x", { headers: { "Content-Type": "text/plain; charset=utf-8", ETag: etag } }),
+      );
+      expect("revision" in (await readDocFile("s1", "x.txt", port))).toBe(false);
+    }
+  });
+
+  test("a hub without S9 names no revision and no time", async () => {
+    // Absent keys, not empty ones: the phone's fallback keys on absence.
+    const port = respondWith(new Response("x", { headers: headers("text/plain; charset=utf-8") }));
+    const doc = await readDocFile("s1", "x.txt", port);
+    expect("revision" in doc).toBe(false);
+    expect("modifiedAt" in doc).toBe(false);
+  });
+
+  test("the revision and the time are read independently", async () => {
+    // A file past the hash limit has a time and no ETag; each key stands alone.
+    const sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const timeOnly = await readDocFile(
+      "s1",
+      "x.txt",
+      respondWith(
+        new Response("x", {
+          headers: { "Content-Type": "text/plain; charset=utf-8", "X-Doc-Modified-At": "1790000000123" },
+        }),
+      ),
+    );
+    expect("revision" in timeOnly).toBe(false);
+    expect(timeOnly.modifiedAt).toBe(1790000000123);
+    const revisionOnly = await readDocFile(
+      "s1",
+      "x.txt",
+      respondWith(new Response("x", { headers: { "Content-Type": "text/plain; charset=utf-8", ETag: `"${sha}"` } })),
+    );
+    expect(revisionOnly.revision).toBe(sha);
+    expect("modifiedAt" in revisionOnly).toBe(false);
+  });
+
+  test("a malformed ETag or modification time is no information", async () => {
+    const port = respondWith(
+      new Response("x", {
+        headers: { "Content-Type": "text/plain; charset=utf-8", ETag: '""', "X-Doc-Modified-At": "yesterday" },
+      }),
+    );
+    const doc = await readDocFile("s1", "x.txt", port);
+    expect("revision" in doc).toBe(false);
+    expect("modifiedAt" in doc).toBe(false);
+  });
+
   test("a 403 (path escapes the session cwd) rejects with a forbidden DocFileError", async () => {
     const port = respondWith(new Response("forbidden", { status: 403 }));
     await expect(readDocFile("s1", "../etc/passwd", port)).rejects.toMatchObject({
@@ -166,6 +255,14 @@ describe("readDocFile", () => {
     await expect(readDocFile("s1", "gone.txt", port)).rejects.toMatchObject({ kind: "not-found", status: 404 });
   });
 
+  test("a 501 (the session's host predates S7 document reads) rejects with a host-unsupported DocFileError", async () => {
+    const port = respondWith(new Response("remote document unavailable", { status: 501 }));
+    await expect(readDocFile("h1:s1", "plan.md", port)).rejects.toMatchObject({
+      kind: "host-unsupported",
+      status: 501,
+    });
+  });
+
   test("any other non-ok status rejects with a generic error DocFileError carrying the status", async () => {
     const port = respondWith(new Response("boom", { status: 500 }));
     await expect(readDocFile("s1", "x.txt", port)).rejects.toMatchObject({ kind: "error", status: 500 });
@@ -174,5 +271,84 @@ describe("readDocFile", () => {
   test("the rejection is a DocFileError instance so the pane can switch on kind", async () => {
     const port = respondWith(new Response(null, { status: 404 }));
     await expect(readDocFile("s1", "gone.txt", port)).rejects.toBeInstanceOf(DocFileError);
+  });
+});
+
+describe("filenameOf", () => {
+  test("returns the last path segment, the whole name at the top level, and the raw path with no segment", () => {
+    expect(filenameOf("src/panes/doc/DocPane.tsx")).toBe("DocPane.tsx");
+    expect(filenameOf("README.md")).toBe("README.md");
+    expect(filenameOf("")).toBe("");
+  });
+});
+
+describe("isMarkdownPath", () => {
+  test.each(["README.md", "notes.MARKDOWN", "a/b/Guide.Md", "x.markdown"])("treats %s as markdown", (path) => {
+    expect(isMarkdownPath(path)).toBe(true);
+  });
+
+  test.each(["notes.txt", "script.ts", "a.md.txt", "mdfile", "Makefile"])("does not treat %s as markdown", (path) => {
+    expect(isMarkdownPath(path)).toBe(false);
+  });
+});
+
+describe("isImagePath", () => {
+  test.each(["out/shot.png", "a/b.JPEG", "c.jpg", "d.gif", "e.WebP"])(
+    "treats %s as an image /doc/image serves",
+    (path) => {
+      expect(isImagePath(path)).toBe(true);
+    },
+  );
+
+  test.each(["logo.svg", "notes.md", "png", "a.png.txt"])("does not treat %s as one", (path) => {
+    expect(isImagePath(path)).toBe(false);
+  });
+});
+
+describe("fileURLToPath", () => {
+  test("decodes a session link's file URL into the path a document read takes", () => {
+    expect(fileURLToPath("file:///tmp/with%20space.md")).toBe("/tmp/with space.md");
+    expect(fileURLToPath("file://localhost/home/jesse/plan.md")).toBe("/home/jesse/plan.md");
+    expect(fileURLToPath("file:///home/jesse/plan.md?x=1#top")).toBe("/home/jesse/plan.md");
+  });
+
+  test("names no path for a malformed escape, another machine, or something that isn't a file URL", () => {
+    // A malformed escape could name a different file than the entry means;
+    // canonical file URLs always encode "%", so this only refuses input this
+    // system never produced.
+    expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("");
+    expect(fileURLToPath("file://server/share/plan.md")).toBe("");
+    expect(fileURLToPath("https://example.test/plan.md")).toBe("");
+    expect(fileURLToPath("not a url")).toBe("");
+  });
+});
+
+describe("cwdRelative", () => {
+  test("relativizes an absolute path inside the session's folder, with or without a trailing slash", () => {
+    expect(cwdRelative("/home/proj/src/a.ts", "/home/proj")).toBe("src/a.ts");
+    expect(cwdRelative("/home/proj/src/a.ts", "/home/proj/")).toBe("src/a.ts");
+  });
+
+  test("names nothing outside the folder, for the folder itself, or for empty input", () => {
+    expect(cwdRelative("/etc/passwd", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/project-other/a.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/a.ts", "")).toBeUndefined();
+  });
+
+  test("names nothing for an absolute path that climbs out, or for the folder itself with a trailing slash", () => {
+    expect(cwdRelative("/home/proj/../secret.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/src/../../secret.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/", "/home/proj/")).toBeUndefined();
+    expect(cwdRelative("/home/proj/src/..hidden.ts", "/home/proj")).toBe("src/..hidden.ts");
+  });
+
+  test("takes a relative path as relative unless it climbs out", () => {
+    expect(cwdRelative("src/a.ts", "/home/proj")).toBe("src/a.ts");
+    expect(cwdRelative("a.ts", "/home/proj")).toBe("a.ts");
+    expect(cwdRelative("../secret.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("src/../../secret.ts", "/home/proj")).toBeUndefined();
   });
 });

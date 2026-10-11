@@ -73,11 +73,8 @@ func TestResumeWorktreeReentry_LaunchEnvironmentScratchFollowsTheSession(t *test
 
 	sess.Close()
 
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("session close removed the scratch %s, want it retained for the handoff: %v", scratch, err)
-	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the launch environment's scratch %s lease is still held after the session closed", scratch)
+	if _, err := os.Lstat(scratch); !os.IsNotExist(err) {
+		t.Errorf("session close left the scratch %s: %v", scratch, err)
 	}
 }
 
@@ -136,7 +133,7 @@ func TestResumeWorktreeReentry_ChildSessionRefusesToReenter(t *testing.T) {
 	if !scratchLeaseHeld(t, scratch) {
 		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
 	}
-	env.DisposeUnadoptedScratch()
+	_ = env.DisposeSessionScratch()
 	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
 	}
@@ -162,7 +159,7 @@ func TestResumeWorktreeReentry_BareResumeOfAPersistedChildRefusesToReenter(t *te
 	if !scratchLeaseHeld(t, scratch) {
 		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
 	}
-	env.DisposeUnadoptedScratch()
+	_ = env.DisposeSessionScratch()
 	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
 	}
@@ -173,6 +170,7 @@ func TestResumeWorktreeReentry_BareResumeOfAPersistedChildRefusesToReenter(t *te
 // bare resume of a persisted child has an empty spawn carrier, so that rule
 // has to read the persisted subagent flag as well.
 func TestInitInside_BareResumeOfAPersistedChildTakesNoLock(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {

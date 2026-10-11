@@ -333,9 +333,15 @@ load_aware_cgroup_walk_cores() {
 	printf '%s' "$_law_best"
 }
 
+# load_aware_load1 — the one-minute load average, or LOAD_AWARE_LOAD1 in its
+# place when that is set. A dedicated CI runner sets LOAD_AWARE_LOAD1=0: its own
+# checkout and cache restore are still in the average when a gate starts, and
+# sizing against them halved every budget on a 4-core runner.
 load_aware_load1() {
 	_law_load=
-	if [ -r /proc/loadavg ]; then
+	if [ -n "${LOAD_AWARE_LOAD1+x}" ]; then
+		_law_load=$LOAD_AWARE_LOAD1
+	elif [ -r /proc/loadavg ]; then
 		_law_load="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
 	elif command -v sysctl >/dev/null 2>&1; then
 		_law_load="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')"

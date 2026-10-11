@@ -2156,3 +2156,38 @@ func TestDoWithAPIAttemptsInactiveRequestRemainsUnwrapped(t *testing.T) {
 		t.Fatalf("inactive response body was wrapped: %T", response.Body)
 	}
 }
+
+// TestDoWithAPIAttemptsOwnershipLoggerRetainsNoEvidence pins the default-off
+// API log: the ownership logger discards every record, so a call it is bound
+// to must not tee the request and response bodies or build a record nobody
+// keeps -- that work scales with the whole conversation and ran every model
+// round. The group still learns the protocol the agent stamps on the turn.
+func TestDoWithAPIAttemptsOwnershipLoggerRetainsNoEvidence(t *testing.T) {
+	logger, err := llm.NewSessionOwnershipAPILogger(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionOwnershipAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = logger.Close() })
+	group := llm.NewAPIAttemptGroup("ag_ownership_transport")
+	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), group), logger)
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/v1", strings.NewReader(`{"messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test", RequestModel: "test-model", Protocol: "openai-chat"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	defer response.Body.Close() //nolint:errcheck // test response
+	if attempt != nil {
+		t.Fatal("ownership-only logger produced an evidence-retaining attempt capture")
+	}
+	if got := group.Protocol(); got != "openai-chat" {
+		t.Fatalf("group protocol = %q, want openai-chat", got)
+	}
+}

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
+import { enterText } from "../../../../textEntryTestUtils";
 import { ProviderConnection } from "./ProviderConnection";
 
 function provider(
@@ -252,7 +253,7 @@ test("changing base in the full form continues with the actual created provider 
   await choose(user, "Azure");
   await user.click(screen.getByRole("button", { name: "Configure provider" }));
   await user.selectOptions(screen.getByLabelText("Base provider"), "openai");
-  await user.type(screen.getByLabelText("Name"), "openai-team");
+  await enterText(user, screen.getByLabelText("Name"), "openai-team");
   const row = { ...catalogue[1]!.setup!, name: "openai-team", implicit: false };
   client.on("evener/instance/create", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
   await user.click(screen.getByRole("button", { name: "Create" }));
@@ -334,7 +335,7 @@ test("a discarded create listing retains the created name and reloads instead of
   const pending = deferred<InstanceListResponse>();
   client.on("evener/instance/create", () => pending.promise);
   await user.click(screen.getByRole("button", { name: "Configure provider" }));
-  await user.type(screen.getByLabelText("Name"), "retained-name");
+  await enterText(user, screen.getByLabelText("Name"), "retained-name");
   await user.click(screen.getByRole("button", { name: "Create" }));
   const row = { ...catalogue[0]!.setup!, name: "retained-name", providerId: "azure", implicit: false };
   await act(async () => {
@@ -410,6 +411,7 @@ afterEach(() => {
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 test("discovers a public provider without launch-ready instances and asks only for its masked key", async () => {
@@ -432,7 +434,7 @@ test("show all providers searches the complete catalogue including separate Code
   const search = screen.getByLabelText("Search providers");
   for (const row of catalogue) {
     await user.clear(search);
-    await user.type(search, row.id);
+    await enterText(user, search, row.id);
     expect(screen.getByRole("button", { name: row.name })).toBeTruthy();
   }
 });
@@ -447,7 +449,7 @@ test("the catalogue search matches id, display name and help label", async () =>
   const search = screen.getByLabelText("Search providers");
   for (const query of ["google", "generative", "gemini"]) {
     await user.clear(search);
-    await user.type(search, query);
+    await enterText(user, search, query);
     expect(screen.getByRole("button", { name: "Gemini" })).toBeTruthy();
   }
   await user.clear(search);
@@ -504,7 +506,7 @@ test("a save refused because the held listing belongs to a replaced connection r
   const { user, client } = setup();
   scriptSave(client);
   await choose(user);
-  await user.type(screen.getByLabelText("API key"), "fixture-key");
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
   const readsBefore = client.calls.filter((c) => c.method === "evener/instance/list").length;
   // The connection is replaced and its own listing has not been applied yet.
   act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
@@ -514,7 +516,7 @@ test("a save refused because the held listing belongs to a replaced connection r
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(0);
   // ...and the refusal names the change rather than reporting a save failure.
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("connection was replaced");
+  expect(alert.textContent).toContain("connection changed");
   expect(screen.queryByText(/could not be saved/)).toBeNull();
   // The draft was aimed at a destination that is gone, so it is dropped, and
   // the flow re-reads the listing to re-anchor on the one now on screen.
@@ -557,7 +559,7 @@ test("a sign-in refused because the held listing belongs to a replaced connectio
   ).toHaveLength(0);
   // ...and the refusal names the change rather than reporting a failed start.
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("connection was replaced");
+  expect(alert.textContent).toContain("connection changed");
   expect(screen.queryByText(/Sign-in could not be started/)).toBeNull();
 });
 
@@ -573,7 +575,7 @@ test("saves directly to the real public ID then reloads and checks before explic
   const { user, client, connected } = setup();
   scriptSave(client);
   await choose(user);
-  await user.type(screen.getByLabelText("API key"), "fixture-key");
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
   expect(client.calls.slice(1)).toEqual([
@@ -600,7 +602,7 @@ test("save failure retains the draft and retry saves once more without a prematu
     throw new Error("secret-failure-body");
   });
   await choose(user);
-  await user.type(screen.getByLabelText("API key"), "fixture-key");
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByRole("alert")).toBe(document.activeElement);
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "fixture-key");
@@ -617,7 +619,7 @@ test.each(["auth_rejected", "endpoint_failure", "configuration_failure", "unsupp
     scriptSave(client);
     client.on("evener/auth/test", ({ provider }) => ({ provider, status, message: "secret-response" }));
     await choose(user);
-    await user.type(screen.getByLabelText("API key"), "fixture-key");
+    await enterText(user, screen.getByLabelText("API key"), "fixture-key");
     await user.click(screen.getByRole("button", { name: "Save and check" }));
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.queryByText(/secret-response/)).toBeNull();
@@ -639,7 +641,7 @@ test.each([{ activeSource: "api_key" }, { baseUrl: "https://changed.example/v1" 
     const { user, client } = setup();
     scriptSave(client, savedList("anthropic", change));
     await choose(user);
-    await user.type(screen.getByLabelText("API key"), "fixture-key");
+    await enterText(user, screen.getByLabelText("API key"), "fixture-key");
     await user.click(screen.getByRole("button", { name: "Save and check" }));
     expect(await screen.findByRole("button", { name: "Use reviewed access and check" })).toBeTruthy();
     expect(screen.getByText(/Credential saved/)).toBeTruthy();
@@ -657,7 +659,7 @@ test("failed refresh is not proof of fresh access and does not check stale metad
     });
     return saved;
   });
-  await user.type(screen.getByLabelText("API key"), "fixture-key");
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
@@ -752,10 +754,10 @@ test("settings saved then key failed repairs the actual named connection without
     throw new Error("write failed");
   });
   await user.click(screen.getByRole("button", { name: "Configure provider" }));
-  await user.type(screen.getByLabelText("Name"), "azure-team");
+  await enterText(user, screen.getByLabelText("Name"), "azure-team");
   await user.type(screen.getByLabelText("AZURE_RESOURCE"), "team");
   await user.click(screen.getByRole("button", { name: "Create" }));
-  await user.type(await screen.findByLabelText("API key"), "retained-draft");
+  await enterText(user, await screen.findByLabelText("API key"), "retained-draft");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(screen.getByText(/Connection settings saved as azure-team/)).toBeTruthy();
@@ -796,7 +798,7 @@ test.each(["save", "refresh", "check"])(
     const check = deferred<{ provider: string; status: string; message: string }>();
     client.on("evener/auth/apiKey/set", () => save.promise);
     client.on("evener/auth/test", () => check.promise);
-    await user.type(screen.getByLabelText("API key"), "old-draft");
+    await enterText(user, screen.getByLabelText("API key"), "old-draft");
     await user.click(screen.getByRole("button", { name: "Save and check" }));
     if (phase !== "save") {
       client.on("evener/instance/list", () => refresh.promise);
@@ -820,7 +822,7 @@ test.each(["save", "refresh", "check"])(
     });
     await choose(user, "OpenAI");
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-    await user.type(screen.getByLabelText("API key"), "new-draft");
+    await enterText(user, screen.getByLabelText("API key"), "new-draft");
     expect(connected).not.toHaveBeenCalled();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "new-draft");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
@@ -901,23 +903,69 @@ test("the originating client's own auth-update echo does not invalidate its save
   expect(screen.queryByText("Connection or configuration changed")).toBeNull();
 });
 test("the store's own post-save refresh does not invalidate the completed check", async () => {
+  // The store schedules its own listing refresh the moment the save succeeds
+  // (a 250ms debounce), while the flow sits in its result phase with Continue
+  // showing. That refresh is this client's own change - it must not read as
+  // "Connection or configuration changed" and yank the success away from the
+  // user. The fake-timer echo test above cannot observe this: its save runs
+  // under real timers, so the self-refresh is a timeout its fake clock never
+  // owns. Here the clock is fake before the save, so the refresh is a timer
+  // Testing Library's waitFor runs (through the stubbed `jest` global).
   const { user, client } = setup();
   scriptSave(client);
   await choose(user);
   await user.type(screen.getByLabelText("API key"), "draft");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  // A plain click: `user` was set up on the real clock, and its delays would
+  // wait on a timer nothing advances now.
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-  // Real timers on purpose: the store schedules its own listing refresh the
-  // moment the save succeeds (250ms debounce), and the flow is now sitting in
-  // its result phase with Continue showing. That refresh is this client's own
-  // change - it must not read as "Connection or configuration changed" and
-  // yank the success away from the user. The fake-timer echo test above cannot
-  // observe this: its save runs under real timers, so the self-refresh is a
-  // real timeout the fake clock never owns.
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+  const listReads = () => client.calls.filter((c) => c.method === "evener/instance/list").length;
+  const reads = listReads();
+  // The self-refresh has been issued and its answer has landed: the store
+  // raises `loading` as it issues the read and clears it once the answer lands.
+  await waitFor(() => {
+    expect(listReads()).toBe(reads + 1);
+    expect(credentialsStore.getState().loading).toBe(false);
   });
   expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+});
+test("the store's own debounced post-save refresh does not invalidate an in-flight check", async () => {
+  // The original flake (issue #1435): the store's own debounced listing refetch
+  // (250ms after the save) landed while the credential check was still in
+  // flight; read as foreign, it reset the flow, so the check's answer never
+  // reached Continue. The sibling test above covers the completed-check phase;
+  // this one holds the check pending so the in-flight window is pinned.
+  const { user, client } = setup();
+  scriptSave(client);
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "draft");
+  // A fake clock owns the store's 250ms debounce, so it cannot fire until this
+  // test fires it - the check is guaranteed to still be in flight when its
+  // answer lands.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  // Flush the save/refresh microtask chain to the pending check without
+  // advancing the clock (0ms drains microtasks, fires no timer).
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toHaveProperty("disabled", true);
+  // Fire the store's own debounced refresh while the check is pending; its
+  // answer installs a fresh rows array, which reads as a listing move.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  vi.useRealTimers();
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "success", message: "" });
+    await pending.promise;
+  });
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
   expect(screen.queryByText("Connection or configuration changed")).toBeNull();
 });
 test("a slow save response extends the echo window so its late own echo keeps Continue", async () => {
@@ -1042,7 +1090,7 @@ test("switching to existing host access does not send the new key or claim authe
     savedList("anthropic", { activeSource: "env:ANTHROPIC_API_KEY", hasStoredFile: false }),
   );
   await choose(user);
-  await user.type(screen.getByLabelText("API key"), "unused-draft");
+  await enterText(user, screen.getByLabelText("API key"), "unused-draft");
   await user.click(screen.getByText("Advanced settings"));
   await user.click(screen.getByRole("button", { name: "Use existing host access" }));
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
@@ -1056,13 +1104,13 @@ test("switching to existing host access does not send the new key or claim authe
 test("adopting a created instance drops a prior host-access choice instead of inheriting it", async () => {
   const { user, client } = setup(savedList("anthropic"));
   await choose(user);
-  await user.type(screen.getByLabelText("API key"), "unused-draft");
+  await enterText(user, screen.getByLabelText("API key"), "unused-draft");
   await user.click(screen.getByText("Advanced settings"));
   await user.click(screen.getByRole("button", { name: "Use existing host access" }));
   expect(screen.queryByLabelText("API key")).toBeNull();
   await user.click(screen.getByRole("button", { name: "Configure another instance" }));
   await user.selectOptions(screen.getByLabelText("Base provider"), "openai");
-  await user.type(screen.getByLabelText("Name"), "openai-team");
+  await enterText(user, screen.getByLabelText("Name"), "openai-team");
   const row = { ...catalogue[1]!.setup!, name: "openai-team", implicit: false };
   client.on("evener/instance/create", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
   await user.click(screen.getByRole("button", { name: "Create" }));
@@ -1076,11 +1124,11 @@ test("adopting a created instance drops a prior host-access choice instead of in
 test("review regression: discarded cross-provider create clears the old credential draft on reload", async () => {
   const { user, client } = setup();
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
+  await enterText(user, screen.getByLabelText("API key"), "anthropic-private-draft");
   await user.click(screen.getByText("Advanced settings"));
   await user.click(screen.getByRole("button", { name: "Configure another instance" }));
   await user.selectOptions(screen.getByLabelText("Base provider"), "openai");
-  await user.type(screen.getByLabelText("Name"), "openai-team");
+  await enterText(user, screen.getByLabelText("Name"), "openai-team");
   const pending = deferred<InstanceListResponse>();
   const row = { ...catalogue[1]!.setup!, name: "openai-team", implicit: false };
   client.on("evener/instance/create", () => pending.promise);
@@ -1113,15 +1161,23 @@ test("a superseded reload read does not baseline a same-named row the store stil
   const pending = deferred<InstanceListResponse>();
   client.on("evener/instance/create", () => pending.promise);
   await user.click(screen.getByRole("button", { name: "Configure provider" }));
-  await user.type(screen.getByLabelText("Name"), "retained-name");
+  await enterText(user, screen.getByLabelText("Name"), "retained-name");
   await user.click(screen.getByRole("button", { name: "Create" }));
   // The create's own listing loses the race with the concurrent read, so the
   // flow reaches its not-ready reload recovery without a row of its own.
+  // A superseded create also schedules the store's debounced refetch. Run it
+  // here, before the scripted reads below: left on the real clock it lands
+  // whenever the test crosses the debounce, and if it lands inside the reload
+  // step it takes that step's scripted response and holds the store's loading
+  // flag, so the Reload click hits a disabled button and does nothing.
+  vi.useFakeTimers();
   await act(async () => {
     await credentialsStore.getState().fetch();
     pending.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
     await pending.promise;
+    await vi.runOnlyPendingTimersAsync();
   });
+  vi.useRealTimers();
   expect(await screen.findByRole("button", { name: "Reload connection" })).toBeTruthy();
   // The older connection's listing still carries a row under this name. It is
   // hidden, so the flow stays in its recovery state rather than presenting it.
@@ -1141,9 +1197,19 @@ test("a superseded reload read does not baseline a same-named row the store stil
 
   const reloadRead = deferred<InstanceListResponse>();
   const retryRead = deferred<InstanceListResponse>();
+  const retryIssued = deferred<void>();
   let reads = 0;
-  client.on("evener/instance/list", () => (reads++ === 0 ? reloadRead.promise : retryRead.promise));
-  await user.click(screen.getByRole("button", { name: "Reload connection" }));
+  client.on("evener/instance/list", () => {
+    if (reads++ === 0) return reloadRead.promise;
+    retryIssued.resolve();
+    return retryRead.promise;
+  });
+  // user.click on a disabled button does nothing, so pin that the click
+  // reaches the reload rather than letting it silently no-op.
+  const reload = screen.getByRole("button", { name: "Reload connection" });
+  expect(reload).toHaveProperty("disabled", false);
+  await user.click(reload);
+  expect(reads).toBe(1);
   // A concurrent write fails while the reload's read is in flight: the write
   // supersedes the read (the store drops the response) and its failure releases
   // loading without recording an error or moving the listing.
@@ -1155,10 +1221,9 @@ test("a superseded reload read does not baseline a same-named row the store stil
   });
   await act(async () => {
     reloadRead.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
-    await reloadRead.promise;
-    // Let the reload's own retry reach the wire before the second write
-    // supersedes it; a reload without one issues nothing more.
-    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    // The reload's own retry must reach the wire before the second write
+    // supersedes it.
+    await retryIssued.promise;
   });
   // The retry loses the same way: its response is dropped, so the flow's own
   // read never applies and the store is left holding the older row.
@@ -1215,11 +1280,11 @@ test.each([
     };
     const { user, client } = setup(baselineList);
     await choose(user, "Anthropic");
-    await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
+    await enterText(user, screen.getByLabelText("API key"), "anthropic-private-draft");
     await user.click(screen.getByText("Advanced settings"));
     await user.click(screen.getByRole("button", { name: "Configure another instance" }));
     await user.selectOptions(screen.getByLabelText("Base provider"), base);
-    await user.type(screen.getByLabelText("Name"), "recovered-team");
+    await enterText(user, screen.getByLabelText("Name"), "recovered-team");
     const pending = deferred<InstanceListResponse>();
     const row = {
       ...catalogue.find((candidate) => candidate.id === base)!.setup!,
@@ -1268,7 +1333,7 @@ function fingerprintList(fingerprint: string, activeSource = "none"): InstanceLi
 test("a query-only endpoint change still requires review before the check", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
   // The displayed URL does not move; the endpoint this name resolves to does.
   // The saved listing reports the source the save produced, so the review can
   // only come from the endpoint identity.
@@ -1287,7 +1352,7 @@ test("a query-only endpoint change still requires review before the check", asyn
 test("a credential draft is not saved to a destination that changed since it was typed", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
   // Another client points the name at a different endpoint while the flow sits
   // idle with the draft: the draft was typed against the old destination, and
   // a credential only ever goes to an endpoint the user was shown.
@@ -1313,7 +1378,7 @@ test("a credential draft is not saved to a destination that changed since it was
 test("adopting a created instance clears a credential draft typed for the previous endpoint", async () => {
   const { user, client } = setup(fingerprintList("fp-original"));
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "old-endpoint-key");
+  await enterText(user, screen.getByLabelText("API key"), "old-endpoint-key");
 
   const created: InstanceEntry = {
     name: "anthropic-team",
@@ -1339,8 +1404,8 @@ test("adopting a created instance clears a credential draft typed for the previo
 
   await user.click(screen.getByText("Advanced settings"));
   await user.click(screen.getByRole("button", { name: "Configure another instance" }));
-  await user.type(screen.getByLabelText("Name"), "anthropic-team");
-  await user.type(screen.getByLabelText(/base url/i), "https://moved.example/v1");
+  await enterText(user, screen.getByLabelText("Name"), "anthropic-team");
+  await enterText(user, screen.getByLabelText(/base url/i), "https://moved.example/v1");
   await user.click(screen.getByRole("button", { name: "Create" }));
 
   expect(await screen.findByLabelText("API key")).toHaveProperty("value", "");
@@ -1356,7 +1421,7 @@ test("adopting a created instance clears a credential draft typed for the previo
 test("adopting a created instance with no fingerprints on either side clears the draft", async () => {
   const { user, client } = setup(savedList("anthropic", { endpointFingerprint: undefined }));
   await choose(user);
-  await user.type(screen.getByLabelText("API key"), "anthropic-private-draft");
+  await enterText(user, screen.getByLabelText("API key"), "anthropic-private-draft");
 
   const created: InstanceEntry = {
     ...catalogue[0]!.setup!,
@@ -1371,7 +1436,7 @@ test("adopting a created instance with no fingerprints on either side clears the
 
   await user.click(screen.getByText("Advanced settings"));
   await user.click(screen.getByRole("button", { name: "Configure another instance" }));
-  await user.type(screen.getByLabelText("Name"), "anthropic-team");
+  await enterText(user, screen.getByLabelText("Name"), "anthropic-team");
   await user.click(screen.getByRole("button", { name: "Create" }));
 
   // The flow's baseline (anthropic) and the adopted row both carry no
@@ -1392,7 +1457,7 @@ test("adopting a created instance with no fingerprints on either side clears the
 test("the flow's own recovery read carries its commitment and leaves the flow usable", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
   client.on("evener/auth/apiKey/set", () => {
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
@@ -1418,7 +1483,7 @@ test("the flow's own recovery read carries its commitment and leaves the flow us
 test("the hub's endpoint refusal re-anchors the flow instead of saving to the moved destination", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
   // The name moves between this flow's check and the write. The client cannot
   // see that window, so the hub refuses the asserted endpoint (appwire.Conflict
   // with evenerErrorInfo "conflict").
@@ -1455,7 +1520,7 @@ test("the hub's endpoint refusal re-anchors the flow instead of saving to the mo
 test("the check asserts the reviewed endpoint", async () => {
   const { user, client } = setup(fingerprintList("fp-reviewed"));
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
   // The post-save listing carries the same destination as the baseline, so the
   // flow goes straight to the check rather than pausing on the review step.
   scriptSave(client, savedList("anthropic", { endpointFingerprint: "fp-reviewed" }));
@@ -1491,7 +1556,7 @@ test("a destination the hub cannot fingerprint refuses the check without a probe
 test("a connection the hub cannot key refuses the save instead of writing an unasserted key", async () => {
   const { user, client } = setup(fingerprintList(""));
   await choose(user);
-  await user.type(screen.getByLabelText("API key"), "sk-ant-unkeyed");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-unkeyed");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
 
   // Nothing reached the hub: no key write, no credential-JSON write, and no
@@ -1513,7 +1578,7 @@ test("a connection the hub cannot key refuses the save instead of writing an una
 test("a refused assertion is reported as a changed connection, not an endpoint failure", async () => {
   const { user, client } = setup(fingerprintList("fp-reviewed"));
   await choose(user, "Anthropic");
-  await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
   scriptSave(client, savedList("anthropic", { endpointFingerprint: "fp-reviewed" }));
   // The hub refuses the asserted endpoint (appwire.Conflict with evenerErrorInfo
   // "conflict"): the name no longer resolves to the endpoint the flow reviewed.

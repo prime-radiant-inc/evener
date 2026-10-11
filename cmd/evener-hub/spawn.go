@@ -21,12 +21,21 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
 const evenerLaunchCheckTimeout = 30 * time.Second
+
+// evenerLaunchCheckWaitDelay bounds how long a launch-check's output pipe may
+// stay open after the check exits or its context ends. Killing the check does
+// not close a pipe a grandchild inherited (a wrapper script around evener is
+// enough), and without this the call would wait for that grandchild however
+// long it lives, turning evenerLaunchCheckTimeout into no bound at all. A
+// check with no stray children reaches EOF at exit and never waits on it.
+const evenerLaunchCheckWaitDelay = time.Second
 
 // daemonLaunchOutputLimit bounds how much of a failed launch's daemon log is
 // quoted back to the operator as the reason it would not start.
@@ -71,16 +80,6 @@ type HubSpawner struct {
 	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
 }
 
-// childNoUserLayer is spec §10's third state as a child must see it: the hub's
-// own tri-state, or a providers.toml the registry cannot read right now. It is
-// asked per call rather than frozen at startup, because every credential
-// action reloads the registry and can change the answer in either direction —
-// and a child pointed at a file the hub is not reading (or denied one it is)
-// fails at launch with none of the hub's diagnostics attached.
-func childNoUserLayer(configured bool, reg *hubcore.ProviderRegistry) bool {
-	return configured || (reg != nil && reg.WritesRefused())
-}
-
 type EvenerLaunchModelLister interface {
 	ListLaunchModels(context.Context) ([]appwire.ModelDescriptor, error)
 }
@@ -106,14 +105,20 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
-	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, nil)
+	if err != nil {
+		return appwire.ModelListResponse{}, err
+	}
+	defer childConfig.cleanup()
+	parentEnv := os.Environ()
+	env := childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
 		HubToken:            h.HubToken,
-		ParentEnv:           os.Environ(),
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		ParentEnv:           parentEnv,
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
 		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
@@ -139,14 +144,20 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 			return appwire.ModelListResponse{}, err
 		}
 	}
-	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, nil)
+	if err != nil {
+		return appwire.ModelListResponse{}, err
+	}
+	defer childConfig.cleanup()
+	parentEnv := os.Environ()
+	env := childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            launchconfig.Resolved{},
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
 		HubToken:            h.HubToken,
-		ParentEnv:           os.Environ(),
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		ParentEnv:           parentEnv,
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
 		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
@@ -184,23 +195,29 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
-	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, req.Resolved.Effective.Env)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	defer childConfig.cleanupUnowned()
+	parentEnv := os.Environ()
+	req.Env = childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
-		ParentEnv:           os.Environ(),
+		ParentEnv:           parentEnv,
 		RunDir:              h.RunDir,
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
 		CredentialsPath:     h.CredentialsPath,
 	})
-	if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
+	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	return SpawnDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
+	return spawnDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
 
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
@@ -239,18 +256,32 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
-	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
+	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, req.Resolved.Effective.Env)
+	if err != nil {
+		prepareDone(err)
+		return rendezvous.Entry{}, err
+	}
+	defer childConfig.cleanupUnowned()
+	parentEnv := os.Environ()
+	req.Env = childConfig.environment(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
-		ParentEnv:           os.Environ(),
+		ParentEnv:           parentEnv,
 		RunDir:              h.RunDir,
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
-		ProvidersConfigPath: h.ProvidersConfigPath,
-		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		ProvidersConfigPath: childConfig.path,
+		NoUserLayer:         childConfig.noUserLayer,
 		CredentialsPath:     h.CredentialsPath,
 	})
 	if req.Provider != "" {
-		if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
+		// The resume request carries the model the session persisted
+		// (resumeRequestForConfig builds it from the session meta), so the
+		// gate judges the very model the resumed session runs — a row may
+		// override the auth scheme, and the instance view can vouch for a
+		// launch that model cannot authenticate. The child's arguments stay
+		// model-stripped (buildResumeArgs) and the launch-contract check
+		// below stays model-blind; only the credential gate is model-aware.
+		if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}
@@ -267,7 +298,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	contractDone(nil)
 	prepareDone(nil)
-	return ResumeDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
+	return resumeDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
 
 func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (launchconfig.Resolved, func(), error) {
@@ -407,7 +438,11 @@ func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 
 // spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+	return spawnDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
+}
+
+func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "spawn", "", hubLog)
 	daemonStarted := time.Now()
 	trace.record(ctx, "daemon", "begin", daemonStarted, nil, 0, 0)
@@ -440,12 +475,15 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	cleanupProvider := providerConfig.transferToChild()
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
 	go func() {
-		exited <- cmd.Wait()
+		err := cmd.Wait()
+		cleanupProvider()
+		exited <- err
 	}()
 
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
@@ -568,7 +606,11 @@ func reapResumeChild(child resumeChild, reaped <-chan struct{}, active *hubcore.
 
 // resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+	return resumeDaemonWithProviderConfig(ctx, evenerBinary, runDir, req, timeout, hubLog, nil)
+}
+
+func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, hubLog)
 	done := trace.stage(ctx, "daemon")
 	defer func() { done(launchErr) }()
@@ -619,6 +661,7 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 		launchDone(err)
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	cleanupProvider := providerConfig.transferToChild()
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
@@ -626,7 +669,9 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	reaped := make(chan struct{})
 	activeResume := req.ActiveResume
 	go func() {
-		exited <- child.wait()
+		err := child.wait()
+		cleanupProvider()
+		exited <- err
 		if activeResume != nil {
 			activeResume.ChildReaped()
 		}
@@ -827,39 +872,96 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 	return project, stateDir, nil
 }
 
-// validateProviderCredentials refuses a launch whose instance has no
+// validateProviderCredentials refuses a launch whose target has no
 // credential the child could resolve, so the failure is a launch error the
-// user can read rather than a 401 mid-session. The registry answers every
-// part of it (spec §11.3): auth = none and optional-bearer need nothing,
-// oauth-openai-codex is satisfied by the instance's OAuth record, gcp-adc by
-// the ADC variable or file, and everything else by a resolved key or
-// credential header — with the endpoint stop of §10 already applied, so a
-// gateway that inherits no vendor key is refused here.
+// user can read rather than a 401 mid-session. A launch names a model, and
+// the child resolves instance/model through that model's own row-merged
+// transport — a row may override the auth scheme or header — so the gate
+// judges that transport, not the per-instance listing (which describes the
+// bare-name launch alone); with no model it judges the listing view. The
+// judgment is structural for command expressions: the gate counts a
+// command-bearing credential slot as present and never executes it — the
+// child alone runs credential commands (the evaluation contract), so the
+// preflight neither mints a second token nor blocks a launch on a
+// transient command failure the child's retry would survive. The registry
+// answers every part of it (spec §11.3): auth = none and optional-bearer
+// need nothing, oauth-openai-codex is satisfied by the instance's OAuth
+// record, gcp-adc by the ADC variable or file, and everything else by a
+// resolved key or credential header — with the endpoint stop of §10
+// already applied, so a gateway that inherits no vendor key is refused here.
 //
 // A nil registry or an empty provider name means there is nothing to check.
-func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry) error {
+func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRegistry) error {
 	name := strings.ToLower(strings.TrimSpace(provider))
 	if name == "" || reg == nil || reg.Get() == nil {
 		return nil
 	}
 	r := reg.Get()
-	if inst, ok := r.Instance(name); ok {
-		switch inst.Auth {
+	// The launch's model arrives as launchconfig materialized it:
+	// provider-qualified (cmdutil.ModelRef.Qualified()). Strip this
+	// instance's own prefix once, for the refusal message and the judgment
+	// alike — ResolveGateCredential strips again, harmlessly.
+	if ref := registry.ParseRef(model); strings.EqualFold(ref.Instance, name) {
+		model = ref.Model
+	}
+	if r.HasInstance(name) {
+		// The listing says the instance exists; the judgment is the gate's
+		// own view of the launch — ResolveGateCredential handles the
+		// provider-qualified model form, judges the model's transport, and
+		// executes no command expression. A named model the child refuses
+		// — disabled, or one that does not resolve — is refused here too,
+		// before the spawn, with the model's own verdict rather than a
+		// credential message for a launch that never happens.
+		res, err := r.ResolveGateCredential(name, model)
+		if err != nil {
+			return appwire.HubLaunchError(err.Error())
+		}
+		switch res.Transport.Auth {
 		case registry.AuthNone, registry.AuthOptionalBearer:
 			return nil
 		}
-		if inst.CredentialSource != "none" {
+		if res.Credential.Source != "none" {
 			return nil
 		}
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", name, strings.Join(inst.Warnings, "; ")))
+		target := name
+		if model != "" {
+			target = name + "/" + model
+		}
+		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", target, strings.Join(res.Warnings, "; ")))
 	}
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		// The judgment is the launch's own — the named model's row, or
+		// the default row when the caller named none — resolved the way
+		// the instance branch's gate resolves it, never executing a
+		// command. Not the provider's model-less shape: a row override
+		// that flips the scheme flips the remedy with it, or the gate
+		// points at a credential the launch never reads. A named model
+		// the child refuses is the preflight's own refusal, before the
+		// spawn — not a bare-launch scheme to offer a credential remedy
+		// against.
+		res, err := r.ResolveGateCredential(name, model)
+		if err != nil {
+			return appwire.HubLaunchError(err.Error())
+		}
+		// The named launch's own judgment: its row's scheme and
+		// credential. A row pinned to none or optional-bearer
+		// launches with nothing to configure; a resolved credential
+		// is satisfied; anything else takes the remediation for the
+		// row's own scheme below.
+		switch res.Transport.Auth {
+		case registry.AuthNone, registry.AuthOptionalBearer:
+			return nil
+		}
+		if res.Credential.Source != "none" {
+			return nil
+		}
+		scheme := res.Transport.Auth
 		// The Codex transport reads no key at all (spec §5.1), so its
 		// api_key_env list is empty and the key advice below would name
 		// nothing. Point at the flow that does configure it.
-		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
+		if scheme == registry.AuthOAuthOpenAICodex {
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
 		}
 		// gcp-adc reads no key either, and it can be unconfigured two ways
@@ -867,7 +969,7 @@ func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry)
 		// registry says which variables this environment still owes it and
 		// what is wrong with the ones it has. Otherwise the URL resolves and
 		// it is the credential that did not.
-		if p.Transport.Auth == registry.AuthGCPADC {
+		if scheme == registry.AuthGCPADC {
 			if p.Hidden {
 				unset, problems := r.UnresolvedBaseURL(name)
 				reasons := append([]string(nil), problems...)
@@ -933,6 +1035,17 @@ func launchCheckWaitError(ctx context.Context) error {
 	return appwire.HubLaunchError("evener launch-check timed out")
 }
 
+// runLaunchCheck runs a launch-check and returns its combined output, bounding
+// the wait for its output pipe with evenerLaunchCheckWaitDelay. When that bound
+// is what ended the wait but the check itself exited 0, the check answered: a
+// child it left behind merely held the pipe open after the complete response
+// was written, so it is not a failure of the check (see orphanpipe).
+func runLaunchCheck(cmd *exec.Cmd) ([]byte, error) {
+	cmd.WaitDelay = evenerLaunchCheckWaitDelay
+	out, err := cmd.CombinedOutput()
+	return out, orphanpipe.ChildErr(cmd, err)
+}
+
 // requiredLaunchFlag is the serve flag the hub passes on every spawn and
 // resume (the api_log floor pins both directions), so every child binary
 // must advertise it in launch-check's launch_flags before the hub will
@@ -953,7 +1066,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
 		return launchCheckWaitError(checkCtx)
 	}
@@ -988,7 +1101,7 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
 		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
 	}

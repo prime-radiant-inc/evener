@@ -4,7 +4,7 @@
 //
 // The status row beside it is a glanceable strip: a context METER, a clock,
 // arrows. This panel is where the same facts get room to be precise ("42%
-// used · 42k / 100k · 58k left" rather than a 64px gauge), plus the facts the
+// used · 42K / 100K · 58K left" rather than a 64px gauge), plus the facts the
 // strip has no room for at all, so a reader deciding whether to compact, or
 // reporting what a session cost, has the numbers instead of a shape.
 //
@@ -35,7 +35,7 @@ import { formatTokenCount } from "@evener/appwire-client";
 import { forwardRef, useImperativeHandle, useState } from "react";
 import { Button, InspectorCard, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { formatTimestamp, sessionTokens } from "./detailsAccounting";
+import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
 import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 
@@ -44,12 +44,8 @@ export interface DetailsPanelProps {
   /** Current wall-clock ms, so the work-time figure keeps counting during an
    * in-flight turn (owned by SessionChrome's useNowTick, same as StatusRow). */
   now: number;
-  // True once SessionChrome's own row has measured too narrow to show this
-  // panel's own inline trigger beside Tasks and the "..." menu without
-  // wrapping to a second row (kata vybn) - SessionChrome renders a "Details"
-  // item in that menu instead, opening this SAME Sheet through the
-  // imperative handle below. Omitted (the default) is every existing
-  // caller/test, which never suppresses this trigger.
+  /** Hides the standalone Sheet's inline trigger. Callers can still open
+   * this Sheet through DetailsPanelHandle, independently of Overview. */
   hideTrigger?: boolean;
 }
 
@@ -58,16 +54,14 @@ export interface DetailsPanelBodyProps {
   now: number;
 }
 
-/** Lets SessionChrome open this panel's Sheet from a collapsed menu item,
- * without lifting `open` out of this component (which would touch every
- * existing render site in DetailsPanel.test.tsx for no behavioral gain -
- * see this task's report). */
+/** Opens the standalone Details Sheet while keeping its open state local. */
 export interface DetailsPanelHandle {
   open: () => void;
 }
 
 const CLASS = {
   section: requireClass(styles.section, "detailspanel.module.css", "section"),
+  session: requireClass(styles.session, "detailspanel.module.css", "session"),
   sectionTitle: requireClass(styles.sectionTitle, "detailspanel.module.css", "sectionTitle"),
   list: requireClass(styles.list, "detailspanel.module.css", "list"),
   row: requireClass(styles.row, "detailspanel.module.css", "row"),
@@ -126,8 +120,9 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
   const tokens = sessionTokens(model);
   // A derived sum over a windowed transcript covers only the turns in hand
   // (thread/read's itemLimit), so its label says exactly that rather than
-  // passing a partial figure off as the session's total.
-  const tokensLabel = tokens?.scope === "loaded" ? "tokens (loaded turns)" : "tokens";
+  // passing a partial figure off as the session's total (tokenUnitLabel,
+  // shared with the native transcript footer).
+  const tokensLabel = tokenUnitLabel(tokens?.scope);
   const createdAt = formatTimestamp(model.createdAt);
   const updatedAt = formatTimestamp(model.updatedAt);
   // A project path identical to the cwd is the common case (a session in its
@@ -145,7 +140,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
           (.path below) that InspectorCard's row has no room for. The
           wrapping div keeps InspectorCard on the same .section divider
           rhythm as its neighbors. */}
-      <div className={CLASS.section}>
+      <div className={`${CLASS.section} ${CLASS.session}`}>
         <InspectorCard
           title="Session"
           properties={[
@@ -230,10 +225,8 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
 
   return (
     <>
-      {/* Omitted while hideTrigger is set (the row collapsed this into the
-          "..." menu instead - see SessionChrome). The palette's /status no
-          longer clicks this trigger; it toggles the sessionDetails workspace
-          pane (shell/palette/commands.ts toggleSessionPane). */}
+      {/* This optional Sheet trigger is separate from Overview and the
+          standalone Details workspace pane. */}
       {!hideTrigger && (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
           Details

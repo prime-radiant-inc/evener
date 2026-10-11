@@ -48,6 +48,25 @@ function startResponse(ref: string): ThreadStartResponse {
   return { thread: threadWithRef(ref), turn: { id: "turn_1", itemsView: "full", status: "idle" } };
 }
 
+test("launch keeps selected command and skill identities separate from raw inline prose", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+  await startThread(fake, {
+    cwd: "/tmp/p",
+    prompt: "keep /same around /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+  });
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [
+      { type: "text", text: "keep /same around /same" },
+      { type: "skill", name: "same" },
+      { type: "command", name: "same" },
+    ],
+  });
+});
+
 test("a bare prompt + cwd sends thread/start with a text input and the cwd", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/start", () => startResponse("local:abc123"));

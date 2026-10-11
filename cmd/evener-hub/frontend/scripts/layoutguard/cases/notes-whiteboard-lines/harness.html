@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>notes-whiteboard-lines layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    font-family: var(--font-sans);
+  }
+  /* Scaffolding only: a pane-wide column wide enough that no fixture line
+     wraps, so every visual line below comes from a line break in the note.
+     The declarations under test are notespanel.module.css's .prose
+     { white-space: pre-wrap } and topnotespanel.module.css's .clampedText
+     { white-space: pre-line; -webkit-line-clamp: 3 }. */
+  .pane {
+    width: 640px;
+    padding: var(--space-4);
+    box-sizing: border-box;
+  }
+  .pane + .pane {
+    margin-top: var(--space-4);
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- NotesPanel.tsx's read-only agent note: <p class={prose}>{model.agentNote}</p>
+     inside its "Agent" section. -->
+<div class="pane">
+  <section class="section">
+    <h3 class="sectionTitle">Agent</h3>
+    <p class="prose" id="agent-note"></p>
+  </section>
+</div>
+<!-- TopNotesPanel.tsx's collapsed bar: the summary button with the chevron,
+     the source icon and the note preview in .clampedText. One bar carries a
+     note longer than the clamp, the other a two-line note under it. -->
+<div class="pane">
+  <div class="topNotesPanel" data-expanded="false">
+    <button type="button" class="summary" aria-expanded="false">
+      <span class="summaryLeft">
+        <span class="chevron" data-open="false"><svg width="16" height="16" aria-hidden="true"></svg></span>
+        <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
+        <span class="clampedText" id="summary-long"></span>
+      </span>
+    </button>
+  </div>
+</div>
+<div class="pane">
+  <div class="topNotesPanel" data-expanded="false">
+    <button type="button" class="summary" aria-expanded="false">
+      <span class="summaryLeft">
+        <span class="chevron" data-open="false"><svg width="16" height="16" aria-hidden="true"></svg></span>
+        <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
+        <span class="clampedText" id="summary-short"></span>
+      </span>
+    </button>
+  </div>
+</div>
+<script>
+// Notes as the server stores them (normalizeWhiteboard): lines joined by LF,
+// each short enough to fit the column on one visual line.
+const AGENT_NOTE = "Port the whiteboard rule to the demo hub.\nNow: adding the browser guard.\nNext: run the gates.";
+const LONG_NOTE = "Ship Friday.\nCite the web version too.\nMeasure it again on magic-kingdom.\nThen rest.\nThen more.";
+const SHORT_NOTE = "Ship Friday.\nCite the web version too.";
+document.querySelector("#agent-note").textContent = AGENT_NOTE;
+document.querySelector("#summary-long").textContent = LONG_NOTE;
+document.querySelector("#summary-short").textContent = SHORT_NOTE;
+
+// Visible lines: distinct line-box tops among the text's client rects that
+// start inside the element's own box. A clamped element still lays out its
+// hidden lines below its bottom edge, so those are not counted.
+function visibleLines(el) {
+  const box = el.getBoundingClientRect();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const tops = new Set();
+  for (const rect of range.getClientRects()) {
+    if (rect.height > 0 && rect.top < box.bottom - 1) tops.add(Math.round(rect.top));
+  }
+  return tops.size;
+}
+
+function measureOne(id, note) {
+  const el = document.querySelector(id);
+  return {
+    noteLines: note.split("\n").length,
+    visibleLines: visibleLines(el),
+    height: el.getBoundingClientRect().height,
+    clipped: el.scrollHeight - el.clientHeight,
+  };
+}
+
+window.measure = () => ({
+  agent: measureOne("#agent-note", AGENT_NOTE),
+  summaryLong: measureOne("#summary-long", LONG_NOTE),
+  summaryShort: measureOne("#summary-short", SHORT_NOTE),
+});
+</script>
+</body>
+</html>

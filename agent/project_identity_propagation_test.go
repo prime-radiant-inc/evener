@@ -11,6 +11,7 @@ import (
 // launch boundary: a linked worktree executes with its active cwd, while the
 // resolved project identifies the canonical main checkout.
 func TestSessionConfigCarriesCanonicalProjectSeparatelyFromActiveCWD(t *testing.T) {
+	t.Parallel()
 	main := t.TempDir()
 	active := filepath.Join(t.TempDir(), "linked-worktree")
 	project := identifier.Project{ID: "main-project", CanonicalPath: main}

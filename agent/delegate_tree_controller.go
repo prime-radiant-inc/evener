@@ -46,10 +46,23 @@ type delegateTreeControllerConfig struct {
 type delegateTreeController struct {
 	mu sync.Mutex
 
-	store       *delegatestore.Store
-	durable     delegatestore.State
-	live        map[string]*delegateLiveState
-	rootRuntime *Session
+	store   *delegatestore.Store
+	durable delegatestore.State
+	// delegateChildren is the parent→children edge set over durable — the
+	// index subtreeMembersLocked walks instead of re-scanning every durable
+	// record per tree level. The constructor derives it from the folded
+	// journal and appendLocked maintains it on accepted delegate_created
+	// events, the only event kind that writes parentage, so it stays a pure
+	// function of durable. Root-level delegates contribute no edge: no
+	// delegate carries the empty id, so a membership walk never follows a
+	// ""-keyed edge. Guarded by mu.
+	delegateChildren map[string]map[string]struct{}
+	activityKeys     []sessionActivityKey
+	// Accepted journal sequences fence activity membership independently of the creation clock.
+	activityAdmissions map[string]uint64
+	activityAdmission  uint64
+	live               map[string]*delegateLiveState
+	rootRuntime        *Session
 
 	rootSessionID       string
 	stateDir            string
@@ -71,21 +84,29 @@ type delegateTreeController struct {
 	deliveries          map[uint64]*delegateDeliveryAdmission
 	deliveryClaims      map[string]*delegateDeliveryClaim
 	quietClaims         map[uint64]*delegateQuietAttentionClaim
-	attentionWakeIDs    map[string]map[string]struct{}
-	watchEnqueues       map[uint64]*delegateWatchReceipt
-	watchDeliveries     map[uint64]*delegateWatchReceipt
-	reclamations        map[uint64]*delegateRuntimeReclamationClaim
-	reclaiming          map[string]uint64
-	stop                *delegateStopState
-	stopDriver          *delegateStopDriver
-	evidenceVersion     uint64
-	retirementClaim     *RetirementClaim
-	closing             bool
-	reconcileOrder      []delegateLease
-	runStarts           map[delegateLease]delegatestore.RunTrigger
-	owedAdmission       bool
-	emitUpdate          func(delegateUpdatePlan)
-	attentionOpen       delegateAttentionWriterOpener
+	// attention holds each delegate's per-delegate attention bookkeeping in one
+	// place (delegateAttentionState), so every path that removes a delegate
+	// drops all of it at once. Process-local.
+	attention             map[string]*delegateAttentionState
+	attentionRestoreHolds map[string]int
+	// attentionDriveSeq orders selections for delegateAttentionState.driveTurn.
+	attentionDriveSeq uint64
+	idleReleaseTimers map[string]idleReleaseTimerHandle
+	idleReleaseArmSeq uint64
+	watchEnqueues     map[uint64]*delegateWatchReceipt
+	watchDeliveries   map[uint64]*delegateWatchReceipt
+	reclamations      map[uint64]*delegateRuntimeReclamationClaim
+	reclaiming        map[string]uint64
+	stop              *delegateStopState
+	stopDriver        *delegateStopDriver
+	evidenceVersion   uint64
+	retirementClaim   *RetirementClaim
+	closing           bool
+	reconcileOrder    []delegateLease
+	runStarts         map[delegateLease]delegatestore.RunTrigger
+	owedAdmission     bool
+	emitUpdate        func(delegateUpdatePlan)
+	attentionOpen     delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -143,6 +164,27 @@ type delegateRuntimeBinding struct {
 	evidence   *delegateGenerationEvidence
 }
 
+// delegateFinalization is a finished generation whose runtime has not yet
+// reported its finalize tail done.
+type delegateFinalization struct {
+	delegateID string
+	runtime    *Session
+	generation uint64
+	// released closes when the finalization is released, so a send refused
+	// in the meantime can wait for it.
+	released chan struct{}
+}
+
+// delegateFinalizingError refuses a start because the delegate's finished
+// generation hasn't released its finalization yet. It is errDelegateTargetBusy
+// to every caller, and carries the channel that closes on release.
+type delegateFinalizingError struct {
+	released <-chan struct{}
+}
+
+func (delegateFinalizingError) Error() string        { return errDelegateTargetBusy.Error() }
+func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
+
 type delegateLiveState struct {
 	runtime          *Session
 	binding          *delegateRuntimeBinding
@@ -158,8 +200,11 @@ type delegateLiveState struct {
 	recoveryRunnerPending bool
 	activityAt            time.Time
 	productiveActivityAt  time.Time
-	quietSequence         uint64
-	quietNotified         bool
+	// activityPublishedAt is the activity time ReportActivityPhase last
+	// published a snapshot for; see delegateActivityPublishInterval.
+	activityPublishedAt time.Time
+	quietSequence       uint64
+	quietNotified       bool
 	// quietNotifiedAt is when the current stretch's most recent quiet wake was
 	// admitted. It re-baselines the repeat cadence: while quietNotified holds,
 	// the next wake is due one more delegateQuietWindow after this instant, so a
@@ -168,6 +213,14 @@ type delegateLiveState struct {
 	// ReportActivityPhase, which resets the baseline to activityAt.
 	quietNotifiedAt time.Time
 	quietClaim      *delegateQuietAttentionClaim
+	// finalizing is the generation FinishGeneration just finished, and its
+	// runtime, while that runtime's own finalize tail is still running: the
+	// aggregate already reads idle, and its parent may already hold the
+	// result, but the child is not ready for another generation until the
+	// tail reports quiescence (ReportFinalizationQuiesced) for that
+	// generation. ReserveStart refuses while the runtime is still resident,
+	// so idle means ready for a send.
+	finalizing *delegateFinalization
 }
 
 type delegateSnapshot struct {
@@ -268,6 +321,9 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 	c := &delegateTreeController{
 		store:               cfg.store,
 		durable:             durable,
+		delegateChildren:    deriveDelegateChildrenIndex(durable),
+		activityKeys:        deriveSessionActivityDelegateKeys(durable),
+		activityAdmissions:  make(map[string]uint64),
 		live:                make(map[string]*delegateLiveState),
 		rootRuntime:         cfg.rootRuntime,
 		rootSessionID:       cfg.rootSessionID,
@@ -288,7 +344,8 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveries:          make(map[uint64]*delegateDeliveryAdmission),
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
-		attentionWakeIDs:    make(map[string]map[string]struct{}),
+		attention:           make(map[string]*delegateAttentionState),
+		idleReleaseTimers:   make(map[string]idleReleaseTimerHandle),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
@@ -296,6 +353,11 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           delegateRunStartIndex(events),
 		owedAdmission:       true,
+	}
+	for _, event := range events {
+		if event.Created != nil {
+			c.noteActivityAdmissionLocked(event)
+		}
 	}
 	if err := c.restorePendingStop(events); err != nil {
 		return nil, err
@@ -323,15 +385,28 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
 		}
 		if event.Created != nil {
+			c.noteActivityAdmissionLocked(event)
 			// A new delegate inserts into its owner's sorted delegate list
 			// and moves every activity entry after it — the mutation a
 			// resumed ResumeIndex must never be applied across. For a live
 			// tree the activity clock is that fence, so a shape change moves
 			// it exactly as a job starting or finishing does.
 			c.rootRuntime.noteJobTreeShapeChange()
+			// delegate_created is the only event kind that writes parentage,
+			// so maintaining the children index here keeps it a pure
+			// function of durable.
+			if aggregate := c.durable[event.DelegateID]; aggregate != nil {
+				c.addChildEdgeLocked(event.DelegateID, aggregate.Descriptor.ParentDelegateID)
+				c.activityKeys = insertSessionActivityKey(c.activityKeys, sessionActivityCreationKey(aggregate.CreatedAt, event.DelegateID))
+			}
 		}
 	}
 	return appended, nil
+}
+
+func (c *delegateTreeController) noteActivityAdmissionLocked(event delegatestore.Event) {
+	c.activityAdmissions[event.DelegateID] = event.Seq
+	c.activityAdmission = max(c.activityAdmission, event.Seq)
 }
 
 func (c *delegateTreeController) authorizeMutationLocked(actor delegateActor, targetID string) error {
@@ -405,7 +480,7 @@ func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []
 // delegateIsAncestorLocked reports whether ancestorID is receiverID or any of
 // its transitive parents in the delegate tree. Callers must hold c.mu. The
 // walk is cycle-guarded: a corrupt journal with a parent loop cannot hang the
-// controller mutex (the same property subtreeMembersLocked's fixed-point
+// controller mutex (the same property subtreeMembersLocked's visited-set
 // closure provides downward).
 func (c *delegateTreeController) delegateIsAncestorLocked(ancestorID, receiverID string) bool {
 	if ancestorID == "" || receiverID == "" {
@@ -919,11 +994,32 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	rows := make([]delegateSnapshot, 0, len(ids))
-	for _, id := range ids {
-		rows = append(rows, c.captureDelegateSnapshotLocked(id))
+	return delegateUpdatePlan{rows: c.captureDelegateSnapshotsLocked(ids)}
+}
+
+// sessionSubtreeSnapshot captures, in id order, the delegates in sessionID's
+// subtree (sessionSubtreeDelegateIDs): a session's own delegate roster.
+func (c *delegateTreeController) sessionSubtreeSnapshot(sessionID string) []delegateSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.captureDelegateSnapshotsLocked(sessionSubtreeDelegateIDs(c.durable, sessionID))
+}
+
+// snapshotsForChildSession captures, in id order, only the delegates whose
+// descriptor names childSessionID. The per-child drive gates ask for one
+// child's row every round, so capturing the whole tree here would make a
+// round cost O(children^2) deep copies.
+func (c *delegateTreeController) snapshotsForChildSession(childSessionID string) []delegateSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ids []string
+	for id, aggregate := range c.durable {
+		if aggregate != nil && aggregate.Descriptor.ChildSessionID == childSessionID {
+			ids = append(ids, id)
+		}
 	}
-	return delegateUpdatePlan{rows: rows}
+	sort.Strings(ids)
+	return c.captureDelegateSnapshotsLocked(ids)
 }
 
 // blockingDelegateIDs returns this session's direct child delegates whose
@@ -998,11 +1094,16 @@ func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID stri
 		}
 	}
 	sort.Strings(ids)
+	return delegateUpdatePlan{rows: c.captureDelegateSnapshotsLocked(ids)}, nil
+}
+
+// captureDelegateSnapshotsLocked captures ids' rows, in the order given.
+func (c *delegateTreeController) captureDelegateSnapshotsLocked(ids []string) []delegateSnapshot {
 	rows := make([]delegateSnapshot, 0, len(ids))
 	for _, id := range ids {
 		rows = append(rows, c.captureDelegateSnapshotLocked(id))
 	}
-	return delegateUpdatePlan{rows: rows}, nil
+	return rows
 }
 
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {

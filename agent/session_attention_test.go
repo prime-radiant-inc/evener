@@ -68,10 +68,10 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	blockedAggregate := c.durable["dlg_target"]
 	blockedGeneration := blockedAggregate.Generation
 	blockedNeedsAttention := blockedAggregate.NeedsAttention
-	_, firstStillUnresolved := c.attentionWakeIDs["dlg_target"][firstID]
+	_, firstStillUnresolved := attentionWakeIDsOf(c, "dlg_target")[firstID]
 	c.mu.Unlock()
 	if blockedGeneration != 0 || !blockedNeedsAttention || !firstStillUnresolved {
-		t.Fatalf("acceptance published before resolution fsync: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, c.attentionWakeIDs["dlg_target"])
+		t.Fatalf("acceptance published before resolution fsync: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, attentionWakeIDsOf(c, "dlg_target"))
 	}
 	fs.release()
 	first := <-done
@@ -82,7 +82,7 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	if aggregate.Generation != 1 || aggregate.Trigger != delegatestore.TriggerAttention || !aggregate.CurrentRunOpen || !aggregate.NeedsAttention || aggregate.ProjectionRevision != beforeRevision+1 {
 		t.Fatalf("nonfinal acceptance aggregate = %#v, want generation 1 open with unchanged true attention", aggregate)
 	}
-	if got := c.attentionWakeIDs["dlg_target"]; !reflect.DeepEqual(got, map[string]struct{}{secondID: {}}) {
+	if got := attentionWakeIDsOf(c, "dlg_target"); !reflect.DeepEqual(got, map[string]struct{}{secondID: {}}) {
 		t.Fatalf("unresolved IDs after nonfinal consumption = %#v", got)
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
@@ -95,6 +95,7 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	if _, err := c.FinishGeneration(first.started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
 		t.Fatalf("FinishGeneration first: %v", err)
 	}
+	reportFinalizeTailDone(t, c, first.started.lease, runtime)
 	secondReservation, err := c.ReserveAttention(runtime, secondID)
 	if err != nil {
 		t.Fatalf("ReserveAttention second: %v", err)
@@ -107,8 +108,8 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 		t.Fatalf("commit final attention: %v", err)
 	}
 	aggregate = c.durable["dlg_target"]
-	if aggregate.Generation != 2 || aggregate.NeedsAttention || len(c.attentionWakeIDs["dlg_target"]) != 0 {
-		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, c.attentionWakeIDs["dlg_target"])
+	if aggregate.Generation != 2 || aggregate.NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
+		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, attentionWakeIDsOf(c, "dlg_target"))
 	}
 	fold, err = readDelegateAttentionFold(path, sessionID)
 	if err != nil {
@@ -713,8 +714,8 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fold controller journal: %v", err)
 	}
-	if state["dlg_target"].NeedsAttention || len(c.attentionWakeIDs["dlg_target"]) != 0 {
-		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], c.attentionWakeIDs["dlg_target"])
+	if state["dlg_target"].NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
+		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], attentionWakeIDsOf(c, "dlg_target"))
 	}
 }
 
@@ -989,6 +990,7 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 }
 
 func TestDelegateAttention_ColdResolutionValidatesBatchBeforeAppend(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "cold-resolution"
@@ -1022,6 +1024,7 @@ func TestDelegateAttention_ColdResolutionValidatesBatchBeforeAppend(t *testing.T
 }
 
 func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSourceAck(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "cold-notification-durability"
@@ -1060,6 +1063,7 @@ func TestDelegateAttention_ColdNotificationRetryReestablishesDurabilityBeforeSou
 }
 
 func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopAck(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "cold-resolution-durability"
@@ -1257,6 +1261,7 @@ func TestDelegateAttention_LiveResolutionRetryReestablishesDurabilityBeforeSettl
 }
 
 func TestDelegateAttention_ResolutionMarkerDoesNotSplitToolCallAndResult(t *testing.T) {
+	t.Parallel()
 	const callID = "call-with-resolution"
 	for _, test := range []struct {
 		name           string
@@ -1348,7 +1353,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "local:"+sessionID, "")
+	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
@@ -1357,7 +1362,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("raw transcript type = %T", rawValue)
 	}
 	pin := 1
-	expandedValue, err := readMarkdownPage(path, "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -1365,7 +1370,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	if !ok || expanded.Expansion == nil {
 		t.Fatalf("expanded transcript = %#v", expandedValue)
 	}
-	outlineValue, err := readOutline(path, "local:"+sessionID, "")
+	outlineValue, err := readOutline(path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read transcript outline: %v", err)
 	}
@@ -1421,7 +1426,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("find_session_transcripts visible tool-result query = opened %v, snippets %#v", opened, visibleSnippets)
 	}
 
-	rawWindowValue, err := readRaw(path, "local:"+sessionID, "last:2")
+	rawWindowValue, err := readRaw(path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged raw transcript: %v", err)
 	}
@@ -1439,7 +1444,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged public JSONL kinds = %#v, want %#v", windowKinds, want)
 	}
 
-	markdownWindowValue, err := readMarkdownPage(path, "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
+	markdownWindowValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "last:2", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("read ranged markdown transcript: %v", err)
 	}
@@ -1448,7 +1453,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("ranged markdown split the public tool round: %s", markdownWindow.Content)
 	}
 
-	outlineWindowValue, err := readOutline(path, "local:"+sessionID, "last:2")
+	outlineWindowValue, err := readOutline(path, "", "local:"+sessionID, "last:2")
 	if err != nil {
 		t.Fatalf("read ranged outline transcript: %v", err)
 	}
@@ -1484,7 +1489,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		t.Fatalf("public find sequence = opened %v snippets %#v, want public seq 1", opened, findSnippets)
 	}
 	findPin := findSnippets[0].Seq
-	findExpansionValue, err := readMarkdownPage(findPath, "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
+	findExpansionValue, err := readMarkdownPage(findPath, "", "local:"+findSessionID, schema.SessionMeta{}, "", &findPin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand public find sequence: %v", err)
 	}
@@ -1519,13 +1524,13 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	rawValue, err := readRaw(path, "local:"+sessionID, "")
+	rawValue, err := readRaw(path, "", "local:"+sessionID, "")
 	if err != nil {
 		t.Fatalf("read raw transcript: %v", err)
 	}
 	raw := rawValue.(readRawEnvelope)
 	pin := 0
-	expandedValue, err := readMarkdownPage(path, "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
+	expandedValue, err := readMarkdownPage(path, "", "local:"+sessionID, schema.SessionMeta{}, "", &pin, 0, maxExpansionBytes)
 	if err != nil {
 		t.Fatalf("expand transcript turn: %v", err)
 	}
@@ -1544,6 +1549,7 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 }
 
 func TestDelegateAttention_HistoryRepairCannotCreateOrphanedToolResult(t *testing.T) {
+	t.Parallel()
 	const callID = "call-with-resolution"
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("delegate completed"))
 	attention.AttentionID = "delegate:delivery-1"
@@ -1577,6 +1583,7 @@ func TestDelegateAttention_HistoryRepairCannotCreateOrphanedToolResult(t *testin
 }
 
 func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const sessionID = "cold-attention"
 	path := transcriptPath(stateDir, sessionID)
@@ -1645,8 +1652,16 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 		{ToolCallID: "call-real", DeliveryID: "dlg/delivery/1"},
 		{ToolCallID: "call-real", DeliveryID: "dlg/delivery/2"},
 	}
-	if _, err := foldDelegateAttention([]transcript.Entry{{Turn: duplicateCall}}); err == nil {
-		t.Fatal("cold fold accepted one ToolCallID committed to multiple deliveries")
+	// One delegate_send wait may carry earlier results ahead of its own, so
+	// its turn commits several deliveries to one call (#3906)...
+	if _, err := foldDelegateAttention([]transcript.Entry{{Turn: duplicateCall}}); err != nil {
+		t.Fatalf("cold fold refused one ToolCallID committing several deliveries in its turn: %v", err)
+	}
+	// ...but a later turn can't commit another delivery to that call.
+	reusedCall := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call-real", "delegate_send", "done", false))
+	reusedCall.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "call-real", DeliveryID: "dlg/delivery/3"}}
+	if _, err := foldDelegateAttention([]transcript.Entry{{Turn: duplicateCall}, {Turn: reusedCall}}); err == nil {
+		t.Fatal("cold fold accepted a later turn's delivery on an earlier turn's ToolCallID")
 	}
 }
 
@@ -2197,11 +2212,12 @@ func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
 }
 
 func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(func(llm.Request) llm.Response {
 			return communicateResponse(true, "retried exact attention")
 		}),
@@ -2311,8 +2327,8 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 	if got := clock.BlockedCount(); got != retryTimersBefore {
 		t.Fatalf("cold fold failure created a second arm mirror timer: got %d, want baseline %d", got, retryTimersBefore)
 	}
-	if root.sessionWorkPending() || len(c.attentionWakeIDs["dlg_target"]) != 0 {
-		t.Fatalf("failed cold fold published unverified attention: work=%t unresolved=%#v", root.sessionWorkPending(), c.attentionWakeIDs["dlg_target"])
+	if root.sessionWorkPending() || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
+		t.Fatalf("failed cold fold published unverified attention: work=%t unresolved=%#v", root.sessionWorkPending(), attentionWakeIDsOf(c, "dlg_target"))
 	}
 	if err := c.armColdDelegateAttention("dlg_target", attentionID); err != nil {
 		t.Fatalf("caller retry cold attention: %v", err)
@@ -2467,7 +2483,7 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 	if !ok {
 		t.Fatal("restored session emitted no SESSION_START")
 	}
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("read restored transcript: %v", err)
 	}
@@ -2872,10 +2888,11 @@ func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T
 }
 
 func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	wakes := make(chan struct{}, 1)
 	root.SetNotifyFunc(func() { wakes <- struct{}{} })
@@ -2903,6 +2920,7 @@ func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t
 }
 
 func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_consume/delivery/1"
@@ -2911,7 +2929,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 	requestSawAttention := false
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
 			return toolCallResponse(communicateCall("root-attention-consumed", "completion received"))
@@ -2948,6 +2966,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 // answers an already-answered context and the user sees the closing message
 // twice. The turn that already presented the item must consume it at finish.
 func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		firstID       = "delegate:dlg_midturn/delivery/1"
@@ -2964,7 +2983,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				calls++
@@ -3049,7 +3068,7 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				calls++
@@ -3134,7 +3153,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				calls++
@@ -3201,7 +3220,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				if appendErr == nil {
@@ -3261,6 +3280,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 // while attention armed after it counts the moment a built request presents
 // the steering turn.
 func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		preTurnID  = "delegate:dlg_boundary/delivery/1"
@@ -3271,7 +3291,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(preTurnID, preContent); err != nil {
 		t.Fatalf("append pre-turn attention: %v", err)
@@ -3280,7 +3300,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		t.Fatalf("arm pre-turn attention: %v", err)
 	}
 	// Turn start: the reset snapshots {preTurnID} as armed before this turn.
-	root.resetRootDelegateAttentionCoverage()
+	root.resetAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(midTurnID, midContent); err != nil {
 		t.Fatalf("append mid-turn attention: %v", err)
 	}
@@ -3306,9 +3326,9 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		steeringFor(midTurnID, midContent),
 		steeringFor(unarmedID, midContent),
 	}
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
 	root.attentionMu.Lock()
-	staged := maps.Clone(root.rootAttentionStagedIDs)
+	staged := maps.Clone(root.attentionStagedIDs)
 	root.attentionMu.Unlock()
 	if _, ok := staged[preTurnID]; ok {
 		t.Fatal("attention armed before the turn was staged")
@@ -3319,9 +3339,9 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 		}
 	}
 	// Staging is candidacy, not credit: only a settled round promotes.
-	root.promoteStagedRootDelegateAttention()
+	root.promoteStagedAttentionCoverage(llm.Request{})
 	root.attentionMu.Lock()
-	covered := root.rootAttentionCoveredIDs
+	covered := root.attentionCoveredIDs
 	root.attentionMu.Unlock()
 	if _, ok := covered[preTurnID]; ok {
 		t.Fatal("attention armed before the turn was marked covered")
@@ -3333,21 +3353,16 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 	}
 }
 
-// A responses-continuation delta request carries only new items; older
-// steering turns live in server-side state this session cannot verify, so a
-// delta request stages nothing. The items keep their wake for a full-history
-// turn.
-func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
+// rootWithMidTurnAttention returns a root whose turn has begun and one
+// attention item armed after that, plus a presented history carrying it.
+func rootWithMidTurnAttention(t *testing.T, attentionID, content string) (*Session, []schema.Turn) {
+	t.Helper()
 	stateDir := t.TempDir()
-	const (
-		attentionID = "delegate:dlg_delta/delivery/1"
-		content     = `<delegate-notification delegate_id="dlg_delta">delta skip</delegate-notification>`
-	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
-	root.resetRootDelegateAttentionCoverage()
+	root.resetAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
@@ -3356,27 +3371,77 @@ func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User(content))
 	steering.AttentionID = attentionID
-	historyTurns := []schema.Turn{
+	return root, []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("context")),
 		steering,
 	}
+}
 
-	root.stageRootDelegateAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}, historyTurns)
+func rootCoveredAttention(root *Session) map[string]struct{} {
 	root.attentionMu.Lock()
-	staged := maps.Clone(root.rootAttentionStagedIDs)
-	root.attentionMu.Unlock()
-	if len(staged) != 0 {
-		t.Fatalf("delta request staged coverage: %v, want nothing", staged)
+	defer root.attentionMu.Unlock()
+	return maps.Clone(root.attentionCoveredIDs)
+}
+
+// A responses-continuation delta request carries only new items; older
+// steering turns live in server-side state this session cannot verify, so a
+// round that settles as a delta credits nothing. The items keep their wake
+// for a full-history turn.
+func TestRootDelegateAttention_SettledDeltaCreditsNothing(t *testing.T) {
+	t.Parallel()
+	const attentionID = "delegate:dlg_delta/delivery/1"
+	root, historyTurns := rootWithMidTurnAttention(t, attentionID,
+		`<delegate-notification delegate_id="dlg_delta">delta skip</delegate-notification>`)
+	delta := llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}
+
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(delta)
+	if covered := rootCoveredAttention(root); len(covered) != 0 {
+		t.Fatalf("settled delta credited coverage: %v, want nothing", covered)
 	}
 
 	// The full-history round that follows credits normally.
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
-	root.attentionMu.Lock()
-	if _, ok := root.rootAttentionStagedIDs[attentionID]; !ok {
-		root.attentionMu.Unlock()
-		t.Fatal("full-history request did not stage the presented attention")
+	full := llm.Request{HistoryMode: llm.HistoryModeFullHistory}
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(full)
+	if _, ok := rootCoveredAttention(root)[attentionID]; !ok {
+		t.Fatal("settled full-history request did not credit the presented attention")
 	}
-	root.attentionMu.Unlock()
+}
+
+// A full-history attempt that failed leaves no candidate behind for the
+// round's retry: when the retry settles as a delta, which carried only new
+// items, nothing is credited.
+func TestRootDelegateAttention_FailedFullAttemptLeavesNothingForASettledDelta(t *testing.T) {
+	t.Parallel()
+	root, historyTurns := rootWithMidTurnAttention(t, "delegate:dlg_retry/delivery/1",
+		`<delegate-notification delegate_id="dlg_retry">retried as a delta</delegate-notification>`)
+
+	// The full-history attempt stages, then fails: no promotion.
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	// The retry builds and settles as a delta.
+	delta := llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(delta)
+	if covered := rootCoveredAttention(root); len(covered) != 0 {
+		t.Fatalf("a delta retry credited the failed attempt's candidates: %v, want nothing", covered)
+	}
+}
+
+// A delta request whose call falls back to a full-history request settles as
+// that request, which carried every turn the round presents, so the round
+// credits them.
+func TestRootDelegateAttention_FullHistoryFallbackCreditsWhatItCarried(t *testing.T) {
+	t.Parallel()
+	const attentionID = "delegate:dlg_fallback/delivery/1"
+	root, historyTurns := rootWithMidTurnAttention(t, attentionID,
+		`<delegate-notification delegate_id="dlg_fallback">carried by the fallback</delegate-notification>`)
+
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeFullHistoryFallback})
+	if _, ok := rootCoveredAttention(root)[attentionID]; !ok {
+		t.Fatal("the settled full-history fallback did not credit the attention it carried")
+	}
 }
 
 // Coverage is credit for presentation in a SETTLED call, not for being in a
@@ -3384,6 +3449,7 @@ func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
 // may fold the steering turn away — must leave the item unconsumed: staged
 // but never promoted, so finish skips it and its wake survives.
 func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_settled/delivery/1"
@@ -3391,9 +3457,9 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
-	root.resetRootDelegateAttentionCoverage()
+	root.resetAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
@@ -3411,13 +3477,13 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	// content-filter retry whose compaction folds the steering turn away is
 	// the production shape). No promotion happens, and finish must not
 	// consume: the model never saw it in a settled call.
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
 	root.attentionMu.Lock()
-	if _, ok := root.rootAttentionStagedIDs[attentionID]; !ok {
+	if _, ok := root.attentionStagedIDs[attentionID]; !ok {
 		root.attentionMu.Unlock()
 		t.Fatal("built request did not stage the presented attention")
 	}
-	if len(root.rootAttentionCoveredIDs) != 0 {
+	if len(root.attentionCoveredIDs) != 0 {
 		root.attentionMu.Unlock()
 		t.Fatal("staging alone credited coverage before any call settled")
 	}
@@ -3435,8 +3501,8 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 
 	// The retry's round settles with the item presented: promotion credits
 	// it, and finish consumes.
-	root.stageRootDelegateAttentionCoverage(llm.Request{}, historyTurns)
-	root.promoteStagedRootDelegateAttention()
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.promoteStagedAttentionCoverage(llm.Request{})
 	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with settled coverage: %v", err)
 	}
@@ -3455,6 +3521,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 // flagged for, finish arranges a paced retry even while the flag is set (the
 // drain skips the notification rung right after a notification turn).
 func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	const (
@@ -3464,7 +3531,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 	var root *Session
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3525,6 +3592,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 // unwinding. The recover defer marks err before re-panicking, and the finish
 // defer — unwinding right after — reads it and skips the success path.
 func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_panic/delivery/1"
@@ -3532,13 +3600,13 @@ func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
 	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	root.attentionMu.Lock()
-	root.rootAttentionCoveredIDs = map[string]struct{}{attentionID: {}}
+	root.attentionCoveredIDs = map[string]struct{}{attentionID: {}}
 	root.attentionMu.Unlock()
 	panicErr := errors.New("injected turn panic")
 	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"panic": panicErr})
@@ -3566,6 +3634,7 @@ func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
 // the optimization's error. The injected writer fails exactly one
 // ATTENTION_RESOLUTION sync: the covering turn's own attempt.
 func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_resfail/delivery/1"
@@ -3575,7 +3644,7 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 	var wakeTurnSaw bool
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3618,10 +3687,11 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 // snapshot already passes that gate; unioning it with the fold would read the
 // fold only to discard the result. Skip it.
 func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	const (
 		snapshotID = "delegate:dlg_snapshotfail/delivery/1"
@@ -3634,7 +3704,7 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T)
 	}
 	root.attentionMu.Lock()
 	root.rootAttentionWakeIDs = map[string]struct{}{snapshotID: {}, coveredID: {}}
-	root.rootAttentionCoveredIDs = map[string]struct{}{coveredID: {}}
+	root.attentionCoveredIDs = map[string]struct{}{coveredID: {}}
 	root.attentionMu.Unlock()
 
 	var foldReads int
@@ -3661,10 +3731,11 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T)
 // turn, and only this gate arms the paced retry that eventually consumes the
 // item.
 func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	const coveredID = "delegate:dlg_coveredgate/delivery/1"
 	if _, err := root.appendDelegateNotificationDurably(coveredID, `<delegate-notification delegate_id="dlg_coveredgate">gate needs the fold</delegate-notification>`); err != nil {
@@ -3672,7 +3743,7 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 	}
 	root.attentionMu.Lock()
 	root.rootAttentionWakeIDs = map[string]struct{}{coveredID: {}}
-	root.rootAttentionCoveredIDs = map[string]struct{}{coveredID: {}}
+	root.attentionCoveredIDs = map[string]struct{}{coveredID: {}}
 	root.attentionMu.Unlock()
 
 	var foldReads int
@@ -3702,13 +3773,14 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 // return strands the flag: the flag stays set precisely so the in-flight
 // kick's turn cannot be suppressed into redundancy.
 func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	const attentionID = "delegate:dlg_refire/delivery/1"
 	var root *Session
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			// The covering turn: appends and arms the attention mid-turn, then
 			// its round settles — the notification turn that consumes it comes
@@ -3772,11 +3844,12 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 }
 
 func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				return toolCallResponse(communicateCall("root-attention-first", "first attempt"))
@@ -3985,7 +4058,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	trigger := aggregate.Trigger
 	open := aggregate.CurrentRunOpen
 	needsAttention := aggregate.NeedsAttention
-	unresolved := maps.Clone(root.delegateController.attentionWakeIDs[fixture.delegateID])
+	unresolved := maps.Clone(attentionWakeIDsOf(root.delegateController, fixture.delegateID))
 	root.delegateController.mu.Unlock()
 	if generation != 1 || trigger != delegatestore.TriggerAttention || !open || !needsAttention {
 		t.Fatalf("owed attention generation = generation:%d trigger:%q open:%t needs:%t, want 1/attention/open/true", generation, trigger, open, needsAttention)

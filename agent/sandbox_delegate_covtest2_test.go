@@ -20,7 +20,6 @@ func faultSession(t *testing.T, faultPoint string) *Session {
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         dir,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

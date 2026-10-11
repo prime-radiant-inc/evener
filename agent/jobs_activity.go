@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 const (
@@ -750,7 +752,11 @@ func liveActivitySessionLabel(s *Session) string {
 	prompt := s.cfg.spawn.subagentTask
 	for _, turn := range s.history {
 		if turn.Kind == schema.TurnUserInput {
-			prompt = turn.Message.Text()
+			// The projection the label must match: an image paste appends a
+			// machinery note to the user turn, and the label carries the
+			// user's prose — never the note — like every other user-facing
+			// surface (bubbles, fork prefill, metadata).
+			prompt = apptranscript.UserFacingText(turn.Message)
 			break
 		}
 	}
@@ -981,16 +987,22 @@ func sortedActivityChildIDs(children map[string]*activitySessionSnapshot) []stri
 // mutating either input. Durable records retain their append positions. Jobs
 // visible only in the live map are inserted by (StartedAt, JobID).
 func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobstore.JobRecord) []*jobstore.JobRecord {
-	durableOrder := make([]string, 0, len(durable))
-	durableByID := make(map[string]*jobstore.JobRecord, len(durable))
+	// One index per durable job: its position in first-appearance order, with
+	// a later duplicate replacing the record in place. A history of hundreds
+	// of thousands of jobs is merged on every page a jobs list serves, so this
+	// keeps it to a single map operation per durable record.
+	durableIndex := make(map[string]int, len(durable))
+	ordered := make([]*jobstore.JobRecord, 0, len(durable))
 	for _, rec := range durable {
 		if rec == nil || rec.JobID == "" {
 			continue
 		}
-		if _, seen := durableByID[rec.JobID]; !seen {
-			durableOrder = append(durableOrder, rec.JobID)
+		if at, seen := durableIndex[rec.JobID]; seen {
+			ordered[at] = rec
+			continue
 		}
-		durableByID[rec.JobID] = rec
+		durableIndex[rec.JobID] = len(ordered)
+		ordered = append(ordered, rec)
 	}
 
 	liveByID := make(map[string]*jobstore.JobRecord, len(live))
@@ -1009,20 +1021,19 @@ func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobsto
 		}
 	}
 
-	merged := make([]*jobstore.JobRecord, 0, len(durableByID)+len(liveByID))
-	seen := make(map[string]bool, len(durableByID)+len(liveByID))
-	for _, jobID := range durableOrder {
-		rec := durableByID[jobID]
-		if liveRec := liveByID[jobID]; liveRec != nil {
-			rec = liveRec
+	merged := make([]*jobstore.JobRecord, 0, len(ordered)+len(liveByID))
+	for _, rec := range ordered {
+		if len(liveByID) > 0 {
+			if liveRec := liveByID[rec.JobID]; liveRec != nil {
+				rec = liveRec
+			}
 		}
 		merged = append(merged, cloneActivityRecord(rec))
-		seen[jobID] = true
 	}
 
 	liveOnly := make([]*jobstore.JobRecord, 0, len(liveByID))
 	for jobID, rec := range liveByID {
-		if !seen[jobID] {
+		if _, durable := durableIndex[jobID]; !durable {
 			liveOnly = append(liveOnly, cloneActivityRecord(rec))
 		}
 	}
@@ -1219,7 +1230,8 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	if row.lastOutcome != nil {
 		delegate.Outcome = string(row.lastOutcome.Status)
 		delegate.Reason = truncateActivityText(row.lastOutcome.Reason, activityMaxDelegateProseRunes)
-		delegate.Terminal = !row.currentRunOpen
+		delegate.Error = truncateActivityText(row.lastOutcome.Error, activityMaxDelegateProseRunes)
+		delegate.Terminal = delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
 		if !row.lastOutcome.EndedAt.IsZero() {
 			delegate.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
 		}
@@ -1491,7 +1503,10 @@ func activityOutcome(status jobstore.Status) (bool, string) {
 	switch status {
 	case jobstore.StatusRunning:
 		return false, ""
-	case jobstore.StatusFailed, jobstore.StatusExhausted:
+	// A command that exited nonzero or was signalled is still a FAILURE
+	// for the activity rollup, exactly like a machinery failure or an
+	// exhausted delegate: attention follows the run, whatever broke it.
+	case jobstore.StatusFailed, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled, jobstore.StatusExhausted:
 		return true, "failure"
 	case jobstore.StatusCompleted:
 		return true, "success"
@@ -1647,6 +1662,7 @@ func shrinkActivityAncestors(root *appwire.JobActivitySession, ancestors int) bo
 		delegate.Task = shrinkText(delegate.Task)
 		delegate.Description = shrinkText(delegate.Description)
 		delegate.Reason = shrinkText(delegate.Reason)
+		delegate.Error = shrinkText(delegate.Error)
 		delegate.NotResumableReason = shrinkText(delegate.NotResumableReason)
 		delegate.StructuredReason = shrinkText(delegate.StructuredReason)
 		if delegate.Message != nil {
@@ -1666,6 +1682,12 @@ func shrinkActivityAncestors(root *appwire.JobActivitySession, ancestors int) bo
 	return changed
 }
 
+// encodeActivityTree is how the size trim weighs a page: the encoding the
+// client receives. A variable so a test can count the whole-page encodes.
+var encodeActivityTree = func(tree appwire.JobActivityTree) ([]byte, error) {
+	return json.Marshal(tree)
+}
+
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
 // encodes within activityMaxEncodedBytes. epochs — every visited session's
 // own generations, keyed by session ID — together with revision and resume
@@ -1678,15 +1700,33 @@ func shrinkActivityAncestors(root *appwire.JobActivitySession, ancestors int) bo
 // nothing left to drop, the response's own fixed parts — labels,
 // diagnostics, the ancestor chain's delegate metadata — are what exceed it,
 // and no continuation can lead anywhere.
+//
+// The page is weighed only when it might fit. floor is a lower bound on its
+// encoded size: the last measurement, less everything its sessions' counts,
+// aggregates and branch state could give up (activityTrimSlack), less every
+// entry dropped since. While floor is over the limit the page certainly still
+// is, so the next drop needs no measurement: each entry is encoded once as it
+// goes, and the whole page a handful of times rather than once per drop.
 func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs map[string]activitySessionEpochs, revision uint64, resume activityTrimResume) (appwire.JobActivityTree, error) {
-	for {
+	size, floor := 0, 0
+	measure := func() error {
 		recomputeActivitySession(&tree.Root)
-		raw, err := json.Marshal(tree)
+		raw, err := encodeActivityTree(tree)
 		if err != nil {
-			return appwire.JobActivityTree{}, err
+			return err
 		}
-		if len(raw) <= activityMaxEncodedBytes {
-			return tree, nil
+		size = len(raw)
+		floor = size - activityTrimSlack(&tree.Root)
+		return nil
+	}
+	for {
+		if floor <= activityMaxEncodedBytes {
+			if err := measure(); err != nil {
+				return appwire.JobActivityTree{}, err
+			}
+			if size <= activityMaxEncodedBytes {
+				return tree, nil
+			}
 		}
 		// Before sacrificing entries, shrink the ancestor chain's fixed
 		// content. A continuation page carries that chain as the path back to
@@ -1696,11 +1736,17 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs m
 		// the floor are cut, so an ordinary chain is untouched and the entry
 		// trim below behaves exactly as before.
 		if shrinkActivityAncestors(&tree.Root, resume.depth) {
+			floor = 0
 			continue
 		}
 		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, epochs, revision, resume)
 		if !ok {
-			markActivityEnvelopeTooLarge(&tree.Root, len(raw))
+			// The error reports the entry-less page's exact size, which a
+			// skipped measurement never took.
+			if err := measure(); err != nil {
+				return appwire.JobActivityTree{}, err
+			}
+			markActivityEnvelopeTooLarge(&tree.Root, size)
 			// The error is part of what makes this page incomplete, and
 			// completeness is derived from the branch: aggregate again so the
 			// counts a reader trusts agree with it.
@@ -1708,16 +1754,24 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs m
 			return tree, nil
 		}
 		if !dropped.unrepresentable {
+			entry, err := json.Marshal(dropped.entry)
+			if err != nil {
+				return appwire.JobActivityTree{}, err
+			}
+			// The entry and, at most, the comma before it.
+			floor -= len(entry) + 1
 			continue
 		}
 		recomputeActivitySession(&tree.Root)
-		without, err := json.Marshal(tree)
+		without, err := encodeActivityTree(tree)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		if len(without) > activityMaxEncodedBytes {
 			// The entry was not what did not fit: keep trimming, and leave
-			// its position for the page that re-targets this session.
+			// its position for the page that re-targets this session. floor
+			// never counted this drop, so the next pass measures.
+			floor = 0
 			continue
 		}
 		// It was. Advance past it and measure the page with the token it will
@@ -1725,7 +1779,7 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs m
 		// with the position it is leaving behind has not been weighed at all.
 		mintActivityTrimContinuation(dropped, rootID, dropped.index+1, epochs, revision)
 		recomputeActivitySession(&tree.Root)
-		advanced, err := json.Marshal(tree)
+		advanced, err := encodeActivityTree(tree)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
@@ -1744,6 +1798,36 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs m
 		}
 		return tree, nil
 	}
+}
+
+// activityTrimSlack bounds how much a page's encoding can shrink, beyond the
+// entries dropped from it, before it is measured again. Dropping an entry
+// rewrites only its sessions' counts, aggregate and branch state (the
+// truncation flag and continuation token); those keys are always encoded, so
+// each value can give up at most its own current length. Diagnostics only
+// grow. A variable so a test can disable the skipped measurements and hold
+// the trim to measuring after every drop.
+var activityTrimSlack = func(root *appwire.JobActivitySession) int {
+	slack := 0
+	var walk func(*appwire.JobActivitySession)
+	walk = func(session *appwire.JobActivitySession) {
+		for _, value := range []any{session.Counts, session.Aggregate, session.Branch} {
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				// Unmeasurable: weigh the page after every drop.
+				slack = math.MaxInt / 2
+				return
+			}
+			slack += len(encoded)
+		}
+		for i := range session.Entries {
+			if delegate := session.Entries[i].Delegate; delegate != nil && delegate.Child != nil {
+				walk(delegate.Child)
+			}
+		}
+	}
+	walk(root)
+	return slack
 }
 
 // markActivityEnvelopeTooLarge reports a page that cannot carry a single
@@ -1765,6 +1849,7 @@ func markActivityEnvelopeTooLarge(session *appwire.JobActivitySession, size int)
 // what did not fit, since nothing else remained to shrink.
 type activityTrimmedEntry struct {
 	session         *appwire.JobActivitySession
+	entry           appwire.JobActivityEntry
 	path            []string
 	ref             string
 	index           int
@@ -1783,7 +1868,7 @@ func explainActivitySkippedEntry(tree *appwire.JobActivityTree, dropped activity
 		dropped.session.Branch = advanced
 		appendActivityBranchError(&dropped.session.Branch, message)
 		recomputeActivitySession(&tree.Root)
-		raw, err := json.Marshal(*tree)
+		raw, err := encodeActivityTree(*tree)
 		if err != nil {
 			return err
 		}
@@ -1855,6 +1940,7 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 	// carries none of the ancestors' weight.
 	dropped := activityTrimmedEntry{
 		session:         session,
+		entry:           *entry,
 		path:            append([]string(nil), path...),
 		ref:             activityEntryRef(*entry),
 		index:           resume.offsetAt(path) + i,

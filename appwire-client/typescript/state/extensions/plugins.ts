@@ -16,14 +16,15 @@
 // be replaced (the web's connection store) hands in an object that resolves
 // the current client on each call.
 
-import type { AppwireClient } from "../../client";
-import { errorText } from "../../errors";
+import type { AppwireClientLike, RequestPort } from "../../clientLike";
+import { errorText, isMethodNotFound } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import type { PluginEntry, PluginListResponse } from "../../types.gen";
+import type { HostRequestMethod, PluginEntry, PluginListResponse } from "../../types.gen";
+import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
-import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
-export type PluginsClient = Pick<AppwireClient, "request" | "onNotification">;
+export type PluginsClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 export interface PluginsState {
   plugins: PluginEntry[] | null;
@@ -37,6 +38,17 @@ export interface PluginsState {
    * spawn-time plugin preview) the moment that set is known to have changed. */
   pluginRevision: number;
   fetchPlugins(): Promise<void>;
+  /** Asks the hub whether each plugin has a newer version: a git-backed one's
+   * remote, or a marketplace-relative one's refreshed marketplace clone
+   * (evener/plugin/checkUpdates), then re-reads the list, which carries the
+   * flags the hub now holds. A host calls it when its plugins view opens. It
+   * never throws, and a failed check publishes nothing: an older hub without
+   * the method leaves every plugin unflagged, so no Upgrade is offered.
+   * Resolves true once the hub has given its answer (the flags, or an older
+   * hub's "method not found"), false when the request never reached one (a
+   * dropped connection, a remote host the proxy couldn't reach), which a host
+   * may ask again once it reconnects. */
+  checkPluginUpdates(): Promise<boolean>;
   installPlugin(plugin: string, marketplace: string): Promise<void>;
   upgradePlugin(plugin: string, marketplace: string): Promise<void>;
   removePlugin(plugin: string, marketplace: string): Promise<void>;
@@ -45,7 +57,7 @@ export interface PluginsState {
   setPluginAutoUpgrade(plugin: string, marketplace: string, autoUpgrade: boolean): Promise<void>;
 }
 
-export interface PluginsStore extends FrameworkFreeStore<PluginsState>, Omit<StoreLifecycle<PluginsState>, "guard"> {
+export interface PluginsStore extends FrameworkFreeStore<PluginsState>, HostLifecycle<PluginsState> {
   /** Follows evener/plugin/updated, which the hub broadcasts to every client
    * after any client's successful mutation (and after a marketplace edit,
    * which can re-key installed plugins): pluginRevision moves at once and the
@@ -62,6 +74,15 @@ export interface PluginsStore extends FrameworkFreeStore<PluginsState>, Omit<Sto
 
 export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
 
+/** The check waits on every plugin's remote, a few at a time and each under
+ * the hub's own per-remote timeout, so it can run far past a plain read's
+ * default timeout. The hub cuts off the whole check at its overall deadline
+ * (internal/plugins updateCheckDeadline), which is not on the wire, so
+ * this number is set by hand: it must exceed that deadline with room for the
+ * hub's own overhead, or the client gives up on a check the hub is still
+ * finishing. */
+export const PLUGIN_UPDATE_CHECK_TIMEOUT_MS = 120_000;
+
 /** The five mutations addressed by a plugin reference alone; setAutoUpgrade
  * carries its flag as well. */
 type PluginRefMethod =
@@ -71,7 +92,7 @@ type PluginRefMethod =
   | "evener/plugin/enable"
   | "evener/plugin/disable";
 
-export function createPluginsStore(client: PluginsClient): PluginsStore {
+export function createPluginsStore(client: PluginsClient, gate: HubWriteGate): PluginsStore {
   // Every mutation, and the notification refetch, replaces the whole list from
   // its own response; see listRevision.ts for the fence.
   const listRevision = createListRevision();
@@ -98,15 +119,21 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
   const store = createFrameworkFreeStore<PluginsState>((publish) => {
     const set = lifecycle.guard(publish);
 
-    /** Runs one mutation: its response's list is written only if no later
-     * revision has committed since. Rejects as the request does. */
+    /** Runs one mutation under the shared hub write gate: its response's list
+     * is written only if no later revision has committed since. Rejects as the
+     * request does, or with HubWriteBusyError when another plugin or
+     * marketplace write already holds the gate. */
     // The same three fields a read's success writes. A response that owns the
     // list owns the error and the loading flag with it - a read this one
     // outran publishes none of the three, the flag it raised included.
-    const mutate = (request: () => Promise<PluginListResponse>): Promise<void> =>
-      writeRevisioned(listRevision, request, (resp) => () => {
-        set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
-      });
+    const mutate = async (request: () => Promise<PluginListResponse>): Promise<void> => {
+      const ran = await gate.run(() =>
+        writeRevisioned(listRevision, request, (resp) => () => {
+          set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+        }),
+      );
+      if (!ran) throw new HubWriteBusyError();
+    };
 
     const mutation = (method: PluginRefMethod) => (plugin: string, marketplace: string) =>
       mutate(() => client.request(method, { plugin, marketplace }));
@@ -128,6 +155,26 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
           onAnswer: (resp) => () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null }),
           onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: errorText(err) }),
         });
+      },
+
+      async checkPluginUpdates() {
+        // The check's own answer is not published: a list issued while the
+        // hub was still asking remotes (a toggle, a notification refetch)
+        // would outrank it and drop the flags. The list read issued after the
+        // check outranks all of those, and the hub's list carries the flags.
+        // No revision fences the check itself, so it compares the lifecycle's
+        // epoch across its request instead.
+        const issuedIn = lifecycle.epoch();
+        try {
+          await client.request("evener/plugin/checkUpdates", {}, { timeoutMs: PLUGIN_UPDATE_CHECK_TIMEOUT_MS });
+        } catch (err) {
+          // Only an older hub's "method not found" is a final answer. Any other
+          // failure, a transport error or a wire error a proxy made of one (a
+          // lost host channel, a busy pool), never reached a check.
+          return isMethodNotFound(err);
+        }
+        if (lifecycle.epoch() === issuedIn) await store.getState().fetchPlugins();
+        return true;
       },
 
       installPlugin: mutation("evener/plugin/install"),

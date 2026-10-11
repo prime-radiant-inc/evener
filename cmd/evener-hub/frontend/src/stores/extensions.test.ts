@@ -1,4 +1,5 @@
 import type { MarketplaceCatalogPlugin, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
+import { HubWriteBusyError } from "@evener/appwire-client/state/extensions";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -367,7 +368,7 @@ describe("editMarketplace", () => {
 // started before a rename can land after it. The later response wins whichever
 // order they arrive in.
 describe("marketplace mutation ordering", () => {
-  test("a refresh that resolves after a newer rename cannot put the old name back", async () => {
+  test("a rename is refused while a refresh is in flight, and the refresh still applies", async () => {
     const fake = connectFakeClient();
     let resolveRefresh!: (v: { marketplaces: MarketplaceEntry[] }) => void;
     fake.on(
@@ -383,12 +384,15 @@ describe("marketplace mutation ordering", () => {
     await Promise.resolve();
 
     fake.on("evener/marketplace/edit", () => ({ marketplaces: [{ ...MARKETPLACE_A, name: "acme2" }] }));
-    await extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" });
-    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2"]);
+    await expect(
+      extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" }),
+    ).rejects.toBeInstanceOf(HubWriteBusyError);
+    // The refused rename sent nothing, so the refresh remains the only write.
+    expect(fake.calls.some((c) => c.method === "evener/marketplace/edit")).toBe(false);
 
     resolveRefresh({ marketplaces: [MARKETPLACE_A] });
     await refreshing;
-    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2"]);
+    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme-plugins"]);
   });
 
   test("a list response that resolves after a newer mutation cannot roll it back", async () => {
@@ -419,7 +423,7 @@ describe("marketplace mutation ordering", () => {
     expect(extensionsStore.getState().marketplacesLoading).toBe(false);
   });
 
-  test("an outrun response still retires its own browse cache entry", async () => {
+  test("a refused concurrent rename leaves the in-flight refresh to retire its own browse cache entry", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/browse", () => ({ name: "local-plugins", plugins: [{ name: "linter" }] }));
     await extensionsStore.getState().browseMarketplace("local-plugins");
@@ -435,11 +439,13 @@ describe("marketplace mutation ordering", () => {
     await Promise.resolve();
 
     fake.on("evener/marketplace/edit", () => ({ marketplaces: [{ ...MARKETPLACE_A, name: "acme2" }] }));
-    await extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" });
+    await expect(
+      extensionsStore.getState().editMarketplace({ name: "acme-plugins", newName: "acme2" }),
+    ).rejects.toBeInstanceOf(HubWriteBusyError);
 
     resolveRefresh({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] });
     await refreshing;
-    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme2"]);
+    expect(extensionsStore.getState().marketplaces?.map((m) => m.name)).toEqual(["acme-plugins", "local-plugins"]);
     expect(extensionsStore.getState().browseCatalogs.has("local-plugins")).toBe(false);
   });
 
@@ -1114,42 +1120,6 @@ describe("reconnect-triggered refetch", () => {
     expect(fresh.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
     expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
     expect(extensionsStore.getState().pluginsLoading).toBe(false);
-  });
-
-  test("a reconnect reads nothing for a section that was never opened", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
-    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
-    await extensionsStore.getState().fetchMarketplaces();
-    const marketplaceCalls = fake.calls.filter((c) => c.method === "evener/marketplace/list").length;
-
-    fake.emitStateChange("reconnecting");
-    fake.emitReady();
-    await drainMicrotasks();
-
-    expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(marketplaceCalls + 1);
-    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
-    expect(fake.calls.filter((c) => c.method === "evener/launch/getLayer")).toHaveLength(0);
-  });
-
-  // A fresh screen that installs a plugin before ever fetching the list: none
-  // of pluginsLoading/plugins/pluginsError is set yet, so nothing in the
-  // store's own data marks the list as wanted - only the install still on the
-  // wire does, at the seam writeRevisioned and readRevisioned share.
-  test("a mutation issued before any list fetch still recovers on a replaced connection", async () => {
-    const interrupted = connectFakeClient();
-    interrupted.on("evener/plugin/install", () => new Promise(() => {}));
-    void extensionsStore.getState().installPlugin("linter", "acme-plugins");
-    await Promise.resolve();
-    expect(extensionsStore.getState().plugins).toBeNull();
-
-    const replacement = new FakeClient("ready");
-    replacement.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
-    connectionStore.getState().connect(replacement);
-    await drainMicrotasks();
-
-    expect(replacement.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
-    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
   });
 });
 

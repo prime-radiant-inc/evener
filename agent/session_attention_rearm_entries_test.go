@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
+	"weak"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -13,14 +15,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// rearmFixtureSession restores a root session whose transcript carries one
-// unresolved and one consumed delegate attention, and returns the restored
-// session plus the durable pending id the fold must re-arm.
-func rearmFixtureSession(t *testing.T) (*Session, string) {
-	return rearmFixtureSessionWithTestOnly(t, testConfig{})
-}
-
-func rearmFixtureSessionWithTestOnly(t *testing.T, testOnly testConfig) (*Session, string) {
+// rearmFixtureSessionWithConfig restores, with restoreCfg, a root session
+// whose transcript carries one unresolved and one consumed delegate
+// attention, and returns the restored session plus the durable pending id the
+// fold must re-arm. The fixture supplies StateDir.
+func rearmFixtureSessionWithConfig(t *testing.T, restoreCfg RestoreSessionConfig) (*Session, string) {
 	t.Helper()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
@@ -64,7 +63,8 @@ func rearmFixtureSessionWithTestOnly(t *testing.T, testOnly testConfig) (*Sessio
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatalf("save root metadata: %v", err)
 	}
-	restored, err := RestoreSessionFromMetaWithConfig(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, RestoreSessionConfig{StateDir: stateDir, testOnly: testOnly})
+	restoreCfg.StateDir = stateDir
+	restored, err := RestoreSessionFromMetaWithConfig(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, restoreCfg)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
 	}
@@ -74,25 +74,26 @@ func rearmFixtureSessionWithTestOnly(t *testing.T, testOnly testConfig) (*Sessio
 // TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries proves the
 // restore-path rearm took the entries branch (not the file read): the seam
 // captures the entry list restore passed to the fold, and that list must be
-// the one RestoredTranscript exposes — the same final entry list serve will
-// see.
+// the one OnRestoredTranscript hands over — the same final entry list serve
+// will see.
 func TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries(t *testing.T) {
 	var foldedEntries []transcript.Entry
-	testOnly := testConfig{}
-	testOnly.delegateAttentionFoldEntries = func(entries []transcript.Entry) (delegateAttentionFold, error) {
+	var captured restoredTranscriptCapture
+	restoreCfg := RestoreSessionConfig{OnRestoredTranscript: captured.record}
+	restoreCfg.testOnly.delegateAttentionFoldEntries = func(entries []transcript.Entry) (delegateAttentionFold, error) {
 		foldedEntries = entries
 		return foldDelegateAttention(entries)
 	}
-	restored, pendingID := rearmFixtureSessionWithTestOnly(t, testOnly)
+	restored, pendingID := rearmFixtureSessionWithConfig(t, restoreCfg)
 	defer restored.Close()
 
 	if foldedEntries == nil {
 		t.Fatal("restore rearm never took the entries fold branch")
 	}
-	_, retained, ok := restored.RestoredTranscript()
-	if !ok {
-		t.Fatal("restored session retained no transcript entries")
+	if !captured.opened {
+		t.Fatal("restore handed over no transcript")
 	}
+	retained := captured.entries
 	if len(foldedEntries) != len(retained) {
 		t.Fatalf("entries passed to the fold = %d, retained entries = %d; the rearm must fold the same final list serve sees", len(foldedEntries), len(retained))
 	}
@@ -110,12 +111,12 @@ func TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries(t *testing.T)
 	}
 }
 
-// TestRestoreSession_RestoredTranscriptOKBoundary pins the ok flag's
-// boundary: a session restored with NO transcript on disk reports ok=false,
-// one restored over a transcript with at least one entry reports ok=true
-// with that entry, and one restored over a header-only transcript reports
-// ok=true with a non-nil empty slice: ok means "a transcript was opened and
-// validated," not "entries exist."
+// TestRestoreSession_RestoredTranscriptOKBoundary pins the opened flag's
+// boundary: a session restored with NO transcript on disk hands over
+// opened=false, one restored over a transcript with at least one entry hands
+// over opened=true with that entry, and one restored over a header-only
+// transcript hands over opened=true with a non-nil empty slice: opened means
+// "a transcript was opened and validated," not "entries exist."
 func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 	t.Run("no transcript on disk", func(t *testing.T) {
 		stateDir := t.TempDir()
@@ -127,21 +128,22 @@ func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 			t.Fatalf("save root metadata: %v", err)
 		}
-		restored, err := RestoreSessionFromMeta(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+		var captured restoredTranscriptCapture
+		restored, err := RestoreSessionFromMetaWithConfig(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, RestoreSessionConfig{StateDir: stateDir, OnRestoredTranscript: captured.record})
 		if err != nil {
 			t.Fatalf("restore root: %v", err)
 		}
 		defer restored.Close()
-		if _, _, ok := restored.RestoredTranscript(); ok {
+		if captured.opened {
 			t.Fatal("a session restored without a transcript reported a restored one")
 		}
 	})
 	t.Run("transcript with entries", func(t *testing.T) {
-		restored, _ := rearmFixtureSession(t)
+		var captured restoredTranscriptCapture
+		restored, _ := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 		defer restored.Close()
-		_, entries, ok := restored.RestoredTranscript()
-		if !ok || len(entries) == 0 {
-			t.Fatalf("RestoredTranscript = ok:%t entries:%d, want ok:true with the fixture's entries", ok, len(entries))
+		if !captured.opened || len(captured.entries) == 0 {
+			t.Fatalf("handed over opened:%t entries:%d, want opened:true with the fixture's entries", captured.opened, len(captured.entries))
 		}
 	})
 	t.Run("header-only transcript", func(t *testing.T) {
@@ -158,17 +160,17 @@ func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 		if err := writer.Close(); err != nil {
 			t.Fatalf("close writer: %v", err)
 		}
-		restored, err := RestoreSessionFromMeta(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+		var captured restoredTranscriptCapture
+		restored, err := RestoreSessionFromMetaWithConfig(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, RestoreSessionConfig{StateDir: stateDir, OnRestoredTranscript: captured.record})
 		if err != nil {
 			t.Fatalf("restore over header-only transcript: %v", err)
 		}
 		defer restored.Close()
-		_, entries, ok := restored.RestoredTranscript()
-		if !ok {
-			t.Fatal("a session restored over a header-only transcript reported no restored transcript; ok must mean 'a transcript was opened'")
+		if !captured.opened {
+			t.Fatal("a session restored over a header-only transcript reported no restored transcript; opened must mean 'a transcript was opened'")
 		}
-		if entries == nil || len(entries) != 0 {
-			t.Fatalf("entries = %#v, want a non-nil empty slice over a header-only transcript", entries)
+		if captured.entries == nil || len(captured.entries) != 0 {
+			t.Fatalf("entries = %#v, want a non-nil empty slice over a header-only transcript", captured.entries)
 		}
 	})
 }
@@ -179,15 +181,16 @@ func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 // it would find nothing (the file form treats a missing transcript as an
 // empty fold) and the pending attention would vanish from the wake cache.
 func TestRootDelegateAttention_RearmFromTranscriptDoesNotOpenTheFile(t *testing.T) {
-	restored, pendingID := rearmFixtureSession(t)
+	var captured restoredTranscriptCapture
+	restored, pendingID := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 	defer restored.Close()
 
 	if err := os.Remove(transcriptPath(restored.stateDir, restored.id)); err != nil {
 		t.Fatalf("remove transcript to prove in-memory fold: %v", err)
 	}
 	// The fold must still report the unresolved attention, proving it came
-	// from the retained entries rather than the (now missing) file.
-	fold, err := foldDelegateAttention(restoredEntriesForRearm(t, restored))
+	// from the handed-over entries rather than the (now missing) file.
+	fold, err := foldDelegateAttention(captured.entries)
 	if err != nil {
 		t.Fatalf("fold entries: %v", err)
 	}
@@ -197,18 +200,19 @@ func TestRootDelegateAttention_RearmFromTranscriptDoesNotOpenTheFile(t *testing.
 }
 
 // TestRootDelegateAttention_RearmYieldsSamePendingIDsAsFileFold is the
-// differential proof: the entries the restored session retained must fold to
+// differential proof: the entries restore handed over must fold to
 // the same pending ids the file itself folds to, over a fixture with both an
 // open and a resolved attention.
 func TestRootDelegateAttention_RearmYieldsSamePendingIDsAsFileFold(t *testing.T) {
-	restored, pendingID := rearmFixtureSession(t)
+	var captured restoredTranscriptCapture
+	restored, pendingID := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 	defer restored.Close()
 
 	fileFold, err := readDelegateAttentionFold(transcriptPath(restored.stateDir, restored.id), restored.id)
 	if err != nil {
 		t.Fatalf("read file fold: %v", err)
 	}
-	entriesFold, err := foldDelegateAttention(restoredEntriesForRearm(t, restored))
+	entriesFold, err := foldDelegateAttention(captured.entries)
 	if err != nil {
 		t.Fatalf("fold retained entries: %v", err)
 	}
@@ -218,30 +222,51 @@ func TestRootDelegateAttention_RearmYieldsSamePendingIDsAsFileFold(t *testing.T)
 }
 
 // TestRootDelegateAttention_RestoredTranscriptExposesFinalEntries pins the
-// restore→serve handoff: RestoredTranscript returns the entries restore
+// restore→serve handoff: OnRestoredTranscript receives the entries restore
 // validated (non-nil once a transcript existed) and a header whose SessionID
 // matches the session.
 func TestRootDelegateAttention_RestoredTranscriptExposesFinalEntries(t *testing.T) {
-	restored, _ := rearmFixtureSession(t)
+	var captured restoredTranscriptCapture
+	restored, _ := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 	defer restored.Close()
 
-	header, entries, ok := restored.RestoredTranscript()
-	if !ok || len(entries) == 0 {
-		t.Fatalf("RestoredTranscript = ok:%t entries:%d, want the restore-validated entries", ok, len(entries))
+	if !captured.opened || len(captured.entries) == 0 {
+		t.Fatalf("handed over opened:%t entries:%d, want the restore-validated entries", captured.opened, len(captured.entries))
 	}
-	if header.SessionID != restored.id {
-		t.Fatalf("restored header session %q, want %q", header.SessionID, restored.id)
-	}
-	if _, _, ok := (&Session{id: restored.id}).RestoredTranscript(); ok {
-		t.Fatal("a session without a restored transcript reported one")
+	if captured.header.SessionID != restored.id {
+		t.Fatalf("restored header session %q, want %q", captured.header.SessionID, restored.id)
 	}
 }
 
-func restoredEntriesForRearm(t *testing.T, s *Session) []transcript.Entry {
-	t.Helper()
-	_, entries, ok := s.RestoredTranscript()
-	if !ok {
-		t.Fatal("session retained no restored transcript entries")
+// restoredTranscriptCapture records what RestoreSessionConfig.
+// OnRestoredTranscript handed over.
+type restoredTranscriptCapture struct {
+	header  transcript.Header
+	entries []transcript.Entry
+	opened  bool
+}
+
+func (c *restoredTranscriptCapture) record(header transcript.Header, entries []transcript.Entry, opened bool) {
+	c.header, c.entries, c.opened = header, entries, opened
+}
+
+// TestRestoredSessionRetainsNoDecodedTranscript pins that restore hands the
+// decoded transcript over without keeping it: once the receiver lets go, the
+// entries are collectable while the restored session lives on. A delegate
+// child or a one-shot run restores with no receiver at all, and a transcript
+// can run to tens of megabytes decoded.
+func TestRestoredSessionRetainsNoDecodedTranscript(t *testing.T) {
+	var captured restoredTranscriptCapture
+	restored, _ := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
+	defer restored.Close()
+	if len(captured.entries) == 0 {
+		t.Fatal("restore handed over no entries")
 	}
-	return entries
+	first := weak.Make(&captured.entries[0])
+	captured = restoredTranscriptCapture{}
+	runtime.GC()
+	if first.Value() != nil {
+		t.Fatal("the restored session still references its decoded transcript entries")
+	}
+	runtime.KeepAlive(restored)
 }

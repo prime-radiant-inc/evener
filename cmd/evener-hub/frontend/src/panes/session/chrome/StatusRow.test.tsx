@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
@@ -105,14 +105,9 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   // Toasts are module state and outlive cleanup(); without this a toast from
-  // an earlier file in this isolate:false worker (or an earlier test here) is
-  // still on screen when "a failed setReasoningEffort call surfaces an error
+  // an earlier test here is still on screen when "a failed setReasoningEffort call surfaces an error
   // toast" below renders its own <Toast/> and looks for its own text.
   resetToastStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // --- what the strip does NOT carry any more --------------------------------

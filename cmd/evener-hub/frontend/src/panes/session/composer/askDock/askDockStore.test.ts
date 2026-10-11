@@ -10,7 +10,7 @@ import type {
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -58,7 +58,14 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 function readResponse(ref: string): ThreadReadResponse {
-  return { thread: testThread(ref) };
+  // Establishes the versioned-history baseline (bootGeneration/epoch/
+  // snapshot.incarnation) every history/updated push in this file's fixtures
+  // carries ("1"/1/"inc-1"): a read that omits `snapshot` hydrates a
+  // pre-v6, unversioned model instead, and the first live push then reads as
+  // an incarnation CHANGE from the (unset) baseline — classifySignal calls
+  // that "invalidate", not "apply", so the pushed item never merges and no
+  // batch is ever seen.
+  return { thread: testThread(ref), bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 0 } };
 }
 
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
@@ -94,19 +101,28 @@ const MULTI_THEN_SINGLE = [
 // test must be started exactly once.
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
-    method: "turn/started",
-    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${ref}`,
+      ref,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+    },
   });
 }
 
 function userMessageNotification(ref: string, turnId: string, itemId: string, text: string): AnyNotification {
   return {
-    method: "item/completed",
+    method: "history/updated",
     params: {
       threadId: `thr_${ref}`,
       ref,
-      turnId,
-      item: { type: "userMessage", id: itemId, turnId, text, status: "completed" },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      items: [{ type: "userMessage", id: itemId, turnId, text, status: "completed" }],
     },
   };
 }
@@ -122,25 +138,26 @@ function ackAskUserCallWith(
   callId: string,
   questions: Array<Record<string, unknown>>,
 ): void {
-  for (const [method, status] of [
-    ["item/started", "inProgress"],
-    ["item/completed", "completed"],
-  ] as const) {
+  for (const status of ["inProgress", "completed"] as const) {
     fake.emitNotification({
-      method,
+      method: "history/updated",
       params: {
         threadId: `thr_${ref}`,
         ref,
-        turnId,
-        item: {
-          type: "commandExecution",
-          id: itemId,
-          turnId,
-          toolName: "ask_user",
-          callId,
-          status,
-          argumentsJson: askArgs(questions),
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            type: "commandExecution",
+            id: itemId,
+            turnId,
+            toolName: "ask_user",
+            callId,
+            status,
+            argumentsJson: askArgs(questions),
+          },
+        ],
       },
     });
   }
@@ -152,22 +169,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
-});
-
-afterEach(() => {
-  // Every test here calls ensureThread(ref) directly for setup - nothing in
-  // this file's own reconciliation path calls releaseThread, so the ref
-  // stays refcounted after the LAST test. Under isolate:false that is what a
-  // later file's own connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 describe("reconciliation from the live ThreadModel", () => {

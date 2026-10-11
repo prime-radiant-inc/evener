@@ -1,13 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { NewContentPill } from "./NewContentPill";
-
-afterEach(() => {
-  cleanup();
-});
 
 // Touch target (UX fix): the pill is a small floating jump-to-latest
 // control (see chevron tests below), so a coarse pointer (phone/tablet

@@ -51,8 +51,8 @@ func TestBinariesWorkflowSnapshotJobRefreshesTheChannel(t *testing.T) {
 	if job.If != "github.ref == 'refs/heads/main'" {
 		t.Errorf("snapshot job condition = %q, want the exact main-branch guard", job.If)
 	}
-	if !workflowNeeds(job.Needs, "build") {
-		t.Errorf("snapshot job needs = %#v, want build (it publishes that job's artifacts)", job.Needs)
+	if !workflowNeeds(job.Needs, "sign-macos") {
+		t.Errorf("snapshot job needs = %#v, want sign-macos (it publishes signed artifacts)", job.Needs)
 	}
 	if job.Permissions["contents"] != "write" {
 		t.Errorf("snapshot contents permission = %q, want write", job.Permissions["contents"])
@@ -61,23 +61,77 @@ func TestBinariesWorkflowSnapshotJobRefreshesTheChannel(t *testing.T) {
 		t.Error("snapshot job has no actions/checkout step")
 	}
 	if !workflowUsesPrefix(job.Steps, "actions/download-artifact@") {
-		t.Error("snapshot job does not download the build job's artifacts")
-	}
-	if !workflowRuns(job.Steps, "refs/tags/snapshot") {
-		t.Error("snapshot job does not move the snapshot tag")
+		t.Error("snapshot job does not download the signed artifact")
 	}
 	if !workflowRuns(job.Steps, `gh release upload "snapshot"`) {
 		t.Error("snapshot job does not upload assets to the snapshot release")
 	}
+	if workflowRuns(job.Steps, "refs/tags/snapshot") || workflowRuns(job.Steps, "git tag -f") {
+		t.Error("snapshot job must not create or move a git tag; the channel resolves through the release's version.txt asset")
+	}
+	if !workflowRuns(job.Steps, `echo "$GITHUB_SHA" > dist/version.txt`) {
+		t.Error("snapshot job does not stamp the built commit into version.txt")
+	}
+	if !workflowRuns(job.Steps, "dist/version.txt --clobber") {
+		t.Error("snapshot job does not upload version.txt with the release assets")
+	}
+}
+
+func TestBinariesWorkflowSignsDarwinBeforePublishing(t *testing.T) {
+	workflow := readWorkflow(t, ".github/workflows/binaries.yml")
+
+	job, ok := workflow.Jobs["sign-macos"]
+	if !ok {
+		t.Fatal("binaries workflow is missing the sign-macos job")
+	}
+	if job.RunsOn != "macos-26" {
+		t.Errorf("sign-macos runner = %q, want macos-26", job.RunsOn)
+	}
+	if !workflowNeeds(job.Needs, "build") {
+		t.Errorf("sign-macos needs = %#v, want build", job.Needs)
+	}
+	if !workflowUsesPrefix(job.Steps, "actions/download-artifact@") {
+		t.Error("sign-macos does not download unsigned artifacts")
+	}
+	if !workflowUsesPrefix(job.Steps, "actions/upload-artifact@") {
+		t.Error("sign-macos does not upload signed artifacts")
+	}
+	if !workflowRuns(job.Steps, "codesign --force") {
+		t.Error("sign-macos does not sign the Darwin binaries")
+	}
+	if !workflowRuns(job.Steps, `grep -F -- "$MACOS_DEVELOPER_ID_APPLICATION"`) {
+		t.Error("sign-macos does not validate the configured Developer ID identity")
+	}
+	if workflowRuns(job.Steps, `MACOS_DEVELOPER_ID_APPLICATION ($APPLE_TEAM_ID)`) {
+		t.Error("sign-macos validates the identity with a duplicated team suffix")
+	}
+	if !workflowRuns(job.Steps, "xcrun notarytool submit") {
+		t.Error("sign-macos does not submit the Darwin payload for notarization")
+	}
+	if !workflowRuns(job.Steps, "shasum -a 256 evener_*.tar.gz") {
+		t.Error("sign-macos does not regenerate checksums after repacking")
+	}
 }
 
 type githubActionsWorkflow struct {
+	On   githubActionsTriggers       `yaml:"on"`
 	Jobs map[string]githubActionsJob `yaml:"jobs"`
+}
+
+type githubActionsTriggers struct {
+	Push githubActionsPushTrigger `yaml:"push"`
+}
+
+type githubActionsPushTrigger struct {
+	Branches []string `yaml:"branches"`
+	Tags     []string `yaml:"tags"`
+	Paths    []string `yaml:"paths"`
 }
 
 type githubActionsJob struct {
 	If          string             `yaml:"if"`
 	Needs       any                `yaml:"needs"`
+	RunsOn      string             `yaml:"runs-on"`
 	Permissions map[string]string  `yaml:"permissions"`
 	Steps       []githubActionStep `yaml:"steps"`
 }

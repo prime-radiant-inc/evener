@@ -68,35 +68,22 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		}
 		return ProbeResult{}
 	}
-	// Read descendants before the root diagnostics. A retained delegate can be
-	// resumed between these calls; taking the child projection first means a
-	// later running lifecycle cannot be mistaken for stale active work and then
-	// overwritten as idle by an older root snapshot.
-	listResponse, err := appClient.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+	listResponse, err := appClient.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true, StatusOnly: true})
 	if err != nil {
 		return ProbeResult{}
 	}
-	rootResponse, err := appClient.ThreadRead(ctx, appwire.ThreadReadParams{})
-	if err != nil {
-		return ProbeResult{}
-	}
-	root := rootResponse.Thread
-	rootID := statusThreadID(root)
-	if strings.TrimSpace(root.ID) == "" || rootID == "" {
-		return ProbeResult{}
-	}
-	// The answer names the answering daemon's session, and a daemon keeps its
-	// entry's session id current (rvreg.UpdateSessionID). An endpoint that
-	// answers for a session the entry does not name is another daemon that
-	// re-bound the port; its answer is not this entry's.
-	if named := strings.TrimSpace(entry.SessionID); named != "" && rootID != named {
+	// The read, when there is one, follows the list: a retained delegate can be
+	// resumed between them, and taking the child projection first means a later
+	// running lifecycle cannot be mistaken for stale active work.
+	rootID, ok := probeRootSessionID(ctx, appClient, entry)
+	if !ok {
 		return ProbeResult{}
 	}
 
-	// ThreadList carries the root and descendants from one projection cut. Keep
-	// the ThreadRead result only for identity validation, and use the matching
-	// listed root so its diagnostics and child projections cannot come from
-	// different snapshots.
+	// ThreadList carries the root and descendants from one projection cut, so
+	// the probe uses the listed root: its diagnostics and the child projections
+	// cannot then come from different snapshots. A list with no row for the
+	// root's session is another daemon's answer.
 	var listedRoot *appwire.Thread
 	seen := make(map[string]bool)
 	var runningSubagentIDs []string
@@ -104,7 +91,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	var childWatches map[string][]appwire.EvenerWatchInfo
 	for i := range listResponse.Data {
 		thread := listResponse.Data[i]
-		if isRootThread(thread, root) {
+		if statusThreadID(thread) == rootID && strings.TrimSpace(thread.ID) != "" {
 			if listedRoot == nil {
 				listedRoot = &listResponse.Data[i]
 			}
@@ -139,7 +126,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if listedRoot == nil {
 		return ProbeResult{}
 	}
-	root = *listedRoot
+	root := *listedRoot
 
 	idleStableDelegateChildren := idleStableDelegateChildIDs(root.Evener.Diagnostics)
 	for _, id := range runningSubagentIDs {
@@ -152,28 +139,115 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	sort.Strings(runningSubagentIDs)
 
-	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	// Lifecycle status is the explicit typed input to retirement UI: a
 	// detached control read that never marks activity. A failed lifecycle
 	// probe (older daemon, mid-restart race) clears current capability — it
 	// never changes process ownership or this probe's residency verdict.
 	lifecycle, lifecycleFresh := probeDaemonLifecycle(ctx, appClient)
-	return ProbeResult{
-		SessionID:             rootID,
-		Status:                root.Status.Type,
-		ActiveFlags:           append([]string(nil), root.Status.ActiveFlags...),
-		PendingAsk:            root.Evener.AskPending,
-		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
-		RunningSubagentIDs:    runningSubagentIDs,
-		RunningSubagentStates: runningSubagentStates,
-		RunningJobs:           runningJobs,
-		CompletedJobs:         completedJobs,
-		Lifecycle:             lifecycle,
-		LifecycleFresh:        lifecycleFresh,
-		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
-		ChildWatches:          childWatches,
-		OK:                    true,
+	result := ProbeResultFromThread(root)
+	result.RunningSubagentIDs = runningSubagentIDs
+	result.RunningSubagentStates = runningSubagentStates
+	result.ChildWatches = childWatches
+	result.Lifecycle = lifecycle
+	result.LifecycleFresh = lifecycleFresh
+	result.OK = true
+	return result
+}
+
+// ProbeResultFromThread builds the ProbeResult fields a single thread
+// projection carries, from its root row. The full probe (over its listed
+// root), ReadSpawnedThread and package hub's remote tree row all read a
+// thread's facts through it, so a field a row reads from the thread is set on
+// every path at once instead of being listed per caller and missed on one
+// (#2962, #2638). The caller adds the fields the thread row alone cannot
+// answer: descendant IDs and states, child watches, the daemon lifecycle, and
+// OK.
+func ProbeResultFromThread(root appwire.Thread) ProbeResult {
+	var subagents appwire.SubagentTally
+	if root.Evener.Subagents != nil {
+		subagents = *root.Evener.Subagents
 	}
+	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
+	return ProbeResult{
+		SessionID:          statusThreadID(root),
+		Status:             root.Status.Type,
+		ActiveFlags:        append([]string(nil), root.Status.ActiveFlags...),
+		PendingAsk:         root.Evener.AskPending,
+		PendingEscalation:  len(root.Evener.PendingEscalations) > 0,
+		PendingEscalations: root.Evener.PendingEscalations,
+		PendingQuestion:    root.Evener.PendingQuestion,
+		Failure:            root.Evener.Failure,
+		// Both callers read a current-protocol daemon's own thread projection,
+		// which stamps the capability set beside the status, so the caps are the
+		// daemon's answer — not an approximation.
+		Capabilities:      root.Evener.Capabilities,
+		CapabilitiesKnown: true,
+		RunningJobs:       runningJobs,
+		CompletedJobs:     completedJobs,
+		Watches:           diagnosticsWatches(root.Evener.Diagnostics),
+		Tasks:             root.Evener.Tasks,
+		Activity:          root.Evener.Activity,
+		Subagents:         subagents,
+		LastTurnEndedAt:   UnixMilliTime(root.Evener.LastTurnEndedAt),
+		Profile:           root.Evener.Profile,
+		LastMessage:       root.Evener.LastMessage,
+		CurrentModel:      root.ModelProvider,
+	}
+}
+
+// LiveEntryThreadFacts copies the thread-row facts a ProbeResult carries onto
+// in, so every hub row that reads a thread projection fills them the same way:
+// the ask flag, escalation cards, jobs, watches, turn end and tasks, beside
+// the row's other summary fields. The caller keeps the fields only a local
+// probe answers — Capabilities, CapabilitiesKnown and ActiveFlags — as it holds
+// them, so a remote row leaves those absent. The result is a CloneLiveEntry
+// copy, so the row never aliases the probe's slices or pointers. (#2638)
+func LiveEntryThreadFacts(in LiveEntry, r ProbeResult) LiveEntry {
+	in.Status = r.Status
+	in.PendingAsk = r.PendingAsk
+	in.PendingEscalation = r.PendingEscalation
+	in.PendingEscalations = r.PendingEscalations
+	in.PendingQuestion = r.PendingQuestion
+	in.Failure = r.Failure
+	in.RunningJobs = r.RunningJobs
+	in.CompletedJobs = r.CompletedJobs
+	in.Watches = r.Watches
+	in.Tasks = r.Tasks
+	in.Activity = r.Activity
+	in.Subagents = r.Subagents
+	in.LastTurnEndedAt = r.LastTurnEndedAt
+	in.Profile = r.Profile
+	in.LastMessage = r.LastMessage
+	in.CurrentModel = r.CurrentModel
+	return CloneLiveEntry(in)
+}
+
+// probeRootSessionID names the session whose row in the probe's list is the
+// root.
+//
+// The answer names the answering daemon's session, and a daemon keeps its
+// entry's session id current (rvreg.UpdateSessionID). So when the entry names
+// its session, that session is the root, and a list with no row for it is
+// another daemon that re-bound the port; no second snapshot is needed to tell
+// them apart.
+//
+// An entry that names no session yet has only the answer to go on, so the
+// root's session comes from a separate read, and the caller's requirement that
+// the list carry a row for it rejects a daemon swap between the two calls.
+func probeRootSessionID(ctx context.Context, client *appwire.Client, entry rendezvous.Entry) (string, bool) {
+	if named := strings.TrimSpace(entry.SessionID); named != "" {
+		return named, true
+	}
+	response, err := client.ThreadRead(ctx, appwire.ThreadReadParams{})
+	if err != nil {
+		return "", false
+	}
+	root := response.Thread
+	if strings.TrimSpace(root.ID) == "" {
+		return "", false
+	}
+	rootID := statusThreadID(root)
+	return rootID, rootID != ""
 }
 
 // probeDaemonLifecycle reads the daemon's retirement lifecycle through the
@@ -193,10 +267,6 @@ func statusThreadID(thread appwire.Thread) string {
 		return sessionID
 	}
 	return strings.TrimSpace(thread.ID)
-}
-
-func isRootThread(thread, root appwire.Thread) bool {
-	return thread.ID == root.ID && statusThreadID(thread) == statusThreadID(root)
 }
 
 // idleStableDelegateChildIDs identifies retained stable delegates with no
@@ -240,13 +310,6 @@ func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.Evener
 	return diagnostics.Watches
 }
 
-// DiagnosticsWatches is the exported form of diagnosticsWatches, shared with
-// package hub's own tree projection so the two cannot drift. It is the same
-// logic; the package-local name stays for the existing in-package callers.
-func DiagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
-	return diagnosticsWatches(diagnostics)
-}
-
 // SplitNonAgentJobs separates non-delegate jobs into active and terminal
 // groups for navigation consumers. The input is already the daemon's bounded
 // diagnostic inventory, so the function preserves its order within each group.
@@ -267,7 +330,7 @@ func SplitNonAgentJobs(jobs []appwire.EvenerJobInfo) ([]appwire.EvenerJobInfo, [
 
 func terminalJobStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "completed", "failed", "cancelled", "stopped", "exhausted":
+	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
 		return true
 	default:
 		return false

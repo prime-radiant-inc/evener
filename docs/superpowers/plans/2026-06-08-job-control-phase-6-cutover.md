@@ -77,7 +77,7 @@ cmd/evener-tui/internal/msgrender/tool_renderers.go  R  spawn_agent/resume_agent
 cmd/evener-tui/internal/msgrender/tool_bodies.go     R  spawn_agent body comment/shape → delegate
 cmd/evener-tui/internal/toolsummary/tool_summary.go  R  spawn_agent/resume_agent/wait/close_agent summary cases → job tools
 cmd/evener-hub/assets/renderer.js               R  SUBAGENT_START/END + spawn_agent/resume_agent/close_agent renderers → job lifecycle/tools
-cmd/evener-hub/assets/appwire.js                R  evener/subagent/* → SUBAGENT_* mapping → job lifecycle mapping
+cmd/serf-hub/assets/appwire.js                R  evener/subagent/* → SUBAGENT_* mapping → job lifecycle mapping
 agent/events/events.go                        R  EventSubagentStart/End kinds → job-lifecycle kinds
 agent/events/payloads.go                      R  SubagentStartData/EndData → job-lifecycle payloads
 agent/events/eventdata.go                     R  the eventKind() bindings + the compile-time _ EventData asserts
@@ -317,10 +317,10 @@ git commit -m "refactor(server): rename SubagentStatusInfo carriers to job statu
 These are `go:embed`-ed and served live, so they are gate-token hits the static gate would otherwise leave red, and a real runtime break (the web client would stop rendering job lifecycle).
 
 **Symbols:**
-- `cmd/evener-hub/assets/appwire.js` — the `if (method === "evener/subagent/started") return [["SUBAGENT_START", ...]]` / `"evener/subagent/completed"` → `"SUBAGENT_END"` mapping.
+- `cmd/serf-hub/assets/appwire.js` — the `if (method === "evener/subagent/started") return [["SUBAGENT_START", ...]]` / `"evener/subagent/completed"` → `"SUBAGENT_END"` mapping.
 - `cmd/evener-hub/assets/renderer.js` — `case "SUBAGENT_START":` / `case "SUBAGENT_END":` (the lifecycle banner/reference-card handlers), and the per-tool renderers `"spawn_agent"` (`spawnAgentRenderer`), `"resume_agent"`/`"wait"`/`"close_agent"` (`subagentControlRenderer`), plus the helper map keys (`activeSubagents`, `subagent-reference`, `data.subagentId`).
 
-- [ ] **Step 1: appwire.js mapping.** `rg -n 'evener/subagent|SUBAGENT_START|SUBAGENT_END' cmd/evener-hub/assets/appwire.js`. Repoint the method strings to Task 6's new wire names (`"evener/job/started"` → `"JOB_STARTED"`, `"evener/job/finished"` → `"JOB_FINISHED"`) and read `params.job || params` instead of `params.subagent || params`. Match the exact `method` strings and param shape chosen in Task 6.
+- [ ] **Step 1: appwire.js mapping.** `rg -n 'evener/subagent|SUBAGENT_START|SUBAGENT_END' cmd/serf-hub/assets/appwire.js`. Repoint the method strings to Task 6's new wire names (`"evener/job/started"` → `"JOB_STARTED"`, `"evener/job/finished"` → `"JOB_FINISHED"`) and read `params.job || params` instead of `params.subagent || params`. Match the exact `method` strings and param shape chosen in Task 6.
 
 - [ ] **Step 2: renderer.js lifecycle cases.** `rg -n 'SUBAGENT_START|SUBAGENT_END' cmd/evener-hub/assets/renderer.js`. Rename the `case` labels to `"JOB_STARTED"`/`"JOB_FINISHED"` and update the handler bodies to read `job_id`/`job_type`/`status` (was `agent_id`/`status`). Update the reference-card el-tracking map (`activeSubagents` → `activeJobs`, keyed by `job_id`) and the dataset/class names if you want them consistent (`subagent-reference` can stay as a CSS class name if a stylesheet depends on it — grep `cmd/evener-hub/assets/*.css` for `subagent-reference` before renaming the class; the CSS class is not a gate token, so renaming it is optional and only for consistency).
 
@@ -332,7 +332,7 @@ These are `go:embed`-ed and served live, so they are gate-token hits the static 
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/evener
-git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/appwire.js
+git add cmd/evener-hub/assets/renderer.js cmd/serf-hub/assets/appwire.js
 git commit -m "refactor(evener hub): repoint web client to evener/job lifecycle + job tools"
 ```
 

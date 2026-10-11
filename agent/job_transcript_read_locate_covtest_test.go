@@ -9,10 +9,12 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-// TestLocateLocalJob_InvalidBucket covers the invalid-bucket-dir error path
-// in locateLocalJob (line 41-43): a state dir with an invalid project bucket
-// name returns an error.
-func TestLocateLocalJob_InvalidBucket(t *testing.T) {
+// TestLocateLocalJob_NonProjectDirError covers a lookup in a state dir whose
+// base name is not a valid project ID. The bucket-name guard was removed
+// (roborev fix round 1); the lookup now proceeds to findLocalJobInProject and
+// fails because no jobs.jsonl exists at that path — not because the bucket
+// name was rejected.
+func TestLocateLocalJob_NonProjectDirError(t *testing.T) {
 	sid, err := identifier.NewSessionID()
 	if err != nil {
 		t.Fatal(err)
@@ -21,8 +23,10 @@ func TestLocateLocalJob_InvalidBucket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A state dir that looks like an evener/projects/ layout but with an invalid
-	// project id (contains a space, which ValidateProjectID rejects).
+	// A state dir that looks like an evener/projects/ layout but with an
+	// invalid project id (contains a space, which ValidateProjectID rejects).
+	// The lookup proceeds and fails downstream (no jobs.jsonl), not at the
+	// removed bucket-name guard.
 	base := t.TempDir()
 	badBucket := filepath.Join(base, "evener", "projects", "invalid bucket")
 	if err := os.MkdirAll(badBucket, 0o755); err != nil {
@@ -30,7 +34,7 @@ func TestLocateLocalJob_InvalidBucket(t *testing.T) {
 	}
 	_, err = locateLocalJob(badBucket, jobID)
 	if err == nil {
-		t.Fatal("expected error for invalid bucket dir")
+		t.Fatal("expected error for job lookup in non-project dir")
 	}
 }
 

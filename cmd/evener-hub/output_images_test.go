@@ -263,7 +263,7 @@ func TestEnrichThreadFileBackedOutputImagesDoesNotDuplicateAnAlreadyProjectedRea
 	if err := os.WriteFile(filepath.Join(cwd, "shot.png"), png, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sha := outputImageSHA(png)
+	sha := imageSha(png)
 	thread := appwire.Thread{
 		ID:        "01DOC",
 		SessionID: "01DOC",
@@ -364,68 +364,69 @@ func TestOutputImagesForToolCallCapsRenderedShellImages(t *testing.T) {
 	}
 }
 
-func TestEnrichOutputImageNotificationUsesStartedArgumentsForCompletedItem(t *testing.T) {
+func TestEnrichOutputImageNotificationUsesRunningArgumentsForCompletedItem(t *testing.T) {
 	cwd := t.TempDir()
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
 	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	argsByCallID := map[string]string{}
-	started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-		"turnId": "turn_1",
-		"item": appwire.ThreadItem{
+	running := appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+		Item: appwire.OverlayItem{Key: "tool:call_write", Kind: appwire.OverlayTool, Item: appwire.ThreadItem{
 			Type:          "commandExecution",
 			ID:            "item_write",
 			ToolName:      "write_file",
 			CallID:        "call_write",
 			ArgumentsJSON: `{"file_path":"plot.png"}`,
 			Status:        appwire.TurnStatusInProgress,
-		},
+		}},
 	}).Notification
-	_ = enrichOutputImageNotification("01DOC", cwd, argsByCallID, *started)
-	completed := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-		"turnId": "turn_1",
-		"item": appwire.ThreadItem{
+	_ = enrichOutputImageNotification("01DOC", cwd, argsByCallID, *running)
+	completed := appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+		Item: appwire.OverlayItem{Key: "tool:call_write", Kind: appwire.OverlayTool, Item: appwire.ThreadItem{
 			Type:     "commandExecution",
 			ID:       "item_write",
 			ToolName: "write_file",
 			CallID:   "call_write",
 			Output:   "wrote",
 			Status:   appwire.TurnStatusCompleted,
-		},
+		}},
 	}).Notification
 
 	got := enrichOutputImageNotification("01DOC", cwd, argsByCallID, *completed)
-	var params struct {
-		Item appwire.ThreadItem `json:"item"`
-	}
+	var params appwire.OverlayUpsertedParams
 	if err := json.Unmarshal(got.Params, &params); err != nil {
 		t.Fatal(err)
 	}
-	if len(params.Item.OutputImages) != 1 || params.Item.OutputImages[0].Source != "written-file" || params.Item.OutputImages[0].Path != "plot.png" {
-		t.Fatalf("OutputImages=%+v, want written-file plot.png descriptor", params.Item.OutputImages)
+	if images := params.Item.Item.OutputImages; len(images) != 1 || images[0].Source != "written-file" || images[0].Path != "plot.png" {
+		t.Fatalf("OutputImages=%+v, want written-file plot.png descriptor", images)
 	}
 }
 
-// enrichedItem runs a live item/completed notification through the relay's
-// output-image enrichment and returns the item the browser would receive.
+// enrichedItem runs a finished tool call item through the relay's
+// output-image enrichment, as a history/updated item and as an overlay/upserted
+// tool item, and returns the item the browser would receive: the two carry the
+// same enrichment.
 func enrichedItem(t *testing.T, sessionID, cwd string, item appwire.ThreadItem) appwire.ThreadItem {
 	t.Helper()
-	params, err := json.Marshal(map[string]any{"threadId": sessionID, "turnId": "turn_1", "item": item})
-	if err != nil {
-		t.Fatal(err)
+	history := enrichOutputImageNotification(sessionID, cwd, map[string]string{}, *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		ThreadID: sessionID, Items: []appwire.ThreadItem{item},
+	}).Notification)
+	var updated appwire.HistoryUpdatedParams
+	if err := json.Unmarshal(history.Params, &updated); err != nil || len(updated.Items) != 1 {
+		t.Fatalf("unmarshal enriched history/updated: %v %+v", err, updated)
 	}
-	got := enrichOutputImageNotification(sessionID, cwd, map[string]string{}, appwire.Notification{
-		Method: appwire.NotifyItemCompleted,
-		Params: params,
-	})
-	var decoded struct {
-		Item appwire.ThreadItem `json:"item"`
+	overlay := enrichOutputImageNotification(sessionID, cwd, map[string]string{}, *appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+		ThreadID: sessionID, Item: appwire.OverlayItem{Key: "tool:" + item.CallID, Kind: appwire.OverlayTool, Item: item},
+	}).Notification)
+	var upserted appwire.OverlayUpsertedParams
+	if err := json.Unmarshal(overlay.Params, &upserted); err != nil {
+		t.Fatalf("unmarshal enriched overlay/upserted: %v", err)
 	}
-	if err := json.Unmarshal(got.Params, &decoded); err != nil {
-		t.Fatalf("unmarshal enriched params: %v", err)
+	if !reflect.DeepEqual(updated.Items[0], upserted.Item.Item) {
+		t.Fatalf("history item %+v and overlay item %+v enriched differently", updated.Items[0], upserted.Item.Item)
 	}
-	return decoded.Item
+	return updated.Items[0]
 }
 
 // TestEnrichOutputImageNotificationStampsTheSHARouteOnALiveToolResult is the
@@ -486,5 +487,40 @@ func TestEnrichOutputImageNotificationKeepsOneEntryWhenBothMechanismsSeeTheSameF
 	}
 	if item.OutputImages[0].Source != "tool-result" || item.OutputImages[0].URL != "/s/02wMz5Txv733WHFsVy66SR/images/"+sha {
 		t.Fatalf("OutputImages[0]=%+v, want the sha-routed tool-result descriptor", item.OutputImages[0])
+	}
+}
+
+// TestOutputImagesForToolCallRepairableMalformedWriteFile (F5 round 6):
+// a repairable-malformed write_file call carries byte-faithful invalid JSON
+// (bare keys without quotes). The live path repaired the same bytes to
+// dispatch; the consumer must repair too so the file-backed thumbnail
+// recovers the path instead of producing nothing.
+func TestOutputImagesForToolCallRepairableMalformedWriteFile(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "out.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare-key malformed JSON — repair.RepairJSON wraps unquoted keys in quotes.
+	imgs := outputImagesForToolCall("01DOC", cwd, "write_file", `{file_path: "out.png"}`, "wrote")
+	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "out.png" || imgs[0].URL == "" {
+		t.Fatalf("repairable-malformed write_file should recover thumbnail, got %+v", imgs)
+	}
+}
+
+// TestOutputImagesForToolCallRepairableMalformedReadFile (F5 round 6):
+// same repair for read_file — the file-backed thumbnail recovers the path
+// from repairable-malformed args.
+func TestOutputImagesForToolCallRepairableMalformedReadFile(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "shot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "read_file", `{file_path: "shot.png"}`, "[image: png, 12 bytes, base64 data follows]")
+	if len(imgs) != 1 || imgs[0].Source != "read-file" || imgs[0].Path != "shot.png" || imgs[0].URL == "" {
+		t.Fatalf("repairable-malformed read_file should recover thumbnail, got %+v", imgs)
 	}
 }

@@ -438,6 +438,7 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 }
 
 func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t)
 	executor := newSignalCompletesStreamingExecutor()
 	result := runShell(context.Background(), sess.jobManager, executor, shellArgs{
@@ -663,6 +664,7 @@ func TestRematerializeOwnedDrainJobPendings(t *testing.T) {
 // arises when a finalize's in-memory enqueue never lands or a revived job's
 // deferred restore side effects are interrupted before arm_notifications.
 func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jobID string
@@ -675,7 +677,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 			for i := range steps {
 				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
 			}
-			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
 			jm := sess.jobManager
 			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
 			if p := sess.peekNotifications(); p != 0 {
@@ -707,6 +709,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 // injectedJobNotifs path, which marks it Delivered WITHOUT re-appending to
 // history — so the drain settles and the block is not duplicated.
 func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jobID string
@@ -719,7 +722,7 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 			for i := range steps {
 				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
 			}
-			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
 			jm := sess.jobManager
 			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
 
@@ -779,6 +782,7 @@ func countHistoryNeedle(s *Session, needle string) int {
 // re-materialize the child's stranded pending so the existing drive-down path
 // delivers it.
 func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jobID string
@@ -791,13 +795,13 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 			for i := range rootSteps {
 				rootSteps[i] = func(llm.Request) llm.Response { return finalResponse("root-ack") }
 			}
-			root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{}))
 
 			childSteps := make([]func(llm.Request) llm.Response, 8)
 			for i := range childSteps {
 				childSteps[i] = func(llm.Request) llm.Response { return finalResponse("child-ack") }
 			}
-			child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{}))
 			childID := child.ID()
 
 			root.subagents.mu.Lock()
@@ -828,13 +832,14 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 }
 
 func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response { return finalResponse("batch handled") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true}))
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
 	jm := sess.jobManager
 	seedOwnedDurablePending(t, jm, "shell-batch-one", jobstore.JobShell)
 	seedOwnedDurablePending(t, jm, "shell-batch-two", jobstore.JobShell)
@@ -862,6 +867,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 }
 
 func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_drain/delivery/1"
@@ -870,7 +876,7 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 	requestSawAttention := false
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
 			return toolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
@@ -924,7 +930,6 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	sess := newSession(t, withDir(stateDir), withSteps(steps...), withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 	}))
 
 	// Background a delegate; it runs to completion in its own goroutine and
@@ -959,6 +964,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 }
 
 func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -967,8 +973,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		clock:            clk,
+		clock: clk,
 	}))
 	sess.stopLaneResidueSweepTimer()
 	se := newDelayedSuccessStreamingExecutor()
@@ -1047,7 +1052,7 @@ func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("readiness acknowledged") },
 	}}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true, TurnEndsProcess: true}))
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}))
 	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; sleep 5","mode":"background"}`),
 	})

@@ -1,18 +1,12 @@
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { WebSocketLike } from "@evener/appwire-client";
-import {
-	connectionTarget,
-	createHubClient,
-	HubProfiles,
-	parsePairingURL,
-} from "./connection";
+import { connectionTarget, createHubClient, HubProfiles, parsePairingURL } from "./connection";
 import { connectionFailure } from "./connectionRecovery";
 
 describe("hub connections", () => {
 	it("parses escaped pairing tokens and rejects unsafe links without exposing input", () => {
-		expect(
-			parsePairingURL("https://hub.example:9443/auth/a%26b%23c%25ile"),
-		).toEqual({
+		expect(parsePairingURL("https://hub.example:9443/auth/a%26b%23c%25ile")).toEqual({
 			origin: "https://hub.example:9443",
 			token: "a&b#c%ile",
 		});
@@ -35,12 +29,8 @@ describe("hub connections", () => {
 		}
 	});
 	it("normalizes origins and rejects credentials and URL tokens", () => {
-		expect(connectionTarget(" https://example.com:443/ ")).toBe(
-			"wss://example.com/rpc",
-		);
-		expect(connectionTarget("http://127.0.0.1:9180")).toBe(
-			"ws://127.0.0.1:9180/rpc",
-		);
+		expect(connectionTarget(" https://example.com:443/ ")).toBe("wss://example.com/rpc");
+		expect(connectionTarget("http://127.0.0.1:9180")).toBe("ws://127.0.0.1:9180/rpc");
 		for (const url of [
 			"https://me:secret@hub.test",
 			"https://hub.test/?token=secret",
@@ -73,10 +63,7 @@ describe("hub connections", () => {
 			origin: "https://hub.test",
 			token: "second",
 		});
-		expect(await profiles.list()).toEqual([
-			a,
-			{ id: "b", name: "Remote", origin: "https://hub.test" },
-		]);
+		expect(await profiles.list()).toEqual([a, { id: "b", name: "Remote", origin: "https://hub.test" }]);
 		expect(await profiles.token("a")).toBe("first");
 		await profiles.remove("a");
 		expect(await profiles.token("a")).toBe("");
@@ -105,9 +92,7 @@ describe("hub connections", () => {
 		// A corrupt record surfaces the domain error, never a raw SyntaxError.
 		data.set("evener.hubs", JSON.stringify(["a"]));
 		data.set("evener.hub.a", "{not json");
-		await expect(profiles.token("a")).rejects.toThrow(
-			"Saved hub could not be read.",
-		);
+		await expect(profiles.token("a")).rejects.toThrow("Saved hub could not be read.");
 		// list() still degrades around the unreadable record.
 		expect(await profiles.list()).toEqual([]);
 	});
@@ -128,9 +113,7 @@ describe("hub connections", () => {
 		const profiles = profilesBackedBy(data);
 		// Without the null guard this reads a property off null and throws a
 		// raw TypeError past the domain error.
-		await expect(profiles.token("a")).rejects.toThrow(
-			"Saved hub could not be read.",
-		);
+		await expect(profiles.token("a")).rejects.toThrow("Saved hub could not be read.");
 		expect(await profiles.list()).toEqual([]);
 	});
 	// Characterization, not regression: every public path already rebuilds its
@@ -151,14 +134,8 @@ describe("hub connections", () => {
 			],
 		]);
 		const profiles = profilesBackedBy(data);
-		expect(await profiles.list()).toEqual([
-			{ id: "a", name: "Local", origin: "https://hub.test" },
-		]);
-		expect(Object.keys((await profiles.list())[0] ?? {}).sort()).toEqual([
-			"id",
-			"name",
-			"origin",
-		]);
+		expect(await profiles.list()).toEqual([{ id: "a", name: "Local", origin: "https://hub.test" }]);
+		expect(Object.keys((await profiles.list())[0] ?? {}).sort()).toEqual(["id", "name", "origin"]);
 		expect(await profiles.token("a")).toBe("secret");
 	});
 	it("retains both hubs when secure writes overlap", async () => {
@@ -172,11 +149,7 @@ describe("hub connections", () => {
 				data.delete(k);
 			},
 		});
-		await Promise.all(
-			["a", "b"].map((id) =>
-				profiles.save({ id, name: id, origin: "https://hub.test", token: id }),
-			),
-		);
+		await Promise.all(["a", "b"].map((id) => profiles.save({ id, name: id, origin: "https://hub.test", token: id })));
 		expect((await profiles.list()).map((p) => p.id)).toEqual(["a", "b"]);
 	});
 	it("skips one corrupt secure record while preserving valid siblings and their secrets", async () => {
@@ -247,7 +220,7 @@ describe("hub connections", () => {
 								id: frame.id,
 								result: {
 									serverInfo: { name: "test", version: "1" },
-									protocolVersion: "evener-appwire-v5",
+									protocolVersion: APPWIRE_PROTOCOL_VERSION,
 									sourceId: "local",
 									features: Object.fromEntries(
 										[
@@ -274,16 +247,12 @@ describe("hub connections", () => {
 				socket.onclose?.({ code: 1000 });
 			},
 		};
-		const client = createHubClient(
-			"https://hub.test",
-			"secret",
-			(url, options) => {
-				target = url;
-				headers = options.headers;
-				queueMicrotask(() => socket.onopen?.());
-				return socket;
-			},
-		);
+		const client = createHubClient("https://hub.test", "secret", (url, options) => {
+			target = url;
+			headers = options.headers;
+			queueMicrotask(() => socket.onopen?.());
+			return socket;
+		});
 		try {
 			await client.connect();
 			expect(client.state).toBe("ready");

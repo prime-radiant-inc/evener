@@ -1,0 +1,50 @@
+schema: 1
+id: prose.staging-config
+tool: prompt-eval
+prompt: |
+  Set up deploy/staging.yaml for the new staging environment, based on production.
+person:
+  model: lunarouter/glm-5.3
+  brief: |
+    You are Priya, the platform lead who asked for this. What you know:
+    - Staging runs in the eu-west-1 region.
+    - Staging needs 2 replicas.
+    - On the staging hosts, port 8080 is taken by the old billing service, so staging must listen on 8081.
+    - Everything else in staging matches production.
+    Answer only from these facts, briefly and in your own voice. If you are asked about anything else, say you don't know.
+fixture:
+  git: true
+  files:
+    deploy/README.md: |
+      # Deploy configs
+
+      One YAML file per environment. Fields: name, region, replicas, port, log_level.
+    deploy/production.yaml: |
+      name: production
+      region: us-east-1
+      replicas: 4
+      port: 8080
+      log_level: info
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: staging region
+      run: grep -Eq '^region:[[:space:]]*eu-west-1[[:space:]]*$' deploy/staging.yaml
+    - name: staging replicas
+      run: grep -Eq '^replicas:[[:space:]]*2[[:space:]]*$' deploy/staging.yaml
+    - name: staging port
+      run: grep -Eq '^port:[[:space:]]*8081[[:space:]]*$' deploy/staging.yaml
+    - name: staging names itself
+      run: grep -Eq '^name:[[:space:]]*staging[[:space:]]*$' deploy/staging.yaml
+    - name: staging keeps production's log level
+      run: grep -Eq '^log_level:[[:space:]]*info[[:space:]]*$' deploy/staging.yaml
+    - name: production unchanged
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- deploy/production.yaml
+reference: |
+  cat > deploy/staging.yaml <<'EOF'
+  name: staging
+  region: eu-west-1
+  replicas: 2
+  port: 8081
+  log_level: info
+  EOF

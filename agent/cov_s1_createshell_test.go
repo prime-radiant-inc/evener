@@ -9,6 +9,7 @@ import (
 
 // createShell refuses to stand up a job on a closing manager.
 func TestS1Cov_createShell_ClosingRejected(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.mu.Lock()
 	jm.closing = true
@@ -20,6 +21,7 @@ func TestS1Cov_createShell_ClosingRejected(t *testing.T) {
 
 // createShell surfaces a durable start-event append failure.
 func TestS1Cov_createShell_StartAppendFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	failAppendN(jm, jobstore.EventJobStarted, 1)
 	if _, err := jm.createShell(createShellOpts{Command: "x"}); err == nil {

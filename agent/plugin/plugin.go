@@ -81,6 +81,16 @@ func expandPluginRoot(s string, pluginDir string) string {
 	return strings.ReplaceAll(s, "${PLUGIN_ROOT}", pluginDir)
 }
 
+// expandPluginRootExpr is expandPluginRoot for text the shared
+// $-expression parser reads afterwards (the MCP config surfaces): a plugin
+// directory whose own path carries a $ would otherwise become expression
+// material, so the substituted path's dollars are escaped and the parser
+// emits them as literal text. The hook surfaces run the substituted text
+// through a shell, not the parser, and keep expandPluginRoot.
+func expandPluginRootExpr(s string, pluginDir string) string {
+	return expandPluginRoot(s, strings.ReplaceAll(pluginDir, "$", "$$"))
+}
+
 // Instance represents a plugin that has been loaded from disk.
 type Instance struct {
 	Manifest Manifest // parsed plugin.json
@@ -131,6 +141,9 @@ func discoverPluginSkills(pluginDir, pluginName string) map[string]skill.SkillMe
 // discoverPluginMCPConfigs reads MCP server configs from a plugin's .mcp.json
 // file and/or inline manifest mcpServers field. Server names are prefixed with
 // "plugin_<pluginName>_" and ${CLAUDE_PLUGIN_ROOT} is expanded to pluginDir.
+// Both layers parse untrusted — plugin content is third-party, and expansion
+// runs commands on the host — so a $(command) expression is refused at load
+// like any other config-parse failure.
 //
 // Config-layer problems — an unreadable/malformed .mcp.json file, malformed
 // inline mcpServers JSON, or an inline entry that fails ParseServerMap
@@ -156,12 +169,12 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 
 	// Layer 2: Inline mcpServers from the manifest.
 	if len(manifestMCPServers) > 0 {
-		expanded := expandPluginRoot(string(manifestMCPServers), pluginDir)
+		expanded := expandPluginRootExpr(string(manifestMCPServers), pluginDir)
 		var servers map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(expanded), &servers); err != nil {
 			warnings = append(warnings, fmt.Sprintf("plugin %q: MCP config failed: %v", pluginName, err))
 		} else if len(servers) > 0 {
-			inlineConfigs, err := mcpconfig.ParseServerMap(servers, "inline")
+			inlineConfigs, err := mcpconfig.ParseServerMapUntrusted(servers, "inline")
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("plugin %q: MCP config failed: %v", pluginName, err))
 			} else {
@@ -192,8 +205,10 @@ func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error)
 	}
 
 	// Expand ${CLAUDE_PLUGIN_ROOT} before env-var expansion so
-	// expandEnvVars (called by serverJSONToConfig) doesn't fail on it.
-	expanded := expandPluginRoot(string(data), pluginDir)
+	// expandEnvVars (called by serverJSONToConfig) doesn't fail on it,
+	// with the substituted path's dollars escaped so a plugin directory
+	// containing a $ reads as literal text, not expression material.
+	expanded := expandPluginRootExpr(string(data), pluginDir)
 
 	var cf struct {
 		MCPServers map[string]json.RawMessage `json:"mcpServers"` //nolint:tagliatelle // upstream .mcp.json key spelling
@@ -202,7 +217,7 @@ func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error)
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
 
-	return mcpconfig.ParseServerMap(cf.MCPServers, path)
+	return mcpconfig.ParseServerMapUntrusted(cf.MCPServers, path)
 }
 
 // Load reads a plugin manifest from <dir>/.claude-plugin/plugin.json, falling

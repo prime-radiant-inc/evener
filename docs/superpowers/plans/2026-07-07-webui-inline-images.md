@@ -37,7 +37,7 @@
 - `cmd/evener-hub/doc_serve_test.go`: `/doc/image` security and content-type tests.
 - `cmd/evener-hub/image_serve.go`: extend transcript sha lookup to include tool-result image bytes.
 - `cmd/evener-hub/app_threadread.go`: pass hub-specific output-image resolver into transcript projection.
-- `cmd/evener-hub/assets/appwire.js`: carry `outputImages` through commandExecution events.
+- `cmd/serf-hub/assets/appwire.js`: carry `outputImages` through commandExecution events.
 - `cmd/evener-hub/assets/renderer.js`: render tool output images under the owning tool row.
 - `cmd/evener-hub/assets/style.css`: add tool-output image wrapper styles by reusing existing user-image card rules.
 - `cmd/evener-hub/jstest/test-renderer.js`: assert one and multiple tool output images render and lightbox opens.
@@ -874,7 +874,7 @@ git commit -m "feat(hub): discover file-backed output images"
 ### Task 5: Frontend rendering for tool output images
 
 **Files:**
-- Modify: `cmd/evener-hub/assets/appwire.js`
+- Modify: `cmd/serf-hub/assets/appwire.js`
 - Modify: `cmd/evener-hub/assets/renderer.js`
 - Modify: `cmd/evener-hub/assets/style.css`
 - Modify: `cmd/evener-hub/jstest/test-renderer.js` or add `cmd/evener-hub/jstest/test-renderer-output-images.js`
@@ -923,7 +923,7 @@ Expected: FAIL because output images are ignored.
 
 - [ ] **Step 3: Pass descriptors through `appwire.js`**
 
-In commandExecution event creation in `cmd/evener-hub/assets/appwire.js`, include:
+In commandExecution event creation in `cmd/serf-hub/assets/appwire.js`, include:
 
 ```js
 output_images: item.outputImages || item.output_images || []
@@ -1004,7 +1004,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-renderer-output-images.js
+git add cmd/serf-hub/assets/appwire.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/assets/style.css cmd/evener-hub/jstest/test-renderer-output-images.js
 git commit -m "feat(web): render tool output images inline"
 ```
 

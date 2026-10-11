@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -130,6 +131,8 @@ type Registry struct {
 	explicit       map[string]*record          // user-layer and injected instances
 	userDefault    string
 	userNote       string
+	userConfigPath string
+	userConfig     []byte
 	env            func(string) (string, bool)
 	creds          CredentialSource
 	stateRoot      string
@@ -269,7 +272,7 @@ func Load(opts ...Option) (*Registry, error) {
 	}
 	r.presets, r.defaultOrder, r.topGlobs[LayerOverlay] = ov.Transports, ov.DefaultOrder, ov.TopGlobs
 
-	user, note, err := loadUserLayer(o)
+	user, note, err := r.loadUserLayer(o)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +339,7 @@ func Load(opts ...Option) (*Registry, error) {
 	return r, nil
 }
 
-func loadUserLayer(o *options) (*Layer, string, error) {
+func (r *Registry) loadUserLayer(o *options) (*Layer, string, error) {
 	path := ""
 	switch {
 	case o.noUserLayer:
@@ -365,6 +368,7 @@ func loadUserLayer(o *options) (*Layer, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", path, err)
 	}
+	r.userConfigPath, r.userConfig = path, data
 	return l, "user layer: " + path, nil
 }
 
@@ -735,6 +739,13 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	}
 	h.Headers = mergeStringMap(h.Headers, src.Headers)
 	h.CredentialHeaders = mergeStringMap(h.CredentialHeaders, src.CredentialHeaders)
+	// The per-layer validation cannot see across the fold: a base layer's
+	// "Authorization" and this layer's "authorization" are individually
+	// clean and collide only once merged, which is when the wire would
+	// carry both while resolution picks one.
+	if err := checkCredentialHeaderNames(h.CredentialHeaders, where); err != nil {
+		return err
+	}
 	rec.notes = append(rec.notes, src.notes...)
 	for _, id := range sortedKeys(src.Models) {
 		m := src.Models[id]
@@ -926,12 +937,16 @@ func expandTemplate(tpl string, lookup func(string) (string, bool)) (string, []s
 func (r *Registry) varLookupWith(rec *record, t Transport, warn func(string)) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		if v, ok := rec.userVars[name]; ok {
-			expanded, missing := expandEnv(v, r.env)
-			for _, m := range missing {
-				warn("unresolved variable " + m)
+			expanded, unresolved := expandEnv(v, r.env)
+			for _, u := range unresolved {
+				if u.Command != "" {
+					warn(commandFailurePhrase(u))
+				} else {
+					warn("unresolved variable " + u.Name)
+				}
 			}
 			switch {
-			case len(missing) > 0:
+			case len(unresolved) > 0:
 				return "", false
 			case expanded != "":
 				return expanded, true
@@ -1178,6 +1193,13 @@ func (r *Registry) Provider(id string) (Provider, bool) {
 // UserLayerNote describes where the user layer came from ("user layer:
 // none (EVENER_PROVIDERS_CONFIG is empty)", spec §14.1).
 func (r *Registry) UserLayerNote() string { return r.userNote }
+
+// UserConfigSnapshot returns the source path and a copy of the exact bytes
+// loaded as the user layer. Nil bytes mean no file was loaded; non-nil empty
+// bytes mean a successful empty file. The bytes may contain authored credentials.
+func (r *Registry) UserConfigSnapshot() (string, []byte) {
+	return r.userConfigPath, bytes.Clone(r.userConfig)
+}
 
 // Warnings returns load-level warnings (curated dangling aliases, …).
 func (r *Registry) Warnings() []string { return append([]string(nil), r.warnings...) }

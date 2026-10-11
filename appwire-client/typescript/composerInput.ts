@@ -1,6 +1,13 @@
 import { translateAttachmentMarkers } from "./attachmentMarkers";
 import type { InputItem } from "./types.gen";
 
+/** Editing-only identity and UTF-16 position on a text item, never activation authority. */
+export interface ComposerMention {
+  kind: "skill" | "command";
+  name: string;
+  offset: number;
+}
+
 /** Staged image bytes; marker identifies its editing anchor, never a wire field. */
 export interface InputAttachment {
   marker: number;
@@ -38,9 +45,16 @@ export function buildInput(
   text: string,
   attachments?: readonly InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): InputItem[] {
   const input: InputItem[] = [];
-  if (text.trim()) input.push({ type: "text", text });
+  if (text.trim())
+    input.push({
+      type: "text",
+      text,
+      ...(mentions?.length ? { mentions: mentions.map((item) => ({ ...item })) } : {}),
+    });
   for (const attachment of attachments ?? []) {
     const image: InputItem = { type: "image", mediaType: attachment.mediaType, data: attachment.data };
     if (attachment.name !== undefined) image.name = attachment.name;
@@ -48,6 +62,9 @@ export function buildInput(
   }
   for (const name of canonicalSkillNames(skillNames)) {
     input.push({ type: "skill", name });
+  }
+  for (const name of canonicalSkillNames(commandNames)) {
+    input.push({ type: "command", name });
   }
   return input;
 }
@@ -57,6 +74,39 @@ export function buildComposerInput(
   text: string,
   attachments?: readonly InputAttachment[],
   skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
 ): InputItem[] {
-  return buildInput(translateAttachmentMarkers(text, attachments), attachments, skillNames);
+  const translated = translateAttachmentMarkers(text, attachments);
+  const translatedMentions = mentions?.map((mention) => ({
+    ...mention,
+    offset: translateAttachmentMarkers(text.slice(0, mention.offset), attachments).length,
+  }));
+  return buildInput(translated, attachments, skillNames, commandNames, translatedMentions);
+}
+
+// Text going back into a draft: after exactly one blank line (the draft's
+// own trailing whitespace dropped), or in place of a blank draft. "prefix"
+// puts it in front with no separator, for the web palette's slash-command
+// insert: a command parses only at the start of the draft. Shared so the web
+// and the phone put a queued message back into the composer the same way
+// (spec 8.5: "after a blank line ... as the web does").
+export function mergeDraftText(existing: string, addition: string, placement: "append" | "prefix" = "append"): string {
+  if (placement === "prefix") return `${addition}${existing}`;
+  return existing.trim() === "" ? addition : `${existing.replace(/\s+$/, "")}\n\n${addition}`;
+}
+
+/**
+ * Turns a raw text-selection string into a markdown blockquote: outer
+ * whitespace-only lines are dropped, every remaining line gets its own
+ * "> " prefix (an internal blank line becomes a bare "> "), and the block
+ * ends with one blank line so it reads as its own paragraph once appended
+ * after whatever the composer draft already holds. An empty/whitespace-only
+ * selection formats to "" - callers never insert a lone blank block.
+ */
+export function formatQuoteBlock(selectedText: string): string {
+  const trimmed = selectedText.trim();
+  if (trimmed === "") return "";
+  const lines = trimmed.split(/\r\n|\n/);
+  return `${lines.map((line) => `> ${line}`).join("\n")}\n\n`;
 }

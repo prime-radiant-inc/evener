@@ -12,17 +12,23 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
+import { parseZoomParams } from "../panes/zoom/intent";
 import { useNavigationStore } from "../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import { EmptyState } from "../widgets/emptystate";
+import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
+import { PaneVisibilityContext } from "./paneVisibility";
+import { refParam } from "./routing";
+import { openTopLevelSession } from "./sessionPlacement";
 import {
   cancelPaneFocus,
   type OpenPaneRecord,
   type PanePanelParams,
+  type PaneSlot,
   registerDockviewApi,
   useWorkspaceStore,
   workspaceStore,
@@ -50,20 +56,14 @@ const LAYOUT_SAVE_DEBOUNCE_MS = 400;
 // reconciliation effect below) but reading dockview's own truth here avoids
 // a render-order dependency between this component and DockHost's effects.
 //
-// UNMOUNT, NOT HIDE: dockview unmounts a panel's whole React tree when it
-// isn't the active tab in its group - confirmed via a live probe (see this
-// wave's task report), not just CSS-hidden. Any pane's own component-local
-// state (an in-progress draft, scroll position, anything not lifted into a
-// store) is lost the instant its tab loses focus, and the component
-// remounts from scratch when it regains it. Every real pane implementation
-// (wave 4's transcript view, most directly) must be designed remount-safe:
-// durable state belongs in a store keyed by the pane's own params (e.g.
-// threads.ts, refcounted per ref - see that file's own header comment),
-// never component-local useState for anything that needs to survive a tab
-// switch - a remount re-subscribes cleanly through the SAME refcount
-// mechanism that already handles multiple panes sharing one ref.
+// Documents keep dockview's `always` renderer so inactive reads stay mounted.
+// Other panes retain their work under their existing pane lifetimes. A document
+// still needs its real per-panel visibility: activation alone
+// is insufficient when a group itself is hidden or restored. The pinned panel
+// API supplies that truth and the provider carries it to document readers.
 function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   const [focused, setFocused] = useState(api.isActive);
+  const [visible, setVisible] = useState(api.isVisible);
   useEffect(() => {
     // This boundary is deliberately above the lazy pane component. A panel can
     // lose activation (or be unmounted) while Suspense is still showing its
@@ -73,8 +73,12 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
       if (!e.isActive) cancelPaneFocus(api.id);
       setFocused(e.isActive);
     });
+    const visibilityDisposable = api.onDidVisibilityChange((event) => {
+      setVisible(event.isVisible);
+    });
     return () => {
       disposable.dispose();
+      visibilityDisposable.dispose();
       // A host teardown (the desktop-to-mobile breakpoint swap) unmounts every
       // panel while the workspace still considers this pane focused - its
       // pending marker must survive for the next host's scaffold to consume.
@@ -96,9 +100,11 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   // and replaces a silent gap with visible progress on the slow one.
   const Component = paneFor(params.paneType).component;
   return (
-    <Suspense fallback={<EmptyState title="Loading…" />}>
-      <Component params={params.paneParams} paneId={api.id} focused={focused} />
-    </Suspense>
+    <PaneVisibilityContext.Provider value={visible}>
+      <Suspense fallback={<EmptyState title="Loading…" />}>
+        <Component params={params.paneParams} paneId={api.id} focused={focused} />
+      </Suspense>
+    </PaneVisibilityContext.Provider>
   );
 }
 
@@ -154,10 +160,13 @@ function saveLayout(): void {
 function positionFor(
   api: DockviewApi,
   pane: OpenPaneRecord,
+  previousSlots: Map<string, PaneSlot>,
 ): { position: { referencePanel: string; direction: "left" | "right" | "within" } } | Record<string, never> {
   const openIds = new Set(api.panels.map((p) => p.id));
   const others = workspaceStore.getState().panes.filter((p) => p.id !== pane.id && openIds.has(p.id));
-  const secondary = others.find((p) => p.slot === "secondary");
+  // A newly demoted main has not moved yet. Do not seat a new document in its
+  // old group and strand that document there when slot reconciliation runs.
+  const secondary = others.find((p) => p.slot === "secondary" && previousSlots.get(p.id) !== "main");
   if (pane.slot === "main") {
     return secondary ? { position: { referencePanel: secondary.id, direction: "left" } } : {};
   }
@@ -224,19 +233,61 @@ function syncGroupHeaders(api: DockviewApi): void {
   }
 }
 
+// Slot promotion is a layout change, not a pane lifetime change. Dockview's
+// pinned panel api exposes moveTo({group, position}) specifically for this: it
+// moves the existing panel and its mounted component instead of removing and
+// re-adding an id. Only changed slots move; unchanged secondary groups belong
+// to the user's split/drag geometry, even during another pane's promotion.
+function syncPaneSlots(api: DockviewApi, panes: OpenPaneRecord[], previousSlots: Map<string, PaneSlot>): void {
+  const main = panes.find((pane) => pane.slot === "main");
+  if (!main) return;
+  const mainPanel = api.getPanel(main.id);
+  if (!mainPanel) return;
+
+  if (previousSlots.get(main.id) === "secondary") {
+    const previousMainId = [...previousSlots].find(([, slot]) => slot === "main")?.[0];
+    const anchor = (previousMainId && api.getPanel(previousMainId)) || api.panels.find((panel) => panel.id !== main.id);
+    if (anchor) mainPanel.api.moveTo({ group: anchor.group, position: "left", skipSetActive: true });
+  }
+
+  for (const pane of panes) {
+    if (pane.slot !== "secondary" || previousSlots.get(pane.id) !== "main") continue;
+    const panel = api.getPanel(pane.id);
+    if (!panel) continue;
+    const secondary = panes.find((other) => other.slot === "secondary" && previousSlots.get(other.id) === "secondary");
+    const secondaryPanel = secondary && api.getPanel(secondary.id);
+    if (secondaryPanel) {
+      if (panel.group !== secondaryPanel.group) {
+        panel.api.moveTo({ group: secondaryPanel.group, position: "center", skipSetActive: true });
+      }
+    } else {
+      panel.api.moveTo({ group: mainPanel.group, position: "right", skipSetActive: true });
+    }
+  }
+}
+
+// Immediately after fromJSON, panel enumeration follows the restored grid's
+// creation order, the same placement authority used by workspace.restoreLayout.
+// Seed before route/live reconciliation so a host remount is not a promotion,
+// but a phone-side slot change against stale saved geometry still is.
+function restoredPaneSlots(api: DockviewApi): Map<string, PaneSlot> {
+  return new Map(api.panels.map((panel, index) => [panel.id, index === 0 ? "main" : "secondary"]));
+}
+
 export function DockHost() {
   const [api, setApi] = useState<DockviewApi | null>(null);
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
+  const paneTitles = useChromeStore((s) => s.paneTitles);
   const threads = useThreadsStore((s) => s.threads);
   const navigation = useNavigationStore();
-  // Tracks, per paneId, the last params reference actually pushed into
-  // dockview (via addPanel at creation or updateParameters on a change) -
-  // params identity only changes in workspace.ts when the value actually
-  // differs (see its own sameParams guard), so a reference-equality check
-  // here is enough to skip a no-op updateParameters() call on every
-  // unrelated re-render without needing a second deep-equal pass.
-  const pushedParamsRef = useRef(new Map<string, unknown>());
+  // A pane can change type while retaining its exact params object. Track
+  // both values pushed into the existing panel, without a deep-equal pass.
+  const pushedParamsRef = useRef(new Map<string, PanePanelParams>());
+  // Slots mutate in-place on promotion, while params/retype can replace records.
+  // Store scalar placements by panel ID, not prior pane objects.
+  const pushedSlotsRef = useRef(new Map<string, PaneSlot>());
+  const syncingSlots = useRef(false);
 
   // Native-interaction wiring: mirrors dockview-native interactions
   // (closing a tab via its own (x), clicking a different tab) back into the
@@ -257,7 +308,7 @@ export function DockHost() {
     // overwrite the real target before the effect finishes. See this
     // task's report for the live dockview probe that found this.
     const activeSub = api.onDidActivePanelChange((e) => {
-      if (e.origin === "user" && e.panel) {
+      if (!syncingSlots.current && e.origin === "user" && e.panel) {
         workspaceStore.getState().focusPane(e.panel.id);
       }
     });
@@ -327,13 +378,28 @@ export function DockHost() {
           component: PANE_COMPONENT_KEY,
           title: paneFor(pane.type).title(pane.params, bootTitleCtx),
           params: panelParams,
-          ...positionFor(api, pane),
+          renderer: pane.type === "doc" ? "always" : "onlyWhenVisible",
+          ...positionFor(api, pane, pushedSlotsRef.current),
         });
-        pushedParamsRef.current.set(pane.id, pane.params);
-      } else if (pushedParamsRef.current.get(pane.id) !== pane.params) {
-        api.getPanel(pane.id)?.api.updateParameters(panelParams);
-        pushedParamsRef.current.set(pane.id, pane.params);
+        pushedParamsRef.current.set(pane.id, panelParams);
+        pushedSlotsRef.current.set(pane.id, pane.slot);
+      } else {
+        const pushed = pushedParamsRef.current.get(pane.id);
+        if (pushed?.paneType !== pane.type || pushed.paneParams !== pane.params) {
+          // Dockview publishes onDidLayoutChange for parameter updates too,
+          // so the existing debounce persists intent as well as geometry.
+          const panel = api.getPanel(pane.id);
+          if (pushed && (pushed.paneType !== pane.type || refParam(pushed.paneParams) !== refParam(pane.params))) {
+            chromeStore.getState().setPaneTitleFor(pane.id, null);
+            panel?.setTitle(paneFor(pane.type).title(pane.params, bootTitleCtx));
+          }
+          panel?.api.updateParameters(panelParams);
+          pushedParamsRef.current.set(pane.id, panelParams);
+        }
       }
+      const panel = api.getPanel(pane.id);
+      const renderer = pane.type === "doc" ? "always" : "onlyWhenVisible";
+      if (panel && panel.api.renderer !== renderer) panel.api.setRenderer(renderer);
     }
 
     const desiredIds = new Set(panes.map((p) => p.id));
@@ -343,6 +409,14 @@ export function DockHost() {
         pushedParamsRef.current.delete(panel.id);
       }
     }
+
+    // moveTo can activate a fallback group while moving its last panel, even
+    // with skipSetActive. Those synchronous events are our own slot work,
+    // not user selection, regardless of dockview's reported origin.
+    syncingSlots.current = true;
+    syncPaneSlots(api, panes, pushedSlotsRef.current);
+    syncingSlots.current = false;
+    pushedSlotsRef.current = new Map(panes.map((pane) => [pane.id, pane.slot]));
 
     // Every add/remove above can change a group's pane count, so the tab-bar
     // rule is re-applied here rather than at each mutation site - one pass over
@@ -368,8 +442,15 @@ export function DockHost() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: panes is a deliberate trigger-only dep for same-commit ordering, see above
   useEffect(() => {
     if (!api || !focusedPaneId) return;
-    if (api.activePanel?.id !== focusedPaneId) {
-      api.getPanel(focusedPaneId)?.api.setActive();
+    const panel = api.getPanel(focusedPaneId);
+    const attached = panel?.view.content.element.isConnected;
+    if (api.activePanel?.id !== focusedPaneId || !attached) {
+      // Activating an already selected panel reattaches its content in Dockview,
+      // resetting nested native scroll positions. Preserve an attached selection
+      // with group activation, but reconnect a restored selection detached when
+      // an inactive always-rendered document was restored after it.
+      if (attached && panel?.group.activePanel?.id === focusedPaneId) panel.group.api.setActive();
+      else panel?.api.setActive();
     }
   }, [api, focusedPaneId, panes]);
 
@@ -377,18 +458,28 @@ export function DockHost() {
   // computed title changes - the ONLY place PaneTitleCtx's threadName is
   // wired to a REACTIVE threads subscription, so a session pane's tab
   // tracks a rename without needing a page reload.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: paneTitles triggers live title updates, read from the store after structural reconciliation can clear an old scope's hint
   useEffect(() => {
     if (!api) return;
-    const ctx: PaneTitleCtx = {
-      threadName: (ref) => resolveThreadName(threads, navigationSummaryFor(ref, navigation), ref),
-    };
     for (const pane of panes) {
       const panel = api.getPanel(pane.id);
       if (!panel) continue; // not created yet on this pass - the structural effect (same commit) already gave it the right initial title
-      const title = paneFor(pane.type).title(pane.params, ctx);
+      let missingName = false;
+      const ctx: PaneTitleCtx = {
+        threadName: (ref) => {
+          const name = resolveThreadName(threads, navigationSummaryFor(ref, navigation), ref);
+          if (name === undefined) missingName = true;
+          return name;
+        },
+      };
+      const registeredTitle = paneFor(pane.type).title(pane.params, ctx);
+      const title = chromeStore.getState().paneTitles.get(pane.id) ?? registeredTitle;
+      // An inactive restored pane has no reader to hydrate its name. Keep its
+      // saved label until live data or bounded navigation supplies a name.
+      if (missingName && title === registeredTitle) continue;
       if (panel.title !== title) panel.setTitle(title);
     }
-  }, [api, panes, threads, navigation]);
+  }, [api, panes, threads, navigation, paneTitles]);
 
   // Registers the api and runs the restore-or-fallback boot sequence
   // BEFORE exposing `api` to this component's own state (setApi, last) -
@@ -407,7 +498,19 @@ export function DockHost() {
   // save-then-restore round-trip test, not spotted by inspection - see
   // this task's report.
   function handleReady(event: DockviewReadyEvent): void {
-    registerDockviewApi(event.api);
+    const reconstructing = registerDockviewApi(event.api);
+    if (reconstructing) {
+      // Phone has kept the workspace alive and may have changed its panes,
+      // slots and selection. Replaying these as cold routes would end their
+      // lifetimes and focus the last secondary. Only dockview geometry needs
+      // recovery; the existing reconciliation effects apply the live store.
+      const stored = readStoredLayout();
+      if (stored !== undefined) workspaceStore.getState().restoreLayout(stored, { preserveLivePanes: true });
+      pushedSlotsRef.current = restoredPaneSlots(event.api);
+      ensureMainPane();
+      setApi(event.api);
+      return;
+    }
 
     // Capture the route intent by slot before restoreLayout replaces the
     // store's pane list. The routed main is reapplied through the primary
@@ -418,15 +521,10 @@ export function DockHost() {
     // restoreLayout() and the store operations are already safe when either
     // the saved layout or the routed intent is absent.
     //
-    // Failure-mode floor, preserved exactly: restoreLayout()'s own
-    // structural-validation failure (a layout dockview itself rejects) clears
-    // the store back to empty (see workspace.ts) BEFORE the routed re-apply
-    // runs - so a corrupt saved layout still leaves the routed pane as the
-    // ONLY thing that ends up open, the same "deep link wins alone"
-    // guarantee the pre-merge implementation always provided. A restored
-    // panel naming an unregistered pane type no longer clears anything:
-    // restoreLayout skips it, removes it from the live api synchronously,
-    // and focus falls to a surviving pane.
+    // Structural restore failure preserves live records and their retained
+    // work. The routed re-apply still gives a deep link its primary slot.
+    // An unregistered or invalid pane is skipped locally, removed from the
+    // live api synchronously, and focus falls to a surviving pane.
     //
     // NOTE for whoever wires AppShell's routing glue to this store: React
     // runs child effects before parent effects within one commit, so THIS
@@ -463,22 +561,53 @@ export function DockHost() {
     if (stored !== undefined) {
       workspaceStore.getState().restoreLayout(stored);
     }
+    pushedSlotsRef.current = restoredPaneSlots(event.api);
+
+    // Preserve saved inspection focus only when its ordinary route panels
+    // survived. A missing owner or child still needs normal route placement.
+    const restoredWorkspace = workspaceStore.getState();
+    const restoredMain = restoredWorkspace.mainPane();
+    const restoredFocus = restoredWorkspace.panes.find((pane) => pane.id === restoredWorkspace.focusedPaneId);
+    const focusedInspection = restoredFocus?.type === "sessionZoom" ? parseZoomParams(restoredFocus.params) : null;
+    const capturedRoutePresent =
+      routedPrimary?.type === "session" &&
+      restoredMain?.type === "session" &&
+      refParam(restoredMain.params) === refParam(routedPrimary.params) &&
+      routed.every((expected) =>
+        restoredWorkspace.panes.some(
+          (pane) =>
+            pane.type === expected.type &&
+            pane.slot === expected.slot &&
+            JSON.stringify(pane.params) === JSON.stringify(expected.params),
+        ),
+      );
+    const preservedInspection =
+      capturedRoutePresent && restoredFocus?.slot === "secondary" && focusedInspection?.inspection
+        ? restoredFocus
+        : null;
 
     if (routedPrimary?.type === "settings") {
       workspaceStore.getState().replacePrimary("settings", routedPrimary.params);
     } else if (routedPrimary?.type === "spawn") {
       workspaceStore.getState().replacePrimary("spawn", routedPrimary.params);
     } else if (routedPrimary?.type === "session") {
-      // A session pane with no ref is not a session to route to; replacePrimary
-      // would mint a main pane no chrome can render from. The ref it matches on
-      // is read out of these same params.
+      // A session pane with no ref is not a session to route to; the placement
+      // helper would mint a main pane no chrome can render from. The ref it
+      // matches on is read out of these same params. openTopLevelSession owns
+      // the legacy cascade-retention rule (it keeps its route role and its
+      // restored neighbors), so the boot re-apply and every later placement
+      // of the same route agree.
       const ref = (routedPrimary.params as { ref?: unknown }).ref;
-      if (typeof ref === "string") {
-        workspaceStore.getState().replacePrimary("session", routedPrimary.params);
-      }
+      if (typeof ref === "string") openTopLevelSession(ref);
     }
     for (const pane of routedSecondary) {
-      workspaceStore.getState().openPane(pane.type, pane.params, { slot: "secondary" });
+      workspaceStore.getState().openPane(pane.type, pane.params, {
+        slot: "secondary",
+        keepExistingFocus: preservedInspection !== null,
+      });
+    }
+    if (preservedInspection && workspaceStore.getState().panes.includes(preservedInspection)) {
+      workspaceStore.getState().focusPane(preservedInspection.id);
     }
 
     // Backstop: a blank main slot with no chrome of its own to open a new pane

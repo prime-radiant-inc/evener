@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"strings"
 	"testing"
 
@@ -70,7 +71,7 @@ func FuzzRootTUIMain(f *testing.F) {
 		processArgs = func() []string { return []string{"evener-tui", "--fixture"} }
 		processGetenv = func(string) string { return "fixture" }
 		standardError, standardOutput = &stderr, &stdout
-		parseStartupOptions = func(args []string, getenv func(string) string) (hubstart.TUIStartupOptions, error) {
+		parseStartupOptions = func(args []string, getenv func(string) string, _ io.Writer) (hubstart.TUIStartupOptions, error) {
 			if len(args) != 1 || getenv("x") != "fixture" {
 				t.Fatal("process inputs not forwarded")
 			}
@@ -85,7 +86,9 @@ func FuzzRootTUIMain(f *testing.F) {
 		applyTerminalBg = func() { applied = true }
 		resetTerminalBg = func() { reset = true }
 		newTUIProgram = func(model tea.Model, programOpts ...tea.ProgramOption) tuiProgram {
-			altScreen = len(programOpts) == 1
+			// run() supplies a buffer standardOutput, so runWith always adds
+			// WithOutput; any option beyond that one is the alt-screen option.
+			altScreen = len(programOpts) > 1
 			m := model.(hubModel)
 			m.postQuitMessage = "  goodbye  "
 			p := &scriptedTUIProgram{model: m, err: programErr}
@@ -134,7 +137,7 @@ func testRootTUIMainAndExecutableBoundaries(t *testing.T) {
 		processArgs, processExecutable, parseStartupOptions = oldArgs, oldExe, oldParse
 	})
 	processArgs = func() []string { return nil }
-	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
+	parseStartupOptions = func([]string, func(string) string, io.Writer) (hubstart.TUIStartupOptions, error) {
 		return hubstart.TUIStartupOptions{}, flag.ErrHelp
 	}
 	exited := run()

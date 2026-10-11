@@ -1,22 +1,8 @@
 // Pure logic behind SelectionQuote.tsx, kept free of the DOM-event/selection
 // glue (jsdom's own selection APIs are too thin to drive honestly - see that
-// file's header comment) so quote formatting, message-content containment,
-// and floating-bar clamping are each testable directly.
-
-/**
- * Turns a raw text-selection string into a markdown blockquote: outer
- * whitespace-only lines are dropped, every remaining line gets its own
- * "> " prefix (an internal blank line becomes a bare "> "), and the block
- * ends with one blank line so it reads as its own paragraph once appended
- * after whatever the composer draft already holds. An empty/whitespace-only
- * selection formats to "" - callers never insert a lone blank block.
- */
-export function formatQuoteBlock(selectedText: string): string {
-  const trimmed = selectedText.trim();
-  if (trimmed === "") return "";
-  const lines = trimmed.split(/\r\n|\n/);
-  return `${lines.map((line) => `> ${line}`).join("\n")}\n\n`;
-}
+// file's header comment) so message-content containment and floating-bar
+// clamping are each testable directly. Quote formatting (formatQuoteBlock)
+// lives in @evener/appwire-client, shared with the phone's Quote action.
 
 /**
  * Walks from `node` up toward (but never including) `container`, returning

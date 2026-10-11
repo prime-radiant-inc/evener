@@ -37,12 +37,11 @@ func TestW3Sub_ApplyPatch_AddFile_WriteFileError(t *testing.T) {
 	}
 }
 
-// updateFileOp.apply rejects a source path that escapes the root (safeJoin
-// error, apply_patch.go:82).
+// A confined policy rejects an update outside its root.
 func TestW3Sub_ApplyPatch_UpdateTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 	patch := "*** Begin Patch\n*** Update File: ../escape.txt\n@@\n-one\n+ONE\n*** End Patch\n"
-	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
+	if _, err := ApplyPatch(confinedPatchMutator(t, dir), patch); err == nil {
 		t.Fatalf("expected traversal update to be rejected")
 	}
 }
@@ -86,15 +85,14 @@ func TestW3Sub_ApplyPatch_UpdateWriteFileError(t *testing.T) {
 	}
 }
 
-// updateFileOp.apply rejects a Move-to path that escapes the root (safeJoin
-// error for the destination, apply_patch.go:145).
+// A confined policy rejects a move destination outside its root.
 func TestW3Sub_ApplyPatch_MoveToTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "src.txt"), []byte("apple\n"), 0o644); err != nil {
 		t.Fatalf("seed src: %v", err)
 	}
 	patch := "*** Begin Patch\n*** Update File: src.txt\n*** Move to: ../escape.txt\n@@\n-apple\n+APPLE\n*** End Patch\n"
-	if _, err := ApplyPatch(testMutator(dir), patch); err == nil {
+	if _, err := ApplyPatch(confinedPatchMutator(t, dir), patch); err == nil {
 		t.Fatalf("expected Move-to traversal to be rejected")
 	}
 }

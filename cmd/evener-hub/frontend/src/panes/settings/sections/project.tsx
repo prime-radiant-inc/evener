@@ -25,11 +25,15 @@
 import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { launchConfigStore } from "../../../stores/launchConfig";
+import { LOCAL_HOST } from "../../../stores/hostRouting";
+import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { HostScopedSurface } from "./hostScopedSurface";
+import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
@@ -62,6 +66,9 @@ export interface ProjectSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The host whose own project layer this section edits (component 07b).
+   * Defaults to the local hub, so a direct render is today's local section. */
+  host?: string;
 }
 
 /**
@@ -70,9 +77,32 @@ export interface ProjectSectionProps {
  * is fetched read-only, purely to drive the "default: {value}" inline hints
  * - this page never writes it.
  */
-export function ProjectSection(_props: ProjectSectionProps) {
+export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   const cwd = useQueryCwd();
+  // The launch-config gateway for the selected host: the controller's own store
+  // for the local hub, a per-host instance (over evener/host/request) for a
+  // remote one. Resolved per render; the instance is stable per host. Every read
+  // and write below - schema/getLayer/resolve, the path validation the form
+  // runs, and setLayer - goes through it, so a remote selection edits THAT
+  // host's project layer rather than this hub's (component 07b). The cwd stays
+  // in the route's ?cwd= query; the host comes from the settings route.
+  const store = launchConfigStoreForHost(host);
+  // The browse-assisted path fields the shared form renders (path scalars, the
+  // prompt file sub-fields, and pathList add rows) list THIS host's filesystem,
+  // not the controller's: same store, same seam as the validate/save calls
+  // above (component 07b). evener/paths/complete and evener/path/validate are
+  // both on the proxy allow-list.
+  const paths: LaunchFormPaths = {
+    directory: {
+      validatePath: (path, kind) => store.getState().validatePath(path, kind),
+      createDirectory: (path) => store.getState().createDirectory(path),
+    },
+    complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
+  };
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
+  // A re-read of what this pane is already showing that failed: the form (and
+  // the draft in it) stays, and this says the values on screen may be stale.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   // The effective layer of a best-effort resolve(cwd): unset fields whose
   // empty marker is generic prepend their entry here ("high (use global
   // default)"). Undefined until the resolve lands, on a resolve failure, and
@@ -80,36 +110,67 @@ export function ProjectSection(_props: ProjectSectionProps) {
   // next project's form.
   const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | undefined>(undefined);
 
-  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // useHostScopedLoad (not a bare useEffect): a direct deep link to
   // /settings/project?cwd= can mount this section before AppShell's own
   // connect() handshake finishes, and schema()/getLayer() both require a
-  // connected client (throw otherwise) - see that hook's own doc comment.
-  // isCancelled guards the same "component unmounted (or cwd changed)
-  // mid-load" case the legacy local `cancelled` flag did.
-  useConnectedEffect(
-    async (isCancelled) => {
+  // connected client (throw otherwise) - see that hook's own doc comment - and
+  // it re-runs this read when the selected host COMES BACK, not only when it
+  // changes. isCancelled guards the same "component unmounted (or cwd/host
+  // changed) mid-load" case the legacy local `cancelled` flag did. The deps
+  // include the store, so a host switch reloads, and the cwd, so another
+  // project's layer is never shown for the one in the address bar.
+  const { reload, retryLoad } = useHostScopedLoad(
+    host,
+    async (blank, isCancelled) => {
       if (!cwd) return;
-      setLoad({ phase: "loading" });
-      setResolvedDefaults(undefined);
+      // Different content - a host switch, a re-registration, or a different
+      // project directory - reloads. A re-read of the same content (a reconnect,
+      // blank === false) keeps the form on screen, and the draft in it.
+      if (blank) {
+        setLoad({ phase: "loading" });
+        setResolvedDefaults(undefined);
+        setRefreshError(null);
+      }
       try {
         const [schema, current, globalDefaults, resolved] = await Promise.all([
-          launchConfigStore.getState().schema(),
-          launchConfigStore.getState().getLayer(cwd, "project"),
-          launchConfigStore.getState().getLayer(cwd, "global"),
-          launchConfigStore
+          store.getState().schema(),
+          store.getState().getLayer(cwd, "project"),
+          store.getState().getLayer(cwd, "global"),
+          store
             .getState()
             .resolve(cwd)
             .catch(() => null),
         ]);
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
-        if (resolved && !isCancelled()) setResolvedDefaults(resolved.effective);
+        setRefreshError(null);
+        // resolve() is best effort: a null answer means it failed, so the
+        // inherited-value labels must not keep describing the previous read.
+        setResolvedDefaults(resolved?.effective);
+        return true;
       } catch (err) {
-        if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+        // `false` tells the hook this run did NOT put content on screen, so the
+        // next run of the same content is a first look rather than a re-read.
+        if (isCancelled()) return false;
+        if (blank) {
+          setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+          return false;
+        }
+        // A failed refresh keeps the form and the draft in it, and says so
+        // beside it: the host is attached and may stay attached, so a silent
+        // pane sitting on values that may be out of date would have no way out.
+        setRefreshError(friendlyErrorMessage(err));
+        return false;
       }
     },
-    [cwd],
+    [cwd, store],
   );
+
+  // The selected host's project layer can change under this mounted pane (the
+  // host's own launch.toml/global layer moving, another window's Save): re-read
+  // it through the refresh path so the form converges without taking away the
+  // draft the user is typing.
+  useLaunchConfigRefresh(host, reload);
 
   if (!cwd) {
     return (
@@ -131,20 +192,51 @@ export function ProjectSection(_props: ProjectSectionProps) {
         Layered on top of the global Evener launch settings. Only fields set here override the global defaults.
       </p>
       {load.phase === "loading" && <p className={CLASS.help}>Loading project launch settings…</p>}
-      {load.phase === "error" && <p className={CLASS.error}>Failed to load project launch settings. {load.message}</p>}
+      {load.phase === "error" && (
+        <p className={CLASS.error}>
+          Failed to load project launch settings. {load.message}{" "}
+          <Button type="button" onClick={() => retryLoad()}>
+            Retry
+          </Button>
+        </p>
+      )}
       {load.phase === "ready" && (
-        <LaunchConfigForm
-          options={load.options}
-          layer="project"
-          current={load.current}
-          globalDefaults={load.globalDefaults}
-          resolvedDefaults={resolvedDefaults}
-          successToast="Project launch settings saved"
-          validatePath={(path, kind) => launchConfigStore.getState().validatePath(path, kind)}
-          onSave={(config) => launchConfigStore.getState().setLayer(cwd, "project", config)}
-          onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
-        />
+        <>
+          {refreshError !== null && (
+            <p className={CLASS.error} role="status">
+              Could not re-read this host's project settings. {refreshError}{" "}
+              <Button type="button" onClick={() => reload()}>
+                Retry
+              </Button>
+            </p>
+          )}
+          <LaunchConfigForm
+            options={load.options}
+            layer="project"
+            current={load.current}
+            globalDefaults={load.globalDefaults}
+            resolvedDefaults={resolvedDefaults}
+            successToast="Project launch settings saved"
+            validatePath={(path, kind) => store.getState().validatePath(path, kind)}
+            paths={paths}
+            host={host}
+            draftOwner={store}
+            onSave={(config) => store.getState().setLayer(cwd, "project", config)}
+            onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
+          />
+        </>
       )}
     </div>
   );
+}
+
+/** ProjectHostScope is the Per-project launch overrides section scoped to the
+ * settings route's selected host (component 07b): the one shared HostPicker
+ * plus ProjectSection, whose own project layer is that host's own. The cwd is
+ * still read from the route's ?cwd= query; the host comes from the shared
+ * frame, never a query parameter of this pane's own. Local renders today's
+ * section byte-for-byte; a remote host's reads and writes all go through
+ * evener/host/request. */
+export function ProjectHostScope({ sectionId }: ProjectSectionProps) {
+  return <HostScopedSurface>{(host) => <ProjectSection sectionId={sectionId} host={host} />}</HostScopedSurface>;
 }

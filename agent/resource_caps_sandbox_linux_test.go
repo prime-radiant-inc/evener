@@ -16,6 +16,7 @@ import (
 )
 
 func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	worktree := filepath.Join(home, "wt")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -37,7 +38,6 @@ func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testi
 	client.Register(&fakeAdapter{name: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -65,11 +65,11 @@ func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testi
 	if resources == nil || resources.CPUs <= 0 || resources.MemoryMB <= 0 {
 		t.Skip("host does not expose finite CPU and memory cgroup caps")
 	}
-	prompt, warning := sess.renderSystemPrompt(local)
+	_, warning := sess.renderSystemPrompt(local)
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
-	caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt)
+	caps, ok := promptResourceCaps(t, sess)
 	if !ok {
 		t.Fatal("rendered environment omitted finite resource payload")
 	}

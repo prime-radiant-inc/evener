@@ -43,13 +43,44 @@ describe("snapshotFromNavigation", () => {
       title: "Ask A",
       level: "needs_you",
       askPending: true,
+      approvalPending: false,
+      needsResponse: false,
     });
     expect(snap.get("local:b")).toEqual<AttentionEntry>({
       ref: "local:b",
       title: "Err B",
       level: "error",
       askPending: false,
+      approvalPending: false,
+      needsResponse: false,
     });
+  });
+  // An approval blocks its turn mid-tool, so the row reports "active"; like
+  // the hub's promotedAttentionLevel, the approval promotes it to needs_you.
+  test("an active row waiting on an approval enters as needs_you, carrying the approval", () => {
+    const snap = snapshotFromNavigation([row({ ref: "local:p", state: "active", approval_pending: true })]);
+    expect(snap.get("local:p")).toEqual<AttentionEntry>({
+      ref: "local:p",
+      title: "local:p",
+      level: "needs_you",
+      askPending: false,
+      approvalPending: true,
+      needsResponse: false,
+    });
+  });
+  // Awaiting with no question is the needs_response rest, the same rule the
+  // hub's attention entry uses; a plain reply rests idle and is absent.
+  test("an awaiting row with no question carries needsResponse", () => {
+    const snap = snapshotFromNavigation([
+      row({ ref: "local:r", state: "awaiting" }),
+      row({ ref: "local:i", state: "idle" }),
+    ]);
+    expect(snap.get("local:r")?.needsResponse).toBe(true);
+    expect(snap.has("local:i")).toBe(false);
+  });
+  test("a failed row stays an error with an approval pending", () => {
+    const snap = snapshotFromNavigation([row({ ref: "local:e", state: "errored", approval_pending: true })]);
+    expect(snap.get("local:e")?.level).toBe("error");
   });
   test("warning maps into the needs_you level", () => {
     const snap = snapshotFromNavigation([row({ ref: "local:w", state: "warning" })]);
@@ -84,22 +115,54 @@ describe("detectFires", () => {
   test("dropping out of the tier does not fire", () => {
     expect(detectFires(snap(row({ ref: "local:a", state: "awaiting" })), snap(), all)).toEqual([]);
   });
-  test("asks: a plain your-move needs_you is silent", () => {
-    expect(detectFires(snap(), snap(row({ ref: "local:a", state: "awaiting", ask_pending: false })), asks)).toEqual([]);
+  test("asks: a needs_response rest fires, like a question", () => {
+    expect(
+      detectFires(snap(), snap(row({ ref: "local:a", state: "awaiting", ask_pending: false })), asks).map((e) => e.ref),
+    ).toEqual(["local:a"]);
+  });
+  // A row already in the tier fires when it becomes loud: a warning that
+  // settles into a needs_response rest asks for a reply.
+  test("asks: a quiet row that becomes a reply request fires", () => {
+    expect(
+      detectFires(
+        snap(row({ ref: "local:a", state: "warning" })),
+        snap(row({ ref: "local:a", state: "awaiting" })),
+        asks,
+      ).map((e) => e.ref),
+    ).toEqual(["local:a"]);
+  });
+  test("asks: a loud row that stays loud does not re-fire", () => {
+    expect(
+      detectFires(
+        snap(row({ ref: "local:a", state: "awaiting", ask_pending: true })),
+        snap(row({ ref: "local:a", state: "awaiting" })),
+        asks,
+      ),
+    ).toEqual([]);
+  });
+  test("asks: a warning is silent", () => {
+    expect(detectFires(snap(), snap(row({ ref: "local:w", state: "warning" })), asks)).toEqual([]);
   });
   test("asks: an ask_pending transition fires", () => {
     expect(
       detectFires(snap(), snap(row({ ref: "local:a", state: "awaiting", ask_pending: true })), asks).map((e) => e.ref),
     ).toEqual(["local:a"]);
   });
+  test("asks: an approval transition fires, like a question", () => {
+    expect(
+      detectFires(snap(), snap(row({ ref: "local:p", state: "active", approval_pending: true })), asks).map(
+        (e) => e.ref,
+      ),
+    ).toEqual(["local:p"]);
+  });
   test("asks: an error transition fires", () => {
     expect(detectFires(snap(), snap(row({ ref: "local:e", state: "errored" })), asks).map((e) => e.ref)).toEqual([
       "local:e",
     ]);
   });
-  test("all: a plain your-move needs_you fires", () => {
-    expect(detectFires(snap(), snap(row({ ref: "local:a", state: "awaiting" })), all).map((e) => e.ref)).toEqual([
-      "local:a",
+  test("all: a warning fires", () => {
+    expect(detectFires(snap(), snap(row({ ref: "local:w", state: "warning" })), all).map((e) => e.ref)).toEqual([
+      "local:w",
     ]);
   });
   test("multiple simultaneous transitions each fire under all", () => {

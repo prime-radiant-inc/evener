@@ -71,20 +71,31 @@ type SessionsOpts struct {
 	Since time.Duration
 	// Bucket scopes the enumeration to one project id. Empty enumerates every
 	// bucket under the state root (the default — the shape a fleet-wide batch
-	// study needs).
+	// study needs). A Bucket naming no enumerated bucket is an explicit
+	// not-found error, never a silently empty list.
 	Bucket string
 }
 
 // ListSessions enumerates every session under stateBase (or just one
 // --bucket): the readable ones as SessionRows sorted by last activity
 // descending (most recently active first), plus every session it could not
-// read, in SessionsResult.Unreadable. One corrupt session never aborts the
-// sweep or silently vanishes from the count — mirroring ScanTurnIDs, the
-// established convention for a whole-state-root sweep.
+// read, in SessionsResult.Unreadable. A session is discovered from its primary
+// metadata identity, so even a .meta.json that is present but unparseable is
+// named in Unreadable rather than silently skipped the way a tolerant UI
+// listing would drop it. One corrupt session never aborts the sweep or
+// silently vanishes from the count — mirroring ScanTurnIDs, the established
+// convention for a whole-state-root sweep.
 func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
-	buckets, err := resolveBuckets(stateBase)
+	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
 		return SessionsResult{}, err
+	}
+	if opts.Bucket != "" {
+		b, ok := bucketByProjectID(buckets, opts.Bucket)
+		if !ok {
+			return SessionsResult{}, fmt.Errorf("bucket %s not found %s", opts.Bucket, scannedUnder(stateRoot, len(buckets)))
+		}
+		buckets = []bucket{b}
 	}
 
 	var cutoff time.Time
@@ -95,12 +106,19 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	res := SessionsResult{Sessions: []SessionRow{}, Unreadable: []UnreadableSession{}}
 	delegates := delegateCache{}
 	for _, b := range buckets {
-		if opts.Bucket != "" && b.projectID != opts.Bucket {
-			continue
-		}
-		metas, err := schema.ListSessionMetas(b.dir)
+		metas, loadErrs, err := schema.ListSessionMetasWithErrors(b.dir)
 		if err != nil {
 			return SessionsResult{}, fmt.Errorf("list session metas in bucket %s: %w", b.dir, err)
+		}
+		// A metadata file that exists but could not be loaded is a session
+		// ListSessions cannot build a row for; report it by its
+		// filename-derived identity rather than drop it.
+		for _, le := range loadErrs {
+			res.Unreadable = append(res.Unreadable, UnreadableSession{
+				SessionID:     le.ID,
+				TranscriptRef: refFor(b.projectID, le.ID),
+				Error:         le.Error.Error(),
+			})
 		}
 		for _, meta := range metas {
 			paths := pathsFor(b, meta.ID)
@@ -265,10 +283,10 @@ func RenderSessions(res SessionsResult) string {
 			// UTC so the table's two time columns are directly comparable
 			// rather than silently mixing zones.
 			fmt.Fprintf(&b, "%-24s %-24s %-20s %-20s %-30s %6d %10d %-6t %-24s %5d %5d %-24s\n",
-				truncate(r.SessionID, 24), truncate(bucket, 24),
+				Truncate(r.SessionID, 24), Truncate(bucket, 24),
 				r.StartedAt.UTC().Format(time.RFC3339), r.LastActivity.UTC().Format(time.RFC3339),
-				truncate(strings.Join(r.Models, ","), 30), r.TurnCount, r.TranscriptBytes, r.IsSubagent,
-				dash(truncate(r.ParentSessionID, 24)), r.DelegateCount, r.ObserverCount, r.Outcome)
+				Truncate(strings.Join(r.Models, ","), 30), r.TurnCount, r.TranscriptBytes, r.IsSubagent,
+				dash(Truncate(r.ParentSessionID, 24)), r.DelegateCount, r.ObserverCount, r.Outcome)
 		}
 		fmt.Fprintf(&b, "sessions=%d\n", len(res.Sessions))
 	}

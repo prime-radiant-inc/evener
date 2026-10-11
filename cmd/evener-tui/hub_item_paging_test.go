@@ -242,7 +242,7 @@ func TestFetchHubSessionReadKeepsCaptureThroughOlderPages(t *testing.T) {
 			if params.Cursor != "older-1" {
 				t.Fatalf("older cursor=%q, want older-1", params.Cursor)
 			}
-			app.Broadcast("01TUI", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{ThreadID: "01TUI", Ref: "local:01TUI", TurnID: "turn-1", Delta: "live-after-page"})
+			app.Broadcast("01TUI", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{ThreadID: "01TUI", Ref: "local:01TUI", Key: "stream:turn-1/0:agentMessage", Field: appwire.OverlayDeltaText, Delta: "live-after-page"})
 			return appwire.ThreadTurnsListResponse{Data: []appwire.Turn{fragmentTurn("turn-1", "item-old")}}, nil
 		})
 	})
@@ -256,8 +256,8 @@ func TestFetchHubSessionReadKeepsCaptureThroughOlderPages(t *testing.T) {
 	msg.capture.Release()
 	select {
 	case notification := <-feed.Notifications():
-		if notification.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("released notification method=%q, want %q", notification.Method, appwire.NotifyAgentMessageDelta)
+		if notification.Method != appwire.NotifyOverlayDelta {
+			t.Fatalf("released notification method=%q, want %q", notification.Method, appwire.NotifyOverlayDelta)
 		}
 	default:
 		t.Fatal("post-cut live notification was not released after the full snapshot")

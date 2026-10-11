@@ -1,6 +1,6 @@
 # job-delegate-wait-no-poll: a parent with no other work waits idle instead of polling
 
-**What this covers**: the `background-jobs.md` prompt guidance that when a parent
+**What this covers**: the background-jobs prompt guidance that when a parent
 has delegated its whole task and has no independent work, it ends its turn and
 waits for the completion notification rather than looping `job_status`. Exercises
 the prompt fix for the polling-loop failure first observed in session
@@ -16,8 +16,12 @@ orientation `job_status` call (ideally zero) and then goes idle.
   detector and any nudge counters start clean and nothing pollutes a real
   instance.
 - A `evener serve` instance and a hub (or TUI) client built from the code under
-  test — confirm the running binary embeds the edited `background-jobs.md`
-  (grep the assembled system prompt for "Do not call `job_status` in a loop").
+  test — confirm the running binary is this checkout, not a stale build: its
+  reported build commit matches `git rev-parse --short HEAD` (`evener --version`
+  prints it; the hub's `/api/health` carries `version` and `backend_git_sha`).
+  `make build` injects the commit, while a bare `go build` reports `dev`, which
+  fails this check instead of quietly passing on an old binary. The anti-poll
+  guidance is asserted by behavior in **Expected**, not by reading prompt prose.
 - Parent model `gpt-5.5` (the model that reproduced the loop). Re-run on at least
   one other tool-capable model as a cross-check.
 

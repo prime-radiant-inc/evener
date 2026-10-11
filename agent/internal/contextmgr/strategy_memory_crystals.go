@@ -29,6 +29,10 @@ type MemoryCrystal struct {
 type MemoryCrystalsStrategy struct {
 	cm       *Manager
 	crystals []MemoryCrystal
+	// aux holds the last crystallization failure so a skipped (non-third)
+	// turn keeps reporting the degradation instead of clearing it between
+	// attempts.
+	aux auxFailure
 }
 
 // NewMemoryCrystalsStrategy returns a MemoryCrystalsStrategy that uses the
@@ -92,7 +96,7 @@ func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []sche
 	turnCount := len(history)
 	// Only crystallize every 3rd action to reduce overhead.
 	if turnCount%3 != 0 {
-		return nil
+		return s.aux.stale()
 	}
 
 	// Get last few turns for context.
@@ -103,8 +107,10 @@ func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []sche
 
 	crystal, err := s.crystallize(ctx, recent, turnCount)
 	if err != nil {
-		return nil //nolint:nilerr // crystallization is a best-effort optimization; failure is non-fatal
+		// Surface it; the caller warns without failing the turn.
+		return s.aux.record(fmt.Errorf("memory-crystals strategy: crystallize: %w", err))
 	}
+	s.aux.clear()
 
 	s.crystals = append(s.crystals, crystal)
 	s.pruneOldCrystals()

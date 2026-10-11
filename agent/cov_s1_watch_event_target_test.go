@@ -7,6 +7,7 @@ import (
 )
 
 func TestS1Cov_watchEventWatchedIdentity(t *testing.T) {
+	t.Parallel()
 	// A concrete target resolves to itself regardless of data.
 	if got := watchEventWatchedIdentity("job_x", events.JobStartedData{JobID: "job_y"}); got != "job_x" {
 		t.Fatalf("concrete target identity = %q, want job_x", got)
@@ -25,6 +26,7 @@ func TestS1Cov_watchEventWatchedIdentity(t *testing.T) {
 }
 
 func TestS1Cov_watchEventMatchesTarget(t *testing.T) {
+	t.Parallel()
 	// Session targets always match.
 	if !watchEventMatchesTarget("caller", events.JobStartedData{JobID: "job_x"}) {
 		t.Fatal("session target must match any event")

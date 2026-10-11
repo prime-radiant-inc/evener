@@ -1,9 +1,10 @@
-/* Task-update card: a checklist of what the mutation changed. Neutral
- * throughout EXCEPT one scoped, user-approved exception (docs/superpowers/
- * specs/2026-07-31-tasklist-renderer-design.md): the TaskCheck glyph alone
- * carries subtle semantic colour (see taskcheck.module.css). All text stays
- * on the ink scale - done/cancelled read through strikethrough + low ink,
- * never colour, and a failed task_list still renders no card at all. */
+/* Task-update card: a window onto the plan (most-recently-settled, working,
+ * next) plus the aggregate footer. Neutral throughout EXCEPT one scoped,
+ * user-approved exception (docs/superpowers/specs/2026-07-31-tasklist-
+ * renderer-design.md): the TaskCheck glyph alone carries subtle semantic
+ * colour (see taskcheck.module.css). All text stays on the ink scale -
+ * done/cancelled read through strikethrough + low ink, never colour, and a
+ * failed task_list still renders no card at all. */
 .card {
   display: flex;
   flex-direction: column;
@@ -11,6 +12,7 @@
   padding: var(--space-2) 0;
 }
 
+/* The footer: aggregate sentence, meter, and the whole-list affordance. */
 .head {
   display: flex;
   align-items: center;
@@ -37,6 +39,25 @@
   font-size: var(--font-size-ui);
 }
 
+/* The window's spine: a hairline from each glyph's foot to the next row's
+ * glyph, so the three slots read as one progression. left/top/bottom are
+ * tuned to the 16px glyph box against an ~18px single-line row: the segment
+ * starts 1px below the box and runs 1px into the next row's glyph, so it
+ * reads connected whether or not the row carries a note. */
+.spined {
+  position: relative;
+}
+
+.spined:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 17px;
+  bottom: -5px;
+  width: 1px;
+  background: var(--edge);
+}
+
 /* The label + note column: the note hangs under its label, aligned with the
  * label text rather than the checkbox glyph. */
 .rowText {
@@ -54,8 +75,23 @@
   text-decoration: line-through;
 }
 
+/* The working slot: the one semibold line on the card - "you are here". */
+.descNow {
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-medium);
+}
+
+/* The next slot: quiet, has not started yet. */
+.descNext {
+  color: var(--ink-mid);
+}
+
+/* The just-added note, set in the prose face: the note is the agent's own
+ * sentence, and this is the one place on the card it gets to read like
+ * one. Only notes THIS call added render (taskCard.tsx's freshNotes). */
 .note {
   color: var(--ink-mid);
+  font-family: var(--font-prose);
   font-size: var(--font-size-caption);
   font-style: italic;
 }

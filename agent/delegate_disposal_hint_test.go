@@ -11,6 +11,7 @@ import (
 const wantDisposalSentence = "When you're done with this delegate's work (e.g., after merging it), dispose its worktree and branch: manage_worktree op=dispose id=dlg_01ISODISPOSALHINT0000001."
 
 func TestDisposalHint_StableOwnedDelegateCarriesSentence(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	desc := delegatestore.Descriptor{OwnerSessionID: s.id}
 	if got := s.stableDelegateDisposalHint(desc, "dlg_01ISODISPOSALHINT0000001"); got != wantDisposalSentence {
@@ -19,6 +20,7 @@ func TestDisposalHint_StableOwnedDelegateCarriesSentence(t *testing.T) {
 }
 
 func TestDisposalHint_JSONRoundTripEmitsField(t *testing.T) {
+	t.Parallel()
 	in := &delegateWorktreeToolResult{Path: "/lane", Branch: "b", HeadSHA: "abc123", DisposalHint: wantDisposalSentence}
 	blob, err := json.Marshal(in)
 	if err != nil {
@@ -37,6 +39,7 @@ func TestDisposalHint_JSONRoundTripEmitsField(t *testing.T) {
 }
 
 func TestDisposalHint_EmptyHintOmittedFromJSON(t *testing.T) {
+	t.Parallel()
 	blob, err := json.Marshal(&delegateWorktreeToolResult{Path: "/lane", Branch: "b"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -47,6 +50,7 @@ func TestDisposalHint_EmptyHintOmittedFromJSON(t *testing.T) {
 }
 
 func TestDisposalHint_StableOwnershipAndToolGate(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	id := "dlg_01ISODISPOSALHINT0000001"
 	if got := s.stableDelegateDisposalHint(delegatestore.Descriptor{OwnerSessionID: "another-session"}, id); got != "" {
@@ -59,6 +63,7 @@ func TestDisposalHint_StableOwnershipAndToolGate(t *testing.T) {
 }
 
 func TestDisposalHint_NonIsolatedStableDelegateHasNoReport(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	if report := s.stableDelegateWorktreeReport(delegatestore.Descriptor{OwnerSessionID: s.id}); report != nil {
 		t.Fatalf("non-isolated delegate report = %+v", report)

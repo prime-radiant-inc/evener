@@ -180,6 +180,46 @@ func TestInitializeOmitsNavigationCapabilityWhenUnconfigured(t *testing.T) {
 	}
 }
 
+// TestInitializeReportsMachineFacts pins that a server configured with the
+// serving machine's system and roots reports them in ServerInfo, and that an
+// unconfigured server leaves them absent — a client showing the hub's own
+// machine (the phone's Hosts) reads these instead of leaving its system and
+// roots unknown.
+func TestInitializeReportsMachineFacts(t *testing.T) {
+	server := NewServer(ServerConfig{
+		ServerName: "evener-hub",
+		Version:    "test",
+		SourceID:   "local",
+		OS:         "darwin",
+		Arch:       "arm64",
+		Roots:      []string{"/Users/jesse/git"},
+	})
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ServerInfo.OS != "darwin" || response.ServerInfo.Arch != "arm64" {
+		t.Fatalf("ServerInfo system = %q/%q, want darwin/arm64", response.ServerInfo.OS, response.ServerInfo.Arch)
+	}
+	if got, want := response.ServerInfo.Roots, []string{"/Users/jesse/git"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ServerInfo roots = %v, want %v", got, want)
+	}
+}
+
+// TestInitializeOmitsMachineFactsWhenUnconfigured pins that a server with no
+// machine facts (the daemon, and every test server) omits them: an absent
+// os/arch/roots is the documented "unknown", never a fabricated value.
+func TestInitializeOmitsMachineFactsWhenUnconfigured(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ServerInfo.OS != "" || response.ServerInfo.Arch != "" || response.ServerInfo.Roots != nil {
+		t.Fatalf("ServerInfo machine facts = %q/%q/%v, want absent", response.ServerInfo.OS, response.ServerInfo.Arch, response.ServerInfo.Roots)
+	}
+}
+
 func TestConnectionInitializeRejectsMissingOrMismatchedProtocolVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -571,7 +611,7 @@ func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
 			projectedMu.Lock()
 			projectedText += "delta"
 			projectedMu.Unlock()
-			record := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"})
+			record := notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "delta"})
 			return []SequencedNotification{record}
 		})
 		close(eventCommitted)
@@ -599,7 +639,7 @@ func TestAtomicRejoinDuringSnapshotCloneDeliversDeltaOnce(t *testing.T) {
 			}
 			combined.WriteString(got.Text)
 		case msg.Notification != nil:
-			var params appwire.AgentMessageDeltaParams
+			var params appwire.OverlayDeltaParams
 			if err := json.Unmarshal(msg.Notification.Params, &params); err != nil {
 				t.Fatalf("decode delta: %v", err)
 			}
@@ -639,7 +679,7 @@ func TestAtomicRejoinWaitsForMatchingResponseEnqueue(t *testing.T) {
 	)
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "post-cut"}),
 		}
 	})
 
@@ -662,7 +702,7 @@ func TestAtomicRejoinWaitsForMatchingResponseEnqueue(t *testing.T) {
 	if first.Response == nil || first.IDString() != "1" {
 		t.Fatalf("first matching delivery = %+v, want snapshot response", first)
 	}
-	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyOverlayDelta {
 		t.Fatalf("second matching delivery = %+v, want released post-cut delta", second)
 	}
 }
@@ -784,7 +824,7 @@ func TestCaptureSubscriptionHandoffCommitsAfterMatchingResponseEnqueue(t *testin
 	)
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "post-cut"}),
 		}
 	})
 	if got := commits.Load(); got != 0 {
@@ -945,7 +985,7 @@ func TestCaptureSubscriptionPreservesLegacyReleaseAfterMatchingErrorResponse(t *
 	}
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "post-cut"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "post-cut"}),
 		}
 	})
 
@@ -960,7 +1000,7 @@ func TestCaptureSubscriptionPreservesLegacyReleaseAfterMatchingErrorResponse(t *
 	if first.Error == nil || first.IDString() != "24" {
 		t.Fatalf("first delivery = %+v, want matching error response", first)
 	}
-	if second.Notification == nil || second.Notification.Method != appwire.NotifyAgentMessageDelta {
+	if second.Notification == nil || second.Notification.Method != appwire.NotifyOverlayDelta {
 		t.Fatalf("second delivery = %+v, want released post-cut delta", second)
 	}
 }
@@ -1012,7 +1052,7 @@ func TestCaptureSubscriptionHandoffAbortsMatchingErrorResponse(t *testing.T) {
 	}
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "held"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "held"}),
 		}
 	})
 
@@ -1263,7 +1303,7 @@ func TestAtomicRejoinBeforeSubscriberInsertionIncludesDeltaOnceInSnapshot(t *tes
 	server.CommitProjection(func() []SequencedNotification {
 		projectedText += "delta"
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "delta"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "delta"}),
 		}
 	})
 	close(releaseSubscriberInsertion)
@@ -1327,7 +1367,7 @@ func TestSnapshotCutReleasesBroadcastToBufferingSubscriber(t *testing.T) {
 	// state a live thread is ever in by the time a client rejoins it.
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "before"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "before"}),
 		}
 	})
 	if cut := notifier.CurrentSequence(); cut == 0 {
@@ -1412,7 +1452,7 @@ func TestSnapshotCutAbortsCaptureWhoseRequestContextDied(t *testing.T) {
 
 	server.CommitProjection(func() []SequencedNotification {
 		return []SequencedNotification{
-			notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "after"}),
+			notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "after"}),
 		}
 	})
 	conn.closeSend()
@@ -1506,7 +1546,7 @@ func TestAtomicReplaceSubscriptionOwnsSnapshotAndPostCutStream(t *testing.T) {
 			projectedText += "new"
 			projectedMu.Unlock()
 			return []SequencedNotification{
-				notifier.Record("th_new", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: "new"}),
+				notifier.Record("th_new", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Delta: "new"}),
 			}
 		})
 		close(eventCommitted)

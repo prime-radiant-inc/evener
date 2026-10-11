@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
@@ -43,7 +44,7 @@ func subagentMeta(t *testing.T, stateDir, sid, parent string) {
 // does, for tests that exercise provider-visible tool names.
 func mustWireNamesForModel(t *testing.T, modelRef string) map[string]string {
 	t.Helper()
-	wireNames, err := wireNameToCanonicalForModel(modelRef)
+	wireNames, err := wireNameToCanonicalForModel(provider.EmbeddedRegistry(), modelRef)
 	if err != nil {
 		t.Fatalf("wireNameToCanonicalForModel(%q): %v", modelRef, err)
 	}
@@ -607,7 +608,7 @@ func TestWireNamesDeriveFromTheRunProfile(t *testing.T) {
 		{"anthropic/test-model", nil},
 	}
 	for _, tc := range cases {
-		got, err := wireNameToCanonicalForModel(tc.modelRef)
+		got, err := wireNameToCanonicalForModel(provider.EmbeddedRegistry(), tc.modelRef)
 		if err != nil {
 			t.Fatalf("wireNameToCanonicalForModel(%q): %v", tc.modelRef, err)
 		}
@@ -661,7 +662,10 @@ func TestMaxRoundsFlagIsAuthoritative(t *testing.T) {
 	probe := probeFile{Prompt: "p"}
 	res := probeResult{WorkDir: "/work", StateDir: "/state"}
 
-	args := cliProbeArgs(cfg, probe, res)
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 	value := ""
 	for i, a := range args {
 		if a == "--max-rounds" && i+1 < len(args) {
@@ -693,7 +697,10 @@ func TestMaxRoundsFlagIsAuthoritative(t *testing.T) {
 		t.Fatalf("default maxRounds = %d, want %d", parsed.maxRounds, defaultMaxRounds)
 	}
 	defCfg := runConfig{model: "openai/m", maxRounds: defaultMaxRounds, reasoningEffort: "high"}
-	defArgs := cliProbeArgs(defCfg, probe, res)
+	defArgs, err := cliProbeArgs(defCfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 	defValue := ""
 	for i, a := range defArgs {
 		if a == "--max-rounds" && i+1 < len(defArgs) {
@@ -720,5 +727,77 @@ func TestMaxRoundsRejectsNonPositive(t *testing.T) {
 		if !strings.Contains(err.Error(), "--max-rounds must be >= 1") {
 			t.Fatalf("runSuite(--max-rounds %s) error = %v, want --max-rounds guidance", bad, err)
 		}
+	}
+}
+
+// TestInheritOperatorEnvFlagDefaultsFalse pins that a plain `run` invocation
+// is hermetic by default (#3227): the operator must opt into their personal
+// skills and plugins explicitly, for debugging, rather than the harness
+// silently seeing them.
+func TestInheritOperatorEnvFlagDefaultsFalse(t *testing.T) {
+	var parsed runConfig
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	var systemPromptAppend cmdutil.StringSliceFlag
+	defineRunFlags(fs, &parsed, &systemPromptAppend)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("parse defaults: %v", err)
+	}
+	if parsed.inheritOperatorEnv {
+		t.Fatal("default --inherit-operator-env must be false")
+	}
+}
+
+// TestInheritOperatorEnvFlagParses pins that --inherit-operator-env sets
+// cfg.inheritOperatorEnv, the seam cliProbeArgs and configureHermeticRunEnv
+// read to restore the operator's real skills and plugins.
+func TestInheritOperatorEnvFlagParses(t *testing.T) {
+	var parsed runConfig
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	var systemPromptAppend cmdutil.StringSliceFlag
+	defineRunFlags(fs, &parsed, &systemPromptAppend)
+	if err := fs.Parse([]string{"--inherit-operator-env"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !parsed.inheritOperatorEnv {
+		t.Fatal("--inherit-operator-env did not set cfg.inheritOperatorEnv")
+	}
+}
+
+// TestCliProbeArgsHermeticByDefaultDisablesOperatorPlugins pins the other
+// half of #3227: EVENER_NO_USER_SKILLS (agent/session_init.go) hides the
+// operator's user-global skills, global MCP config, and evener-wide commands,
+// but their installed, enabled plugins still load in full (hooks, agents,
+// commands) whenever `evener run` resolves plugins against its default root,
+// because the CLI harness spawns evener
+// with no --enabled-plugins/--plugin-dir of its own. A hermetic run must pass
+// --enabled-plugins with an explicit empty selection so plugin resolution
+// (internal/plugins.ResolveForLaunch) selects nothing, however many plugins
+// the operator has installed.
+func TestCliProbeArgsHermeticByDefaultDisablesOperatorPlugins(t *testing.T) {
+	cfg := runConfig{model: "openai/m", reasoningEffort: "low", maxRounds: 1}
+	args, err := cliProbeArgs(cfg, probeFile{Prompt: "p"}, probeResult{WorkDir: "/work", StateDir: "/state"})
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
+	idx := slices.Index(args, "--enabled-plugins")
+	if idx == -1 || idx+1 >= len(args) || args[idx+1] != "" {
+		t.Fatalf("args = %v, want --enabled-plugins with an explicit empty selection", args)
+	}
+}
+
+// TestCliProbeArgsInheritOperatorEnvLeavesPluginResolutionToOperatorDefault
+// pins --inherit-operator-env's debugging escape hatch: it must restore
+// today's behavior exactly, so it must not add --enabled-plugins at all
+// (an omitted flag resolves the operator's normal plugin inventory, per
+// internal/plugins.ResolveForLaunch; an explicit empty one would still
+// suppress it).
+func TestCliProbeArgsInheritOperatorEnvLeavesPluginResolutionToOperatorDefault(t *testing.T) {
+	cfg := runConfig{model: "openai/m", reasoningEffort: "low", maxRounds: 1, inheritOperatorEnv: true}
+	args, err := cliProbeArgs(cfg, probeFile{Prompt: "p"}, probeResult{WorkDir: "/work", StateDir: "/state"})
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
+	if slices.Contains(args, "--enabled-plugins") {
+		t.Fatalf("args = %v, want no --enabled-plugins with --inherit-operator-env", args)
 	}
 }

@@ -46,6 +46,7 @@ func nestedOneOfParams() map[string]any {
 // back to the enclosing property-level oneOf and its branches surfaced,
 // instead of the generic present-field "wrong type or value" on the container.
 func TestPrepareToolCall_NestedOneOfNamesConstraint(t *testing.T) {
+	t.Parallel()
 	rt := registerSchemaTool(t, "nested_oneof", nestedOneOfParams())
 	call := llm.ToolCallData{
 		ID:        "nested",
@@ -73,6 +74,7 @@ func TestPrepareToolCall_NestedOneOfNamesConstraint(t *testing.T) {
 // must not be reported as a missing argument for the array index (issue #624
 // review, finding 2), and its Example must render the item structurally.
 func TestPrepareToolCall_NestedOneOfInArrayItem(t *testing.T) {
+	t.Parallel()
 	rt := registerSchemaTool(t, "nested_item_oneof", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -108,6 +110,7 @@ func TestPrepareToolCall_NestedOneOfInArrayItem(t *testing.T) {
 // validator's locations; the explain layer must decode it (issue #624 review,
 // finding 5).
 func TestPrepareToolCall_NestedOneOfDecodesPointerEscapes(t *testing.T) {
+	t.Parallel()
 	rt := registerSchemaTool(t, "nested_ptr", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -137,6 +140,7 @@ func TestPrepareToolCall_NestedOneOfDecodesPointerEscapes(t *testing.T) {
 // an over-match (oneOf means exactly-one), not as branch requirements the
 // arguments already satisfy (issue #624 review, finding 1).
 func TestPrepareToolCall_NestedOneOfOverMatch(t *testing.T) {
+	t.Parallel()
 	rt := registerSchemaTool(t, "nested_overmatch", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -166,6 +170,7 @@ func TestPrepareToolCall_NestedOneOfOverMatch(t *testing.T) {
 // An object property named "0" must be reported as an object key, not an array
 // index (issue #624 review, finding 4).
 func TestPrepareToolCall_NestedOneOfNumericPropertyName(t *testing.T) {
+	t.Parallel()
 	rt := registerSchemaTool(t, "nested_numeric", map[string]any{
 		"type": "object",
 		"properties": map[string]any{

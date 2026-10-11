@@ -4,6 +4,13 @@
 // store, mutationOutboxStorage's outbox) and their test doubles implement this
 // single shape, so one fake fits every suite and the savepoint helper below is
 // written once instead of copied per adapter.
+//
+// Concurrency contract: a SqliteSync is exactly one connection, and this app
+// opens exactly one per database file for the life of the process. The adapters
+// therefore rely on SQLite's own single-connection serialization and install no
+// busy handler: a second connection to the same file meets the engine's lock
+// boundary ("database is locked") instead of waiting. Adopting concurrent
+// handles is a deliberate change that must revisit this contract first.
 export type SqliteSyncParam = string | number | null;
 
 // The affected-row count expo-sqlite's runSync and node:sqlite's run() both

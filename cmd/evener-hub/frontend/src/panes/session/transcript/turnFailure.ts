@@ -6,7 +6,7 @@
 // "Retry turn" and a "Reconnect & retry" action; this reproduces that decision
 // purely from the TurnError the reducer already maps onto TurnModel.error
 // (reducer.ts:216, wireToTurnScalars).
-import type { TurnError } from "@evener/appwire-client";
+import { isTurnError, type TurnError } from "@evener/appwire-client";
 
 // The reconnect-class message substrings the legacy hub-recovery button keyed
 // off (renderer.js:4463-4471) - a daemon/session that went away, where the
@@ -49,10 +49,7 @@ export interface TurnFailureInfo {
 // keeps it wire-type-free) to a TurnError by its one required field, so a turn
 // carrying a real error object renders the end-cap and anything else is ignored.
 export function asTurnError(error: unknown): TurnError | undefined {
-  if (error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string") {
-    return error as TurnError;
-  }
-  return undefined;
+  return isTurnError(error) ? error : undefined;
 }
 
 export function classifyTurnError(error: TurnError): TurnFailureInfo {

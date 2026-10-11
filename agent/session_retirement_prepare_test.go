@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
-	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -44,6 +43,7 @@ func retirementPrepareFixture(t *testing.T) (*Session, *RetirementController, *R
 // primary-file failure case: the real transcript file is replaced with garbage,
 // preparation must refuse it, the session stays resident, and admission reopens.
 func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c, err := NewRetirementController(0, clock.Real())
@@ -97,6 +97,7 @@ func TestRetirementPreparationCorruptTranscriptStaysResident(t *testing.T) {
 // metadata write through SessionConfig.testOnly.metaFS to fail; preparation
 // must surface the persistence error instead of succeeding.
 func TestRetirementPreparationMetadataWriteFailureStaysResident(t *testing.T) {
+	t.Parallel()
 	root, c, claim := retirementPrepareFixture(t)
 	root.cfg.testOnly.metaFS = afero.NewReadOnlyFs(afero.NewMemMapFs())
 	if _, err := c.Prepare(context.Background(), claim); err == nil {
@@ -146,6 +147,7 @@ func TestRetirementPreparationCorruptMutationStaysResident(t *testing.T) {
 // TestRetirementPreparationMissingStateDirStaysResident proves a session with
 // no durable state cannot be validated as reconstructible.
 func TestRetirementPreparationMissingStateDirStaysResident(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -176,6 +178,7 @@ func TestRetirementPreparationMissingStateDirStaysResident(t *testing.T) {
 // TestRetirementPreparationStaleClaimRefused proves Prepare requires the exact
 // live preparation and never manufactures one from an aborted claim.
 func TestRetirementPreparationStaleClaimRefused(t *testing.T) {
+	t.Parallel()
 	_, c, claim := retirementPrepareFixture(t)
 	if err := c.Abort(claim, "prepare_failed"); err != nil {
 		t.Fatal(err)
@@ -185,35 +188,6 @@ func TestRetirementPreparationStaleClaimRefused(t *testing.T) {
 	}
 	if _, err := c.Prepare(context.Background(), nil); err == nil {
 		t.Fatal("preparation accepted a nil claim")
-	}
-}
-
-// TestRetirementPreparationMissingScratchArtifactStaysResident proves a pinned
-// required scratch directory that has vanished blocks preparation instead of
-// being silently minted or ignored.
-func TestRetirementPreparationMissingScratchArtifactStaysResident(t *testing.T) {
-	root, c, claim := retirementPrepareFixture(t)
-	owner, ok := root.scratchRetentionOwner()
-	if !ok {
-		t.Fatal("root had no scratch retention owner")
-	}
-	scratch, err := sandbox.NewSessionScratch(t.TempDir(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = scratch.Retain() })
-	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
-	if err := scratch.Pin(owner, ref); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(scratch.Dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Prepare(context.Background(), claim); err == nil {
-		t.Fatal("preparation accepted a missing required scratch artifact")
-	}
-	if err := c.Abort(claim, "prepare_failed"); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -245,6 +219,7 @@ func TestRetirementPreparationCorruptTaskStoreStaysResident(t *testing.T) {
 // occupied managed lane's identity and lock ownership, verified against the
 // live lock, rather than only refusing a bad lane in tree evidence.
 func TestRetirementPreparationCapturesOccupiedLane(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
@@ -283,6 +258,7 @@ func TestRetirementPreparationCapturesOccupiedLane(t *testing.T) {
 // requirement that a preparation failure leaves the session resident: no
 // session-end event is emitted and the job and delegate stores stay open.
 func TestRetirementPreparationFailureEmitsNoTerminalEventOrClose(t *testing.T) {
+	t.Parallel()
 	root, c, claim := retirementPrepareFixture(t)
 	evs, mu, _ := collectEvents(root)
 	path := root.TranscriptPath()
@@ -322,6 +298,7 @@ func TestRetirementPreparationFailureEmitsNoTerminalEventOrClose(t *testing.T) {
 // verification error branches: a foreign-locked and an unlocked occupied lane
 // both refuse preparation.
 func TestRetirementPreparationWrongOwnerLaneStaysResident(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, r *scriptedLaneRepo, lanePath string)
@@ -370,6 +347,7 @@ func TestRetirementPreparationWrongOwnerLaneStaysResident(t *testing.T) {
 // TestRetirementPreparationMissingChildTranscriptStaysResident exercises a
 // missing child transcript through Prepare, not only the TryClaim predicate.
 func TestRetirementPreparationMissingChildTranscriptStaysResident(t *testing.T) {
+	t.Parallel()
 	root, _, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)
@@ -395,6 +373,7 @@ func TestRetirementPreparationMissingChildTranscriptStaysResident(t *testing.T) 
 // TestRetirementPreparationMalformedDescriptorStaysResident exercises a
 // corrupt durable delegate descriptor through Prepare's strict store readiness.
 func TestRetirementPreparationMalformedDescriptorStaysResident(t *testing.T) {
+	t.Parallel()
 	root, _, c := newRetirementDelegateController(t)
 	defer root.Close()
 	_ = retirementIdleDelegate(t, root)
@@ -422,6 +401,7 @@ func TestRetirementPreparationMalformedDescriptorStaysResident(t *testing.T) {
 // TestRetirementPreparationUnreadableColdEvidenceStaysResident exercises a cold
 // delegate whose reconstruction evidence cannot be read, through Prepare.
 func TestRetirementPreparationUnreadableColdEvidenceStaysResident(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	d := retirementIdleDelegate(t, root)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -134,6 +135,15 @@ func (h *daemonRetirementProcessHelper) close() {
 // runCommands reads the fixture's commands until the pipe closes. Advance and
 // release are the only operations; both are pipe requests the fixture waits on
 // an acknowledgement for, so nothing here is paced by a timer.
+//
+// The loop ends in one of three ways. The helper closing its own end when serve
+// returns is an orderly shutdown (os.ErrClosed): runCommands returns and
+// TestMain reports the exit. End of input means the fixture's end closed, and
+// its cleanup kills this process before closing it, so reading it means the
+// test binary died without cleaning up (a timeout panic, a kill). The daemon
+// then exits with code 3: its clock only moves when the fixture advances it, so
+// its idle retirement can never fire, and it would otherwise run on as an
+// orphan holding its scratch for good. Any other read error exits with code 4.
 func (h *daemonRetirementProcessHelper) runCommands() {
 	scanner := bufio.NewScanner(h.ctl)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
@@ -155,6 +165,16 @@ func (h *daemonRetirementProcessHelper) runCommands() {
 		default:
 			h.emit(daemonRetirementProcessEvent{Kind: "command_error", Err: "unknown command " + cmd.Cmd})
 		}
+	}
+	switch err := scanner.Err(); {
+	case errors.Is(err, os.ErrClosed):
+		return
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "daemon retirement helper: reading the control pipe: %v; exiting\n", err)
+		os.Exit(4)
+	default:
+		fmt.Fprintln(os.Stderr, "daemon retirement helper: the fixture's control pipe closed; exiting with it")
+		os.Exit(3)
 	}
 }
 
@@ -197,6 +217,23 @@ func (h *daemonRetirementProcessHelper) releaseChannel(seq int) chan struct{} {
 	return h.releases[seq]
 }
 
+// The helper closes its own end of the control pipe when serve returns
+// normally, which ends runCommands' read too. That is an orderly shutdown, not
+// the fixture dying: runCommands must return and leave the exit code to
+// TestMain, or it would clobber a clean retirement's 0 with the orphan exit.
+func TestDaemonRetirementProcessHelperOwnCloseIsNotAnOrphanExit(t *testing.T) {
+	ctlR, ctlW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctlW.Close() //nolint:errcheck // test pipe teardown
+	h := newDaemonRetirementProcessHelper(ctlR, nil)
+	if err := ctlR.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.runCommands()
+}
+
 // TestDaemonRetirementProcessHelperReleaseSurvivesAnEarlyLookup pins the
 // handshake the scripted adapter relies on. The adapter records a provider
 // sequence in nextProvider and then looks up that sequence's release channel;
@@ -232,6 +269,84 @@ func TestDaemonRetirementProcessHelperReleaseSurvivesAnEarlyLookup(t *testing.T)
 	}
 }
 
+// The controller computes a remaining interval from its clock read and then
+// arms the timer with it, so an advance can land between the two. The fake
+// timer must measure that interval from the read, as the controller meant it:
+// measured from the moment of arming instead, the fixture's advance moved the
+// deadline later by the whole advance, and the deadline the fixture then
+// advanced to never fired.
+func TestDaemonRetirementProcessClockArmsFromTheEvaluatedInstant(t *testing.T) {
+	evtR, evtW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evtR.Close() //nolint:errcheck // test pipe teardown
+	defer evtW.Close() //nolint:errcheck // test pipe teardown
+	go func() { _, _ = io.Copy(io.Discard, evtR) }()
+	clk := newDaemonRetirementProcessHelper(nil, evtW).clock
+
+	evaluated := clk.Now()
+	clk.advance(30*time.Minute, 1)
+	timer := clk.NewTimer(time.Hour)
+	clk.advance(30*time.Minute, 2)
+
+	select {
+	case fired := <-timer.C():
+		if want := evaluated.Add(time.Hour); !fired.Equal(want) {
+			t.Fatalf("timer fired at %v, want %v", fired, want)
+		}
+	default:
+		t.Fatalf("timer armed for 1h at %v did not fire at %v", evaluated, evaluated.Add(time.Hour))
+	}
+}
+
+// TestDaemonRetirementProcessClockAcknowledgesAdvanceBeforeFiring pins that an
+// advance is acknowledged before it delivers the timer. The daemon retires on
+// that delivery, and a retirement that won the race closed the event pipe
+// before the acknowledgement was written, so the fixture's advance saw "event
+// stream closed" (#2253).
+func TestDaemonRetirementProcessClockAcknowledgesAdvanceBeforeFiring(t *testing.T) {
+	h := newDaemonRetirementProcessHelper(nil, nil)
+	w := &advanceAckOrderWriter{}
+	h.enc = json.NewEncoder(w)
+	clk := h.clock
+	w.timer = clk.NewTimer(time.Hour)
+
+	clk.advance(time.Hour, 1)
+
+	if !w.acked {
+		t.Fatal("advance wrote no acknowledgement")
+	}
+	if w.firedBeforeAck {
+		t.Fatal("the timer fired before the advance was acknowledged")
+	}
+	select {
+	case <-w.timer.C():
+	default:
+		t.Fatal("an advance to the deadline did not fire the timer")
+	}
+}
+
+// advanceAckOrderWriter records whether the timer had already fired when the
+// advance acknowledgement was written.
+type advanceAckOrderWriter struct {
+	timer          agent.RetirementTimer
+	acked          bool
+	firedBeforeAck bool
+}
+
+func (w *advanceAckOrderWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"advanced"`)) {
+		w.acked = true
+		select {
+		case <-w.timer.C():
+			w.firedBeforeAck = true
+		default:
+		}
+	}
+	return len(p), nil
+}
+
 // daemonRetirementProcessClock is the helper-side retirement clock. Every
 // assertion the fixture makes about evaluation, arming and resetting is an
 // event this clock emits; every advance is a command it acknowledges. It never
@@ -243,11 +358,18 @@ type daemonRetirementProcessClock struct {
 	mu    sync.Mutex
 	now   time.Time
 	timer *daemonRetirementProcessTimer
+	// evaluated is the instant the controller last read. Its Run loop is the
+	// only caller of this clock, and it arms the timer with a remaining
+	// interval it computed from that read, so the interval is measured from
+	// here rather than from whatever virtual time an advance has since moved
+	// to.
+	evaluated time.Time
 }
 
 func (c *daemonRetirementProcessClock) Now() time.Time {
 	c.mu.Lock()
 	now := c.now
+	c.evaluated = now
 	armed := c.timer != nil
 	var remaining int64
 	if armed {
@@ -284,10 +406,21 @@ func (c *daemonRetirementProcessClock) arm(t *daemonRetirementProcessTimer, d ti
 	}
 	c.mu.Lock()
 	c.timer = t
-	t.deadline = c.now.Add(d)
-	now := c.now
+	from := c.evaluated
+	if from.IsZero() {
+		from = c.now
+	}
+	t.deadline = from.Add(d)
+	// An advance that landed after the read may already have passed the
+	// deadline; deliver now, as a real timer armed with a spent interval would.
+	if !c.now.Before(t.deadline) {
+		select {
+		case t.ch <- c.now:
+		default:
+		}
+	}
 	c.mu.Unlock()
-	c.h.emit(daemonRetirementProcessEvent{Kind: "armed", Now: now.UTC().Format(time.RFC3339Nano), Remaining: int64(d)})
+	c.h.emit(daemonRetirementProcessEvent{Kind: "armed", Now: from.UTC().Format(time.RFC3339Nano), Remaining: int64(d)})
 }
 
 // stop is the timer's Stop. It reports the disarm so the fixture can see the
@@ -308,33 +441,36 @@ func (c *daemonRetirementProcessClock) stop(t *daemonRetirementProcessTimer) {
 // advance moves virtual time and delivers the armed timer if its deadline has
 // passed. It acknowledges with the post-command armed state, so the fixture's
 // wait is a pipe acknowledgement rather than a quiet window.
+//
+// The acknowledgement is written before the timer is delivered: the daemon
+// retires on that delivery and closes the event pipe, so an acknowledgement
+// written after it can be lost. The lock is held across both so no arm or stop
+// lands between the state the acknowledgement reports and the delivery.
 func (c *daemonRetirementProcessClock) advance(d time.Duration, seq int) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
 	t := c.timer
-	fired := false
-	if t != nil && !c.now.Before(t.deadline) {
-		fired = true
+	fired := t != nil && !c.now.Before(t.deadline)
+	armed := t != nil
+	var remaining int64
+	if armed {
+		remaining = max(int64(t.deadline.Sub(c.now)), 0)
+	}
+	c.h.emit(daemonRetirementProcessEvent{
+		Kind:      "advanced",
+		Seq:       seq,
+		Now:       c.now.UTC().Format(time.RFC3339Nano),
+		Armed:     &armed,
+		Remaining: remaining,
+		Fired:     &fired,
+	})
+	if fired {
 		select {
 		case t.ch <- c.now:
 		default:
 		}
 	}
-	now := c.now
-	armed := c.timer != nil
-	var remaining int64
-	if armed {
-		remaining = max(int64(c.timer.deadline.Sub(c.now)), 0)
-	}
-	c.mu.Unlock()
-	c.h.emit(daemonRetirementProcessEvent{
-		Kind:      "advanced",
-		Seq:       seq,
-		Now:       now.UTC().Format(time.RFC3339Nano),
-		Armed:     &armed,
-		Remaining: remaining,
-		Fired:     &fired,
-	})
 }
 
 type daemonRetirementProcessTimer struct {

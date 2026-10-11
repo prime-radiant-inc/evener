@@ -107,6 +107,7 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 	}{
 		{appwire.MethodThreadReasoningEffortSet, appwire.ThreadReasoningEffortSetParams{Ref: ref, ReasoningEffort: "high"}},
 		{appwire.MethodEvenerSandboxEscalationResolve, appwire.SandboxEscalationResolveParams{Ref: ref, EscalationID: "escalation", Approve: true}},
+		{appwire.MethodEvenerDelegateStop, appwire.DelegateStopParams{Ref: ref, DelegateID: "dlg_1"}},
 	} {
 		t.Run(request.method, func(t *testing.T) {
 			var response any
@@ -158,7 +159,7 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 
 }
 
-func protocolMismatchPeer(t *testing.T) string {
+func protocolMismatchPeer(t testing.TB) string {
 	t.Helper()
 	peer := httptest.NewServer(http.HandlerFunc(serveProtocolMismatch))
 	t.Cleanup(peer.Close)
@@ -511,8 +512,10 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					childRestart = true
 				}
 			}
-			if childRestart != delegated {
-				t.Errorf("navigation child restart=%v, delegated=%v", childRestart, delegated)
+			// A subagent has no navigation row to carry the restriction, and a
+			// child with no delegate descriptor is not owned by the daemon.
+			if childRestart {
+				t.Errorf("navigation lists the child with restart state, delegated=%v", delegated)
 			}
 			if delegated && !scenario.unreadableSibling {
 				t.Run("canceled ownership check", func(t *testing.T) {
@@ -525,9 +528,6 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					wire, ok := errors.AsType[appwire.WireError](err)
 					if !ok || !strings.Contains(wire.Message, context.Canceled.Error()) {
 						t.Errorf("ownership check ignored cancellation: %v", err)
-					}
-					if snapshot := web.navigationSnapshotInputs(ctx); !errors.Is(snapshot.ownershipErr, context.Canceled) {
-						t.Errorf("navigation ownership error=%v, want cancellation", snapshot.ownershipErr)
 					}
 				})
 			}
@@ -929,7 +929,7 @@ func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
 				if mode == "aside" {
 					params.Aside = true
 				} else {
-					params.SourceTurnID = "1"
+					params.SourceItemKey = "apptranscript-item-v2:t_1:0:0"
 					params.Label = "parent branch"
 					if mode == "defer" {
 						params.DeferInput = true

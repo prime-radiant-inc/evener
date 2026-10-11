@@ -11,9 +11,10 @@
 // Stop write with the stop-epoch barrier enqueueIntent compares at commit,
 // nextDispatchable blocked by an earlier blockedUnknown on the same target
 // only while skipping canceled rows, restoreProvenAbsent reopening only
-// what the authoritative snapshot omits) without the web's Blob handling,
-// cross-tab identity or shared-notes recovery-superseding, none of which
-// the port declares.
+// what the authoritative snapshot omits, and the settlement note-supersede
+// discardSupersededNoteRecovery runs inside both settleReceipt and
+// settleApplied) without the web's Blob handling or cross-tab identity,
+// neither of which the port declares.
 import * as Crypto from "expo-crypto";
 import type {
 	MutationAttachmentRef,
@@ -28,7 +29,7 @@ import type {
 	MutationStopBarrier,
 	SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
-import { createSecureUUID } from "@evener/appwire-client/state/mutation";
+import { acceptedRecord, carriesOptimisticInput, createSecureUUID } from "@evener/appwire-client/state/mutation";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
 
 // This app's SecureRandomSource: expo-crypto's synchronous randomUUID and
@@ -60,7 +61,11 @@ export interface MutationOutboxSQLiteOptions {
 // state (submitting/blockedUnknown -> outbox, accepted -> optimistic,
 // rejected/orphaned -> recovery), so no separate state machine duplicates
 // what the table membership already says.
-export const TABLES = { outbox: "mutation_outbox", optimistic: "mutation_optimistic", recovery: "mutation_recovery" } as const;
+export const TABLES = {
+	outbox: "mutation_outbox",
+	optimistic: "mutation_optimistic",
+	recovery: "mutation_recovery",
+} as const;
 
 const COLUMNS = [
 	"client_mutation_id",
@@ -209,8 +214,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			// write - left the ref's durable stop epoch past the click-time
 			// capture. The row commits born-"canceled": never dispatched,
 			// released only by an explicit Retry.
-			const canceledByBarrier =
-				barrier !== undefined && this.stopEpochOf(intent.targetRef) > barrier.stopEpoch;
+			const canceledByBarrier = barrier !== undefined && this.stopEpochOf(intent.targetRef) > barrier.stopEpoch;
 			// Allocate and persist the next sequence in one write so a reentrant
 			// enqueue cannot reuse a value read before another allocation.
 			const intentSequence = this.allocateSequence(intent.targetRef);
@@ -351,38 +355,14 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const optimisticRecord = this.get<MutationOptimisticRecord<A>>(TABLES.optimistic, clientMutationId);
 			const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
 			if (!source) return false;
-			const display = source.optimisticDisplay;
-			const retainsOptimisticDisplay =
-				projectionState === "pending" &&
-				typeof display === "object" &&
-				display !== null &&
-				Array.isArray((display as { input?: unknown }).input);
+			this.discardSupersededNoteRecovery(source);
+			const retainsOptimisticDisplay = projectionState === "pending" && carriesOptimisticInput(source);
 			if (retainsOptimisticDisplay) {
-				// Built field-by-field, never spread, so a recovery-sourced receipt
-				// (source.recoveryKind/recoveryReason) and attempted evidence do not
-				// leak into the optimistic row - the oracle's settleReceipt builds
-				// its accepted record the same explicit way.
-				const accepted: MutationOptimisticRecord<A> = {
-					version: source.version,
-					clientMutationId: source.clientMutationId,
-					originClientId: source.originClientId,
-						// The enqueue-time instance rides the outbox ->
-						// optimistic transition like provenance does: dropping it
-						// would leave the accepted record identifying itself by
-						// threadId alone, exactly the pre-instance shape a
-						// replacement that retains the thread id is invisible to.
-						instanceId: source.instanceId,
-					targetRef: source.targetRef,
-					threadId: source.threadId,
-					method: source.method,
-					payload: source.payload,
-					attachments: source.attachments,
-					optimisticDisplay: source.optimisticDisplay,
-					intentSequence: source.intentSequence,
-					createdAt: source.createdAt,
-					state: "accepted",
-				};
-				this.replace(TABLES.optimistic, accepted);
+				// The package's acceptedRecord is the one whitelist both adapters
+				// build: it never spreads, so a recovery-sourced receipt
+				// (source.recoveryKind/recoveryReason) and attempted evidence do
+				// not leak into the optimistic row.
+				this.replace(TABLES.optimistic, acceptedRecord(source));
 			} else if (optimisticRecord) {
 				this.delete(TABLES.optimistic, clientMutationId);
 			}
@@ -396,12 +376,36 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// of the three tables currently holds it.
 	async settleApplied(clientMutationId: string): Promise<boolean> {
 		return this.transaction("mutation_outbox_settle_applied", () => {
+			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
+			const optimisticRecord = this.get<MutationOptimisticRecord<A>>(TABLES.optimistic, clientMutationId);
+			const recoveryRecord = this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
+			const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
+			if (!source) return false;
+			this.discardSupersededNoteRecovery(source);
 			let removed = false;
 			for (const table of Object.values(TABLES)) {
 				if (this.delete(table, clientMutationId)) removed = true;
 			}
 			return removed;
 		});
+	}
+
+	// The shared settlement contract's note supersede, run inside the same
+	// settlement transaction (the web adapter's #discardSupersededNoteRecovery):
+	// a settled notes/human/set supersedes the SAME ref's earlier
+	// notes/human/set recovery rows whatever their recoveryKind - a later save
+	// is the note editor's only retry - and nothing else. Every other method,
+	// every other target, and every newer row (including a note saved after
+	// this one) stays; the port declares no separate discard method for it,
+	// because it is the settlement's own side effect.
+	protected discardSupersededNoteRecovery(source: MutationRecord<A>): void {
+		if (source.method !== "notes/human/set") return;
+		this.db.runSync(
+			`DELETE FROM ${TABLES.recovery}
+			 WHERE method = 'notes/human/set' AND target_ref = ? AND intent_sequence < ?`,
+			source.targetRef,
+			source.intentSequence,
+		);
 	}
 
 	async transferToRecovery(
@@ -422,10 +426,19 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// Read methods required by MutationOutboxStorage.
 
 	async listTargetRefs(): Promise<string[]> {
+		// UNION (not UNION ALL) already removes duplicates, so a DISTINCT under
+		// each arm would only repeat what the merge already guarantees. The
+		// ordering stays in JS: the web adapter sorts by the default UTF-16
+		// comparison, which a SQL ORDER BY's BINARY collation does not always
+		// match for non-ASCII refs, and the two hosts must agree exactly.
 		const rows = this.db.getAllSync<{ target_ref: string }>(
-			`SELECT DISTINCT target_ref FROM ${TABLES.outbox} UNION SELECT DISTINCT target_ref FROM ${TABLES.optimistic}`,
+			`SELECT target_ref FROM ${TABLES.outbox} UNION SELECT target_ref FROM ${TABLES.optimistic}`,
 		);
 		return rows.map((row) => row.target_ref).sort();
+	}
+
+	async listOutbox(targetRef?: string): Promise<MutationOutboxRecord<A>[]> {
+		return this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef);
 	}
 
 	async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord<A> | undefined> {
@@ -444,6 +457,66 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
 	}
 
+	// Native-only recovery projection reads are always scoped to the composite
+	// hub/conversation target. The shared storage port intentionally stays
+	// unchanged; callers must provide the exact target key before seeing or
+	// deleting a recovered record.
+	async listRecovery(targetRef: string): Promise<MutationRecoveryRecord<A>[]> {
+		return this.list<MutationRecoveryRecord<A>>(TABLES.recovery, targetRef);
+	}
+
+	async discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean> {
+		return (
+			changedRows(
+				this.db.runSync(
+					`DELETE FROM ${TABLES.recovery} WHERE client_mutation_id = ? AND target_ref = ?`,
+					clientMutationId,
+					targetRef,
+				),
+			) > 0
+		);
+	}
+
+	// The user's Discard on their own message that a Stop held before it left
+	// the phone ("canceled") or whose delivery couldn't be confirmed
+	// ("blockedUnknown"): exactly that row, for exactly that composite target.
+	// A submitting row is still owed to the daemon and is never discarded.
+	async discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean> {
+		return (
+			changedRows(
+				this.db.runSync(
+					`DELETE FROM ${TABLES.outbox}
+					 WHERE client_mutation_id = ? AND target_ref = ? AND state IN ('blockedUnknown', 'canceled')`,
+					clientMutationId,
+					targetRef,
+				),
+			) > 0
+		);
+	}
+
+	// The one release of a canceled row: the user's Send now. It moves the row
+	// to the end of its target's line, with a fresh sequence, so it can never
+	// dispatch ahead of the interrupt whose Stop canceled it (the row never
+	// left the phone, so moving it is safe). The barrier is the press's
+	// stop-epoch capture: a Stop that committed after it outranks the press,
+	// and the row stays canceled. A canceled row was never attempted (a Stop
+	// cancels only rows with attempted = 0, enqueueInterruptAndCancel), so it
+	// goes back exactly as it was. The web adapter's releaseCanceled, plus the
+	// move.
+	async releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean> {
+		return this.transaction("mutation_outbox_release_canceled", () => {
+			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
+			if (record?.state !== "canceled" || record.targetRef !== targetRef) return false;
+			if (this.stopEpochOf(targetRef) > barrier.stopEpoch) return false;
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET state = 'submitting', intent_sequence = ? WHERE client_mutation_id = ?`,
+				this.allocateSequence(targetRef),
+				clientMutationId,
+			);
+			return true;
+		});
+	}
+
 	// The lowest-sequence submitting outbox record for this target. A
 	// canceled row provably never left the client, so it cannot be reordered
 	// against the daemon and must not park what follows it - including the
@@ -451,40 +524,58 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// daemon may already have applied it, so the FIFO stays closed behind it
 	// and every later one on the SAME target, never another target's.
 	async nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined> {
-		for (const record of this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef)) {
-			if (record.state === "submitting") return record;
-			if (record.state === "blockedUnknown") return undefined;
-		}
-		return undefined;
+		// The FIFO head is the lowest-sequence row still in play; a canceled row
+		// above it provably never left the client and never parks the queue. Ask
+		// SQLite for that one row directly instead of decoding the target's whole
+		// queue only to discard it. The state filter mirrors the loop it replaces:
+		// the first submitting/blockedUnknown row decides, and anything else is
+		// skipped.
+		const row = this.db.getFirstSync<Row>(
+			`SELECT * FROM ${TABLES.outbox} WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown')
+			 ORDER BY intent_sequence LIMIT 1`,
+			targetRef,
+		);
+		if (!row || row.state === "blockedUnknown") return undefined;
+		return fromRow<A, MutationOutboxRecord<A>>(row);
 	}
 
 	// Reopens every blockedUnknown record for this target the authoritative
 	// read does NOT name - a missing id is not proof of non-delivery (a
 	// bounded transcript can omit older work), so only an id the snapshot
 	// explicitly confirms stays settled. Returns the ids restored. Wrapped in
-	// the same savepoint as every other compound write here: a throw partway
-	// through the loop must not leave some blockedUnknown records reopened
-	// and others not.
+	// the same savepoint as every other compound write here: a throw must not
+	// leave some blockedUnknown records reopened and others not.
 	async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
 		return this.transaction("mutation_outbox_restore_absent", () => {
-			const blocked = this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef).filter(
-				(record) => record.state === "blockedUnknown" && !authoritativeIds.has(record.clientMutationId),
+			// One statement reopens the whole omitted set and reports the ids it
+			// changed, instead of decoding every row on the target and updating the
+			// blocked ones one at a time. It stays inside the savepoint: a fault on
+			// any row aborts the single UPDATE and rolls the entire restore back,
+			// the same all-or-nothing the loop's savepoint gave. RETURNING promises
+			// no row order, so carry intent_sequence out and sort here to keep the
+			// ascending order callers saw when this listed the target first.
+			const named = [...authoritativeIds];
+			const namedClause = named.length > 0 ? ` AND client_mutation_id NOT IN (${named.map(() => "?").join(", ")})` : "";
+			const restored = this.db.getAllSync<{ client_mutation_id: string; intent_sequence: number }>(
+				`UPDATE ${TABLES.outbox} SET state = 'submitting'
+				 WHERE target_ref = ? AND state = 'blockedUnknown'${namedClause}
+				 RETURNING client_mutation_id, intent_sequence`,
+				targetRef,
+				...named,
 			);
-			for (const record of blocked) {
-				this.db.runSync(
-					`UPDATE ${TABLES.outbox} SET state = 'submitting' WHERE client_mutation_id = ?`,
-					record.clientMutationId,
-				);
-			}
-			return blocked.map((record) => record.clientMutationId);
+			return restored
+				.sort((left, right) => left.intent_sequence - right.intent_sequence)
+				.map((row) => row.client_mutation_id);
 		});
 	}
 
 	protected list<T extends MutationRecord<A>>(table: string, targetRef?: string): T[] {
-		const rows =
-			targetRef === undefined
-				? this.db.getAllSync<Row>(`SELECT * FROM ${table} ORDER BY intent_sequence`)
-				: this.db.getAllSync<Row>(`SELECT * FROM ${table} WHERE target_ref = ? ORDER BY intent_sequence`, targetRef);
+		// One statement template, scoped or not, so the query string lives in one
+		// place instead of two near-identical copies.
+		const rows = this.db.getAllSync<Row>(
+			`SELECT * FROM ${table}${targetRef === undefined ? "" : " WHERE target_ref = ?"} ORDER BY intent_sequence`,
+			...(targetRef === undefined ? [] : [targetRef]),
+		);
 		return rows.map((row) => fromRow<A, T>(row));
 	}
 
@@ -537,7 +628,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		}
 	}
 
-	protected insertNew(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
+	protected insertNew(
+		table: string,
+		record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>,
+	): void {
 		this.db.runSync(insertSQL(table), ...this.insertValues(record));
 	}
 
@@ -547,7 +641,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// full-row replace the oracle's `put` gives on a colliding key. Refreshing
 	// only state/attempted would leave a stale payload/display/recovery
 	// reason behind from whatever the row held before.
-	protected replace(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
+	protected replace(
+		table: string,
+		record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>,
+	): void {
 		this.db.runSync(replaceSQL(table), ...this.insertValues(record));
 	}
 

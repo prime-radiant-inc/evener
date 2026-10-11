@@ -20,8 +20,12 @@
 // duplicating it; this file keeps only what's specific to the read-only
 // card (the malformed-vs-absent fallback wording and the static markup).
 
-import type { ItemModel } from "@evener/appwire-client";
-import { type AskUserQuestion, answeredAskUserSuffix, parseAskUserQuestions } from "@evener/appwire-client";
+import {
+  type AskUserQuestion,
+  answeredAskUserSuffix,
+  askUserSummary,
+  parseAskUserQuestions,
+} from "@evener/appwire-client";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -111,11 +115,7 @@ registerToolRenderer({
   match: "ask_user",
   fold: "never", // a question put to the reader is never folded away
   icon: "ask",
-  summary(item: ItemModel) {
-    const questions = parseAskUserQuestions(item);
-    if (!questions) return "Asked a question";
-    return `Asked: ${questions.map((q) => `[${q.header}]`).join(", ")}`;
-  },
+  summary: askUserSummary,
   // A settled thing should compress to its outcome (kata h70z): once a
   // later [answers] reply resolves this call, its collapsed row should say
   // what was answered, not just what was asked - matching the old build's

@@ -25,6 +25,7 @@ import (
 // Wall 1 — NOT TRIGGERABLE: no model-facing tool can raise an escalation; only the
 // harness seam does.
 func TestEscalationWall_NotTriggerableByAnyTool(t *testing.T) {
+	t.Parallel()
 	s := newSession(t)
 	for _, name := range s.reg.Names() {
 		if strings.Contains(strings.ToLower(name), "escalat") {
@@ -37,6 +38,7 @@ func TestEscalationWall_NotTriggerableByAnyTool(t *testing.T) {
 // absent from the model-facing watch allowlist, so no model-configured watch can
 // see (or react to) it.
 func TestEscalationWall_NotModelWatchable(t *testing.T) {
+	t.Parallel()
 	for name, kind := range modelEventKinds {
 		if kind == events.EventSandboxEscalationRequested {
 			t.Fatalf("the escalation event must not be model-watchable (found under %q)", name)
@@ -47,6 +49,7 @@ func TestEscalationWall_NotModelWatchable(t *testing.T) {
 // Wall 3 — NOT OBSERVABLE in history: after a full approve→re-run turn, the model's
 // history contains only the tool round — the escalation id appears nowhere.
 func TestEscalationWall_NotObservableInHistory(t *testing.T) {
+	t.Parallel()
 	outside := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(outside, []byte("PAYLOAD"), 0o644); err != nil {
 		t.Fatal(err)
@@ -97,6 +100,7 @@ func TestEscalationWall_NotObservableInHistory(t *testing.T) {
 // human snapshot (PendingEscalations) but NEVER in the model's history — the
 // snapshot is a separate channel, not built from (or leaking into) what the model sees.
 func TestEscalationWall_SnapshotIsHumanOnlyNotInHistory(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res, _ := deniedResult("/secret/path/xyz")
 	done := make(chan tool.ExecResult, 1)
@@ -123,6 +127,7 @@ func TestEscalationWall_SnapshotIsHumanOnlyNotInHistory(t *testing.T) {
 // denial (an IsError result) when the session closes, exactly like an interrupted
 // ask_user; nothing is persisted to replay. (The pending map is in-memory only.)
 func TestEscalationWall_NotReplayable_CloseYieldsErrorPlaceholder(t *testing.T) {
+	t.Parallel()
 	s := escalatableSession(t)
 	res, _ := deniedResult("/etc/hosts")
 	done := make(chan tool.ExecResult, 1)
@@ -145,6 +150,7 @@ func TestEscalationWall_NotReplayable_CloseYieldsErrorPlaceholder(t *testing.T) 
 // from pre-M7 — the typed error is final, no escalation event is emitted, nothing
 // blocks.
 func TestEscalation_NonInteractiveDenialUnchanged(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	worktree := filepath.Join(home, "wt")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {

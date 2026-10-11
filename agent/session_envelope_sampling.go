@@ -25,10 +25,11 @@ import (
 //	that lives in package agent.
 //
 // Since the feed became lossless, an emitter whose buffer is full WAITS
-// (session_events.go's sendEvent). Four locks are held across live emits today
+// (session_events.go's sendEvent). Five locks are held across live emits today
 // on purpose — responseSideEffectsMu around a tool call's side-effect bundle,
 // queueEventsMu around a queue mutation and its announcement, queuePersistMu
-// around the snapshot-then-write, and subagent.mu around a delegate handoff. If
+// around the snapshot-then-write, subagent.mu around a delegate handoff, and
+// restMu around a needs_response rest's STATUS_SETTLED. If
 // a sample taken here blocks on one of them, the consumer stops draining, the
 // buffer fills, and the emitter blocks holding that same lock. Neither side can
 // move, and because the blocked send holds eventsMu.RLock the session can no
@@ -67,7 +68,8 @@ type EnvelopeSampling interface {
 	CumulativeUsageSnapshot() llm.Usage
 	ActiveTurnStartedAtMillis() int64
 	FailedToolCallsSnapshot() (count int, measured bool)
-	HasPendingAsk() bool
+	PendingQuestion() *appwire.PendingQuestion
+	RestingFailure() *appwire.ThreadFailure
 	PendingEscalations() []events.SandboxEscalationRequestedData
 	ReasoningEffort() string
 	VisionModel() string

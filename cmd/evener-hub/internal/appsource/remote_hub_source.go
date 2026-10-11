@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -306,10 +307,17 @@ func (s *RemoteHubSource) mapCallError(err error) error {
 	if wire.Code != appwire.CodeInternalError {
 		return err
 	}
-	if remoteHubTransportText(strings.ToLower(wire.Message)) {
-		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
+	// Only a failure the client synthesized because its read loop is gone is a
+	// transport failure; the client marks it with TransportFailureError. An
+	// InternalError that arrived intact is the remote hub's own application
+	// verdict and is preserved: reconstructing transport provenance from the
+	// message text reclassified an intact "unexpected eof" as host
+	// unavailability, which then became mutationOutcomeUnknown with an
+	// automatic retry.
+	if !appwire.IsTransportFailure(err) {
+		return err
 	}
-	return err
+	return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
 }
 
 // mapConnectError mirrors localDaemonDialError for the attach step: a timeout
@@ -411,9 +419,11 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	return err
 }
 
-// remoteHubTransportText recognizes transport-shaped error text. "eof" is
-// matched as a standalone token only so an application message that merely
-// contains those letters is not reclassified as host unavailability.
+// remoteHubTransportText recognizes transport-shaped error text for the raw
+// errors transportUnavailable still sees (it is no longer consulted for a
+// WireError, whose provenance the client now carries). "eof" is matched as a
+// standalone token only so a string that merely contains those letters is not
+// reclassified as host unavailability.
 func remoteHubTransportText(lower string) bool {
 	switch {
 	case containsWord(lower, "eof"),
@@ -423,9 +433,9 @@ func remoteHubTransportText(lower string) bool {
 		strings.Contains(lower, "closed pipe"),
 		// os.ErrClosed's text: the descriptor this end writes to is gone, the
 		// same class of failure as net.ErrClosed's "use of closed network
-		// connection" below. It matters on the WireError path, where the
-		// failure arrives as the peer's message and errors.Is has nothing to
-		// match against.
+		// connection" below. transportUnavailable checks errors.Is(err,
+		// os.ErrClosed) first, so this text fallback covers only the shapes a
+		// transport library wraps without exposing the sentinel.
 		strings.Contains(lower, "file already closed"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "i/o timeout"):
@@ -585,6 +595,62 @@ func (s *RemoteHubSource) ListTurns(ctx context.Context, params appwire.ThreadTu
 	return out, nil
 }
 
+// FetchSessionImage fetches one image out of the owning host's own local
+// session state, for the controller routes that serve a remote session's
+// host-qualified image URLs (multi-host component 05). It resolves the
+// attached-only client like every other remote call — an unattached or unknown
+// host is refused typed and never dialed, so this path can never fall back to a
+// local read — and the response needs no translation: it carries bytes and a
+// media type, not refs.
+func (s *RemoteHubSource) FetchSessionImage(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+	var out appwire.SessionImageResponse
+	if err := s.call(ctx, appwire.MethodEvenerSessionImage, params, &out); err != nil {
+		return appwire.SessionImageResponse{}, err
+	}
+	return out, nil
+}
+
+// FetchSessionDocument reads one document out of the owning host's own session
+// folder, for the controller's /doc/file proxy (S7). Like FetchSessionImage it
+// is attached-only and needs no translation: it carries bytes, not refs.
+func (s *RemoteHubSource) FetchSessionDocument(ctx context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+	var out appwire.SessionDocumentResponse
+	if err := s.call(ctx, appwire.MethodEvenerSessionDocument, params, &out); err != nil {
+		return appwire.SessionDocumentResponse{}, err
+	}
+	return out, nil
+}
+
+// ReadSessionActivity reads the host's own live sessions' pulse meters for the
+// controller's evener/activity/read (S5). Refs are rewritten into the host's
+// namespace on the way out and back into the controller's on the way in; a
+// session the controller cannot address (one of the host's own hosts) is
+// dropped rather than failing the read.
+func (s *RemoteHubSource) ReadSessionActivity(ctx context.Context, params appwire.ActivityReadParams) (appwire.ActivityReadResponse, error) {
+	remote := appwire.ActivityReadParams{}
+	for _, raw := range params.Refs {
+		ref, err := s.toRemoteRef(raw, "")
+		if err != nil {
+			return appwire.ActivityReadResponse{}, err
+		}
+		remote.Refs = append(remote.Refs, ref.String())
+	}
+	var out appwire.ActivityReadResponse
+	if err := s.call(ctx, appwire.MethodEvenerActivityRead, remote, &out); err != nil {
+		return appwire.ActivityReadResponse{}, err
+	}
+	sessions := make([]appwire.SessionActivity, 0, len(out.Sessions))
+	for _, session := range out.Sessions {
+		ref, err := s.fromRemoteRefString(session.Ref)
+		if err != nil || ref == "" {
+			continue
+		}
+		session.Ref = ref
+		sessions = append(sessions, session)
+	}
+	return appwire.ActivityReadResponse{Sessions: sessions}, nil
+}
+
 func (s *RemoteHubSource) ListModels(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	var out appwire.ModelListResponse
 	if err := s.call(ctx, appwire.MethodModelList, params, &out); err != nil {
@@ -630,6 +696,9 @@ type remoteItemPagingState struct {
 	// recognized as a divergent transcript and the incarnation rotates.
 	head    appwire.ThreadItemPosition
 	hasHead bool
+	// history is the history identity the remote read the last page recorded
+	// into the window under; a continuation served from the window carries it.
+	history HistoryIdentity
 }
 
 // remoteItemSpan is one run of retained candidates this source observed as a
@@ -706,6 +775,11 @@ func remoteItemPagingKey(sourceID, threadID string) string {
 // page mints (or continues) a controller-owned identity, and the remote cursor
 // is retained behind it.
 func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
+	// A before beside a cursor moves the cursor's boundary, whoever calls.
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err
@@ -724,18 +798,26 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
 	remote.ItemLimit = itemLimit
+	// ApplyBefore spends a before that rode a cursor, so a before still set here
+	// is cursorless: forward it and let the remote hub mint its own cursor at
+	// that boundary (#3176). The page it returns is joined to the retained
+	// window below, so other viewers' cursors survive it.
+	remote.Before = params.Before
 
 	if params.Cursor == "" {
 		remote.Cursor = ""
-		candidates, native, err := s.remoteItemPage(ctx, remote)
+		candidates, native, history, err := s.remoteItemPage(ctx, remote)
 		if err != nil {
-			return ItemCandidateResult{}, err
+			return ItemCandidateResult{}, remoteCursorlessBeforeRefusal(params, err)
+		}
+		if params.Before != nil {
+			return s.recordRemoteBeforePage(key, *params.Before, candidates, native, history)
 		}
 		if err := validateRemotePageCursor(native, candidates); err != nil {
 			return ItemCandidateResult{}, err
 		}
 		identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
-		return s.recordRemoteItemPage(key, identity, candidates, native, head, hasHead, nil)
+		return s.recordRemoteItemPage(key, identity, candidates, native, history, head, hasHead, nil)
 	}
 
 	state, ok := s.itemPaging.peek(key)
@@ -765,7 +847,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 		return ItemCandidateResult{}, err
 	}
 	remote.Cursor = native
-	candidates, next, err := s.remoteItemPage(ctx, remote)
+	candidates, next, history, err := s.remoteItemPage(ctx, remote)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -784,7 +866,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	if _, compatible := remoteMergeCandidates(state.candidates, candidates); !compatible {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
-	return s.recordRemoteItemPage(key, state.identity, candidates, next, state.head, state.hasHead, &before)
+	return s.recordRemoteItemPage(key, state.identity, candidates, next, history, state.head, state.hasHead, &before)
 }
 
 // ReadItemCandidates materializes a remote item-mode thread read into the
@@ -845,24 +927,25 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 		return ItemCandidateResult{}, err
 	}
 	identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
-	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, head, hasHead, nil)
+	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, ReadHistoryIdentity(response), head, hasHead, nil)
 }
 
 // remoteItemPage issues one remote item-mode turn page and returns its
-// positioned candidates and the remote cursor for the next older page.
-func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.ThreadTurnsListParams) ([]appitempaging.TranscriptItemCandidate, string, error) {
+// positioned candidates, the remote cursor for the next older page, and the
+// history identity the remote read it under.
+func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.ThreadTurnsListParams) ([]appitempaging.TranscriptItemCandidate, string, HistoryIdentity, error) {
 	var out appwire.ThreadTurnsListResponse
 	if err := s.call(ctx, appwire.MethodThreadTurnsList, remote, &out); err != nil {
-		return nil, "", err
+		return nil, "", HistoryIdentity{}, err
 	}
 	candidates, err := appitempaging.CandidatesFromTurns(out.Data)
 	if err != nil {
-		return nil, "", err
+		return nil, "", HistoryIdentity{}, err
 	}
 	if err := validateRemotePagePositions(candidates); err != nil {
-		return nil, "", err
+		return nil, "", HistoryIdentity{}, err
 	}
-	return candidates, out.NextCursor, nil
+	return candidates, out.NextCursor, PageHistoryIdentity(out), nil
 }
 
 // validateRemotePagePositions applies to one remote item page the whole positional
@@ -1004,7 +1087,7 @@ func continueCompleteRemoteItemPage(cursor string, state remoteItemPagingState, 
 			return ItemCandidateResult{}, err
 		}
 	}
-	return ItemCandidateResult{Candidates: window, Identity: state.identity, Exhausted: !hasOlder}, nil
+	return ItemCandidateResult{Candidates: window, Identity: state.identity, Exhausted: !hasOlder, History: state.history}, nil
 }
 
 // remoteContiguousPrefix returns the leading run of retained candidates the
@@ -1073,13 +1156,22 @@ func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (app
 // remotePositionCompare orders two positions the way the paging package does:
 // negative when a is older, zero when equal, positive when newer.
 func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
-	if a.Entry < b.Entry || (a.Entry == b.Entry && a.Item < b.Item) {
-		return -1
+	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
+}
+
+// remoteCandidatesBefore keeps only the candidates strictly older than before,
+// for clipping a remote before page to the boundary it was fetched with.
+func remoteCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition) []appitempaging.TranscriptItemCandidate {
+	// Allocate rather than reuse the backing array: the caller still reads the
+	// original page for the contradiction check, and aliasing the two would let
+	// the clip overwrite it.
+	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if remotePositionCompare(candidate.Position, before) < 0 {
+			older = append(older, candidate)
+		}
 	}
-	if a == b {
-		return 0
-	}
-	return 1
+	return older
 }
 
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
@@ -1439,6 +1531,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	identity appitempaging.CursorIdentity,
 	candidates []appitempaging.TranscriptItemCandidate,
 	native string,
+	history HistoryIdentity,
 	head appwire.ThreadItemPosition,
 	hasHead bool,
 	from *appwire.ThreadItemPosition,
@@ -1475,7 +1568,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		spans = remoteItemSpansAfterObserving(merged, spans, candidates, from)
 	}
 	window := appitempaging.TranscriptItemWindow{Candidates: windowCandidates}
-	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, spans: spans, complete: native == "", head: head, hasHead: hasHead}
+	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, spans: spans, complete: native == "", head: head, hasHead: hasHead, history: history}
 	if native == "" {
 		// The identity is returned even when the page is complete: packing can
 		// still drop the oldest item for size and needs an identity to mint a
@@ -1484,7 +1577,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		// observed under this identity below any unobserved span, can be served
 		// locally.
 		s.itemPaging.put(key, state)
-		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true}, nil
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true, History: history}, nil
 	}
 	if len(windowCandidates) == 0 {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
@@ -1495,7 +1588,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	}
 	window.OlderCursor = cursor
 	s.itemPaging.put(key, state)
-	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: false}, nil
+	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: false, History: history}, nil
 }
 
 func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.CursorIdentity {
@@ -1504,6 +1597,104 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 		Incarnation:       fmt.Sprintf("remote-hub-incarnation-%d", remoteHubItemIncarnationSequence.Add(1)),
 		ProjectionVersion: remoteHubItemCursorProjectionVersion,
 	}
+}
+
+// recordRemoteBeforePage joins a cursorless-before page to the retained window
+// (#3176). The page is the continuation below the boundary the client named, so
+// it is recorded exactly as a cursor-fetched continuation is, with
+// from=&before so the page's observed run joins any recorded run that covers
+// the boundary: the retained identity is kept whenever the page merges without
+// contradiction, so other viewers' cursors survive, and only a real rewrite
+// rotates it.
+//
+// Two edges the cursor path does not meet are handled here. The page is clipped
+// to strictly older than before, so an inclusive remote cannot have the boundary
+// item retained or served as older; but the contradiction check runs on the
+// unclipped page first, so a boundary item re-reported with changed contents is
+// still seen as the rewrite it is. And a page whose boundary is not covered by a
+// retained run starts a run of its own: its own exhaustion says nothing about the
+// region between it and the retained window, so it must not overwrite the
+// retained continuation cursor or claim the window reached the thread's bottom.
+func (s *RemoteHubSource) recordRemoteBeforePage(
+	key string,
+	before appwire.ThreadItemPosition,
+	page []appitempaging.TranscriptItemCandidate,
+	native string,
+	history HistoryIdentity,
+) (ItemCandidateResult, error) {
+	state, hasState := s.itemPaging.peek(key)
+	compatible := true
+	if hasState {
+		_, compatible = remoteMergeCandidates(state.candidates, page)
+	}
+	if len(page) == 0 {
+		// Nothing precedes the boundary: an empty page, answered exhausted. It
+		// carries no continuation, so the retained state — and the cursor other
+		// viewers hold into it — is left exactly as it was.
+		if err := validateRemotePageCursor(native, page); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		if hasState {
+			return ItemCandidateResult{Identity: state.identity, Exhausted: true, History: history}, nil
+		}
+		return ItemCandidateResult{Identity: s.mintRemoteItemIdentity(key), Exhausted: true, History: history}, nil
+	}
+	older := remoteCandidatesBefore(page, before)
+	if len(older) == 0 {
+		// Only the boundary item came back. Nothing is served, but a contradiction
+		// on that item is still a rewrite under the retained identity: rotate so
+		// cursors that pinned the replaced history fail closed.
+		if hasState && !compatible {
+			s.itemPaging.put(key, remoteItemPagingState{identity: s.mintRemoteItemIdentity(key)})
+		}
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	if err := validateRemotePageCursor(native, older); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if hasState && compatible {
+		if remoteSpanContaining(state.spans, before) < 0 && native == "" {
+			// The page starts a run of its own and is exhausted on its own; its
+			// emptiness says nothing about the region between it and the retained
+			// window. Keep the retained cursor cached for the window it belongs to,
+			// but answer this page exhausted: nothing continues below it.
+			result, err := s.recordRemoteItemPage(key, state.identity, older, state.native, history, state.head, state.hasHead, &before)
+			if err != nil {
+				return ItemCandidateResult{}, err
+			}
+			result.Exhausted = true
+			result.Candidates.OlderCursor = ""
+			return result, nil
+		}
+		return s.recordRemoteItemPage(key, state.identity, older, native, history, state.head, state.hasHead, &before)
+	}
+	identity := s.mintRemoteItemIdentity(key)
+	head, hasHead := remoteItemPageHead(older)
+	return s.recordRemoteItemPage(key, identity, older, native, history, head, hasHead, &before)
+}
+
+// remoteCursorlessBeforeRefusal maps a remote hub's refusal of a cursorless
+// before back to the refusal a cursorless before got before this source could
+// forward one. A hub older than the before field decodes the request without
+// it, so its cursor is empty: it refuses because a cursor or before is
+// required, or, under strict decoding, because the before field is unknown.
+// Only those two shapes are rewritten; any other failure — including a newer
+// hub's unrelated invalid-params refusal — passes through unchanged, so this
+// rewrite never masks a real error.
+func remoteCursorlessBeforeRefusal(params appwire.ThreadTurnsListParams, err error) error {
+	if params.Before == nil {
+		return err
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		return err
+	}
+	missingCursor := strings.Contains(wireErr.Message, "cursor or before is required")
+	unknownField := strings.Contains(wireErr.Message, `unknown field "before"`)
+	if !missingCursor && !unknownField {
+		return err
+	}
+	return appwire.InvalidParams("before without a cursor is not supported for a thread on another host")
 }
 
 // AdminCall forwards one hub-scoped admin RPC to this remote host's hub over
@@ -1640,8 +1831,10 @@ func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, 
 // ambiguous case described on AdminMutationCall: it becomes
 // outcome-unknown/blocked directly, so the classification no longer depends on
 // mapCallError turning a deadline into SessionUnavailable and the
-// unavailability re-label below catching it. A semantic wire refusal keeps its
-// own code and message, exactly as on AdminCall. Everything else is mapped by
+// unavailability re-label below catching it. A delivered wire refusal keeps its
+// own code, message and data, regardless of the data's Go representation. Check
+// its original provenance before mapCallError replaces a transport failure with
+// an ordinary SessionUnavailable WireError. Everything else is mapped by
 // mapCallError, and only an unavailability it produced is re-labelled: that
 // mapping stays deliberately narrow because mapCallError's other outcomes are
 // not lost responses.
@@ -1652,18 +1845,16 @@ func (s *RemoteHubSource) remoteHubAdminMutationCallError(err error) error {
 		// rather than as an unknown outcome that blocks a safe retry.
 		return s.mapCallError(err)
 	}
-	var refused appwire.WireError
-	if !errors.As(err, &refused) && callerContextEnded(err) {
+	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
+		return err
+	}
+	if callerContextEnded(err) {
 		return s.hubAdminMutationOutcomeUnknown(
 			"mutation outcome is unknown after the caller's context ended while the remote hub call was in flight")
 	}
 	mapped := s.mapCallError(err)
-	var wire appwire.WireError
-	if !errors.As(mapped, &wire) {
-		return mapped
-	}
-	data, ok := wire.Data.(appwire.ErrorData)
-	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+	wire, ok := errors.AsType[appwire.WireError](mapped)
+	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
 	return s.hubAdminMutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss")

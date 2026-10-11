@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
 import { WireError } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
@@ -15,39 +15,31 @@ import type {
   SearchResult,
   ThreadCapabilities,
   ThreadModel,
+  ThreadReadResponse,
   TurnModel,
 } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { IDBFactory } from "fake-indexeddb";
+import { Composer } from "../../panes/session/composer/Composer";
+import { refreshPendingTurnsProjection } from "../../panes/session/composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { createTestComposerSource } from "../../panes/session/testing/composerSource";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
 import { renderPalette as render, scriptSearch } from "./paletteTestUtils";
 
-// See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const CAPS: ThreadCapabilities = {
@@ -190,7 +182,7 @@ function needsYouRows(): NavigationSessionSummary[] {
 function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     clientGenerationID: "generation_test",
     resources:
       rows === null
@@ -223,6 +215,19 @@ test("the empty-query view lists needs-you sessions (title + 'needs you' hint) w
   const option = screen.getByRole("option", { name: /Session A/i });
   expect(within(option).getByText(/needs you/i)).toBeTruthy();
   expect(screen.getByRole("option", { name: /Session B/i })).toBeTruthy();
+});
+
+// An approval blocks its turn mid-tool, so the row's wire state stays
+// "active": the dot must read approval_pending, not the state alone.
+test("a needs-you row waiting on an approval shows a needs-you dot, not a working one", () => {
+  setNeedsYouRows(
+    needsYouRows().map((row) => (row.ref === "local:ny1" ? { ...row, state: "active", approval_pending: true } : row)),
+  );
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  const option = screen.getByRole("option", { name: /Session A/i });
+  expect(within(option).getByRole("img", { name: "Needs you" })).toBeTruthy();
 });
 
 test("Enter on a needs-you row opens that session and closes the palette", async () => {
@@ -548,27 +553,6 @@ test("typing after /help leaves the help panel and returns to a real command lis
 
 // --- search mode ---
 
-test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
-  const user = userEvent.setup();
-  scriptSearch({
-    live: [
-      { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
-    ],
-    past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
-  });
-
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "frobnitz");
-
-  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-  expect(screen.getByText("Past · 1")).toBeTruthy();
-  const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
-  expect(live).toBeTruthy();
-  // The matched substring is wrapped in <mark> (§2.3 highlighting).
-  expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
-});
-
 test("in-session search scans the focused ThreadModel's turns", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
@@ -623,32 +607,87 @@ test('typing past a bare "?" leaves the help view and resumes filtering, same as
   expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
 });
 
-// --- search-result navigation ---
+// --- remote search results ---
 
-// Typed against the real SearchResult, not Record<string, unknown>: `ref` is
-// required now (see search.ts), and a fixture omitting it would be describing
-// a response the hub cannot produce.
-async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
-  scriptSearch({ live: [result], past: [] });
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), term);
-  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-  const row = screen.getAllByRole("option").find((o) => o.textContent?.includes(term));
-  await user.click(row as HTMLElement);
-}
+// Remote search waits out the palette's search debounce. Fake timers own that
+// clock, and the stubbed `jest` global lets Testing Library's waitFor polls
+// advance it, so the debounce costs a poll rather than real time.
+describe("remote search results", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-// One ref form, and the type is what enforces it: a hit with no ref is not a
-// state this code can be in, so there is no runtime fallback to test. The hub
-// sets Ref at both construction sites and its field carries no omitempty.
-test("a search result is opened by its qualified ref", async () => {
-  const user = userEvent.setup();
-  await searchAndClick(
-    user,
-    { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
-    "reffuls",
-  );
-  expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+  test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [
+        { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
+      ],
+      past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    expect(screen.getByText("Past · 1")).toBeTruthy();
+    const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
+    expect(live).toBeTruthy();
+    // The matched substring is wrapped in <mark> (§2.3 highlighting).
+    expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
+  });
+
+  // Typed against the real SearchResult, not Record<string, unknown>: `ref` is
+  // required now (see search.ts), and a fixture omitting it would be describing
+  // a response the hub cannot produce.
+  async function searchLiveRow(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
+    scriptSearch({ live: [result], past: [] });
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), term);
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    return screen.getAllByRole("option").find((o) => o.textContent?.includes(term)) as HTMLElement;
+  }
+
+  // One ref form, and the type is what enforces it: a hit with no ref is not a
+  // state this code can be in, so there is no runtime fallback to test. The hub
+  // sets Ref at both construction sites and its field carries no omitempty.
+  test("a search result is opened by its qualified ref", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const row = await searchLiveRow(
+      user,
+      { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
+      "reffuls",
+    );
+    await user.click(row);
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+  });
+
+  // An approval blocks its turn mid-tool, so the result's wire state stays
+  // "active": the dot must read approval_pending, not the state alone, the
+  // same rule #2560 gave the rail's needs-you dot (#2567).
+  test("a live search result waiting on an approval shows a needs-you dot, not a working one", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const live = await searchLiveRow(
+      user,
+      {
+        id: "local:a",
+        ref: "local:local:a",
+        title: "frobnitz worker",
+        project: "proj",
+        state: "active",
+        age: "now",
+        approvalPending: true,
+      },
+      "frobnitz",
+    );
+    expect(within(live).getByRole("img", { name: "Needs you" })).toBeTruthy();
+  });
 });
 
 // --- keyboard navigation ---
@@ -731,12 +770,12 @@ test("Enter on an unknown slash command sends the raw query - the escape hatch f
 test("Enter on an unknown slash command against a fenced session toasts the refusal and keeps the palette open", async () => {
   const user = userEvent.setup();
   focusSession("local:ref_a");
-  // A Stop in flight arms the fence while the snapshot still reads idle -
-  // the window the liveControls predicate exists for.
+  // A Stop this page started is its own fence while it drains: the hub holds
+  // Stopping > 0 and refuses turn/start even though the snapshot reads idle.
+  // This is deliberately NOT the Send-resumes face (which excludes a draining
+  // Stop), so the fallthrough's refusal path is what runs here.
   act(() => {
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:ref_a", Symbol()),
-    }));
+    threadsStore.setState((state) => ({ stoppingRefs: new Set(state.stoppingRefs).add("local:ref_a") }));
   });
   render(
     <>
@@ -755,6 +794,184 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
   expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("/frobnicate main");
 });
 
+// R09: the palette's slash fallthrough is one of the direct callers of the
+// shared store send, so a Send-resumes fenced ref inherits the whole journey
+// here. The raw text parks durably, the store drives the resume, and the parked
+// turn/start drains once after the resume's hydration reconciles the uncertain
+// row. The palette closes on the durable accept, before the resume lands.
+test("Enter on an unknown slash command against a Send-resumes fenced session parks the send, drives the resume, closes the palette, and drains once", async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:ref_a";
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  let resumed = false;
+  let uncertain = "";
+  const fenced = () =>
+    wireThread(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPS, send: false, queue: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+  // The resumed, authoritative snapshot names the uncertain row as accepted,
+  // which reconciles it.
+  const idle = () =>
+    wireThread(ref, {
+      status: { type: "idle" },
+      evener: {
+        ref,
+        capabilities: CAPS,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, clientMutationIds: [uncertain] },
+      },
+    });
+  fake.on("thread/read", () => ({ thread: resumed ? idle() : fenced() }) satisfies ThreadReadResponse);
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const heldResume = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return heldResume;
+  });
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  // Track and hydrate the fenced ref: the fallthrough reads the focused pane's
+  // session, and the driver's refreshThread needs a tracked ref to re-read.
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  await act(async () => {
+    const row = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/queue",
+      payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "uncertain" }] },
+    });
+    uncertain = row.clientMutationId;
+    await storage.markUnknown(uncertain, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+  });
+  await flushPendingTurnsProjectionForTests();
+  render(
+    <>
+      <CommandPalette />
+      <Toast />
+    </>,
+  );
+  act(() => openPalette("/frobnicate main"));
+  await user.keyboard("{Enter}");
+  // The durable accept closes the palette before the resume lands.
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => {
+    await requested;
+  });
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  // The row is parked: nothing reached the wire while the resume was held.
+  expect(starts).toBe(0);
+  await act(async () => {
+    resumed = true;
+    resolveResume({ thread: idle() });
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(threadsStore.getState().resumeFailures.size).toBe(0);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  await waitFor(() => expect(starts).toBe(1));
+  expect(starts).toBe(1);
+});
+
+// The failure arm: the palette still closes on the durable accept (the row is
+// parked and Send remains the single action), and the resume's rejection
+// surfaces through the composer's toast, which names the reason.
+test("a Send-resumes fallthrough whose resume fails parks the row, closes the palette, and toasts through the composer", async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:ref_fail";
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  fake.on(
+    "thread/read",
+    () =>
+      ({
+        thread: wireThread(ref, {
+          status: { type: "notLoaded" },
+          evener: {
+            ref,
+            capabilities: { ...CAPS, send: false, queue: false },
+            mutationStateAuthoritative: false,
+            resumeRequired: true,
+            queue: { revision: 0 },
+          },
+        }),
+      }) satisfies ThreadReadResponse,
+  );
+  fake.on("thread/resume", () => {
+    throw new Error("resume rejected");
+  });
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <>
+      <CommandPalette />
+      <Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />
+      <Toast />
+    </>,
+  );
+  act(() => openPalette("/frobnicate main"));
+  await user.keyboard("{Enter}");
+  expect(await screen.findByText("Resume failed: resume rejected")).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await flushPendingTurnsProjectionForTests();
+  const rows = await storage.listOutbox(ref);
+  expect(rows.map((record) => record.method)).toEqual(["turn/start"]);
+  expect(starts).toBe(0);
+});
+
 // 2026-08-14: a picked session-scoped command - built-in OR plugin catalog -
 // no longer runs from the palette at all (nor, for a plugin command, sends
 // its qualified form immediately). Both now resolve to the SAME single
@@ -769,7 +986,6 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
 test("selecting a plugin catalog entry's handoff row inserts the raw typed text into the composer instead of sending", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });
@@ -794,7 +1010,6 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
 test("Enter on a plugin command with arguments hands off the FULL typed text, args included", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });

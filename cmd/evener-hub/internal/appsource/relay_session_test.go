@@ -175,7 +175,7 @@ func observeRelayFrame(t *testing.T, session *relaySession, notification appwire
 }
 
 func relayDelta(threadID, delta string) appwire.Notification {
-	return *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	return *appwire.NotificationMessage(appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
 		ThreadID: threadID,
 		Ref:      "local:" + threadID,
 		Delta:    delta,
@@ -1641,7 +1641,7 @@ func awaitRecoveryLatchRelease(t *testing.T, session *relaySession) {
 
 func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
 	t.Helper()
-	var params appwire.AgentMessageDeltaParams
+	var params appwire.OverlayDeltaParams
 	if err := json.Unmarshal(notification.Params, &params); err != nil {
 		t.Fatalf("decode delta: %v", err)
 	}

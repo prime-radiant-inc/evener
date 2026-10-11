@@ -315,9 +315,11 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		// machinery resolves it. The controller mutex is held across this
 		// check and the completion append below, so a wake cannot slip into
 		// that window twice and leak past the completed stop.
-		for attentionID := range c.attentionWakeIDs[id] {
-			if !slices.Contains(attention, attentionID) {
-				attention = append(attention, attentionID)
+		if state := c.attention[id]; state != nil {
+			for attentionID := range state.wakeIDs {
+				if !slices.Contains(attention, attentionID) {
+					attention = append(attention, attentionID)
+				}
 			}
 		}
 		sort.Strings(attention)
@@ -416,20 +418,13 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 				stabilize:     true,
 			}}}, nil, nil
 		}
-		packet := delegateStoppedTerminalPacket()
-		deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
-		if _, err := c.appendLocked(delegateRunFinishedEvent(
-			lease,
-			delegatestore.OutcomeStopped,
-			delegatestore.DispositionTerminalError,
-			"stopped_by_parent",
-			c.now(),
-			deliveryID,
-			&packet,
-		)); err != nil {
-			return delegateMutationPlans{}, nil, fmt.Errorf("reconcile delegate %s recovery-required stop: %w", lease.delegateID, err)
+		plans, cancel, finishErr := c.executeFinishDecisionLocked(c.reduceStoppedGenerationFinishIntent(finishIntent{
+			lease: lease,
+			latch: finishLatchNone,
+		}))
+		if finishErr != nil {
+			return delegateMutationPlans{}, nil, fmt.Errorf("reconcile delegate %s recovery-required stop: %w", lease.delegateID, finishErr)
 		}
-		plans, cancel := c.generationFinishedPlansLocked(lease, deliveryID)
 		return plans, cancel, nil
 	}
 	return delegateMutationPlans{}, nil, nil
@@ -720,7 +715,24 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, plan.disposition); err != nil {
+	// A stop discards only attention the transcript still owes. A noted wake
+	// can outlive its item's resolution: a delegate generation consumes what
+	// its settled requests presented, and its wake stays until a clear
+	// reconciles it. Discarding that item again would be a conflicting
+	// resolution, so the stop re-resolves it as recorded instead: that appends
+	// nothing and renews the durability barrier for a marker whose fsync may
+	// have failed, before the wake is forgotten.
+	disposition, generation := plan.disposition, uint64(0)
+	if plan.disposition == delegateAttentionDiscarded {
+		recorded, recordedGeneration, resolved, err := c.recordedDelegateAttentionResolution(plan.transcriptRef, plan.attentionID)
+		if err != nil {
+			return err
+		}
+		if resolved {
+			disposition, generation = recorded, recordedGeneration
+		}
+	}
+	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, disposition, generation); err != nil {
 		return err
 	}
 	if plan.disposition == delegateAttentionConsumed {
@@ -731,12 +743,29 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 	return err
 }
 
+// recordedDelegateAttentionResolution returns the resolution the receiver
+// transcript holds for attentionID, if any: its disposition and resume
+// generation. A resolution is appended before it is reported, so the file
+// holds it for a resident runtime too.
+func (c *delegateTreeController) recordedDelegateAttentionResolution(transcriptRef, attentionID string) (delegateAttentionResolution, uint64, bool, error) {
+	path, sessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
+	if err != nil {
+		return "", 0, false, err
+	}
+	fold, err := readExistingDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		return "", 0, false, err
+	}
+	disposition, resolved := fold.resolutions[attentionID]
+	return disposition, fold.resumeGenerations[attentionID], resolved, nil
+}
+
 // resolveDelegateAttentionDurably appends attention resolution markers through
 // the resident runtime's one writer when it exists, and through a cold writer
 // on the receiver transcript otherwise.
-func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Session, transcriptRef string, ids []string, disposition delegateAttentionResolution) error {
+func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Session, transcriptRef string, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if runtime != nil {
-		return runtime.resolveAttentionDurably(ids, disposition)
+		return runtime.resolveAttentionDurablyForGeneration(ids, disposition, resumeGeneration)
 	}
 	path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
 	if err != nil {
@@ -746,7 +775,7 @@ func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Sessio
 	if open == nil {
 		open = transcript.OpenWriterForSession
 	}
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, open)
+	return appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID, ids, disposition, resumeGeneration, open)
 }
 
 func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (delegateMutationPlans, error) {
@@ -775,31 +804,23 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 			if aggregate.PreparedTerminal == nil {
 				return delegateMutationPlans{}, fmt.Errorf("reconcile delegate %s: settling without prepared terminal", lease.delegateID)
 			}
-			finish := delegatePreparedFinish(*aggregate.PreparedTerminal)
-			if !finish.endedAt.IsZero() {
-				endedAt = finish.endedAt
+			settled := settledGenerationFinish(*aggregate.PreparedTerminal, delegateFinish{})
+			if !settled.prepared.endedAt.IsZero() {
+				endedAt = settled.prepared.endedAt
 			}
 			events = []delegatestore.Event{delegateRunFinishedEvent(
 				lease,
-				finish.outcome,
-				finish.disposition,
-				finish.reason,
+				settled.outcome,
+				settled.disposition,
+				settled.reason,
 				endedAt,
 				delegateDeliveryID(lease.delegateID, lease.generation),
 				nil,
 			)}
-			events = delegateFinishMetadataEvents(events, lease, finish, finish.outcome, finish.reason)
+			events = delegateFinishMetadataEvents(events, lease, settled.meta, settled.outcome, settled.reason)
 		case delegatestore.PhaseStopping:
-			stoppedPacket := delegateStoppedTerminalPacket()
-			events = []delegatestore.Event{delegateRunFinishedEvent(
-				lease,
-				delegatestore.OutcomeStopped,
-				delegatestore.DispositionTerminalError,
-				"stopped_by_parent",
-				endedAt,
-				delegateDeliveryID(lease.delegateID, lease.generation),
-				&stoppedPacket,
-			)}
+			event, _ := stoppedGenerationFinishEvent(lease, nil, endedAt)
+			events = []delegatestore.Event{event}
 		default:
 			return delegateMutationPlans{}, fmt.Errorf("reconcile delegate %s: open run has phase %s", lease.delegateID, aggregate.Phase)
 		}

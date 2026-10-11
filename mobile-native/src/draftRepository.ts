@@ -1,12 +1,10 @@
 import { CreationDraftRepository } from "./creationDraftRepository";
-import {
-	type DraftImage,
-	type DraftImageData,
-	imageInput,
-	parseImages,
-} from "./draftImages";
+import { type DraftImage, type DraftImageData, imageInput, parseImages } from "./draftImages";
 import {
 	decodeQuestionSelections,
+	questionDefinition,
+	sameQuestion,
+	type QuestionDefinition,
 	type QuestionSelections,
 } from "./questionAnswers";
 import { type SqliteSync, withSavepoint } from "./sqliteSync";
@@ -52,10 +50,7 @@ export class DraftRepository {
     )`);
 	}
 
-	readQuestionPosition(
-		destination: DraftDestination,
-		keys: string[],
-	): string | undefined {
+	readQuestionPosition(destination: DraftDestination, keys: string[]): string | undefined {
 		const row = this.db.getFirstSync<{ question_key: string }>(
 			"SELECT question_key FROM question_positions WHERE hub_id = ? AND session_ref = ?",
 			destination.hubId,
@@ -79,35 +74,26 @@ export class DraftRepository {
 			destination.sessionRef,
 		);
 	}
-	readQuestions(
-		destination: DraftDestination,
-		signature: string,
-	): QuestionSelections {
+	readQuestions(destination: DraftDestination, signature: string): QuestionSelections {
 		const row = this.questionRow(destination);
 		if (!row) return {};
 		const definitions = questionDefinitions(row.signature);
 		const selections = decodeQuestionSelections(row.selections);
 		const result: QuestionSelections = {};
-		for (const [key, definition] of questionDefinitions(signature)) {
-			if (definitions.get(key) === definition && selections[key])
-				result[key] = selections[key];
+		for (const current of questionDefinitions(signature).values()) {
+			if (sameQuestion(definitions.get(current.key), current) && selections[current.key])
+				result[current.key] = selections[current.key];
 		}
 		return result;
 	}
-	writeQuestions(
-		destination: DraftDestination,
-		signature: string,
-		selections: QuestionSelections,
-	): void {
+	writeQuestions(destination: DraftDestination, signature: string, selections: QuestionSelections): void {
 		const row = this.questionRow(destination);
-		const definitions = row
-			? questionDefinitions(row.signature)
-			: new Map<string, string>();
+		const definitions = row ? questionDefinitions(row.signature) : new Map<string, QuestionDefinition>();
 		const merged = row ? decodeQuestionSelections(row.selections) : {};
-		for (const [key, definition] of questionDefinitions(signature)) {
-			definitions.set(key, definition);
-			if (selections[key]) merged[key] = selections[key];
-			else delete merged[key];
+		for (const current of questionDefinitions(signature).values()) {
+			definitions.set(current.key, current);
+			if (selections[current.key]) merged[current.key] = selections[current.key];
+			else delete merged[current.key];
 		}
 		this.db.runSync(
 			`INSERT INTO question_drafts (hub_id, session_ref, signature, selections)
@@ -115,7 +101,7 @@ export class DraftRepository {
        signature = excluded.signature, selections = excluded.selections`,
 			destination.hubId,
 			destination.sessionRef,
-			`[${[...definitions.values()].join(",")}]`,
+			`[${[...definitions.values()].map((definition) => JSON.stringify(definition)).join(",")}]`,
 			JSON.stringify(merged),
 		);
 	}
@@ -136,11 +122,9 @@ export class DraftRepository {
 		if (row) {
 			const images = parseImages(row.images);
 			const unconfirmedImages = parseImages(row.unconfirmed_images);
-			for (const image of [...images, ...unconfirmedImages])
-				this.requireImage(destination, image);
+			for (const image of [...images, ...unconfirmedImages]) this.requireImage(destination, image);
 			if (images.length) record.images = images;
-			if (unconfirmedImages.length)
-				record.unconfirmedImages = unconfirmedImages;
+			if (unconfirmedImages.length) record.unconfirmedImages = unconfirmedImages;
 		}
 		return record;
 	}
@@ -152,8 +136,7 @@ export class DraftRepository {
 			destination.sessionRef,
 			image.id,
 		);
-		if (!row || row.media_type !== image.mediaType)
-			throw new Error("Saved image is unavailable.");
+		if (!row || row.media_type !== image.mediaType) throw new Error("Saved image is unavailable.");
 		return row;
 	}
 
@@ -171,25 +154,13 @@ export class DraftRepository {
 		});
 	}
 
-	write(
-		destination: DraftDestination,
-		record: DraftRecord,
-		additions: DraftImageData[] = [],
-	): void {
+	write(destination: DraftDestination, record: DraftRecord, additions: DraftImageData[] = []): void {
 		const images = parseImages(JSON.stringify(record.images ?? []));
-		const unconfirmedImages = parseImages(
-			JSON.stringify(record.unconfirmedImages ?? []),
-		);
+		const unconfirmedImages = parseImages(JSON.stringify(record.unconfirmedImages ?? []));
 		const referenced = [...images, ...unconfirmedImages];
 		withSavepoint(this.db, "draft_write", () => {
 			for (const image of additions) {
-				if (
-					!referenced.some(
-						(item) =>
-							item.id === image.id && item.mediaType === image.mediaType,
-					) ||
-					!image.data
-				)
+				if (!referenced.some((item) => item.id === image.id && item.mediaType === image.mediaType) || !image.data)
 					throw new Error("Image must belong to this draft.");
 				const existing = this.db.getFirstSync<{
 					data: string;
@@ -200,11 +171,7 @@ export class DraftRepository {
 					destination.sessionRef,
 					image.id,
 				);
-				if (
-					existing &&
-					(existing.data !== image.data ||
-						existing.media_type !== image.mediaType)
-				)
+				if (existing && (existing.data !== image.data || existing.media_type !== image.mediaType))
 					throw new Error("Saved image identity cannot be replaced.");
 				if (!existing)
 					this.db.runSync(
@@ -264,6 +231,19 @@ export class DraftRepository {
 		);
 	}
 
+	/** The sessions on a hub with a draft worth marking: typed or unconfirmed
+	 * text, or images alone (an image-only draft lives only in
+	 * draft_image_sets, since write deletes its empty drafts row). */
+	refsWithDrafts(hubId: string): Set<string> {
+		const rows = this.db.getAllSync<{ session_ref: string }>(
+			`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL)
+       UNION SELECT session_ref FROM draft_image_sets WHERE hub_id = ?`,
+			hubId,
+			hubId,
+		);
+		return new Set(rows.map((row) => row.session_ref));
+	}
+
 	removeHub(hubId: string): void {
 		this.creation.clear(hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);
@@ -274,20 +254,20 @@ export class DraftRepository {
 	}
 }
 
-/** Definitions are compared per question so another batch cannot erase edits. */
-function questionDefinitions(signature: string): Map<string, string> {
+/** Definitions are compared per question so another batch cannot erase edits.
+ * Each definition normalizes through questionAnswers.ts's questionDefinition,
+ * so a row saved under the pre-identity signature — the full canonical
+ * question, or the display bound's truncated copy — compares equal to the
+ * identity's signature of the same question (questionAnswers.ts's
+ * sameQuestion). */
+function questionDefinitions(signature: string): Map<string, QuestionDefinition> {
 	const value: unknown = JSON.parse(signature);
 	if (!Array.isArray(value)) throw new Error("Invalid question definitions");
-	const definitions = new Map<string, string>();
+	const definitions = new Map<string, QuestionDefinition>();
 	for (const question of value) {
-		if (
-			!question ||
-			typeof question !== "object" ||
-			typeof question.key !== "string" ||
-			definitions.has(question.key)
-		)
+		if (!question || typeof question !== "object" || typeof question.key !== "string" || definitions.has(question.key))
 			throw new Error("Invalid question definitions");
-		definitions.set(question.key, JSON.stringify(question));
+		definitions.set(question.key, questionDefinition(question));
 	}
 	return definitions;
 }

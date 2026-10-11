@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/remoteinstall"
 )
 
 // TestRound11EmbeddedInstallerMatchesTheReviewedScript pins the round-eleven
@@ -24,19 +25,19 @@ import (
 // claim — a future edit to install.sh fails here until the embedded copy is
 // re-copied from the reviewed file, so the copy cannot drift silently.
 func TestRound11EmbeddedInstallerMatchesTheReviewedScript(t *testing.T) {
-	if len(installerScript) == 0 {
+	if len(remoteinstall.Script) == 0 {
 		t.Fatal("the embedded installer is empty")
 	}
-	if !bytes.HasPrefix(installerScript, []byte("#!/bin/sh\n")) {
-		t.Fatalf("the embedded installer does not start with a /bin/sh shebang: %q", installerScript)
+	if !bytes.HasPrefix(remoteinstall.Script, []byte("#!/bin/sh\n")) {
+		t.Fatalf("the embedded installer does not start with a /bin/sh shebang: %q", remoteinstall.Script)
 	}
 	reviewed, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "install.sh"))
 	if err != nil {
 		t.Fatalf("read the repository's install.sh: %v", err)
 	}
-	if !bytes.Equal(installerScript, reviewed) {
-		t.Fatalf("the embedded installer (%d bytes) differs from the repository's install.sh (%d bytes); the fix is to re-copy the reviewed script into cmd/evener-hub/internal/sshconn/install.sh",
-			len(installerScript), len(reviewed))
+	if !bytes.Equal(remoteinstall.Script, reviewed) {
+		t.Fatalf("the embedded installer (%d bytes) differs from the repository's install.sh (%d bytes); the fix is to re-copy the reviewed script into internal/remoteinstall/install.sh",
+			len(remoteinstall.Script), len(reviewed))
 	}
 }
 
@@ -69,7 +70,7 @@ func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(evenerPathMissingMarker + "\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -86,8 +87,8 @@ func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 	if !installerRan {
 		t.Fatal("the installer fallback never ran")
 	}
-	if !bytes.Equal(installerStdin, installerScript) {
-		t.Fatalf("the host received %d bytes on stdin, want the embedded installer's %d bytes", len(installerStdin), len(installerScript))
+	if !bytes.Equal(installerStdin, remoteinstall.Script) {
+		t.Fatalf("the host received %d bytes on stdin, want the embedded installer's %d bytes", len(installerStdin), len(remoteinstall.Script))
 	}
 	for _, forbidden := range []string{"http://", "https://", "curl", "raw.githubusercontent.com"} {
 		if strings.Contains(installerJoined, forbidden) {
@@ -225,10 +226,13 @@ func TestRound11PreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 			case strings.HasSuffix(joined, "id -u"):
 				return []byte("1000\n"), nil
 			case strings.Contains(joined, resolved+" launch-check"):
-				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, " evener launch-check"):
 				// The host's non-interactive PATH does not carry the binary.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+			case strings.Contains(joined, executableProbeRemote("evener")):
+				// The dedicated executable probe: absent.
+				return nil, exitStatus(t, 1)
 			case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
 				return []byte(resolved + "\n"), nil
 			case strings.Contains(joined, "api/health"):
@@ -290,13 +294,16 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 				// The host has neither lsof nor a listener: the fallback tier
 				// proved the hub port free.
 				return []byte(noListenerMarker + "\n"), nil
+			case strings.Contains(joined, executableProbeRemote("evener")):
+				// The dedicated executable probe: absent.
+				return nil, exitStatus(t, 1)
 			case strings.Contains(joined, "command -v evener"):
 				return []byte(evenerPathMissingMarker + "\n"), nil
 			case strings.Contains(joined, "launch-check"):
 				if strings.Contains(joined, " evener launch-check") {
 					return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 				}
-				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, "evener_resolve"):
 				// The deploy-target resolver runs before the push (nothing
 				// installed yet, so it fails and the create-target fallback takes
@@ -337,6 +344,8 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {

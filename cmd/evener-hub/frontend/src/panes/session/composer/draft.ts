@@ -19,6 +19,7 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
+import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
@@ -29,9 +30,11 @@ const draftRevisions = new Map<string, number>();
 // (never prose): the submit boundary assembles them as {type: "skill", name}
 // input items after the ordinary text/attachment items, and a chip change is
 // a draft edit even when the text is byte-identical.
-export interface ComposerDraft {
-  text: string;
-  skillNames: string[];
+export interface ComposerDraft extends SkillEditorValue {
+  // Wall-clock stamp of the last write, so two refs' drafts can be ordered when
+  // one is carried to the other (see carryComposerDraft). Absent on records an
+  // older build wrote.
+  editedAt?: number;
 }
 
 // A remount inherits the same draft revision. Editing or replacing its
@@ -58,7 +61,21 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
   return (
     typeof record.text === "string" &&
     Array.isArray(record.skillNames) &&
-    record.skillNames.every((name) => typeof name === "string")
+    record.skillNames.every((name) => typeof name === "string") &&
+    (record.commandNames === undefined ||
+      (Array.isArray(record.commandNames) && record.commandNames.every((name) => typeof name === "string"))) &&
+    (record.editedAt === undefined || typeof record.editedAt === "number") &&
+    (record.mentions === undefined ||
+      (Array.isArray(record.mentions) &&
+        record.mentions.every(
+          (mention) =>
+            mention !== null &&
+            typeof mention === "object" &&
+            (mention.kind === "skill" || mention.kind === "command") &&
+            typeof mention.name === "string" &&
+            Number.isInteger(mention.offset) &&
+            mention.offset >= 0,
+        )))
   );
 }
 
@@ -85,7 +102,12 @@ export function readComposerDraft(ref: string): ComposerDraft {
       // hand padded, empty or repeated names straight to the chips. Canonical
       // names are the contract everywhere else; enforce it here too.
       if (isStoredComposerDraft(parsed)) {
-        return { text: parsed.text, skillNames: canonicalSkillNames(parsed.skillNames) };
+        return {
+          text: parsed.text,
+          skillNames: canonicalSkillNames(parsed.skillNames),
+          ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
+          ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
+        };
       }
     }
     return { text: localStorage.getItem(draftStorageKey(ref)) ?? "", skillNames: [] };
@@ -94,10 +116,34 @@ export function readComposerDraft(ref: string): ComposerDraft {
   }
 }
 
+// A draft with nothing to send: no prose and no selections. The one predicate
+// the writer and the carry share, so an empty draft is never persisted and a
+// blank source never moves.
+function isBlankDraft(value: ComposerDraft): boolean {
+  return value.text.trim() === "" && value.skillNames.length === 0 && !value.commandNames?.length;
+}
+
 // The text half of the structured draft, for callers that only compose prose
 // (the dev harness's seeded panes, and tests reading back what they typed).
 export function readDraft(ref: string): string {
   return readComposerDraft(ref).text;
+}
+
+// A persisted draft's last-write stamp, 0 when it carries none (an older build
+// wrote it, or there is no record). Kept out of readComposerDraft's own value:
+// the stamp is persistence metadata the carry needs to order two refs, not part
+// of the draft's content, and returning it there would change the draft's public
+// shape for every reader.
+export function readDraftEditedAt(ref: string): number {
+  try {
+    const structured = localStorage.getItem(composerDraftStorageKey(ref));
+    if (structured === null) return 0;
+    const parsed: unknown = JSON.parse(structured);
+    if (!isStoredComposerDraft(parsed)) return 0;
+    return parsed.editedAt ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 // Writes the whole structured draft as ONE atomic v2 record, then removes any
@@ -111,11 +157,13 @@ export function readDraft(ref: string): string {
 export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   markDraftEdited(ref);
   try {
-    if (value.text.trim() === "" && value.skillNames.length === 0) {
+    if (isBlankDraft(value)) {
       localStorage.removeItem(composerDraftStorageKey(ref));
       localStorage.removeItem(draftStorageKey(ref));
     } else {
-      localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify(value));
+      // The one choke point every persisted draft edit goes through, so the stamp
+      // is the draft's actual last-write time.
+      localStorage.setItem(composerDraftStorageKey(ref), JSON.stringify({ ...value, editedAt: Date.now() }));
       localStorage.removeItem(draftStorageKey(ref));
     }
   } catch {
@@ -124,10 +172,11 @@ export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   }
 }
 
-// A text edit preserves the draft's selections - chips apply to the request
-// independently of the prose, so editing words never drops a selected skill.
+// Explicit atoms follow their visible labels across text edits. Names-only
+// drafts retain their selections independently of the prose.
 export function writeDraft(ref: string, value: string): void {
-  writeComposerDraft(ref, { text: value, skillNames: readComposerDraft(ref).skillNames });
+  const current = readComposerDraft(ref);
+  writeComposerDraft(ref, current.mentions ? patchSelectionText(current, value) : { ...current, text: value });
 }
 
 // clearDraft drops a ref's stored draft outright - called on every
@@ -136,6 +185,30 @@ export function writeDraft(ref: string, value: string): void {
 export function clearDraft(ref: string): void {
   markDraftEdited(ref);
   clearPersistedDraft(ref);
+}
+
+// A store-driven resume can return a different identity, and the pane follows
+// it. The draft the old-ref composer held is stored under the OLD ref
+// (persistDraft keys by ref), while the incoming pane's composer starts on the
+// NEW ref's own draft - so without this the old ref's draft would be dropped at
+// the ref change. The carry must preserve whichever draft is genuinely NEWER,
+// not assume the source is: the notice's Resume button hands over whatever sat
+// in the old-ref composer, so a draft typed in another pane on the resumed ref
+// can be newer. The persisted wall-clock stamp orders the two across refs (the
+// per-ref revision counter cannot). A blank or absent destination always takes
+// the source; otherwise the source wins only when strictly newer. Ties, and the
+// migration case of two unstamped records, keep the destination - conservative,
+// and transient until drafts are re-edited. The source copy under the old ref is
+// left in place either way (returning to that identity still finds it). Staged
+// image attachments are NOT part of the carried draft: they are per-mount
+// sourceState and the new pane starts with none.
+export function carryComposerDraft(fromRef: string, toRef: string): void {
+  if (fromRef === toRef) return;
+  const from = readComposerDraft(fromRef);
+  if (isBlankDraft(from)) return;
+  const to = readComposerDraft(toRef);
+  if (!isBlankDraft(to) && readDraftEditedAt(fromRef) <= readDraftEditedAt(toRef)) return;
+  writeComposerDraft(toRef, from);
 }
 
 // Recovery persistence owns the text in IndexedDB. Removing its redundant

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,7 +54,7 @@ func FuzzParseStartup(f *testing.F) {
 		if which&1 == 0 {
 			args := strings.Split(raw, " ")
 			// flag parsing must never panic, only return an error.
-			_, _ = ParseTUIStartupOptions(args, getenv)
+			_, _ = ParseTUIStartupOptions(args, getenv, io.Discard)
 			return
 		}
 
@@ -126,7 +127,7 @@ func FuzzHubStartupCoverage(f *testing.F) {
 		case 21:
 			TestClassifyStartHubError(t)
 		case 22:
-			_, _ = ParseTUIStartupOptions(nil, nil)
+			_, _ = ParseTUIStartupOptions(nil, nil, io.Discard)
 			_ = EnvDefault(func(string) string { return "set" }, "key", "fallback")
 			_ = (StartupError{Err: errors.New("wrapped")}).Unwrap()
 		case 23:

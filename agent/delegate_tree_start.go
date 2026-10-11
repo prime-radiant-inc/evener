@@ -66,6 +66,7 @@ type delegateFinish struct {
 	outcome             delegatestore.OutcomeStatus
 	disposition         delegatestore.RunDisposition
 	reason              string
+	errorText           string
 	packet              *delegatestore.TerminalPacket
 	endedAt             time.Time
 	exhaustionBudget    delegatestore.ExhaustionBudget
@@ -393,7 +394,7 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	if err != nil || ownerID != "" && ownerID != lease.delegateID {
 		return errDelegateTargetBusy
 	}
-	live.runtime = runtime
+	c.setResidentRuntimeLocked(live, runtime)
 	live.binding.runtime = runtime
 	c.evidenceVersion++
 	return nil
@@ -577,23 +578,18 @@ func (c *delegateTreeController) FailCommittedRestart(lease delegateLease, failu
 // the error: the failure path joins the append error onto that sentinel, and
 // errors.Is walks a join, so no inspection of the error can tell them apart.
 func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, live *delegateLiveState) (delegateMutationPlans, context.CancelFunc, delegateCommittedStartFailureDisposition, error) {
-	packet := delegateStoppedTerminalPacket()
-	deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
-	finish := delegateRunFinishedEvent(
-		lease,
-		delegatestore.OutcomeStopped,
-		delegatestore.DispositionTerminalError,
-		"stopped_by_parent",
-		c.now(),
-		deliveryID,
-		&packet,
-	)
-	if _, finishErr := c.appendLocked(finish); finishErr != nil {
-		live.recoveryRequired = true
-		plans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
-		return plans, nil, delegateCommittedStartFailureAppendFailed, errors.Join(errDelegateTargetBusy, finishErr)
+	decision := c.reduceStoppedGenerationFinishIntent(finishIntent{
+		lease: lease,
+		latch: finishLatchRecoveryOnly,
+	})
+	// Latch the caller's authenticated live state on a failed append; the
+	// reduce step carries no controller state.
+	decision.latchLive = live
+	plans, cancel, finishErr := c.executeFinishDecisionLocked(decision)
+	if finishErr != nil {
+		failurePlans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
+		return failurePlans, nil, delegateCommittedStartFailureAppendFailed, errors.Join(errDelegateTargetBusy, finishErr)
 	}
-	plans, cancel := c.generationFinishedPlansLocked(lease, deliveryID)
 	return plans, cancel, delegateCommittedStartFailureStopWon, errDelegateTargetBusy
 }
 
@@ -619,6 +615,12 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	aggregate := c.durable[delegateID]
 	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
+	}
+	// Idle but still finalizing: the finished generation's runtime has not
+	// reported quiescence, so it can't take another generation yet. Refusing
+	// here, under the lock the start commits under, leaves nothing written.
+	if finalizing := c.finalizingLocked(delegateID); finalizing != nil {
+		return nil, delegateFinalizingError{released: finalizing.released}
 	}
 	for _, existing := range c.reservations {
 		if existing.delegateID == delegateID {
@@ -833,7 +835,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		c.replaceDelegateAttentionLocked(record.delegateID, record.attentionPendingIDs)
 	}
 	if record.runtime != nil {
-		live.runtime = record.runtime
+		c.setResidentRuntimeLocked(live, record.runtime)
 	}
 	if record.waiter != nil {
 		if live.waiters == nil {
@@ -870,7 +872,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	}
 	c.dropRuntimeClaimsForMembersLocked(map[string]struct{}{lease.delegateID: {}})
 	if live.binding.runtime != nil {
-		live.runtime = live.binding.runtime
+		c.setResidentRuntimeLocked(live, live.binding.runtime)
 	}
 	live.binding = nil
 	// A steer accepted under the covering stop outlives the generation it was

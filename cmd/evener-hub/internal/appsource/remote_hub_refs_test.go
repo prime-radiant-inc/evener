@@ -30,14 +30,23 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		SharedNotes:       true,
 		Rename:            true,
 		SkillInput:        true,
+		StopSubagent:      true,
+		PageBefore:        true,
 	}
 }
 
+// maskedRemoteThreadCapabilities is the set a remote thread may advertise for the
+// full daemon claim: the remote's own flags intersected with the actions this
+// source forwards. Shutdown is the one action remoteForwardedThreadCapabilities
+// names today; every other staged action stays masked.
+var maskedRemoteThreadCapabilities = appwire.ThreadCapabilities{Shutdown: true}
+
 // A remote hub reports the capability set of its OWN session daemon. Those flags
-// describe what the remote daemon can do, not what the controller can forward:
-// every mutation, lifecycle, and subscription method on RemoteHubSource is still
-// staged, so a thread read from a remote hub must not advertise an action that
-// would fail with an internal error the moment a client used it.
+// describe what the remote daemon can do, not what the controller can forward, so
+// the mask must drop every action this source cannot carry. Shutdown is the one
+// action remoteForwardedThreadCapabilities names today (the controller rpc
+// thread/shutdown forwards through RemoteHubSource.ShutdownThread), so it is the
+// one flag that survives; every other staged action stays masked.
 func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
 	thread, err := source.fromRemoteThread(appwire.Thread{
@@ -52,27 +61,35 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fromRemoteThread: %v", err)
 	}
-	if got := maskRemoteThreadCapabilities(allRemoteThreadCapabilities()); got != (appwire.ThreadCapabilities{}) {
-		t.Fatalf("masked capabilities = %+v, want every staged action masked", got)
+	want := maskedRemoteThreadCapabilities
+	if got := maskRemoteThreadCapabilities(allRemoteThreadCapabilities()); got != want {
+		t.Fatalf("masked capabilities = %+v, want %+v", got, want)
 	}
-	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
-		t.Fatalf("remote thread advertised %+v, want the ref translation to mask staged actions", thread.Evener.Capabilities)
+	if thread.Evener.Capabilities != want {
+		t.Fatalf("remote thread advertised %+v, want %+v", thread.Evener.Capabilities, want)
 	}
 	// The mask is a filter over the remote's own claim, not a replacement for it:
 	// nothing outside the capability set may change.
-	if thread.Source != "host" || thread.Evener.Ref != "host:t1" || thread.Evener.InstanceID != "inst-1" {
-		t.Fatalf("masked thread = %+v, want refs and opaque fields untouched", thread.Evener)
+	if thread.Source != "host" {
+		t.Fatalf("masked thread source = %q, want host", thread.Source)
+	}
+	if thread.Evener.Ref != "host:t1" {
+		t.Fatalf("masked thread ref = %q, want host:t1", thread.Evener.Ref)
+	}
+	if thread.Evener.InstanceID != "inst-1" {
+		t.Fatalf("masked thread instance = %q, want inst-1", thread.Evener.InstanceID)
 	}
 }
 
 // Every capability a remote thread is allowed to advertise must have a working
 // method behind it. The methods below are the 05c/05d work: component 05c
 // implements the turn mutations and lifecycle verbs in remote_hub_mutations.go,
-// and each capability stays masked until 05d's host capability probe answers what
-// the host supports (remoteForwardedThreadCapabilities is still empty).
-// Enumerating the promise here means a field cannot be flipped on while its
-// method still fails closed, and a future capability field cannot be added
-// without deciding which method answers for it.
+// and a capability is re-enabled only once remoteForwardedThreadCapabilities
+// names it. Shutdown is named today; every other staged action stays masked until
+// 05d's host capability probe answers what the host supports. Enumerating the
+// promise here means a field cannot be flipped on while its method still fails
+// closed, and a future capability field cannot be added without deciding which
+// method answers for it.
 func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 	ctx := context.Background()
 	// A connector that always fails: every method below must reach the forward
@@ -140,9 +157,25 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		{"Rename", map[string]func() error{
 			"SetThreadName": func() error { return source.SetThreadName(ctx, appwire.ThreadNameSetParams{}) },
 		}},
+		{"StopSubagent", map[string]func() error{
+			"StopDelegate": func() error { _, err := source.StopDelegate(ctx, appwire.DelegateStopParams{}); return err },
+		}},
 		{"SkillInput", map[string]func() error{
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
 			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+		{"CommandInput", map[string]func() error{
+			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
+			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+		// The source forwards a cursorless before to a remote thread now
+		// (#3176), but the hub does not advertise PageBefore for one yet, so
+		// the capability stays masked.
+		{"PageBefore", map[string]func() error{
+			"ListItemCandidates": func() error {
+				_, err := source.ListItemCandidates(ctx, appwire.ThreadTurnsListParams{Before: &appwire.ThreadItemPosition{Entry: 1}})
+				return err
+			},
 		}},
 	}
 
@@ -167,8 +200,17 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			t.Errorf("capability %s is not a field of appwire.ThreadCapabilities", tc.field)
 			continue
 		}
-		if advertised {
-			t.Errorf("capability %s is advertised although remoteForwardedThreadCapabilities forwards nothing", tc.field)
+		// Only the actions remoteForwardedThreadCapabilities names may be
+		// advertised. The expectation is read from that set rather than restated as
+		// a literal here, so enabling another action cannot leave this test agreeing
+		// with a stale copy of it.
+		wantAdvertised, ok := capabilityFieldValue(maskedRemoteThreadCapabilities, tc.field)
+		if !ok {
+			t.Errorf("capability %s is not a field of the shared masked set", tc.field)
+			continue
+		}
+		if advertised != wantAdvertised {
+			t.Errorf("capability %s advertised = %v, want %v", tc.field, advertised, wantAdvertised)
 		}
 	}
 
@@ -583,6 +625,41 @@ func TestRemoteHubJobsListPreservesUnrecognizedPayloads(t *testing.T) {
 				t.Fatalf("Data = %#v, want the unrecognized payload preserved as %#v", resp.Data, want)
 			}
 			assertNoRewrittenRefs(t, resp.Data)
+		})
+	}
+}
+
+// Typed job detail results translate only declared session refs. Commands and
+// opaque shell transcript handles retain their literal values.
+func TestRemoteHubJobsGetTranslatesTypedJobRefs(t *testing.T) {
+	source := &RemoteHubSource{id: "host"}
+	for _, transcriptRef := range []string{"local:child", "job:job_1", ""} {
+		t.Run(transcriptRef, func(t *testing.T) {
+			var response appwire.JobsGetResponse
+			payload := `{"data":{"jobId":"job_1","ownerSessionId":"sess_1","ownerRef":"local:sess_1","command":"echo local:sess_1"}}`
+			if err := json.Unmarshal([]byte(payload), &response); err != nil {
+				t.Fatal(err)
+			}
+			response.Data.TranscriptRef = transcriptRef
+			if err := source.translateOut(&response); err != nil {
+				t.Fatal(err)
+			}
+			wantOwner, err := source.fromRemoteRefString("local:sess_1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTranscript := transcriptRef
+			if transcriptRef == "local:child" {
+				wantTranscript, err = source.fromRemoteRefString(transcriptRef)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := response.Data
+			if job.OwnerRef != wantOwner || job.TranscriptRef != wantTranscript ||
+				job.OwnerSessionID != "sess_1" || job.Command != "echo local:sess_1" {
+				t.Fatalf("translated job = %+v", job)
+			}
 		})
 	}
 }

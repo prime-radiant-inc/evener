@@ -12,7 +12,7 @@ import {
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
 } from "./client";
-import { ConnectionClosedError } from "./errors";
+import { ConnectionClosedError, RequestTimeoutError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import type { InitializeResponse } from "./types.gen";
 
@@ -57,6 +57,20 @@ function latestSocket(sockets: FakeSocket[]): FakeSocket {
   return socketAt(sockets, sockets.length - 1);
 }
 
+// driveFailedAttempts advances through each jittered delay in order and fails
+// the dialed socket before it opens, so the next backoff timer arms. It leaves
+// the client "reconnecting" with the next timer armed, the state the cap
+// assertions below start from.
+async function driveFailedAttempts(sockets: FakeSocket[], delays: number[]): Promise<void> {
+  for (const delay of delays) {
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(delay);
+    expect(sockets.length).toBe(before + 1); // exactly one new dial, at this delay
+    latestSocket(sockets).closeFromServer(1006);
+    await flushUntil(() => vi.getTimerCount() > 0); // let the next backoff timer arm
+  }
+}
+
 interface NavigationHandshake {
   version: number;
   generationId: string;
@@ -88,7 +102,7 @@ function reconnectHarness(): {
     sockets.push(socket);
     return socket;
   };
-  const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+  const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
 
   return {
     client,
@@ -126,7 +140,7 @@ afterEach(() => {
 });
 
 describe("AppwireClient heartbeat", () => {
-  test("defers heartbeat while an ordinary request is pending, then resumes", async () => {
+  test("pings a quiet connection while an ordinary request is pending, and the pong leaves the request running", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
     await connectReady(sockets, client);
@@ -136,69 +150,19 @@ describe("AppwireClient heartbeat", () => {
     const request = sentFrames(socket).find((frame) => frame.method === "thread/list");
     if (typeof request?.id !== "number") throw new Error("missing thread/list request id");
 
+    // The hub answers ping outside its request queue, so a slow request never
+    // holds the pong back.
     await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS - 1);
 
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
     expect(client.state).toBe("ready");
-    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
 
     socket.receive({ id: request.id, result: { data: [], nextCursor: "" } });
-    await pending;
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
-
-    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    await expect(pending).resolves.toEqual({ data: [], nextCursor: "" });
     client.close();
   });
 
-  test("keeps heartbeat deferred until the last of multiple successful RPCs settles", async () => {
-    const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
-    await connectReady(sockets, client);
-    const socket = socketAt(sockets, 0);
-
-    const first = client.request("thread/list", { limit: 1 });
-    const second = client.request("thread/list", { limit: 2 }, { timeoutMs: HEARTBEAT_INTERVAL_MS + 1 });
-    const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
-    if (requests.length !== 2 || typeof requests[0]?.id !== "number" || typeof requests[1]?.id !== "number") {
-      throw new Error("missing concurrent thread/list request ids");
-    }
-
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
-    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
-
-    socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
-    await first;
-    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
-
-    socket.receive({ id: requests[1].id, result: { data: [], nextCursor: "" } });
-    await second;
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
-    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
-    client.close();
-  });
-
-  test("resumes heartbeat after the last concurrent RPC ends with a wire error", async () => {
-    const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
-    await connectReady(sockets, client);
-    const socket = socketAt(sockets, 0);
-
-    const first = client.request("thread/list", { limit: 1 });
-    const second = client.request("thread/list", { limit: 2 });
-    const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
-    if (requests.length !== 2 || typeof requests[0]?.id !== "number" || typeof requests[1]?.id !== "number") {
-      throw new Error("missing concurrent thread/list request ids");
-    }
-    socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
-    await first;
-    socket.receive({ id: requests[1].id, error: { code: 409, message: "request rejected" } });
-    await expect(second).rejects.toThrow("request rejected");
-
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
-    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
-    client.close();
-  });
-
-  test("resumes heartbeat after the last concurrent RPC times out", async () => {
+  test("each response restarts the quiet countdown, so the ping waits a full interval after the last one", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
     await connectReady(sockets, client);
@@ -207,16 +171,81 @@ describe("AppwireClient heartbeat", () => {
     const first = client.request("thread/list", { limit: 1 });
     const second = client.request("thread/list", { limit: 2 }, { timeoutMs: HEARTBEAT_INTERVAL_MS * 2 });
     const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
-    if (requests.length !== 2 || typeof requests[0]?.id !== "number") throw new Error("missing first request id");
+    if (requests.length !== 2 || typeof requests[0]?.id !== "number" || typeof requests[1]?.id !== "number") {
+      throw new Error("missing concurrent thread/list request ids");
+    }
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
     socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
     await first;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
+    socket.receive({ id: requests[1].id, result: { data: [], nextCursor: "" } });
+    await second;
 
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
     expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
-    const timedOut = expect(second).rejects.toThrow(/timed out/);
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
+  test("an error response restarts the quiet countdown like any other frame", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    const rejected = client.request("thread/list", { limit: 1 });
+    const request = sentFrames(socket).find((frame) => frame.method === "thread/list");
+    if (typeof request?.id !== "number") throw new Error("missing thread/list request id");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
+    socket.receive({ id: request.id, error: { code: 409, message: "request rejected" } });
+    await expect(rejected).rejects.toThrow("request rejected");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
+  test("a request timeout is not a frame, so it never postpones the ping", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    const abandoned = client.request("thread/list", { limit: 1 }, { timeoutMs: HEARTBEAT_INTERVAL_MS / 2 });
+    const timedOut = expect(abandoned).rejects.toBeInstanceOf(RequestTimeoutError);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
     await timedOut;
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+
+    // The handshake's reply was the last frame, so the ping is due a full
+    // interval after it, however recently a request gave up.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
+  test("a busy connection whose frames keep arriving is never pinged", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    // Each notification lands just before the quiet countdown would run out.
+    for (let i = 0; i < 5; i += 1) {
+      await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
+      socket.receive({ method: "thread/started", params: {} });
+    }
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+
+    // Once the hub goes quiet, the ping comes a full interval after its last frame.
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - 1);
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
     expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
     client.close();
   });
@@ -256,28 +285,33 @@ describe("AppwireClient heartbeat", () => {
     expect(states).toContain("reconnecting");
   });
 
-  test("after multiple RPCs clear, an unanswered heartbeat detects half-open and reconnects", async () => {
+  test("a silent drop is declared lost while a steady poll keeps requests pending, and reconnects", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
     await connectReady(sockets, client);
     const socket = socketAt(sockets, 0);
-    const first = client.request("thread/list", { limit: 1 });
-    const second = client.request("thread/list", { limit: 2 });
-    const requests = sentFrames(socket).filter((frame) => frame.method === "thread/list");
-    if (requests.length !== 2 || typeof requests[0]?.id !== "number" || typeof requests[1]?.id !== "number") {
-      throw new Error("missing concurrent thread/list request ids");
-    }
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
-    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
-    socket.receive({ id: requests[0].id, result: { data: [], nextCursor: "" } });
-    socket.receive({ id: requests[1].id, result: { data: [], nextCursor: "" } });
-    await Promise.all([first, second]);
-
+    // A silent drop, as on a mobile network change: sends still succeed, nothing
+    // arrives, and the socket never reports closed.
     socket.autoInitialize = false;
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+
+    // A poll whose period is shorter than the 30s request deadline, like the
+    // phone's 10s activity read, always has a request waiting.
+    const pollIntervalMs = HEARTBEAT_INTERVAL_MS / 2;
+    const earlierPoll = client.request("thread/list", { limit: 1 }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(pollIntervalMs);
+    const laterPoll = client.request("thread/list", { limit: 2 }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS - pollIntervalMs);
+
     expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT_MS - 1);
+    expect(client.state).toBe("ready");
+    await vi.advanceTimersByTimeAsync(1);
     expect(client.state).toBe("reconnecting");
+    expect(await earlierPoll).toBeInstanceOf(Error);
+    // The later poll was still inside its own deadline, so the loss is what ended it.
+    const laterOutcome = await laterPoll;
+    expect(laterOutcome).toBeInstanceOf(Error);
+    expect(laterOutcome).not.toBeInstanceOf(RequestTimeoutError);
 
     await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
     socketAt(sockets, 1).open();
@@ -357,7 +391,7 @@ describe("AppwireClient reconnect", () => {
 
   test("backs off 250ms, 500ms, 1000ms, 2000ms, 4000ms, then caps at 5000ms, re-dialing every attempt", async () => {
     const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
     await connectReady(sockets, client);
 
     socketAt(sockets, 0).closeFromServer(1006);
@@ -495,6 +529,145 @@ describe("AppwireClient reconnect", () => {
   });
 });
 
+// Bounded jitter spreads reconnects across clients dropped by the same
+// outage. scheduleReconnect computes half + random() * half over the
+// deterministic exponential value, so random: () => 0 selects the low bound
+// and random: () => 1 the high one. These tests inject the source so the
+// spread is deterministic under fake timers.
+describe("AppwireClient reconnect jitter", () => {
+  test("the injected random source places the first delay inside [base/2, base]", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 0 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(client.state).toBe("reconnecting");
+
+    // random() === 0 selects the low bound: half the deterministic delay.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS / 2 - 1);
+    expect(sockets).toHaveLength(1); // not yet
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(2); // dialed at exactly base/2
+    client.close();
+  });
+
+  test("random() === 1 selects the deterministic upper bound, never exceeding the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS - 1);
+    expect(sockets).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(2);
+    client.close();
+  });
+
+  test("at the cap, random() === 1 holds the delay at exactly the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    // Fail the doubling attempts up to and including the first capped one, so
+    // the next armed delay is the cap itself.
+    await driveFailedAttempts(sockets, [
+      RECONNECT_BASE_MS,
+      RECONNECT_BASE_MS * 2,
+      RECONNECT_BASE_MS * 4,
+      RECONNECT_BASE_MS * 8,
+      RECONNECT_BASE_MS * 16,
+      RECONNECT_MAX_MS,
+    ]);
+
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS - 1);
+    expect(sockets).toHaveLength(before); // not early: the cap is the upper bound
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(before + 1); // dialed at exactly the cap
+    client.close();
+  });
+
+  test("at the cap, random() === 0 halves the delay and never exceeds the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 0 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    // The low jitter bound halves every delay, so the first capped attempt
+    // waits RECONNECT_MAX_MS / 2.
+    await driveFailedAttempts(sockets, [
+      RECONNECT_BASE_MS / 2,
+      RECONNECT_BASE_MS,
+      RECONNECT_BASE_MS * 2,
+      RECONNECT_BASE_MS * 4,
+      RECONNECT_BASE_MS * 8,
+      RECONNECT_MAX_MS / 2,
+    ]);
+
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS / 2 - 1);
+    expect(sockets).toHaveLength(before); // not before the low bound
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(before + 1); // dialed at half the cap, still under it
+    client.close();
+  });
+
+  test("two clients dropped together reconnect at different times", async () => {
+    const low = dialer();
+    const lowClient = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: low.factory,
+      random: () => 0,
+    });
+    const high = dialer();
+    const highClient = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: high.factory,
+      random: () => 1,
+    });
+    await connectReady(low.sockets, lowClient);
+    await connectReady(high.sockets, highClient);
+
+    // The same outage drops both clients at the same instant.
+    socketAt(low.sockets, 0).closeFromServer(1006);
+    socketAt(high.sockets, 0).closeFromServer(1006);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS / 2 - 1);
+    expect(low.sockets).toHaveLength(1);
+    expect(high.sockets).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(low.sockets).toHaveLength(2); // low jitter retried first
+    expect(high.sockets).toHaveLength(1); // high jitter is still waiting
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS / 2);
+    expect(high.sockets).toHaveLength(2); // high jitter retried later
+
+    lowClient.close();
+    highClient.close();
+  });
+
+  test("close() cancels a jittered backoff without dialing", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 0 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(client.state).toBe("reconnecting");
+
+    client.close();
+    expect(client.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
+    expect(sockets).toHaveLength(1);
+    expect(client.state).toBe("closed");
+  });
+});
+
 // retryNow is the manual counterpart to the automatic backoff above (wired
 // to ConnectionBanner's "Retry now" affordance, shown only while
 // "reconnecting" - the client is already retrying on its own, so this just
@@ -618,7 +791,7 @@ describe("AppwireClient retryNow", () => {
 
   test("a failed reentrant manual retry waits for doubled backoff and leaves close terminal", async () => {
     const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
     await connectReady(sockets, client);
 
     client.onStateChange((state) => {
@@ -648,7 +821,7 @@ describe("AppwireClient retryNow", () => {
 
   test("a failed retryNow attempt falls back to the ordinary backoff sequence, continuing from where it left off", async () => {
     const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
     await connectReady(sockets, client);
 
     socketAt(sockets, 0).closeFromServer(1006);
@@ -677,7 +850,7 @@ describe("AppwireClient close() during heartbeat/reconnect", () => {
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
     await connectReady(sockets, client);
 
-    expect(vi.getTimerCount()).toBeGreaterThan(0); // the heartbeat interval is armed
+    expect(vi.getTimerCount()).toBeGreaterThan(0); // the heartbeat timer is armed
     const first = client.request("thread/list", { limit: 1 });
     const second = client.request("thread/list", { limit: 2 });
 
@@ -694,6 +867,18 @@ describe("AppwireClient close() during heartbeat/reconnect", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(client.state).toBe("closed");
     expect(sockets).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("from a notification subscriber leaves no heartbeat timer armed", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    client.onNotification(() => client.close());
+
+    socketAt(sockets, 0).receive({ method: "thread/started", params: {} });
+
+    expect(client.state).toBe("closed");
     expect(vi.getTimerCount()).toBe(0);
   });
 

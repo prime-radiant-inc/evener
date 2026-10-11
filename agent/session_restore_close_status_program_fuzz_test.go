@@ -280,9 +280,8 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 	}
 	clk := agenttest.NewFakeClock()
 	sess, err := NewSession(srspClient(), NewOpenAIProfile("gpt-5.2"), &agenttest.DenyEnv{WorkDir: workspace, Seed: uint64(draw)}, SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
-		clock:            clk,
+		StateDir: stateDir,
+		clock:    clk,
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			noSyncJobStore:  true,

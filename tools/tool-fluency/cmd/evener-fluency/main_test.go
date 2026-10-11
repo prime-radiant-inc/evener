@@ -2,15 +2,85 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
+
+// TestConfigureHermeticRunEnvDefaultHidesUserSkills pins that a hermetic run
+// (inheritOperatorEnv=false, today's default) hides the operator's personal
+// skills from every run: it sets EVENER_NO_USER_SKILLS, and the environment
+// the CLI probe hands a spawned evener (fixtureEnv) carries it, as an
+// in-process live session already inherits it (#3227).
+func TestConfigureHermeticRunEnvDefaultHidesUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	configureHermeticRunEnv(false)
+	if got := envvars.EVENERNoUserSkills.Getenv(); got != "1" {
+		t.Fatalf("%s = %q, want 1", envvars.EVENERNoUserSkills.Name, got)
+	}
+	want := envvars.EVENERNoUserSkills.Assignment("1")
+	if !slices.Contains(fixtureEnv(t.TempDir()), want) {
+		t.Fatalf("fixtureEnv does not carry %q", want)
+	}
+}
+
+// TestCatalogSessionHidesUserSkills pins that every subcommand that builds a
+// session, not only run and matrix, runs hermetic: catalog's session must see
+// EVENER_NO_USER_SKILLS set when it is created (#3227). Not parallel: it
+// replaces runnerNewSession and sets process env.
+func TestCatalogSessionHidesUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "")
+	oldNewSession := runnerNewSession
+	t.Cleanup(func() { runnerNewSession = oldNewSession })
+	var seen string
+	runnerNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		seen = envvars.EVENERNoUserSkills.Getenv()
+		return nil, errors.New("stop after recording the environment")
+	}
+	_ = run([]string{"catalog", "--model", "openai/gpt-5.4-mini"})
+	if seen != "1" {
+		t.Fatalf("catalog session saw %s = %q, want 1", envvars.EVENERNoUserSkills.Name, seen)
+	}
+}
+
+// TestConfigureHermeticRunEnvInheritOperatorEnvRestoresUserSkills pins
+// --inherit-operator-env's debugging escape hatch: it must clear
+// EVENER_NO_USER_SKILLS so a run goes back to seeing the operator's real home
+// and user-config skills, exactly like before #3227.
+func TestConfigureHermeticRunEnvInheritOperatorEnvRestoresUserSkills(t *testing.T) {
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	configureHermeticRunEnv(true)
+	if got := envvars.EVENERNoUserSkills.Getenv(); got == "1" {
+		t.Fatalf("%s = %q after --inherit-operator-env, want cleared", envvars.EVENERNoUserSkills.Name, got)
+	}
+}
+
+// TestLastBytesNeverSplitsARune: lastBytes cuts at a byte offset, which can
+// land inside a multi-byte UTF-8 rune. It must back off to a rune boundary
+// instead of returning invalid UTF-8, for every cut point through the
+// string, the way agent/doctor.Truncate does when it cuts from the front.
+func TestLastBytesNeverSplitsARune(t *testing.T) {
+	t.Parallel()
+	const s = "prefix-日本語-suffix"
+	for n := 0; n <= len(s)+2; n++ {
+		got := lastBytes(s, n)
+		if !utf8.ValidString(got) {
+			t.Fatalf("lastBytes(%q, %d) = %q, not valid UTF-8", s, n, got)
+		}
+	}
+}
 
 func TestRunSuiteRejectsUnknownHarness(t *testing.T) {
 	err := runSuite([]string{"--harness", "bogus"})
@@ -32,7 +102,10 @@ func TestCLIProbeArgsIncludesSystemPromptAppendFiles(t *testing.T) {
 	probe := probeFile{Prompt: "inspect the fixture"}
 	res := probeResult{WorkDir: "/work", StateDir: "/state"}
 
-	args := cliProbeArgs(cfg, probe, res)
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 
 	want := []string{
 		"--system-prompt-append", "/tmp/append-a.md",

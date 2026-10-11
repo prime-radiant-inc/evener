@@ -104,7 +104,7 @@ HUB=http://127.0.0.1:$PORT
   `[data-testid="user-message-item"][data-opens-exchange="true"]`, whereas a
   steer is the same test id with the attribute **absent**
   (`transcript/messages/UserMessageItem.tsx:98,112`,
-  `messages/SteeringItem.tsx:143-146`). Falsify: the queued text lands as
+  `messages/SteeringItem.tsx:124-127`). Falsify: the queued text lands as
   `STEERING` (a drain fired instead of the normal queue drain — see
   `web-queue-then-drain-as-steer.md`), or it never reaches the transcript at
   all.

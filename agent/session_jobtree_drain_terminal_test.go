@@ -72,8 +72,7 @@ func TestTerminalDrainExitsDespiteWatchSendResidue(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse("all done") },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 
 	// TRIPWIRE: scripted adapter, in-memory residue, no real I/O. The fixed
@@ -100,6 +99,30 @@ func TestTerminalDrainExitsDespiteWatchSendResidue(t *testing.T) {
 	}
 }
 
+// TestTerminalDrainKeepsFinalizingDelegateLive pins the finalize window the
+// #3531 drain flakes fall through. A delegate's run clears its own
+// running/finalizing flags (subagents.go, before announceFinishedGeneration)
+// while the controller still holds the generation finalizing until its tail
+// has announced the result. In that window the child is live work — its
+// completion is about to be delivered — so the terminal-residue verdict must
+// not read it as undeliverable residue and let the drain exit before the
+// result is announced. holdDelegateTail pins exactly that window with no
+// timing; the old inline predicate (running||finalizing||driving) reported the
+// child dead and the drain abandoned the still-owed completion, printing the
+// pre-drain "waiting" turn instead of the delegate's result.
+func TestTerminalDrainKeepsFinalizingDelegateLive(t *testing.T) {
+	held := holdDelegateTail(t, holdBeforeAnnouncement)
+	held.s.acceptTerminalCommunicate()
+
+	live, err := held.s.subtreeHasLiveTerminalDrainWork()
+	if err != nil {
+		t.Fatalf("subtreeHasLiveTerminalDrainWork: %v", err)
+	}
+	if !live {
+		t.Fatal("a delegate whose run ended but whose generation is still finalizing must keep the terminal drain live: its result has not been announced yet, so reading it as residue abandons the completion and exits before it is drained (issue #3531)")
+	}
+}
+
 // TestPostTerminalNotificationTurnEmptyResponseFinishesIdle is the other half
 // of the #329 sanitize-git-repo regression. A notification turn that
 // legitimately runs after the terminal communicate (a live job finished during
@@ -119,8 +142,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 		},
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; 30s only fires on a
@@ -156,8 +178,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 func TestNormalDrainStillWaitsOnWatchSendResidue(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	seedWatchSendResidue(t, sess)
 
@@ -286,8 +307,7 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 
@@ -353,8 +373,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	firstJobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 
@@ -416,8 +435,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 		func(llm.Request) llm.Response { return finalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 	if !finalizeShell(t, sess.jobManager, jobID, releaseShell) {
@@ -484,8 +502,7 @@ func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T)
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 	watchRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{

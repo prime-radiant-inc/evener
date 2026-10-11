@@ -11,11 +11,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/syncio"
 )
 
 // State is a channel lifecycle state. 04a's chain is
@@ -109,6 +112,59 @@ type Options struct {
 	// BuildBinary is set.
 	BuildSource string
 
+	// OwnExecutable, when set, records that BuildBinary serves this controller's
+	// own executable — the hub's default deploy source, adopted without a flag —
+	// rather than an operator-named artifact or a compile of a checkout. It
+	// changes exactly one decision: a dirty controller (a "<sha>-dirty" build)
+	// refuses every other deploy source terminally (errControllerDirty), because
+	// none of them can be proven to be this controller's build — a checkout
+	// cannot be reproduced, and a "<sha>-dirty" label is not an identity (another
+	// dirty tree at the same commit reports it too, so neither the pre-push
+	// checks nor the post-deploy version comparison could tell an
+	// operator-supplied artifact apart from a foreign one). The controller's own
+	// executable is exempt because the caller — the hub's default-adoption path —
+	// declares those bytes ARE this controller's build. That declaration is the
+	// whole of the guarantee: the file is read at deploy time, so a hub whose
+	// executable was replaced under it deploys the replacement — a cross-commit
+	// one is caught after the push (errDeployUnstamped; the host reports a
+	// version this controller did not stamp), and a same-commit dirty variant is
+	// the documented, accepted residual (see the hub's ownExecutableBuild). The
+	// artifact's identity is still judged where it can be: the push re-reads
+	// it (evener identity and host target) before staging, and the on-host launch
+	// contract re-read after the deploy is compared against this controller
+	// (errDeployUnstamped).
+	OwnExecutable bool
+
+	// DeployDisabled, when set, turns deploying off for this whole Manager: no
+	// push and no installer fallback, so a release or snapshot controller cannot
+	// quietly install a published artifact on a host either. canDeploy reports
+	// false (the decision ladder never deploys, and a host that needs a build is
+	// left on its own exactly as with no deploy source), and every deploy that
+	// still reaches deploy — the explicit host-deploy operation — is refused
+	// terminally (errDeployDisabled) with DeployHelp's remedy. It is the hub's
+	// -no-deploy.
+	DeployDisabled bool
+
+	// DeployHelp is the remedy clause the refusals that have nothing to install
+	// append: the missing-executable preflight refusal and the installer fallbacks.
+	// An embedder with its own CLI fills in the flags an operator must set; sshconn
+	// is a library and must not learn those names, so they arrive through this field
+	// rather than being written here. Empty falls back to the library's own sentence
+	// ("set Options.BuildSource"), which is the right text for an embedder that has
+	// no flags to name and keeps the refusal byte-for-byte what it was.
+	DeployHelp string
+
+	// EnsureDeploy, when set, records one Ensure-triggered deploy as a durable
+	// operation (deploy pipeline 08b §6: "Ensure-triggered operations are
+	// durable fenced operations"). It is called with the host's per-host gate
+	// already held and before any remote write of the deploy step; a non-nil
+	// error means no durable record could be persisted, so nothing may be
+	// launched (persisted-before-launch) and the deploy refuses. The returned
+	// finish records the step's outcome. Nil leaves the deploy unrecorded,
+	// which is only correct for a hub with no operation store wired (tests,
+	// embedders).
+	EnsureDeploy EnsureDeployHook
+
 	// HubAddr is the host hub's loopback listen address, used as this host's
 	// --addr for the bridge and by the restart path to find the old pid and probe
 	// /api/health. Both read the same resolution (hostAddrFor), so they cannot
@@ -137,6 +193,28 @@ type Options struct {
 	// for the host gate. Tests use it to establish, without a sleep, that one
 	// contender has reached a gate the test holds before another one does.
 	beforeHostGate func(name string)
+	// beforeUpdateHostSwap, when set, runs inside UpdateHost's gate hold after the
+	// retired channel's teardown and before the registry Update. That is exactly
+	// the window a gate-free reader would see: the retired channel is already
+	// unmapped while the registry still holds the pre-edit entry. Tests use it to
+	// drive a directly driven registry insert into the teardown/Update window, so
+	// an update can be observed swapping an entry it did not capture, and to
+	// assert the state a gate-free row build would observe in that window.
+	beforeUpdateHostSwap func(name string)
+	// AfterUpdateHostSwap, when set, runs inside UpdateHost's gate hold after a
+	// successful registry swap and after the onRetire hook, immediately before the
+	// gate is released. That is the window a caller's next read sits in once the
+	// swap is committed: the registry already holds the new entry and the retired
+	// identity is retired, but no concurrent attach can have started, because the
+	// gate this call still holds is the one Ensure and a supervisor contend for.
+	// Tests use it to interleave a directly driven registry change — the only
+	// writer that can race the gate-free finish-phase reread — into the window
+	// between a committed swap and the caller's next read, without a sleep. It is
+	// never run on a refusal: there is no committed swap to observe then. Unlike
+	// the seams above it is exported, because the hub package's own tests (which
+	// drive this Manager through Options) must install it just as they install
+	// Runner and OnEvent.
+	AfterUpdateHostSwap func(name string)
 	// beforeSuperviseGate, when set, runs in a host's supervisor after it observes
 	// the link drop and before it contends for the host gate. Tests use it to park
 	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
@@ -146,6 +224,18 @@ type Options struct {
 	// and released any gate it held. Tests use it to observe "the supervisor
 	// stood down" instead of sleeping long enough to hope it did.
 	superviseExited func(name string)
+	// beforeSuperviseClear, when set, runs in a supervisor's teardown while the
+	// teardown holds the manager mutex, after its loop has deregistered and
+	// before the channel's supervision mark is cleared. Tests use it to park a
+	// teardown at that decision point, so an attach handoff's supervision
+	// question interleaves with it exactly instead of racing the window
+	// between the two.
+	beforeSuperviseClear func(name string, ch *Channel)
+	// beforeSuperviseStart, when set, runs in startSupervise before it contends
+	// for the manager mutex, i.e. before its supervision decision. Tests use it
+	// to park supervisor start attempts at that point, so two handoffs' starts
+	// interleave exactly rather than racing.
+	beforeSuperviseStart func(name string, ch *Channel)
 	// afterChildExit, when set, runs in the child-wait goroutine once the exited
 	// SSH child's exit edge has been published. Tests use it to inspect, without
 	// a sleep or a scheduling race, what a consumer could observe at the moment
@@ -293,15 +383,24 @@ func defaultJitter(d time.Duration) time.Duration {
 // Manager owns the SSH channels for the configured hosts. It is safe for
 // concurrent use.
 type Manager struct {
-	reg    *hostreg.Registry
-	opts   Options
-	runner Runner
+	// ensureDeploy is the deploy pipeline's Ensure-deploy recorder (see
+	// SetEnsureDeployHook); nil refuses an Ensure-triggered deploy before any
+	// mutating command (§6's durable-record rule). It is published atomically
+	// because Ensure reads it on its hot path.
+	ensureDeploy atomic.Pointer[EnsureDeployHook]
+	// ensureRestart is the restart-only Ensure recorder (see
+	// SetEnsureRestartHook); nil refuses a restart-only attempt before any
+	// mutating command.
+	ensureRestart atomic.Pointer[EnsureRestartHook]
+	reg           *hostreg.Registry
+	opts          Options
+	runner        Runner
 	// diagWriter serializes ssh diagnostics from every host onto one sink. Each
 	// attach builds its own diagSink over Options.Stderr, and os/exec copies each
 	// child's stderr on its own goroutine, so without a shared lock two hosts'
 	// copies would write to a caller-supplied writer concurrently — a writer like
 	// bytes.Buffer is not safe for that.
-	diagWriter *syncWriter
+	diagWriter *syncio.Writer
 
 	baseCtx context.Context
 	cancel  context.CancelFunc
@@ -334,11 +433,11 @@ type Manager struct {
 	// Detached yet. Close reads it to pair the events for the channel it tears
 	// down without emitting a Detached for one already paired.
 	announced map[string]*Channel
-	locks     map[string]*sync.Mutex
+	locks     map[string]*hostLockEntry
 	chans     map[string]*Channel
 	// devDeployed records hosts this Manager has installed its own
 	// identity-less build on — "dev", or a dirty "<sha>-dirty" build whose
-	// version cannot prove the code matches (see isUnverifiableVersion) — so the
+	// version cannot prove the code matches (see UnverifiableVersion) — so the
 	// deploy happens at most once per process rather than on every reconnect.
 	devDeployed map[string]bool
 	// resolvedTargets records, per host, the executable path this Manager
@@ -348,20 +447,24 @@ type Manager struct {
 	// non-interactive PATH) was re-deployed on every reconnect, interrupting the
 	// host's sessions each time.
 	resolvedTargets map[string]string
-	// pendingRestarts records, per host, the restart command (a bare relaunch, or
-	// a supervisor's restart) recorded before it ran, with the identity of the hub
-	// it was meant to replace. A restart that left no listener, or that left the
-	// old process serving, leaves this set, and the next Ensure retries it.
+	// pendingRestarts records, per host, the restart command (a supervisor's
+	// restart, or a recorded bootstrap start) recorded before it ran, with the
+	// identity of the hub it was meant to replace. A restart that left no
+	// listener, or that left the old process serving, leaves this set, and the
+	// next Ensure retries it.
 	pendingRestarts map[string]pendingRestartState
 }
 
 // hubIdentity identifies a running hub from its /api/health body: the version it
-// reports and, when the body carries one, its process start time. Version alone
-// cannot tell two builds apart when both are "dev" — an unstamped controller and
-// an unstamped host — so the start time is what proves a restart produced a new
-// process rather than leaving the old one serving.
+// reports, the build's backend_git_sha, and, when the body carries one, its
+// process start time. Version alone cannot tell two builds apart when both are
+// "dev" — an unstamped controller and an unstamped host — so the start time is
+// what proves a restart produced a new process rather than leaving the old one
+// serving; on the snapshot channel the version cannot tell two builds apart at
+// all, so the git SHA is what a snapshot pin compares.
 type hubIdentity struct {
 	version   string
+	gitSHA    string
 	startedAt time.Time
 }
 
@@ -409,11 +512,11 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		reg:             reg,
 		opts:            opts,
 		runner:          opts.runner(),
-		diagWriter:      newSyncWriter(opts.stderr()),
+		diagWriter:      syncio.NewWriter(opts.stderr()),
 		baseCtx:         baseCtx,
 		cancel:          cancel,
 		closeDone:       make(chan struct{}),
-		locks:           map[string]*sync.Mutex{},
+		locks:           map[string]*hostLockEntry{},
 		chans:           map[string]*Channel{},
 		devDeployed:     map[string]bool{},
 		resolvedTargets: map[string]string{},
@@ -422,6 +525,15 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		announced:       map[string]*Channel{},
 	}
 }
+
+// Registry returns the registry this manager dials and mutates through: the
+// same instance Ensure validates against and AddHost and RemoveHost commit to.
+// The hub's host surfaces share it — hostRegistryFromConfig prefers it when a
+// caller threads the manager without a separate RemoteHostRegistry — so a
+// runtime Add is visible to every reader and an added host is Ensure-able,
+// instead of the surfaces splitting between the manager's registry and a
+// fresh copy built from the configured entries.
+func (m *Manager) Registry() *hostreg.Registry { return m.reg }
 
 // Ensure returns a connected, initialized channel for host, preflighting and
 // attaching as needed. It is idempotent while attached: repeated calls return
@@ -453,18 +565,51 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		m.opts.beforeHostGate(name)
 	}
 	lock := m.hostLock(name)
+	// The acquisition is paired here, on the caller's own reference: every
+	// return path below releases it, including the ones that hand the gate to
+	// a supervisor — startSupervise takes that goroutine's own reference
+	// before it exists, so this release never drops an entry a live supervisor
+	// still gates on.
+	defer m.releaseHostLock(name)
 	// Honor the caller's context while waiting for the host gate: a canceled
 	// caller must not park behind another Ensure's or a supervisor's long
 	// preflight/attach, and must not be handed a channel afterwards.
 	if err := lockHostCtx(ctx, lock); err != nil {
 		return nil, err
 	}
+	// The gate is held, so register this attach as its holder: a pipeline
+	// try-acquire that fails while the attach runs reports the attach (the
+	// manager holder class), never a stale holder or an invented operation.
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
 	if err := ctx.Err(); err != nil {
 		lock.Unlock()
 		return nil, err
 	}
+	// The entry can have been deregistered — or replaced — between the lookup
+	// above and this gate: RemoveHost drops the registry entry while holding
+	// this same lock, and a remove/re-add of the name swaps in a new entry,
+	// so rechecking the name alone would pass while the re-added name is
+	// live. Compare the full entry — and its generation: content equality
+	// cannot tell a remove/re-add of a byte-identical entry apart, while the
+	// registry's insert generation always advances across the cycle. This
+	// attach captured one identity, and a name that now resolves to a
+	// different entry must be refused before it dials — a channel built from
+	// the removed entry would be published under the re-added name. The
+	// re-add's own caller attaches the fresh identity.
+	if !m.reg.SameRegistration(name, host) {
+		lock.Unlock()
+		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
 
-	if ch := m.liveChannel(name); ch != nil {
+	// The mapped channel has to belong to the registration this attach just
+	// validated, not merely be mapped under the name: a remove/re-add that
+	// swapped the entry without a teardown (a caller writing the registry
+	// directly, which is how the hub's own registry behaves with no manager
+	// wired) leaves the removed identity's channel under the name, and handing
+	// it back would give the re-added host a live channel to the removed
+	// address. A channel from another registration falls through to the attach
+	// below, which retires it on the way out.
+	if ch := m.liveChannel(name); ch != nil && ch.host.Generation == host.Generation {
 		err := m.channelUsable(name, ch)
 		lock.Unlock()
 		if err == nil {
@@ -574,7 +719,22 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		_ = ch.Close()
 		return nil, errChannelDropped(name)
 	}
-	if !m.publishChannel(name, ch) {
+	// Recheck the registry under the lock before publishing, on the full
+	// entry and its generation: a deregistration that does not pass through
+	// this gate (a caller dropping the registry entry directly, as the hub's
+	// host manager does when no sshconn manager is wired) must not gain a
+	// fresh channel for a host that is gone, and a remove/re-add that swapped
+	// the entry mid-attach must not have the channel built from the removed
+	// entry published under the re-added name — byte-identical re-adds
+	// included, because the registry assigns the re-add a new generation. The
+	// replacement is reaped and the dropped predecessor keeps ownership,
+	// exactly as a replacement that died in its handshake does.
+	if !m.reg.SameRegistration(name, host) {
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
+	if !m.publishChannel(name, ch, host) {
 		// Close landed while this attach was in flight. Handing back a channel
 		// that nothing will ever supervise would be a lie, so reap it.
 		lock.Unlock()
@@ -650,6 +810,219 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	}
 	lock.Unlock()
 	return ch, nil
+}
+
+// hostGateEntryFor returns name's per-host gate while it is held by holder:
+// the same holder the hold published through TryAcquire/HoldAs (deploy
+// pipeline 08b §5's holder vocabulary), compared exactly. It returns nil for a
+// free gate, a missing entry, or one carrying a different holder. The entry is
+// fetched under the manager mutex; the held flag and holder themselves are
+// atomic by design (hostLockGate), so the read does not disturb a contender's
+// registration. It is a cooperative precondition, not a security boundary: it
+// proves the caller presents the hold the gate currently carries, which is the
+// strongest check the try-acquire/release API allows. The caller's own hold
+// pins the entry's live-user reference, so a returned entry cannot be dropped
+// while the caller uses it.
+func (m *Manager) hostGateEntryFor(name string, holder hostops.Holder) *hostLockGate {
+	m.mu.Lock()
+	entry := m.locks[name]
+	m.mu.Unlock()
+	if entry == nil || !entry.gate.isHeld() {
+		return nil
+	}
+	held := entry.gate.holderOf()
+	if held.Kind != holder.Kind ||
+		strings.TrimSpace(held.OperationID) != strings.TrimSpace(holder.OperationID) ||
+		strings.TrimSpace(held.Activity) != strings.TrimSpace(holder.Activity) {
+		return nil
+	}
+	return &entry.gate
+}
+
+// hostGateHeldBy reports whether name's per-host gate is currently held by
+// holder, exactly as hostGateEntryFor compares it.
+func (m *Manager) hostGateHeldBy(name string, holder hostops.Holder) bool {
+	return m.hostGateEntryFor(name, holder) != nil
+}
+
+// attachHandoff builds the caller's post-verification handoff for ch: under the
+// caller's still-held gate it starts the supervisor that owns the channel. The
+// start dedupes under the manager mutex — a channel a loop already owns is left
+// to it — so two handoffs using the same held operation cannot register
+// duplicate loops for one channel, and the handoff reports true when the
+// channel is supervised, started or already owned. It refuses when the gate is
+// no longer held by holder — a released or re-registered hold must not start a
+// supervisor under another holder's exclusion — and it is safe to call more
+// than once: the first call's result is reported for every repeat.
+func (m *Manager) attachHandoff(host hostreg.Host, ch *Channel, holder hostops.Holder) func() bool {
+	var once sync.Once
+	result := false
+	return func() bool {
+		once.Do(func() {
+			entry := m.hostGateEntryFor(host.Name, holder)
+			if entry == nil {
+				return
+			}
+			// The decision and the registration are one critical section inside
+			// startSupervise: an already-supervised channel is left to its loop
+			// and reported supervised, never raced by a second loop.
+			result = m.startSupervise(host, ch, entry)
+		})
+		return result
+	}
+}
+
+// AttachUnderGate re-attaches host under the caller's already-held per-host
+// gate: the operation-owned attach/reattach primitive (registry spec 08 §14)
+// the deploy/restart worker consumes (deploy pipeline 08b §6 seam (d)). The
+// caller holds the gate — Manager.TryAcquire's hold, or the hold a
+// connect/attach path took — and this method never acquires it: the gate is
+// the same non-reentrant per-host lock, so re-running the normal attach path
+// (Ensure) here would deadlock. It re-runs the attach dialing closure
+// (ensureOnce) for the registration it was handed, publishes the replacement
+// exactly as Ensure and reconnectOnce do, and starts no supervisor: the caller
+// owns the channel until terminal verification, then calls the returned
+// handoff — still under the held gate — which starts the supervisor for the
+// channel so the host keeps automatic reconnect after the operation (§6: the
+// suppress-supervisor scope ends at verification).
+//
+// The caller presents the holder its hold registered (the operation's record
+// id): a gate held by some other holder is not the caller's hold, so a call
+// presenting a different holder refuses before any dial rather than publish
+// under another holder's exclusion. explicit distinguishes the two arms: the
+// first attach (true) keeps Ensure's explicit-attach semantics, the
+// first-attach bootstrap included; the restart's reattach (false) is
+// reconnect-shaped — the restart already produced the serving hub, and a
+// reconnect never starts one (Ensure's supervisor path passes false for the
+// same reason).
+//
+// A predecessor mapped under the name (the channel a restart dropped when the
+// operation reattaches) is replaced and reaped here, with its outstanding
+// Attached paired by a Detached before the replacement's Attached, exactly as
+// Ensure's replacement does — otherwise the predecessor's consumer would keep
+// a source nothing owns. The handoff always ensures the channel is supervised
+// at most once: an already-live channel whose loop exists is left to it, and
+// one without a loop gets the missing supervisor. It is safe to call more than
+// once — a repeat reports the first result — and it refuses when the gate is no
+// longer held by the caller's own holder, so a released or stolen hold never
+// starts a supervisor outside the caller's exclusion.
+func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder hostops.Holder, explicit bool) (*Channel, func() bool, error) {
+	name := strings.TrimSpace(host.Name)
+	if name == "" {
+		return nil, nil, errors.New("sshconn: an attach-under-gate needs a host name")
+	}
+	if !m.beginEnsure() {
+		return nil, nil, ErrManagerClosed
+	}
+	defer m.ensureWG.Done()
+	// The caller's own hold is this primitive's whole premise: publishing under
+	// someone else's exclusion is what the gate-aware entry exists to prevent,
+	// so a free gate — or one held by a different holder — refuses before any
+	// dial.
+	if !m.hostGateHeldBy(name, holder) {
+		return nil, nil, fmt.Errorf("%w: host %q; AttachUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	if m.reg == nil || !m.reg.SameRegistration(name, host) {
+		// The generation-pinned entry the caller resolved is not the live
+		// registration (a remove/re-add, or a direct registry swap, landed under
+		// the hold): never attach the superseded identity's configuration.
+		return nil, nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
+	// An already-live channel for this same registration is the host attached:
+	// hand it back untouched, exactly the state Ensure reports for an
+	// idempotent re-attach. The returned handoff still ensures supervision: a
+	// channel this primitive published earlier has no supervisor until a
+	// handoff starts one (the attach suppresses startup), so the handoff starts
+	// the missing loop; a channel with an existing loop is left to it.
+	if ch := m.liveChannel(name); ch != nil && ch.MatchesRegistration(host) {
+		return ch, m.attachHandoff(host, ch, holder), nil
+	}
+	stale := m.currentChannel(name)
+	// Tie the attempt to the manager's lifetime, exactly as Ensure does: a
+	// Close landing mid-attempt must cancel it rather than let it outlive the
+	// manager with its ssh child alive.
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopClose := context.AfterFunc(m.baseCtx, cancel)
+	defer stopClose()
+	ch, err := m.ensureOnce(attemptCtx, host, explicit)
+	if err != nil {
+		if m.baseCtx.Err() != nil && !isTerminal(err) {
+			// Close canceling the attempt, not the host, is why.
+			err = ErrManagerClosed
+		}
+		// Mirror Ensure's non-close failure handling: consumers tracking the
+		// host's phase must see the attach end, not park on the last
+		// intermediate state. A closing manager or a canceled caller owns its
+		// own events (Close emits the Detached; a canceled caller emits
+		// nothing), exactly as Ensure suppresses them there.
+		if m.baseCtx.Err() == nil && ctx.Err() == nil {
+			if isTerminal(err) && stale == nil && !errors.Is(err, ErrManagerClosed) {
+				// The host row's last-attach-error surfaces EventFailed; with no
+				// predecessor to own the terminal outcome, this attach is where
+				// the terminal cause is announced, exactly as Ensure announces
+				// it. A reattach with a predecessor keeps the predecessor's
+				// supervisor (it must still reconnect), so no terminal event is
+				// claimed for it here.
+				m.failedEvent(name, err)
+				// stale == nil does not mean no supervisor exists: a loop that
+				// retired its own channel clears the map and waits out its
+				// backoff, and it would retry into this same terminal cause and
+				// announce a second EventFailed for one host. Ensure's terminal
+				// arm stops such a loop; this one must too. With a predecessor
+				// (stale != nil) its own supervisor owns the terminal
+				// announcement, so it is deliberately left running there.
+				m.stopSupervisor(name)
+			}
+			m.stateEvent(name, StateDisconnected)
+		}
+		return nil, nil, err
+	}
+	if ch.isClosed() || ch.isLost() {
+		// The link died between the handshake and the publish: reap the
+		// replacement and report the drop; the predecessor (if any) keeps the
+		// slot, exactly as Ensure's own validation does. With no predecessor
+		// the honest state is disconnected, the same event Ensure emits there.
+		_ = ch.Close()
+		if stale == nil {
+			m.stateEvent(name, StateDisconnected)
+		}
+		return nil, nil, errChannelDropped(name)
+	}
+	if !m.reg.SameRegistration(name, host) {
+		_ = ch.Close()
+		return nil, nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
+	if !m.publishChannel(name, ch, host) {
+		_ = ch.Close()
+		return nil, nil, ErrManagerClosed
+	}
+	if m.opts.afterPublish != nil {
+		m.opts.afterPublish(name, ch)
+	}
+	if ch.isLost() || ch.isClosed() {
+		// The link died between the validation and the announcement: reap the
+		// replacement, hand the slot back (to the predecessor when one exists),
+		// and pair nothing — the check runs before the event pair exactly as
+		// Ensure's post-publish death path orders it, so no consumer is ever
+		// told about a channel nothing will supervise.
+		_ = ch.Close()
+		return nil, nil, m.lostAfterPublish(name, stale)
+	}
+	// Order the predecessor's Detached before the replacement's Attached, as
+	// Ensure's replacement does: the predecessor's own supervisor is parked on
+	// the gate this call holds, so it will stand down without pairing them.
+	if stale != nil {
+		m.detachEvent(name, StateReconnecting)
+	}
+	m.attachEvent(name, ch, StateAttached)
+	if stale != nil {
+		// The map no longer references the predecessor; reaping it can block on
+		// its ssh child's exit, which Kill bounds (the child is the dead link
+		// the operation's restart left).
+		_ = stale.Close()
+	}
+	return ch, m.attachHandoff(host, ch, holder), nil
 }
 
 // ClientIfAttached returns name's current initialized client ONLY while a live,
@@ -862,6 +1235,7 @@ func (m *Manager) Close() error {
 		// announced as usable after its teardown has begun.
 		lock := m.hostLock(e.name)
 		lock.Lock()
+		lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "close"})
 		// Pair the Attached a consumer saw with a Detached, under the same lock
 		// that ordered them: the supervisor returns on the canceled base context
 		// without emitting one, so shutdown is where that channel's source is
@@ -875,6 +1249,7 @@ func (m *Manager) Close() error {
 		// Close as terminal must not find an entry that looks live afterwards.
 		m.clearChannel(e.name)
 		lock.Unlock()
+		m.releaseHostLock(e.name)
 		if err != nil && first == nil {
 			first = err
 		}
@@ -896,6 +1271,560 @@ func (m *Manager) Close() error {
 	m.closeErr = first
 	close(m.closeDone)
 	return first
+}
+
+// DetachHost removes name's host cleanly: it stops the supervisor first, then
+// drops the mapped channel, so a removed-then-readded host attaches fresh. The
+// name is normalized through the registry exactly like Ensure and
+// ClientIfAttached, and an unknown name (or a nil registry) is a no-op
+// returning nil: removal of the registry entry is what makes re-add clean, so
+// there is nothing to detach for a name the registry no longer reports.
+//
+// The host lock serializes with an in-flight Ensure — both hold it while they
+// inspect or publish the host's channel, so a channel cannot be announced as
+// usable after its teardown has begun — and the supervisor is stopped before
+// the channel is cleared so it cannot reconnect behind this call. The Detached
+// is paired through claimAnnounced exactly like Close, so consumers see it
+// only when the channel was announced. The channel close runs after the locks
+// are released: Channel.Close blocks on the ssh child's exit and must never be
+// held across m.mu, but the host lock spans the map mutation so no Ensure can
+// interleave between the clear and the reap. This never dials, preflights, or
+// attaches, and a second call for the same name is a no-op returning nil.
+func (m *Manager) DetachHost(name string) error {
+	if m.reg == nil {
+		return nil
+	}
+	// Trimmed for the lock key exactly as AddHost trims and as the registry's
+	// Get and Remove trim what they are given, so a padded spelling takes the
+	// same host gate as its canonical name.
+	name = strings.TrimSpace(name)
+	host, ok := m.reg.Get(name)
+	if !ok {
+		return nil
+	}
+	// The registry is the authority on the name's spelling, and every map below
+	// is keyed off host.Name: normalizing here keeps a padded spelling from
+	// missing the channel Ensure published, exactly as Ensure does.
+	name = host.Name
+	// Serialize with Ensure and this host's supervisor, as Close does: neither
+	// can inspect or publish the channel while it is being torn down.
+	lock := m.hostLock(name)
+	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "detach"})
+	// A remove/re-add that swapped the entry while this call waited for the
+	// gate leaves the re-added host's own channel mapped under the name; the
+	// teardown is scoped to the identity resolved above, so that channel — and
+	// its supervisor — stay up.
+	ch := m.teardownHostChannel(name, host, true)
+	lock.Unlock()
+	m.releaseHostLock(name)
+	// Reaping the ssh child can block on its exit, which needs no lock; the map
+	// no longer references this channel, so a concurrent Ensure attaching fresh
+	// — the re-add path — cannot interleave with it.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
+}
+
+// teardownHostChannel performs the channel half of a host teardown while the
+// caller holds the host lock: it stops the supervisor — a loop parked in
+// backoff would otherwise re-attach behind the teardown and a removed host
+// would come back on its own — then drops the mapped channel together with
+// the per-host caches, so a detached host's caches do not survive the detach
+// and a re-add starts clean rather than inheriting this identity's deploy
+// marker, resolved executable, or pending restart. claimAnnounced pairs the
+// Attached a consumer saw with a Detached under the same lock that ordered
+// them, and makes the pairing a no-op for a channel whose Detached was
+// already emitted — so a Close racing the teardown cannot pair it twice. The
+// returned channel is the one that was mapped, for the caller to reap at the
+// position its own discipline fixes: the self-acquiring entries (RemoveHost,
+// UpdateHost, DetachHost) reap after releasing the host lock, while the
+// under-gate entries reap inside the caller's own reservation, which the caller
+// releases last (registry spec 08 §4's "gate released last"; the AttachUnderGate
+// precedent reaps the same way). The lock spans the map mutation so no Ensure
+// can interleave between the clear and the reap; Channel.Close's wait on the
+// ssh child's exit needs no lock either way. Callers hold the host lock.
+//
+// captured is the identity the caller resolved before the gate, and
+// hadCaptured says whether it resolved one at all. It scopes the teardown to
+// that identity: a remove/re-add that swapped the name's entry while the
+// caller waited for the gate leaves the re-added host's own attach mapped
+// under the name, and a channel built from a strictly newer registration is
+// that host's live channel — with its supervisor and its caches — which
+// nothing here was asked to touch. The caller's own identity still comes
+// down, and a name with no captured identity keeps the sweep of an older
+// attach's channel.
+// The teardown is scoped to the identity the caller captured. A name whose
+// channel or reconnect loop belongs to a strictly newer registration is the
+// re-added host's own live state: reaping that channel, cancelling the loop
+// reconnecting it, or clearing the caches it is using would leave a host whose
+// add answered success silently offline. The captured identity's own resources
+// still come down, and a name with no captured identity keeps the sweep of an
+// older attach's channel.
+func (m *Manager) teardownHostChannel(name string, captured hostreg.Host, hadCaptured bool) *Channel {
+	newer := func(generation uint64) bool { return hadCaptured && generation > captured.Generation }
+	// The loops first: one reconnecting a newer registration is that host's own
+	// live state, and cancelling it would leave nobody to bring the host back.
+	reconnectingNewer := m.stopSupervisorsBefore(name, newer)
+	m.mu.Lock()
+	ch := m.chans[name]
+	if ch != nil && newer(ch.host.Generation) {
+		// The re-added host's own live channel: it stays mapped, and its
+		// Attached stays unpaired.
+		m.mu.Unlock()
+		return nil
+	}
+	delete(m.chans, name)
+	m.mu.Unlock()
+	if !reconnectingNewer {
+		m.clearHostCaches(name)
+	}
+	if ch != nil && m.claimAnnounced(name, ch) {
+		m.detachEvent(name, StateDisconnected)
+	}
+	return ch
+}
+
+// stopSupervisorsBefore ends every reconnect loop name still has except the
+// loops reconnecting a registration newer than the caller captured, and
+// reports whether any such loop was left running. Ending all of the others, not
+// just the most recent, is what reaches a predecessor parked in backoff after a
+// replacement attach registered over it; skipping the newer ones is what keeps
+// a stale teardown from cancelling the re-added host's own reconnect.
+func (m *Manager) stopSupervisorsBefore(name string, newer func(uint64) bool) bool {
+	m.mu.Lock()
+	loops := m.supervisors[name]
+	if len(loops) == 0 {
+		m.mu.Unlock()
+		return false
+	}
+	kept := make(map[*supervisorLoop]struct{}, len(loops))
+	var ended []*supervisorLoop
+	for loop := range loops {
+		if newer(loop.host.Generation) {
+			kept[loop] = struct{}{}
+			continue
+		}
+		ended = append(ended, loop)
+	}
+	if len(kept) == 0 {
+		delete(m.supervisors, name)
+	} else {
+		m.supervisors[name] = kept
+	}
+	m.mu.Unlock()
+	for _, loop := range ended {
+		loop.cancel()
+	}
+	return len(kept) > 0
+}
+
+// RemoveHost deregisters name and tears down its channel as one atomic step:
+// under the host lock it drops the registry entry, stops the supervisor, and
+// clears the mapped channel together with the per-host caches, so a concurrent
+// Ensure cannot publish a fresh channel for a host that is deregistered — its
+// registry recheck under the same lock sees the entry gone and refuses.
+//
+// DetachHost alone cannot give the caller that guarantee: it drops the channel
+// under the lock but leaves the registry entry to the caller, and the gap
+// between the two is exactly where a racing Ensure dials and publishes for a
+// host the caller is about to remove. The registry is the manager's own
+// (New takes it), so this method owns the whole lifecycle the hub's host
+// manager drives: persist first at the caller, then RemoveHost once, and
+// nothing is resurrected.
+//
+// Like DetachHost this never dials, an unknown name is a no-op returning nil,
+// and a second call for the same name is a no-op. The Detached pairing and
+// the post-lock reap mirror DetachHost exactly — both run through the same
+// teardownHostChannel. A nil registry is an error rather than a silent no-op:
+// a removal that committed nothing must not report success — a Remove that
+// answered Removed:true while the host stayed in the live registry would
+// leave it listed as removable-but-never-removed, mislabeled and unremovable
+// — mirroring AddHost's loud-refusal posture.
+//
+// The removal targets the identity the call resolved before the gate, not
+// whatever holds the name when the gate is taken: a remove/re-add that swaps
+// the entry while this call waits leaves the re-added host — its registry
+// entry and its own channel — untouched.
+func (m *Manager) RemoveHost(name string) error {
+	if m.reg == nil {
+		return errors.New("sshconn: RemoveHost with no registry")
+	}
+	// Trimmed for the lock key exactly as AddHost trims and as the registry's
+	// Get and Remove trim what they are given: a padded spelling must take the
+	// same host gate as its canonical name rather than mint a second gate for
+	// one host that a concurrent teardown of the canonical name races.
+	name = strings.TrimSpace(name)
+	host, ok := m.reg.Get(name)
+	if ok {
+		// The registry is the authority on the name's spelling, and every map
+		// below is keyed off host.Name, exactly as Ensure and DetachHost do.
+		name = host.Name
+	}
+	lock := m.hostLock(name)
+	defer m.releaseHostLock(name)
+	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"})
+	ch, err := m.removeHostUnderLock(name, host, ok)
+	lock.Unlock()
+	if err != nil {
+		return err
+	}
+	// The reap runs after the lock is released, exactly as DetachHost's does:
+	// Channel.Close blocks on the ssh child's exit, and nothing references the
+	// channel once the map entry is gone.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
+}
+
+// removeHostUnderLock is RemoveHost's registry-and-channel teardown body with
+// no lock operation of its own: the caller holds the host gate (RemoveHost by
+// acquiring it, RemoveHostUnderGate under the caller's own reservation) and
+// calls this inside that hold. It returns the channel the teardown unmapped,
+// for the caller to reap at the position its own discipline fixes.
+func (m *Manager) removeHostUnderLock(name string, host hostreg.Host, hadHost bool) (*Channel, error) {
+	// Under the gate the name can hold a registration this call never captured
+	// — an add that landed the name while this call waited, the mirror of the
+	// remove/re-add below — so the unknown-name half is re-checked here rather
+	// than trusted from the lookup above: a host whose add is about to answer
+	// success is not this call's to remove, and sweeping its channel would kill
+	// the attach that add's caller is about to use. A name that still holds
+	// nothing keeps the no-op the doc promises. (Under an under-gate caller
+	// there is no wait to cover, and the re-check is the same no-op.)
+	if !hadHost {
+		if _, exists := m.reg.Get(name); exists {
+			return nil, nil
+		}
+	}
+	// A remove/re-add can swap the name's entry in the window this call spent
+	// waiting for the gate, which leaves a different registration here. The
+	// identity this call was asked to remove is gone by then — the swap's own
+	// removal tore it down — so its registry entry is not this call's to drop:
+	// taking the replacement's would deregister the host its caller re-added,
+	// behind that add's own success. The channel half below still runs, scoped
+	// by the captured identity.
+	if !hadHost || m.reg.SameRegistration(name, host) {
+		// Registry entry first, under the same lock the rechecks in Ensure and
+		// reconnectOnce consult: once it is gone no attach path can publish. An
+		// unknown name is the no-op the doc promises — the entry is already gone,
+		// but a channel an older attach published for it still comes down.
+		if err := m.reg.Remove(name); err != nil && !errors.Is(err, hostreg.ErrUnknownHost) {
+			return nil, err
+		}
+	}
+	return m.teardownHostChannel(name, host, hadHost), nil
+}
+
+// RemoveHostUnderGate runs RemoveHost's teardown under the caller's
+// already-held per-host gate: §4's "gate released last" for a removal (registry
+// spec 08 §4; deploy pipeline 08b §5's mutation rebind ordering, "the gate
+// releases last. No gate waiter can acquire a half-rebound host"). The caller —
+// the hub's `remove` mutation — reserves the gate before its staged commit and
+// keeps it through the commit and this teardown, presenting the holder its
+// reservation registered (hostGateEntryFor's exact comparison). This method
+// never acquires the gate: it is the same non-reentrant per-host lock, so
+// re-acquiring it would deadlock, and re-acquiring after an early release would
+// be a second exclusion with a gap the caller's reservation is supposed to
+// close. A free gate, or one held by a different holder, refuses with
+// hostops.ErrGateNotHeld before anything live moves.
+//
+// Everything this call does runs inside the caller's hold — the registry drop,
+// the supervisor stop, the channel unmap, and the reap of the unmapped channel
+// — because the caller releases the reservation last (08 §4: "commit first,
+// then rebind/teardown, gate released last"). Reaping under the hold is safe:
+// Channel.Close waits on the ssh child's exit, which needs no lock, exactly as
+// AttachUnderGate reaps a restart's dropped predecessor under its caller's
+// hold.
+//
+// The removal targets the identity resolved under the caller's hold, not
+// whatever holds the name later: this call's span cannot overlap another
+// remove/re-add of the name, because the name's gate is held throughout.
+func (m *Manager) RemoveHostUnderGate(name string, holder hostops.Holder) error {
+	if m.reg == nil {
+		return errors.New("sshconn: RemoveHostUnderGate with no registry")
+	}
+	// Trimmed for the gate key exactly as TryAcquire trims the acquisition the
+	// caller made, so a padded spelling still presents its own hold.
+	name = strings.TrimSpace(name)
+	if !m.hostGateHeldBy(name, holder) {
+		return fmt.Errorf("%w: host %q; RemoveHostUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	host, ok := m.reg.Get(name)
+	if ok {
+		// The registry is the authority on the name's spelling, exactly as in
+		// RemoveHost.
+		name = host.Name
+	}
+	ch, err := m.removeHostUnderLock(name, host, ok)
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return err
+}
+
+// AddHost registers entry in the manager's own registry under the same
+// per-host gate RemoveHost and the attach paths coordinate on. The hub's host
+// manager routes its re-adds through here so a remove/re-add of a name can
+// never interleave with an attach for it: once an Ensure holds the gate, the
+// entry it captured cannot be swapped before its pre-publish recheck, and a
+// parked Ensure that takes the gate after the swap sees the new identity at
+// its recheck and refuses the stale attach instead of publishing it.
+//
+// Validation and normalization are the registry's own (Registry.Add), so this
+// inserts exactly what hostreg would; only the locking discipline is added. A
+// nil registry is an error rather than a silent no-op — an add that committed
+// nothing must not report success. The gate acquisition is try-acquire and
+// answers the typed busy error when the name's gate is held (see the note at
+// the acquisition): the hub's Add calls this inside the mutation mutex, and
+// nothing may wait on a gate while holding that mutex.
+func (m *Manager) AddHost(entry hostreg.Host) error {
+	if m.reg == nil {
+		return errors.New("sshconn: AddHost with no registry")
+	}
+	// Trimmed for the lock key exactly as Get and Remove trim what they are
+	// given, so a padded spelling takes the same gate as its canonical name —
+	// and held in a name so the release below pairs this exact acquisition.
+	name := strings.TrimSpace(entry.Name)
+	lock := m.hostLock(name)
+	defer m.releaseHostLock(name)
+	// Try-acquire, never wait (deploy pipeline 08b §5's acquisition rule): the
+	// hub's Add calls this while holding the process-wide mutation mutex, and
+	// the pipeline takes the gate *before* that mutex — so a blocking
+	// acquisition here would be the one reverse-order wait that can close a
+	// deadlock cycle with a plan. A held gate is the typed busy refusal instead.
+	if !lock.TryLock() {
+		return hostops.Busy(name, lock.holderOf())
+	}
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "add"})
+	defer lock.Unlock()
+	return m.reg.Add(entry)
+}
+
+// UpdateHost replaces name's registry entry with entry and tears the host's
+// channel down as one atomic step, under the per-host gate. Inside the one
+// hold the order is fixed: refuse an absent name, validate, then tear the
+// retired channel down, then swap the registry, then release.
+//
+// The teardown comes BEFORE the swap because a gate-free reader must never pair
+// the new entry with the retired channel. The row build behind host/list and
+// host/status takes no host gate: it snapshots the registry and then resolves
+// the channel by name alone (ClientIfAttached/ChannelIfAttached compare no
+// registrations). If the swap landed first, such a reader could take the new
+// entry inside that window and pair it with the still-mapped channel of the
+// identity this call is retiring, record the retired host's handshake and facts
+// under the new generation — which is above the generation fence the swap
+// itself advances — and render the retired host's server facts for the new
+// identity until the next successful attach. Unmapping the channel before the
+// new generation becomes visible makes that pairing impossible. The reverse
+// window, the old entry observed with no channel, is harmless: it can only make
+// a row render offline, and the retire leaves that clean.
+//
+// An absent name is refused and the entry validated before the teardown because
+// the caller's contract is that an error from this method means nothing live
+// changed. The absence check runs first: Registry.Update is the authority on
+// ErrUnknownHost and rechecks it under its own lock, but by the time it runs
+// below the channel is already retired, so a name a directly driven registry
+// dropped would otherwise be disconnected while still live. hostreg.ValidateEntry
+// is the side-effect-free half of the same Normalize+validateEntry pass
+// Registry.Update runs, so checking it here lets the teardown stay
+// unconditional — a shape refusal returns before the channel is touched, and
+// the swap below cannot refuse for a shape reason. Only a directly driven
+// registry can still refuse the swap (the name dropped inside the gate hold
+// after the capture); that path returns the error with the retired channel
+// already gone, and the host reattaches on the next Ensure.
+//
+// Every update tears the channel down, whether or not the edit changed a field
+// the dial reads. The reason is the fence, not the dial: a supervisor captures
+// the entry it supervises when it starts, and reconnectOnce refuses to publish a
+// replacement once SameRegistration no longer matches that capture — so a
+// channel kept across an update that advanced the generation could never be
+// reconnected by the supervisor that owns it, and the host would go dark on the
+// next link drop with nothing to bring it back. Retiring the channel with the
+// identity keeps one rule instead of a rebind path.
+//
+// It never dials, deploys, or attaches. An unknown name is hostreg's own
+// ErrUnknownHost, and a nil registry is an error rather than a silent no-op,
+// mirroring AddHost and RemoveHost: an update that committed nothing must not
+// report success.
+//
+// onRetire, when non-nil, runs while the per-host gate is still held, in the
+// same hold as the swap: after the registry already holds the new entry and the
+// retired identity's teardown (its Detached included) has been emitted, and
+// immediately before the gate is released. That placement is the contract, not
+// an implementation detail. Every lifecycle event is delivered synchronously
+// with the gate held, so a concurrent attach can only start for the new
+// generation once the gate is free; a caller's per-identity state retired from
+// this hook therefore cannot have a new-generation event interleave between the
+// swap and the retirement and be erased by it. The hook runs only on a swap
+// this call actually made: never on a refusal, and the pre-swap capture it is
+// handed is guaranteed present, because an absent name is refused before
+// anything live moves.
+//
+// The hook receives the entry the swap actually retired — the pre-swap capture,
+// its Generation included — so a caller can retire per-identity state by
+// generation rather than by timing: it can mark every row built from that
+// identity (or any earlier one) as retired, which is what makes the retirement
+// immune to a late write from a row that captured the old entry before the
+// swap but only reaches its state write after the hook. The hook must not call
+// back into Manager — the gate is non-reentrant — and must not take a lock
+// another goroutine may hold while parked on this gate.
+func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error {
+	if m.reg == nil {
+		return errors.New("sshconn: UpdateHost with no registry")
+	}
+	// Trimmed for the lock key exactly as AddHost trims, so a padded spelling
+	// takes the same host gate as its canonical name.
+	name := strings.TrimSpace(entry.Name)
+	lock := m.hostLock(name)
+	defer m.releaseHostLock(name)
+	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
+	ch, err := m.updateHostUnderLock(entry, onRetire)
+	lock.Unlock()
+	// The reap runs after the lock is released, exactly as DetachHost's and
+	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return err
+}
+
+// updateHostUnderLock is UpdateHost's rebind body with no lock operation of its
+// own: the caller holds the host gate (UpdateHost by acquiring it,
+// UpdateHostUnderGate under the caller's own reservation) and calls this inside
+// that hold. It returns the channel the rebind unmapped — on the registry
+// refusal too, since the teardown has already run by then — for the caller to
+// reap at the position its own discipline fixes.
+func (m *Manager) updateHostUnderLock(entry hostreg.Host, onRetire func(retired hostreg.Host)) (*Channel, error) {
+	name := strings.TrimSpace(entry.Name)
+	// The identity this call retires is resolved under the gate, and so is the
+	// swap: a remove/re-add that took the name while this call waited is not
+	// this call's to tear down, and the teardown below is scoped to the entry
+	// the update actually replaced. The capture is guaranteed present on every
+	// path that reaches the teardown — an absent name is refused immediately
+	// below — so hadCaptured reads as "there is an identity here to retire" for
+	// teardownHostChannel's own contract.
+	before, hadCaptured := m.reg.Get(name)
+	// Refuse an absent name before anything live moves, in the same gate hold as
+	// the swap it guards. Registry.Update is the authority on this refusal and
+	// rechecks it under its own lock, but by the time it runs below the teardown
+	// has already retired the channel: an update whose name a directly driven
+	// registry dropped (one bypassing this manager) would disconnect a host that
+	// is still live and then answer an error — exactly the "an error means
+	// nothing live changed" contract the validate-first step exists to keep.
+	// The message is Registry.Update's own — fmt.Errorf("%w: %q",
+	// ErrUnknownHost, name) — so callers' errors.Is keeps working across the
+	// moved check.
+	if !hadCaptured {
+		return nil, fmt.Errorf("%w: %q", hostreg.ErrUnknownHost, name)
+	}
+	// Validate before anything live moves. The caller's contract is that an
+	// error from this method means nothing live changed, so a refused update
+	// must not have torn the host's channel down on its way out. ValidateEntry
+	// is the side-effect-free half of the same Normalize+validateEntry pass
+	// Registry.Update runs below; doing it here, ahead of the teardown, is what
+	// lets the teardown stay unconditional — the swap below can then refuse only
+	// for a reason independent of the entry's shape.
+	if err := hostreg.ValidateEntry(entry); err != nil {
+		return nil, err
+	}
+	// The teardown targets the captured entry's own spelling. The capture is
+	// guaranteed present — an absent name was refused above — so before.Name is
+	// always a real host and there is no fallback to the gate key: a fallback
+	// keyed to name could never run, and the empty name it once guarded against
+	// (a directly driven registry inserting the name inside the capture/swap
+	// window) is now refused before the teardown instead of swapped past it.
+	// Tear the retired channel down BEFORE the swap becomes visible. A gate-free
+	// row build resolves a name through the registry and then looks the channel
+	// up by name alone, so a swap that landed first would let it pair the new
+	// entry with this retired channel; unmapping first closes that window. See
+	// the method comment.
+	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
+	if m.opts.beforeUpdateHostSwap != nil {
+		m.opts.beforeUpdateHostSwap(name)
+	}
+	if err := m.reg.Update(entry); err != nil {
+		// Validation above already passed, so this refusal is not a shape
+		// refusal: only a directly driven registry — one whose name was dropped
+		// from under the gate — can reach it. The entry is unchanged and the
+		// retired channel is already gone; the host reattaches on the next
+		// Ensure, which finds no channel under the name and dials fresh. Reap
+		// the channel this call did retire — the close blocks on the ssh child's
+		// exit, so it happens at the caller's reap position, as everywhere else
+		// — and report the refusal.
+		return ch, err
+	}
+	// The caller's retirement runs under the gate, in the same hold as the swap,
+	// so no new-identity lifecycle event can interleave before it: an attach
+	// cannot acquire the gate until it is released below. It receives the entry
+	// the swap replaced — the capture above, guaranteed present because an
+	// absent name was refused before the teardown — so the caller retires by
+	// identity rather than by timing.
+	if onRetire != nil {
+		onRetire(before)
+	}
+	// The post-swap seam runs last in the hold, so the window it exposes is
+	// exactly "the swap and the caller's retirement are done, the gate is still
+	// ours": a directly driven registry change made here lands after the committed
+	// swap and the retirement, inside the same gate hold, and before any gate-free
+	// reread the caller makes. It runs only down this path — a refusal returned
+	// above — so a test can key it to a swap that actually happened.
+	if m.opts.AfterUpdateHostSwap != nil {
+		m.opts.AfterUpdateHostSwap(name)
+	}
+	return ch, nil
+}
+
+// UpdateHostUnderGate runs UpdateHost's rebind under the caller's already-held
+// per-host gate: §4's "gate released last" for an edit (registry spec 08 §4;
+// deploy pipeline 08b §5's mutation rebind ordering, "the gate releases last.
+// No gate waiter can acquire a half-rebound host"). The caller — the hub's
+// `update` mutation — reserves the gate before its staged commit and keeps it
+// through the commit and this rebind, presenting the holder its reservation
+// registered (hostGateEntryFor's exact comparison). This method never acquires
+// the gate: it is the same non-reentrant per-host lock, so re-acquiring it
+// would deadlock, and re-acquiring after an early release would be a second
+// exclusion with a gap the caller's reservation is supposed to close. A free
+// gate, or one held by a different holder, refuses with hostops.ErrGateNotHeld
+// before anything live moves.
+//
+// Everything this call does runs inside the caller's hold — the retired
+// channel's teardown, the registry swap, the caller's retirement hook, and the
+// reap of the unmapped channel — because the caller releases the reservation
+// last (08 §4: "commit first, then rebind/teardown, gate released last").
+// Reaping under the hold is safe: Channel.Close waits on the ssh child's exit,
+// which needs no lock, exactly as AttachUnderGate reaps a restart's dropped
+// predecessor under its caller's hold.
+func (m *Manager) UpdateHostUnderGate(entry hostreg.Host, holder hostops.Holder, onRetire func(retired hostreg.Host)) error {
+	if m.reg == nil {
+		return errors.New("sshconn: UpdateHostUnderGate with no registry")
+	}
+	// Trimmed for the gate key exactly as TryAcquire trims the acquisition the
+	// caller made, so a padded spelling still presents its own hold.
+	name := strings.TrimSpace(entry.Name)
+	if !m.hostGateHeldBy(name, holder) {
+		return fmt.Errorf("%w: host %q; UpdateHostUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	ch, err := m.updateHostUnderLock(entry, onRetire)
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return err
+}
+
+// clearHostCaches drops every per-host record that must not survive a detach or
+// removal: the at-most-once dev-deploy marker, the resolved executable path,
+// and any pending restart. A re-added host starts clean instead of inheriting
+// the previous identity's dial and deploy decisions.
+func (m *Manager) clearHostCaches(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.devDeployed, name)
+	delete(m.resolvedTargets, name)
+	delete(m.pendingRestarts, name)
 }
 
 // ensureOnce runs one full preflight-then-decide-then-attach sequence with the
@@ -943,8 +1872,8 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// deploy/restart phases and, crucially, attach → channelArgv otherwise build
 	// the bridge from an empty evener_path, and evenerCommand falls back to the
 	// bare word `evener`, which the host cannot resolve. The first attach to an
-	// already-healthy host at that location then failed with command-not-found
-	// and only recovered on a later attempt (round eleven).
+	// already-healthy host at that location would then fail with
+	// command-not-found and only recover on a later attempt.
 	m.applyResolvedTarget(&host)
 
 	expected := m.opts.controllerVersion()
@@ -954,17 +1883,34 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
 	running, runningKnown := m.probeRunningHub(probeCtx, host)
 	cancelProbe()
-	if pending := m.pendingRestart(host.Name); runningKnown && running.version == expected && running.differentProcessFrom(pending.replaced) {
-		// A hub already serving exactly the expected build — and provably not the
-		// process the recorded restart meant to replace — resolves whatever an
-		// earlier restart left outstanding; do not launch a second hub over it.
-		// Version equality alone is not that proof: two unstamped builds both
-		// report "dev", so a restart that never took would otherwise be cleared on
-		// the old process's answer and the next Ensure would attach to it. A start
-		// time that is missing on either side is not proof either: an old hub
-		// whose health body carries no started_at would otherwise clear the
-		// pending marker on the same answer, so the identity must be known on BOTH
-		// sides and must differ before the marker is cleared (differentProcessFrom).
+	// Settlement judges the build the host will actually serve, exactly as
+	// recoverRestart and the restart waits do: a host that keeps its own build
+	// (hostBuildDiffers, no deploy configured) answers with its own version, not
+	// the controller's, and a snapshot controller's pin requires the running
+	// hub's backend_git_sha to match. Comparing against the controller's version
+	// alone would leave a recorded start on a keep-its-own-build host unsettled
+	// forever, and dropping the pin would let a wrong-commit hub satisfy the
+	// settlement the waits refuse.
+	servedVersion, servedPin := expectedServedBuild(facts, expected)
+	if pending := m.pendingRestart(host.Name); runningKnown && running.version == servedVersion &&
+		hubBuildSHAMatches(running.gitSHA, servedPin) &&
+		(pending.start || running.differentProcessFrom(pending.replaced)) {
+		// A hub already serving exactly the expected build resolves whatever an
+		// earlier restart or start left outstanding; do not launch a second hub
+		// over it. A recorded START has no predecessor to exclude — bootstrapHub
+		// only ever starts a hub where nothing was serving — so the expected build
+		// (version and, on the snapshot channel, the pinned commit) alone settles
+		// it, exactly as recoverRestart judges a recovered start (a start's zero
+		// `replaced` can never satisfy differentProcessFrom, so the build match is
+		// the only thing that can clear it). A recorded REPLACEMENT must
+		// additionally be provably not the process it meant to replace: the version
+		// is not that proof, because two unstamped builds both report "dev", so a
+		// restart that never took would otherwise be cleared on the old process's
+		// answer and the next Ensure would attach to it. A start time that is
+		// missing on either side is not proof either: an old hub whose health body
+		// carries no started_at would otherwise clear the pending marker on the
+		// same answer, so the identity must be known on BOTH sides and must differ
+		// before the marker is cleared (differentProcessFrom).
 		m.clearPendingRestart(host.Name)
 	}
 
@@ -993,12 +1939,36 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	}
 
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
+	// A deploy-only attempt finishes at the end of its deploy block; a planned
+	// restart leg runs under the same durable record, and a restart-only attempt
+	// mints its own record below.
+	var finishEnsureOp func(error)
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
+		// The Ensure-triggered deploy is a durable fenced operation (deploy
+		// pipeline 08b §6): the record carrying its fencing epoch is persisted
+		// before the deploy's first remote write, and the gate hold publishes
+		// the operation so a contender's busy refusal names it. A Manager with
+		// no recorder wired has no record to persist, so the deploy refuses
+		// here — before any mutating command — rather than running unrecorded
+		// (§6's durable-record rule; the same contract the restart-only arm
+		// holds).
+		hook := m.ensureDeployHook()
+		if hook == nil {
+			return nil, errors.New("sshconn: this Manager has no deploy recorder wired, so an Ensure-triggered deploy performs no mutating SSH command (§6); nothing was launched")
+		}
+		finish, err := hook(host)
+		if err != nil {
+			return nil, err
+		}
+		finishEnsureOp = finish
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
 		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
+			if finishEnsureOp != nil {
+				finishEnsureOp(err)
+			}
 			return nil, err
 		}
 		if resolvedTarget != "" {
@@ -1015,32 +1985,89 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// The controller's own build is installed now; the dev-identity question
 		// is settled for this Manager's lifetime.
 		m.markDevDeployed(host.Name)
+		// Judge the build just installed on the fresh on-disk facts BEFORE the
+		// restart path. A wrong operator-supplied artifact is a permanent cause:
+		// the restart onto it fails retryably in waitHealthy (the process never
+		// reports the expected version), which would mask the terminal refusal and
+		// leave the supervisor pushing and restarting forever without converging.
+		// Judging first makes the permanent cause the one that surfaces.
+		facts, err = m.reReadLaunchContract(ctx, host, facts)
+		if err != nil {
+			if finishEnsureOp != nil {
+				finishEnsureOp(err)
+			}
+			return nil, err
+		}
+		if err := m.deployedBuildNotStamped(host.Name, facts, expected); err != nil {
+			if finishEnsureOp != nil {
+				finishEnsureOp(err)
+			}
+			return nil, err
+		}
+		if !restart {
+			// A deploy with no restart leg planned is over: finish where the
+			// deploy-only path always finished.
+			if finishEnsureOp != nil {
+				finishEnsureOp(nil)
+			}
+		}
+	}
+	if restart && !deploy {
+		// A restart-only attempt (a stale running build, or a recorded
+		// pendingRestart) is its own durable operation (§6: "a reconnect with
+		// no durable record performs no mutating SSH command"): the hook mints
+		// the record under the held gate before the leg's first remote command,
+		// and the record's scope arms the leg below. With no recorder wired
+		// there is no record and no scope, so the attempt refuses here — before
+		// any mutating command — rather than restarting unrecorded.
+		hook := m.ensureRestartHook()
+		if hook == nil {
+			return nil, errors.New("sshconn: this Manager has no restart recorder wired, so a restart-only Ensure attempt performs no mutating SSH command (§6); nothing was launched")
+		}
+		finish, err := hook(host)
+		if err != nil {
+			return nil, err
+		}
+		finishEnsureOp = finish
 	}
 	if restart {
 		m.stateEvent(host.Name, StateRestarting)
 		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
+		// Every restart leg runs under a durable record: the deploy's record
+		// when a deploy planned the leg, or the restart-only record the hook
+		// above minted (§6's "a reconnect with no durable record performs no
+		// mutating SSH command"). Both arms refuse when their recorder is
+		// unwired, so there is no restart leg that runs unrecorded by omission.
 		var restartErr error
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
 			// no hub to kill now, so complete the recorded restart instead.
-			restartErr = m.recoverRestart(restartCtx, host, pending)
+			restartErr = m.recoverRestart(restartCtx, host, facts, expected, pending)
 		} else {
 			restartErr = m.restartHub(restartCtx, host, facts, running)
 		}
 		cancelRestart()
 		if restartErr != nil {
+			// The record stayed open through the leg, so the leg's failure is
+			// recorded on it — never a `complete` record for an operation that
+			// did not finish.
+			if finishEnsureOp != nil {
+				finishEnsureOp(restartErr)
+			}
 			return nil, restartErr
 		}
+		if finishEnsureOp != nil {
+			finishEnsureOp(nil)
+		}
 	}
-	if deploy || restart {
-		// The on-disk build changed (deploy) or the serving process was replaced
-		// (restart), so the launch contract read before either phase is stale. This
-		// must run for a deploy even when no restart followed: on a stopped host the
-		// deploy starts nothing, and judging the terminal gates — or reporting the
-		// channel's facts — against the replaced build left the metadata obsolete.
-		refreshCtx, cancelRefresh := context.WithTimeout(ctx, m.opts.deployLimit())
-		facts, err = m.refreshLaunchContract(refreshCtx, host, facts)
-		cancelRefresh()
+	if restart && !deploy {
+		// A restart-only attempt (replacing a stale process, or completing a
+		// recorded restart) still needs the post-phase re-read: the serving process
+		// was replaced, so the launch contract read before it is stale. A deploy
+		// already re-read the on-disk contract above — before the restart path,
+		// where the terminal judgement must win — and the restart serves that same
+		// on-disk binary, so there is nothing new to read here.
+		facts, err = m.reReadLaunchContract(ctx, host, facts)
 		if err != nil {
 			return nil, err
 		}
@@ -1058,18 +2085,23 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
 		return nil, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, facts.LaunchFlags, requiredLaunchFlag)
 	}
-	// A known on-disk version mismatch on a Manager with no build source can
-	// never be resolved: nothing can be installed, and a restart cannot give the
-	// on-disk binary a version it does not carry. Attaching anyway would quietly
-	// violate version auto-match — the guarantee this component exists for — so
-	// refuse terminally rather than serve a build the controller did not ask for.
-	// It fires after the deploy/restart phase so a configured deploy still gets
-	// its chance (that case never reaches here with a mismatch: the re-probed
-	// facts carry the deployed build's version).
-	if !m.canDeploy() && facts.LaunchCheckKnown && facts.Version != expected {
-		return nil, fmt.Errorf("%w: host %q runs version %q, want %q, and no build source is configured to deploy the controller's build; set Options.BuildSource",
-			ErrVersionMismatch, host.Name, facts.Version, expected)
-	}
+	// A differing build VERSION is not a gate on the attach. A host that answered
+	// the launch-check speaks this controller's appwire protocol — launch-check
+	// refuses any protocol but its own (launchcheck.go:72-74), so a known contract
+	// is itself the compatibility proof — and the wire layer enforces the same rule
+	// again at Initialize (appwire.ProtocolVersionMismatchError). Gating on the
+	// version label instead refused working hosts: an unstamped "dev" host against
+	// a stamped controller, or a host built from another checkout, were told to
+	// configure a deploy path they did not need, for a difference the protocol
+	// already tolerates.
+	//
+	// Version auto-match still converges a host that can be converged: with a deploy
+	// path configured, deployRequired above installs this controller's build and the
+	// judgement right after the write (above) proves the result, while the installer
+	// path keeps its own terminal ErrVersionMismatch for a moved channel. What
+	// is left here attaches on the host's own build, and reports the difference
+	// where it accepts it — at the attach, so a passed-over bootstrap cannot leave a
+	// notice for an attach that never happened.
 	// First attach to a stopped host must be able to start the hub. The probe
 	// above only restarts a hub that is already answering, and the bridge is a
 	// client that must not start one, so a configured host whose hub is not
@@ -1087,6 +2119,12 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			return nil, bootErr
 		}
 	}
+	// The host keeps the build it has: nothing installed this controller's, and the
+	// protocol — not the build label — decides compatibility. Say so, so accepting
+	// the difference is never silent.
+	if hostBuildDiffers(facts, expected) {
+		m.logf("sshconn: host %s runs build %q, controller is %q; attaching anyway (a protocol-compatible host need not run this controller's build, and no deploy path replaced it)", host.Name, facts.Version, expected)
+	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)
 }
@@ -1101,6 +2139,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 // supervisor is refused with ErrRestart, so the first host action surfaces the
 // failure instead of attaching nothing.
 func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Preflight, expected string) error {
+	// The build this start must see is the one the host will actually run, not
+	// necessarily this controller's: expectedServedBuild.
+	startVersion, startPin := expectedServedBuild(facts, expected)
 	port := hubPort(m.hostAddr(host))
 	lp, err := m.probeListeners(ctx, host, port)
 	if err != nil {
@@ -1131,7 +2172,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 			if runErr != nil && !sup.restartStatusIsAdvisory() {
 				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 			}
-			if err := m.waitStartedHealthy(ctx, host, expected); err != nil {
+			if err := m.waitStartedHealthy(ctx, host, startVersion, startPin); err != nil {
 				return err
 			}
 			m.clearPendingRestart(host.Name)
@@ -1151,7 +2192,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 	if runErr != nil {
 		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
 	}
-	if err := m.waitStartedHealthy(ctx, host, expected); err != nil {
+	if err := m.waitStartedHealthy(ctx, host, startVersion, startPin); err != nil {
 		return err
 	}
 	m.clearPendingRestart(host.Name)
@@ -1167,7 +2208,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 func (m *Manager) deployRequired(name string, facts Preflight, expected string) bool {
 	protocolOK := facts.LaunchCheckKnown && facts.Protocol == appwire.ProtocolVersion
 	flagsOK := slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
-	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
+	versionDiffers := hostBuildDiffers(facts, expected)
 	deployNeeded := versionDiffers || !protocolOK || !flagsOK
 
 	// "dev" is not an identity: an unstamped controller and an unstamped host
@@ -1178,19 +2219,24 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
-	// A DIRTY controller with a deploy configured cannot install anything (deploy
-	// refuses it terminally: see errControllerDirty), so the force below is what
-	// keeps it from attaching to a host whose code equality cannot prove; the
-	// refusal is terminal rather than a retryable ErrDeploy, so the same forced
-	// deploy cannot become an endless cross-compile.
+	// A DIRTY controller whose deploy source is anything but its own executable
+	// cannot install anything (deploy refuses it terminally: see errControllerDirty),
+	// so the force below is what keeps it from attaching to a host whose code
+	// equality cannot prove; that refusal is terminal rather than a retryable
+	// ErrDeploy, so the same forced deploy cannot become an endless cross-compile.
+	// The controller's own executable (Options.OwnExecutable) is installable, and
+	// once installed it settles the question for this Manager's lifetime like any
+	// other deploy.
 	deployPossible := m.canDeploy()
-	devUnverified := isUnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
+	devUnverified := UnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
 	// A deploy is only a decision when there is something to deploy. With no
 	// BuildSource/BuildBinary configured, attempting one fails at
 	// verifyBuildSource with ErrDeploy, which is non-terminal: the supervisor
-	// retried it forever and the cause was discarded. ensureOnce refuses the
-	// incompatible cases terminally instead.
+	// retried it forever and the cause was discarded. With nothing to deploy a
+	// version difference is left to the attach path, which accepts the host's own
+	// build; ensureOnce refuses terminally only the cases no deploy could fix — a
+	// protocol or launch-contract failure.
 	return (deployNeeded && deployPossible) || devUnverified
 }
 
@@ -1215,7 +2261,7 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 // are judged by ensureOnce only after a deploy/restart has run.
 func (m *Manager) ensureDecision(name string, facts Preflight, expected string, running hubIdentity, runningKnown, hubPresent bool) (deploy, restart bool) {
 	deploy = m.deployRequired(name, facts, expected)
-	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
+	versionDiffers := hostBuildDiffers(facts, expected)
 	// Replace the RUNNING hub only when the binary a restart would launch (the
 	// on-disk one) already matches the controller. A restart cannot give the
 	// on-disk binary a version it does not carry, so an on-disk mismatch needs the
@@ -1272,9 +2318,50 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 	// *running* hub against expected, but this launch-check describes the on-disk
 	// binary, which can still differ (a replaced or partially installed file);
 	// overwriting it with expected would make the channel claim a match it did
-	// not observe. A difference here is what makes the next Ensure redeploy.
+	// not observe. A difference here is what ensureOnce's post-deploy gate
+	// refuses on: a deploy that leaves it cannot be retried into converging.
 	facts.Version = refreshed.Version
 	return facts, nil
+}
+
+// reReadLaunchContract re-reads the on-disk launch contract under the deploy
+// limit. It is refreshLaunchContract plus the phase timeout, so the two call
+// sites that judge a deploy or a restart bound the remote probe identically
+// instead of each repeating the WithTimeout.
+func (m *Manager) reReadLaunchContract(ctx context.Context, host hostreg.Host, facts Preflight) (Preflight, error) {
+	refreshCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
+	defer cancel()
+	return m.refreshLaunchContract(refreshCtx, host, facts)
+}
+
+// deployedBuildNotStamped is the terminal refusal a deploy that left the host on a
+// build other than the controller's must produce, or nil when the fresh facts pin
+// the controller's build (or could not be read at all). It judges the launch
+// contract re-read after the phase, the only evidence available for an
+// operator-supplied artifact built from another tree: it targets the right
+// platform and carries a foreign identity, so the pre-push check passes and this
+// disagreement is what remains. Attaching anyway would serve a host on a build the
+// controller did not stamp, the version auto-match guarantee this component exists
+// for; retrying re-pushes the same artifact, so the refusal is terminal rather
+// than the retryable ErrDeploy (the same reason errControllerDirty is).
+//
+// It is judged only where a deploy ran. A pass that merely started or restarted the
+// hub launched the build already on disk, and the attach rule allows that build to
+// be the host's own, so judging the on-disk version after a restart-only pass would
+// refuse exactly the host the rule exists to attach to. What a restart must prove —
+// that the process answering is the one the phase produced — belongs to the waits,
+// which already do it; what this adds is the on-disk judgement, and only a deploy
+// changes what is on disk.
+//
+// The remedy clause comes through Options.DeployHelp (unstampedRemedy), so a hub
+// names the flags to set exactly as its sibling refusals do while an embedder with
+// no flags keeps the library's own sentence.
+func (m *Manager) deployedBuildNotStamped(hostName string, facts Preflight, expected string) error {
+	if !hostBuildDiffers(facts, expected) {
+		return nil
+	}
+	return fmt.Errorf("%w: host %q still reports version %q after this controller deployed its build, want %q; the build the host now holds was not built from this controller's tree, so the host cannot be pinned to the controller's build — %s",
+		errDeployUnstamped, hostName, facts.Version, expected, m.unstampedRemedy())
 }
 
 // attach spawns the bridge, wraps its stdio in a StreamTransport, and
@@ -1421,7 +2508,7 @@ func (t *lossWatchingTransport) Close() error {
 // It holds the host lock only around state inspection, channel teardown, and
 // one attach attempt. The backoff sleep happens with the lock released, so a
 // concurrent Ensure never waits behind a delay that can reach BackoffMax.
-func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *sync.Mutex) {
+func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *hostLockGate) {
 	select {
 	case <-ch.lost:
 	case <-ctx.Done():
@@ -1431,7 +2518,18 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	if m.opts.beforeSuperviseGate != nil {
 		m.opts.beforeSuperviseGate(host.Name, ch)
 	}
+	// A canceled loop no longer owns the host, and standing down needs no gate:
+	// return before contending for it. This covers the teardown ordering this
+	// path exists for — a loop is canceled, then its link is dropped, so the loop
+	// wakes on the drop with its context already canceled — and it stands down
+	// here instead of taking (or parking on) the gate it no longer owns. A loop
+	// canceled while already parked on Lock still takes the gate once, and the
+	// post-acquire check below returns it.
+	if ctx.Err() != nil {
+		return
+	}
 	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	// Ownership, not liveness, decides whether this supervisor still has work: the
 	// manager closing ends it, and a replaced channel means the replacement's
 	// supervisor owns the host now. A channel that was closed while still mapped is
@@ -1474,21 +2572,36 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	}
 }
 
-// startSupervise launches the reconnect loop that owns host's channel and
-// reports whether it started. The supervisor gets its own context, derived from
-// baseCtx, so a terminal failure can end it even while it waits out a backoff.
+// startSupervise launches the reconnect loop that owns host's channel, or
+// stands down when a loop already does, and reports whether the channel is
+// supervised (started now, or already owned). The supervisor gets its own
+// context, derived from baseCtx, so a terminal failure can end it even while it
+// waits out a backoff.
 //
-// The registration happens under m.mu, together with the closed check: Go
-// increments supervisorsWG before it returns, so once Close has set closed and
-// released the lock no new supervisor can join the group, and every supervisor
-// that did join is observed by Close's Wait.
+// The dedupe decision, the closed check, and the registration are one critical
+// section under m.mu, so two callers racing for the same channel — say two
+// handoffs using the same held operation — cannot both observe "unsupervised"
+// and register duplicate loops: the first registers, the second sees the mark
+// and leaves the channel to the loop that owns it. The false return stays
+// reserved for a manager that cannot supervise at all (Close already ran), so
+// the publish tails that reap on false — Ensure's and reconnectOnce's — are
+// untouched, and the supervision mark is stored only after the loop's
+// live-user reference is counted: a refused start can never leave a channel
+// marked supervised.
+//
+// Go increments supervisorsWG before it returns, so once Close has set closed
+// and released the lock no new supervisor can join the group, and every
+// supervisor that did join is observed by Close's Wait.
 //
 // Every live loop stays registered as its own entry: a replacement attach adds a
 // loop rather than overwriting the host's slot, so stopSupervisor can end a
 // predecessor still parked in backoff instead of leaking it.
-func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) bool {
+func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockGate) bool {
 	ctx, cancel := context.WithCancel(m.baseCtx)
-	loop := &supervisorLoop{cancel: cancel}
+	loop := &supervisorLoop{host: host, cancel: cancel}
+	if m.opts.beforeSuperviseStart != nil {
+		m.opts.beforeSuperviseStart(host.Name, ch)
+	}
 	m.mu.Lock()
 	if m.closed {
 		// Close already ran. A supervisor started now would only race its Wait, and
@@ -1497,10 +2610,40 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mute
 		cancel()
 		return false
 	}
+	if ch.supervised.Load() {
+		// A loop already owns this channel: a second would only race it to the
+		// same reconnect. Stand down and report the channel supervised. The
+		// mark is read in the same critical section the owning loop's teardown
+		// clears it in, so it cannot be a gone loop's leavings — the
+		// already-live handoff path and the duplicate-start race share this
+		// decision.
+		m.mu.Unlock()
+		cancel()
+		return true
+	}
 	if m.supervisors[host.Name] == nil {
 		m.supervisors[host.Name] = map[*supervisorLoop]struct{}{}
 	}
 	m.supervisors[host.Name][loop] = struct{}{}
+	// The supervisor goroutine outlives this call and keeps gating on lock, so
+	// it takes its own live-user reference here — under m.mu, before the
+	// goroutine exists, and while the caller's reference still pins the entry
+	// (an entry is deleted only at zero references, so the entry this lock
+	// belongs to is the one being counted). Without it, the caller's release
+	// with its return could drop the entry while the loop still holds this
+	// mutex, and a fresh acquisition would build a second gate for the name.
+	m.locks[host.Name].refs++
+	// Supervision is tracked on the channel itself, not on the loop's
+	// start-time copy: a channel is supervised exactly while a loop owns it,
+	// and the loop's teardown deregisters and clears the mark in one critical
+	// section. The dedupe above reads it under that same mutex, so a second
+	// start attempt cannot miss a loop that has moved past the state it started
+	// with, nor read a deregistered loop's mark as live supervision. The mark
+	// is stored last, after the loop's live-user reference is counted and after
+	// every refusal has already returned, so registration is complete by the
+	// time the channel reads as supervised: no failed start can leave a mark
+	// behind for a handoff to mistake for a live loop.
+	ch.supervised.Store(true)
 	// WaitGroup.Go adds, runs, and marks the loop done, so Close waiting on the
 	// group observes the fully-finished loop.
 	m.supervisorsWG.Go(func() {
@@ -1516,8 +2659,21 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mute
 					delete(m.supervisors, host.Name)
 				}
 			}
+			// The mark is cleared inside this critical section, not after it: the
+			// handoff's start decision reads it under the same mutex
+			// (startSupervise's dedupe), so it can never observe a mark whose
+			// loop has already deregistered — the stale-true window the round-6
+			// review named. The decision sees the live mark or the cleared one,
+			// and a cleared mark sends it to start the missing supervisor.
+			if m.opts.beforeSuperviseClear != nil {
+				m.opts.beforeSuperviseClear(host.Name, ch)
+			}
+			ch.supervised.Store(false)
 			m.mu.Unlock()
 			cancel()
+			// The loop no longer touches the gate, so its reference goes with
+			// it — the last one out drops the entry.
+			m.releaseHostLock(host.Name)
 			// Announce the exit only after the gate is released, so a test that
 			// waits on it can assert on the supervisor's final state.
 			if m.opts.superviseExited != nil {
@@ -1533,6 +2689,10 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mute
 // supervisorLoop identifies one live supervise goroutine. A cancel func is not a
 // valid map key, so loops are keyed by this handle.
 type supervisorLoop struct {
+	// host is the registration this loop reconnects. The teardown fences read
+	// it, so a stale removal cannot cancel the reconnect of a host that was
+	// re-added under the same name after the removal looked.
+	host   hostreg.Host
 	cancel context.CancelFunc
 }
 
@@ -1556,8 +2716,9 @@ func (m *Manager) stopSupervisor(name string) {
 // reconnectOnce runs one re-attach attempt with the host lock held, and reports
 // whether another attempt is worth making. Every outcome that ends the
 // supervisor emits its own state event first.
-func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sync.Mutex) bool {
+func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *hostLockGate) bool {
 	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	defer lock.Unlock()
 
 	if ctx.Err() != nil {
@@ -1583,7 +2744,21 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sy
 			m.stateEvent(host.Name, StateReconnecting)
 			return true
 		}
-		if !m.publishChannel(host.Name, nch) {
+		// Recheck the registry before publishing, as Ensure does — and on the
+		// full entry and its generation, not just the name: a host deregistered
+		// while this loop was reconnecting it (RemoveHost stops parked loops,
+		// but this attempt was already in flight) must not gain a fresh
+		// channel, and a remove/re-add that swapped the entry this loop
+		// captured must not gain a channel built from the removed entry
+		// either — byte-identical re-adds included, because the registry
+		// assigns the re-add a new generation. Reap the replacement, report
+		// the host honestly disconnected, and stand down.
+		if !m.reg.SameRegistration(host.Name, host) {
+			_ = nch.Close()
+			m.stateEvent(host.Name, StateDisconnected)
+			return false
+		}
+		if !m.publishChannel(host.Name, nch, host) {
 			// Close landed mid-attempt; reap the channel it would have orphaned.
 			_ = nch.Close()
 			m.stateEvent(host.Name, StateDisconnected)
@@ -1681,12 +2856,25 @@ func isTerminal(err error) bool {
 		errors.Is(err, ErrPreflightDecode),
 		errors.Is(err, errExecutableMissing),
 		errors.Is(err, errControllerDirty),
+		errors.Is(err, errRunTargetUnservable),
+		errors.Is(err, errDeployArtifactUnusable),
+		errors.Is(err, errOwnExecutableCannotServe),
+		errors.Is(err, errDeployUnstamped),
+		errors.Is(err, errDeployDisabled),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
 		return false
 	}
 }
+
+// Terminal reports whether err belongs to the attach ladder's terminal class:
+// the causes a retry cannot fix — a protocol or version mismatch, an
+// unsupported host, launch-contract and deploy-artifact refusals, a missing
+// host, an unusable address, and a closed manager. Callers that bound their own
+// retries (the hub's post-restart reattach) use it to fail fast instead of
+// waiting out a window on a cause that cannot change.
+func Terminal(err error) bool { return isTerminal(err) }
 
 // ErrControllerDirty is the exported alias for the terminal dirty-controller
 // deploy refusal (errControllerDirty, deploy.go): this controller was built
@@ -1697,15 +2885,175 @@ func isTerminal(err error) bool {
 // (appwire.HubLaunchError) rather than a generic internal error.
 var ErrControllerDirty = errControllerDirty
 
-func (m *Manager) hostLock(name string) *sync.Mutex {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	lock := m.locks[name]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		m.locks[name] = lock
+// ErrRunTargetUnservable is the exported alias for the terminal run-target
+// deploy refusal (errRunTargetUnservable, deploy.go): the configured run target
+// is not the `evener` binary a host hub can serve, so no deploy to it can ever
+// attach and the refusal is terminal rather than a retryable ErrDeploy. It is
+// exported so a caller — the hub's attach handler — can match the refusal with
+// errors.Is and surface it as a typed deploy failure (appwire.HubLaunchError)
+// rather than a generic internal error, the same reason ErrControllerDirty is.
+var ErrRunTargetUnservable = errRunTargetUnservable
+
+// ErrDeployArtifactUnusable is the exported alias for the terminal
+// operator-artifact deploy refusal (errDeployArtifactUnusable, deploy.go): the
+// -deploy-binary artifact an operator supplied cannot serve the host — it
+// targets another platform, or it is a Go program that is not evener — so
+// retrying re-reads the same file and can never succeed. It is exported so a
+// caller — the hub's attach handler — can match the refusal with errors.Is and
+// surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrRunTargetUnservable is.
+var ErrDeployArtifactUnusable = errDeployArtifactUnusable
+
+// ErrDeployUnstamped is the exported alias for the terminal post-deploy identity
+// refusal (errDeployUnstamped, deploy.go): this controller deployed its build but
+// the host still reports a different one, so the artifact was not stamped by this
+// controller and the host can never be pinned to its build. It is exported so a
+// caller — the hub's attach handler — can match the refusal with errors.Is and
+// surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrControllerDirty is.
+var ErrDeployUnstamped = errDeployUnstamped
+
+// ErrOwnExecutableCannotServe is the exported alias for the terminal
+// cross-target deploy refusal (errOwnExecutableCannotServe, deploy.go): the
+// controller's only deploy source is its own executable, the host runs another
+// target, and the installer fallback has no published artifact to pin for this
+// build, so this controller can never provision this host — the same host,
+// target, and build re-refuse identically. It is exported so a caller — the
+// hub's attach handler — can match the refusal with errors.Is and surface it as
+// a typed deploy failure (appwire.HubLaunchError) rather than a generic internal
+// error, the same reason ErrDeployUnstamped is.
+var ErrOwnExecutableCannotServe = errOwnExecutableCannotServe
+
+// ErrDeployDisabled is the exported alias for the terminal deploy-disabled
+// refusal (errDeployDisabled, deploy.go): the controller was started with
+// deploying turned off (the hub's -no-deploy), so it will not install a build on
+// any host, and the refusal names the remedy through DeployHelp. It is exported
+// so a caller — the hub's attach handler — can match the refusal with errors.Is
+// and surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrOwnExecutableCannotServe is.
+var ErrDeployDisabled = errDeployDisabled
+
+// hostLockEntry is one per-host gate together with its live-user count.
+// refs counts the hostLock acquisitions that have not been released yet —
+// holders and parked waiters both — so the entry can be dropped exactly when
+// nobody can still be using its mutex.
+type hostLockEntry struct {
+	gate hostLockGate
+	refs int
+}
+
+// hostLockGate is the per-host gate itself: the mutex every holder of one
+// host's work serializes on (Ensure, the reconnect supervisor, AddHost,
+// UpdateHost, RemoveHost, DetachHost, Close — and, through Manager.TryAcquire,
+// the deploy pipeline's plan/deploy/restart paths), plus the holder
+// registration the pipeline's busy refusal renders (deploy pipeline 08b §5).
+//
+// The holder is written by whoever holds the mutex, after acquiring it, and
+// cleared by Unlock before the mutex is released, so a contender that fails
+// TryLock can never read a stale holder for a free gate — a free gate always
+// reads the zero Holder. It is an atomic pointer rather than a field under the
+// manager mutex so Unlock stays a lock-free operation, exactly as the plain
+// sync.Mutex it replaces was. The holder is published as the acquisition's very
+// next step (see TryAcquire and each holdAs call site): the one instant between
+// a successful TryLock and the store is not observable as a holder, so a
+// contender landing exactly there reads the zero Holder and gets the safe
+// generic transient form, never a wrong operation id.
+type hostLockGate struct {
+	mu     sync.Mutex
+	held   atomic.Bool
+	holder atomic.Pointer[hostops.Holder]
+}
+
+// isHeld reports whether the gate is currently held, without disturbing the
+// holder a contender may be about to read. HoldAs tests it before publishing a
+// promotion.
+func (g *hostLockGate) isHeld() bool { return g.held.Load() }
+
+// Lock blocks until the gate is held, clearing any holder left by the previous
+// hold: an unregistered hold (this package's own paths register theirs
+// immediately after Lock) reads as the generic manager class, never as the
+// previous holder's identity.
+func (g *hostLockGate) Lock() {
+	g.mu.Lock()
+	g.held.Store(true)
+	g.holder.Store(nil)
+}
+
+// TryLock try-acquires the gate, reporting whether it now holds it.
+func (g *hostLockGate) TryLock() bool {
+	if !g.mu.TryLock() {
+		return false
 	}
-	return lock
+	g.held.Store(true)
+	g.holder.Store(nil)
+	return true
+}
+
+// Unlock clears the holder before releasing the mutex, so no contender can
+// observe a stale holder for a gate that is about to be free.
+func (g *hostLockGate) Unlock() {
+	g.holder.Store(nil)
+	g.held.Store(false)
+	g.mu.Unlock()
+}
+
+// holdAs registers the holder of the current hold. Callers call it immediately
+// after Lock/TryLock succeeded.
+func (g *hostLockGate) holdAs(holder hostops.Holder) {
+	g.holder.Store(&holder)
+}
+
+// holderOf returns the current hold's registered holder, or the zero Holder
+// when the hold never registered one.
+func (g *hostLockGate) holderOf() hostops.Holder {
+	if holder := g.holder.Load(); holder != nil {
+		return *holder
+	}
+	return hostops.Holder{}
+}
+
+// hostLock returns the per-host gate for name and registers the caller as a
+// live user of it: every hostLock call must be paired with exactly one
+// releaseHostLock call, made by the caller once neither it nor anyone it handed
+// the gate to can touch the mutex again. The pairing keeps the map bounded
+// (a permanent gate per name would leak one mutex entry for every host
+// name ever attached, for the manager's lifetime) while making that
+// cleanup safe: an entry is deleted only when its last user released it,
+// so a gate is never dropped while a holder — or a goroutine parked
+// waiting on it — still uses it, and two callers can never hold two
+// different gates for one name.
+func (m *Manager) hostLock(name string) *hostLockGate {
+	m.mu.Lock()
+	entry := m.locks[name]
+	if entry == nil {
+		entry = &hostLockEntry{}
+		m.locks[name] = entry
+	}
+	entry.refs++
+	m.mu.Unlock()
+	return &entry.gate
+}
+
+// releaseHostLock pairs one hostLock call for name, dropping the entry when
+// the last live user released it: refs reached zero, so no goroutine holds
+// the gate or is parked acquiring it, and a later acquisition building a
+// fresh entry for the name cannot split one host's exclusion across two
+// mutexes. Waiters are counted at acquisition, before they park, so they hold
+// the entry open for as long as they wait; lockHostCtx's abandoned acquire
+// parks on the mutex without a reference of its own, but its caller's
+// reference covers the parking and the abandoned goroutine only hands the
+// mutex straight back — it never runs a critical section — so a release that
+// deletes the entry under it leaves it touching a mutex nothing else
+// references.
+func (m *Manager) releaseHostLock(name string) {
+	m.mu.Lock()
+	if entry := m.locks[name]; entry != nil {
+		entry.refs--
+		if entry.refs == 0 {
+			delete(m.locks, name)
+		}
+	}
+	m.mu.Unlock()
 }
 
 // lockHostCtx acquires the per-host gate, giving up when ctx is done. The host
@@ -1714,7 +3062,7 @@ func (m *Manager) hostLock(name string) *sync.Mutex {
 // woken out of Lock directly. This helper parks a goroutine on Lock instead and,
 // when the caller gives up first, has that goroutine hand the lock straight back
 // once it acquires it — the gate is never left held by a caller that returned.
-func lockHostCtx(ctx context.Context, mu *sync.Mutex) error {
+func lockHostCtx(ctx context.Context, mu *hostLockGate) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1741,6 +3089,141 @@ func lockHostCtx(ctx context.Context, mu *sync.Mutex) error {
 		close(abandon)
 		return ctx.Err()
 	}
+}
+
+// TryAcquire implements hostops.Gate: it try-acquires name's per-host gate for
+// holder, returning the typed busy error naming the current holder when the
+// gate is held. The gate it takes is the one gate this Manager's own paths use
+// (Ensure, the reconnect supervisor, AddHost, UpdateHost, RemoveHost,
+// DetachHost, Close), so a plan cannot interleave with an in-flight attach or
+// teardown for the same host.
+//
+// Nothing waits: the acquisition is a TryLock on the same mutex, and a failed
+// attempt reports the holder the successful acquirer registered — the operation
+// class with its record id for a deploy/restart (or an Ensure-triggered
+// deploy), the transient plan form for a plan's validation-plus-mint window,
+// and the manager's activity class for this package's own holds.
+func (m *Manager) TryAcquire(host string, holder hostops.Holder) (func(), error) {
+	name := strings.TrimSpace(host)
+	if name == "" {
+		return nil, errors.New("sshconn: a gate acquisition needs a host name")
+	}
+	lock := m.hostLock(name)
+	if !lock.TryLock() {
+		held := lock.holderOf()
+		m.releaseHostLock(name)
+		return nil, hostops.Busy(name, held)
+	}
+	lock.holdAs(holder)
+	// The release is idempotent: a double release must not double-unlock.
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			lock.Unlock()
+			m.releaseHostLock(name)
+		})
+	}, nil
+}
+
+// hostGate is the compile-time assertion that the Manager is the production
+// hostops.Gate.
+var _ hostops.Gate = (*Manager)(nil)
+
+// HoldAs implements hostops.Gate: it replaces the holder published for name's
+// currently-held gate, the promotion the deploy/restart paths run once their
+// operation record exists (deploy pipeline 08b §5). The gate is the Manager's
+// own per-host lock, so the promotion upgrades the very holder a contender's
+// TryAcquire reads. The entry is looked up under the manager mutex with a
+// live-user reference, so a concurrently released gate cannot drop the entry
+// under the promotion; a gate nobody holds — free, or never created — refuses
+// with hostops.ErrGateNotHeld.
+func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
+	name := strings.TrimSpace(host)
+	if name == "" {
+		return errors.New("sshconn: a gate promotion needs a host name")
+	}
+	m.mu.Lock()
+	entry := m.locks[name]
+	if entry == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: host %q", hostops.ErrGateNotHeld, name)
+	}
+	entry.refs++
+	m.mu.Unlock()
+
+	if !entry.gate.isHeld() {
+		m.releaseHostLock(name)
+		return fmt.Errorf("%w: host %q", hostops.ErrGateNotHeld, name)
+	}
+	entry.gate.holdAs(holder)
+	m.releaseHostLock(name)
+	return nil
+}
+
+// EnsureRestartHook records one restart-only Ensure attempt as a durable
+// operation (deploy pipeline 08b §6: "a reconnect with no durable record
+// performs no mutating SSH command"). It mirrors EnsureDeployHook: called with
+// the host's per-host gate already held and before the restart leg's first
+// remote command, it persists the record carrying the attempt's fencing epoch
+// and returns the finish the leg's outcome is recorded through. A non-nil
+// error means no durable record could be persisted, so nothing may be
+// restarted; with no hook wired at all, the attempt is refused for the same
+// reason.
+type EnsureRestartHook func(host hostreg.Host) (finish func(err error), err error)
+
+// SetEnsureRestartHook wires the deploy pipeline's restart recorder into this
+// Manager's Ensure path. It is a setter for the same reason
+// SetEnsureDeployHook is: the hub's host surface is constructed after the
+// Manager. A nil hook clears it; an unwired recorder refuses a restart-only
+// Ensure attempt before any mutating command (§6's durable-record rule), so
+// production always wires it (newHubHostManager wires both recorders in one
+// block, and that is the only production construction).
+func (m *Manager) SetEnsureRestartHook(hook EnsureRestartHook) {
+	if hook == nil {
+		m.ensureRestart.Store(nil)
+		return
+	}
+	m.ensureRestart.Store(&hook)
+}
+
+// ensureRestartHook returns the wired hook, if any.
+func (m *Manager) ensureRestartHook() EnsureRestartHook {
+	if hook := m.ensureRestart.Load(); hook != nil {
+		return *hook
+	}
+	return nil
+}
+
+// EnsureDeployHook records one Ensure-triggered deploy as a durable operation
+// (deploy pipeline 08b §6). It is called with the host's per-host gate already
+// held and before any remote write of the deploy step; it mints and persists
+// the operation record carrying the deploy's fencing epoch and returns the
+// finish the step's outcome is recorded through. A non-nil error means no
+// durable record could be persisted, so nothing may be launched; with no hook
+// wired at all, the deploy is refused for the same reason.
+type EnsureDeployHook func(host hostreg.Host) (finish func(err error), err error)
+
+// SetEnsureDeployHook wires the deploy pipeline's recorder into this Manager's
+// Ensure path. It is a setter rather than an Options field because the hub's
+// host surface (which owns the operation store and the gate's holder
+// publication) is constructed after the Manager; the wiring runs before the
+// Manager serves any request. A nil hook clears it; an unwired recorder
+// refuses an Ensure-triggered deploy before any mutating command (§6's
+// durable-record rule), so production always wires it.
+func (m *Manager) SetEnsureDeployHook(hook EnsureDeployHook) {
+	if hook == nil {
+		m.ensureDeploy.Store(nil)
+		return
+	}
+	m.ensureDeploy.Store(&hook)
+}
+
+// ensureDeployHook returns the wired hook, if any.
+func (m *Manager) ensureDeployHook() EnsureDeployHook {
+	if hook := m.ensureDeploy.Load(); hook != nil {
+		return *hook
+	}
+	return nil
 }
 
 func (m *Manager) currentChannel(name string) *Channel {
@@ -1776,7 +3259,25 @@ func (m *Manager) Attached(name string) bool {
 // publishChannel records ch as name's channel unless Close already ran, in which
 // case nothing would ever supervise it: the caller reaps ch and reports
 // ErrManagerClosed instead.
-func (m *Manager) publishChannel(name string, ch *Channel) bool {
+//
+// registration is the entry the channel was dialed for, which the caller
+// revalidated with hostreg.Registry.SameRegistration under the host lock
+// immediately before this call: the registry entry name resolved to before
+// ensureOnce folded this Manager's resolved executable path into the copy of
+// the host it dialed. Storing that value — rather than re-reading the registry
+// here — is what keeps identity pairing honest. A re-read is a TOCTOU: an
+// update landing between the caller's recheck and this function would stamp a
+// channel built from the pre-update entry with the post-update one, which
+// MatchesRegistration then accepts for a row rendering the new configuration.
+// The caller's capture cannot go stale in that way: the registry never mutates
+// an inserted entry, so a later update only makes SameRegistration refuse the
+// capture, never adopt it.
+func (m *Manager) publishChannel(name string, ch *Channel, registration hostreg.Host) bool {
+	// Write the identity before the channel becomes visible through the map
+	// below, so no reader can find it there with an empty registration. The
+	// manager mutex is left unnested from the registry's: nothing here reads the
+	// registry.
+	ch.reg = registration
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -1829,13 +3330,48 @@ func isDirtyVersion(v string) bool {
 	return strings.HasSuffix(strings.TrimSpace(v), "-dirty")
 }
 
-// isUnverifiableVersion reports whether v cannot prove two builds are the same
+// UnverifiableVersion reports whether v cannot prove two builds are the same
 // code. An empty version and "dev" are identity-less by construction; a dirty
 // version is a commit plus a marker rather than a content identity, so a host
 // reporting the controller's own "<sha>-dirty" may be running a different dirty
 // checkout of that commit.
-func isUnverifiableVersion(v string) bool {
+//
+// It is exported for evener/host/plan, which must apply the same rule the deploy
+// paths do: deploy pipeline 08b §6 states that "a probed unverifiable revision
+// (`dev` or dirty) always reads as outdated: restart follows".
+func UnverifiableVersion(v string) bool {
 	return isDevVersion(v) || isDirtyVersion(v)
+}
+
+// Preflight runs host's non-interactive preflight now — the same probe series
+// the attach path runs, bounded by the manager's own attempt limit — and returns
+// the facts it read. It is the ungated refresh evener/host/plan builds from
+// (deploy pipeline 08b §6 step 1): a plan must read the host's facts for itself
+// rather than trust a snapshot captured whenever the channel attached, because a
+// token minted from arbitrarily old facts would carry a freshness term it never
+// earned.
+//
+// It is an SSH command execution, not a probe of the AppWire channel: it neither
+// needs nor takes the per-host gate, exactly as §6 step 1 requires. The returned
+// Preflight carries no timestamp of its own — the caller stamps the instant the
+// call returned, which is when these values were true.
+func (m *Manager) Preflight(ctx context.Context, host hostreg.Host) (Preflight, error) {
+	preflightCtx, cancel := context.WithTimeout(ctx, m.opts.attemptLimit())
+	defer cancel()
+	return m.preflight(preflightCtx, host)
+}
+
+// hostBuildDiffers reports whether the host's known on-disk build is a build other
+// than the one this controller expects to find there. An unreadable contract
+// carries no build at all, so it is not a difference to report: the launch-contract
+// gates handle a host that could not answer.
+//
+// Every place that compares the host's build against the controller's asks this,
+// so the rule has one expression: when the attach stopped being gated on the build
+// version, four copies of it had to be found and reconsidered, and the copies that
+// were missed were exactly the ones that kept refusing.
+func hostBuildDiffers(facts Preflight, expected string) bool {
+	return facts.LaunchCheckKnown && facts.Version != expected
 }
 
 // canBuild reports whether the primary cross-compile + push path is available: a
@@ -1847,20 +3383,73 @@ func (m *Manager) canBuild() bool {
 // canDeploy reports whether the controller can install its own build on a host
 // at all: either the primary push path is available, or the installer fallback
 // can pin a published artifact for this controller's build channel. A dev/dirty
-// controller with no build source has neither, so it cannot resolve a version
-// difference and ensureOnce refuses it terminally.
+// controller with no build source has neither, so a version difference cannot be
+// converged here — under the attach rule that is not a refusal: the host keeps its
+// own build and attaches, and ensureOnce reports the difference. What such a
+// controller still refuses terminally is a protocol or launch-contract failure,
+// which no deploy could have fixed.
 //
 // This answers "is a deploy path configured", not "will the configured path
 // accept this build": a dirty controller with a build source reaches deploy,
 // which refuses it terminally (errControllerDirty) instead of returning false
 // here — returning false would let the decision ladder attach to a host whose
-// code equality the dirty version cannot prove.
+// code equality the dirty version cannot prove. A dirty controller deploying its
+// own executable (Options.OwnExecutable) is accepted by deploy: those bytes are
+// the controller's build by construction, so there is no reproduction proof to
+// make (though for a host on another target that source hands over to the
+// installer fallback, or refuses terminally when the fallback has nothing to
+// pin: errOwnExecutableCannotServe). And a
+// controller with deploying turned off (Options.DeployDisabled) has no deploy
+// path at all, so it is false before even the installer fallback is considered:
+// -no-deploy must not let a release or snapshot controller quietly install a
+// published artifact.
 func (m *Manager) canDeploy() bool {
+	if m.opts.DeployDisabled {
+		return false
+	}
 	if m.canBuild() {
 		return true
 	}
-	_, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
+	_, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	return err == nil
+}
+
+// deployRemedy is the remedy clause a deploy refusal appends: the embedder's
+// text when it supplied any, else the library's own sentence for that refusal.
+// See Options.DeployHelp.
+func (m *Manager) deployRemedy(libraryDefault string) string {
+	if help := strings.TrimSpace(m.opts.DeployHelp); help != "" {
+		return help
+	}
+	return libraryDefault
+}
+
+// deployHelp is the remedy clause the refusals that have nothing to install
+// append: the missing-executable preflight refusal, and the installer fallbacks
+// through installerRemedy. The default is what an embedder with no flags to name
+// gets, so an unconfigured hub that also supplies no help is refused exactly as it
+// was before this field existed.
+func (m *Manager) deployHelp() string {
+	return m.deployRemedy("set Options.BuildSource")
+}
+
+// installerRemedy is the remedy clause the installer-path refusals append. Its
+// default names the option an embedder sets directly, which is the right text
+// when there are no CLI flags to name; a hub supplies Options.DeployHelp
+// instead, so an operator is told which flags to set rather than an internal
+// field they cannot act on.
+func (m *Manager) installerRemedy() string {
+	return m.deployRemedy("use the atomic push path or Options.BuildBinary")
+}
+
+// unstampedRemedy is the remedy clause the post-phase build-identity refusal
+// appends (deployedBuildNotStamped). Its default names what an embedder can do
+// directly — supply a matching artifact or a build source — which is the right
+// text when there are no CLI flags to name; a hub supplies Options.DeployHelp
+// instead, so an operator is told which flags to set rather than an internal
+// field they cannot act on.
+func (m *Manager) unstampedRemedy() string {
+	return m.deployRemedy("supply an artifact built from this controller's tree, or a build source")
 }
 
 // isDevDeployed reports whether this Manager has installed its own dev build on
@@ -2013,7 +3602,17 @@ func (m *Manager) failedEvent(name string, err error) {
 
 // Channel is one owned SSH channel plus the AppWire client over it.
 type Channel struct {
-	host  hostreg.Host
+	host hostreg.Host
+	// reg is the registration this channel was published for: the registry
+	// entry the caller validated under the host lock and passed to
+	// publishChannel, captured before ensureOnce folded this Manager's
+	// resolved executable path (applyResolvedTarget) into the copy of the host
+	// it dialed. Identity pairing (MatchesRegistration) compares reg, not host:
+	// a host that configured no evener_path never carries the resolved path in
+	// the registry, so comparing host refused the common case. It is written
+	// once, under the host lock at publish and before the channel is visible
+	// through the map, and never mutated.
+	reg   hostreg.Host
 	facts Preflight
 	// handshake is the InitializeResponse the attach's own initialize captured.
 	// It is published once, before the channel is visible through the map, and
@@ -2029,6 +3628,11 @@ type Channel struct {
 	closeOnce sync.Once
 	closeErr  error
 	stopped   chan struct{}
+	// supervised reports whether a live reconnect loop owns this channel: set
+	// by startSupervise when the loop registers, cleared by the loop as it
+	// exits. An attach-handoff reads it to avoid starting a second loop for a
+	// channel that already has one.
+	supervised atomic.Bool
 }
 
 // Client returns the initialized AppWire client over this channel.
@@ -2064,6 +3668,19 @@ func (c *Channel) Host() hostreg.Host {
 	h := c.host
 	h.Roots = slices.Clone(c.host.Roots)
 	return h
+}
+
+// MatchesRegistration reports whether entry is the registration this channel
+// was published for: content and generation both, the same predicate
+// hostreg.SameRegistration wraps. It compares the registration captured at
+// publish (reg), not the host the bridge was dialed with (host): that copy
+// carries the executable path this Manager resolved for a host that configured
+// no evener_path, which the registry entry never does, so comparing it refused
+// the common case. It compares in place, so a caller pairing a live channel
+// with the entry it renders — and only comparing — need not clone the host and
+// its roots.
+func (c *Channel) MatchesRegistration(entry hostreg.Host) bool {
+	return hostreg.SameRegistration(c.reg, entry)
 }
 
 // Close kills the ssh child and closes the stream. It is idempotent and

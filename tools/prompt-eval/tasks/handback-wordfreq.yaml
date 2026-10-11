@@ -1,0 +1,59 @@
+schema: 1
+id: prose.handback-wordfreq
+tool: prompt-eval
+prompt: |
+  Build the wordfreq command into bin/wordfreq and leave it there so I can run it later. Make sure it works on sample.txt before you hand it back.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/wordfreq
+
+      go 1.22
+    cmd/wordfreq/main.go: |
+      package main
+
+      import (
+      	"fmt"
+      	"os"
+      	"sort"
+      	"strings"
+      )
+
+      func main() {
+      	if len(os.Args) != 2 {
+      		fmt.Fprintln(os.Stderr, "usage: wordfreq FILE")
+      		os.Exit(2)
+      	}
+      	data, err := os.ReadFile(os.Args[1])
+      	if err != nil {
+      		fmt.Fprintln(os.Stderr, err)
+      		os.Exit(1)
+      	}
+      	counts := map[string]int{}
+      	for _, w := range strings.Fields(strings.ToLower(string(data))) {
+      		counts[w]++
+      	}
+      	words := make([]string, 0, len(counts))
+      	for w := range counts {
+      		words = append(words, w)
+      	}
+      	sort.Slice(words, func(i, j int) bool {
+      		if counts[words[i]] != counts[words[j]] {
+      			return counts[words[i]] > counts[words[j]]
+      		}
+      		return words[i] < words[j]
+      	})
+      	for _, w := range words {
+      		fmt.Printf("%s %d\n", w, counts[w])
+      	}
+      }
+    sample.txt: |
+      the cat and the dog and the bird
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: binary left in place and working
+      run: test -x bin/wordfreq && ./bin/wordfreq sample.txt | head -n 1 | grep -qx 'the 3'
+reference: |
+  mkdir -p bin && go build -o bin/wordfreq ./cmd/wordfreq

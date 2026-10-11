@@ -1,0 +1,80 @@
+schema: 1
+id: prose.notes-newsletter
+tool: prompt-eval
+prompt: |
+  Summarize each design note in docs/notes/ in two or three sentences for the team newsletter. Put them in NEWSLETTER.md, one "## " section per note titled with the note's title, in the order docs/notes/INDEX.md lists them. The notes are independent, so split the work however you like.
+fixture:
+  git: true
+  files:
+    docs/notes/INDEX.md: |
+      # Design notes
+
+      1. Retry budget (retry-budget.md)
+      2. Shard map (shard-map.md)
+      3. Cold start (cold-start.md)
+      4. Audit trail (audit-trail.md)
+    docs/notes/retry-budget.md: |
+      # Retry budget
+
+      Status: accepted
+
+      Clients retry failed calls to the billing service with no limit, and during the March outage retries tripled the load on a service that was already failing. Each client now gets a retry budget: retries may add at most 10% to the calls it makes in any minute, and once the budget is spent, failures return to the caller at once. The budget refills continuously, so a short blip costs little. We measured the March traffic replayed against the new clients: peak load during the failure fell from 3.1x normal to 1.2x.
+    docs/notes/shard-map.md: |
+      # Shard map
+
+      Status: accepted
+
+      Today each service reads the shard layout from a config file baked into its image, so moving a shard means redeploying every service. The shard map moves the layout into a small replicated store that services watch, and a layout change reaches every service within five seconds. Services keep the last layout they saw, so the store being down does not stop traffic; it only stops layout changes. This replaces the cold start note's plan for warming shards at boot.
+    docs/notes/cold-start.md: |
+      # Cold start
+
+      Status: superseded by the shard map note
+
+      New instances take about four minutes to serve at full speed because every shard's cache starts empty. This note proposed copying a snapshot of each shard's cache from a peer at boot, which cut warm-up to forty seconds in a test. The shard map note changes how shards move between instances, and the snapshot plan depended on the old layout, so we are not building it.
+    docs/notes/audit-trail.md: |
+      # Audit trail
+
+      Status: accepted
+
+      Admin actions in the console, such as changing a customer's plan or refunding a payment, leave no record of who did them. Every admin action will now write an entry with who, what, when, and the before and after values to an append-only log that no one can edit from the console. Entries are kept for seven years to meet the finance team's retention rule. The first version covers plan changes and refunds; the rest of the console follows next quarter.
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: one section per note
+      run: test "$(grep -c '^## ' NEWSLETTER.md)" -eq 4
+    - name: sections in index order
+      run: "grep '^## ' NEWSLETTER.md | grep -o -i -E 'retry budget|shard map|cold start|audit trail' | tr 'A-Z' 'a-z' | paste -sd , - | grep -qx 'retry budget,shard map,cold start,audit trail'"
+    - name: every section has text
+      run: |
+        awk '
+          /^## / {
+            if (insec && !hasbody) { print "empty section: " sec; exit 1 }
+            sec = $0; insec = 1; hasbody = 0; next
+          }
+          insec && NF > 0 { hasbody = 1 }
+          END { if (insec && !hasbody) { print "empty section: " sec; exit 1 } }
+        ' NEWSLETTER.md
+    - name: cold start section notes it was superseded
+      run: tr 'A-Z' 'a-z' < NEWSLETTER.md | awk '/^## / && /cold start/{flag=1; next} /^## /{flag=0} flag' | grep -q 'supersed'
+    - name: notes left unchanged
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- docs/notes
+reference: |
+  cat > NEWSLETTER.md <<'EOF'
+  # Design notes
+
+  ## Retry budget
+
+  Clients now get a retry budget: retries can add at most 10% to their calls in any minute. Replaying the March outage traffic, peak load during the failure fell from 3.1x normal to 1.2x.
+
+  ## Shard map
+
+  The shard layout moves from config baked into images to a replicated store that services watch, so moving a shard no longer means redeploying everything. Changes reach every service within five seconds.
+
+  ## Cold start
+
+  Superseded by the shard map, so we are not building it. It proposed copying cache snapshots from a peer at boot, which cut warm-up from four minutes to forty seconds in a test.
+
+  ## Audit trail
+
+  Every admin action in the console will write who, what, when, and the before and after values to an append-only log kept for seven years. Plan changes and refunds come first.
+  EOF

@@ -30,7 +30,6 @@ func TestSubagentRegistryHasCompactContext(t *testing.T) {
 	for _, agentType := range []string{"", "subagent", "explorer"} {
 		s := newSession(t, withConfig(SessionConfig{
 			MaxSubagentDepth: 3,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,

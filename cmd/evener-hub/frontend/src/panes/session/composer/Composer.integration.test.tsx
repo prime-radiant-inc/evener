@@ -8,16 +8,27 @@
 // - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
 
-import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import {
+  type MethodTypes,
+  type Thread,
+  type ThreadCapabilities,
+  type ThreadReadResponse,
+  WireError,
+} from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
+import { conversationPaneLifetime } from "../../../shell/paneLifetime";
+import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
+import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -25,12 +36,15 @@ import {
   threadsStore,
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { replaceEditorText, selectEditorText } from "../testing/editor";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
+import { createTestComposerSource } from "../testing/composerSource";
+import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
+import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
-import { readComposerDraft, readDraft } from "./draft";
+import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
@@ -43,24 +57,6 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
       <ComposerView {...props} />
     </ClientProvider>
   );
-}
-
-// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
 }
 
 class PausedCommitStorage extends MutationOutboxIndexedDB {
@@ -113,8 +109,7 @@ class CommitObservedStorage extends MutationOutboxIndexedDB {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
@@ -159,7 +154,12 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
+  return {
+    thread: testThread(ref, overrides),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
 }
 
 function connectFakeClient(): FakeClient {
@@ -168,19 +168,21 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Promise<FakeClient> {
+async function mountComposer(
+  ref: string,
+  overrides: Partial<Thread> = {},
+  source = createTestComposerSource(ref),
+): Promise<FakeClient> {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} focused={false} />
+      <Composer ref={ref} source={source} focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
   return fake;
 }
 
@@ -192,31 +194,28 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
+  resetMobileViewportForTests();
 });
 
 afterEach(() => {
   cleanup();
+  resetWorkspaceStoreForTests();
+  resetMobileViewportForTests();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  // This file mounts the singleton toast region and its relay-recovery test
-  // deliberately pushes an unavailable-send toast. Unmounting only cancels
-  // that toast's timer; it does not remove the queue entry, so retire it here
-  // before another isolate:false file mounts the same region.
-  resetToastStoreForTests();
-  // Every test here calls ensureThread(ref) directly for setup - Composer
-  // takes its ref as a prop and never calls ensureThread/releaseThread
-  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
-  // test. Under isolate:false that is what a later file's own
-  // connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
+
+function installMobileViewport(): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+}
 
 function textarea(): HTMLDivElement | null {
   return screen.queryByRole("textbox", { name: /message/i }) as HTMLDivElement | null;
@@ -236,6 +235,565 @@ function drainButton(): HTMLButtonElement {
 function composerSteerButton(): HTMLButtonElement {
   return screen.getByTestId("composer-steer") as HTMLButtonElement;
 }
+
+function skillFocusThread(ref: string): Partial<Thread> {
+  return {
+    ...idleFocusThread(ref),
+    evener: {
+      ref,
+      mutationStateAuthoritative: true,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+          {
+            name: "skill-2",
+            description: "second skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
+async function selectSkill(user: ReturnType<typeof userEvent.setup>, name: string): Promise<void> {
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, `Run /${name}`);
+  await user.click(within(screen.getByTestId("composer-slash-menu")).getByRole("option"));
+}
+
+function selectImageFile(file: File): void {
+  const picker = document.querySelector('input[type="file"]');
+  if (!picker) throw new Error("Composer has no image picker");
+  fireEvent.change(picker, { target: { files: [file] } });
+}
+
+test("source text survives a view remount without sending", async () => {
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  await userEvent.setup().type(screen.getByRole("textbox", { name: "Message" }), "keep this draft");
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("keep this draft");
+  expect(source.getSnapshot().text).toBe("keep this draft");
+  expect(readComposerDraft("root")).toEqual({ text: "keep this draft", skillNames: [] });
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+test("selected source skill chips survive a view remount without sending", async () => {
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", skillFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  await selectSkill(userEvent.setup(), "skill-1");
+  expect(source.getSnapshot().skillNames).toEqual(["skill-1"]);
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  expect(within(screen.getByRole("textbox", { name: "Message" })).getByTestId("composer-skill-chip").textContent).toBe(
+    "/skill-1",
+  );
+  expect(source.getSnapshot().skillNames).toEqual(["skill-1"]);
+  expect(readComposerDraft("root")).toEqual({ text: "Run /skill-1 ", skillNames: ["skill-1"] });
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+// Comparing only prose and skills would clear the newly inert command token.
+test("held acceptance preserves a same-text command edit through source Return", async () => {
+  const text = "🙂 /same /same /same";
+  const mentions = [
+    { kind: "command" as const, name: "same", offset: 3 },
+    { kind: "skill" as const, name: "same", offset: 9 },
+  ];
+  writeComposerDraft("root", { text, skillNames: ["same"], commandNames: ["same"], mentions });
+  const source = createTestComposerSource("root");
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const overrides = idleFocusThread("root");
+  const fake = await mountComposer(
+    "root",
+    {
+      ...overrides,
+      evener: {
+        ...overrides.evener,
+        ref: "root",
+        queue: { revision: 0 },
+        capabilities: { ...FULL_CAPABILITIES, skillInput: true, commandInput: true },
+      },
+    },
+    source,
+  );
+  await settleActivityDiscovery("root");
+  const delivered = deferred<void>();
+  fake.on("turn/start", (params) => {
+    delivered.resolve();
+    return {
+      turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_root",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  try {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await hold.reached;
+    const durable = await storage.listOutbox("root");
+    expect(durable).toHaveLength(1);
+    const mutationId = durable[0]?.clientMutationId;
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    expect(editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+    selectEditorText(editor, 3, 8);
+    await user.keyboard("{Backspace}");
+    await user.type(editor, "/same", { skipClick: true });
+    expect(editor.textContent).toBe(text);
+    expect(editor.querySelectorAll("[data-command-name]")).toHaveLength(0);
+    expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    cleanup();
+    await act(async () => {
+      hold.release();
+      await delivered.promise;
+    });
+    await flushPendingTurnsProjectionForTests();
+    render(<Composer ref="root" source={source} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    const returned = screen.getByRole("textbox", { name: "Message" });
+    expect(returned.textContent).toBe(text);
+    expect(returned.querySelectorAll("[data-command-name]")).toHaveLength(0);
+    expect(returned.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    expect(readComposerDraft("root")).toEqual({
+      text,
+      skillNames: ["same"],
+      mentions: [{ kind: "skill", name: "same", offset: 9 }],
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+      {
+        method: "turn/start",
+        params: expect.objectContaining({
+          ref: "root",
+          clientMutationId: mutationId,
+          input: [
+            { type: "text", text, mentions },
+            { type: "skill", name: "same" },
+            { type: "command", name: "same" },
+          ],
+        }),
+      },
+    ]);
+  } finally {
+    hold.release();
+  }
+});
+
+test.each([
+  { recovery: false, newer: false },
+  { recovery: false, newer: true },
+  { recovery: true, newer: false },
+  { recovery: true, newer: true },
+])(
+  "detached delayed acceptance retains source ownership, recovery $recovery, newer $newer",
+  async ({ recovery, newer }) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const input = [
+      { type: "text" as const, text: "Run /skill-1 " },
+      { type: "skill" as const, name: "skill-1" },
+    ];
+    const original = recovery
+      ? await storage.enqueueIntent({
+          targetRef: "root",
+          method: "turn/start",
+          payload: { ref: "root", input },
+          attachments: [],
+          optimisticDisplay: { method: "turn/start", input },
+        })
+      : null;
+    if (original) await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const source = createTestComposerSource("root");
+    const fake = await mountComposer("root", skillFocusThread("root"), source);
+    await settleActivityDiscovery("root");
+    const user = userEvent.setup();
+    if (!recovery) await selectSkill(user, "skill-1");
+    expect(source.getSnapshot().activeRecoveryId).toBe(original?.clientMutationId ?? null);
+    expect(source.getSnapshot().skillNames).toEqual(["skill-1"]);
+    const delivered = deferred<void>();
+    fake.on("turn/start", (params) => {
+      delivered.resolve();
+      return {
+        turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thr_root",
+          projectionState: "reflected",
+        },
+      };
+    });
+    await flushPendingTurnsProjectionForTests();
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    try {
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      await hold.reached;
+      expect(source.getSnapshot().activeRecoveryId).toBe(original?.clientMutationId ?? null);
+      const durable = await storage.listOutbox("root");
+      expect(durable).toHaveLength(1);
+      const mutationId = durable[0]?.clientMutationId;
+      expect(mutationId).toEqual(expect.any(String));
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+      if (newer) await selectSkill(user, "skill-2");
+      cleanup();
+      await act(async () => {
+        hold.release();
+        await delivered.promise;
+      });
+      await flushPendingTurnsProjectionForTests();
+      expect(source.getSnapshot().activeRecoveryId).toBeNull();
+      expect(source.getSnapshot().text).toBe(newer ? "Run /skill-2 " : "");
+      expect(source.getSnapshot().skillNames).toEqual(newer ? ["skill-2"] : []);
+      render(<Composer ref="root" source={source} focused={false} />);
+      await flushPendingTurnsProjectionForTests();
+      expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(newer ? "Run /skill-2 " : "");
+      expect(readComposerDraft("root")).toEqual(
+        newer ? { text: "Run /skill-2 ", skillNames: ["skill-2"] } : { text: "", skillNames: [] },
+      );
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+        { method: "turn/start", params: expect.objectContaining({ ref: "root", clientMutationId: mutationId, input }) },
+      ]);
+      expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
+      if (original) expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+    } finally {
+      hold.release();
+    }
+  },
+);
+
+test.each([
+  { action: "close", pending: "recovery edit" },
+  { action: "reset", pending: "recovery edit" },
+  { action: "close", pending: "acceptance" },
+  { action: "reset", pending: "acceptance" },
+])("pane $action fences held $pending completion from a same-ID replacement", async ({ action, pending }) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [
+    { type: "text" as const, text: "Run /skill-1 " },
+    { type: "skill" as const, name: "skill-1" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const pane: OpenPaneRecord = { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const lifetime = conversationPaneLifetime(pane);
+  const source = lifetime.composer;
+  if (!source) throw new Error("session pane has no source composer");
+  const fake = await mountComposer("root", skillFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  const delivered = deferred<void>();
+  fake.on("turn/start", (params) => {
+    delivered.resolve();
+    return {
+      turn: { id: "accepted", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_root",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const hold = holdNextWriteTransaction(
+    pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
+  );
+  try {
+    let completion: Promise<void> | undefined;
+    if (pending === "recovery edit") {
+      completion = source.queueRecoveryPersistence(original.clientMutationId, "Run /skill-1 ", [], ["skill-1"]);
+    } else {
+      await userEvent.setup().click(screen.getByRole("button", { name: "Send" }));
+    }
+    await hold.reached;
+    cleanup();
+    if (action === "close") workspaceStore.getState().closePane(pane.id);
+    else resetWorkspaceStoreForTests();
+    const replacementPane: OpenPaneRecord = { ...pane, params: { ref: "root" } };
+    workspaceStore.setState({ panes: [replacementPane], focusedPaneId: replacementPane.id });
+    const replacement = conversationPaneLifetime(replacementPane);
+    const replacementSource = replacement.composer;
+    if (!replacementSource) throw new Error("replacement pane has no source composer");
+    expect(lifetime.alive).toBe(false);
+    expect(source.alive).toBe(false);
+    expect(replacement.serial).not.toBe(lifetime.serial);
+    render(<Composer ref="root" source={replacementSource} focused={false} />);
+    await waitFor(() => expect(replacementSource.getSnapshot().freshRecoveryRef).toBe("root"));
+    await selectSkill(userEvent.setup(), "skill-2");
+    selectEditorText(screen.getByRole("textbox", { name: "Message" }), "Run /skill-2 ".length);
+    const encoding = installControlledImageEncoding();
+    selectImageFile(new File([new Uint8Array([1, 2, 3])], "replacement.png", { type: "image/png" }));
+    await act(async () => encoding.resolve());
+    await screen.findByRole("button", { name: "View replacement.png" });
+    const replacementRecoveryId = pending === "recovery edit" ? original.clientMutationId : null;
+    expect(replacementSource.getSnapshot().activeRecoveryId).toBe(replacementRecoveryId);
+    await act(async () => {
+      hold.release();
+      if (completion) await completion;
+      else await delivered.promise;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("Run /skill-2 [image 1]");
+    expect(
+      within(screen.getByRole("textbox", { name: "Message" })).getByTestId("composer-skill-chip").textContent,
+    ).toBe("/skill-2");
+    expect(screen.getByRole("button", { name: "View replacement.png" })).toBeTruthy();
+    expect(replacementSource.getSnapshot()).toMatchObject({
+      text: "Run /skill-2 [image 1]",
+      skillNames: ["skill-2"],
+      activeRecoveryId: replacementRecoveryId,
+    });
+    expect(replacementSource.attachments.getState().items).toEqual([
+      { marker: 1, name: "replacement.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
+    ]);
+    if (pending === "recovery edit") {
+      expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({
+        clientMutationId: original.clientMutationId,
+        targetRef: "root",
+        payload: {
+          input: [
+            { type: "text", text: "Run /skill-2 [image 1]" },
+            { type: "image", mediaType: "image/png", data: "AQID", name: "replacement.png" },
+            { type: "skill", name: "skill-2" },
+          ],
+        },
+      });
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    } else {
+      expect(readComposerDraft("root")).toEqual({ text: "Run /skill-2 [image 1]", skillNames: ["skill-2"] });
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+        { method: "turn/start", params: expect.objectContaining({ ref: "root", input }) },
+      ]);
+    }
+    expect(getToasts()).toEqual([]);
+  } finally {
+    hold.release();
+  }
+});
+
+test("a pending source image survives a Composer view remount without sending", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  const message = screen.getByRole("textbox", { name: "Message" });
+  const file = new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" });
+  selectImageFile(file);
+  expect(message.textContent).toBe("[image 1]");
+  expect(screen.getByRole("button", { name: "Remove source.png" })).toBeTruthy();
+
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await settleActivityDiscovery("root");
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("[image 1]");
+  expect(screen.queryByRole("button", { name: "Remove source.png" })).not.toBeNull();
+  await act(async () => encoding.resolve());
+  await screen.findByRole("button", { name: "View source.png" });
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+test("a source encode failure after remount keeps text typed in its current view", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  const file = new File([new Uint8Array([1, 2, 3])], "bad.png", { type: "image/png" });
+  selectImageFile(file);
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await settleActivityDiscovery("root");
+  replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "[image 1] keep this edit");
+  await act(async () => encoding.reject());
+  await waitFor(() => expect(readComposerDraft("root").text).toBe(" keep this edit"));
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(" keep this edit");
+  expect(screen.queryByRole("button", { name: "Remove bad.png" })).toBeNull();
+});
+
+test("an old source encode failure cannot overwrite a newer pane's same-ref draft", async () => {
+  const encoding = installControlledImageEncoding();
+  await mountComposer("root", idleFocusThread("root"));
+  await settleActivityDiscovery("root");
+  const file = new File([new Uint8Array([1, 2, 3])], "bad.png", { type: "image/png" });
+  selectImageFile(file);
+  cleanup();
+  render(<Composer ref="root" source={createTestComposerSource("root")} focused={false} />);
+  await settleActivityDiscovery("root");
+  replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "foreign [image 1] draft");
+  await act(async () => encoding.reject());
+  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toEqual(["bad.png (image decode failed)"]));
+  expect(readComposerDraft("root")).toEqual({ text: "foreign [image 1] draft", skillNames: [] });
+  expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe("foreign [image 1] draft");
+});
+
+test.each([
+  { action: "paste", text: "source draft [image 1]", persistedText: "source draft [image 1]" },
+  { action: "remove", text: "source draft ", persistedText: "source draft " },
+  { action: "submitted cleanup", text: "source draft ", persistedText: "foreign [image 1] draft" },
+])(
+  "mounted same-ref attachment $action uses its own editor after another pane edits",
+  async ({ action, text, persistedText }) => {
+    const encoding = installControlledImageEncoding();
+    const source = createTestComposerSource("root");
+    const fake = await mountComposer("root", idleFocusThread("root"), source);
+    await settleActivityDiscovery("root");
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    replaceEditorText(editor, "source draft ");
+    if (action !== "paste") {
+      selectEditorText(editor, "source draft ".length);
+      pastePngInto(editor, "source.png");
+      await act(async () => encoding.resolve());
+      await screen.findByRole("button", { name: "View source.png" });
+    }
+    const otherSource = createTestComposerSource("root");
+    const other = render(<Composer ref="root" source={otherSource} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    const otherEditor = within(other.container).getByRole("textbox", { name: "Message" });
+    replaceEditorText(otherEditor, "foreign [image 1] draft");
+    expect(editor.textContent).toBe(action === "paste" ? "source draft " : "source draft [image 1]");
+    expect(readComposerDraft("root")).toEqual({ text: "foreign [image 1] draft", skillNames: [] });
+
+    if (action === "paste") {
+      selectEditorText(editor, "source draft ".length);
+      pastePngInto(editor, "source.png");
+      await act(async () => encoding.resolve());
+      await screen.findByRole("button", { name: "View source.png" });
+    } else if (action === "remove") {
+      await userEvent.setup().click(screen.getByRole("button", { name: "Remove source.png" }));
+    } else {
+      act(() => source.clearSubmittedAttachments([...source.attachments.getState().items]));
+    }
+
+    expect.soft(editor.textContent).toBe(text);
+    expect.soft(source.getSnapshot().text).toBe(text);
+    expect.soft(otherEditor.textContent).toBe("foreign [image 1] draft");
+    expect.soft(readComposerDraft("root")).toEqual({ text: persistedText, skillNames: [] });
+    expect(source.attachments.getState().items).toEqual(
+      action === "paste"
+        ? [{ marker: 1, name: "source.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 }]
+        : [],
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+    expect(getToasts()).toEqual([]);
+  },
+);
+
+test("mounted encode failure cleans its own marker without claiming a newer same-ref draft", async () => {
+  const encoding = installControlledImageEncoding();
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, "source draft ");
+  selectEditorText(editor, "source draft ".length);
+  pastePngInto(editor, "bad.png");
+  expect(editor.textContent).toBe("source draft [image 1]");
+  const otherSource = createTestComposerSource("root");
+  const other = render(<Composer ref="root" source={otherSource} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  const otherEditor = within(other.container).getByRole("textbox", { name: "Message" });
+  replaceEditorText(otherEditor, "foreign [image 1] draft");
+
+  await act(async () => encoding.reject());
+
+  expect.soft(editor.textContent).toBe("source draft ");
+  expect.soft(source.getSnapshot().text).toBe("source draft ");
+  expect.soft(otherEditor.textContent).toBe("foreign [image 1] draft");
+  expect.soft(readComposerDraft("root")).toEqual({ text: "foreign [image 1] draft", skillNames: [] });
+  expect(source.attachments.getState().items).toEqual([]);
+  expect(screen.queryByRole("button", { name: "Remove bad.png" })).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+  expect(getToasts().map((toast) => ({ kind: toast.kind, text: toast.text }))).toEqual([
+    { kind: "error", text: "bad.png (image decode failed)" },
+  ]);
+});
+
+test.each(["success", "failure"] as const)(
+  "detached recovery encode %s keeps its original durable identity",
+  async (outcome) => {
+    const encoding = installControlledImageEncoding();
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const input = [
+      { type: "text" as const, text: "Run /skill-1 " },
+      { type: "skill" as const, name: "skill-1" },
+    ];
+    const original = await storage.enqueueIntent({
+      targetRef: "root",
+      method: "turn/start",
+      payload: { ref: "root", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const source = createTestComposerSource("root");
+    const fake = await mountComposer("root", skillFocusThread("root"), source);
+    await settleActivityDiscovery("root");
+    selectEditorText(screen.getByRole("textbox", { name: "Message" }), "Run /skill-1 ".length);
+    const file = new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" });
+    selectImageFile(file);
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    cleanup();
+    const child = createTestComposerSource("child");
+    child.editor.write("child draft", 11);
+    await act(async () => {
+      if (outcome === "success") await encoding.resolve();
+      else await encoding.reject();
+    });
+    await flushPendingTurnsProjectionForTests();
+    const recovered = await storage.getRecovery(original.clientMutationId);
+    expect(recovered?.clientMutationId).toBe(original.clientMutationId);
+    expect(recovered?.targetRef).toBe("root");
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(recovered?.payload.input).toEqual(
+      outcome === "success"
+        ? [
+            { type: "text", text: "Run /skill-1 [image 1]" },
+            { type: "image", mediaType: "image/png", data: "AQID", name: "source.png" },
+            { type: "skill", name: "skill-1" },
+          ]
+        : input,
+    );
+    expect(getToasts().map((toast) => toast.text)).toEqual(
+      outcome === "failure" ? ["source.png (image decode failed)"] : [],
+    );
+    expect(readComposerDraft("child")).toEqual({ text: "child draft", skillNames: [] });
+    render(<Composer ref="root" source={source} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    expect(
+      within(screen.getByRole("textbox", { name: "Message" })).getByTestId("composer-skill-chip").textContent,
+    ).toBe("/skill-1");
+    if (outcome === "success") await screen.findByRole("button", { name: "View source.png" });
+    expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+  },
+);
 
 test.each(["pointer", "keyboard"] as const)(
   "ordinary %s Send returns focus to Message after successful submission",
@@ -262,7 +820,7 @@ test.each(["pointer", "keyboard"] as const)(
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-    await user.type(message, "ordinary focus proof");
+    await user.type(message, "ok");
     expect(document.activeElement).toBe(message);
     expect(send.disabled).toBe(false);
 
@@ -281,16 +839,14 @@ test.each(["pointer", "keyboard"] as const)(
       await user.keyboard("{Enter}");
     }
 
-    await waitFor(() => {
-      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
-        {
-          method: "turn/start",
-          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ordinary focus proof" }] }),
-        },
-      ]);
-      expect(message.textContent).toBe("");
-    });
     await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+      {
+        method: "turn/start",
+        params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ok" }] }),
+      },
+    ]);
+    expect(message.textContent).toBe("");
     expect(message.getAttribute("contenteditable")).toBe("true");
     expect(send.disabled).toBe(true);
     // The contract is usable composer focus, not a jsdom-specific BODY blur.
@@ -337,7 +893,7 @@ test.each(["pointer", "keyboard"] as const)(
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-    await user.type(message, "queue focus proof");
+    await user.type(message, "qf");
     expect(send.disabled).toBe(false);
     if (activation === "pointer") {
       await user.click(send);
@@ -352,17 +908,15 @@ test.each(["pointer", "keyboard"] as const)(
       expect(document.activeElement).toBe(send);
       await user.keyboard("{Enter}");
     }
-    await waitFor(() => {
-      expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([
-        {
-          method: "turn/queue",
-          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "queue focus proof" }] }),
-        },
-      ]);
-      expect(message.textContent).toBe("");
-    });
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([
+      {
+        method: "turn/queue",
+        params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "qf" }] }),
+      },
+    ]);
+    expect(message.textContent).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     expect(message.getAttribute("contenteditable")).toBe("true");
     expect(send.disabled).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(message));
@@ -379,12 +933,12 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-    await user.type(message, "delayed focus proof");
+    await user.type(message, "df");
     try {
       await user.click(send);
       await storage.commitStarted;
       expect(send.disabled).toBe(true);
-      expect(message.textContent).toBe("delayed focus proof");
+      expect(message.textContent).toBe("df");
       expect(document.activeElement).toBe(message);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
       fireEvent.submit(message.closest("form")!);
@@ -401,21 +955,20 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
         await act(async () => {
           await threadsStore.getState().ensureThread("ref_b");
         });
-        const second = render(<Composer ref="ref_b" focused={false} />);
+        const second = render(<Composer ref="ref_b" source={createTestComposerSource("ref_b")} focused={false} />);
         destinationElement = second
           .getAllByRole("textbox", { name: "Message" })
           .find((element) => element !== message)!;
-        await user.type(destinationElement, "other draft");
+        await user.type(destinationElement, "od");
       }
       expect(document.activeElement).toBe(destinationElement);
       await act(async () => storage.release());
-      await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
       await flushPendingTurnsProjectionForTests();
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
       if (destination !== "replacement Composer") await waitFor(() => expect(message.textContent).toBe(""));
       else expect(message.isConnected).toBe(false);
       expect(document.activeElement).toBe(destinationElement);
-      if (destination !== "other control")
-        expect((destinationElement as HTMLDivElement).textContent).toBe("other draft");
+      if (destination !== "other control") expect((destinationElement as HTMLDivElement).textContent).toBe("od");
     } finally {
       storage.release();
     }
@@ -430,15 +983,13 @@ test("ordinary Send does not take another control's focus on programmatic form s
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
-  await user.type(message, "unfocused submission");
+  await user.type(message, "us");
   await user.click(elsewhere);
   act(() => message.closest("form")!.requestSubmit(send));
   expect(document.activeElement).toBe(elsewhere);
-  await waitFor(() => {
-    expect(message.textContent).toBe("");
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
-  });
   await flushPendingTurnsProjectionForTests();
+  expect(message.textContent).toBe("");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(document.activeElement).toBe(elsewhere);
 });
 
@@ -447,19 +998,19 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
   acceptFocusSubmission(fake, "turn/start");
   const user = userEvent.setup();
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
-  await user.type(message, "shortcut focus proof");
+  await user.type(message, "sf");
   await user.keyboard("{Control>}{Enter}{/Control}");
-  await waitFor(() => {
-    expect(message.textContent).toBe("");
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
-  });
   await flushPendingTurnsProjectionForTests();
+  expect(message.textContent).toBe("");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(document.activeElement).toBe(message);
   await user.keyboard("next draft");
   expect(message.textContent).toBe("next draft");
 });
 
-test("ordinary Send retains draft and reports local failure without late focus theft", async () => {
+// A refused durable write sends directly; the paused write keeps that send in
+// flight while focus moves, and the daemon's refusal is what the person sees.
+test("ordinary Send retains draft and reports a refused send without late focus theft", async () => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
   let failCommit: (() => void) | undefined;
@@ -468,16 +1019,19 @@ test("ordinary Send retains draft and reports local failure without late focus t
   });
   const enqueue = vi.spyOn(storage, "enqueueIntent").mockImplementationOnce(async () => {
     await failure;
-    throw new Error("focus proof storage failure");
+    throw new DOMException("storage full", "QuotaExceededError");
   });
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
+  fake.on("turn/start", () => {
+    throw new WireError("focus proof send refusal", -32000);
+  });
   render(<button type="button">Elsewhere</button>);
   const user = userEvent.setup();
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
   const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
   try {
-    await user.type(message, "keep failed draft");
+    await user.type(message, "kf");
     await user.click(send);
     await waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1));
     expect(send.disabled).toBe(true);
@@ -485,15 +1039,13 @@ test("ordinary Send retains draft and reports local failure without late focus t
     await user.click(elsewhere);
     await act(async () => failCommit?.());
     await waitFor(() =>
-      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain(
-        "focus proof storage failure",
-      ),
+      expect(screen.getByRole("region", { name: "Notifications" }).textContent).toContain("focus proof send refusal"),
     );
     await flushPendingTurnsProjectionForTests();
-    expect(message.textContent).toBe("keep failed draft");
-    expect(readDraft("ref_a")).toBe("keep failed draft");
+    expect(message.textContent).toBe("kf");
+    expect(readDraft("ref_a")).toBe("kf");
     expect(send.disabled).toBe(false);
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
     expect(document.activeElement).toBe(elsewhere);
   } finally {
     failCommit?.();
@@ -534,20 +1086,8 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
     };
   });
   await flushPendingTurnsProjectionForTests();
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  let commitObserved: (() => void) | undefined;
-  const committed = new Promise<void>((resolve) => {
-    commitObserved = resolve;
-  });
-  const transact = IDBDatabase.prototype.transaction;
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-      hold = holdIndexedDBEvent(transaction, "complete");
-      void hold.reached.then(() => commitObserved?.());
-    }
-    return transaction;
-  });
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  const committed = hold.reached;
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await act(async () => {
@@ -563,7 +1103,7 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
     expect(composerSteerButton().disabled).toBe(true);
     fireEvent.click(composerSteerButton());
   } finally {
-    await act(async () => hold?.release());
+    await act(async () => hold.release());
     vi.useRealTimers();
     await flushPendingTurnsProjectionForTests();
   }
@@ -574,7 +1114,7 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
   expect(consoleError).not.toHaveBeenCalled();
 });
 
-test("a cancelled storage stall keeps the draft, reports the problem, and allows one safe retry", async () => {
+test("a stalled capture read dispatches the steer directly and never fails closed", async () => {
   const fake = await mountComposer("ref_a");
   let deliveryObserved: (() => void) | undefined;
   const delivered = new Promise<void>((resolve) => {
@@ -619,20 +1159,22 @@ test("a cancelled storage stall keeps the draft, reports the problem, and allows
       await reached;
       await vi.runOnlyPendingTimersAsync();
     });
-    expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBeTruthy();
-    expect(textarea()?.textContent).toBe("keep this draft");
-    expect(composerSteerButton().disabled).toBe(false);
-    expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(0);
+    // The click-time capture read never answered, so this steer carries no
+    // click-time stop epoch - but it still went out as a plain RPC instead of
+    // failing closed and making the user retry.
+    expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
   } finally {
     keepAlive = false;
     hold?.release();
     vi.useRealTimers();
     await flushPendingTurnsProjectionForTests();
   }
-  fireEvent.click(composerSteerButton());
-  await flushPendingTurnsProjectionForTests();
-  expect(textarea()?.textContent).toBe("");
   await act(async () => delivered);
+  // The fallback send succeeded, so the composer clears the input exactly as
+  // it does for any successful steer.
+  expect(textarea()?.textContent).toBe("");
+  // Releasing the stalled read after the fallback send must not send again.
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
 });
 
@@ -679,12 +1221,16 @@ test("a second message queues behind a committed start even when recovery projec
   }
   const user = userEvent.setup();
   try {
-    await user.type(textarea() as HTMLDivElement, "first message");
+    await user.type(textarea() as HTMLDivElement, "m1");
     await user.click(screen.getByTestId("composer-submit"));
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
-    await user.type(textarea() as HTMLDivElement, "second message");
+    await user.type(textarea() as HTMLDivElement, "m2");
     await user.click(screen.getByTestId("composer-submit"));
-    expect(await secondRequest).toBe("turn/queue");
+    // The second submit's local commit and its draft bookkeeping can land after
+    // the click returns, before the dispatch this waits for can go out, so the
+    // wait runs inside act. The projection flush the other tests settle with
+    // cannot settle here until the finally releases the held recovery reads.
+    expect(await act(async () => secondRequest)).toBe("turn/queue");
   } finally {
     spy.mockRestore();
     for (const hold of held) hold.release();
@@ -732,20 +1278,8 @@ test.each([
       },
     }));
     await flushPendingTurnsProjectionForTests();
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    let announceCommit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      announceCommit = resolve;
-    });
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => announceCommit?.());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       await act(async () => {
@@ -755,21 +1289,22 @@ test.each([
       });
       if (remount) {
         cleanup();
-        render(<Composer ref="ref_a" focused={false} />);
+        render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
       }
       expect(actionButton().disabled).toBe(true);
       fireEvent.click(actionButton());
       if (edited) replaceEditorText(textarea() as HTMLDivElement, "new draft");
       if (edited === "same") replaceEditorText(textarea() as HTMLDivElement, "original message");
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       vi.useRealTimers();
       await flushPendingTurnsProjectionForTests();
     }
     const expectedDraft = edited === "same" ? "original message" : edited ? "new draft" : "";
     expect(textarea()?.textContent).toBe(expectedDraft);
     expect(readDraft("ref_a")).toBe(expectedDraft);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
+    // The flush in the finally above has seen the dispatch out.
+    expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
   },
 );
 
@@ -794,14 +1329,14 @@ test.each(["storage", "composer"] as const)(
       const fake = await mountComposer("ref_a");
       fake.on("turn/steer", () => new Promise<never>(() => undefined));
       const user = userEvent.setup();
-      await user.type(textarea() as HTMLDivElement, "one submission");
+      await user.type(textarea() as HTMLDivElement, "os");
       await user.click(composerSteerButton());
       await flushPendingTurnsProjectionForTests();
       expect(textarea()?.textContent).toBe("");
       expect(readDraft("ref_a")).toBe("");
       expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
       expect(observed).toHaveBeenCalled();
-      await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
+      expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
       expect(report).toHaveBeenCalledWith(expect.any(String), failure);
     } finally {
       unsubscribeFailure();
@@ -823,7 +1358,14 @@ test("the composer resends recovered text while recovery projection callbacks ar
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const fake = await mountComposer("ref_a");
-  fake.on("turn/steer", () => new Promise<never>(() => undefined));
+  // The steer is awaited where it arrives: the recovery reads held below keep
+  // the projection work open, so a flush could not settle until they are
+  // released.
+  const steerSent = deferred<void>();
+  fake.on("turn/steer", () => {
+    steerSent.resolve();
+    return new Promise<never>(() => undefined);
+  });
   await flushPendingTurnsProjectionForTests();
   expect(textarea()?.textContent).toBe("recover me");
   const getAll = IDBObjectStore.prototype.getAll;
@@ -840,7 +1382,8 @@ test("the composer resends recovered text while recovery projection callbacks ar
     await user.click(composerSteerButton());
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
     expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
+    await act(async () => steerSent.promise);
+    expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
     const call = fake.calls.find((call) => call.method === "turn/steer");
     expect(call?.params).toEqual(expect.objectContaining({ input: [{ type: "text", text: "recover me edited" }] }));
   } finally {
@@ -892,7 +1435,8 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
   const editedInput = [{ type: "text", text: `${text} again` }, ...skills];
   expect((await storage.getRecovery(original.clientMutationId))?.payload.input).toEqual(editedInput);
   await user.click(composerSteerButton());
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
   expect(fake.calls.find((call) => call.method === "turn/steer")?.params).toEqual(
     expect.objectContaining({ input: editedInput }),
   );
@@ -905,27 +1449,20 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: `thr_${ref}`,
+        ref: "ref-1",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+      },
     });
   });
 }
 
 // --- T3: queue strip wiring --------------------------------------------------
-
-test("the queue strip renders inside the composer once the queue has entries", async () => {
-  await mountComposer("ref_a", {
-    evener: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
-      activeTurnId: "turn_1",
-    },
-  });
-
-  expect(await screen.findByText(/queued messages/i)).toBeTruthy();
-  expect(screen.getByText("queued hello")).toBeTruthy();
-});
 
 test("the strip's drain-as-steer reads the composer's live text at click time, not a stale snapshot", async () => {
   const user = userEvent.setup();
@@ -946,12 +1483,12 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "steer this in live");
+  await user.type(textarea() as HTMLDivElement, "st");
   await user.click(drainButton());
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "steer this in live" }] });
+  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "st" }] });
 });
 
 test("a successful strip-triggered drain clears the composer's own text and draft", async () => {
@@ -973,7 +1510,7 @@ test("a successful strip-triggered drain clears the composer's own text and draf
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "drain me too");
+  await user.type(textarea() as HTMLDivElement, "dm");
   await user.click(drainButton());
 
   await waitFor(() => expect((textarea() as HTMLDivElement).textContent).toBe(""));
@@ -1015,50 +1552,30 @@ test("text changed while a strip-triggered drain is in flight survives the drain
       }),
   );
 
-  await user.type(textarea() as HTMLDivElement, "original");
-  await user.click(drainButton()); // fires the request; handleDrain awaits the still-pending promise
+  await user.type(textarea() as HTMLDivElement, "ab");
+  // The drain's durable write is held, so the edit below lands while the
+  // drain is still in flight, before handleDrain can reach its success.
+  const commit = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  await user.click(drainButton());
+  await commit.reached;
 
   // The user keeps typing while the drain is in flight - a real, synchronous
   // DOM change event landing between the drain click and its settlement.
-  replaceEditorText(textarea() as HTMLDivElement, "original plus more");
-  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
+  replaceEditorText(textarea() as HTMLDivElement, "ab plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 
+  // The commit lands: onDrainSuccess (handleDrain's own continuation) runs,
+  // which is where a wrong clear would happen, and the dispatcher sends the
+  // request this fake holds.
+  commit.release();
+  await flushPendingTurnsProjectionForTests();
   resolveDrain?.();
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  // Settles the receipt the answered drain writes, and the refresh after it.
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
 
-  // Give onDrainSuccess (handleDrain's own .then continuation) a chance to
-  // run and settle - if it were going to wrongly clear, it would have by
-  // the time this passes.
-  await new Promise((resolve) => setTimeout(resolve, 10));
-
-  expect((textarea() as HTMLDivElement).textContent).toBe("original plus more"); // NOT cleared - text changed since the drain was triggered
-  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
-});
-
-test("clicking a queued row's Edit button restores its full text into an empty composer verbatim", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    evener: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["the full queued text"], preview: ["the full queued text"] },
-      activeTurnId: "turn_1",
-    },
-  });
-  fake.on("turn/cancelQueued", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
-    removedText: "the full queued text",
-  }));
-
-  await user.click(screen.getByRole("button", { name: /edit message/i }));
-
-  expect((textarea() as HTMLDivElement).textContent).toBe("the full queued text");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  expect((textarea() as HTMLDivElement).textContent).toBe("ab plus more"); // NOT cleared - text changed since the drain was triggered
+  expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 });
 
 test("queue edit restores inline selections that a nonempty composer drain sends unchanged", async () => {
@@ -1109,7 +1626,8 @@ test("queue edit restores inline selections that a nonempty composer drain sends
       .map((chip) => chip.textContent),
   ).toEqual(["/skill-1", "/skill-2", "/skill-1"]);
   await user.click(drainButton());
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toHaveLength(1);
   expect(fake.calls.find((call) => call.method === "turn/drainAsSteer")?.params).toEqual(
     expect.objectContaining({
       input: [
@@ -1246,7 +1764,8 @@ test("clicking Edit on a queued entry whose daemon skillNames slot is null resto
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
   expect((textarea() as HTMLDivElement).textContent).toBe("plain queued text");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true);
 });
 
 test("clicking Edit appends the restored text after a blank line when the composer already has typed text", async () => {
@@ -1269,10 +1788,10 @@ test("clicking Edit appends the restored text after a blank line when the compos
     removedText: "queued copy",
   }));
 
-  await user.type(textarea() as HTMLDivElement, "my own draft");
+  await user.type(textarea() as HTMLDivElement, "mine");
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLDivElement).textContent).toBe("my own draft\n\nqueued copy");
+  expect((textarea() as HTMLDivElement).textContent).toBe("mine\n\nqueued copy");
 });
 
 test("clicking a queued row's cancel button fires turn/cancelQueued with that row's expectedEntryId", async () => {
@@ -1298,50 +1817,164 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
 
   await user.click(screen.getByRole("button", { name: /remove from queue/i }));
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });
 
-// The location line rides under the prompt card: the cwd from the session
-// model, and the branch resolved from that cwd through the hub's git/head
-// method. This drives the real assembled tree only to prove the line is wired
-// in below the card and reaches the hub with the session's own cwd - the
-// component's own rendering rules are covered in RepoLocation.test.tsx.
-test("shows the session's cwd and git branch under the composer card", async () => {
+// RoboRev round-7 Medium: the composer's Stop button is a Stop call site too
+// (handleInterruptClick -> threadsStore.interrupt), and interrupt lacked the
+// mid-swap sweep forceStop and shutdown already had. A live fenced local session
+// (active snapshot plus the resumeRequired overlay) keeps its Stop button while
+// the resume moves the parked row to the resumed ref; pressing Stop then let the
+// moved row deliver. This drives the REAL button and the REAL stores.
+test("the composer's Stop button cancels the row a mid-swap resume moved to the resumed ref", async () => {
+  const user = userEvent.setup();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient();
+  const ref = "local:btn-stop-from";
+  const toRef = "local:btn-stop-to";
+  const fromShape = () =>
+    readResponse(ref, {
+      status: { type: "active" },
+      evener: {
+        ref,
+        capabilities: FULL_CAPABILITIES,
+        mutationStateAuthoritative: true,
+        resumeRequired: true,
+        queue: { revision: 0 },
+        activeTurnId: "turn_1",
+      },
+    });
+  const toIdle = () =>
+    readResponse(toRef, {
+      status: { type: "idle" },
+      evener: { ref: toRef, capabilities: FULL_CAPABILITIES, mutationStateAuthoritative: true, queue: { revision: 1 } },
+    });
+  // The resumed ref's snapshot is fenced too, so the row the retarget moves onto
+  // it parks (unattempted) and only the sweep can cancel it.
+  const toFenced = () =>
+    readResponse(toRef, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: toRef,
+        capabilities: { ...FULL_CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+      turns: [],
+    });
+  // The drive settles first, then its trailing drain runs on a later task.
+  // Holding that pass open is the window the reviewer names: no fence runs again,
+  // so the drive's own catch compensation is gone and only the Stop call sites'
+  // sweep can cancel the moved row.
+  let drainHeld = false;
+  let releaseDrain!: () => void;
+  const drainGate = new Promise<void>((resolve) => {
+    releaseDrain = resolve;
+  });
+  const realRetarget = MutationOutboxIndexedDB.prototype.retargetOutbox;
+  const spy = vi.spyOn(MutationOutboxIndexedDB.prototype, "retargetOutbox").mockImplementation(async function (
+    this: MutationOutboxIndexedDB,
+    from: string,
+    to: string,
+    identity: { threadId?: string; instanceId?: string },
+  ) {
+    // Only the trailing drain's pass runs after the drive published the resumed
+    // identity; hold it before the move so the registration stays live.
+    if (!drainHeld && threadsStore.getState().resumedIdentities.has(ref)) {
+      drainHeld = true;
+      await drainGate;
+    }
+    return realRetarget.call(this, from, to, identity);
+  });
+  fake.on("thread/read", (params) => (params.ref === toRef ? toFenced() : fromShape()));
+  fake.on("thread/resume", () => toIdle());
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${ref}`,
+      projectionState: "reflected",
+    },
+  }));
+  const starts: string[] = [];
+  fake.on("turn/start", (params) => {
+    starts.push(String(params.ref));
+    return {
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: `thr_${params.ref}`,
+        projectionState: "reflected",
+      },
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  try {
+    await threadsStore.getState().ensureThread(ref);
+    // Arm the resumed ref's restart obligation first: the retarget then moves the
+    // parked row onto a ref that is already fenced, so it parks unattempted.
+    await threadsStore.getState().ensureThread(toRef);
+    render(<Composer ref={ref} source={createTestComposerSource(ref)} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+    expect(screen.getByTestId("composer-stop")).toBeTruthy();
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    await user.click(editor);
+    await user.type(editor, "stop me");
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(drainHeld).toBe(true));
+    // The drive settled; its retarget already moved the parked row to the resumed
+    // ref, where it waits because that ref is fenced.
+    const moved = await storage.listOutbox(toRef);
+    expect(moved).toHaveLength(1);
+    const movedId = moved[0]?.clientMutationId;
+    // Press Stop on the still-visible old ref, in the held drain window.
+    await user.click(screen.getByTestId("composer-stop"));
+    await flushPendingTurnsProjectionForTests();
+    // The press reached interrupt: its own turn/interrupt row parks under the
+    // fenced old ref. The sweep is the only thing that can reach toRef now.
+    expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
+    releaseDrain();
+    await flushPendingTurnsProjectionForTests();
+    expect(starts).toEqual([]);
+    const outbox = await storage.listOutbox(toRef);
+    // The moved row is durably canceled under the resumed ref; the interrupt's
+    // own row lands there too once the released drain moves it, and stays queued.
+    expect(outbox.find((record) => record.clientMutationId === movedId)?.state).toBe("canceled");
+  } finally {
+    releaseDrain();
+    spy.mockRestore();
+  }
+});
+
+test("mobile composer omits the working path and repository without a git lookup", async () => {
+  installMobileViewport();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("local:ref_loc", { cwd: "/home/jesse/repo" }));
-  fake.on("evener/git/head", ({ cwd }) => {
-    expect(cwd).toBe("/home/jesse/repo");
-    return { head: "composer-line", originUrl: "git@github.com:owner/repo.git" };
-  });
+  fake.on("evener/git/head", () => ({ head: "composer-line", originUrl: "git@github.com:owner/repo.git" }));
   await threadsStore.getState().ensureThread("local:ref_loc");
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="local:ref_loc" focused={false} />
+      <Composer ref="local:ref_loc" source={createTestComposerSource("local:ref_loc")} focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
 
-  const line = await screen.findByTestId("composer-repo-location");
-  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/home/jesse/repo");
-  expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe("https://github.com/owner/repo");
-  expect(screen.getByTestId("composer-repo-ref").textContent).toBe("owner/repo#composer-line");
-
-  // "underneath the composer": the line follows the prompt card in the DOM.
-  const card = screen.getByTestId("composer-input-card");
-  expect(card.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(fake.calls.some((call) => call.method === "evener/git/head")).toBe(false);
 });
 
-// A finished session collapses its card to (at most) a one-line follow-up
-// invitation, and a fenced one renders no card at all. The location line is not
-// part of that card: "where is this agent working" must survive the collapse,
-// which is exactly the state the composer is in when you are reading a session
-// that has already finished.
-test("keeps the location line under a finished session with no composer card", async () => {
+test("mobile finished session with no composer card omits repository metadata", async () => {
+  installMobileViewport();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("local:ref_ended", {
@@ -1350,8 +1983,7 @@ test("keeps the location line under a finished session with no composer card", a
       evener: {
         ref: "local:ref_ended",
         mutationStateAuthoritative: true,
-        // send false: showFollowUpCard is false, so the form card is not rendered
-        // at all and the location line is the composer's only visible content.
+        // No follow-up card when sending is unavailable.
         capabilities: { ...FULL_CAPABILITIES, send: false },
         queue: { revision: 0 },
       },
@@ -1363,37 +1995,37 @@ test("keeps the location line under a finished session with no composer card", a
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="local:ref_ended" focused={false} />
+      <Composer ref="local:ref_ended" source={createTestComposerSource("local:ref_ended")} focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
 
   expect(screen.queryByTestId("composer-input-card")).toBeNull();
-  expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/home/jesse/repo");
-  expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe("https://github.com/owner/repo");
-  expect(screen.getByTestId("composer-repo-ref").textContent).toBe("owner/repo#ended-branch");
+  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(fake.calls.some((call) => call.method === "evener/git/head")).toBe(false);
 });
 
 // A source-backed session's cwd is another host's path. This hub must not be
 // asked to resolve a branch there: a local repository that merely shares the
-// path would render as that session's branch. The working dir still shows.
-test("does not resolve a branch for a source-backed (non-local) session", async () => {
+// path would render as that session's branch.
+test("mobile source-backed session omits repository metadata without a local git lookup", async () => {
+  installMobileViewport();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("remote:ref_remote", { cwd: "/srv/remote/repo", source: "remote" }));
   await threadsStore.getState().ensureThread("remote:ref_remote");
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="remote:ref_remote" focused={false} />
+      <Composer ref="remote:ref_remote" source={createTestComposerSource("remote:ref_remote")} focused={false} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushPendingTurnsProjectionForTests();
-  });
+  await flushPendingTurnsProjectionForTests();
 
-  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/srv/remote/repo");
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  expect(screen.queryByTestId("composer-repo-location")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-path")).toBeNull();
   expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
   expect(screen.queryByTestId("composer-repo-link")).toBeNull();
   expect(fake.calls.some((call) => call.method === "evener/git/head")).toBe(false);
@@ -1432,7 +2064,8 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
   expect(composerSteerButton().disabled).toBe(true);
 
   storage.release();
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
 });
 
 test("while the composer's own classic drain is in flight, the strip's Steer-now button is also disabled (shared busy gate)", async () => {
@@ -1456,14 +2089,15 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "drain me");
+  await user.type(textarea() as HTMLDivElement, "dm");
   await user.click(composerSteerButton());
 
   await storage.commitStarted;
   expect(drainButton().disabled).toBe(true);
 
   storage.release();
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
 });
 
 // --- pending-tracking uniformity (send/steer/queue/drain all register) ------
@@ -1479,13 +2113,13 @@ test("a plain send exposes its durable pending entry while the network remains u
   fake.on("turn/start", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
 
-  await user.type(textarea() as HTMLDivElement, "hello agent");
+  await user.type(textarea() as HTMLDivElement, "ha");
   await user.click(screen.getByRole("button", { name: /^send\b/i }));
   await storage.committed;
   await flushPendingTurnsProjectionForTests();
 
   expect(result.current).toHaveLength(1);
-  expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });
+  expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "ha" });
 });
 
 test("a queue submit also exposes its durable pending entry in the composed UI while the network remains unsettled", async () => {
@@ -1497,7 +2131,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   fake.on("turn/queue", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
 
-  await user.type(textarea() as HTMLDivElement, "queued message");
+  await user.type(textarea() as HTMLDivElement, "qm");
   // "Send" in every state - a mid-turn submit still queues (that is the ROUTE,
   // which this test proves) but the verb never changes under the user; see
   // Composer.tsx's own submitLabel comment.
@@ -1512,24 +2146,27 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   // through the REAL, fully composed Composer+QueueStrip tree via an actual
   // user submit, not just the store's own hook state (queue-strip stream
   // review, Minor).
-  expect(await screen.findByText("queued message")).toBeTruthy();
+  expect(await screen.findByText("qm")).toBeTruthy();
 });
 
 test("relay recovery refreshes stale queue capability without reconnecting or remounting the composer", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   let readCount = 0;
-  fake.on("thread/read", () => {
+  fake.on("thread/read", (params) => {
     readCount += 1;
-    return readResponse("ref_a", {
-      status: { type: "active" },
-      evener: {
-        ref: "ref_a",
-        capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
-        queue: { revision: 0 },
-        activeTurnId: "turn_1",
-      },
-    });
+    return {
+      ...readResponse("ref_a", {
+        status: { type: "active" },
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
+          queue: { revision: 0 },
+          activeTurnId: "turn_1",
+        },
+      }),
+      ...(params.requestGeneration !== undefined ? { requestGeneration: params.requestGeneration } : {}),
+    };
   });
   fake.on("turn/queue", (params) => ({
     receipt: {
@@ -1543,16 +2180,16 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="ref_a" focused={false} />
+      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
     </ClientProvider>,
   );
 
-  await user.type(textarea() as HTMLDivElement, "follow up");
+  await user.type(textarea() as HTMLDivElement, "fu");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
   expect(await screen.findByText("Send is not available for this session")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "turn/queue" || call.method === "turn/start")).toHaveLength(0);
-  expect((textarea() as HTMLDivElement).textContent).toBe("follow up");
+  expect((textarea() as HTMLDivElement).textContent).toBe("fu");
 
   await act(async () => {
     fake.emitNotification({
@@ -1566,7 +2203,8 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
 
   await user.click(screen.getByTestId("composer-submit"));
 
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });
 
 // --- T4: ask dock wiring ------------------------------------------------------
@@ -1585,27 +2223,9 @@ function idleNoTurnOverrides(): Partial<Thread> {
   };
 }
 
-test("a pending ask hides and inerts the composer's input row, and the dock is no longer the composer's child", async () => {
+test("a pending ask hides the composer's input row, which un-hides once the ask resolves through the normal send path", async () => {
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   expect(textarea()).toBeTruthy(); // sanity: visible before any ask arrives
-
-  startTurn(fake, "ref_a", "turn_1");
-  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
-
-  // Excluded from the accessibility tree by the `hidden` attribute (RTL's
-  // byRole queries respect it, matching real assistive-tech behavior) -
-  // a stronger, more meaningful signal than probing the `inert` IDL
-  // property directly, and it also proves the textarea can't be tabbed to.
-  await waitFor(() => expect(textarea()).toBeNull());
-  // The answering surface is the transcript's trailing row now (Session.tsx
-  // passes AskDock as TranscriptBody's trailingRow; AskDock.test.tsx and
-  // Session.test.tsx prove that half) - nothing ask-shaped renders here.
-  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
-  expect(screen.queryByText("Deploy?")).toBeNull();
-});
-
-test("the composer un-hides once the pending ask resolves through the normal send path", async () => {
-  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   let observeTurnStart!: (params: MethodTypes["turn/start"]["params"]) => void;
   const turnStarted = new Promise<MethodTypes["turn/start"]["params"]>((resolve) => {
     observeTurnStart = resolve;
@@ -1627,16 +2247,26 @@ test("the composer un-hides once the pending ask resolves through the normal sen
   // The dock itself is the transcript's trailing row now, so this test
   // resolves the batch through the same store seam its Send button calls
   // (askDockStore.sendBatch, the real durable send path) rather than a UI
-  // click - what THIS component owns is the un-hide that follows.
+  // click - what THIS component owns is the hide and the un-hide that follows.
+  //
+  // Excluded from the accessibility tree by the `hidden` attribute (RTL's
+  // byRole queries respect it, matching real assistive-tech behavior) -
+  // a stronger, more meaningful signal than probing the `inert` IDL
+  // property directly, and it also proves the textarea can't be tabbed to.
   await waitFor(() => expect(textarea()).toBeNull());
+  // Nothing ask-shaped renders here: the answering surface is the
+  // transcript's trailing row (Session.tsx passes AskDock as TranscriptBody's
+  // trailingRow; AskDock.test.tsx and Session.test.tsx prove that half).
+  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
+  expect(screen.queryByText("Deploy?")).toBeNull();
   const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
   if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
 
   await act(async () => {
     await askDockStore.sendBatch("ref_a", batchId);
     await turnStarted;
-    await flushPendingTurnsProjectionForTests();
   });
+  await flushPendingTurnsProjectionForTests();
 
   await expect(turnStarted).resolves.toMatchObject({
     input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
@@ -1728,9 +2358,10 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
     },
   }));
 
-  await user.type(textarea() as HTMLDivElement, "first queued message");
+  await user.type(textarea() as HTMLDivElement, "fq");
   await user.click(screen.getByTestId("composer-submit"));
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true);
   expect((textarea() as HTMLDivElement).textContent).toBe(""); // clears optimistically like any other successful submit
   const queueCall = fake.calls.find((c) => c.method === "turn/queue");
   const clientMutationId = (queueCall?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
@@ -1751,15 +2382,15 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
           depth: 1,
           ids: ["q1"],
           clientMutationIds: [clientMutationId!],
-          texts: ["first queued message"],
-          preview: ["first queued message"],
+          texts: ["fq"],
+          preview: ["fq"],
         },
       },
     });
   });
 
   expect(await screen.findByText(/queued messages/i)).toBeTruthy();
-  expect(screen.getByText("first queued message")).toBeTruthy();
+  expect(screen.getByText("fq")).toBeTruthy();
 
   fake.on("turn/cancelQueued", (params) => ({
     receipt: {
@@ -1768,12 +2399,12 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
       threadId: "thread_a",
       projectionState: "reflected",
     },
-    removedText: "first queued message",
+    removedText: "fq",
   }));
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLDivElement).textContent).toBe("first queued message"); // restored into the (now empty) composer
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  expect((textarea() as HTMLDivElement).textContent).toBe("fq"); // restored into the (now empty) composer
+  await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });

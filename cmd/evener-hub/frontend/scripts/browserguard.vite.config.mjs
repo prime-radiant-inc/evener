@@ -17,12 +17,17 @@
 //   server.hmr: false   - no HMR client channel. Nothing in a guard hot-
 //                         reloads by design; measurements must reflect the
 //                         bytes the run wrote, not a live-reloading page.
+//   cacheDir            - BROWSER_GUARD_VITE_CACHE_DIR when set. make
+//                         test-web-browser runs guards side by side, and two
+//                         Vite processes optimizing deps into one cache race
+//                         (issue #1586), so it gives each guard its own.
 import { defineConfig, mergeConfig } from "vite";
 import baseConfig from "../vite.config";
 
 export default mergeConfig(
   baseConfig,
   defineConfig({
+    ...(process.env.BROWSER_GUARD_VITE_CACHE_DIR ? { cacheDir: process.env.BROWSER_GUARD_VITE_CACHE_DIR } : {}),
     server: {
       watch: null,
       hmr: false,

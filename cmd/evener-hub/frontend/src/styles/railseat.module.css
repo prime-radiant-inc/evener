@@ -1,0 +1,55 @@
+/* The icon-rail seat: the shared geometry of the transcript's rail glyph
+ * slots. Every "run" row (layoutRoles.ts) sits inside .runContent's reserved
+ * --speaker-gutter padding above the 700px breakpoint (turnblock.module.css),
+ * and each row's leading glyph seats in the SAME avatar column the speaker
+ * avatars occupy. ToolRow's .rowIcon and the notification head's .statusIcon
+ * compose this seat; Loader's rail row composes the pull alone (its slot is a
+ * grid of cells, not a glyph box); ThinkBlock's bulb and SteeringItem's
+ * diamond deliberately compose neither - both are single-line, centered
+ * rows whose pull rides the container (see thinkblock.module.css's .icon and
+ * steeringitem.module.css's .railIcon for each stance). Declaring the
+ * geometry once here is what keeps the former hand-synced copies from
+ * drifting apart; railseat.contract.test.ts pins the seat and every
+ * consumer's wiring, and the layoutguard case transcript-rail-icon-seats
+ * measures the column they must share.
+ *
+ * The glyph is ambient context, not content: 50% opacity in the rail ink
+ * (Jesse's review call: icons out of the text, into the gutter). align-self:
+ * flex-start + height: 1lh pin it to line 1 no matter how the row wraps
+ * below it. font-size matches the rows' first text line because 1lh is the
+ * computed line-height of THIS element - without the match the glyph box is
+ * a different height than the line it seats against, and the glyph sits off
+ * the text's centre. (ToolRow narrows the box on intent-bearing rows with a
+ * local line-height override - see toolcallitem.module.css.) */
+.seat {
+  flex: none;
+  align-self: flex-start;
+  height: 1lh;
+  font-size: var(--font-size-ui);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  /* The consumer row's own --space-2 flex gap also lands between this slot
+   * and the text that follows, so the margin-right is the speaker-gap MINUS
+   * that gap: slot (24) + margin (2) + row gap (8) = one speaker-gutter (34),
+   * and the row's text lands exactly on the content edge, aligned with the
+   * lines beneath it. Measured, not aesthetic: before this the rationale sat
+   * 8px right of its own summary. */
+  margin-right: calc(var(--speaker-gap) - var(--space-2));
+  opacity: 0.5;
+  color: var(--ink-mid);
+}
+
+/* The desktop gutter pull, composed by the seat's consumers and by Loader's
+ * rail row. Above the breakpoint the row sits inside runContent's
+ * --speaker-gutter of reserved padding: pulling one gutter to the left seats
+ * the glyph in the rail while the row's text stays at the content edge. The
+ * negative margin would push the row out of the pane if the padding were not
+ * there, which is why this pull shares runContent's exact breakpoint - below
+ * it the gutter collapses and the slot simply leads its line inline. */
+@media (min-width: 700px) {
+  .gutterPull {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
+}

@@ -33,7 +33,12 @@ var defaultUpgradeTimeout = 5 * time.Minute
 // the checksum ever runs. A var so tests can shrink it.
 var defaultMaxArchiveBytes = int64(128 << 20)
 
-var installBinaries = []string{"evener", "evener-dev"}
+// installBinaries is the binary an upgrade installs from the release archive.
+// evener-dev, the dev tooling binary, is not installed and no longer rides in
+// the archive: no tagged release required it there (v0.2.0, the first
+// evener-named release, already installs evener alone), only dev/snapshot
+// builds from the transition window did, and those have aged out.
+var installBinaries = []string{"evener"}
 
 var (
 	copyStream = io.Copy
@@ -114,7 +119,7 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 	}
 	binDir := envvars.FirstNonEmpty(opts.BinDir, filepath.Join(prefix, "bin"))
 	shareBinDir := envvars.FirstNonEmpty(opts.ShareBinDir, filepath.Join(prefix, "share", "evener", "bin"))
-	repoURL := strings.TrimRight(envvars.FirstNonEmpty(opts.RepoURL, defaultRepoURL), "/")
+	repoURL := resolveRepoURL(opts.RepoURL)
 	url := releaseURL(repoURL, target.Release, asset)
 	client := opts.HTTPClient
 	if client == nil {
@@ -275,7 +280,17 @@ func InstallDirsFromExecutable(exe string) (prefix, binDir, shareBinDir string) 
 	return "", "", ""
 }
 
+// resolveRepoURL picks the repository release downloads resolve against:
+// the caller's override, else the product default.
+func resolveRepoURL(override string) string {
+	return envvars.FirstNonEmpty(override, defaultRepoURL)
+}
+
+// releaseURL builds the download URL for one release asset. repoURL may
+// carry a trailing slash; every release-download call site goes through
+// here, so the slash trim lives here too.
 func releaseURL(repoURL, release, asset string) string {
+	repoURL = strings.TrimRight(repoURL, "/")
 	if release == "latest" {
 		return repoURL + "/releases/latest/download/" + asset
 	}
@@ -285,8 +300,9 @@ func releaseURL(repoURL, release, asset string) string {
 // maxExtractedBytes caps total uncompressed output across one archive
 // extraction. Binaries are ~100MB installed; a highly compressible entry
 // could otherwise expand the 128MB download cap into disk exhaustion while
-// ignoring the operation deadline inside a single entry copy.
-const maxExtractedBytes = int64(512 << 20)
+// ignoring the operation deadline inside a single entry copy. A var so the
+// bomb tests can prove the cap with a small archive.
+var maxExtractedBytes = int64(512 << 20)
 
 // ctxReader returns a reader that stops the copy when ctx expires, so a
 // single large entry cannot outlive the overall upgrade deadline.
@@ -570,11 +586,11 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		return nil, err
 	}
 	defer release()
-	// Stage then commit: copy both new binaries to temp names first, so
-	// a failure before the commit point leaves the live pair untouched.
-	// Commit renames each staged file over its destination and swaps
-	// both symlinks; a commit failure rolls back to the pre-install
-	// binaries captured below, never leaving a mixed-release pair.
+	// Stage then commit: copy each new binary to a temp name first, so a
+	// failure before the commit point leaves the live install untouched.
+	// Commit renames each staged file over its destination and swaps its
+	// symlink; a commit failure rolls back to the pre-install binaries and
+	// entrypoints captured below.
 	type staged struct {
 		bin      string
 		tmp      string
@@ -638,7 +654,17 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			rollback()
 		}
 	}()
-	restore := func() {
+	// restore returns the pre-install binaries and entrypoints to their
+	// original paths, collecting every restoration failure so the caller can
+	// report a rollback that itself failed instead of hiding it behind the
+	// original commit error.
+	restore := func() error {
+		var errs []error
+		remove := func(path string) {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("restore remove %s: %w", path, err))
+			}
+		}
 		for _, s := range stagedBins {
 			// The binDir entry is restored independently of hadPrev:
 			// the commit loop swaps the link even on a first-time
@@ -648,15 +674,19 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			link := filepath.Join(binDir, s.bin)
 			switch {
 			case !s.linkHadEntry:
-				_ = os.Remove(link)
+				remove(link)
 			case s.linkIsLink:
-				_ = os.Remove(link)
-				_ = os.Symlink(s.linkTarget, link)
+				remove(link)
+				if err := os.Symlink(s.linkTarget, link); err != nil {
+					errs = append(errs, fmt.Errorf("restore entrypoint %s: %w", link, err))
+				}
 			case s.linkIsRegular && s.linkFile != nil:
 				// A copied executable: restore the snapshotted bytes
 				// over the swapped-in link.
-				_ = os.Remove(link)
-				_ = os.WriteFile(link, s.linkFile, 0o755)
+				remove(link)
+				if err := os.WriteFile(link, s.linkFile, 0o755); err != nil {
+					errs = append(errs, fmt.Errorf("restore entrypoint %s: %w", link, err))
+				}
 			default:
 				// A non-regular entry (dir and friends) cannot be
 				// reconstructed after rename-over destroyed it; leave
@@ -665,7 +695,7 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			}
 			dst := filepath.Join(shareBinDir, s.bin)
 			if !s.hadPrev {
-				_ = os.Remove(dst)
+				remove(dst)
 				continue
 			}
 			// Restore via temp+rename: truncating the live path with
@@ -676,30 +706,48 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			// rollback.
 			tmp, err := os.CreateTemp(shareBinDir, s.bin+".*.restore")
 			if err != nil {
+				errs = append(errs, fmt.Errorf("restore %s: %w", dst, err))
 				continue
 			}
 			tmpName := tmp.Name()
 			_ = os.Chmod(tmpName, 0o755)
 			_, werr := tmp.Write(s.previous)
-			_ = closeFile(tmp)
-			if werr != nil {
+			cerr := closeFile(tmp)
+			if werr != nil || cerr != nil {
 				_ = os.Remove(tmpName)
+				if werr != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", dst, werr))
+				}
+				if cerr != nil {
+					errs = append(errs, fmt.Errorf("restore %s: %w", dst, cerr))
+				}
 				continue
 			}
-			_ = os.Rename(tmpName, dst)
+			if err := os.Rename(tmpName, dst); err != nil {
+				_ = os.Remove(tmpName)
+				errs = append(errs, fmt.Errorf("restore %s: %w", dst, err))
+			}
 		}
+		return errors.Join(errs...)
+	}
+	// abort runs the rollback and returns err, joined with any restoration
+	// failure so a rollback that itself failed is visible. When the rollback
+	// succeeds it returns err unchanged.
+	abort := func(err error) error {
+		if rerr := restore(); rerr != nil {
+			return errors.Join(err, rerr)
+		}
+		return err
 	}
 	for i := range stagedBins {
 		s := &stagedBins[i]
 		if err := ctx.Err(); err != nil {
-			restore()
-			return nil, err
+			return nil, abort(err)
 		}
 		dst := filepath.Join(shareBinDir, s.bin)
 		if err := renameFile(s.tmp, dst); err != nil {
 			_ = os.Remove(s.tmp)
-			restore()
-			return nil, err
+			return nil, abort(err)
 		}
 		// Snapshot a regular-file entrypoint just before swapSymlink
 		// destroys it: deferred from stage time so an earlier abort
@@ -709,23 +757,21 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		if s.linkIsRegular && s.linkFile == nil {
 			data, rerr := os.ReadFile(filepath.Join(binDir, s.bin))
 			if rerr != nil {
-				restore()
-				return nil, fmt.Errorf("snapshot entrypoint %s: %w", filepath.Join(binDir, s.bin), rerr)
+				return nil, abort(fmt.Errorf("snapshot entrypoint %s: %w", filepath.Join(binDir, s.bin), rerr))
 			}
 			s.linkFile = data
 		}
 		if err := swapSymlink(dst, filepath.Join(binDir, s.bin)); err != nil {
-			restore()
-			return nil, err
+			return nil, abort(err)
 		}
 	}
 	// Digest before committing the transaction: a digest failure must roll
-	// back the swapped pair like any other commit error, not leave the new
-	// binaries live while the install reports failure and no restart runs.
+	// back the swapped install like any other commit error, not leave the
+	// new binaries live while the install reports failure and no restart
+	// runs.
 	digests, err := digestsUnderLock(shareBinDir)
 	if err != nil {
-		restore()
-		return nil, err
+		return nil, abort(err)
 	}
 	committed = true
 	return digests, nil
@@ -751,7 +797,7 @@ func digestsUnderLock(shareBinDir string) (map[string]string, error) {
 // stageExecutable copies src into a temp file beside the managed dir and
 // returns its path; the caller commits it with renameFile or removes it.
 // Staging (not direct copy) keeps a failed install from touching the live
-// pair before the commit point.
+// install before the commit point.
 func stageExecutable(ctx context.Context, src, shareBinDir, bin string) (string, error) {
 	in, err := os.Open(src)
 	if err != nil {

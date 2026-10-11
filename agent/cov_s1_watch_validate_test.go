@@ -8,6 +8,7 @@ import (
 // validateWatchSendTarget rejects the non-delegate delivery targets before any
 // store read, and surfaces target_not_found for an unknown delegate handle.
 func TestS1Cov_validateWatchSendTarget_EarlyArms(t *testing.T) {
+	t.Parallel()
 	jm := newSession(t).jobManager
 
 	tests := []struct {

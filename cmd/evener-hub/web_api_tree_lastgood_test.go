@@ -6,8 +6,47 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
+
+// uncomparableAppSource is a registered source whose dynamic type has no
+// comparable identity: a struct carrying a slice. Comparing two interface
+// values that hold it panics, and a Source is free to be a value type like
+// this one.
+type uncomparableAppSource struct {
+	*scriptedAppSource
+	tags []string
+}
+
+// With no generation store the retention fence trusts the source instance, and
+// a registered source whose dynamic type cannot be compared must not turn that
+// trust into a panic on a tree read: the fence reports "not the same
+// instance", which drops the stale retention instead of publishing rows under
+// an identity it cannot verify. Pointer sources — every one this hub registers
+// itself — keep comparing by address.
+func TestLastGoodRegistrationOwnedHandlesAnUncomparableSource(t *testing.T) {
+	reg := appsource.NewRegistry()
+	value := uncomparableAppSource{
+		scriptedAppSource: &scriptedAppSource{id: "alpha"},
+		tags:              []string{"one"},
+	}
+	reg.Add(value)
+	web := &WebServer{sources: reg}
+
+	if web.lastGoodRegistrationOwned(value, 0, false) {
+		t.Fatal("an uncomparable source compared as its own instance")
+	}
+
+	ptr := &scriptedAppSource{id: "beta"}
+	reg.Add(ptr)
+	if !web.lastGoodRegistrationOwned(ptr, 0, false) {
+		t.Fatal("a registered pointer source did not compare as its own instance")
+	}
+	if web.lastGoodRegistrationOwned(&scriptedAppSource{id: "beta"}, 0, false) {
+		t.Fatal("another instance of the registered pointer source compared as it")
+	}
+}
 
 type stubThreadLister struct {
 	id    string

@@ -20,6 +20,7 @@ import (
 const expectedStableDelegateWatchSourceKind watchSourceKind = 3
 
 func TestStableDelegateWatch_TypedSessionShellAndDelegateSources(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		source string
 		kind   watchSourceKind
@@ -79,6 +80,7 @@ func TestStableDelegateWatch_DelegateReceiverIsImplicit(t *testing.T) {
 }
 
 func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime := delegateRuntime{owner: root}
 	args := delegateArgs{Task: "persist parent watch grant", WatchParent: true}
@@ -425,6 +427,7 @@ func TestStableDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing
 }
 
 func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T) {
+	t.Parallel()
 	key := jobstore.WatchSendKey{
 		VisibleSessionID:        "source-session",
 		WatchID:                 "watch-stable",
@@ -1181,6 +1184,7 @@ func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
 }
 
 func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
+	t.Parallel()
 	events := []jobstore.Event{
 		{Kind: jobstore.EventJobStarted, JobID: "job_legacy", Type: jobstore.JobType(delegateResourceType)},
 		{Kind: jobstore.EventWatchRegistered, WatchID: "watch_legacy", Watch: &jobstore.WatchEvent{Target: "job_legacy"}},

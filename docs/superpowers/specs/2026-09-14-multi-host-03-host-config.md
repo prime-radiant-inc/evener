@@ -4,11 +4,12 @@ Parent: `2026-09-14-multi-host-evener-design.md` (§3, §4 item 3, §5 item 1).
 Sibling: `2026-09-14-multi-host-02-attach-bridge.md`.
 Spikes: `2026-09-14-multi-host-spikes-findings.md`.
 
-**Implementation status.** The `hostreg` package, `validateHostConfigs`, and the
-`hub.toml` `[[hosts]]` decoding are on `main`. The `sshconn` connection manager
-and the `hubcore.WebConfig` `RemoteHost*` wiring this spec also describes are
-implemented on `multi-host-pr04a-ssh-channel`/`multi-host-pr06a-fleet-view-go`
-and are **pending merge, not on `main`** — do not read them as shipped.
+**Implementation status.** The `hostreg` package, `validateHostConfigs`, the
+`hub.toml` `[[hosts]]` decoding (`cmd/evener-hub/config.go`;
+`cmd/evener-hub/internal/hostreg`), the `sshconn` connection manager
+(`cmd/evener-hub/internal/sshconn`), and the `hubcore.WebConfig` `RemoteHost*`
+wiring (`cmd/evener-hub/main.go:549-581`) are all on `main`. The deltas this
+spec still lists as requirements are marked inline.
 
 ## Purpose
 
@@ -22,22 +23,22 @@ not open connections, does not spawn SSH, and does not implement a source.
 
 - Add `Hosts []HostConfig` to the hub's `Config` and its TOML decoding path
   (`cmd/evener-hub/config.go`).
-- A `HostConfig` entry `{ name, ssh, user?, evener_path?, roots[] }` where
+- A `HostConfig` entry `{ name, ssh, user?, evener_path?, roots[], config_path?,
+  addr?, key_path? }` where
   `name` is the source ID surfaced in refs (`name:<sessionID>`) and URLs.
 - Validation of `name` against the ref grammar, reserve `local`, reject `..`,
   reject duplicates.
-- Reject a host list that would overflow the navigation manifest: at most **63**
-  remote hosts, because component 06's manifest caps `sources` at 64 including
-  the `local` entry (`cmd/evener-hub/navigation_projection.go`). One host over
-  the cap fails navigation for the entire hub, not just for the extra host.
-  **The cap is a registry invariant, enforced centrally in the registry add
-  paths (`New`/`Add`/`AddWithUpstreams`) as well as at config load**, so no
-  runtime mutation path can push the registry over it and break navigation for
-  every host; both surfaces return the same named `ErrTooManyHosts`. (Load-time
-  validation alone is not sufficient: it only guards the config-file path, not a
-  programmatic add.) (Implementation status: the shipped `validateHostConfigs`
-  builds a throwaway `hostreg.Registry` and neither it nor the registry has a
-  count check yet; the limit is the implementing PR's requirement.)
+- **Recorded decision (Jesse, 2026-09-26): no 64-source cap.** This bullet
+  previously required a host list larger than the navigation manifest's
+  `sources` cap to be rejected at config load and in the registry add paths
+  (`New`/`Add`/`AddWithUpstreams`) with a named `ErrTooManyHosts`, because
+  component 06 caps the manifest at 64 sources including `local`. That
+  requirement is **withdrawn, not deferred**: no count check is implemented
+  (`validateHostConfigs` builds a throwaway `hostreg.Registry`; no
+  `ErrTooManyHosts` exists in the tree) and none is to be added. Bounded fan-out
+  is a **risk accepted for v1**: an operator who configures more than 63 hosts
+  can drive navigation past that cap, which fails navigation for the whole hub
+  until the config shrinks. Do not implement the cap without a new decision.
 - An in-memory `hostreg.Registry` built from the validated list, rejecting
   duplicates at add time (a self-edge is rejected only when an explicit upstream
   list is supplied; see §"Source registration hook" and "Open questions" for the
@@ -68,19 +69,39 @@ evener_path = "/usr/local/bin/evener"    # optional; remote binary path
 roots       = ["/Users/jesse/src"]       # optional; remote working roots
 config_path = "/etc/evener/hub.toml"     # optional; the host's hub.toml
 addr        = "127.0.0.1:9180"           # optional; the host hub's loopback address
+key_path    = "/home/jesse/.ssh/id_m4"    # optional; SSH identity file (absolute; relative values are refused)
 ```
 
 - `name` → `appwire.Ref.SourceID`; refs surface as `name:<sessionID>`
   (design §5, `appwire/refs.go`).
 - `ssh` is the destination token passed to `ssh`; component 04 owns how it is
   used. If `user` is set and `ssh` already carries a user, that is a validation
-  error (ambiguous authority) — see "Error handling". Non-default ports,
-  identity files, and jump hosts are expressed through the user's `ssh_config`,
-  never by smuggling options into `ssh` (component 04, §"SSH channel argv"):
+  error (ambiguous authority) — see "Error handling". Non-default ports and
+  jump hosts — and identity files, unless the entry sets `key_path` — are
+  expressed through the user's `ssh_config`, never by smuggling options into
+  `ssh` (component 04, §"SSH channel argv"):
   `ssh` is a destination, not an option string.
 - `evener_path` and `roots` are advisory inputs to components 04/05; this
   component only stores and validates their shape (`roots` entries must be
   non-empty after trim; no path validation here).
+- `key_path` (optional) is the SSH private-key file the controller dials with.
+  It is a component-08 addition to the stored schema: the machine-managed
+  `hub.toml` carries it so a UI-added host's key path round-trips through a
+  rewrite (component 08, §6). Shape rules, matching the shipped behavior: it is
+  optional, trimmed, and empty-after-trim is absent (`hostreg.Normalize` trims;
+  `validateHostConfigs` then validates the normalized value, so a padded value
+  never reaches a consumer untrimmed). **Correction (this series):** validation
+  requires an absolute path — a relative or `~`-prefixed value is refused with
+  `hostreg.ErrInvalidKeyPath` (the registry PR adds the sentinel and the check
+  to `hostreg.ValidateEntry`; the tree this spec lands on has no such check
+  yet), nothing stored. The hub performs no `~` or environment expansion, and
+  the value travels to ssh verbatim as `["-i", key_path]` before the `--`
+  destination terminator (component 04, §"SSH channel argv") — a relative path
+  would otherwise resolve against whatever working directory the hub happened
+  to launch with, not a stable base. Unlike `evener_path`, a key file that does
+  not exist surfaces at dial time as ssh's own failure, not as a load-time
+  refusal (its shape is validated at load). A rewrite round-trips the
+  field (component 08's rewrite tests pin it).
 - **`config_path` / `addr` — the connection parameters both halves must
   agree on (corrected contract).** The bridge resolves the host hub's address
   and capability-token state root from the `hub.toml` it reads; component 04's
@@ -170,6 +191,7 @@ type HostConfig struct {
     Roots      []string `toml:"roots"`
     ConfigPath string   `toml:"config_path"` // optional; host hub.toml the bridge must read
     Addr       string   `toml:"addr"`        // optional; host hub loopback host:port
+    KeyPath    string   `toml:"key_path"`    // optional; SSH identity file (component 08 §6)
 }
 ```
 
@@ -200,6 +222,7 @@ type Host struct {
     Roots      []string
     ConfigPath string
     Addr       string
+    KeyPath    string
 }
 
 type Registry struct { /* mu sync.RWMutex; hosts map[string]Host; edges ... */ }
@@ -231,8 +254,9 @@ import direction is therefore `hub → hostreg` and nothing else — no cycle an
 type mismatch. `LoadConfig` validates by converting `cfg.Hosts` into
 `[]hostreg.Host` and calling `hostreg.New` on that throwaway list
 (`validateHostConfigs`), and the hub converts the same way, field for field
-  (`Name`, `SSH`, `User`, `EvenerPath`, `ConfigPath`, `Addr`, `Roots` — see
-  "`config_path` / `addr`"), when it builds the live registry at
+  (`Name`, `SSH`, `User`, `EvenerPath`, `ConfigPath`, `Addr`, `Roots`,
+  `KeyPath` — see
+  "`config_path` / `addr`" and `key_path`), when it builds the live registry at
 startup. That conversion is the only place the two types meet.
 
 `All()` is the hook surface: component 05 iterates it to `appsource.Registry.Add`
@@ -452,12 +476,11 @@ tree and last-known-good cache (`refreshRemoteThreadSnapshot`,
 - `user` set while `ssh` already contains `user@` → `ErrAmbiguousSSHUser`.
 - Empty `ssh` after trim → `ErrMissingSSH`.
 - `roots` entries empty after trim → `ErrEmptyRoot`.
-- More than 63 remote hosts → a named `ErrTooManyHosts`, returned from both
-  `LoadConfig`/`validateHostConfigs` **and** the registry add paths
-  (`New`/`Add`/`AddWithUpstreams`) so no runtime mutation can exceed the cap.
-  The manifest's 64-source cap is a hard downstream limit; rejecting at both
-  surfaces turns "navigation breaks for every host" into an error naming the
-  limit.
+- More than 63 remote hosts → **not rejected** (recorded decision, §Scope: the
+  cap is withdrawn). The manifest's 64-source limit
+  (`cmd/evener-hub/navigation_projection.go`) is a hard downstream limit, so an
+  over-limit config breaks navigation for every host; that is the accepted v1
+  risk, not a validation error.
 - Exactly one of `config_path`/`addr` set → a named error (the two are coupled;
   see §"`config_path` / `addr`").
 - A cycle refused at add time leaves the registry unchanged (candidate not
@@ -479,8 +502,11 @@ Unit tests, all without a hub or network:
   it can never reach `checkCycleLocked`; see §"Host registry"); `All()` is
   name-sorted (mirroring `appsource.Registry.All`, `registry.go`); the registry
   is safe for concurrent `Get`/`All`.
-- A host-count boundary test: 63 remote entries load; 64 fail with
-  `ErrTooManyHosts` (the `local` entry is the 64th manifest source).
+- **No host-count boundary test** (recorded decision, §Scope): the 64-source cap
+  is not implemented, so a 63/64-entry count test has nothing to assert.
+- `key_path` validation: an absolute `key_path` loads; a relative or
+  `~`-prefixed value is refused with `hostreg.ErrInvalidKeyPath`; an
+  empty-after-trim value is absent.
 - A ref-grammar parity test: for a corpus of names, assert
   `hostreg` accepts exactly the names `appwire.ParseRef(name+":x")` accepts,
   minus the `.`, `..`, and `local` cases we deliberately exclude. This pins
@@ -516,10 +542,13 @@ Unit tests, all without a hub or network:
 8. Registry membership is independent of connectivity: with a host configured
    and its channel attached or dropped, `appsource.Registry.All()` is byte-for-
    byte the same set of source IDs.
-9. A host list with more than 63 remote entries fails `LoadConfig` with
-   `ErrTooManyHosts`; 63 entries load (the `local` entry is the 64th manifest
-   source). A programmatic add that would take the registry past 63 entries also
-   fails `ErrTooManyHosts` (the cap is not config-load-only).
+9. **Withdrawn** (recorded decision, §Scope): no `ErrTooManyHosts`, at config
+   load or on a programmatic add; an over-limit `[[hosts]]` list loads and is
+   the operator's configuration.
+10. `key_path` is absolute-or-absent: an absolute path round-trips through load
+    and rewrite; a relative or `~`-prefixed value fails validation with
+    `hostreg.ErrInvalidKeyPath` naming the host and field; the sentinel maps to
+    the `keyPath` control in the host dialog (host-edit-slice §5).
 
 ## PR size estimate (LOC)
 
@@ -546,10 +575,11 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
   deferral.
 - **Where the registry is built (settled).** `main.go`, before the web server,
   passed through `hubcore.WebConfig` as `RemoteHosts`/`RemoteHostClient`/
-  `RemoteHostFacts`/`RemoteHostOnline`/`RemoteHostClientIfAttached` — the wiring
-  described in §Implementation approach item 4, which is **pending merge** (see
-  the header note), not on `main`. `newHubSourceRegistry` consumes
-  `cfg.RemoteHosts`; `NewWebServer` never reads `hub.toml`.
+  `RemoteHostFacts`/`RemoteHostOnline`/`RemoteHostClientIfAttached`/
+  `RemoteHostHandshake` — the wiring described in §Implementation approach item
+  4, shipped on `main` (`cmd/evener-hub/main.go:549-581`).
+  `newHubSourceRegistry` consumes `cfg.RemoteHosts`; `NewWebServer` never reads
+  `hub.toml`.
 - **Is `roots` validated or opaque?** This spec only trims/validates non-empty.
   Whether roots must be absolute or exist on the remote is component 05's
   preflight concern; leave them opaque here.

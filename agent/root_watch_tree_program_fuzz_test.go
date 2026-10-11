@@ -325,7 +325,6 @@ func rwlpRunRestoreRetryProgram(t *testing.T, r *rwlpReader) {
 		cfg := SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			clock:            clk,
 			LLMSleep:         func(context.Context, time.Duration) error { return nil },
 		}

@@ -1,14 +1,13 @@
 package hubcore
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 
@@ -25,7 +24,7 @@ type RegistryLoader func(extra ...registry.Option) (*registry.Registry, *credent
 // ProviderRegistry is the hub's live view of the provider registry: the
 // current instance set, reloaded after every providers.toml write, and the
 // diagnostics the web UI shows (spec §11.3). When the user layer fails to
-// load (an old-schema file) it holds an implicit-only registry, keeps the
+// load it keeps the previous registry (implicit-only at startup), keeps the
 // error for the diagnostics, and refuses writes until a reload succeeds
 // (spec §10, §14.1).
 
@@ -76,11 +75,12 @@ type ProviderRegistry struct {
 	// bumps it, and a fetch mints its token at request start, so a slower
 	// fetch that returns after a newer one began holds a lower token.
 	// lastApplied holds the highest order actually applied per instance;
-	// ReapplyLive lands only above it, so stale responses are discarded
-	// while a failed newer fetch - which applies nothing - never blocks an
-	// older in-flight success. It is deliberately NOT generation:
+	// ReapplyLive lands only above it, so stale responses are discarded.
+	// A provider failure publishes an empty snapshot and supersedes an older
+	// success; a caller-cancelled fetch publishes nothing, so it does not.
+	// It is deliberately NOT generation:
 	// beginning a fetch changes nothing a reader can observe, and the
-	// prefetch begins one per instance on every pass, so counting starts
+	// startup prefetch begins one per instance, so counting starts
 	// as installs would defeat the model-list cache's TTL.
 	fetchClock uint64
 	// lastApplied holds the highest fetch order applied per instance.
@@ -114,8 +114,8 @@ func NewProviderRegistry(load RegistryLoader) *ProviderRegistry {
 }
 
 // Reload re-reads the registry and returns the load error, if any. A failing
-// user layer leaves the holder on an implicit-only registry so sessions still
-// launch, and the error is what refuses instance writes until the file is
+// user layer retains the previous usable registry, or loads an implicit-only
+// registry at startup. The error refuses instance writes until the file is
 // fixed. Cached live listings carry over to the fresh object either way, so
 // an instance write never wipes what background prefetch and manual
 // refreshes already fetched.
@@ -131,6 +131,12 @@ func (h *ProviderRegistry) Reload() error {
 	oldIDs := instanceIdentities(old)
 	r, _, err := h.load()
 	if err != nil {
+		if old != nil {
+			h.mu.Lock()
+			h.loadErr = err
+			h.mu.Unlock()
+			return err
+		}
 		fallback, _, ferr := h.load(registry.WithNoUserLayer())
 		var fallbackIDs map[string]string
 		if ferr == nil {
@@ -285,18 +291,21 @@ func carryLive(old, r *registry.Registry, recreated map[string]bool, oldIDs, new
 }
 
 // instanceIdentity fingerprints what a live listing is fetched from:
-// the provider, protocol, fully resolved endpoint routing (base URL
-// plus the protocol models endpoint -- a models_endpoint change
-// re-points the fetch as surely as a base_url change), and a
-// non-secret fingerprint of the credential material behind the source
-// label. A Reload that removes, renames, re-points, or re-credentials
-// an instance changes its identity, and rows fetched from the old
-// transport must not publish into the new one. Display fields
-// (default, warnings, vars) do not affect where rows come from and
-// are not part of it. The fingerprint hashes the secret bytes
-// themselves (SHA-256, in-memory only), so even a same-length rotation
-// changes the identity; only the digest enters the identity string,
-// never the secrets.
+// the provider, the protocol and endpoint routing the listing's own
+// resolve carries (the default row's, falling back to the provider's
+// own shape — a models_endpoint, base_url, or row protocol change
+// re-points the fetch all the same), and a non-secret fingerprint of
+// the credential material behind the source label. A Reload that
+// removes, renames, re-points, or re-credentials an instance changes
+// its identity, and rows fetched from the old transport must not
+// publish into the new one. Display fields (default, warnings, vars)
+// do not affect where rows come from and are not part of it. The
+// fingerprint hashes stable material (SHA-256, in-memory only) so even
+// a same-length rotation changes the identity, while command-bearing
+// material contributes its authored text — the minted value rotates
+// with the cache TTL, and an identity that followed it would prune the
+// cached live rows on every rollover and force a re-fetch. Only the
+// digest enters the identity string, never the secrets.
 func instanceIdentity(r *registry.Registry, name string) string {
 	inst, ok := r.Instance(name)
 	if !ok {
@@ -304,39 +313,151 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	}
 	endpoint := ""
 	authprint := ""
-	if res, err := r.ResolveInstance(name); err == nil {
+	proto := inst.Protocol
+	// The endpoint view the listing resolves through: row-aware and
+	// mint-free, the same shape ResolveInstanceListing fetches with.
+	if res, err := r.ResolveInstanceTransport(name); err == nil {
 		endpoint = res.Transport.ModelsEndpoint
-		authprint = authFingerprint(res)
+		proto = res.Protocol
+		if fp, ok := r.AuthFingerprint(name); ok {
+			authprint = fp
+		}
 		if res.Transport.Auth == registry.AuthOAuthOpenAICodex {
 			authprint += "\x00" + oauthAccountFingerprint(r.StateRoot(), name)
 		}
 		if res.Transport.Auth == registry.AuthGCPADC {
-			authprint += "\x00" + adcFingerprint(r, res)
+			// A stored credential JSON outranks the ADC file (spec
+			// §4.2) and already rotates the identity through
+			// AuthFingerprint; the file's bytes count only when the
+			// file is the material the launch would actually read.
+			if pres, perr := r.ResolveInstancePresence(name); perr != nil || pres.Credential.Source != "store" {
+				authprint += "\x00" + adcFingerprint()
+			}
 		}
 	}
-	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
+	return strings.Join([]string{inst.ProviderID, proto, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
 }
 
-// authFingerprint hashes the resolved authentication material
-// non-reversibly (SHA-256 over the actual secret bytes and the stable
-// account-identity fields, never the lengths alone): a same-length key
-// rotation, an OAuth account swap, or a header change alters the
-// fingerprint, so rows fetched under the old credential never publish
-// into the newly-credentialed instance. The digest never leaves the
-// process — it lives only in identity strings compared in-memory — so a
-// strong hash of the value is safe where a length was not sufficient.
-func authFingerprint(res registry.Resolved) string {
-	sum := sha256.New()
-	cred := res.Credential
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", cred.Source, cred.Value)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", res.Transport.Auth, res.Transport.AuthHeader)
-	for _, k := range slices.Sorted(maps.Keys(res.CredentialHeaders)) {
-		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.CredentialHeaders[k])
+// CredentialConfigRevision returns name's effective credential-configuration
+// revision: a stable, keyed MAC over the configuration a conditional credential
+// write is fenced against (design §07 "credential push"). It is derived from
+// the same registry snapshot a credential write re-resolves under the
+// credential lock, so a client that captured it from a read-only
+// evener/auth/status or evener/instance/list answer can echo it back as
+// ApiKeyConditionalSetParams.ExpectedRevision and have the host refuse the
+// write when anything it covers has changed since. It covers the instance's
+// structural identity (provider, protocol, surface), the endpoint it routes to
+// (base URL and models endpoint), the credential source that resolves, and the
+// credential-header names in force. It deliberately does NOT cover the secret
+// value: it must not let a reader tell one stored key from another (design's
+// "Honest limitation"), and every source transition it needs to fence — none
+// to store, providers.toml, or the environment — is already a change to the
+// resolved source.
+//
+// key is the hub-held secret the endpoint fingerprints are already keyed with
+// (fingerprintWithKey): the MAC is what keeps a reader who can see the revision
+// from recovering a secret the covered configuration carries. The destination
+// half covers the base URL's userinfo and query string, which a listing strips
+// because a short token or a password in either can be low-entropy, and an
+// unkeyed digest of a guessable secret is a guessable function of it. An empty
+// key (this hub could not resolve one) yields no revision, exactly as it yields
+// no fingerprint; the credential write that would fence on it then refuses
+// rather than reading the empty value as "no fence"
+// (hubAuthController.verifyConfigRevision). Empty for a name the registry
+// cannot resolve too: there is nothing to fence, and the empty value is what a
+// client reads as "no revision fence" where the hub has no state root to key
+// with at all.
+func CredentialConfigRevision(key []byte, r *registry.Registry, name string) string {
+	if len(key) == 0 || r == nil || strings.TrimSpace(name) == "" {
+		return ""
 	}
-	for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
-		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.Headers[k])
+	// Presence depth: the revision covers the credential's source label
+	// and the credential-header names, neither of which needs the value
+	// materialized — and the status and listing paths that serve this
+	// digest render on every pane refresh, where a full resolve could
+	// execute a command expression (spec §10.1). Every path that feeds
+	// CredentialConfigRevisionResolved resolves at this same depth, so
+	// one configuration MACs to one revision wherever it is read.
+	res, err := r.ResolveInstancePresence(name)
+	if err != nil {
+		return ""
 	}
-	return hex.EncodeToString(sum.Sum(nil))
+	return CredentialConfigRevisionResolved(key, res)
+}
+
+// DestinationIdentity is where a resolved instance's credential-bearing
+// requests go, as one string: the base URL it resolves, the protocol that
+// selects its request templates, and every request path those templates
+// contribute. A credential-bearing request is built from exactly these, so a
+// change to any of them moves where the secret is sent - and a change to the
+// protocol or a path template can leave the sanitized URL a listing displays
+// byte-identical, which is why neither consumer of this identity can work from
+// that URL alone. Nothing secret-bearing is here: not the credential, not
+// either header map, not vars.
+//
+// It has two consumers, and they must not drift: the listing's endpoint
+// fingerprint digests a keyed MAC of it (the hub's own destinationFingerprint),
+// and CredentialConfigRevisionResolved MACs it, with the same hub-held key,
+// into the revision the credential push fences against. Sharing this one
+// function is what keeps the revision covering every field the fingerprint
+// covers.
+func DestinationIdentity(resolved registry.Resolved) string {
+	t := resolved.Transport
+	return strings.Join([]string{
+		strings.TrimSpace(t.BaseURL),
+		resolved.Protocol,
+		strings.TrimSpace(t.Endpoint),
+		strings.TrimSpace(t.StreamEndpoint),
+		strings.TrimSpace(t.ModelsEndpoint),
+		strings.TrimSpace(t.CountTokensEndpoint),
+	}, "\x00")
+}
+
+// CredentialConfigRevisionResolved is CredentialConfigRevision over an instance
+// the caller has already resolved, so a caller that resolved it for another
+// field of the same row - the instances listing's endpoint fingerprint, say -
+// does not resolve the name a second time. It contributes exactly what the
+// resolving form contributes: the same fields, in the same order, with the same
+// separators, and the same keyed MAC, so the two agree byte for byte on the
+// same resolution. An unresolved Resolved (no instance name) has no revision,
+// matching the empty string CredentialConfigRevision returns for a name the
+// registry cannot resolve or a hub key that is unavailable.
+//
+// The revision is the credential push's only no-clobber fence: the conditional
+// set it calls checks no endpoint fingerprint of its own, so everything that
+// decides where a stored key is sent has to be in here. DestinationIdentity
+// carries the endpoint half of that (the same bytes the listing's fingerprint
+// digests) and AuthHeader the rest, because the header a scheme writes decides
+// both where the key goes and - when the instance authors that same header
+// through credential_headers - whether the scheme derives from it at all.
+//
+// It is a keyed MAC, not a bare digest: a destination can carry a secret in a
+// part a listing strips (base_url's userinfo or query string), and a reader who
+// can see the revision could otherwise recover a low-entropy secret from it
+// offline. key is the same hub-held secret the endpoint fingerprints use
+// (fingerprintWithKey); an empty key yields no revision.
+func CredentialConfigRevisionResolved(key []byte, res registry.Resolved) string {
+	if len(key) == 0 || strings.TrimSpace(res.Instance) == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "instance", res.Instance)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "provider", res.ProviderID)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "protocol", res.Protocol)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "surface", res.Surface)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "auth", res.Transport.Auth)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "authHeader", res.Transport.AuthHeader)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "destination", DestinationIdentity(res))
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "source", res.Credential.Source)
+	// The authored layer that resolved to nothing is part of the configuration
+	// even though it moves the source to "none": an instance that authors a
+	// credential whose variables are unset is not the same instance as one that
+	// authors nothing, and it is the difference between "a stored key would be
+	// sent" and "a stored key is dead". The value is the layer's name, never its
+	// variable or a secret.
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "authoredLayer", res.Credential.AuthoredLayer)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "credentialHeaders", strings.Join(res.CredentialHeaderNames, ","))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // oauthAccountFingerprint folds the Codex OAuth record's stable
@@ -393,15 +514,11 @@ func oauthAccountFingerprint(stateRoot, instance string) string {
 // in-memory only) into the identity: an ADC account swap rewrites the
 // file behind a stable source label ("adc", no credential value in the
 // resolution), so without it rows fetched under the old account publish
-// into the newly-credentialed instance. A stored credential JSON
-// outranks the file (spec §4.2) and already feeds authFingerprint
-// through the resolved value; the file hash covers only the ADC branch.
-// Missing/unreadable contributes nothing: the source label already
-// distinguishes "no ADC" from "ADC".
-func adcFingerprint(r *registry.Registry, res registry.Resolved) string {
-	if res.Credential.Source == "store" {
-		return ""
-	}
+// into the newly-credentialed instance. The caller decides whether the
+// file is the material the launch reads at all — a stored credential
+// JSON outranks it (spec §4.2). Missing/unreadable contributes
+// nothing: the source label already distinguishes "no ADC" from "ADC".
+func adcFingerprint() string {
 	// No public accessor reaches the registry's injected env from
 	// here: the hub runs with the real process environment, and that
 	// lookup is what the authenticator resolves, so read it directly
@@ -462,6 +579,22 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 	return h.snapshot()
 }
 
+// RetainedUserConfig pairs the failed-load state with the usable registry's
+// source bytes under one lock. A retained registry with nil bytes loaded no
+// user file, so a child must use the implicit instance set.
+func (h *ProviderRegistry) RetainedUserConfig() (string, []byte, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.loadErr == nil {
+		return "", nil, false
+	}
+	if h.current == nil {
+		return "", nil, true
+	}
+	path, raw := h.current.UserConfigSnapshot()
+	return path, raw, true
+}
+
 // BeginLiveFetchReg atomically pairs instance's fetch token with the
 // registry snapshot the fetch must run against AND the endpoint
 // identity that fetch queried: the client is built from the returned
@@ -493,17 +626,15 @@ func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registr
 // ReapplyLive applies rows fetched under token tok to the current
 // registry. Rows are the fetch's raw live snapshot, so advertised
 // capability facts survive the round trip the way the direct ApplyLive
-// inside the fetch did. The apply lands only above lastApplied: a
-// slower fetch that returns after a newer success began holds a lower
-// token and is discarded, while a failed newer fetch — which never
-// reaches here — leaves lastApplied untouched so the older success it
-// overtook still lands. A Reload swaps the registry (whose carryLive
-// kept the before snapshot); a fetch that began before the swap holds
-// a token from an older generation and still applies its listing
-// forward, which is the carry-forward the refresh path needs. An
-// unsupported listing (Live == false) must not reach here either: its
-// rows are catalog data, not a live listing, and applying them would
-// plant an empty snapshot over a real one.
+// inside the fetch did. Nil rows publish static fallback for a provider
+// failure, unsupported endpoint, or otherwise unusable listing. The apply
+// lands only above lastApplied: a slower fetch that returns after a newer
+// published outcome holds a lower token and is discarded. A caller-cancelled
+// fetch never reaches here, so it leaves lastApplied untouched and an older
+// success it overtook may still land. A Reload swaps the registry (whose
+// carryLive kept the before snapshot); a fetch that began before the swap
+// holds a token from an older generation and still applies its listing
+// forward, which is the carry-forward the refresh path needs.
 func (h *ProviderRegistry) ReapplyLive(tok LiveToken, instance, identity string, rows []registry.Model) {
 	// The identity check below reads credential material, so it is taken
 	// outside the lock and re-judged if a Reload moves the snapshot in
@@ -585,7 +716,7 @@ func (h *ProviderRegistry) Diagnostics() []string {
 	defer h.mu.RUnlock()
 	var out []string
 	if h.loadErr != nil {
-		out = append(out, "providers.toml: "+h.loadErr.Error()+" (instance writes are refused until the file is fixed)")
+		out = append(out, "providers.toml: "+h.loadErr.Error()+" (instance writes are refused until the file is fixed; the active configuration is retained while this edit is invalid)")
 	}
 	if h.current != nil {
 		out = append(out, h.current.UserLayerNote())

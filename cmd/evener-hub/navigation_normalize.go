@@ -97,11 +97,12 @@ func normalizeNavigationResource(key navigationResourceKey, object any) (hubapi.
 			Revision     uint64 `json:"revision"`
 			Ref          string `json:"ref"`
 			TopLevelRef  string `json:"top_level_ref"`
+			Catalog      string `json:"catalog,omitempty"`
 			ProjectKey   string `json:"project_key,omitempty"`
 			TopLevel     bool   `json:"top_level"`
 			Tier         string `json:"tier,omitempty"`
 			PinSectionID string `json:"pin_section_id,omitempty"`
-		}{value.GenerationID, value.Revision, value.Ref, value.TopLevelRef, value.ProjectKey, value.TopLevel, value.Tier, value.PinSectionID})
+		}{value.GenerationID, value.Revision, value.Ref, value.TopLevelRef, value.Catalog, value.ProjectKey, value.TopLevel, value.Tier, value.PinSectionID})
 		if value.Session != nil {
 			b.addSessions("root", "session", hubapi.NavigationArray[hubapi.NavigationSessionSummary]{*value.Session})
 		} else {

@@ -16,8 +16,8 @@ import (
 // Session.mu is exempt because the emit path re-acquires it, which makes
 // "held across an emit" a self-deadlock rather than a convention
 // (session_emit_lock_guard_test.go). Every other mutex here is treated as
-// forbidden whether or not it is held across an emit TODAY — four of them are
-// (responseSideEffectsMu, queueEventsMu, queuePersistMu, subagent.mu), and for
+// forbidden whether or not it is held across an emit TODAY — five of them are
+// (responseSideEffectsMu, queueEventsMu, queuePersistMu, restMu, subagent.mu), and for
 // the rest nothing would announce it if a future emit moved inside their
 // critical section. A sampler that takes one is one refactor away from wedging
 // the daemon, and the refactor would be in a different file from the sampler.
@@ -75,6 +75,14 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.metaSaveMu.Lock()
 		return s.metaSaveMu.Unlock
 	}},
+	{owner: "Session", field: "memoryMu", hold: func(s *Session) func() {
+		s.memoryMu.Lock()
+		return s.memoryMu.Unlock
+	}},
+	{owner: "Session", field: "restMu", hold: func(s *Session) func() {
+		s.restMu.Lock()
+		return s.restMu.Unlock
+	}},
 	{owner: "Session", field: "responseSideEffectsMu", hold: func(s *Session) func() {
 		s.responseSideEffectsMu.Lock()
 		return s.responseSideEffectsMu.Unlock
@@ -115,6 +123,14 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.releaseRetryMu.Lock()
 		return s.releaseRetryMu.Unlock
 	}},
+	{owner: "Session", field: "delegateAttentionWarnMu", hold: func(s *Session) func() {
+		s.delegateAttentionWarnMu.Lock()
+		return s.delegateAttentionWarnMu.Unlock
+	}},
+	{owner: "Session", field: "outputReductionMu", hold: func(s *Session) func() {
+		s.outputReductionMu.Lock()
+		return s.outputReductionMu.Unlock
+	}},
 	{owner: "Session", field: "drainAbandonedMu", hold: func(s *Session) func() {
 		s.drainAbandonedMu.Lock()
 		return s.drainAbandonedMu.Unlock
@@ -148,6 +164,7 @@ var envelopeSamplingPermittedLocks = map[string]string{
 // test edit: the method set is read off the interface type, so a method added
 // tomorrow is exercised tomorrow.
 func TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	if sess.subagents == nil {
 		t.Fatal("test session has no subagent manager; the subagent.mu case cannot be set up")
@@ -178,6 +195,7 @@ func TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock(t *testing.T) {
 // subagent must be classified as permitted or forbidden before it can be
 // silently uncovered.
 func TestEverySamplingRelevantMutexIsClassified(t *testing.T) {
+	t.Parallel()
 	forbidden := map[string]bool{}
 	for _, lock := range envelopeSamplingForbiddenLocks {
 		forbidden[lock.String()] = true

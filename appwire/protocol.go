@@ -3,6 +3,7 @@ package appwire
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -97,6 +98,56 @@ type MethodSpec struct {
 	Summary string
 }
 
+// MethodResultArms is the union-result registration: one named Go struct per arm
+// for the methods whose result is a union rather than a single struct, keyed by
+// wire name. It sits beside Methods — whose positional entries stay shaped the
+// way every other entry is — and the generators spell such a method's result as
+// the union over its arm names, emitting each arm as its own type (deploy
+// pipeline 08b §10). A name absent here has an ordinary single-struct result.
+var MethodResultArms = map[string][]any{
+	MethodEvenerHostPlan: {HostPlanPlanned{}, HostPlanNoToken{}},
+	// Each method advertises only the arms it can return. Ambiguous belongs
+	// to a keyless add; remove's committed arms carry RemovedRow.
+	MethodEvenerHostAdd: {
+		HostMutationCommitted{}, HostMutationTeardownFailure{},
+		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+	},
+	MethodEvenerHostUpdate: {
+		HostMutationCommitted{}, HostMutationTeardownFailure{}, HostMutationCollisionDropped{},
+	},
+	MethodEvenerHostRemove: {
+		HostMutationCommittedRemoved{}, HostMutationTeardownFailureRemoved{}, HostMutationCollisionDropped{},
+	},
+	// teardown-retry's six declared arms: three outcomes crossed with both host
+	// shapes (registry spec 08 §11).
+	MethodEvenerHostTeardownRetry: {
+		HostTeardownRetryCompleteLive{}, HostTeardownRetryCompleteRemoved{},
+		HostTeardownRetryClearedLive{}, HostTeardownRetryClearedRemoved{},
+		HostTeardownRetryFailedLive{}, HostTeardownRetryFailedRemoved{},
+	},
+}
+
+// StringDiscriminators declares fixed JSON string fields on named result arms.
+// SDK generators use these literals for narrowing, while producers use the same
+// Go constants. Keys are JSON field names, not Go field names.
+var StringDiscriminators = map[reflect.Type]map[string]string{
+	reflect.TypeFor[HostPlanPlanned]():                    {"outcome": HostPlanOutcomePlanned},
+	reflect.TypeFor[HostPlanNoToken]():                    {"outcome": HostPlanOutcomeNoToken},
+	reflect.TypeFor[HostMutationCommitted]():              {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationCommittedRemoved]():       {"outcome": string(HostMutationOutcomeCommitted)},
+	reflect.TypeFor[HostMutationTeardownFailure]():        {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationTeardownFailureRemoved](): {"outcome": string(HostMutationOutcomeTeardownFailure)},
+	reflect.TypeFor[HostMutationCollisionDropped]():       {"outcome": string(HostMutationOutcomeCollisionDropped)},
+	reflect.TypeFor[HostMutationAmbiguous]():              {"outcome": string(HostMutationOutcomeAmbiguous)},
+	reflect.TypeFor[HostTeardownRetryCompleteLive]():      {"outcome": HostTeardownOutcomeComplete, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryCompleteRemoved]():   {"outcome": HostTeardownOutcomeComplete, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRetryClearedLive]():       {"outcome": HostTeardownOutcomeCleared, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryClearedRemoved]():    {"outcome": HostTeardownOutcomeCleared, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRetryFailedLive]():        {"outcome": HostTeardownOutcomeFailed, "hostKind": HostKindLive},
+	reflect.TypeFor[HostTeardownRetryFailedRemoved]():     {"outcome": HostTeardownOutcomeFailed, "hostKind": HostKindRemoved},
+	reflect.TypeFor[HostTeardownRecoverResult]():          {"outcome": HostTeardownOutcomeRecovered},
+}
+
 // NotificationSpec is one server→client notification: the wire name, the Go
 // payload type (zero value), and a one-line summary of when it fires.
 type NotificationSpec struct {
@@ -115,11 +166,11 @@ var Methods = []MethodSpec{
 	{MethodThreadList, ThreadListParams{}, ThreadListResponse{}, ScopeBoth, "Lists threads; the daemon returns its single session."},
 	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items."},
 	{MethodThreadUnsubscribe, ThreadUnsubscribeParams{}, EmptyResponse{}, ScopeBoth, "Drops this connection's live-update subscription to a thread without reading it."},
-	{MethodThreadTurnsList, ThreadTurnsListParams{}, ThreadTurnsListResponse{}, ScopeBoth, "Pages atomic projected items backward (older) for lazy transcript loading; requests require an opaque item cursor."},
+	{MethodThreadTurnsList, ThreadTurnsListParams{}, ThreadTurnsListResponse{}, ScopeBoth, "Pages atomic projected items backward (older) for lazy transcript loading; requests carry an opaque item cursor, a before position (which rebases the cursor, or with no cursor pages before it in the current transcript, for threads advertising pageBefore), or both."},
 	{MethodThreadTurnItemsList, ThreadTurnItemsListParams{}, ThreadTurnItemsListResponse{}, ScopeUnimplemented, "Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router."},
 	{MethodThreadStart, ThreadStartParams{}, ThreadStartResponse{}, ScopeHub, "Starts a new thread and attaches a live-update relay."},
 	{MethodThreadResume, ThreadResumeParams{}, ThreadResumeResponse{}, ScopeHub, "Resumes an existing session and attaches its relay."},
-	{MethodThreadFork, ThreadForkParams{}, ThreadForkResponse{}, ScopeHub, "Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config."},
+	{MethodThreadFork, ThreadForkParams{}, ThreadForkResponse{}, ScopeHub, "Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config."},
 	{MethodThreadClear, ThreadClearParams{}, ThreadClearResponse{}, ScopeBoth, "Clears the thread's conversation when no turn, queued, or approval work is unresolved."},
 	{MethodThreadModelSet, ThreadModelSetParams{}, EmptyResponse{}, ScopeBoth, "Changes the session's model/provider."},
 	{MethodEvenerThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
@@ -133,7 +184,7 @@ var Methods = []MethodSpec{
 	{MethodTurnInterrupt, TurnInterruptParams{}, TurnInterruptResponse{}, ScopeBoth, "Cancels whatever turn the session is running; the receipt names the turn actually cancelled."},
 	{MethodTurnQueue, TurnQueueParams{}, TurnQueueResponse{}, ScopeBoth, "Queues a user message for after the active turn completes."},
 	{MethodTurnDrainAsSteer, TurnDrainAsSteerParams{}, TurnDrainAsSteerResponse{}, ScopeBoth, "Drains the input queue and injects it as a single steering message."},
-	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
+	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, TurnPromoteQueuedAsSteerResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn (or the next turn when none is running)."},
 	{MethodTurnCancelQueued, TurnCancelQueuedParams{}, TurnCancelQueuedResponse{}, ScopeBoth, "Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose)."},
 	{MethodGoalSet, GoalSetParams{}, GoalSetResponse{}, ScopeBoth, "Sets or clears the session's /goal objective."},
 	{MethodNotesHumanSet, NotesHumanSetParams{}, NotesHumanSetResponse{}, ScopeBoth, "Atomically accepts the human whiteboard and a notification; returns the canonical note and mutation receipt."},
@@ -141,10 +192,16 @@ var Methods = []MethodSpec{
 	{MethodEvenerTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data."},
 	{MethodEvenerJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback."},
+	{MethodEvenerJobsGet, JobsGetParams{}, JobsGetResponse{}, ScopeBoth, "Reads one job's metadata (the activity-tree job shape, including the untruncated command). Hub-served for exited sessions via the persisted jobs.jsonl fallback."},
 	{MethodEvenerDaemonList, DaemonListParams{}, DaemonListResponse{}, ScopeHub, "Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes."},
 	{MethodEvenerDaemonRetire, DaemonRetireParams{}, DaemonRetireResponse{}, ScopeBoth, "Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle."},
 	{MethodEvenerDaemonStatus, DaemonStatusParams{}, DaemonStatusResponse{}, ScopeDaemon, "Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility."},
+	{MethodEvenerDaemonIdleTimeoutSet, DaemonIdleTimeoutSetParams{}, DaemonIdleTimeoutSetResponse{}, ScopeDaemon, "Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions."},
 	{MethodEvenerThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
+	{MethodEvenerThreadActivityRead, SessionActivityReadParams{}, SessionActivitySummary{}, ScopeBoth, "Reads cheap activity counts and context for an explicit session ref and ownership scope; unknown counts are explicit."},
+	{MethodEvenerThreadDelegatesList, SessionActivityListParams{}, SessionDelegatesResponse{}, ScopeBoth, "Pages compact stable delegates logically owned by a session or its subtree; bounded by 200 rows and 256 KiB."},
+	{MethodEvenerThreadJobsList, SessionActivityListParams{}, SessionJobsResponse{}, ScopeBoth, "Pages shell jobs logically owned by a session or its subtree; job output is read separately."},
+	{MethodEvenerThreadWatchesList, SessionActivityListParams{}, SessionWatchesResponse{}, ScopeBoth, "Pages receiver-owned watches and bounded retained history for a session or its subtree."},
 	{MethodEvenerSubagentPreview, EvenerSubagentPreviewParams{}, EvenerSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodEvenerPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
 	{MethodEvenerDirsCreate, DirsCreateParams{}, DirsCreateResponse{}, ScopeHub, "Creates a missing working directory and its parents for Spawn preflight."},
@@ -152,7 +209,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodEvenerGitHead, GitHeadParams{}, GitHeadResponse{}, ScopeHub, "Reads a working directory's git HEAD, and its sanitized origin remote URL when requested."},
 	{MethodEvenerMobilePairing, MobilePairingParams{}, MobilePairingResponse{}, ScopeHub, "Creates a validated mobile pairing URL for the authenticated web application."},
-	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource as a normalized v2 snapshot or delta, optionally conditional on its exact base."},
+	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base."},
 	{MethodEvenerFavoriteSet, FavoriteSetParams{}, FavoriteSetResponse{}, ScopeHub, "Sets or clears a project favorite and returns the committed navigation invalidation targets."},
 	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt."},
 	{MethodEvenerProjectDelete, ProjectDeleteParams{}, ProjectDeleteResponse{}, ScopeHub, "Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt."},
@@ -161,7 +218,11 @@ var Methods = []MethodSpec{
 	{MethodEvenerPinSectionDelete, PinSectionDeleteParams{}, PinSectionDeleteResponse{}, ScopeHub, "Deletes a named pin section and returns its removed membership and committed navigation receipt."},
 	{MethodEvenerSessionPinAssign, SessionPinAssignParams{}, SessionPinAssignResponse{}, ScopeHub, "Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt."},
 	{MethodEvenerSessionPinUnpin, SessionPinUnpinParams{}, SessionPinUnpinResponse{}, ScopeHub, "Removes a top-level session's named pin assignment and returns its committed navigation receipt."},
-	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches live and persisted sessions for the hub command palette."},
+	{MethodEvenerSessionSeenSet, SessionSeenSetParams{}, SessionSeenSetResponse{}, ScopeHub, "Marks sessions seen through a hub or daemon timestamp the client showed (a row's turn end, or a session's last-moved time), or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen and seen_through from the hub's marker."},
+	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived."},
+	{MethodEvenerArchivedList, ArchivedListParams{}, ArchivedListResponse{}, ScopeHub, "Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own."},
+	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time, the newest tool intent and when the tree last moved, of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
+	{MethodEvenerNoticesList, EmptyParams{}, NoticesListResponse{}, ScopeHub, "Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},
 	{MethodEvenerUpdateCheck, UpdateCheckParams{}, UpdateCheckResponse{}, ScopeHub, "Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request."},
@@ -174,6 +235,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerAuthList, EmptyParams{}, AuthListResponse{}, ScopeHub, "Lists auth status for all providers."},
 	{MethodEvenerAuthApiKeySet, AuthApiKeySetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a provider API key; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthApiKeyClear, AuthApiKeyClearParams{}, AuthStatusResponse{}, ScopeHub, "Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated."},
+	{MethodEvenerAuthApiKeyConditionalSet, ApiKeyConditionalSetParams{}, ApiKeyConditionalSetResponse{}, ScopeHub, "Conditionally stores a provider API key: re-resolves the instance's credential source and configuration revision under the credential write lock and refuses a stale revision or a non-writable scheme; broadcasts evener/auth/updated when it writes."},
 	{MethodEvenerAuthCredentialJsonSet, AuthCredentialJsonSetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthDeviceStart, AuthDeviceStartParams{}, AuthDeviceStartResponse{}, ScopeHub, "Begins a device-code auth flow (or signals fallback)."},
 	{MethodEvenerAuthDevicePoll, AuthDevicePollParams{}, AuthDevicePollResponse{}, ScopeHub, "Polls a device-code flow; broadcasts evener/auth/updated when authorized."},
@@ -195,7 +257,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerMarketplaceList, EmptyParams{}, MarketplaceListResponse{}, ScopeHub, "Lists registered plugin marketplaces."},
 	{MethodEvenerMarketplaceAdd, MarketplaceAddParams{}, MarketplaceListResponse{}, ScopeHub, "Registers a plugin marketplace; returns the updated list."},
 	{MethodEvenerMarketplaceRemove, MarketplaceNameParams{}, MarketplaceListResponse{}, ScopeHub, "Unregisters a plugin marketplace; returns the updated list."},
-	{MethodEvenerMarketplaceRefresh, MarketplaceNameParams{}, MarketplaceListResponse{}, ScopeHub, "Pulls a marketplace's latest catalog; returns the updated list."},
+	{MethodEvenerMarketplaceRefresh, MarketplaceNameParams{}, MarketplaceListResponse{}, ScopeHub, "Pulls a marketplace's latest catalog (one pinned to a tag or a commit is already current) and stamps its lastUpdated; returns the updated list. Broadcasts evener/marketplace/updated only when the refresh moved the clone to another commit or repaired it."},
 	{MethodEvenerMarketplaceEdit, MarketplaceEditParams{}, MarketplaceListResponse{}, ScopeHub, "Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated."},
 	{MethodEvenerMarketplaceBrowse, MarketplaceBrowseParams{}, MarketplaceBrowseResponse{}, ScopeHub, "Lists a marketplace's plugin catalog for browsing/install."},
 	{MethodEvenerPluginList, EmptyParams{}, PluginListResponse{}, ScopeHub, "Lists installed plugins."},
@@ -205,6 +267,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerPluginEnable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Enables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginDisable, PluginRefParams{}, PluginListResponse{}, ScopeHub, "Disables an installed plugin; returns the updated list."},
 	{MethodEvenerPluginSetAutoUpgrade, PluginSetAutoUpgradeParams{}, PluginListResponse{}, ScopeHub, "Sets an installed plugin's auto-upgrade flag; returns the updated list."},
+	{MethodEvenerPluginCheckUpdates, EmptyParams{}, PluginListResponse{}, ScopeHub, "Refreshes each fetched git marketplace, within a time budget (a refresh it cannot make is a warning), then asks each git-backed installed plugin's remote whether it has moved past the installed commit and checks each plugin stored in its marketplace's own repo against the refreshed clone, without installing anything; returns the list with updateAvailable set. Clients call it when their plugins view opens; the hub never runs it on a timer. It waits on every plugin's remote, each with its own timeout (internal/plugins updateCheckTimeout) and the whole check within updateCheckDeadline, so a client's timeout for it must exceed that deadline."},
 	{MethodEvenerCommandList, EmptyParams{}, CommandListResponse{}, ScopeHub, "Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display."},
 	{MethodEvenerSpawnSlashCatalog, SpawnSlashCatalogParams{}, SpawnSlashCatalogResponse{}, ScopeHub, "Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer."},
 	{MethodEvenerSettingsOverview, EmptyParams{}, SettingsOverviewResponse{}, ScopeHub, "Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data."},
@@ -215,8 +278,24 @@ var Methods = []MethodSpec{
 	{MethodEvenerSettingsAgentsDocGet, EmptyParams{}, AgentsDocResponse{}, ScopeHub, "Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content."},
 	{MethodEvenerSettingsAgentsDocSet, AgentsDocSetParams{}, AgentsDocResponse{}, ScopeHub, "Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed."},
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
+	{MethodEvenerDelegateStop, DelegateStopParams{}, DelegateStopResponse{}, ScopeBoth, "Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning."},
 	{MethodEvenerHostRequest, HostRequestParams{}, HostForwardedResult{}, ScopeHub, "Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult)."},
 	{MethodEvenerHostAttach, HostAttachParams{}, HostAttachResponse{}, ScopeHub, "Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state."},
+	{MethodEvenerHostAdd, HostAddParams{}, HostMutationResult{}, ScopeHub, "Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm."},
+	{MethodEvenerHostList, EmptyParams{}, HostListResponse{}, ScopeHub, "Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state."},
+	{MethodEvenerHostStatus, HostStatusParams{}, HostStatusResponse{}, ScopeHub, "Returns one host's list row for a single named host; never dials."},
+	{MethodEvenerHostRemove, HostRemoveParams{}, HostMutationResult{}, ScopeHub, "Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row."},
+	{MethodEvenerHostUpdate, HostUpdateParams{}, HostMutationResult{}, ScopeHub, "Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union."},
+	{MethodEvenerHostTeardownRetry, HostTeardownRetryParams{}, HostTeardownRetryResult{}, ScopeHub, "Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal."},
+	{MethodEvenerHostTeardownRecover, HostTeardownRecoverParams{}, HostTeardownRecoverResult{}, ScopeHub, "Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write."},
+	{MethodEvenerHostPlan, HostPlanParams{}, HostPlanResult{}, ScopeHub, "Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal."},
+	{MethodEvenerHostDeploy, HostDeployParams{}, HostDeployResponse{}, ScopeHub, "Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC."},
+	{MethodEvenerHostRestart, HostRestartParams{}, HostRestartResponse{}, ScopeHub, "Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC."},
+	{MethodEvenerHostOperations, HostOperationsParams{}, HostOperationsResponse{}, ScopeHub, "Reads the operation store's deploy/restart records, one bounded page at a time, ascending by the controller-assigned id and resumed by an opaque cursor: host-pinned pages echo the effective (generation, incarnationId) pair, unfiltered cross-host pages carry the authoritative hostBoundaries map (the triple or the literal \"absent\" per host in the query), and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused."},
+	{MethodEvenerHostRunning, HostRunningParams{}, HostRunningResponse{}, ScopeHub, "Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe."},
+	{MethodEvenerHostPushCredentials, HostPushCredentialsParams{}, HostPushCredentialsResponse{}, ScopeHub, "Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed."},
+	{MethodEvenerSessionImage, SessionImageParams{}, SessionImageResponse{}, ScopeHub, "Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative or current-root absolute file inside the session's current working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route."},
+	{MethodEvenerSessionDocument, SessionDocumentParams{}, SessionDocumentResponse{}, ScopeHub, "Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route."},
 }
 
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
@@ -283,28 +362,21 @@ var Notifications = []NotificationSpec{
 	{NotifyThreadModelChanged, ThreadModelChangedParams{}, "The session's model/provider changed mid-session (thread/model/set or an equivalent switch)."},
 	{NotifyThreadReasoningEffortChanged, ThreadReasoningEffortChangedParams{}, "The session's reasoning effort changed mid-session (thread/reasoning-effort/set)."},
 	{NotifyThreadVisionModelChanged, ThreadVisionModelChangedParams{}, "The session's vision side-channel routing changed mid-session (thread/vision-model/set)."},
-	{NotifyTurnStarted, TurnStartedParams{}, "A new turn began (inProgress)."},
-	{NotifyTurnCompleted, TurnCompletedParams{}, "A turn reached a terminal state (completed/failed/interrupted)."},
-	{NotifyItemStarted, ItemLifecycleParams{}, "A thread item began streaming."},
-	{NotifyItemCompleted, ItemLifecycleParams{}, "A thread item finished."},
-	{NotifyAgentMessageDelta, AgentMessageDeltaParams{}, "Incremental assistant-message text chunk for an item."},
-	{NotifyAgentMessageReset, AgentMessageResetParams{}, "Discard the in-progress streamed item (assistant or reasoning — a retry replaces it)."},
-	{NotifyReasoningSummaryDelta, ReasoningSummaryDeltaParams{}, "Incremental reasoning-summary text chunk for a reasoning item."},
-	{NotifyToolOutputDelta, ToolOutputDeltaParams{}, "Incremental tool-output chunk for a tool-call item."},
 	{NotifyWarning, WarningParams{}, "Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures."},
 	{NotifyEvenerThreadModelRetry, ThreadModelRetryParams{}, "A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item."},
-	{NotifyEvenerSteeringInjected, EvenerSteeringInjectedParams{}, "A steering message was injected into the active turn."},
 	{NotifyEvenerJobStarted, EvenerJobParams{}, "A background job started."},
 	{NotifyEvenerJobFinished, EvenerJobParams{}, "A background job finished; the job carries status/reason/exitCode/output."},
 	{NotifyEvenerDelegateUpdated, EvenerDelegateParams{}, "A stable delegate projection changed."},
 	{NotifyEvenerJobsTreeUpdated, JobsTreeUpdatedParams{}, "The current-session activity tree changed; clients refresh the jobs tree."},
-	{NotifyEvenerAuthUpdated, EvenerAuthUpdatedParams{}, "Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list."},
+	{NotifyEvenerAuthUpdated, EvenerAuthUpdatedParams{}, "Broadcast after a successful auth mutation or provider-instance CRUD/live-model change, including a launch model list refresh that changed what a picker showed. Clients refresh auth state, the instance list and their model list."},
 	{NotifyEvenerLaunchUpdated, EvenerLaunchUpdatedParams{}, "Broadcast after a launch layer/trust mutation. Clients refresh launch config."},
 	{NotifyEvenerAttentionChanged, AttentionChangedPayload{}, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
 	{NotifyEvenerNavigationInvalidated, NavigationInvalidatedPayload{}, "Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources."},
-	{NotifyEvenerMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list."},
+	{NotifyEvenerMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/edit/remove, or a refresh that moved a clone to another commit or repaired it); no payload. Clients refresh the marketplace list. A refresh that changed nothing moves only lastUpdated and does not broadcast."},
 	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list."},
+	{NotifyEvenerNoticesChanged, NoticesListResponse{}, "Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons."},
 	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
+	{NotifyEvenerThreadActivityChanged, SessionActivityChangedParams{}, "Scoped activity invalidation; clients revalidate the named observed resources for the addressed session."},
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list outcome counts (total/done/cancelled/remaining) changed."},
 	{NotifyEvenerGoalUpdated, GoalUpdatedParams{}, "The session's complete structured goal state changed; null clears it."},
 	{NotifyEvenerNotesUpdated, NotesUpdatedParams{}, "The session's shared-notes whiteboards changed."},
@@ -315,4 +387,9 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerSettingsKeybindingsChanged, KeybindingsOverrides{}, "Broadcast after the user keybinding overrides change; carries the revision and canonical rules."},
 	{NotifyEvenerSettingsAgentsDocChanged, AgentsDocResponse{}, "Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content."},
 	{NotifyEvenerHostNotification, HostNotificationParams{}, "Re-emits one host-owned config notification to the controller's browser clients tagged with the source host (component 07a); local notifications keep their unwrapped methods. This is the Go-side fan-out contract: the client-side unwrapping into host-scoped stores is component 07b, and no Go-side consumer exists here."},
+	{NotifyHistoryUpdated, HistoryUpdatedParams{}, "The full current form of every item and turn whose recorded entries changed."},
+	{NotifyOverlayUpserted, OverlayUpsertedParams{}, "One overlay item (a stream, preview, running tool, or notice) was created or replaced."},
+	{NotifyOverlayDelta, OverlayDeltaParams{}, "An incremental chunk appended to one overlay item's text or output."},
+	{NotifyOverlayReset, OverlayResetParams{}, "Discard a stream's in-progress overlay item; a retry replaces it."},
+	{NotifyOverlayEnd, OverlayEndParams{}, "A round's overlay state is final and about to be replaced by recorded history."},
 }

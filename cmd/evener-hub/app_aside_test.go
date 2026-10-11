@@ -81,10 +81,10 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
-		Ref:          "local:" + parentID,
-		Aside:        true,
-		SourceTurnID: "1",
-		EditedInput:  "edit",
+		Ref:           "local:" + parentID,
+		Aside:         true,
+		SourceItemKey: "apptranscript-item-v2:t_1:0:0",
+		EditedInput:   "edit",
 	}, &appwire.ThreadForkResponse{})
 	if err == nil {
 		t.Fatal("ThreadFork(aside+turn fields) succeeded, want invalid-params rejection")

@@ -14,6 +14,9 @@ var (
 	sessionScratchTempDir      = os.TempDir
 	sessionScratchUserCacheDir = os.UserCacheDir
 	sessionScratchReadDir      = os.ReadDir
+	// sessionScratchRemoveTree removes a sweep tombstone. A test swaps it to model
+	// a tree this process cannot remove, such as one another uid planted.
+	sessionScratchRemoveTree = removeTree
 )
 
 const (
@@ -69,9 +72,9 @@ func NewSessionScratch(base, workspaceRoot string) (*SessionScratch, error) {
 	return &SessionScratch{Dir: dir, base: cleanBase, lease: lease}, nil
 }
 
-// Retain releases the live-session lease without removing the directory. This
-// is the normal session-teardown operation: the absolute path is handed to the
-// parent and cleanup remains a manual decision.
+// Retain releases the live-session lease without removing the directory, for a
+// directory that may still be in use: a live ownership move, or a detached
+// command's TMPDIR. The crashed-scratch sweep reclaims it once it is old.
 func (s *SessionScratch) Retain() error {
 	if s == nil || s.lease == nil {
 		return nil
@@ -82,8 +85,8 @@ func (s *SessionScratch) Retain() error {
 }
 
 // HasLease reports whether this scratch still owns its live lease. A scratch
-// whose lease was released (Retain/Cleanup) keeps its directory but can no
-// longer be pinned.
+// whose lease was released by Retain keeps its directory; one released by
+// Cleanup is gone.
 func (s *SessionScratch) HasLease() bool {
 	return s != nil && s.lease != nil
 }
@@ -120,22 +123,56 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 
 // sessionScratchBases lists, in allocation-preference order, every base a
 // session on this workspace may end up in: the requested base (or the temp dir)
-// and the user cache dir, each canonical and listed once. Allocation stops at
-// the first; a reclaim has to visit them all, because a workspace that contains
-// the temp dir sends its own sessions to the cache dir instead.
-func sessionScratchBases(requested, workspaceRoot string) []string {
-	candidates := []string{preferredSessionScratchCandidate(requested)}
-	if cache, err := sessionScratchUserCacheDir(); err == nil {
-		candidates = append(candidates, cache)
-	}
+// and the user cache dir, each canonical and listed once, plus every world-usable
+// host temp base a session TEMP CONTAINER (session_tmp.go) may have been created
+// in. Allocation stops at the first; a reclaim has to visit them all, because a
+// workspace that contains the temp dir sends its own sessions to the cache dir
+// instead, and a temp container deliberately does not use the temp dir at all
+// (os.TempDir() is private on macOS and can be private on Linux).
+//
+// The workspace filter applies to the SCRATCH bases only. A container is minted
+// in a world temp base regardless of where the workspace is — NewSessionTmp takes
+// no workspace — so a base the filter would refuse for allocation (a workspace
+// that CONTAINS /tmp, or is /tmp itself) still holds containers, and dropping it
+// from this list would leave them unreclaimable forever.
+//
+// A malformed EVENER_HOST_TEMP_BASES is returned as the error beside the scratch
+// bases, which are still listed: the world temp bases are then left out
+// entirely rather than replaced by the defaults.
+func sessionScratchBases(requested, workspaceRoot string) ([]string, error) {
 	var bases []string
-	for _, candidate := range candidates {
-		base, ok := validSessionScratchBase(candidate, workspaceRoot)
-		if ok && !slices.Contains(bases, base) {
+	add := func(base string) {
+		if base != "" && !slices.Contains(bases, base) {
 			bases = append(bases, base)
 		}
 	}
-	return bases
+	scratchCandidates := []string{preferredSessionScratchCandidate(requested)}
+	if cache, err := sessionScratchUserCacheDir(); err == nil {
+		scratchCandidates = append(scratchCandidates, cache)
+	}
+	for _, candidate := range scratchCandidates {
+		base, ok := validSessionScratchBase(candidate, workspaceRoot)
+		if ok {
+			add(base)
+		}
+	}
+	// Only where a session temp container can exist: elsewhere the bases are
+	// meaningless names, and walking them would let the reclaim scan directories
+	// evener never allocated in.
+	if !SessionTmpSupported {
+		return bases, nil
+	}
+	candidates, err := worldTempBaseCandidates()
+	if err != nil {
+		return bases, err
+	}
+	for _, candidate := range candidates {
+		base, ok := validWorldTempBase(candidate)
+		if ok {
+			add(base)
+		}
+	}
+	return bases, nil
 }
 
 // preferredSessionScratchCandidate is the base a caller asked for, or the temp
@@ -194,19 +231,24 @@ func (s *SessionScratch) Cleanup() error {
 	}
 	dir := filepath.Clean(s.Dir)
 	base := filepath.Clean(s.base)
-	if s.base == "" || filepath.Dir(dir) != base ||
-		!strings.HasPrefix(filepath.Base(dir), sessionScratchPrefix) {
+	inNamespace := strings.HasPrefix(filepath.Base(dir), sessionScratchPrefix) ||
+		isSessionScratchTree(base)
+	if s.base == "" || filepath.Dir(dir) != base || !inNamespace {
 		return fmt.Errorf("sandbox: refuse cleanup outside session scratch namespace: %q", s.Dir)
 	}
 	releaseErr := s.Retain()
-	return errors.Join(releaseErr, os.RemoveAll(dir))
+	removeErr := removeTree(dir)
+	if s.Named() {
+		removeEmptySessionScratchTree(base)
+	}
+	return errors.Join(releaseErr, removeErr)
 }
 
 // SweepCrashedSessionScratch reclaims the session scratch directories left in
-// every base a session on workspaceRoot may allocate from. A session releases
-// its lease and keeps its directory at close and on handoff, so nothing else
-// ever removes those: this is what makes retention safe rather than a permanent
-// leak. It sweeps all the allocation bases rather than the one this workspace
+// every base a session on workspaceRoot may allocate from: a session that
+// crashed before removing its scratch, a detached command's TMPDIR container
+// whose command has exited, and a directory a live ownership move released. It
+// sweeps all the allocation bases rather than the one this workspace
 // would pick, because a workspace containing the temp dir allocates from the
 // cache dir instead, and it skips a base inside workspaceRoot for the same
 // reason allocation refuses one: nothing Evener owns is ever written there. It
@@ -218,11 +260,11 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 	if err != nil {
 		return err
 	}
-	bases := sessionScratchBases("", canonicalWorkspace)
+	bases, basesErr := sessionScratchBases("", canonicalWorkspace)
 	if len(bases) == 0 {
-		return noSessionScratchBaseError(workspaceRoot)
+		return errors.Join(basesErr, noSessionScratchBaseError(workspaceRoot))
 	}
-	var failures []error
+	failures := []error{basesErr}
 	for _, base := range bases {
 		if err := sweepCrashedSessionScratch(base); err != nil {
 			failures = append(failures, err)
@@ -231,14 +273,31 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 	return errors.Join(failures...)
 }
 
+// crashedSessionScratchTombstoneSuffix marks the dot-prefixed tombstone a
+// sweeper renames a candidate to before removing it.
+const crashedSessionScratchTombstoneSuffix = ".reclaiming"
+
+// crashedSessionScratchTombstone names the tombstone dir is renamed to
+// before its removal. The dot prefix hides it from the sweep's candidate
+// filter — enumerated by nobody, removed exactly once — and reclaims it
+// under the same ownership, age, and lease gates.
+func crashedSessionScratchTombstone(dir string) string {
+	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+crashedSessionScratchTombstoneSuffix)
+}
+
+// isCrashedSessionScratchTombstone reports whether a base entry is the
+// tombstone a sweeper renames a candidate to before removing it, so a sweep
+// that crashed between the rename and the removal can be cleaned up by a
+// later one.
+func isCrashedSessionScratchTombstone(name string) bool {
+	return strings.HasPrefix(name, "."+sessionScratchPrefix) && strings.HasSuffix(name, crashedSessionScratchTombstoneSuffix)
+}
+
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
 // lease is currently acquirable. A candidate whose lease is held, or whose age
 // cannot be read, is left untouched and is not an error: it is someone else's.
-// A candidate carrying a retention pin is skipped while that owner's manifest is
-// unreleased, held through the retention check and any removal so a concurrent
-// same-path restore cannot interleave, and its identity is verified after the
-// lease is acquired. A malformed or conflicting pin is conservatively retained
-// with a bounded diagnostic.
+// Its identity is verified after the lease is acquired, and it is renamed to a
+// tombstone before its removal.
 func sweepCrashedSessionScratch(base string) error {
 	entries, err := sessionScratchReadDir(base)
 	if err != nil {
@@ -247,7 +306,36 @@ func sweepCrashedSessionScratch(base string) error {
 	cutoff := time.Now().Add(-crashedSessionScratchMaxAge)
 	var failures []error
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
+		if !entry.IsDir() {
+			continue
+		}
+		if isCrashedSessionScratchTombstone(entry.Name()) {
+			// A sweeper that crashed between its rename and the removal left this
+			// behind, where the candidate filter can never enumerate it again.
+			// Reclaim it under the same age, ownership, and lease gates — the
+			// lease is what excludes a live remover mid-removal, whose held flock
+			// a crashed one released. No second rename: a removal that fails
+			// leaves the same tombstone for the next sweep to retry.
+			info, infoErr := entry.Info()
+			if infoErr != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			tombstone := filepath.Join(base, entry.Name())
+			owned, ownerErr := scratchEntryOwnedByProcess(tombstone)
+			if ownerErr != nil || !owned {
+				continue
+			}
+			lease, contended, leaseErr := acquireScratchLease(filepath.Join(tombstone, sessionScratchLeaseName))
+			if leaseErr != nil || contended {
+				continue
+			}
+			if removeErr := sessionScratchRemoveTree(tombstone); removeErr != nil {
+				failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch tombstone %q: %w", tombstone, removeErr))
+			}
+			_ = lease.Release()
+			continue
+		}
+		if !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
 			continue
 		}
 		info, err := entry.Info()
@@ -259,6 +347,14 @@ func sweepCrashedSessionScratch(base string) error {
 		if statErr != nil {
 			continue
 		}
+		// Never touch a candidate this process does not own. The sweep walks
+		// world-writable temp bases now, where any local user can plant a directory
+		// under our prefix; acquiring our lease inside someone else's directory and
+		// then removing it recursively would destroy files that are not ours.
+		owned, ownerErr := scratchEntryOwnedByProcess(dir)
+		if ownerErr != nil || !owned {
+			continue
+		}
 		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
 		if err != nil || contended {
 			continue
@@ -268,20 +364,36 @@ func sweepCrashedSessionScratch(base string) error {
 			_ = lease.Release()
 			continue
 		}
-		retain, retentionErr := scratchDirectoryRetained(dir)
-		if retentionErr != nil {
-			failures = append(failures, retentionErr)
+		// Re-verify under the held lease: acquiring it creates a file in the
+		// candidate, so a directory whose ownership changed between the two checks
+		// must not be removed either.
+		if owned, ownerErr := scratchEntryOwnedByProcess(dir); ownerErr != nil || !owned {
 			_ = lease.Release()
 			continue
 		}
-		if retain {
+		// Rename before removing: the rename is atomic and size-independent, and
+		// the dot-prefixed tombstone fails the sweep's own prefix filter, so a
+		// sweep that crashes mid-removal leaves something only the tombstone
+		// branch above reclaims. The directory lease is held through the removal.
+		tombstone := crashedSessionScratchTombstone(dir)
+		if renameErr := os.Rename(dir, tombstone); renameErr != nil {
 			_ = lease.Release()
+			// A candidate that vanished mid-sweep is not a failure; anything else
+			// is, and the directory stays for a later sweep to retry.
+			if !os.IsNotExist(renameErr) {
+				failures = append(failures, fmt.Errorf("sandbox: rename crashed session scratch %q for reclamation: %w", dir, renameErr))
+			}
 			continue
 		}
-		// Hold the lease through removal: releasing first would let a same-path
-		// restore acquire the lease and be deleted out from under it.
-		if err := os.RemoveAll(dir); err != nil {
+		if err := sessionScratchRemoveTree(tombstone); err != nil {
+			// A failed removal must not leave the candidate renamed: an
+			// unremovable directory stays at its original path, where the
+			// operator expects it and a later sweep retries it. Only a
+			// rename-back that itself fails leaves a tombstone, reported too.
 			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
+			if backErr := os.Rename(tombstone, dir); backErr != nil {
+				failures = append(failures, fmt.Errorf("sandbox: restore unremoved crashed session scratch %q from %q: %w", dir, tombstone, backErr))
+			}
 		}
 		_ = lease.Release()
 	}

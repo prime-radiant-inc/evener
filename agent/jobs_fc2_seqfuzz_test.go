@@ -34,6 +34,7 @@ import (
 // DEPTH may differ with order, never the authority).
 // evener:fuzz rapid
 func TestJobsFc2DescendantMergeSeqFuzz(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("EVENER_FUZZ_TESTS") != "1" {
 		t.Skip("fuzz: skipped by default; run `make test-fuzz`, or EVENER_FUZZ_TESTS=1 go test ./agent -run TestJobsFc2DescendantMergeSeqFuzz -count=1 -v")
 	}

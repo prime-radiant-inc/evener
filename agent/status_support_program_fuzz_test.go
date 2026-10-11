@@ -200,7 +200,7 @@ func statusSupportSession(t *testing.T, profile *provider.Profile, providerName 
 	client := llm.NewClient()
 	client.Register(adapter)
 	clock := agenttest.NewFakeClock()
-	cfg := SessionConfig{NoProjectPrompts: true, StateDir: t.TempDir(), clock: clock}
+	cfg := SessionConfig{StateDir: t.TempDir(), clock: clock}
 	cfg.testOnly = testConfig{
 		skipGitSnapshot:     true,
 		minimalSystemPrompt: true,

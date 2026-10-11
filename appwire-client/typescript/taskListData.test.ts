@@ -2,24 +2,8 @@
 import { expect, test } from "vitest";
 import { parseTaskListData, taskAggregateLabel } from "./taskListData";
 
-// parseTaskListData narrows TaskListResponse.data (typed `unknown` on the
-// wire - appwire/types.go:896-898, `TaskListResponse{Data any}`) into a
-// display-ready TaskRow[]. Ground truth for the shape, since the catalog
-// itself only says `any`:
-//   - agent/task/task_store.go:54-79 (Task struct, json tags): id/type/
-//     description/prompt/status/depends_on/notes/reasoning_effort/insert/
-//     created_at/updated_at/completed_at.
-//   - agent/task/task_store.go:28-36 (TaskStatus): open/in_progress/done/
-//     cancelled.
-//   - agent/session_tools.go:957-959 (Session.Tasks -> TaskStore.View,
-//     always a non-nil, possibly-empty []Task).
-//   - server/server.go:625-631 (SetTasksFunc) + cmd/evener/serve.go:596
-//     (wired unconditionally by every real evener daemon session).
-//   - server/appwire_runtime.go:713-721 (handleAppTasksList: Data is nil
-//     only when no tasksFn is registered at all - an old daemon or a
-//     source with no task support, which instead rejects the call outright).
-// This is the wire-true fixture the panel renders from once a store action
-// exists to fetch it (see this stream's report for the NEEDS_CONTEXT gap).
+// The parser accepts untrusted task-list input and preserves the persisted
+// snake_case wire contract while normalizing display rows.
 
 const WIRE_TRUE_TASK_LIST = [
   {
@@ -100,6 +84,19 @@ test("preserves the explicit task-start marker from a mutation snapshot", () => 
   expect(rows?.map((row) => ({ id: row.id, started: row.started }))).toEqual([
     { id: 1, started: false },
     { id: 2, started: true },
+  ]);
+});
+
+test("preserves the explicit terminal-settle marker from a mutation snapshot", () => {
+  const rows = parseTaskListData([
+    { id: 1, type: "implement", description: "a", prompt: "", status: "done", settled: true },
+    { id: 2, type: "implement", description: "b", prompt: "", status: "done", settled: false },
+    { id: 3, type: "implement", description: "c", prompt: "", status: "cancelled", settled: "yes" },
+  ]);
+  expect(rows?.map((row) => ({ id: row.id, settled: row.settled }))).toEqual([
+    { id: 1, settled: true },
+    { id: 2, settled: false },
+    { id: 3, settled: undefined },
   ]);
 });
 
@@ -184,6 +181,18 @@ test("skips individual malformed entries (missing a required field) rather than 
     { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
     { id: 3, type: "implement", description: "also good", prompt: "", status: "done" },
   ]);
+});
+
+test("drops a row carrying a status outside the daemon's four-status enum rather than casting it to TaskStatus", () => {
+  // TaskStatus is the closed enum the Go store mints (open/in_progress/
+  // done/cancelled), but the wire field is a bare string: a status a
+  // newer daemon adds must not survive the cast into a settled group it
+  // does not belong to (groupTasks routes everything unmatched there).
+  const rows = parseTaskListData([
+    { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
+    { id: 2, type: "implement", description: "unrecognized", prompt: "", status: "blocked" },
+  ]);
+  expect(rows).toEqual([{ id: 1, type: "implement", description: "good", prompt: "", status: "open" }]);
 });
 
 test("the aggregate reads 'N of M tasks left' while work remains", () => {

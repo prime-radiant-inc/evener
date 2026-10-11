@@ -2,6 +2,7 @@ package diagnostic
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -318,5 +319,27 @@ func TestFromFields_MCP401_DoesNotMatchProvider(t *testing.T) {
 	got := FromFields("mcp", "", "", "MCP server \"linear\" failed to connect: 401 unauthorized")
 	if got.Source != SourceMCP {
 		t.Fatalf("MCP 401 misclassified: Source=%q, want %q", got.Source, SourceMCP)
+	}
+}
+
+// TestFromError_SignInRequired_IsSignInFailure verifies that a ConfigurationError
+// carrying the sign-in sentinel is classified as a sign-in failure with a
+// sign-in remedy, not the generic "Evener configuration error" that blames the
+// hub's launch configuration (#2705).
+func TestFromError_SignInRequired_IsSignInFailure(t *testing.T) {
+	err := &llm.ConfigurationError{
+		Message:          `instance "openai-codex": openai login required (run ` + "`evener openai login --instance openai-codex`" + `)`,
+		Cause:            llm.ErrSignInRequired,
+		ProviderInstance: "openai-codex",
+	}
+	info := FromError(err)
+	if info.Source != SourceProvider {
+		t.Fatalf("FromError(sign-in required): Source=%q, want %q", info.Source, SourceProvider)
+	}
+	if info.Title != "Sign-in required" {
+		t.Fatalf("FromError(sign-in required): Title=%q, want %q", info.Title, "Sign-in required")
+	}
+	if !strings.Contains(strings.ToLower(info.Hint), "sign in") {
+		t.Fatalf("FromError(sign-in required): Hint=%q, want sign-in guidance", info.Hint)
 	}
 }

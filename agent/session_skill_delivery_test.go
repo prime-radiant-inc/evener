@@ -719,7 +719,9 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 	explanationSeen := false
 	for _, msg := range adapter.Requests()[0].Messages {
 		for _, part := range msg.Content {
-			if part.Kind == llm.ContentText && strings.Contains(part.Text, `Skill "opaque" is no longer available from `+missing) {
+			// The explanation is machinery the session manufactured; its
+			// part must carry the flag.
+			if part.Kind == llm.ContentText && strings.Contains(part.Text, `Skill "opaque" is no longer available from `+missing) && part.Machinery {
 				explanationSeen = true
 			}
 		}
@@ -1097,6 +1099,7 @@ func newContinuationSession(t *testing.T, adapter *skillContinuationAdapter, dir
 // the typed causal notification and the rebuilt request commits through the
 // same seam.
 func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
@@ -1189,6 +1192,7 @@ func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
 // session rebuilds the request from full history; the seam revalidates and
 // commits against that rebuilt shape.
 func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)

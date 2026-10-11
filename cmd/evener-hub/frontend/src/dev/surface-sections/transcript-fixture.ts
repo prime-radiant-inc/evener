@@ -34,13 +34,6 @@ export function makeEditorialTranscriptModel() {
       intent: "Checking the source against the latest report",
     },
     {
-      id: "attention",
-      status: "running",
-      terminal: false,
-      needsAttention: true,
-      intent: "Reviewing the independent verification findings",
-    },
-    {
       id: "reported",
       status: "idle",
       outcome: "completed",
@@ -77,6 +70,7 @@ export function makeEditorialTranscriptModel() {
   model.delegates = cases.map(
     ({ id, intent: _intent, ...state }): EvenerDelegateInfo => ({
       ...state,
+      runGeneration: 1,
       delegateId: `dlg_editorial_${id}`,
       ownerSessionId: "editorial_parent",
       rootSessionId: "editorial_parent",
@@ -86,7 +80,7 @@ export function makeEditorialTranscriptModel() {
       lifecycle: state.status,
       phase: state.status,
       resumable: state.resumable ?? false,
-      needsAttention: state.needsAttention ?? false,
+      needsAttention: false,
       projectionRevision: 1,
     }),
   );

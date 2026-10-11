@@ -5,9 +5,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve));
 
 it("coalesces requests made during a run into one trailing run", async () => {
 	const runs: (() => void)[] = [];
-	const flight = singleFlight(
-		() => new Promise<void>((resolve) => runs.push(resolve)),
-	);
+	const flight = singleFlight(() => new Promise<void>((resolve) => runs.push(resolve)));
 	flight.request();
 	flight.request();
 	flight.request();
@@ -49,4 +47,22 @@ it("recovers from a run that throws synchronously", () => {
 	expect(flight.running).toBe(false);
 	flight.request();
 	expect(calls).toBe(2);
+});
+
+it("abandons a run that never settles and starts the next request", async () => {
+	const runs: (() => void)[] = [];
+	const flight = singleFlight(() => new Promise<void>((resolve) => runs.push(resolve)));
+	flight.request();
+	expect(flight.running).toBe(true);
+	flight.abandon();
+	expect(flight.running).toBe(false);
+	flight.request();
+	expect(runs).toHaveLength(2);
+	// The abandoned run's late settle must not clear the replacement's flags.
+	runs[0]();
+	await tick();
+	expect(flight.running).toBe(true);
+	runs[1]();
+	await tick();
+	expect(flight.running).toBe(false);
 });

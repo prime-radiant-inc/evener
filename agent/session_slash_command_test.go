@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
@@ -236,6 +237,41 @@ func TestEvenerwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	cmd, ok := plugin.ResolveCommand(sess.pluginCommands, "review")
 	if !ok || cmd.Source != "project" {
 		t.Fatalf("pluginCommands = %v, want project command %q", sess.pluginCommands, "review")
+	}
+}
+
+// TestEvenerwideCommand_HermeticHidesOperatorGlobal pins #3487 at the session
+// level: with EVENER_NO_USER_SKILLS=1 (what the tool-fluency harness sets), a
+// session must not pick up the operator's user-global commands, while commands
+// its own fixture declares remain.
+func TestEvenerwideCommand_HermeticHidesOperatorGlobal(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv(envvars.EVENERNoUserSkills.Name, "1")
+	operatorDir := filepath.Join(xdg, "evener", "commands")
+	if err := os.MkdirAll(operatorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(operatorDir, "operator-cmd.md"), []byte("operator body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	writeEvenerwideCommandFile(t, workDir, "review", "project body")
+
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if _, ok := plugin.ResolveCommand(sess.pluginCommands, "operator-cmd"); ok {
+		t.Errorf("operator user-global command reached a hermetic session: %v", sess.pluginCommands)
+	}
+	if cmd, ok := plugin.ResolveCommand(sess.pluginCommands, "review"); !ok || cmd.Source != "project" {
+		t.Errorf("project command must remain; got %+v", cmd)
 	}
 }
 
@@ -619,6 +655,9 @@ func TestInitPlugins_CommandModelOverrideWarnsUnenforced(t *testing.T) {
 	for _, w := range warnings {
 		if w.Title == "unenforced command override" && w.PluginName == "model-plugin" && strings.Contains(w.Message, "model") {
 			found = true
+			if w.Code != events.WarningCodePluginCompatibility {
+				t.Errorf("unenforced-model-override warning code = %q, want %q", w.Code, events.WarningCodePluginCompatibility)
+			}
 		}
 	}
 	if !found {
@@ -636,6 +675,9 @@ func TestInitPlugins_CommandAllowedToolsWarnsUnenforced(t *testing.T) {
 	for _, w := range warnings {
 		if w.Title == "unenforced command override" && w.PluginName == "tools-plugin" && strings.Contains(w.Message, "allowed-tools") {
 			found = true
+			if w.Code != events.WarningCodePluginCompatibility {
+				t.Errorf("unenforced-allowed-tools warning code = %q, want %q", w.Code, events.WarningCodePluginCompatibility)
+			}
 		}
 	}
 	if !found {

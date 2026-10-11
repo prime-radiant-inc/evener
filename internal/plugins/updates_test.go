@@ -1,0 +1,1020 @@
+package plugins
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+// urlPluginFixture is widget@acme installed from a local plugin repo through a
+// local marketplace repo whose catalog names it by a url source.
+type urlPluginFixture struct {
+	pluginRepo, mktRepo string
+	m                   *Manager
+}
+
+// installURLPlugin builds the fixture. sourceExtra returns extra JSON members
+// for the catalog's url source (for example `,"sha":"..."`), given the plugin
+// repo and its head commit.
+func installURLPlugin(t *testing.T, sourceExtra func(repo, head string) string) urlPluginFixture {
+	t.Helper()
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	f := urlPluginFixture{
+		pluginRepo: filepath.Join(t.TempDir(), "pluginrepo"),
+		mktRepo:    filepath.Join(t.TempDir(), "mkt"),
+		m:          NewManager(t.TempDir()),
+	}
+	writePlugin(t, f.pluginRepo, "widget", nil)
+	head := makeGitRepo(t, f.pluginRepo, "extra.txt", "v1")
+	writeURLCatalog(t, f.mktRepo, "widget", f.pluginRepo, sourceExtra(f.pluginRepo, head))
+	makeGitRepo(t, f.mktRepo, "README.md", "x")
+	f.m.Stderr = &bytes.Buffer{}
+	if _, err := f.m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: f.mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := f.m.Install(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	return f
+}
+
+func unpinned(string, string) string { return "" }
+
+// writeURLCatalog writes acme's marketplace.json into mktRepo, listing plugin
+// by a url source at pluginRepo with sourceExtra appended to that source.
+func writeURLCatalog(t *testing.T, mktRepo, plugin, pluginRepo, sourceExtra string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(mktRepo, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mktRepo, ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"`+plugin+`","source":{"source":"url","url":"`+pluginRepo+`"`+sourceExtra+`}}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// advanceRepo adds an empty commit to repo and returns the new head.
+func advanceRepo(t *testing.T, repo string) string {
+	t.Helper()
+	gitIn(t, repo, "commit", "--allow-empty", "-qm", "advance")
+	return gitIn(t, repo, "rev-parse", "HEAD")
+}
+
+func (f urlPluginFixture) warnings() string { return f.m.Stderr.(*bytes.Buffer).String() }
+
+// checkThenList runs a check and reports what List says about widget.
+func checkThenList(t *testing.T, m *Manager) bool {
+	t.Helper()
+	if err := m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	return listedUpdateAvailable(t, m)
+}
+
+func listedUpdateAvailable(t *testing.T, m *Manager) bool {
+	t.Helper()
+	items, err := m.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, it := range items {
+		if it.Plugin == "widget" {
+			return it.UpdateAvailable
+		}
+	}
+	t.Fatal("widget not listed")
+	return false
+}
+
+func TestCheckUpdates_FlagsAGitPluginWhoseRemoteMovedUntilItIsUpgraded(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("unchecked plugin listed as having an update")
+	}
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin at its remote head listed as having an update")
+	}
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	// The remote moves again after the check, so the upgrade lands past the
+	// checked head; the check's answer must not outlive the upgrade.
+	advanceRepo(t, f.pluginRepo)
+	if _, err := f.m.Upgrade(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("upgraded plugin still listed as having an update")
+	}
+}
+
+func TestCheckUpdates_AnswerGoesStaleWhenTheInstallChangesAnyOtherWay(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	advanceRepo(t, f.pluginRepo)
+	// A reinstall (or a CLI upgrade, another Manager) changes the installed
+	// commit without this Manager's Upgrade.
+	if err := f.m.Remove(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := f.m.Install(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("reinstalled plugin listed with the update checked before the reinstall")
+	}
+}
+
+func TestCheckUpdates_CancelledCheckKeepsThePreviousAnswer(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := f.m.CheckUpdates(ctx); err == nil {
+		t.Fatal("cancelled CheckUpdates reported success")
+	}
+	if !listedUpdateAvailable(t, f.m) {
+		t.Fatal("cancelled check discarded the previous answer")
+	}
+}
+
+func TestCheckUpdates_ShaPinnedSourceAsksNoRemote(t *testing.T) {
+	for name, pin := range map[string]func(string, string) string{
+		"full":        func(_, head string) string { return `,"sha":"` + head + `"` },
+		"abbreviated": func(_, head string) string { return `,"sha":"` + strings.ToUpper(head[:7]) + `"` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := installURLPlugin(t, pin)
+			advanceRepo(t, f.pluginRepo)
+			// A check that reached the remote would now fail and warn.
+			if err := os.Rename(f.pluginRepo, f.pluginRepo+".gone"); err != nil {
+				t.Fatal(err)
+			}
+			if checkThenList(t, f.m) {
+				t.Fatal("plugin at its pinned sha listed as having an update")
+			}
+			if w := f.warnings(); w != "" {
+				t.Fatalf("pinned check reached the remote: %s", w)
+			}
+		})
+	}
+}
+
+func TestCheckUpdates_FlagsAPinTheCatalogMoved(t *testing.T) {
+	f := installURLPlugin(t, func(_, head string) string { return `,"sha":"` + head + `"` })
+	next := advanceRepo(t, f.pluginRepo)
+	writeURLCatalog(t, f.mktRepo, "widget", f.pluginRepo, `,"sha":"`+next+`"`)
+	gitIn(t, f.mktRepo, "commit", "-aqm", "pin next")
+	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin whose catalog pin moved not listed as having an update")
+	}
+}
+
+func TestCheckUpdates_FollowsTheCatalogRef(t *testing.T) {
+	f := installURLPlugin(t, func(repo, _ string) string {
+		gitIn(t, repo, "branch", "stable")
+		return `,"ref":"stable"`
+	})
+	advanceRepo(t, f.pluginRepo)
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin flagged for a commit on a branch its catalog ref doesn't follow")
+	}
+	gitIn(t, f.pluginRepo, "branch", "-f", "stable", "main")
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin whose ref moved not listed as having an update")
+	}
+}
+
+func TestCheckUpdates_UnreachableRemoteWarnsAndFlagsNothing(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	if err := os.Rename(f.pluginRepo, f.pluginRepo+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin with an unreachable remote listed as having an update")
+	}
+	if w := f.warnings(); !strings.Contains(w, "widget@acme") {
+		t.Fatalf("no warning names the plugin: %q", w)
+	}
+}
+
+// A plugin stored in its marketplace's own repo ("./plugins/widget") is
+// upgradable from the refreshed marketplace clone. A check flags it when the
+// clone's tree at its folder is not the one installed, so a commit elsewhere
+// in the marketplace flags nothing, and an Upgrade copies the folder's new
+// contents and settles the flag.
+func TestCheckUpdates_RelativeSourcePluginUpgradesFromItsRefreshedMarketplace(t *testing.T) {
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	refresh := func() {
+		t.Helper()
+		if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+			t.Fatalf("RefreshMarketplace: %v", err)
+		}
+	}
+	advanceRepo(t, mktRepo)
+	refresh()
+	if checkThenList(t, m) {
+		t.Fatal("plugin flagged by a marketplace commit that did not touch its folder")
+	}
+
+	if err := os.WriteFile(filepath.Join(mktRepo, "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", ".")
+	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	// The check refreshes the marketplace first, so a change pushed since
+	// the last refresh is seen without one.
+	if !checkThenList(t, m) {
+		t.Fatal("plugin whose folder changed in its marketplace not flagged")
+	}
+	entry, err := m.Upgrade(context.Background(), "widget", name)
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(entry.InstallPath, "extra.txt")); err != nil || string(b) != "v2" {
+		t.Fatalf("upgraded plugin's extra.txt = %q (%v), want the marketplace's new contents", b, err)
+	}
+	if checkThenList(t, m) {
+		t.Fatal("upgraded plugin still flagged")
+	}
+}
+
+// A relative plugin is flagged by what its folder holds, not by the history
+// that touched it: commits that change the folder and change it back flag
+// nothing, as a reclone that moves a shallow clone's root does not.
+func TestCheckUpdates_RelativePluginWhoseFolderIsUnchangedIsNotFlagged(t *testing.T) {
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	extra := filepath.Join(mktRepo, "plugins", "widget", "extra.txt")
+	if err := os.WriteFile(extra, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", ".")
+	gitIn(t, mktRepo, "commit", "-qm", "change widget")
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, mktRepo, "add", "-A")
+	gitIn(t, mktRepo, "commit", "-qm", "change it back")
+	if err := m.RefreshMarketplace(context.Background(), name); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if checkThenList(t, m) {
+		t.Fatal("plugin whose folder holds what was installed flagged")
+	}
+}
+
+// A relative plugin installed before installs recorded its folder's tree has
+// none, so the first check flags it: it may be behind its marketplace, and
+// nothing says otherwise. One Upgrade records the tree and settles it.
+func TestCheckUpdates_RelativePluginInstalledWithNoCommitIsFlaggedOnce(t *testing.T) {
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := registryKey("widget", name)
+	reg.Plugins[key][0].GitCommitSha = ""
+	if err := m.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+	if !checkThenList(t, m) {
+		t.Fatal("relative plugin installed with no commit not flagged")
+	}
+	if _, err := m.Upgrade(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if checkThenList(t, m) {
+		t.Fatal("relative plugin still flagged after its upgrade recorded the commit")
+	}
+}
+
+func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	first := makeGitRepo(t, repo, "f.txt", "1")
+	gitIn(t, repo, "tag", "-a", "v1", "-m", "release")
+	gitIn(t, repo, "branch", "feature")
+	head := advanceRepo(t, repo)
+
+	for _, tc := range []struct{ ref, want string }{
+		{"", head},
+		{"main", head},
+		{"feature", first},
+		{"v1", first},
+		{"refs/tags/v1", first},
+		{"refs/heads/feature", first},
+	} {
+		got, err := gitRemoteHead(context.Background(), repo, tc.ref)
+		if err != nil {
+			t.Fatalf("gitRemoteHead(%q): %v", tc.ref, err)
+		}
+		if got != tc.want {
+			t.Errorf("gitRemoteHead(%q) = %s, want %s", tc.ref, got, tc.want)
+		}
+	}
+	if _, err := gitRemoteHead(context.Background(), repo, "nope"); err == nil {
+		t.Error("gitRemoteHead of a missing ref succeeded")
+	}
+}
+
+// Run under -race this also guards the two kinds of warning against sharing
+// a slice, but only when the remote check happens to start before the broken
+// catalog is read, which map order makes an occasional event.
+func TestCheckUpdates_WarnsAboutEveryRemoteAndCatalogItCannotRead(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	name := "other"
+	mktRepo := makeMarketplaceRepoWithPlugin(t, name, "gadget")
+	ref, err := f.m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := f.m.Install(context.Background(), "gadget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ref.InstallLocation, ".claude-plugin", "marketplace.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(f.pluginRepo, f.pluginRepo+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	w := f.warnings()
+	if !strings.Contains(w, "checking widget@acme for updates") || !strings.Contains(w, "reading marketplace.json for "+name) {
+		t.Fatalf("warnings miss the unreachable remote or the unreadable catalog: %q", w)
+	}
+}
+
+func TestCheckUpdates_AnswerGoesStaleWhenItsMarketplaceChanges(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not listed as having an update")
+	}
+	// A refresh that pulls a change to the catalog can change a plugin's
+	// source, ref or pin, so an answer checked against the old catalog no
+	// longer says what Upgrade would do. (One that pulls nothing keeps it:
+	// TestRefreshMarketplace_ANoOpRefreshReportsNoChange.)
+	advanceRepo(t, f.mktRepo)
+	if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("answer checked against the catalog before a refresh still listed")
+	}
+}
+
+func TestCheckUpdates_AnOlderCheckCannotOverwriteANewerOne(t *testing.T) {
+	m := NewManager(t.TempDir())
+	older := m.beginCheck()
+	newer := m.beginCheck()
+	m.publishCheck(newer, map[string]checkedHead{"widget@acme": {head: "b", installed: "a"}})
+	m.publishCheck(older, map[string]checkedHead{})
+	if !m.updateAvailable("widget@acme", "a") {
+		t.Fatal("an older check's late answer replaced a newer check's")
+	}
+}
+
+func TestCheckUpdates_UnfetchedMarketplaceIsNotReadFromTheWorkingDirectory(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	// A catalog in the working directory must never be taken for the
+	// marketplace's: a recorded but unfetched marketplace has no clone.
+	cwd := t.TempDir()
+	writeURLCatalog(t, cwd, "widget", f.pluginRepo, "")
+	t.Chdir(cwd)
+	mk, err := f.m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := mk["acme"]
+	ref.InstallLocation = ""
+	mk["acme"] = ref
+	if err := f.m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin flagged from a catalog read out of the working directory")
+	}
+}
+
+// An upgrade that lands while a check is in flight leaves the plugin
+// unflagged once the check publishes: the check's answer (the remote's head
+// before it moved) is for the install it read, which the upgrade replaced.
+// This is the overlap the hub allows by running evener/plugin/checkUpdates
+// off the connection's serial worker.
+func TestCheckUpdates_AnUpgradeDuringACheckIsNotFlaggedAfterIt(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	answered := make(chan struct{})
+	publish := make(chan struct{})
+	realGit := gitRun
+	t.Cleanup(func() { gitRun = realGit })
+	gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
+		out, err := realGit(ctx, dir, args...)
+		if len(args) > 0 && args[0] == "ls-remote" {
+			close(answered)
+			<-publish
+		}
+		return out, err
+	}
+	checked := make(chan error, 1)
+	go func() { checked <- f.m.CheckUpdates(context.Background()) }()
+	<-answered
+	// The remote moves on and the plugin is upgraded to it after the check
+	// read the old head, before it publishes.
+	advanceRepo(t, f.pluginRepo)
+	if _, err := f.m.Upgrade(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	close(publish)
+	if err := <-checked; err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if listedUpdateAvailable(t, f.m) {
+		t.Fatal("a check that read the remote before an upgrade flagged the upgraded plugin")
+	}
+}
+
+func TestCheckUpdates_WarnsAboutAPluginWhoseMarketplaceIsGone(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	reg, err := LoadRegistry(f.m.registryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins["ghost@gone"] = []InstallEntry{{Source: Source{Kind: SourceURL, URL: f.pluginRepo}, GitCommitSha: "abc"}}
+	if err := SaveRegistry(f.m.registryPath(), reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if w := f.warnings(); strings.Count(w, `marketplace "gone"`) != 1 {
+		t.Fatalf("want one warning naming the missing marketplace, got %q", w)
+	}
+}
+
+func TestCheckUpdates_WarnsAboutAPluginKeyWithNoMarketplace(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	reg, err := LoadRegistry(f.m.registryPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins["ghost"] = []InstallEntry{{Source: Source{Kind: SourceURL, URL: f.pluginRepo}, GitCommitSha: "abc"}}
+	if err := SaveRegistry(f.m.registryPath(), reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if w := f.warnings(); w != "warning: plugin \"ghost\" is installed with no marketplace; not checking it for updates\n" {
+		t.Fatalf("want one warning naming the plugin with no marketplace, got %q", w)
+	}
+}
+
+// A remote that never answers is cut off by the check's overall deadline, not
+// only by its own updateCheckTimeout, so the check answers before a client
+// waiting on it gives up. The hung remote is warned about like any other
+// remote that cannot be read.
+func TestCheckUpdates_OverallDeadlineCutsOffAHungRemote(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realGit, realDeadline := gitRun, updateCheckDeadline
+	t.Cleanup(func() { gitRun, updateCheckDeadline = realGit, realDeadline })
+	updateCheckDeadline = 50 * time.Millisecond
+	gitRun = func(ctx context.Context, dir string, args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "ls-remote" {
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
+		return realGit(ctx, dir, args...)
+	}
+	start := time.Now()
+	if checkThenList(t, f.m) {
+		t.Fatal("plugin whose remote hung listed as having an update")
+	}
+	// The warning names the deadline whichever timeout ended the hang, so
+	// only the time taken shows the overall deadline, not the 20s
+	// per-remote one, cut it off.
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("check took %v; the overall deadline did not cut off the hung remote", elapsed)
+	}
+	if w := f.warnings(); !strings.Contains(w, "checking widget@acme for updates: "+errUpdateCheckDeadline.Error()) {
+		t.Fatalf("no warning names the hung plugin: %q", w)
+	}
+}
+
+// A marketplace the check cannot refresh is warned about and checked as its
+// clone stands; the check itself still answers.
+func TestCheckUpdates_AMarketplaceThatCannotRefreshIsAWarning(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	if err := os.Rename(f.mktRepo, f.mktRepo+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not flagged when its marketplace could not refresh")
+	}
+	if w := f.warnings(); !strings.Contains(w, `refreshing marketplace "acme"`) {
+		t.Fatalf("no warning names the marketplace that could not refresh: %q", w)
+	}
+}
+
+// A check's refresh that leaves a marketplace's clone where it was confirms
+// its catalog current (LastUpdated) but reports no store change: nothing is
+// broadcast and no answers are retired for another check in flight. One that
+// pulls a change reports it.
+func TestCheckUpdates_ARefreshThatChangesNothingReportsNoChange(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	lastUpdated := func() time.Time {
+		t.Helper()
+		mk, err := f.m.ListMarketplaces(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mk["acme"].LastUpdated
+	}
+	reports := recordStoreChanges(f.m)
+	later := lastUpdated().Add(time.Hour)
+	f.m.Now = func() time.Time { return later }
+	checkThenList(t, f.m)
+	if got := lastUpdated(); !got.Equal(later) {
+		t.Fatalf("a refresh that pulled nothing left LastUpdated at %v, want %v", got, later)
+	}
+	if len(*reports) != 0 {
+		t.Fatalf("a refresh that pulled nothing reported %v", *reports)
+	}
+	advanceRepo(t, f.mktRepo)
+	checkThenList(t, f.m)
+	if len(*reports) != 1 || !(*reports)[0].Marketplaces {
+		t.Fatalf("a refresh that pulled a change reported %v, want one marketplaces change", *reports)
+	}
+}
+
+// A marketplace re-sourced to a pin while a check fetches its clone is left
+// alone once the fetch is done: the fast-forward skips it rather than fails
+// on its detached HEAD. Pinning the record and detaching the clone inside
+// the fetch stand in for the re-source, which waits on the clone lock the
+// fetch holds.
+func TestCheckUpdates_AClonePinnedDuringTheFetchIsNotFastForwarded(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFetch := marketplaceGitFetch
+	t.Cleanup(func() { marketplaceGitFetch = realFetch })
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		head := gitIn(t, dir, "rev-parse", "HEAD")
+		gitIn(t, dir, "checkout", "--quiet", "--detach")
+		mk, err := f.m.loadMarketplaces()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := mk["acme"]
+		ref.Source.Sha = head
+		mk["acme"] = ref
+		if err := f.m.writeMarketplaces(mk); err != nil {
+			t.Fatal(err)
+		}
+		return realFetch(ctx, dir)
+	}
+	advanceRepo(t, f.mktRepo)
+	checkThenList(t, f.m)
+	if w := f.warnings(); strings.Contains(w, "refreshing marketplace") {
+		t.Fatalf("a clone pinned during the fetch was fast-forwarded: %q", w)
+	}
+}
+
+// Marketplace refreshes that hang are cut off at their own budget, so the
+// remote checks still answer within the check's deadline.
+func TestCheckUpdates_HungRefreshesLeaveTheRemoteChecksTheirTime(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	advanceRepo(t, f.pluginRepo)
+	hangingFetches(t)
+	start := time.Now()
+	if !checkThenList(t, f.m) {
+		t.Fatal("plugin behind its remote head not flagged after its marketplace's refresh hung")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("check took %v; the refresh budget did not cut off the hung refresh", elapsed)
+	}
+	if w := f.warnings(); !strings.Contains(w, errUpdateCheckRefreshBudget.Error()) {
+		t.Fatalf("no warning names the refresh budget: %q", w)
+	}
+}
+
+// A check refreshes no marketplace pinned to a sha or a tag (its clone is on
+// a detached HEAD, which a fast-forward cannot move), and once its refresh
+// budget is spent it starts no more refreshes.
+func TestCheckUpdates_RefreshSkipsPinnedMarketplacesAndStopsAtItsBudget(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = &bytes.Buffer{}
+	shaRepo := makeMarketplaceRepoWithPlugin(t, "pinned", "gadget")
+	head := gitIn(t, shaRepo, "rev-parse", "HEAD")
+	tagRepo := makeMarketplaceRepoWithPlugin(t, "tagged", "gizmo")
+	gitIn(t, tagRepo, "tag", "v1")
+	for _, src := range []Source{
+		{Kind: SourceURL, URL: shaRepo, Sha: head},
+		{Kind: SourceURL, URL: tagRepo, Ref: "v1"},
+		{Kind: SourceURL, URL: makeMarketplaceRepoWithPlugin(t, "first", "widget")},
+		{Kind: SourceURL, URL: makeMarketplaceRepoWithPlugin(t, "second", "widget")},
+	} {
+		if _, err := m.AddMarketplace(context.Background(), "", src); err != nil {
+			t.Fatalf("AddMarketplace %s: %v", src.URL, err)
+		}
+	}
+	fetched := hangingFetches(t)
+	if err := m.CheckUpdates(context.Background()); err != nil {
+		t.Fatalf("CheckUpdates: %v", err)
+	}
+	if want := []string{m.marketplaceDir("first")}; !slices.Equal(*fetched, want) {
+		t.Fatalf("fetches = %v, want %v: only the first unpinned marketplace's before the budget ran out", *fetched, want)
+	}
+	w := m.Stderr.(*bytes.Buffer).String()
+	if strings.Contains(w, `"pinned"`) || strings.Contains(w, `"tagged"`) {
+		t.Fatalf("a pinned marketplace was refreshed: %q", w)
+	}
+	if !strings.Contains(w, `"second"`) {
+		t.Fatalf("no warning names the marketplace left unrefreshed: %q", w)
+	}
+}
+
+// hangingFetches makes every marketplace fetch hang until its context ends,
+// with a refresh budget of 500ms, and answers the clones fetched, in order.
+// The budget leaves a check's first refresh ample time to reach its fetch
+// (taking the clone lock, fast-forwarding a quick one) even under -race, so
+// the hang, not the setup, is what spends it.
+func hangingFetches(t *testing.T) *[]string {
+	t.Helper()
+	realFetch, realBudget := marketplaceGitFetch, updateCheckRefreshBudget
+	t.Cleanup(func() { marketplaceGitFetch, updateCheckRefreshBudget = realFetch, realBudget })
+	updateCheckRefreshBudget = 500 * time.Millisecond
+	var fetched []string
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		fetched = append(fetched, dir)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return &fetched
+}
+
+// A check whose budget ran out starts its next refresh at the marketplace it
+// left unrefreshed, so the same marketplaces are not starved every time.
+func TestCheckUpdates_RefreshResumesWhereTheLastCheckRanOut(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = &bytes.Buffer{}
+	for _, name := range []string{"first", "second"} {
+		if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepoWithPlugin(t, name, "widget")}); err != nil {
+			t.Fatalf("AddMarketplace %s: %v", name, err)
+		}
+	}
+	fetched := hangingFetches(t)
+	for range 3 {
+		if err := m.CheckUpdates(context.Background()); err != nil {
+			t.Fatalf("CheckUpdates: %v", err)
+		}
+	}
+	want := []string{m.marketplaceDir("first"), m.marketplaceDir("second"), m.marketplaceDir("first")}
+	if !slices.Equal(*fetched, want) {
+		t.Fatalf("fetches across three checks = %v, want %v", *fetched, want)
+	}
+}
+
+// A check's refresh downloads with the store lock free, so a plugin operation
+// started meanwhile is not held up behind the network.
+func TestCheckUpdates_RefreshFetchesWithTheStoreLockFree(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFetch := marketplaceGitFetch
+	t.Cleanup(func() { marketplaceGitFetch = realFetch })
+	lockErr := errors.New("no fetch ran")
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		release, err := f.m.lockStore(ctx, acquireLock, 200*time.Millisecond)
+		if lockErr = err; err == nil {
+			release()
+		}
+		return realFetch(ctx, dir)
+	}
+	advanceRepo(t, f.mktRepo)
+	checkThenList(t, f.m)
+	if lockErr != nil {
+		t.Fatalf("the store lock could not be taken during a check's fetch: %v", lockErr)
+	}
+}
+
+// A marketplace refresh cut off by the budget partway through goes first next
+// time, so one that is always the one in flight is not starved.
+func TestCheckUpdates_RefreshResumesAtOneTheBudgetCutOff(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = &bytes.Buffer{}
+	for _, name := range []string{"first", "second"} {
+		if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: makeMarketplaceRepoWithPlugin(t, name, "widget")}); err != nil {
+			t.Fatalf("AddMarketplace %s: %v", name, err)
+		}
+	}
+	fetched := hangingFetches(t)
+	hang := marketplaceGitFetch
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		if dir == m.marketplaceDir("first") {
+			*fetched = append(*fetched, dir)
+			return nil
+		}
+		return hang(ctx, dir)
+	}
+	for range 2 {
+		if err := m.CheckUpdates(context.Background()); err != nil {
+			t.Fatalf("CheckUpdates: %v", err)
+		}
+	}
+	want := []string{m.marketplaceDir("first"), m.marketplaceDir("second"), m.marketplaceDir("second")}
+	if !slices.Equal(*fetched, want) {
+		t.Fatalf("fetches across two checks = %v, want %v", *fetched, want)
+	}
+}
+
+// A check that cannot fetch a marketplace warns and leaves its clone; it never
+// reclones, which would hold the store lock across a download.
+func TestCheckUpdates_AFailedFetchDoesNotReclone(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFetch, realClone := marketplaceGitFetch, marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitFetch, marketplaceGitClone = realFetch, realClone })
+	marketplaceGitFetch = func(context.Context, string) error { return errors.New("wedged") }
+	clones := 0
+	marketplaceGitClone = func(ctx context.Context, url, dir, ref, sha string) error {
+		clones++
+		return realClone(ctx, url, dir, ref, sha)
+	}
+	checkThenList(t, f.m)
+	if clones != 0 {
+		t.Fatalf("a check whose fetch failed cloned %d times", clones)
+	}
+	if w := f.warnings(); !strings.Contains(w, "wedged") {
+		t.Fatalf("no warning carries the failed fetch: %q", w)
+	}
+}
+
+// duringCheckFetch runs op in the background while a check fetches the
+// marketplace "acme", and answers whether op had finished by the time the
+// fetch did (it should have waited for the fetch).
+func duringCheckFetch(t *testing.T, f urlPluginFixture, op func()) bool {
+	t.Helper()
+	realFetch := marketplaceGitFetch
+	t.Cleanup(func() { marketplaceGitFetch = realFetch })
+	var finishedDuringFetch bool
+	done := make(chan struct{})
+	marketplaceGitFetch = func(ctx context.Context, dir string) error {
+		go func() {
+			defer close(done)
+			op()
+		}()
+		select {
+		case <-done:
+			finishedDuringFetch = true
+		case <-time.After(300 * time.Millisecond):
+		}
+		return realFetch(ctx, dir)
+	}
+	checkThenList(t, f.m)
+	<-done
+	return finishedDuringFetch
+}
+
+// An explicit refresh of a clone a check is fetching waits for that fetch,
+// so the two gits do not collide on the clone's ref locks.
+func TestCheckUpdates_AnExplicitRefreshWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if err := f.m.RefreshMarketplace(context.Background(), "acme"); err != nil {
+			t.Errorf("RefreshMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("an explicit refresh ran while a check was fetching the same clone")
+	}
+}
+
+// Removing a marketplace a check is fetching waits for that fetch, so the
+// clone is not deleted under a running git (which Windows refuses).
+func TestCheckUpdates_RemovingAMarketplaceWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if err := f.m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+			t.Errorf("RemoveMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("a marketplace was removed while a check was fetching its clone")
+	}
+}
+
+// Renaming a marketplace a check is fetching waits for that fetch, so its
+// clone is not moved under a running git.
+func TestCheckUpdates_RenamingAMarketplaceWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if _, err := f.m.EditMarketplace(context.Background(), "acme", "renamed", nil); err != nil {
+			t.Errorf("EditMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("a marketplace was renamed while a check was fetching its clone")
+	}
+}
+
+// A check's fast-forward holds the clone's lock too, so another check's
+// fetch of the same clone does not run beside it.
+func TestCheckUpdates_TheFastForwardHoldsTheCloneLock(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realFastForward := marketplaceGitFastForward
+	t.Cleanup(func() { marketplaceGitFastForward = realFastForward })
+	var ran bool
+	lockErr := errors.New("not tried")
+	marketplaceGitFastForward = func(ctx context.Context, dir string) error {
+		ran = true
+		tryCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		release, err := NewManager(f.m.Root).lockClone(tryCtx, dir)
+		if lockErr = err; err == nil {
+			release()
+		}
+		return realFastForward(ctx, dir)
+	}
+	checkThenList(t, f.m)
+	if !ran || lockErr == nil {
+		t.Fatalf("fast-forward ran=%v and another holder took its clone's lock; want the lock held", ran)
+	}
+}
+
+// A check waiting for a clone's lock gives up when its refresh budget ends,
+// so a long explicit refresh holding the clone cannot stall the check.
+func TestCheckUpdates_AWaitForTheCloneLockEndsWithTheBudget(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	realBudget := updateCheckRefreshBudget
+	t.Cleanup(func() { updateCheckRefreshBudget = realBudget })
+	updateCheckRefreshBudget = 50 * time.Millisecond
+	mk, err := f.m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := f.m.lockClone(context.Background(), mk["acme"].InstallLocation)
+	if err != nil {
+		t.Fatalf("lockClone: %v", err)
+	}
+	defer release()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		checkThenList(t, f.m)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a check waited past its refresh budget for a clone's lock")
+	}
+	if w := f.warnings(); !strings.Contains(w, errUpdateCheckRefreshBudget.Error()) {
+		t.Fatalf("no warning names the refresh budget: %q", w)
+	}
+}
+
+// Another evener process removing a marketplace a check is fetching waits for
+// that fetch too: the clone lock is a file lock, not this process's alone.
+func TestCheckUpdates_AnotherProcessRemovingAMarketplaceWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	other := NewManager(f.m.Root)
+	other.Stderr = &bytes.Buffer{}
+	if duringCheckFetch(t, f, func() {
+		if err := other.RemoveMarketplace(context.Background(), "acme"); err != nil {
+			t.Errorf("RemoveMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("another process removed a marketplace while a check was fetching its clone")
+	}
+}
+
+// Re-sourcing a marketplace to a directory while a check fetches its clone
+// waits for the fetch before removing the old clone.
+func TestCheckUpdates_ReSourcingToADirectoryWaitsForTheCheckFetch(t *testing.T) {
+	f := installURLPlugin(t, unpinned)
+	if duringCheckFetch(t, f, func() {
+		if _, err := f.m.EditMarketplace(context.Background(), "acme", "", &Source{Kind: SourceDirectory, Path: f.mktRepo}); err != nil {
+			t.Errorf("EditMarketplace: %v", err)
+		}
+	}) {
+		t.Fatal("the old clone was removed while a check was fetching it")
+	}
+}
+
+// An unpinned git-subdir marketplace's sparse clone stays on its branch, so a
+// check refreshes it and sees a change pushed to a relative-source plugin.
+func TestCheckUpdates_AGitSubdirMarketplaceIsRefreshed(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := filepath.Join(t.TempDir(), "monorepo")
+	if err := os.MkdirAll(filepath.Join(repo, "mkt", ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "mkt", ".claude-plugin", "marketplace.json"),
+		[]byte(`{"name":"acme","owner":{"name":"o"},"plugins":[{"name":"widget","source":"./plugins/widget"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePlugin(t, filepath.Join(repo, "mkt", "plugins", "widget"), "widget", nil)
+	makeGitRepo(t, repo, "README.md", "root")
+	m := NewManager(t.TempDir())
+	m.Stderr = &bytes.Buffer{}
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "mkt", "plugins", "widget", "extra.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", ".")
+	gitIn(t, repo, "commit", "-qm", "change widget")
+	if !checkThenList(t, m) {
+		t.Fatalf("a change in a git-subdir marketplace was not seen; warnings: %q", m.Stderr.(*bytes.Buffer).String())
+	}
+}
+
+// A ref is a branch exactly when checkout left a local branch of that name,
+// so origin/HEAD does not matter: a remote whose HEAD names a missing branch
+// never gives a clone one. A tag shadowing another branch stays a pin, and a
+// tag named like the default branch stays the branch, either way.
+func TestSourcePinned_NeedsNoOriginHEAD(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepoWithPlugin(t, "shadowed", "widget")
+	gitIn(t, repo, "tag", "rel")
+	gitIn(t, repo, "branch", "rel")
+	def := gitIn(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	gitIn(t, repo, "tag", def)
+	m := NewManager(t.TempDir())
+	shadowed, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "rel"})
+	if err != nil {
+		t.Fatalf("AddMarketplace rel: %v", err)
+	}
+	onDefault, err := m.AddMarketplace(context.Background(), "default", Source{Kind: SourceURL, URL: repo, Ref: def})
+	if err != nil {
+		t.Fatalf("AddMarketplace %s: %v", def, err)
+	}
+	check := func(when string) {
+		t.Helper()
+		if !sourcePinned(context.Background(), shadowed) {
+			t.Fatalf("%s: a tag shadowing a non-default branch is not a pin", when)
+		}
+		if sourcePinned(context.Background(), onDefault) {
+			t.Fatalf("%s: a tag named like the default branch was taken for a pin", when)
+		}
+	}
+	check("with origin/HEAD")
+	for _, ref := range []MarketplaceRef{shadowed, onDefault} {
+		gitIn(t, ref.InstallLocation, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	}
+	check("without origin/HEAD")
+}

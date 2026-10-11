@@ -6,11 +6,11 @@
  * slack-lean spec, 2026-07-29-transcript-slack-lean-messages.md,
  * decision 1), and the live stream's caret (see .stream below).
  *
- * Agent prose is body-size like everything else (tiered-density spec,
- * 2026-07-27): the hierarchy against the user's ink-mid text is carried
- * by CONTRAST alone (Markdown's root is --ink-hi). The earlier pane-title
- * size bump fired on every mid-turn narrative fragment, dozens per
- * session, and cancelled itself. */
+ * Agent prose reads at the shared prose step, like the user's own text
+ * (tiered-density spec, 2026-07-27): the hierarchy against the user's
+ * ink-mid text is carried by CONTRAST alone (Markdown's root is --ink-hi).
+ * The earlier pane-title size bump fired on every mid-turn narrative
+ * fragment, dozens per session, and cancelled itself. */
 .message {
   /* One rhythm step inside an exchange: consecutive agent fragments stack
    * tight. The larger steps live on the user message (exchange) and the
@@ -37,6 +37,12 @@
    * characters per line at 1440 (typography-spacing-critique-2026-09-06). */
   max-width: 100%;
   padding: var(--rhythm-line) 0;
+  /* The transcript's reading surface: the Markdown root composes with its
+   * host (1em fallback), so pin the shared prose step here, on the bubble
+   * both the live and the settled prose share - without it agent prose
+   * falls to the ambient body step. Steps above prose stay forbidden (see
+   * this file's header). */
+  --prose-font-size: var(--font-size-prose);
 }
 
 /* Continuation fragments (no avatar, no header) follow a tool run or a

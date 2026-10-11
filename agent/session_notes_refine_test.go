@@ -12,6 +12,7 @@ import (
 
 // A refused atomic save changes neither storage nor publication.
 func TestSetHumanNoteRefusalDoesNotPublish(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "stop"}
@@ -36,6 +37,7 @@ func TestSetHumanNoteRefusalDoesNotPublish(t *testing.T) {
 }
 
 func TestSetHumanNoteRejectedReplayKeepsNewer(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "stop"}
@@ -68,6 +70,7 @@ func TestSetHumanNoteRejectedReplayKeepsNewer(t *testing.T) {
 // emission order matches the store order (no stale publish after a newer
 // store).
 func TestConcurrentNotesSavesConvergeToOneOrder(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	const writers = 8
@@ -119,6 +122,7 @@ drain:
 // persistence failure surfaces with no success journaled: human-note journal
 // persistence and URL metadata persistence each use their actual filesystem seam.
 func TestNotesPersistenceFailureBlocksSuccessJournal(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	defer s.Close()
 	injected := errors.New("injected meta save failure")
@@ -159,6 +163,7 @@ func TestNotesPersistenceFailureBlocksSuccessJournal(t *testing.T) {
 // notes refresh that ran before a compaction is re-projected into the
 // request built after it, so the provider request contains current notes.
 func TestNotesRefreshAfterCompactionReachesRequest(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	if _, changed := s.setAgentNote("fresh agent note"); !changed {
@@ -188,6 +193,7 @@ func TestNotesRefreshAfterCompactionReachesRequest(t *testing.T) {
 // notification-wake request, even though the notification accept path
 // projects no notes context of its own.
 func TestNotificationWakeFirstRequestReflectsURLRemoval(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	entry, err := s.addSessionURL("https://x.test/keep", "")

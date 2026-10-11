@@ -1,9 +1,11 @@
-import { canonicalSkillNames } from "@evener/appwire-client";
+import { type ComposerMention, canonicalSkillNames } from "@evener/appwire-client";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 export interface SkillEditorValue {
   text: string;
   skillNames: string[];
+  commandNames?: string[];
+  mentions?: ComposerMention[];
 }
 
 /** Flat inline content: newlines are text, and skills occupy one document position. */
@@ -11,6 +13,19 @@ export const skillSchema = new Schema({
   nodes: {
     doc: { content: "inline*", whitespace: "pre" },
     text: { group: "inline" },
+    command: {
+      inline: true,
+      group: "inline",
+      atom: true,
+      selectable: false,
+      attrs: { name: {} },
+      toDOM: (node) => [
+        "span",
+        { "data-command-name": node.attrs.name, contenteditable: "false" },
+        `/${node.attrs.name}`,
+      ],
+      leafText: (node) => `/${node.attrs.name}`,
+    },
     skill: {
       inline: true,
       group: "inline",
@@ -61,14 +76,25 @@ export function completeSkillReferenceAt(text: string, offset: number, names: re
 
 /** Only complete visible mentions in skillNames become atoms; never append hidden selections. */
 export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
-  const names = canonicalSkillNames(value.skillNames).sort((a, b) => b.length - a.length);
+  const skills = canonicalSkillNames(value.skillNames);
+  const commands = canonicalSkillNames(value.commandNames);
+  const names = [...new Set([...skills, ...commands])].sort((a, b) => b.length - a.length);
+  const usedSkills = new Set<string>();
   const nodes: ProseMirrorNode[] = [];
   let textStart = 0;
   for (let offset = 0; offset < value.text.length; offset++) {
     const name = completeSkillReferenceAt(value.text, offset, names);
     if (!name) continue;
+    const mention = value.mentions?.find((item) => item.offset === offset && item.name === name);
+    if (value.mentions && !mention) continue;
+    const kind =
+      mention?.kind ??
+      (skills.includes(name) && (!commands.includes(name) || !usedSkills.has(name)) ? "skill" : "command");
+    if (!(kind === "skill" ? skills : commands).includes(name)) continue;
     if (textStart < offset) nodes.push(skillSchema.text(value.text.slice(textStart, offset)));
-    nodes.push(skillSchema.nodes.skill.create({ name }));
+    const type = kind === "skill" ? skillSchema.nodes.skill : skillSchema.nodes.command;
+    nodes.push(type.create({ name }));
+    if (kind === "skill") usedSkills.add(name);
     offset += name.length;
     textStart = offset + 1;
   }
@@ -80,14 +106,60 @@ export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
 export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   let text = "";
   const names: string[] = [];
+  const commands: string[] = [];
+  const mentions: ComposerMention[] = [];
   doc.forEach((node) => {
     if (node.isText) text += node.text;
     else {
+      const kind = node.type.name === "command" ? "command" : "skill";
+      mentions.push({ kind, name: node.attrs.name, offset: text.length });
       text += `/${node.attrs.name}`;
-      names.push(node.attrs.name);
+      (kind === "command" ? commands : names).push(node.attrs.name);
     }
   });
-  return { text, skillNames: canonicalSkillNames(names) };
+  const value = { text, skillNames: canonicalSkillNames(names) };
+  // Names alone suffice only when every matching reference is an actual skill
+  // atom. Keep locations when commands or same-spelling prose need distinct
+  // intent, including after deletion of the final command.
+  const needsMentions = commands.length > 0 || (value.skillNames.length > 0 && !parseSkillDocument(value).eq(doc));
+  return {
+    ...value,
+    ...(commands.length ? { commandNames: canonicalSkillNames(commands) } : {}),
+    ...(needsMentions ? { mentions } : {}),
+  };
+}
+
+/** Length of the leading run two serialized values share. */
+export function sharedPrefixLength(before: string, after: string): number {
+  const limit = Math.min(before.length, after.length);
+  let index = 0;
+  while (index < limit && before[index] === after[index]) index++;
+  return index;
+}
+
+/** Length of the trailing run two serialized values share, past `prefix`. */
+export function sharedSuffixLength(before: string, after: string, prefix: number): number {
+  const limit = Math.min(before.length, after.length) - prefix;
+  let count = 0;
+  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
+  return count;
+}
+
+/** Shift existing atom identities across a plain-text splice without selecting new prose. */
+export function patchSelectionText(value: SkillEditorValue, text: string): SkillEditorValue {
+  if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...value, text }));
+  const prefix = sharedPrefixLength(value.text, text);
+  const suffix = sharedSuffixLength(value.text, text, prefix);
+  const oldEnd = value.text.length - suffix;
+  const delta = text.length - value.text.length;
+  const mentions = value.mentions.flatMap((item) =>
+    item.offset + item.name.length + 1 <= prefix
+      ? [item]
+      : item.offset >= oldEnd
+        ? [{ ...item, offset: item.offset + delta }]
+        : [],
+  );
+  return serializeSkillDocument(parseSkillDocument({ ...value, text, mentions }));
 }
 
 /**
@@ -118,6 +190,43 @@ export function materializeSkillReferences(text: string, names: readonly string[
   // references is decided here, so trailing whitespace the user typed survives.
   const joiner = text === "" || /\s$/.test(text) ? "" : " ";
   return `${text}${joiner}${missing.map((name) => `/${name}`).join(" ")}`;
+}
+
+/** A queue selection may lack a visible label, so restore one of its own kind. */
+export function materializeSelectionReferences(value: SkillEditorValue): SkillEditorValue {
+  let current = serializeSkillDocument(parseSkillDocument(value));
+  for (const kind of ["skill", "command"] as const) {
+    const wanted = kind === "skill" ? value.skillNames : value.commandNames;
+    for (const name of canonicalSkillNames(wanted)) {
+      const present = kind === "skill" ? current.skillNames : (current.commandNames ?? []);
+      if (present.includes(name)) continue;
+      const joiner = current.text === "" || /\s$/.test(current.text) ? "" : " ";
+      const offset = current.text.length + joiner.length;
+      const mentions = current.mentions ?? skillAtomMentions(parseSkillDocument(current));
+      current = serializeSkillDocument(
+        parseSkillDocument({
+          text: `${current.text}${joiner}/${name}`,
+          skillNames: kind === "skill" ? [...current.skillNames, name] : current.skillNames,
+          commandNames: kind === "command" ? [...(current.commandNames ?? []), name] : current.commandNames,
+          mentions: [...mentions, { kind, name, offset }],
+        }),
+      );
+    }
+  }
+  return current;
+}
+
+export function skillAtomMentions(doc: ProseMirrorNode): ComposerMention[] {
+  const mentions: ComposerMention[] = [];
+  let offset = 0;
+  doc.forEach((node) => {
+    if (node.isText) offset += node.nodeSize;
+    else {
+      mentions.push({ kind: node.type.name === "command" ? "command" : "skill", name: node.attrs.name, offset });
+      offset += node.attrs.name.length + 1;
+    }
+  });
+  return mentions;
 }
 
 /** Map a UTF-16 serialized offset to a flat document position; bias snaps atom interiors. */

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // sandboxGranter is the execution environment's ability to produce a short-lived
@@ -115,7 +116,9 @@ var escalatableTools = map[string]bool{
 }
 
 // escalationAllowed reports whether a denial is eligible for human escalation. It
-// mirrors ask_user's root-only interactive gate (NonInteractive || subagent), adds
+// uses ask_user's root-only interactive gate (NonInteractive || subagent), except
+// that an attached ask responder never enables it: a scripted answerer must not
+// approve a sandbox bypass. It adds
 // the reconciliation zero-subscriber rule, restricts escalation to the single-file
 // tools (escalatableTools), and — critically — only raises a card for a denial a
 // per-invocation single-leaf grant could actually CURE: a CONTAINMENT denial
@@ -211,7 +214,12 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 	s.emit(events.EventSandboxEscalationRequested, data)
 
 	select {
-	case d := <-ch:
+	case d, decided := <-ch:
+		if !decided {
+			// cancelAllEscalations closed the channel: the session is closing,
+			// and no human answered.
+			return res
+		}
 		if d.Approve {
 			return rerun(withInvocationGrant(ctx, denied.Path))
 		}
@@ -235,6 +243,17 @@ func (s *Session) ResolveSandboxEscalation(id string, approve bool) error {
 	if !ok {
 		return fmt.Errorf("sandbox escalation %q is not pending (unknown or already resolved)", id)
 	}
+	// The human's answer is history. It is recorded here, where the session
+	// accepts it, rather than by the waiting call: a turn stopped at the same
+	// moment can win that call's select and never read the answer. Recording
+	// before the send also puts it before the re-run's result.
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeApprovalDecision, ApprovalDecision: &schema.ApprovalDecisionNotice{
+		EscalationID: id,
+		Approved:     approve,
+		Tool:         w.data.Tool,
+		Kind:         w.data.Kind,
+		DeniedPath:   w.data.DeniedPath,
+	}})
 	w.ch <- sandbox.EscalationDecision{Approve: approve} // buffered(1); exactly one send
 	return nil
 }
@@ -273,7 +292,7 @@ func (s *Session) PendingEscalations() []events.SandboxEscalationRequestedData {
 	return out
 }
 
-// cancelAllEscalations denies every pending escalation. Called from Close so a
+// cancelAllEscalations withdraws every pending escalation. Called from Close so a
 // blocked tool-exec goroutine unblocks (returning the typed denial) rather than
 // leaking. Turn-interrupt cancellation is handled by the ctx.Done() arm of the
 // select; this covers teardown, where the ctx may outlive the decision to stop.
@@ -282,8 +301,12 @@ func (s *Session) cancelAllEscalations() {
 	pending := s.pendingEscalations
 	s.pendingEscalations = nil
 	s.mu.Unlock()
+	// Closing, not sending a deny: the waiter tells a human's decision from
+	// the session going away by whether the channel delivered one, and only a
+	// human's decision is recorded. Each waiter left the map under s.mu before
+	// this, so ResolveSandboxEscalation can never send on a closed channel.
 	for _, w := range pending {
-		w.ch <- sandbox.EscalationDecision{Approve: false}
+		close(w.ch)
 	}
 }
 

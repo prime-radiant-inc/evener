@@ -66,12 +66,14 @@ func doctorStateBase(deps *toolDeps, override string) string {
 // tests can substitute the runbook source FS.
 var doctorBundledSkills = bundled.Skills
 
-// execDoctorEvener dispatches one doctor_evener invocation to the
-// agent/doctor package. Results are the CLI's --json struct shapes: the CLI's
-// cmd functions marshal these same structs, so the tool and
-// `evener doctor --json` cannot disagree on shape. Command-option
-// precedence mirrors the CLI exactly (count, then health, then render;
-// validate over health on apilog).
+// execDoctorEvener validates and dispatches one doctor_evener invocation to
+// the agent/doctor package, and is the error seam that makes a miss explicit:
+// on any error it returns no value, so the tool layer renders the not-found
+// text instead of a doctor function's zero struct. Results are the CLI's
+// --json struct shapes: the CLI's cmd functions marshal these same structs,
+// so the tool and `evener doctor --json` cannot disagree on shape.
+// Command-option precedence mirrors the CLI exactly (count, then health,
+// then render; validate over health on apilog).
 func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 	command, _ := args["command"].(string)
 	if command == "" {
@@ -99,6 +101,25 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		}
 	}
 
+	res, err := dispatchDoctorEvener(deps, args, command, stateBase, selector)
+	if err != nil {
+		// One seam for every command: a doctor miss is an explicit error and
+		// no data. The doctor functions return their zero structs alongside
+		// the error — none returns partial results with one (in-band partials,
+		// like ListSessions' unreadable list, ride in the value, never as an
+		// error) — and the tool layer renders a non-nil erroring value as the
+		// result content, so passing the zero struct through would show the
+		// model an all-empty JSON object instead of the not-found text.
+		return nil, err
+	}
+	return res, nil
+}
+
+// dispatchDoctorEvener runs one validated doctor command against the
+// agent/doctor package. execDoctorEvener's error seam above is what makes a
+// miss explicit on this surface; the branches here may return the doctor
+// functions' (value, err) pairs directly.
+func dispatchDoctorEvener(deps *toolDeps, args map[string]any, command, stateBase, selector string) (any, error) {
 	switch command {
 	case "locate":
 		return doctor.Locate(stateBase, selector)
@@ -238,7 +259,7 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 		return findings, nil
 	}
 
-	// Unreachable: the enum gate above covers every command.
+	// Unreachable: execDoctorEvener's enum gate covers every command.
 	return nil, fmt.Errorf("unknown doctor command %q", command)
 }
 
@@ -293,7 +314,7 @@ func doctorCapSessionsRows(res doctor.SessionsResult) doctorSessionsEnvelope {
 // error instead.
 func doctorRequireSelector(command, selector string) error {
 	if strings.TrimSpace(selector) == "" {
-		return fmt.Errorf("doctor command %q requires a selector (local:<id>, proj:<hash>:<id>, or bare <id>)", command)
+		return fmt.Errorf("doctor command %q requires a selector (%s)", command, tool.DoctorEvenerSelectorDialect)
 	}
 	return nil
 }

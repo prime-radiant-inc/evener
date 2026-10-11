@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 )
@@ -540,6 +541,20 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 	return inspect.Watching || inspect.Source != "" || inspect.EndReason != ""
 }
 
+// validateDelegateLabel validates a delegate name with the same alphabet
+// manage_worktree names use (worktree.ValidateName), wrapped in the
+// invalid_request convention both the create path and describe share.
+// A blank name is valid (absent label).
+func validateDelegateLabel(name string) error {
+	if name == "" {
+		return nil
+	}
+	if verr := worktree.ValidateName(name); verr != nil {
+		return fmt.Errorf("invalid_request: name: %w", verr)
+	}
+	return nil
+}
+
 // decodeDelegateArgs decodes the delegate tool's raw params into delegateArgs,
 // returning an invalid_request error for a malformed wait/allowance value. It is
 // pure over the args map (no session state), so the decode — including the
@@ -555,8 +570,11 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
-		Isolation:       stringArg(args, "isolation"),
-		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
+		// Isolation is normalized here so every downstream consumer —
+		// create, describe — sees one shape; a padded value must not
+		// behave differently at exactly one of them.
+		Isolation: strings.TrimSpace(stringArg(args, "isolation")),
+		Sandbox:   stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
 	if raw, exists := args["fork_context"]; exists {
 		var ok bool
@@ -593,6 +611,20 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		default:
 			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 		}
+	}
+	// name: a short mnemonic the caller gives the delegate. With isolation
+	// "worktree" it names the lane's git branch, so `git branch` and merges
+	// read clearly; without isolation it is a display-only label. Either way
+	// the lane directory and every addressing surface stay keyed to the
+	// delegate id. Validated here with the same alphabet manage_worktree names
+	// use — a branch-safe alphabet is also a good label alphabet — before any
+	// capacity is reserved; the worktree create core re-checks with git's own
+	// ref rules and refuses a branch that already exists.
+	if name := stringArg(args, "name"); name != "" {
+		if err := validateDelegateLabel(name); err != nil {
+			return delegateArgs{}, err
+		}
+		a.Name = name
 	}
 	// delegation_allowance: absent = the default grant (one level below the
 	// creator, resolved by createDelegate); 0 = leaf delegate; positive =
@@ -945,6 +977,7 @@ func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleR
 		Kind:                 "delegate",
 		Type:                 "delegate",
 		Status:               status.Status,
+		Name:                 snapshot.descriptor.Name,
 		Description:          snapshot.descriptor.Description,
 		OwnerSessionID:       snapshot.descriptor.OwnerSessionID,
 		VisibleToSessionID:   snapshot.descriptor.VisibleSessionID,
@@ -1029,8 +1062,15 @@ func formatJobList(out jobListResult) string {
 		if label == "" && j.Command != nil {
 			label = *j.Command
 		}
+		parts := make([]string, 0, 2)
+		if j.Name != "" {
+			parts = append(parts, j.Name)
+		}
 		if label != "" {
-			fmt.Fprintf(&b, "  %s", label)
+			parts = append(parts, label)
+		}
+		if len(parts) != 0 {
+			fmt.Fprintf(&b, "  %s", strings.Join(parts, " — "))
 		}
 		var detail []string
 		if started := shortTimestamp(j.StartedAt); started != "" {
@@ -1167,7 +1207,7 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 	if err != nil {
 		return "", err
 	}
-	result, cancelPlan, plans, err := s.delegateController.StopSubtreeAndDrive(actor, delegateID)
+	result, cancelPlan, plans, err := s.delegateController.StopSubtreeAndDrive(ctx, actor, delegateID)
 	if err != nil {
 		return "", err
 	}
@@ -1290,6 +1330,7 @@ type stableDelegateStatusResult struct {
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
+	Name               string                 `json:"name,omitempty"`
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
 	AgentType          string                 `json:"agent_type"`
@@ -1318,6 +1359,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		ID:                 snapshot.id,
 		Type:               "delegate",
 		Status:             string(snapshot.lifecycle),
+		Name:               descriptor.Name,
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
@@ -1423,13 +1465,16 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	ID               string   `json:"id"`
-	JobID            string   `json:"job_id,omitempty"`
-	Kind             string   `json:"kind"`
-	Type             string   `json:"type"`
-	Status           string   `json:"status"`
-	Phase            string   `json:"phase,omitempty"`
-	Reason           *string  `json:"reason,omitempty"`
+	ID     string  `json:"id"`
+	JobID  string  `json:"job_id,omitempty"`
+	Kind   string  `json:"kind"`
+	Type   string  `json:"type"`
+	Status string  `json:"status"`
+	Phase  string  `json:"phase,omitempty"`
+	Reason *string `json:"reason,omitempty"`
+	// Name is the delegate's display label (the `name` create argument);
+	// empty for shells and unnamed delegates, which render as absent.
+	Name             string   `json:"name,omitempty"`
 	Description      string   `json:"description"`
 	Task             string   `json:"task,omitempty"`
 	AgentType        string   `json:"agent_type,omitempty"`
@@ -1618,6 +1663,7 @@ type delegateSendResult struct {
 	ResolvedProfileID      string                  `json:"resolved_profile_id,omitempty"`
 	ResolvedModel          string                  `json:"resolved_model,omitempty"`
 	ReasoningEffort        string                  `json:"reasoning_effort,omitempty"`
+	Name                   string                  `json:"name,omitempty"`
 	RunStartedAt           string                  `json:"run_started_at,omitempty"`
 	RunEndedAt             string                  `json:"run_ended_at,omitempty"`
 	LatestActivityAt       string                  `json:"latest_activity_at,omitempty"`
@@ -1627,6 +1673,10 @@ type delegateSendResult struct {
 	// lifecycle step 3); nil for a non-isolated delegate.
 	Worktree          *delegateWorktreeToolResult `json:"worktree,omitempty"`
 	WaitIgnoredReason string                      `json:"wait_ignored_reason,omitempty"`
+	// EarlierResults are results of the same delegate the caller had not
+	// yet received, oldest first, carried ahead of this one by a wait that
+	// collected them (#3906).
+	EarlierResults []delegateSendResult `json:"earlier_results,omitempty"`
 }
 
 type jobWatchToolResult struct {
@@ -1648,6 +1698,7 @@ type jobWatchToolResult struct {
 	Fired            bool   `json:"fired"`
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type jobWatchToolEventFilter struct {
@@ -1719,6 +1770,11 @@ func delegateSandboxToolResultFrom(sb *delegateSandboxReport) *delegateSandboxTo
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
 	_ = maxChars
+	out := delegateSendResultFrom(res)
+	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
+}
+
+func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 	out := delegateSendResult{
 		DelegateID:          res.DelegateID,
 		Type:                res.Type,
@@ -1739,6 +1795,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		RequestedModel:      res.RequestedModel,
 		ResolvedProfileID:   res.ResolvedProfileID,
 		ResolvedModel:       res.ResolvedModel,
+		Name:                res.Name,
 		ReasoningEffort:     res.ReasoningEffort,
 		RunStartedAt:        res.RunStartedAt,
 		RunEndedAt:          res.RunEndedAt,
@@ -1757,14 +1814,52 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		out.StructuredResultValid = &valid
 		out.StructuredResultReason = res.StructuredResultReason
 	}
-	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
+	for _, packet := range res.Earlier {
+		earlier := sendMessageResult{DelegateID: res.DelegateID, Type: res.Type, TranscriptRef: res.TranscriptRef}
+		if packet.Kind == delegatestore.PacketUpdate {
+			// A mid-work update the reply carries ahead of the newest result
+			// settles nothing: it is the delegate's message and no more.
+			earlier.Action = "update"
+			message, err := delegateUpdateMessage(packet)
+			if err != nil {
+				// Unreachable by construction: the journal fold writes every
+				// update message with json.Marshal of a string. The reply has
+				// no error channel, so the decode error stands in as output.
+				message = err.Error()
+			}
+			earlier.Output = message
+		} else {
+			completeStableDelegateSendResult(&earlier, packet)
+		}
+		out.EarlierResults = append(out.EarlierResults, delegateSendResultFrom(earlier))
+	}
+	return out
 }
 
-// formatDelegateSend renders a delegate send/steer/start result: any reply output,
-// a bracketed footer, and the structured_result (JSON, genuinely structured) when
-// present.
+// latestResultHeader introduces a delegate_send reply's own result after the
+// earlier results it carries, in the tool reply and in transcripts alike.
+const latestResultHeader = "latest result:\n"
+
+// earlierResultHeader introduces earlier result i (zero-based) of n that a
+// delegate_send reply carries, in the tool reply and in transcripts alike.
+func earlierResultHeader(i, n int) string {
+	return fmt.Sprintf("earlier result %d of %d, not delivered before:\n", i+1, n)
+}
+
+// formatDelegateSend renders a delegate send/steer/start result: any earlier
+// results it carries, numbered and each rendered the same way, then any reply
+// output, a bracketed footer, and the structured_result (JSON, genuinely
+// structured) when present.
 func formatDelegateSend(out delegateSendResult) string {
 	var b strings.Builder
+	for i, earlier := range out.EarlierResults {
+		b.WriteString(earlierResultHeader(i, len(out.EarlierResults)))
+		b.WriteString(formatDelegateSend(earlier))
+		b.WriteString("\n\n")
+	}
+	if len(out.EarlierResults) != 0 {
+		b.WriteString(latestResultHeader)
+	}
 	if out.Output != nil && *out.Output != "" {
 		b.WriteString(*out.Output)
 		if !strings.HasSuffix(*out.Output, "\n") {
@@ -1821,6 +1916,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+		Reason:             res.Reason,
 	}
 	if res.OneShot {
 		out.AfterSeconds = res.TimerSeconds
@@ -2118,7 +2214,8 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
-			jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
+			jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
+			jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
 			statuses = append(statuses, status)
 		default:
 			return nil, fmt.Errorf("invalid job status %q", status)

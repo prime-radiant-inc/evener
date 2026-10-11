@@ -1,0 +1,167 @@
+/* Styles for the inline task-list card rework mock-ups
+ * (taskcardmockups.html). Every color, space, and face decision is a token
+ * from styles/tokens.css, and the geometry deliberately mirrors
+ * tools/taskcard.module.css so the variants read as siblings of today's
+ * card, not a new design language. The TaskCheck glyph stays the one scoped
+ * color exception on the transcript's neutral ground (per the 2026-07-31
+ * renderer spec); everything else stays on the ink scale. */
+
+/* --- shared window rows (variants A, D, E) --------------------------- */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  font-family: var(--font-sans);
+}
+
+.window {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.winRow {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--font-size-ui);
+}
+
+.winRowText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The just-added note's sans treatment, where the card reads as chrome
+ * (Pipeline, Segment strip); the serif treatment is the production card's
+ * own .note, reached through the prodCard import in variants.tsx. */
+.noteSans {
+  font-family: var(--font-sans);
+  font-style: italic;
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+/* --- the aggregate footer (variants A, D) ---------------------------- */
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.footLabel {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+
+.footMeter {
+  flex: 1;
+  min-width: 0;
+}
+
+/* --- variant B: the pipeline ------------------------------------------ */
+
+.pipe {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
+  font-size: var(--font-size-ui);
+}
+
+.pipeArrow {
+  flex: none;
+  color: var(--ink-low);
+  line-height: 18px;
+}
+
+.frag {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 30ch;
+}
+
+.fragNow {
+  max-width: 44ch;
+}
+
+.fragText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Each fragment clamps to one line: the pipeline's compactness is the
+ * variant's whole point, and the clamp is the honest cost of it. */
+.fragDesc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- variant D: the now inset ---------------------------------------- */
+
+/* The "you are here" treatment: the same evidence-inset grammar the
+ * transcript uses for code gutters (surface-inset ground, hairline edge,
+ * pane radius), carrying the in-progress task and its fresh note. */
+.inset {
+  border: 1px solid var(--edge);
+  background: var(--surface-inset);
+  border-radius: var(--radius-pane);
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* --- variant E: the segment strip ------------------------------------ */
+
+.stripHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* One segment per task - no fabricated precision, the same 6px height as
+ * Meter's track. Settled segments (done or cancelled) fill with the quiet
+ * edge ink ("done reads through ink, never colour" - the renderer spec's
+ * own rule), the working segment carries --alive, open segments stay sunken
+ * --field. */
+.strip {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+}
+
+.seg {
+  flex: 1;
+  border-radius: 2px;
+  background: var(--field);
+}
+
+.segDone {
+  background: var(--edge-strong);
+}
+
+.segNow {
+  background: var(--alive);
+}
+
+.stripLabel {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}

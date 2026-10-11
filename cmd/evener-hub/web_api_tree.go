@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
@@ -21,8 +23,11 @@ func (s *WebServer) emptyNavigationMutation() hubapi.NavigationMutation {
 	return s.navigation.EmptyMutation()
 }
 
+// projectKeyForStateDir names the project a PastEntry.StateDir belongs to. The
+// state dir is the project bucket itself (<state>/projects/<id>), so its base
+// is the project ID that keys navigation project resources.
 func projectKeyForStateDir(stateDir string) string {
-	return filepath.Base(filepath.Dir(stateDir))
+	return filepath.Base(stateDir)
 }
 
 var (
@@ -42,9 +47,12 @@ type navigationSnapshot struct {
 	projectIdentities   map[string][]identifier.Project
 	projectConflicts    map[string]bool
 	remoteOwnership     map[string]favoriteRemoteOwnership
+	remoteRoots         *hubcore.RootIndex
 	remoteSources       map[string]hubcore.RemoteSourceSnapshot
 	remoteIncompleteIDs map[string]struct{}
 	remoteGeneration    uint64
+	// resolveDuration is the time ResolveProjectMap took inside this capture.
+	resolveDuration time.Duration
 }
 
 type favoriteRemoteOwnership struct {
@@ -53,10 +61,28 @@ type favoriteRemoteOwnership struct {
 }
 
 type remoteThreadFetch struct {
-	threads    []appwire.Thread
-	complete   bool
-	sources    map[string]hubcore.RemoteSourceSnapshot
-	generation uint64
+	threads  []appwire.Thread
+	complete bool
+	sources  map[string]hubcore.RemoteSourceSnapshot
+	// sourceGenerations is the per-source identity generation the walk
+	// captured immediately before it read each source — the read-time
+	// capture the background refresher hands to StoreWalkSnapshot, so a
+	// remove or remove/re-add between a source's read and the publish
+	// moves the live generation and the read's rows drop. A source absent
+	// from the map was unregistered when the
+	// walk read it; the publish drops its rows as unowned.
+	sourceGenerations map[string]uint64
+	generation        uint64
+	// tombstones names the sources whose rows in this fetch are tombstone-
+	// sourced: the removed hosts whose retained projections the refresh
+	// re-applied (spec 08 §15). The rows keep their metadata and their
+	// tombstone's name as their Source tag, but the tree/action logic must
+	// force them non-live with capabilities disabled — never through the
+	// `appThreadTreeLive` + `sourceOnline` predicate, whose documented
+	// fail-open on unknown source IDs would promote a removed host's rows
+	// straight back to live (web.go's sourceOnline comment names exactly that
+	// defect).
+	tombstones map[string]struct{}
 }
 
 // pokeMutationAttention nudges the attention watcher (if configured). It exists for
@@ -82,9 +108,9 @@ func (s *WebServer) archiveDecisions() map[hubcore.ArchiveKey]bool {
 	return decisions
 }
 
-func (s *WebServer) pinSectionAssignments() (map[string]hubcore.SessionPin, error) {
+func (s *WebServer) pinSectionAssignments() (map[hubcore.ArchiveKey]hubcore.SessionPin, error) {
 	if s.cfg.PinSections == nil {
-		return map[string]hubcore.SessionPin{}, nil
+		return map[hubcore.ArchiveKey]hubcore.SessionPin{}, nil
 	}
 	return s.cfg.PinSections.Assignments()
 }
@@ -96,24 +122,61 @@ func (s *WebServer) pinSections() ([]hubcore.PinSection, error) {
 	return s.cfg.PinSections.Sections()
 }
 
-func classifySessionPins(assignments map[string]hubcore.SessionPin, authority hubcore.FavoriteAuthority) hubcore.FavoriteRevalidation {
+// pinDecisionKey is the decision identity a stored pin resolves under: the
+// authority index and the decision stores name a controller row by its bare ID
+// (every local decision predates the ref spelling) and a remote row by its
+// host-qualified ref.
+func pinDecisionKey(key hubcore.ArchiveKey) hubcore.ArchiveKey {
+	if key.Source == "" {
+		return hubcore.ArchiveKey{Kind: "session", ID: key.ID}
+	}
+	return hubcore.ArchiveKey{Kind: "session", ID: hubapi.Ref{HostID: key.Source, SessionID: key.ID}.String()}
+}
+
+func classifySessionPins(assignments map[hubcore.ArchiveKey]hubcore.SessionPin, authority hubcore.FavoriteAuthority) hubcore.FavoriteRevalidation {
 	decisions := make(map[hubcore.ArchiveKey]bool, len(assignments))
-	for storedID := range assignments {
-		decisions[hubcore.ArchiveKey{Kind: "session", ID: storedID}] = true
+	for key := range assignments {
+		decisions[pinDecisionKey(key)] = true
 	}
 	return hubcore.ClassifyFavoriteDecisions(decisions, authority)
 }
 
-func canonicalPinAssignments(assignments map[string]hubcore.SessionPin, classified hubcore.FavoriteRevalidation) map[string]hubcore.SessionPin {
-	out := make(map[string]hubcore.SessionPin, len(assignments)*2)
-	for storedID, assignment := range assignments {
-		out[storedID] = assignment
-		classification := classified.Classifications[hubcore.ArchiveKey{Kind: "session", ID: storedID}]
+func canonicalPinAssignments(assignments map[hubcore.ArchiveKey]hubcore.SessionPin, classified hubcore.FavoriteRevalidation) map[hubcore.ArchiveKey]hubcore.SessionPin {
+	out := make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(assignments)*2)
+	for key, assignment := range assignments {
+		out[key] = assignment
+		classification := classified.Classifications[pinDecisionKey(key)]
 		if classification.State == hubcore.FavoriteDecisionValid && classification.CanonicalKey.ID != "" {
-			out[classification.CanonicalKey.ID] = assignment
+			// A canonical identity lands on the owning source's pin, never a
+			// bare-ID key that a second source could also claim.
+			out[hubcore.SessionPinIdentity(classification.CanonicalKey.ID)] = assignment
 		}
 	}
 	return out
+}
+
+// dropSubagentPins removes the assignments whose target is a known subagent
+// from what navigation presents, and takes them out of their section's member
+// count. Favorites and pins never target a subagent; a stale row is inert here
+// and stays in the store until the user unpins it.
+func dropSubagentPins(assignments map[hubcore.ArchiveKey]hubcore.SessionPin, sections []hubcore.PinSection, subagents map[string]bool) (map[hubcore.ArchiveKey]hubcore.SessionPin, []hubcore.PinSection) {
+	if len(subagents) == 0 {
+		return assignments, sections
+	}
+	kept := make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(assignments))
+	dropped := make(map[string]int)
+	for key, assignment := range assignments {
+		if subagents[pinDecisionKey(key).ID] {
+			dropped[assignment.SectionID]++
+			continue
+		}
+		kept[key] = assignment
+	}
+	adjusted := append([]hubcore.PinSection(nil), sections...)
+	for i := range adjusted {
+		adjusted[i].MemberCount -= dropped[adjusted[i].ID]
+	}
+	return kept, adjusted
 }
 
 func projectFavoritePresentation(presentation map[hubcore.ArchiveKey]bool) map[hubcore.ArchiveKey]bool {
@@ -173,11 +236,14 @@ func (s *WebServer) memoTreeWithAuthority(ctx context.Context) (hubcore.Tree, ap
 	value := s.treeCache.Get(key, time.Now(), func() hubcore.TreeCacheValue {
 		t := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
 		_, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
+		// This authority serves alias lookup, which falls back to the id's own
+		// spellings, so it carries no session facts: the stores are not read.
+		authority, _ := s.favoriteAuthorityForReferences(snapshot, nil)
 		return hubcore.TreeCacheValue{
 			Tree:              t,
 			AttentionSummary:  sum,
 			Live:              snapshot.live,
-			FavoriteAuthority: favoriteAuthorityForNavigation(snapshot, t),
+			FavoriteAuthority: authority,
 		}
 	})
 	return value.Tree, value.AttentionSummary, value.Live, value.FavoriteAuthority
@@ -220,7 +286,7 @@ func (s *WebServer) navigationSnapshot(ctx context.Context) navigationSnapshot {
 // snapshot assembly to the pure navigation projector. It accepts every row
 // decoration explicitly: the projector never reaches back into WebServer,
 // Roster, or a decision store while walking a node tree.
-func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64, tree hubcore.Tree, sources []hubapi.Source, attention hubapi.AttentionSummary, live []hubcore.LiveEntry, sessionFavorites, projectFavorites map[hubcore.ArchiveKey]bool, pinSections []hubcore.PinSection, pinAssignments map[string]hubcore.SessionPin) navigationBuildInputs {
+func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64, tree hubcore.Tree, sources []hubapi.Source, attention hubapi.AttentionSummary, live []hubcore.LiveEntry, sessionFavorites, projectFavorites map[hubcore.ArchiveKey]bool, pinSections []hubcore.PinSection, pinAssignments map[hubcore.ArchiveKey]hubcore.SessionPin) navigationBuildInputs {
 	liveBySession := make(map[string]bool, len(live))
 	renameable := make(map[string]bool)
 	for _, entry := range live {
@@ -288,12 +354,66 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 	}
 }
 
+// sessionsUnderIncompatibleDaemons selects the past sessions whose ownership
+// a restartRequired or unconfirmed daemon can decide: those daemons' own
+// sessions and everything reachable from them through parent or job-tree-root
+// links. Any other session has no path to such a daemon, so verifying it
+// could only report ancestry gaps that no daemon could account for. An
+// unconfirmed claim without a usable identity cannot exclude any session.
+func sessionsUnderIncompatibleDaemons(past []hubcore.PastEntry, live []hubcore.LiveEntry, unconfirmed []rendezvous.Entry) []hubcore.PastEntry {
+	var pending []string
+	addDaemon := func(entry rendezvous.Entry, sessionID string) {
+		pending = append(pending, sessionID, entry.SessionID, entry.ThreadID)
+		if ref, err := appwire.ParseRef(localSpawnWorkspaceRef(entry)); err == nil {
+			pending = append(pending, ref.ThreadID)
+		}
+	}
+	for _, entry := range live {
+		if !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired {
+			addDaemon(entry.Entry, entry.SessionID)
+		}
+	}
+	for _, entry := range unconfirmed {
+		if _, err := appwire.ParseRef(localSpawnWorkspaceRef(entry)); err != nil {
+			return past
+		}
+		addDaemon(entry, "")
+	}
+	linked := make(map[string][]string, len(past))
+	for _, entry := range past {
+		for _, owner := range []string{entry.Meta.ParentSessionID, entry.Meta.JobTreeRootSessionID} {
+			if owner != "" {
+				linked[owner] = append(linked[owner], entry.Meta.ID)
+			}
+		}
+	}
+	reached := make(map[string]bool)
+	for len(pending) > 0 {
+		id := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if id == "" || reached[id] {
+			continue
+		}
+		reached[id] = true
+		pending = append(pending, linked[id]...)
+	}
+	var affected []hubcore.PastEntry
+	for _, entry := range past {
+		if reached[entry.Meta.ID] {
+			affected = append(affected, entry)
+		}
+	}
+	return affected
+}
+
 func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnapshot {
 	var live []hubcore.LiveEntry
 	var unconfirmedOwnership bool
 	var ownershipErr error
+	var unconfirmed []rendezvous.Entry
 	if s.cfg.Roster != nil {
 		roster := s.cfg.Roster.Snapshot()
+		unconfirmed = roster.Unconfirmed
 		ownershipErr = roster.OwnershipError
 		live = roster.Live
 		unconfirmedOwnership = len(roster.Unconfirmed) > 0
@@ -311,9 +431,18 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	if unconfirmedOwnership || slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
 		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
 	}) {
-		// Persisted delegates have no rendezvous of their own. Preserve the
-		// authenticated owner's restart restriction in every navigation projection.
-		for _, past := range pastEntries {
+		// Persisted job-tree roots and fork continuations have no rendezvous of
+		// their own. Preserve the authenticated owner's restart restriction in
+		// every navigation projection. The walk still passes through subagents
+		// to reach them, but a subagent has no row to carry the state.
+		roots, running := hubcore.NewRootIndex(nil), hubcore.RunningSubagentIDs(live)
+		if s.cfg.Past != nil {
+			roots = s.cfg.Past.RootIndex()
+		}
+		for _, past := range sessionsUnderIncompatibleDaemons(pastEntries, live, unconfirmed) {
+			if roots.IsSubagent(past.Meta.ID) || running[past.Meta.ID] {
+				continue
+			}
 			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
 			if err != nil {
 				if ownershipErr == nil {
@@ -334,13 +463,19 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 
 	}
 	fetch := s.remoteThreadFetch(ctx)
+	tombstoned := func(sourceID string) bool {
+		_, isTombstone := fetch.tombstones[strings.TrimSpace(sourceID)]
+		return isTombstone
+	}
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
+	var remoteMetas []schema.SessionMeta
 	for _, thread := range fetch.threads {
 		meta, entry, ok := appThreadTreeEntries(thread)
 		if !ok {
 			continue
 		}
 		metas = append(metas, meta)
+		remoteMetas = append(remoteMetas, meta)
 		if entry.Project.ID != "" && identifier.ValidateProjectID(entry.Project.ID) == nil && entry.WorkingDir != "" {
 			addNavigationProjectCandidate(carriedProjectCandidates, entry.WorkingDir, entry.Project)
 		}
@@ -352,14 +487,23 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		// rather than being projected live. An empty Source is treated as online
 		// (server-owned local rows), so only source-identified remote rows can
 		// be excluded.
-		if appThreadTreeLive(thread) && s.sourceOnline(thread.Source) {
+		//
+		// A tombstone-sourced row is forced non-live BEFORE the predicate: the
+		// tombstone check must never route through sourceOnline, whose
+		// fail-open on an unknown source ID would promote a removed host's
+		// active rows straight back to live (spec 08 §15 names exactly that
+		// defect). The row keeps its metadata for display; only liveness and
+		// capabilities are withheld.
+		if !tombstoned(thread.Source) && appThreadTreeLive(thread) && s.sourceOnline(thread.Source) {
 			live = append(live, entry)
 		}
 	}
 	// Resolve live working directories once at ingestion. BuildTree and the
 	// orphan-live projection reuse this carried identity rather than resolving
 	// in grouping or rendering loops.
+	resolveStart := time.Now()
 	resolvedProjects := hubcore.ResolveProjectMap(metas, live)
+	resolveDuration := time.Since(resolveStart)
 	projectCandidates := make(map[string]map[string]identifier.Project, len(resolvedProjects)+len(carriedProjectCandidates))
 	for path, project := range resolvedProjects {
 		addNavigationProjectCandidate(projectCandidates, path, project)
@@ -381,11 +525,9 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		if _, ok := resolvedProjects[path]; ok {
 			continue
 		}
-		id := filepath.Base(entry.StateDir)
-		if identifier.ValidateProjectID(id) != nil {
-			continue
+		if id, ok := stateDirProjectID(entry.StateDir); ok {
+			addNavigationProjectCandidate(projectCandidates, path, identifier.Project{ID: id})
 		}
-		addNavigationProjectCandidate(projectCandidates, path, identifier.Project{ID: id})
 	}
 	for path, candidates := range carriedProjectCandidates {
 		for _, project := range candidates {
@@ -412,9 +554,11 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		projectIdentities:   projectIdentities,
 		projectConflicts:    projectConflicts,
 		remoteOwnership:     favoriteRemoteOwnerships(fetch.threads),
+		remoteRoots:         hubcore.NewRootIndex(remoteMetas),
 		remoteSources:       fetch.sources,
 		remoteIncompleteIDs: incompleteIDs,
 		remoteGeneration:    fetch.generation,
+		resolveDuration:     resolveDuration,
 	}
 }
 
@@ -427,6 +571,19 @@ func addNavigationProjectCandidate(candidates map[string]map[string]identifier.P
 	}
 	key := project.ID + "\x00" + project.CanonicalPath
 	candidates[path][key] = project
+}
+
+// stateDirProjectID reports the project ID a past entry's state directory is
+// named by. ok is false when the basename is not a well-formed project ID, so
+// every reader skips the same malformed basename instead of one of them
+// applying a project decision the others would not (#2775). The navigation
+// tree and search share it.
+func stateDirProjectID(stateDir string) (string, bool) {
+	id := filepath.Base(stateDir)
+	if identifier.ValidateProjectID(id) != nil {
+		return "", false
+	}
+	return id, true
 }
 
 func selectNavigationProjects(candidates map[string]map[string]identifier.Project) (map[string]identifier.Project, map[string][]identifier.Project, map[string]bool) {
@@ -454,7 +611,7 @@ func selectNavigationProjects(candidates map[string]map[string]identifier.Projec
 }
 
 func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry, map[string]identifier.Project) {
-	snapshot := s.navigationSnapshotInputs(ctx)
+	snapshot := s.navigationSnapshot(ctx)
 	return snapshot.metas, snapshot.live, snapshot.projects
 }
 
@@ -472,11 +629,39 @@ func (s *WebServer) remoteThreadFetch(ctx context.Context) remoteThreadFetch {
 			complete:   snapshot.Complete,
 			sources:    snapshot.Sources,
 			generation: snapshot.Generation,
+			tombstones: tombstonedSourceNames(snapshot.Sources),
 		}
 	}
 	fetch := s.refreshRemoteThreadSnapshot(ctx)
 	fetch.generation = s.remoteFetchGeneration.Add(1)
 	return fetch
+}
+
+// tombstonedSourceNames is the tombstone tag a published snapshot carries: the
+// names whose per-source entry the refresh re-applied from a durable tombstone.
+// The tree's live predicate consumes it to force those rows non-live.
+func tombstonedSourceNames(sources map[string]hubcore.RemoteSourceSnapshot) map[string]struct{} {
+	var names map[string]struct{}
+	for sourceID, source := range sources {
+		if !source.Tombstoned {
+			continue
+		}
+		if names == nil {
+			names = make(map[string]struct{})
+		}
+		names[sourceID] = struct{}{}
+	}
+	return names
+}
+
+// retainedTombstoneSources returns the removed hosts' retained rows the tree
+// merge re-applies, one entry per unexpired (or remnant-gated) tombstone. Nil
+// when no manager is wired or no tombstone is visible.
+func (s *WebServer) retainedTombstoneSources() map[string]hubcore.RemoteSourceSnapshot {
+	if s.hostManage == nil {
+		return nil
+	}
+	return s.hostManage.retainedTombstoneSources()
 }
 
 func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
@@ -495,16 +680,55 @@ func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
 }
 
 func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThreadFetch {
+	tombstoneSources := s.retainedTombstoneSources()
 	if s.sources == nil {
-		return remoteThreadFetch{complete: true, sources: map[string]hubcore.RemoteSourceSnapshot{}}
+		// No source registry: the publication is the tombstone merge alone.
+		var threads []appwire.Thread
+		sources := make(map[string]hubcore.RemoteSourceSnapshot, len(tombstoneSources))
+		tombstoneNames := make(map[string]struct{}, len(tombstoneSources))
+		for name, snapshot := range tombstoneSources {
+			threads = append(threads, snapshot.Threads...)
+			sources[name] = snapshot
+			tombstoneNames[name] = struct{}{}
+		}
+		return remoteThreadFetch{
+			complete:          true,
+			threads:           threads,
+			sources:           sources,
+			sourceGenerations: map[string]uint64{},
+			tombstones:        tombstoneNames,
+		}
 	}
 	var threads []appwire.Thread
 	complete := true
 	sources := make(map[string]hubcore.RemoteSourceSnapshot)
+	// readGenerations is the walk's read-time capture: one entry per source,
+	// taken immediately before the walk reads it.
+	readGenerations := make(map[string]uint64)
 	remoteHosts := remoteHostNames(s.cfg)
 	for _, source := range s.sources.All() {
 		if source.ID() == "local" {
 			continue
+		}
+		// Row ownership follows the generation at READ time, not at walk
+		// start: a host that registers mid-walk is
+		// captured here, under the registration that owns the rows about to
+		// be read, so it still publishes on this tick — while a remove or
+		// remove/re-add that lands between this capture and the publish moves
+		// the live generation, and the publish drops these rows instead of
+		// letting the old registration's rows outlive it or publish under a
+		// re-added identity. A source with no generation here was already
+		// removed when the walk reached it (the registry snapshot lags the
+		// removal); it stays uncaptured, and the publish drops its rows as
+		// unowned. Unattached sources are captured too — the last-known-good
+		// rows below publish like a live read's.
+		var readGeneration uint64
+		var captured bool
+		if s.cfg.RemoteThreadCache != nil {
+			if generation, ok := s.cfg.RemoteThreadCache.SourceGeneration(source.ID()); ok {
+				readGenerations[source.ID()] = generation
+				readGeneration, captured = generation, true
+			}
 		}
 		// The background walk must not force attachment: an unattached remote host
 		// is skipped without a call, so the 30s ticker cannot dial every configured
@@ -517,7 +741,19 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 		var listed remoteSourceFetch
 		var listComplete bool
 		if remoteSourceAttached(s.cfg, remoteHosts, source.ID()) {
-			listed, listComplete = s.listRemoteSourceWithFallbackState(ctx, source)
+			// The retention store joins the read-time generation rule the
+			// publish already follows: listRemoteSourceWithFallbackState
+			// stores only after ListThreads returns, so a remove whose
+			// forgetLastGoodThreads already dropped this source's retained
+			// rows — the removal commits while the list is in flight — must
+			// not be undone by the late store; the source is gone from the
+			// registry, so no later walk would ever prune the entry.
+			// Without a cache the store fences on the source instance the
+			// walk read under — the read-time identity token the nil-cache
+			// shape captures instead of a generation.
+			listed, listComplete = s.listRemoteSourceWithFallbackState(ctx, source, func(rows []appwire.Thread) {
+				s.storeLastGoodThreadsIfCurrent(source, readGeneration, captured, rows)
+			})
 		} else {
 			listed = remoteSourceFetch{threads: s.lastGoodThreadsForSource(source.ID())}
 		}
@@ -577,7 +813,31 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 			IncompleteIDs: invalid,
 		}
 	}
-	return remoteThreadFetch{threads: threads, complete: complete, sources: sources}
+	// Snapshot merge (spec §15): AFTER enumerating the registered sources,
+	// re-apply each unexpired tombstone's last-known-good rows (marked
+	// stale, non-actionable, plus the truncation indicator), so a removed
+	// host's rows survive every subsequent refresh until its tombstone is
+	// re-added or pruned. The rows carry the tombstone's name as their
+	// Source tag and the fetch's tombstone set carries the identity the
+	// tree consumes; a concurrent re-add wins by the generation rule at
+	// publish time (the re-registration's generation makes the cache's
+	// staleness rule drop tombstone-sourced rows, and its own
+	// new-generation walk publishes the live rows).
+	//
+	// A name the walk just enumerated as a registered source — a re-add that
+	// landed mid-walk — is skipped: its freshly read live rows belong to the
+	// current registration, and the tombstone merge must not shadow them with
+	// the removed incarnation's rows or tag the source tombstoned.
+	mergedTombstones := make(map[string]struct{}, len(tombstoneSources))
+	for name, snapshot := range tombstoneSources {
+		if _, enumerated := sources[name]; enumerated {
+			continue
+		}
+		threads = append(threads, snapshot.Threads...)
+		sources[name] = snapshot
+		mergedTombstones[name] = struct{}{}
+	}
+	return remoteThreadFetch{threads: threads, complete: complete, sources: sources, sourceGenerations: readGenerations, tombstones: mergedTombstones}
 }
 
 // sourceThreadLister is the minimal slice of appsource.Source that
@@ -599,7 +859,9 @@ func (s *WebServer) listThreadsWithFallback(ctx context.Context, source sourceTh
 }
 
 func (s *WebServer) listThreadsWithFallbackState(ctx context.Context, source sourceThreadLister) ([]appwire.Thread, bool) {
-	result, complete := s.listRemoteSourceWithFallbackState(ctx, source)
+	// nil retain: this direct-lister seam carries no read-time capture
+	// to fence the store with, so a completed list retains unconditionally.
+	result, complete := s.listRemoteSourceWithFallbackState(ctx, source, nil)
 	return result.threads, complete
 }
 
@@ -607,7 +869,15 @@ type remoteSourceFetch struct {
 	threads []appwire.Thread
 }
 
-func (s *WebServer) listRemoteSourceWithFallbackState(ctx context.Context, source sourceThreadLister) (remoteSourceFetch, bool) {
+// listRemoteSourceWithFallbackState lists source's threads across cursor
+// pages, retaining the complete result as last-known-good: through retain
+// when the walk supplies one — a store fenced on the registration the read
+// happened under, storeLastGoodThreadsIfCurrent — or unconditionally when
+// retain is nil. The store runs only after the final page's ListThreads
+// returns, which is the window the fence exists for: a removal can commit
+// mid-round-trip, after the walk captured its generation but before the
+// list came back.
+func (s *WebServer) listRemoteSourceWithFallbackState(ctx context.Context, source sourceThreadLister, retain func(rows []appwire.Thread)) (remoteSourceFetch, bool) {
 	var threads []appwire.Thread
 	cursor := ""
 	seenCursors := make(map[string]struct{})
@@ -619,7 +889,11 @@ func (s *WebServer) listRemoteSourceWithFallbackState(ctx context.Context, sourc
 		threads = append(threads, resp.Data...)
 		next := strings.TrimSpace(resp.NextCursor)
 		if next == "" {
-			s.storeLastGoodThreads(source.ID(), threads)
+			if retain != nil {
+				retain(threads)
+			} else {
+				s.storeLastGoodThreads(source.ID(), threads)
+			}
 			return remoteSourceFetch{threads: append([]appwire.Thread(nil), threads...)}, true
 		}
 		if _, repeated := seenCursors[next]; repeated {
@@ -642,10 +916,107 @@ func (s *WebServer) lastGoodThreadsForSource(sourceID string) []appwire.Thread {
 func (s *WebServer) storeLastGoodThreads(sourceID string, threads []appwire.Thread) {
 	s.lastGoodMu.Lock()
 	defer s.lastGoodMu.Unlock()
+	s.setLastGoodThreadsLocked(sourceID, threads)
+}
+
+// storeLastGoodThreadsIfCurrent retains threads as source's last-known-good
+// rows only while the registration the walk read under still owns the name.
+// The walk's read-time identity capture is the cache's SourceGeneration when a
+// cache is configured — the same generation the publish compares under the
+// cache's lock — and the source instance itself when one is
+// not: the nil-cache shape has no generation store to compare against, and
+// the instance is the identity the registry hands out before the name becomes
+// enumerable (registerSource and newHubSourceRegistry build the source, then
+// Add), so "the name still maps to the instance the walk read" makes the same
+// ownership claim a generation match makes. The
+// check and the write share lastGoodMu, so a retention store and a removal's
+// forgetLastGoodThreads serialize: the removal drops the identity first —
+// RemoveSource and the source registration's own Remove both run before the
+// forget in the remove finish phase — so a store that runs after the removal
+// sees the moved or missing identity and skips, while a store that wins the
+// race is deleted by the forget that follows. Either order leaves no entry,
+// so a host removed while its list was in flight cannot leave its rows
+// retained under a name no later walk enumerates — nothing else ever deletes
+// an entry, so they would otherwise sit for the process lifetime, and
+// across a re-add they would render as the re-added
+// host's sessions until its own first successful list.
+func (s *WebServer) storeLastGoodThreadsIfCurrent(source appsource.Source, generation uint64, captured bool, threads []appwire.Thread) {
+	s.lastGoodMu.Lock()
+	defer s.lastGoodMu.Unlock()
+	if !s.lastGoodRegistrationOwned(source, generation, captured) {
+		return
+	}
+	s.setLastGoodThreadsLocked(source.ID(), threads)
+}
+
+// lastGoodRegistrationOwned reports whether the read-time capture still
+// matches the source's live registration. Callers hold lastGoodMu; the
+// identity lookups nest inside it, which is safe because no path takes the
+// two locks in the reverse order — the removal calls RemoveSource,
+// sources.Remove, and forgetLastGoodThreads sequentially, never nested.
+func (s *WebServer) lastGoodRegistrationOwned(source appsource.Source, generation uint64, captured bool) bool {
+	if s.cfg.RemoteThreadCache == nil {
+		// No cache means no generation store to compare against; the source
+		// instance the walk enumerated is the identity token. A removed host
+		// has no registration to match, and a re-added name maps to the fresh
+		// instance its re-add registered — both fail the comparison exactly
+		// the way a moved or missing generation does on the cached path.
+		current, ok := s.sources.Source(source.ID())
+		return ok && sameSourceInstance(current, source)
+	}
+	if !captured {
+		return false
+	}
+	current, ok := s.cfg.RemoteThreadCache.SourceGeneration(source.ID())
+	return ok && current == generation
+}
+
+// sameSourceInstance reports whether two registrations are the same source
+// instance without comparing the interface values head-on: an interface
+// comparison panics when both hold the same uncomparable dynamic type, and a
+// Source implemented as a struct carrying a slice or a map is free to be one.
+// Every source the hub registers itself is a pointer, where the dynamic type is
+// comparable and the comparison is the address — the identity this fence is
+// after. A dynamic type with no comparable identity reports "not the same
+// instance", the conservative answer: the fence drops the stale retention
+// rather than panicking on a tree read, and a registration whose rows were
+// captured under a different instance is exactly what it must refuse.
+func sameSourceInstance(a, b appsource.Source) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+		return false
+	}
+	if !reflect.TypeOf(a).Comparable() {
+		return false
+	}
+	return a == b
+}
+
+func (s *WebServer) setLastGoodThreadsLocked(sourceID string, threads []appwire.Thread) {
 	if s.lastGoodThreads == nil {
 		s.lastGoodThreads = map[string][]appwire.Thread{}
 	}
 	s.lastGoodThreads[sourceID] = append([]appwire.Thread(nil), threads...)
+}
+
+// forgetLastGoodThreads drops sourceID's retained last-known-good rows. The
+// host manager's remove finish phase calls it beside
+// remoteCache.RemoveSource, so a removed host's last successful list leaves
+// with every other piece of its per-name state instead of sitting in the map
+// for the process lifetime — nothing else ever deleted an entry, so churning
+// distinct host names grew the map without bound.
+// A missing key — a host whose walk never completed a list — is a no-op, as
+// is a nil map: delete treats both alike. A walk parked inside ListThreads
+// while the remove commits cannot resurrect the entry afterwards: the walk's
+// store carries the read-time identity capture and skips names whose
+// registration the removal dropped (storeLastGoodThreadsIfCurrent), so the
+// late store leaves the forgotten entry forgotten.
+func (s *WebServer) forgetLastGoodThreads(sourceID string) {
+	s.lastGoodMu.Lock()
+	defer s.lastGoodMu.Unlock()
+	delete(s.lastGoodThreads, sourceID)
 }
 
 func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.LiveEntry, bool) {
@@ -673,6 +1044,9 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		},
 		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
 		IsSubagent:      thread.Evener.Kind == "subagent",
+		// The row's last message reaches the tree through the meta too, so an
+		// offline host's last-known row, which is not live, keeps it (S1d).
+		LastMessage: thread.Evener.LastMessage,
 	}
 	// Issue #152: a hub-synthesized fork (parent set, not a subagent) must
 	// stamp DivergenceTurn so the 96cp invariant (ParentSessionID != "" &&
@@ -695,28 +1069,13 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 			StartedAt:  hubcore.OrderCreatedAt(createdAt, updatedAt),
 		},
 		SessionID: refText,
-		Status:    thread.Status.Type,
 		Project:   project,
 	}
-	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
-	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
+	// The remote row reads its thread-row facts through the one shared reader,
+	// so it cannot drift from the local probe (#2638). Capabilities and
+	// ActiveFlags stay absent on a remote row; only a local probe answers them.
+	entry = hubcore.LiveEntryThreadFacts(entry, hubcore.ProbeResultFromThread(thread))
 	return meta, entry, true
-}
-
-func diagnosticsJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJobInfo {
-	if diagnostics == nil {
-		return nil
-	}
-	return diagnostics.Jobs
-}
-
-// diagnosticsWatches returns a remote thread's own live-watch rows. A thread
-// with no diagnostics (old daemon, or one that listed nothing) and a
-// diagnostics that omits Watches both yield an empty list — absence is never
-// an error. It delegates to hubcore's shared projection so the local and remote
-// tree code cannot drift.
-func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
-	return hubcore.DiagnosticsWatches(diagnostics)
 }
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the
@@ -835,43 +1194,119 @@ func (s *WebServer) favoriteDecisions() (map[hubcore.ArchiveKey]bool, error) {
 	return f, nil
 }
 
-func favoriteAuthorityForNavigation(snapshot navigationSnapshot, tree hubcore.Tree) hubcore.FavoriteAuthority {
-	topLevel := hubcore.TopLevelSessionIDs(snapshot.metas)
-	lineage := favoriteLineageQualities(snapshot.metas)
-	metaIDs := make(map[string]struct{}, len(snapshot.metas))
-	authority := hubcore.FavoriteAuthority{}
-	for _, meta := range snapshot.metas {
-		if meta.ID == "" {
-			continue
+// referencedSessionIDs names every session the favorite and pin stores refer
+// to, in the spelling each store keeps.
+func referencedSessionIDs(favorites map[hubcore.ArchiveKey]bool, assignments map[hubcore.ArchiveKey]hubcore.SessionPin) []string {
+	ids := make([]string, 0, len(favorites)+len(assignments))
+	for key := range favorites {
+		if key.Kind == "session" {
+			ids = append(ids, key.ID)
 		}
-		metaIDs[meta.ID] = struct{}{}
-		_, isTopLevel := topLevel[meta.ID]
-		authority.Sessions = append(authority.Sessions, hubcore.FavoriteSessionAuthority{
-			ID:       meta.ID,
-			Aliases:  favoriteSessionAliases(meta.ID),
-			TopLevel: isTopLevel,
-			Lineage:  lineage[meta.ID],
-			Source:   favoriteSessionSourceQuality(meta.ID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
-		})
 	}
+	for key := range assignments {
+		ids = append(ids, pinDecisionKey(key).ID)
+	}
+	return ids
+}
+
+// localSessionIndex is the past-index view the referenced-ID authority reads:
+// lineage from the root index and a membership check that never probes disk.
+type localSessionIndex struct {
+	roots *hubcore.RootIndex
+	known func(id string) bool
+}
+
+func (s *WebServer) localSessionIndex() localSessionIndex {
+	if s.cfg.Past == nil {
+		return localSessionIndex{roots: hubcore.NewRootIndex(nil), known: func(string) bool { return false }}
+	}
+	past := s.cfg.Past
+	return localSessionIndex{roots: past.RootIndex(), known: func(id string) bool {
+		_, ok := past.Lookup(id)
+		return ok
+	}}
+}
+
+// favoriteAuthorityForReferences collects authority for the sessions the
+// stores reference, not for every session the hub holds. The second result is
+// the set of referenced canonical ids that are known subagents: no favorite or
+// pin may target one, so navigation drops them.
+func (s *WebServer) favoriteAuthorityForReferences(snapshot navigationSnapshot, ids []string) (hubcore.FavoriteAuthority, map[string]bool) {
+	sessions, subagents := referencedSessionAuthorities(ids, snapshot, s.localSessionIndex())
+	return hubcore.FavoriteAuthority{
+		Sessions: sessions,
+		Projects: favoriteProjectAuthorities(snapshot),
+	}, subagents
+}
+
+// referencedSessionAuthorities builds the session authority for each distinct
+// referenced id from the local root index and the remote thread snapshot. An id
+// no source knows gets no authority and classifies Dormant. A known subagent
+// (persisted meta, a live entry's running child, or a remote subagent thread)
+// is not top level and classifies ConfirmedInvalid. Rootness comes from the
+// shared nesting rule inside RootIndex, so lineage is always complete here.
+func referencedSessionAuthorities(ids []string, snapshot navigationSnapshot, local localSessionIndex) ([]hubcore.FavoriteSessionAuthority, map[string]bool) {
+	remoteRoots := snapshot.remoteRoots
+	if remoteRoots == nil {
+		remoteRoots = hubcore.NewRootIndex(nil)
+	}
+	running := hubcore.RunningSubagentIDs(snapshot.live)
+	liveIDs := make(map[string]bool, len(snapshot.live))
 	for _, entry := range snapshot.live {
-		if entry.SessionID == "" {
+		if entry.SessionID != "" {
+			liveIDs[entry.SessionID] = true
+		}
+	}
+	var sessions []hubcore.FavoriteSessionAuthority
+	subagents := make(map[string]bool)
+	seen := make(map[string]bool, len(ids))
+	for _, raw := range ids {
+		id, remote := canonicalSessionDecisionID(raw)
+		if seen[id] {
 			continue
 		}
-		if _, exists := metaIDs[entry.SessionID]; exists {
+		seen[id] = true
+		roots, inIndex := local.roots, false
+		if remote {
+			roots = remoteRoots
+			_, inIndex = snapshot.remoteOwnership[id]
+		}
+		isSubagent := roots.IsSubagent(id) || running[id]
+		if !isSubagent && !remote {
+			inIndex = local.known(id)
+		}
+		if !isSubagent && !inIndex && !liveIDs[id] {
 			continue
 		}
-		authority.Sessions = append(authority.Sessions, hubcore.FavoriteSessionAuthority{
-			ID:       entry.SessionID,
-			Aliases:  favoriteSessionAliases(entry.SessionID),
-			TopLevel: true,
+		if isSubagent {
+			subagents[id] = true
+		}
+		// A live session whose meta has not reached an index is a root.
+		topLevel := !isSubagent && (!inIndex || roots.TopLevel(id))
+		sessions = append(sessions, hubcore.FavoriteSessionAuthority{
+			ID:       id,
+			Aliases:  favoriteSessionAliases(id),
+			TopLevel: topLevel,
 			Lineage:  hubcore.FavoriteAuthorityComplete,
-			Source:   favoriteSessionSourceQuality(entry.SessionID, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
+			Source:   favoriteSessionSourceQuality(id, snapshot.remoteOwnership, snapshot.remoteSources, snapshot.remoteIncompleteIDs),
 		})
 	}
-	authority.Projects = favoriteProjectAuthorities(snapshot)
-	authority.Nodes = tree.FavoriteNodeAuthorities()
-	return authority
+	return sessions, subagents
+}
+
+// canonicalSessionDecisionID maps a decision's session spelling to the id the
+// authority is keyed by: the bare id for the controller's own sessions, the
+// host-qualified ref for a remote one.
+func canonicalSessionDecisionID(raw string) (id string, remote bool) {
+	ref, err := hubapi.ParseRef(raw)
+	switch {
+	case err != nil:
+		return raw, false
+	case ref.HostID == "local":
+		return ref.SessionID, false
+	default:
+		return ref.String(), true
+	}
 }
 
 func favoriteSessionAliases(id string) []string {
@@ -979,80 +1414,6 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-func favoriteLineageQualities(metas []schema.SessionMeta) map[string]hubcore.FavoriteAuthorityQuality {
-	qualities := make(map[string]hubcore.FavoriteAuthorityQuality, len(metas))
-	byID := make(map[string]int, len(metas))
-	children := make(map[string][]string)
-	for _, meta := range metas {
-		if meta.ID == "" {
-			continue
-		}
-		byID[meta.ID]++
-		qualities[meta.ID] = hubcore.FavoriteAuthorityComplete
-		if meta.ParentSessionID != "" && !meta.IsSubagent {
-			children[meta.ParentSessionID] = append(children[meta.ParentSessionID], meta.ID)
-		}
-	}
-	markIncomplete := func(id string) {
-		if id != "" {
-			qualities[id] = hubcore.FavoriteAuthorityIncomplete
-		}
-	}
-	for _, meta := range metas {
-		if meta.ID == "" {
-			continue
-		}
-		if meta.IsSubagent && meta.ParentSessionID == "" {
-			markIncomplete(meta.ID)
-		}
-		if meta.ParentSessionID != "" {
-			if meta.ParentSessionID == meta.ID || byID[meta.ParentSessionID] != 1 {
-				markIncomplete(meta.ID)
-			}
-		}
-	}
-	for parentID, childIDs := range children {
-		if len(uniqueStrings(childIDs)) > 1 {
-			markIncomplete(parentID)
-			for _, childID := range childIDs {
-				markIncomplete(childID)
-			}
-		}
-	}
-	for _, meta := range metas {
-		if meta.ID == "" || meta.ParentSessionID == "" {
-			continue
-		}
-		seen := map[string]struct{}{}
-		current := meta.ID
-		for current != "" {
-			if _, ok := seen[current]; ok {
-				markIncomplete(current)
-				for id := range seen {
-					markIncomplete(id)
-				}
-				break
-			}
-			seen[current] = struct{}{}
-			parent, ok := findMetaByID(metas, current)
-			if !ok {
-				break
-			}
-			current = parent.ParentSessionID
-		}
-	}
-	return qualities
-}
-
-func findMetaByID(metas []schema.SessionMeta, id string) (schema.SessionMeta, bool) {
-	for _, meta := range metas {
-		if meta.ID == id {
-			return meta, true
-		}
-	}
-	return schema.SessionMeta{}, false
-}
-
 func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteProjectAuthority {
 	claims := make(map[string]hubcore.FavoriteProjectAuthority)
 	projectIdentities := snapshot.projectIdentities
@@ -1062,17 +1423,20 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 			projectIdentities[path] = []identifier.Project{project}
 		}
 	}
+	// Group session IDs by working directory once; each project then reads
+	// its own group instead of rescanning every session.
+	idsByDir := make(map[string][]string)
+	for _, meta := range snapshot.metas {
+		dir := hubcore.EffectiveWorkingDir(meta)
+		idsByDir[dir] = append(idsByDir[dir], meta.ID)
+	}
+	for _, entry := range snapshot.live {
+		idsByDir[entry.WorkingDir] = append(idsByDir[entry.WorkingDir], entry.SessionID)
+	}
 	for path, projects := range projectIdentities {
 		owners := make(map[string]favoriteProjectOwnerEvidence)
-		for _, meta := range snapshot.metas {
-			if hubcore.EffectiveWorkingDir(meta) == path {
-				favoriteProjectOwnerEvidenceAdd(owners, meta.ID, snapshot)
-			}
-		}
-		for _, entry := range snapshot.live {
-			if entry.WorkingDir == path {
-				favoriteProjectOwnerEvidenceAdd(owners, entry.SessionID, snapshot)
-			}
+		for _, id := range idsByDir[path] {
+			favoriteProjectOwnerEvidenceAdd(owners, id, snapshot)
 		}
 		if len(owners) == 0 {
 			owners["local"] = favoriteProjectOwnerEvidence{quality: hubcore.FavoriteAuthorityIncomplete}

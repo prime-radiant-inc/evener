@@ -25,6 +25,9 @@ const (
 	EventUserInput EventKind = "USER_INPUT"
 	// EventEnvironment carries a persisted environment-context update.
 	EventEnvironment EventKind = "ENVIRONMENT"
+	// EventEnvironmentChanged reports the execution environment installed for the
+	// session, independently of prompt/transcript environment context.
+	EventEnvironmentChanged EventKind = "ENVIRONMENT_CHANGED"
 	// EventAssistantTextStart marks the start of an assistant text response.
 	EventAssistantTextStart EventKind = "ASSISTANT_TEXT_START"
 	// EventAssistantTextDelta carries an incremental chunk of assistant text.
@@ -119,6 +122,10 @@ const (
 	EventPromptLoaded EventKind = "PROMPT_LOADED"
 	// EventRoundTimings carries round timing information.
 	EventRoundTimings EventKind = "ROUND_TIMINGS"
+	// EventStatusSettled announces a resting session's new state outside a
+	// turn: a needs_response rest moving to awaiting once its quiet period
+	// passes.
+	EventStatusSettled EventKind = "STATUS_SETTLED"
 	// EventTurnEnded marks a single turn reaching its terminal boundary, carrying
 	// the turn's wall-clock duration.
 	EventTurnEnded EventKind = "TURN_ENDED"
@@ -157,6 +164,20 @@ const (
 	// clear its now-stale approval card. The projector maps it to the AppWire
 	// escalation-resolved notification.
 	EventSandboxEscalationResolved EventKind = "SANDBOX_ESCALATION_RESOLVED"
+	// EventRoundStarted marks a model round opening: the requests (attempts,
+	// retries, fallback groups) that can record one ASSISTANT entry, all
+	// under the round's RoundID.
+	EventRoundStarted EventKind = "ROUND_STARTED"
+	// EventRoundEnded marks a round over: the next round of its execution
+	// opened, or the execution completed. It follows the round's tools and
+	// hooks, so everything live the round produced is settled by then.
+	EventRoundEnded EventKind = "ROUND_ENDED"
+	// EventExecutionStarted marks an execution admitted under its TurnID,
+	// before any of its entries is recorded.
+	EventExecutionStarted EventKind = "EXECUTION_STARTED"
+	// EventExecutionEnded marks an execution over, after its completion entry
+	// is recorded.
+	EventExecutionEnded EventKind = "EXECUTION_ENDED"
 )
 
 // SessionEvent is a single timestamped event on a session's event stream,

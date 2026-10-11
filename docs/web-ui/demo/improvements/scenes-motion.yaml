@@ -45,16 +45,15 @@ scenes:
       - key: Escape
 
   - id: goal-live
-    note: /goal sets the session goal live; the chip and popover are real.
+    note: /goal sets the session goal live; the CurrentWork goal row is real.
     actions:
       - click: 'textarea[aria-label="Message"]'
       - eval: "(() => { const t = document.querySelector('textarea[aria-label=\"Message\"]'); const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set; set.call(t, ''); t.dispatchEvent(new Event('input', { bubbles: true })); })()"
       - type: "/goal Answer questions briefly; start nothing new"
       - key: Ctrl+Enter
-      - wait_for: '[data-testid="goal-chip-trigger"]'
+      - wait_for: '[data-testid="current-work-goal"]'
       - pause: 1.5
-      - click: '[data-testid="goal-chip-trigger"]'
-      - wait_for: '[data-testid="goal-popover"]'
+      - click: '[data-testid="current-work-goal-value"]'
       - pause: 1.6
       - key: Escape
 

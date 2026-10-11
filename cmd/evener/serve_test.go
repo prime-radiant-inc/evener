@@ -26,7 +26,6 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
@@ -196,7 +195,7 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	valid, resumable := true, false
 	running, quiet, duration := int64(100), int64(40), int64(60)
 	in := agent.DelegateStatusInfo{
-		DelegateID: "dlg_bridge", OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
+		DelegateID: "dlg_bridge", RunGeneration: 2, OwnerSessionID: "owner", RootSessionID: "root", ChildSessionID: "child", TranscriptRef: "local:child",
 		ParentDelegateID: "dlg_parent", Type: "delegate", Lifecycle: "idle", Phase: "idle", Status: "idle", Outcome: "exhausted",
 		Reason: "tool_round_budget_exhausted", Terminal: true, Resumable: true, NeedsAttention: true, ProjectionRevision: 9,
 		Task: "inspect", Description: "inspect carefully", AgentType: "explorer", RequestedModel: "openai/gpt-5",
@@ -213,7 +212,7 @@ func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 		t.Fatalf("delegates = %+v, want one", out.Delegates)
 	}
 	want := server.DelegateStatusInfo{
-		DelegateID: in.DelegateID, OwnerSessionID: in.OwnerSessionID, RootSessionID: in.RootSessionID, ChildSessionID: in.ChildSessionID, TranscriptRef: in.TranscriptRef,
+		DelegateID: in.DelegateID, RunGeneration: in.RunGeneration, OwnerSessionID: in.OwnerSessionID, RootSessionID: in.RootSessionID, ChildSessionID: in.ChildSessionID, TranscriptRef: in.TranscriptRef,
 		ParentDelegateID: in.ParentDelegateID, Type: in.Type, Lifecycle: in.Lifecycle, Phase: in.Phase, Status: in.Status, Outcome: in.Outcome,
 		Reason: in.Reason, Terminal: in.Terminal, Resumable: in.Resumable, NeedsAttention: in.NeedsAttention, NotResumableReason: in.NotResumableReason, ProjectionRevision: in.ProjectionRevision,
 		Task: in.Task, Description: in.Description, AgentType: in.AgentType, RequestedModel: in.RequestedModel, ResolvedProfileID: in.ResolvedProfileID,
@@ -497,7 +496,7 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	}
 }
 
-func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
+func TestRunServeNonInteractiveFlagReachesTheSession(t *testing.T) {
 	oldLoadClient := serveLoadClient
 	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
@@ -549,20 +548,12 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 				t.Fatal("runServe did not exit after thread/shutdown")
 			}
 
-			path := filepath.Join(stateDir, "sessions", entry.SessionID+".transcript.jsonl")
-			f, err := os.Open(path)
+			meta, err := schema.LoadSessionMeta(stateDir, entry.SessionID)
 			if err != nil {
-				t.Fatalf("open transcript: %v", err)
+				t.Fatalf("load session meta: %v", err)
 			}
-			var header transcript.Header
-			derr := json.NewDecoder(f).Decode(&header)
-			f.Close()
-			if derr != nil {
-				t.Fatalf("decode transcript header: %v", derr)
-			}
-			got := strings.Contains(header.SystemPrompt, "Non-interactive mode")
-			if got != tc.want {
-				t.Fatalf("non-interactive prompt addendum present=%v, want %v", got, tc.want)
+			if meta.Config.NonInteractive != tc.want {
+				t.Fatalf("session config NonInteractive = %v, want %v", meta.Config.NonInteractive, tc.want)
 			}
 		})
 	}
@@ -747,20 +738,30 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 // start within 5 seconds.
 func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
 	t.Helper()
+	return waitForServeTestRendezvousWithin(t, runDir, 5*time.Second, nil)
+}
+
+// waitForServeTestRendezvousWithin is waitForServeTestRendezvous with the
+// startup ceiling named by the caller, for a serve that resumes a large
+// transcript before it can register. A non-nil exited receives runServe's
+// result; serve returning before it registers fails the wait at once instead
+// of at the ceiling.
+func waitForServeTestRendezvousWithin(t *testing.T, runDir string, within time.Duration, exited <-chan error) rendezvous.Entry {
+	t.Helper()
 
 	// Ensure the run directory exists before attaching the watcher.
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
-		t.Fatalf("waitForServeTestRendezvous: mkdir %s: %v", runDir, err)
+		t.Fatalf("waitForServeTestRendezvousWithin: mkdir %s: %v", runDir, err)
 	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		t.Fatalf("waitForServeTestRendezvous: new watcher: %v", err)
+		t.Fatalf("waitForServeTestRendezvousWithin: new watcher: %v", err)
 	}
 	defer watcher.Close()
 
 	if err := watcher.Add(runDir); err != nil {
-		t.Fatalf("waitForServeTestRendezvous: watch %s: %v", runDir, err)
+		t.Fatalf("waitForServeTestRendezvousWithin: watch %s: %v", runDir, err)
 	}
 
 	// findEntry scans the run dir for a ready rendezvous entry.
@@ -780,20 +781,22 @@ func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
 		return e
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(within)
 	for {
 		select {
 		case _, ok := <-watcher.Events:
 			if !ok {
-				t.Fatal("waitForServeTestRendezvous: watcher closed unexpectedly")
+				t.Fatal("waitForServeTestRendezvousWithin: watcher closed unexpectedly")
 			}
 			if e, found := findEntry(); found {
 				return e
 			}
 		case werr := <-watcher.Errors:
-			t.Fatalf("waitForServeTestRendezvous: watcher error: %v", werr)
+			t.Fatalf("waitForServeTestRendezvousWithin: watcher error: %v", werr)
+		case err := <-exited:
+			t.Fatalf("serve exited before registering: %v", err)
 		case <-deadline:
-			t.Fatalf("no rendezvous entry in %s after 5s", runDir)
+			t.Fatalf("no rendezvous entry in %s after %s", runDir, within)
 			return rendezvous.Entry{}
 		}
 	}
@@ -1860,108 +1863,5 @@ func TestRunServeClearSessionInheritsTheShutdownLifetime(t *testing.T) {
 	}
 	if !liveAtClear {
 		t.Fatal("the cleared session's lifetime context was already over when the clear ran")
-	}
-}
-
-// adoptRetainedScratchOntoLaunchEnv reproduces the state a resume leaves when it
-// adopts a durable retained allocation from the root's scratch-retention
-// manifest onto the launch environment: a pinned directory the manifest
-// references, a current-consumer binding for rootSessionID, and the lease-owning
-// handle installed on env. It returns the reference so a caller can assert the
-// directory survived a later failure.
-func adoptRetainedScratchOntoLaunchEnv(t *testing.T, stateDir, rootSessionID string, env execenv.ExecutionEnvironment) sandbox.ScratchReference {
-	t.Helper()
-	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}
-	scratch, err := sandbox.NewSessionScratch(t.TempDir(), stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
-	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
-	if err := scratch.Pin(owner, ref); err != nil {
-		t.Fatal(err)
-	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding := sandbox.ScratchBinding{
-		BindingID:      "E-launch",
-		OwnerSessionID: rootSessionID,
-		WorkingDir:     stateDir,
-		Slots:          map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}},
-	}
-	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
-		[]sandbox.ScratchBinding{binding},
-		[]sandbox.ScratchConsumerBinding{{SessionID: rootSessionID, CurrentBindingID: binding.BindingID}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := scratch.Retain(); err != nil {
-		t.Fatal(err)
-	}
-	local, ok := env.(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatalf("launch env = %T, want a local environment", env)
-	}
-	handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := local.SetScratchRetentionBinding(owner, binding); err != nil {
-		t.Fatal(err)
-	}
-	if err := local.RestoreSessionScratch(binding.BindingID, ref, handle); err != nil {
-		t.Fatal(err)
-	}
-	return ref
-}
-
-// TestServePreservesAdoptedRetainedScratchWhenRestoreFails is roborev round-8
-// High 1 on the caller path: a resume adopts a durable retained allocation onto
-// the launch environment, then a later restore failure must retain it (release
-// the lease) rather than run os.RemoveAll over a directory the manifest still
-// references.
-func TestServePreservesAdoptedRetainedScratchWhenRestoreFails(t *testing.T) {
-	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
-	stateDir := t.TempDir()
-	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
-	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
-		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
-	}); err != nil {
-		t.Fatalf("SaveSessionMeta: %v", err)
-	}
-	deps := defaultServeDeps()
-	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func(context.Context) error { return nil }
-	var adopted sandbox.ScratchReference
-	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
-		adopted = adoptRetainedScratchOntoLaunchEnv(t, stateDir, sessionID, env)
-		return nil, errors.New("restore failed after the retained scratch was adopted")
-	}
-	deps.listen = func(context.Context, string, string) (net.Listener, error) {
-		t.Error("bound a listener for a resume that never restored")
-		return nil, errors.New("a listener was bound without a session")
-	}
-
-	err := runServeWithDeps([]string{
-		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
-	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "restore session") {
-		t.Fatalf("serve error = %v, want the restore failure", err)
-	}
-	if adopted.Dir == "" {
-		t.Fatal("restore stub never ran, so no retained scratch was adopted")
-	}
-	if _, err := os.Stat(adopted.Dir); err != nil {
-		t.Fatalf("failed resume removed the adopted retained scratch %s: %v", adopted.Dir, err)
-	}
-	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID}
-	handle, err := sandbox.OpenRetainedSessionScratch(owner, adopted)
-	if err != nil {
-		t.Fatalf("failed resume did not release the adopted scratch lease: %v", err)
-	}
-	if err := handle.Retain(); err != nil {
-		t.Fatal(err)
 	}
 }

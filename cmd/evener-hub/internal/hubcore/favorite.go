@@ -60,7 +60,7 @@ func (s *FavoriteStore) open() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := ensureDecisionSourceColumn(db, "favorite", createFavoriteTable, "favorited"); err != nil {
+	if err := ensureIndexSchema(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

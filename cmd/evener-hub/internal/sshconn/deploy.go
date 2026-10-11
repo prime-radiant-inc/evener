@@ -3,7 +3,6 @@ package sshconn
 import (
 	"bytes"
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -11,12 +10,14 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/remoteinstall"
 )
 
 // buildinfoPkg is the import path whose ldflags the controller stamps into the
@@ -156,6 +157,15 @@ func verifyBuildSource(source string) (string, error) {
 	return abs, nil
 }
 
+// ValidateBuildSource is the exported entry point an embedder uses to check a
+// build-source value at startup — where its flag is read — instead of deferring
+// a bad value to the first attach. It is verifyBuildSource: the same refusals
+// (not an evener checkout, a dirty tree, an ignored compiled .go file), and it
+// returns the canonical absolute path to store in Options.BuildSource.
+func ValidateBuildSource(source string) (string, error) {
+	return verifyBuildSource(source)
+}
+
 // verifyBuildRevision makes the deployed binary's version stamp honest. The
 // builder stamps this process's own buildinfo into whatever the source checkout
 // compiles, so a checkout at a different revision would install code that reports
@@ -268,15 +278,37 @@ func declaresEvenerModule(dir string) bool {
 }
 
 // errControllerDirty marks a deploy refused because this controller was built
-// from a dirty tree. Such a build has no reproducible identity: the push path
-// refuses to compile a tree it cannot prove matches this process
-// (verifyBuildRevision), the installer fallback has no published artifact to pin
-// (installerRefFor), and version auto-match cannot prove a host reporting the
-// same "<sha>-dirty" names the same code. The refusal is terminal rather than
-// ErrDeploy: the same install can never succeed by being retried, and a
-// supervisor that retried it cross-compiled forever while the host was never
-// attached (round thirteen).
+// from a dirty tree and the configured deploy source is not the controller's own
+// executable. Such a build has no reproducible identity: the push path refuses
+// to compile a tree it cannot prove matches this process (verifyBuildRevision),
+// the installer fallback has no published artifact to pin (installerRefFor), and
+// version auto-match cannot tell an operator-named artifact built from another
+// dirty tree at the same commit apart from this controller's build — "<sha>-dirty"
+// is not an identity. Only a source whose bytes ARE this controller's build
+// (Options.OwnExecutable: the hub's own executable, the file this process was
+// started from) is not refused; its on-host identity is still judged
+// (errDeployUnstamped). The
+// refusal is terminal rather than ErrDeploy: the same install can never succeed
+// by being retried, and a supervisor that retried it cross-compiled forever while
+// the host was never attached (round thirteen).
 var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
+
+// errDeployUnstamped marks a deploy that left the host reporting a build other
+// than the controller's. Unlike the dirty-tree refusal above, the controller HAD a
+// deploy path and used it; the freshly re-read launch contract still disagrees, so
+// the artifact that reached the host was not stamped by this controller — the one
+// case the pre-push check cannot catch, an operator-supplied -deploy-binary built
+// from a different tree that targets the right platform but carries another
+// build's identity. The refusal is terminal rather than ErrDeploy: retrying
+// re-pushes the same artifact, so the supervisor would loop forever while the host
+// was never attached (the same mistake round thirteen records for the
+// dirty-controller refusal). Attaching instead would serve a build version
+// auto-match exists to prevent.
+//
+// It is judged only where a deploy ran. A pass that merely started or restarted
+// the hub launched the build already on disk, and the host is allowed to keep that
+// build: the protocol, not the build label, decides whether it may attach.
+var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by this controller")
 
 // deploy installs a matching build on the host. The cross-compile + push path is
 // primary when a build source is configured; otherwise the installer fallback
@@ -286,22 +318,114 @@ var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
 func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	// A dirty controller can neither install its own build nor verify a host's.
-	// deployRequired forces this deploy for an unverifiable version (a dirty
-	// "<sha>-dirty" is not an identity: another dirty checkout at the same commit
-	// reports it too), and attaching instead of deploying would silently serve a
-	// build version auto-match cannot verify. Refuse terminally, naming the
-	// cause: retrying is what turned this refusal into an endless cross-compile,
-	// because every attempt failed as a retryable ErrDeploy and markDevDeployed
-	// was never reached.
-	if version := m.opts.controllerVersion(); isDirtyVersion(version) {
-		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install its own build (a dirty tree cannot be reproduced from a checkout, and the installer fallback has no published artifact to pin) or prove that a host's build matches it; rebuild the controller from a clean checkout",
-			errControllerDirty, host.Name, version)
+	// Deploying turned off wins over every deploy source: a hub started with
+	// -no-deploy installs nothing on a host, not even through the installer
+	// fallback a release or snapshot controller would otherwise use. The attach
+	// ladder never gets here (canDeploy is false), so this refusal is the
+	// explicit host-deploy operation's answer: terminal, naming the remedy.
+	if m.opts.DeployDisabled {
+		return "", fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; %s",
+			errDeployDisabled, host.Name, m.deployHelp())
 	}
-	if m.canBuild() {
+	// A dirty controller cannot install a build it cannot reproduce. deployRequired
+	// forces this deploy for an unverifiable version (a dirty "<sha>-dirty" is not
+	// an identity: another dirty checkout at the same commit reports it too), and
+	// attaching instead of deploying would silently serve a build version
+	// auto-match cannot verify.
+	//
+	// Only the controller's own executable (Options.OwnExecutable) is exempt, and
+	// it is exempt on identity, not convenience: those bytes ARE the build this
+	// controller runs, so installing them needs no reproduction proof and leaves
+	// nothing for version auto-match to prove. Every other source is refused:
+	// compiling a checkout requires proving it reproduces the running "<sha>-dirty"
+	// tree, which cannot be done; the installer fallback has no published artifact
+	// to pin; and an operator-named artifact cannot be told apart from a foreign
+	// dirty build, because its "<sha>-dirty" label is shared by every dirty tree at
+	// that commit — the pre-push checks pass, and the post-deploy version
+	// comparison (errDeployUnstamped) cannot see the difference either, so the host
+	// would attach on code that is not this controller's.
+	//
+	// The accepted residual for the exempt source: its file is read at deploy
+	// time, so a hub whose executable is replaced under it deploys the
+	// replacement. A cross-commit replacement is caught after the push
+	// (errDeployUnstamped: the host reports a version this controller did not
+	// stamp); a replacement that is itself a dirty build at this controller's own
+	// commit reports the same "<sha>-dirty" and is not detectable. That corner —
+	// a locally built dirty controller whose executable is replaced while it runs
+	// — is accepted rather than closed with hash plumbing: the label could not
+	// distinguish it anyway, the default's whole meaning is "deploy the file at
+	// this process's executable path", and an operator who wants a different
+	// artifact names it for a controller that can verify it. Refuse the rest
+	// terminally, naming the cause: retrying is what turned this refusal into an
+	// endless cross-compile, because every attempt failed as a retryable ErrDeploy
+	// and markDevDeployed was never reached.
+	if version := m.opts.controllerVersion(); isDirtyVersion(version) && !m.ownExecutableIsStagingPath() {
+		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install this build: a checkout cannot be proven to reproduce the dirty tree, the installer fallback has no published artifact to pin, and a named artifact cannot be told apart from a foreign dirty build (a %q version names a commit plus uncommitted changes, not the code); rebuild the controller from a clean checkout, or deploy the controller's own executable — the one source a dirty controller can install",
+			errControllerDirty, host.Name, version, version)
+	}
+	// The defaulted own executable is this process's build, so it can serve only
+	// hosts on this process's own target (runtime.GOOS/GOARCH). For a host on any
+	// other target the push cannot work, and before the default existed a
+	// flagless controller had no push path at all: it reached the installer
+	// fallback here, which is the working path for a differently-architected host
+	// with a published artifact to pin. Keep that fallback reachable for exactly
+	// this source, so the default does not shadow it; every other source keeps
+	// the push — -build-source cross-compiles, and an explicitly named artifact
+	// keeps its own terminal mismatch refusal, which names the flag to fix.
+	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
 		return m.deployPush(ctx, host, facts)
 	}
+	if m.ownExecutableCannotServe(facts) {
+		// The only source is the own executable, the host runs another target, and
+		// the installer fallback is the one remaining path. If it has no published
+		// artifact to pin (a dev, dirty, or tag-less release controller), this
+		// controller can never provision this host, and the state is permanent: the
+		// same host, target, and build re-refuse identically. Refuse terminally
+		// with that cause rather than falling into installerRefFor's retryable
+		// ErrDeploy — in this position the reconnect loop would retry it forever
+		// while the host was never attached (round thirteen).
+		if _, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy()); err != nil {
+			return "", fmt.Errorf("%w: host %q: this controller's own executable targets %s/%s but the host runs %s/%s, and the installer fallback has no published artifact to pin for this controller's build (a dev or dirty controller has none, and a release needs a stamped tag); %s",
+				errOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
+		}
+		return m.deployInstaller(ctx, host, facts)
+	}
 	return m.deployInstaller(ctx, host, facts)
+}
+
+// TargetMatches reports whether a build for buildOS/buildArch can serve a host
+// running hostOS/hostArch. It is the one expression of the target rule: the
+// dispatch that chooses between the push and the installer fallback
+// (ownExecutableCannotServe) and the hub's staging refusal for an artifact
+// (copyDeployBinary) both read it, so the two cannot disagree about what "the
+// host's target" means.
+func TargetMatches(buildOS, buildArch, hostOS, hostArch string) bool {
+	return buildOS == hostOS && buildArch == hostArch
+}
+
+// ownExecutableIsStagingPath reports whether this Manager would actually stage
+// this controller's own executable: the OwnExecutable marker AND a BuildBinary to
+// stage it through. The marker is a claim about BuildBinary, so a Manager that
+// would build from BuildSource is judged by that path instead — which is what
+// keeps the dirty-controller refusal intact for it.
+func (m *Manager) ownExecutableIsStagingPath() bool {
+	return m.opts.OwnExecutable && m.opts.BuildBinary != nil
+}
+
+// ownExecutableCannotServe reports whether the source this Manager would deploy
+// from is the defaulted own executable and the host's target differs from this
+// process's own. The defaulted artifact's target is this process's target by
+// construction, so this is the one configuration whose push can never serve the
+// host. It is deliberately narrow: an explicit artifact is not covered (its
+// mismatch is the operator's to fix and the hub refuses it terminally), and
+// neither is a build source (it cross-compiles). OwnExecutable is read together
+// with BuildBinary because the claim is about the staging path: a Manager that
+// would stage through BuildSource is judged by that path, not by this marker.
+func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
+	if !m.ownExecutableIsStagingPath() {
+		return false
+	}
+	return !TargetMatches(runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch)
 }
 
 // deployPush cross-compiles this tree for the host target and atomically
@@ -332,6 +456,14 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 		}
 	}
 	if err := build(ctx, facts.OS, facts.Arch, stage); err != nil {
+		// A terminal refusal from the build seam — an operator-supplied
+		// -deploy-binary built for another platform (errDeployArtifactUnusable) —
+		// names a permanent cause that retrying re-reads unchanged. Keep it out of
+		// the retryable ErrDeploy class so the sentinel's own classification, not
+		// ErrDeploy, is what the supervisor and the wire mapping see.
+		if isTerminal(err) {
+			return "", fmt.Errorf("host %q build %s/%s: %w", host.Name, facts.OS, facts.Arch, err)
+		}
 		return "", fmt.Errorf("%w: host %q build %s/%s: %w", ErrDeploy, host.Name, facts.OS, facts.Arch, err)
 	}
 
@@ -351,12 +483,85 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	return target, nil
 }
 
+// errRunTargetUnservable marks a deploy refused because the configured run
+// target is not the `evener` binary a host hub can serve — `evener-dev` (the
+// development tooling binary: no `hub` subcommand, no `launch-check`) or any
+// other basename. The refusal is terminal rather than ErrDeploy: a misconfigured
+// run target is an operator configuration defect the host cannot recover from,
+// so retrying can never install a binary the hub can run — the supervisor would
+// re-refuse the same path forever and discard the cause, the basename to fix
+// (the identical mistake round thirteen records for the dirty-controller
+// refusal).
+var errRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub")
+
+// errDeployArtifactUnusable marks a deploy refused because the operator-supplied
+// artifact (-deploy-binary) cannot serve the host: it was built for a different
+// GOOS/GOARCH, or it is a Go program that is not evener (the hub's
+// copyDeployBinary refuses both before anything is staged). The operator supplies
+// the artifact, so either defect is a permanent mistake — the same file is
+// re-read on every retry — and the refusal is terminal for the same reason
+// errRunTargetUnservable is: the supervisor would re-refuse it forever. deployPush
+// also keeps this sentinel out of the retryable ErrDeploy wrap, so terminal is the
+// class that reaches both the reconnect loop and the hub's attach handler.
+var errDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serve the host")
+
+// errOwnExecutableCannotServe marks a deploy refused because the controller's
+// only deploy source is its own executable, the host runs a different target,
+// and the installer fallback cannot pin a published artifact for this build (a
+// dev, dirty, or tag-less release controller has none). Such a controller can
+// never provision this host, and the state is permanent — the same host, target,
+// and build re-refuse identically — so the refusal is terminal rather than the
+// retryable ErrDeploy installerRefFor's own refusal carries: in this position
+// the reconnect loop would retry it forever while the host was never attached
+// (the pattern round thirteen records). It arrives only from the defaulted
+// source: an explicitly named artifact keeps its own terminal mismatch refusal
+// (errDeployArtifactUnusable, which names the flag to fix), and a build source
+// cross-compiles.
+var errOwnExecutableCannotServe = errors.New("sshconn: this controller's own executable cannot serve the host's target")
+
+// errDeployDisabled marks a deploy refused because deploying is turned off for
+// this Manager (Options.DeployDisabled, the hub's -no-deploy). It is terminal
+// rather than ErrDeploy: the setting is a deliberate configuration, so a retry
+// re-refuses identically, and the refusal names the remedy through DeployHelp so
+// an operator who wants deploys back knows how to get them. canDeploy reports
+// false under the same option, so the attach ladder never reaches this refusal;
+// the explicit host-deploy operation does, which is why the sentinel exists at
+// all.
+var errDeployDisabled = errors.New("sshconn: deploying is disabled on this controller")
+
+// checkRunTarget refuses a configured evener_path that cannot be the host hub's
+// run target. Only the shipped `evener` binary can serve a hub: `evener-dev` is
+// the development/test tooling binary — no `hub` subcommand and no
+// `launch-check` — so a host configured to run it installs "successfully" and
+// then fails preflight, health, and restart on a binary that can never serve
+// the hub. Any other basename is no better: the manager records this one path
+// as the host's run target and probes, restarts, and attaches the binary at it.
+//
+// It is checked before the target is probed, pushed, or installed, and it is
+// terminal (errRunTargetUnservable) with no write. The ordering and the sentinel
+// are both the point: the refusal names a configuration defect the host cannot
+// recover from, so a retry could only re-refuse it forever, and discovering it
+// after the write would only leave the host holding a binary the controller can
+// never run. The missing-directory refusal beside it stays a retryable ErrDeploy
+// because a directory can appear.
+func checkRunTarget(hostName, p string) error {
+	if installableEvenerBasename(p) {
+		return nil
+	}
+	base := path.Base(strings.TrimSpace(p))
+	if base == "evener-dev" {
+		return fmt.Errorf("%w: host %q evener_path %q names %q, the development tooling binary (cmd/evener-dev), which does not provide the hub command and has no launch-check, so it can never serve a hub; configure the evener binary", errRunTargetUnservable, hostName, p, base)
+	}
+	return fmt.Errorf("%w: host %q evener_path %q has basename %q, which is not the evener binary that serves a hub; configure an evener-named run target", errRunTargetUnservable, hostName, p, base)
+}
+
 // deployTarget resolves the absolute remote path the binary is installed to:
 // the registry's evener_path when set (whose directory must already exist),
-// otherwise the executable the running hub was launched from (when the installer
-// ships that basename), else whatever `evener` resolves to on the remote PATH,
-// else the installer's default ~/.local/bin/evener. A not-yet-installed file is
-// a creatable target, so a push deploy can provision a fresh host.
+// otherwise the executable the running hub was launched from (when its basename
+// is a run target a hub can serve, checkRunTarget), else whatever `evener`
+// resolves to on the remote PATH, else the installer's default
+// ~/.local/bin/evener. A not-yet-installed file is a creatable target, so a push
+// deploy can provision a fresh host.
 //
 // The running hub's own executable comes first because a push to any other file
 // leaves the upgrade inert: the restart path proves the recovered hub executable
@@ -366,6 +571,11 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 // the same location (existingInstallableEvener); this is the push path's half.
 func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
+		// Before even the directory probe: a run target that cannot serve a hub
+		// is refused with no remote command at all (checkRunTarget).
+		if err := checkRunTarget(host.Name, p); err != nil {
+			return "", err
+		}
 		dir := path.Dir(p)
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+shellquote.RemoteWord(dir)), nil)
 		if err != nil {
@@ -574,28 +784,6 @@ func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target stri
 	return nil
 }
 
-// installerScript is the installer the fallback runs on the host, compiled into
-// this binary: a byte-for-byte copy of the repository's install.sh, the same
-// file the documented quickstart serves. It is embedded rather than generated
-// (like agent/sandbox's SBPL policies) so it stays auditable as plain shell text
-// and byte-identical across every build.
-//
-// Why a compiled-in copy rather than a URL: the fallback used to download
-// install.sh from the repository's mutable `main` branch and execute it on every
-// remote host. A future branch change, or any compromise of the repository,
-// therefore gained arbitrary code execution on every auto-deployed host, under
-// the controller's ssh identity and with no operator in the loop. The controller
-// binary is the trust anchor instead: its installer copy is reviewed, built, and
-// (for a release) published as part of the same artifact the operator chose to
-// run, and it cannot change under the controller's feet.
-//
-// The copy is kept honest by TestRound11EmbeddedInstallerMatchesTheReviewedScript,
-// which fails whenever it drifts from the repository's install.sh; the fix for a
-// failure is to re-copy the reviewed script, never to loosen the check.
-//
-//go:embed install.sh
-var installerScript []byte
-
 // installerRefFor maps this controller's build channel to the artifact
 // reference install.sh accepts as EVENER_INSTALL_VERSION. install.sh treats that
 // variable as a GitHub *release tag* (`$repo/releases/download/$version`), while
@@ -604,30 +792,35 @@ var installerScript []byte
 // mapping is therefore:
 //
 //   - release: the stamped ReleaseTag (a Git SHA is never a substitute);
-//   - snapshot: the mutable `snapshot` tag. It is not pinned by construction: the
-//     post-install version check accepts it only while the tag still points at
-//     this controller's commit. Once the tag moves past it, the check refuses
-//     terminally (ErrVersionMismatch) rather than re-fetching the same artifact
-//     forever;
+//   - snapshot: the mutable `snapshot` prerelease. It is not pinned by
+//     construction: the post-install version check accepts it only while the
+//     channel still serves this controller's commit. Once the channel moves
+//     past it, the check refuses terminally (ErrVersionMismatch) rather than
+//     re-fetching the same artifact forever;
 //   - dev/dirty: refused with ErrDeploy — there is no publishable identity to
-//     pin, so the operator must use the push path or Options.BuildBinary.
+//     pin, so the refusal appends the remedy clause.
+//
+// remedy is the remedy clause those refusals append. The caller resolves it from
+// Options.DeployHelp, so a hub tells the operator which flags to set while an
+// embedder with no flags to name keeps the library's own sentence
+// (Manager.installerRemedy). It must be non-empty.
 //
 // `latest` is never passed.
-func installerRefFor(channel, releaseTag, dirty string) (string, error) {
+func installerRefFor(channel, releaseTag, dirty, remedy string) (string, error) {
 	if strings.TrimSpace(dirty) == "true" {
-		return "", fmt.Errorf("%w: this controller was built from a dirty tree, so the installer fallback has no published artifact to pin; use the atomic push path or Options.BuildBinary", ErrDeploy)
+		return "", fmt.Errorf("%w: this controller was built from a dirty tree, so the installer fallback has no published artifact to pin; %s", ErrDeploy, remedy)
 	}
 	switch channel {
 	case "release":
 		tag := strings.TrimSpace(releaseTag)
 		if tag == "" {
-			return "", fmt.Errorf("%w: this controller is a release build but carries no stamped release tag (buildinfo.ReleaseTag); refusing to pass the Git SHA %q as a release tag — use the atomic push path", ErrDeploy, buildinfo.Version())
+			return "", fmt.Errorf("%w: this controller is a release build but carries no stamped release tag (buildinfo.ReleaseTag); refusing to pass the Git SHA %q as a release tag; %s", ErrDeploy, buildinfo.Version(), remedy)
 		}
 		return tag, nil
 	case "snapshot":
 		return "snapshot", nil
 	default:
-		return "", fmt.Errorf("%w: this controller's build channel %q has no publishable artifact to pin (buildinfo.Version() %q is a Git SHA, not a release tag); use the atomic push path or Options.BuildBinary", ErrDeploy, channel, buildinfo.Version())
+		return "", fmt.Errorf("%w: this controller's build channel %q has no publishable artifact to pin (buildinfo.Version() %q is a Git SHA, not a release tag); %s", ErrDeploy, channel, buildinfo.Version(), remedy)
 	}
 }
 
@@ -647,7 +840,10 @@ func installerRefFor(channel, releaseTag, dirty string) (string, error) {
 // somewhere the manager never probes, records, or relaunches, while the deploy
 // reported success. BINDIR and EVENER_SHARE_BINDIR fully determine where
 // install.sh writes (PREFIX is only their fallback), so passing the resolved
-// defaults pins the layout to the run target this function returns.
+// defaults pins the layout to the run target this function returns. A configured
+// evener_path whose basename is not `evener` is refused here too (checkRunTarget):
+// the installer installs the runtime binary as `evener`, so a path naming
+// anything else is a run target the installer cannot produce a hub for.
 func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, runTarget string, err error) {
 	p := strings.TrimSpace(host.EvenerPath)
 	if p == "" {
@@ -659,43 +855,35 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 		shareBindir = path.Join(home, ".local", "share", "evener", "bin")
 		return bindir, shareBindir, path.Join(bindir, "evener"), nil
 	}
-	base := path.Base(p)
-	if base != "evener" && base != "evener-dev" {
-		return "", "", "", fmt.Errorf("%w: host %q evener_path %q has basename %q, which install.sh does not ship (it installs evener and evener-dev); use the atomic push path", ErrDeploy, host.Name, p, base)
+	if err := checkRunTarget(host.Name, p); err != nil {
+		return "", "", "", err
 	}
 	bindir = path.Dir(p)
 	shareBindir = path.Join(path.Dir(bindir), "share", "evener", "bin")
 	return bindir, shareBindir, p, nil
 }
 
-// installerCommand builds the remote command that runs the embedded installer
-// pinned to ref, installing into bindir/shareBindir when a custom run target is
-// given. The script itself arrives on stdin (deployInstaller feeds
-// installerScript), so the host fetches nothing to execute: its only network
-// use is install.sh's own archive and checksums.txt download. The installer runs
-// with the variables passed to `env` (not to sh), and every value is
-// rendered as one shell word by internal/shellquote.
+// DeployRunTargetFor resolves the run target a deploy would install to for host,
+// as a pure function of its entry and the host's home directory: the configured
+// evener_path — refused here when it cannot serve a hub (checkRunTarget) — or
+// the installer's default ~/.local/bin/evener under home. It is installerDirs'
+// own rule, exported for evener/host/plan, which must name the resolved deploy
+// target it would deploy to (deploy pipeline 08b §6 step 1) before anything
+// dials: a plan that named a different path than the deploy uses would be a plan
+// for a different deploy.
 //
-// It writes the script to a temp file and runs it only after that write
-// succeeds AND the file's byte count matches the embedded script's length,
-// rather than feeding it straight to an interpreter: a dropped or truncated ssh
-// stream must not execute half a script, and ssh reports a dropped stream as a
-// successful EOF, so `cat` alone exits 0 on a partial transfer. The count is the
-// same check pushBinaryRemote makes — the two handoffs a host executes from a
-// stream must fail closed identically. A pipeline returns the LAST command's
-// status, so `cat … | sh` would report sh's status and hide the write failure
-// entirely. Round ten's property — check the handoff before executing — is
-// preserved; round eleven replaces the download whose status it checked with the
-// embedded copy, and round twelve adds the byte count that catch makes possible.
-func installerCommand(ref, bindir, shareBindir string, size int) string {
-	env := "EVENER_INSTALL_VERSION=" + shellquote.RemoteWord(ref)
-	if bindir != "" {
-		env += " BINDIR=" + shellquote.RemoteWord(bindir) + " EVENER_SHARE_BINDIR=" + shellquote.RemoteWord(shareBindir)
-	}
-	tmp := "tmp=$(mktemp \"${TMPDIR:-/tmp}/evener-install.XXXXXX\") || exit 1"
-	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
-	verify := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(size) + " ]"
-	return tmp + "; " + cleanup + "; cat > \"$tmp\" && " + verify + " && env " + env + " sh \"$tmp\""
+// The extra resolutions the deploy paths apply on top — the running hub's own
+// executable, then whatever `evener` resolves to on the remote PATH — need
+// remote commands and belong to the paths that dial, so a plan resolves the
+// entry-and-facts rule and the deploy re-resolves with what it finds live.
+//
+// home is the only preflight fact this rule reads, so the parameter is the fact
+// itself rather than a whole Preflight a caller would have to reconstruct:
+// passing a partially-filled probe struct would invite a caller to leave a field
+// this rule silently depends on at its zero value.
+func DeployRunTargetFor(host hostreg.Host, home string) (string, error) {
+	_, _, runTarget, err := installerDirs(host, Preflight{Home: home})
+	return runTarget, err
 }
 
 // deployInstaller is the fallback deploy path for a controller with no build
@@ -705,7 +893,7 @@ func installerCommand(ref, bindir, shareBindir string, size int) string {
 // moved artifact is a failed verification (a terminal ErrVersionMismatch), never
 // a retry of the same pinned ref and never an attach.
 func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
+	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	if err != nil {
 		return "", err
 	}
@@ -726,7 +914,7 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	if err != nil {
 		return "", err
 	}
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, installerCommand(ref, bindir, shareBindir, len(installerScript))), bytes.NewReader(installerScript))
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remoteinstall.Command(ref, "", bindir, shareBindir)), bytes.NewReader(remoteinstall.Script))
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q installer (%s): %w: %s", ErrDeploy, host.Name, ref, err, tail(out))
 	}
@@ -745,11 +933,13 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	// The installer ran, so the fetched artifact is a definitive answer rather
 	// than a transient deploy failure: an installed version other than the
 	// controller's means the pinned ref has moved past this controller's commit
-	// (for a snapshot build, the mutable `snapshot` tag). Refuse terminally as a
+	// (for a snapshot build, the mutable `snapshot` channel). Refuse terminally as a
 	// version mismatch — ErrDeploy would be retried forever by the supervisor,
-	// re-downloading and re-rejecting the same unmatchable artifact.
+	// re-downloading and re-rejecting the same unmatchable artifact. The remedy
+	// clause names the path that does carry a provable identity, so the operator
+	// is told how to stop depending on the moved channel.
 	if want := m.opts.controllerVersion(); lc.Version != want {
-		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact %q does not match the controller's build; a moved channel tag cannot be resolved by retrying)", ErrVersionMismatch, host.Name, lc.Version, want, ref)
+		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact %q does not match the controller's build; a moved channel cannot be resolved by retrying); %s", ErrVersionMismatch, host.Name, lc.Version, want, ref, m.installerRemedy())
 	}
 	return runTarget, nil
 }
@@ -757,9 +947,9 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 // existingInstallableEvener resolves the user-facing install path of the evener
 // the host already has — the running hub's own executable first, then whatever
 // `evener` resolves to on the remote PATH — or "" when none can be identified or
-// the found binary has a basename install.sh does not ship. It is how a deploy
-// with no configured evener_path keeps the existing install location instead of
-// writing to an unrelated default.
+// the found binary's basename is not one a hub can be run as
+// (installableEvenerBasename). It is how a deploy with no configured evener_path
+// keeps the existing install location instead of writing to an unrelated default.
 //
 // It deliberately returns the path the installation names (argv[0] / the
 // `command -v` result), not the canonical file a symlink points at. install.sh

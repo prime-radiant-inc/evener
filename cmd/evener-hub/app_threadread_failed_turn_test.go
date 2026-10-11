@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -48,7 +50,7 @@ func TestReplayedFailureProjectsFailedItem(t *testing.T) {
 	persisted := schema.NewTurn(schema.TurnFailure, llm.System("provider error: access denied"))
 	persisted.Error = &schema.TurnFailureInfo{Message: "provider error: access denied"}
 
-	items := appItemsFromReplayTurn("turn_1", 1, hubDecodedTurn(t, persisted), map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, hubDecodedTurn(t, persisted), apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items = %+v, want exactly one", items)

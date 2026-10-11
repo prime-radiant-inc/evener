@@ -79,7 +79,7 @@ Use `--probe <id>` for a single probe; `--probe all` (the default) selects
 every probe manifest under `--probes-dir`. Before launching any live request,
 the runner prints the exact selected count and probe ids to stderr (e.g.
 `selected=7` plus the list), so a scoped run never silently expands to a
-larger set without you seeing it named — check that line if a run looks
+larger set without you seeing it named. Check that line if a run looks
 bigger or smaller than you expected. The runner writes per-repetition
 `result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
 `summary.json`.
@@ -118,6 +118,16 @@ go run ./tools/tool-fluency/cmd/evener-fluency run \
 The live harness wires the same session notification and continuation callbacks
 that `evener serve` wires, waits on runtime kicks, and then closes the session
 after the bounded post-turn window. It is not a polling harness.
+
+To compare system prompt versions, `matrix` runs every version's `evener`
+binary against every model (building each one itself from a version manifest,
+or from hand-built binaries passed with `--version`), `prose-stats` counts the
+writing tics and bare identifiers in what the agents wrote, `review-pack`
+makes blind transcripts for a human read, and `rank-sets`/`rank-score` turn
+those transcripts into a blind side-by-side ranking and score it.
+`tools/prompt-eval/README.md` walks through all of them with the prompt
+evaluation tasks. `prose-count FILE...` counts the same tics in any file, such
+as a prompt section.
 
 ## Data model
 
@@ -349,6 +359,26 @@ alive after the initial noninteractive invocation to drive follow-up
 model fluency and CLI/harness lifecycle gaps. A live-session or hub-backed
 runner is the next step for full `job_watch` callback verification.
 
+### Hermetic by default
+
+A `run` or `matrix` invocation hides the operator's skills and plugins by
+default (#3227). The operator's personal skills (`~/.agents/skills`, their
+user config skills directory) and their installed, enabled plugins (skills,
+hooks, agents, commands) never reach a probe. Both harnesses run with
+`EVENER_NO_USER_SKILLS=1`. The CLI harness also passes `--enabled-plugins`
+with an explicit empty selection, so plugin resolution selects nothing
+whatever is installed; the live harness never loads plugins. The
+operator's global MCP config and their evener-wide commands are hidden too:
+`EVENER_NO_USER_SKILLS` also suppresses the user-global MCP config
+(`~/.config/evener/mcp.json`) and the user-global commands directory
+(`~/.config/evener/commands`), while project layers still reach a probe
+(#3487). Pass `--inherit-operator-env` to restore the operator's real skills
+and plugins for debugging; `result.json`'s `env_mode` field
+(`"hermetic"` or `"inherit_operator_env"`) records which mode a run used.
+A hermetic CLI run refuses an evener older than `--enabled-plugins`
+(2026-08-25) before any probe runs; compare such a version with
+`--inherit-operator-env`.
+
 ## Result shape
 
 ```json
@@ -359,6 +389,7 @@ runner is the next step for full `job_watch` callback verification.
   "model": "openai/gpt-5.4-mini",
   "repetition": 1,
   "status": "passed",
+  "env_mode": "hermetic",
   "semantic_verified": true,
   "session_id": "01...",
   "state_dir": "/tmp/evener-fluency-...",

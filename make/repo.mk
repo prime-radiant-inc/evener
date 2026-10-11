@@ -1,4 +1,4 @@
-.PHONY: tools tools-golangci tools-gitleaks generate clean refresh-model-catalog help
+.PHONY: tools tools-golangci tools-gitleaks hooks generate clean refresh-model-catalog help
 
 # tools installs the CI-pinned lint/scanner versions from .tool-versions, so
 # a local `make lint` runs exactly what CI runs.
@@ -25,7 +25,20 @@ tools-golangci:
 tools-gitleaks:
 	@set -eu; \
 	gitleaks=$$(awk '$$1=="gitleaks" {print $$2}' .tool-versions); \
-	go install github.com/zricethezav/gitleaks/v8@v$$gitleaks
+	attempt=0; for delay in 3 10 30 0; do attempt=$$((attempt+1)); \
+		if go install github.com/zricethezav/gitleaks/v8@v$$gitleaks; then exit 0; fi; \
+		echo "tools-gitleaks: attempt $$attempt of 4 failed" >&2; \
+		if [ "$$delay" -gt 0 ]; then echo "tools-gitleaks: retrying in $${delay}s" >&2; sleep "$$delay"; fi; \
+	done; \
+	echo "tools-gitleaks: gitleaks install failed after 4 attempts" >&2; exit 1
+
+# hooks points this clone's git at scripts/hooks, whose pre-commit formats the
+# staged TypeScript with each tree's own Biome. scripts/hooks/install.sh refuses
+# to bypass a hook that is already installed.
+## Install the checked-in git hooks (core.hooksPath=scripts/hooks): pre-commit
+## formats staged TypeScript with each tree's own pinned Biome.
+hooks:
+	@scripts/hooks/install.sh
 
 # refresh-model-catalog replaces the embedded models.dev snapshot in
 # llm/registry/data/ (models.dev.json.gz plus the meta recording when and

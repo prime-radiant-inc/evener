@@ -2,8 +2,6 @@ package hub
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -12,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 )
@@ -36,7 +35,12 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 	}
 	var candidates []candidate
 	var args map[string]any
-	_ = json.Unmarshal([]byte(argumentsJSON), &args)
+	// Repair malformed bytes before parsing (F5 round 6): the live path
+	// emits byte-faithful ArgumentsJSON, so a repairable-malformed
+	// read_file/write_file call carries invalid JSON. The live path already
+	// repaired the same bytes to dispatch the call; repair here too so the
+	// file-backed thumbnail recovers the path instead of producing nothing.
+	_ = json.Unmarshal(argrepair.RepairJSON([]byte(argumentsJSON)), &args)
 	addArgPath := func(key, source string) {
 		if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
 			candidates = append(candidates, candidate{path: v, source: source})
@@ -88,10 +92,12 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 }
 
 // enrichOutputImageNotification completes a live tool call's output images on
-// their way to the browser: it adds the file-backed descriptors this hub can
-// resolve by re-reading the call's own file argument off disk, and it stamps
-// the sha-addressed route onto whatever descriptors the daemon minted without
-// one (see stampOutputImageURLs).
+// their way to the browser, in the call items a history/updated carries and
+// the tool item an overlay/upserted carries, and routes the images a relayed
+// user message carries by their sha: it adds the file-backed
+// descriptors this hub can resolve by re-reading the call's own file argument
+// off disk, and it stamps the sha-addressed route onto whatever descriptors
+// the daemon minted without one (see stampOutputImageURLs).
 //
 // Only the sha stamp works without a cwd, so a session whose working directory
 // is unknown still gets its tool-result thumbnails.
@@ -101,25 +107,69 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 	if sessionID == "" {
 		return notification
 	}
-	if notification.Method != appwire.NotifyItemStarted && notification.Method != appwire.NotifyItemCompleted {
-		return notification
+	enrich := func(item *appwire.ThreadItem) bool {
+		return enrichOutputImageItem(sessionID, cwd, argsByCallID, item)
 	}
+	switch notification.Method {
+	case appwire.NotifyHistoryUpdated:
+		return rewriteNotificationField(notification, "items", func(items *[]appwire.ThreadItem) bool {
+			changed := false
+			for i := range *items {
+				item := &(*items)[i]
+				changed = enrich(item) || changed
+				// A user message's images carry their sha, as on a read.
+				changed = stampInputImageURLs(sessionID, item.Images) || changed
+			}
+			return changed
+		})
+	case appwire.NotifyOverlayUpserted:
+		return rewriteNotificationField(notification, "item", func(item *appwire.OverlayItem) bool {
+			return enrich(&item.Item)
+		})
+	}
+	return notification
+}
+
+// rewriteNotificationField decodes one field of notification's params,
+// lets edit change it, and re-encodes the params only when edit reports a
+// change, so a frame the hub has nothing to add passes through byte for byte.
+func rewriteNotificationField[T any](notification appwire.Notification, field string, edit func(*T) bool) appwire.Notification {
 	var params map[string]json.RawMessage
 	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
 		return notification
 	}
-	var item appwire.ThreadItem
-	if raw := params["item"]; len(raw) == 0 || json.Unmarshal(raw, &item) != nil {
+	var value T
+	if raw := params[field]; len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
 		return notification
 	}
-	if item.Type != "commandExecution" {
+	if !edit(&value) {
 		return notification
+	}
+	encoded, err := outputImageMarshal(value)
+	if err != nil {
+		return notification
+	}
+	params[field] = encoded
+	data, err := outputImageMarshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = data
+	return notification
+}
+
+// enrichOutputImageItem completes one tool call item's output images once the
+// call has finished, remembering a running call's arguments for when it does.
+// It reports whether it changed the item.
+func enrichOutputImageItem(sessionID, cwd string, argsByCallID map[string]string, item *appwire.ThreadItem) bool {
+	if item.Type != "commandExecution" {
+		return false
 	}
 	if argsByCallID != nil && item.CallID != "" && item.ArgumentsJSON != "" {
 		argsByCallID[item.CallID] = item.ArgumentsJSON
 	}
-	if notification.Method != appwire.NotifyItemCompleted {
-		return notification
+	if item.Status == appwire.TurnStatusInProgress {
+		return false
 	}
 	var fileBacked []appwire.OutputImage
 	if cwd != "" {
@@ -135,20 +185,10 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 	images := appendOutputImagesUnique(item.OutputImages, fileBacked)
 	stamped := stampOutputImageURLs(sessionID, images)
 	if len(fileBacked) == 0 && !stamped {
-		return notification
+		return false
 	}
 	item.OutputImages = images
-	itemData, err := outputImageMarshal(item)
-	if err != nil {
-		return notification
-	}
-	params["item"] = itemData
-	data, err := outputImageMarshal(params)
-	if err != nil {
-		return notification
-	}
-	notification.Params = data
-	return notification
+	return true
 }
 
 // stampOutputImageURLs fills in the route this hub serves sha-addressed image
@@ -181,7 +221,7 @@ func stampOutputImageURLs(sessionID string, images []appwire.OutputImage) bool {
 }
 
 // stampSessionImageURLs is stampOutputImageURLs over every item of every turn,
-// plus the replayed user-input images: projectReplayInputImage strips their
+// plus the replayed user-input images: apptranscript.AddressedImageProjector strips their
 // bytes and records the sha in metadata, and handleSessionImage serves exactly
 // that sha back, so the fetchable route belongs on the item itself (kata ck8z)
 // rather than being left for the client to reconstruct from metadata.
@@ -198,8 +238,10 @@ func stampSessionImageURLs(sessionID string, turns []appwire.Turn) {
 }
 
 // stampInputImageURLs gives each sha-bearing input image its sha route,
-// leaving already-routed images and sha-less inline images alone.
-func stampInputImageURLs(sessionID string, images []appwire.InputItem) {
+// leaving already-routed images and sha-less inline images alone. It reports
+// whether it changed anything.
+func stampInputImageURLs(sessionID string, images []appwire.InputItem) bool {
+	stamped := false
 	for i := range images {
 		if images[i].URL != "" {
 			continue
@@ -209,7 +251,9 @@ func stampInputImageURLs(sessionID string, images []appwire.InputItem) {
 			continue
 		}
 		images[i].URL = sessionImageURL(sessionID, sha)
+		stamped = true
 	}
+	return stamped
 }
 
 // stampThreadImageURLs is stampSessionImageURLs over a whole thread, resolving
@@ -301,7 +345,7 @@ func resolveOutputImageFile(sessionID, cwd, candidate, source string) (appwire.O
 		MediaType: mediaType,
 		Size:      info.Size(),
 		URL:       "/doc/image?session=" + url.QueryEscape(sessionID) + "&path=" + url.QueryEscape(rel),
-		SHA:       outputImageSHA(data),
+		SHA:       imageSha(data),
 		Path:      rel,
 	}, true
 }
@@ -318,9 +362,31 @@ func readOutputImageFile(abs string) ([]byte, os.FileInfo, bool) {
 	return data, info, true
 }
 
-func outputImageSHA(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
+// readOutputImageInRoot reads abs, a path fspaths.ResolveInRoot accepted for
+// root, for the image routes. root may be reached through a symlink: the open
+// resolves it. abs must be symlink-resolved, as ResolveInRoot returns it, since
+// the open measures it against that resolved root: an unresolved abs (named
+// through macOS's /var rather than /private/var, say) reads as outside and is
+// refused. The open goes through root again (docOpen, i.e. openDocInRoot), so a
+// symlink swapped in after the containment check cannot lead it outside root;
+// the stat is of the open descriptor, so a non-regular file or one over
+// outputImageMaxBytes is refused whatever the path names by then.
+func readOutputImageInRoot(root, abs string) ([]byte, os.FileInfo, bool) {
+	f, err := docOpen(root, abs)
+	if err != nil {
+		return nil, nil, false
+	}
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
+	info, err := docStat(f)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > outputImageMaxBytes {
+		return nil, nil, false
+	}
+	var buf bytes.Buffer
+	buf.Grow(int(info.Size()))
+	if _, err := buf.ReadFrom(f); err != nil {
+		return nil, nil, false
+	}
+	return buf.Bytes(), info, true
 }
 
 func outputImageDisplayName(path string) string {

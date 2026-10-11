@@ -1,8 +1,6 @@
 import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { expect, test } from "vitest";
 import { Chevron } from ".";
-
-afterEach(cleanup);
 
 function svgOf(container: HTMLElement): SVGSVGElement {
   const svg = container.querySelector("svg");

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -47,9 +46,9 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // `closing` and the install are written under s.mu, so one of the two always
 // sees the other.
 //
-// A swap that passes that first check is ADMITTED: it registers on envWorkWG
+// A swap that passes that first check is ADMITTED: it registers in envWork
 // under the same s.mu hold that read `closing` (the beginDispose idiom), so the
-// Add happens-before Close()'s join, and Close waits for it before cleaning the
+// admission happens-before Close()'s join, and Close waits for it before cleaning the
 // environment. Without that wait a close walks past the refusal it just caused
 // and reaps the process table while step 1's git is still forking on it, on
 // contexts the close never reaches. The refusal alone is not enough: it lands at
@@ -70,7 +69,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		return err
 	}
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
-	// it: the git snapshot and the pre-warm below spawn through next, and a
+	// it: the git snapshot below spawns through next, and a
 	// command is what mints a scratch on an environment that owns none. Adopting
 	// after them would find next already owning a fresh one, keep it, and retain
 	// the session's original — a silently changed $EVENER_SCRATCH_DIR and an
@@ -108,14 +107,6 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	defer s.endEnvWork(admission)
 	moved := current != nil && !sameEnvironment(shared, current) && !sameEnvironment(shared, next)
 	if moved {
-		// Persist the allocation-ownership transition BEFORE the handles move.
-		// An occupied target keeps what it already owns and retains the incoming
-		// allocation (AdoptSessionScratch releases that lease), so a source's
-		// owning slot must never be durably dropped before the target's
-		// replacement slot and the consumer's new current binding are committed.
-		if err := s.stageScratchSwapBinding(next, current, s.id); err != nil {
-			return err
-		}
 		next.AdoptSessionScratch(current)
 	}
 	// Step 0b — the context step 1's git runs under. Every command below forks
@@ -128,16 +119,13 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		hook(refreshCtx)
 	}
 
-	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot, and
-	// pre-warm next's git-root cache. The git snapshot forks several `git`
-	// subprocesses and `git status` can take seconds on a big repo; s.mu must
-	// never be held across a subprocess (it would stall every event emit,
-	// Meta() autosave, and hub poll while forking). The pre-warm is load
-	// bearing, not an optimization: step 2's refreshSystemPromptCache calls
-	// renderSystemPrompt, which calls execenv.GitRootOrEmpty(next, ...) again —
-	// next's memoization cache starts empty (WithWorkingDirectory gives it a
-	// fresh gitRoots cache), so without this call step 2 would fork
-	// `git rev-parse --show-toplevel` while holding s.mu.
+	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot. The
+	// git snapshot forks several `git` subprocesses and `git status` can take
+	// seconds on a big repo; s.mu must never be held across a subprocess (it
+	// would stall every event emit, Meta() autosave, and hub poll while
+	// forking). Step 2's refreshSystemPromptCache runs under s.mu, so the
+	// prompt render must never start a subprocess either: it reads session
+	// state and files only.
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
@@ -150,20 +138,17 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 			ei.GitOriginURL = gitOriginURL(refreshCtx, next, newWD)
 		}
 	}
-	if !s.cfg.NoProjectPrompts {
-		// Pre-warm next's git-root cache; see the lock-order comment above.
-		_ = execenv.GitRootOrEmptyContext(refreshCtx, next, newWD)
-	}
-
 	// Step 2 — under s.mu: atomically install env+envInfo (so the two are
 	// never observed in a torn intermediate state) and rebuild the caches that
-	// derive from them. next's git-root cache is already warm, so this render
-	// hits the cache instead of forking.
+	// derive from them. The prompt render here reads session state and files
+	// only and starts no subprocess.
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		// Roll back exactly what step 0 moved: the session's own scratch, whose
-		// directory is kept for the handoff its close would have made.
+		// Roll back exactly what step 0 moved: the session's own scratch goes back
+		// to the environment the session still holds, so the close removes it
+		// last, after the SessionEnd hooks and MCP servers that still use it.
+		// What next minted for itself is disposed with next below.
 		//
 		// A swap exempt from the move has no adopted lease to release, and what
 		// it must do instead depends on what next is. On a shared child's exit
@@ -175,11 +160,11 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		// reference. It goes with the clone, the decision every other discarded
 		// clone's scratch takes (the re-entry probes, the worktree control env,
 		// a spawn that failed before adoption).
-		switch {
-		case moved:
-			next.RetainSessionScratch()
-		case shared != nil && !sameEnvironment(shared, next):
-			next.DisposeUnadoptedScratch()
+		if moved {
+			current.AdoptSessionScratch(next)
+		}
+		if moved || (shared != nil && !sameEnvironment(shared, next)) {
+			_ = next.EndSessionScratch()
 		}
 		return errSwapWhileClosing
 	}
@@ -197,25 +182,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.recordAbandonedEnvironmentLocked(prior, next)
 	s.rebuildToolDefsCache()
 	promptWarning := s.refreshSystemPromptCache(next)
+	installedWorkingDir := s.envInfo.WorkingDir
 	s.mu.Unlock()
+	s.emit(events.EventEnvironmentChanged, events.EnvironmentChangedData{WorkingDir: installedWorkingDir})
 	s.reportPromptRenderFailure(promptWarning)
-	// Publish the swapped-in environment's binding and its current/parked
-	// consumer roles outside any Session lock, so retention tracks the same
-	// environment the session now works in. The swap is already committed here
-	// (s.env is next and the caller's rollback must not run), so a publication
-	// failure is reported as a warning rather than returned: the "error ⇒ no
-	// swap" contract stays true. Publishing BEFORE the install is not the
-	// smaller correct option — the roles derive from worktreeRestoreEnv and the
-	// abandoned set, both decided by record() under the same s.mu hold that
-	// installs next, so an early publish would record pre-swap roles.
-	if err := s.registerScratchConsumerRoles(next); err != nil {
-		// The swap is already committed (s.env is next and the caller's rollback
-		// must not run), so the failure is a warning for the op — but the manifest
-		// may now diverge from the environment, so it is recorded sticky for the
-		// preparation readiness check to fail closed with a persistence error.
-		s.recordScratchRetentionError(err)
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-			"scratch retention publication after environment swap failed: %v", err)})
-	}
 	return nil
 }

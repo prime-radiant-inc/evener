@@ -1,8 +1,4 @@
-import type {
-	NavigationInvalidatedPayload,
-	NavigationMutation,
-	NavigationReadParams,
-} from "@evener/appwire-client";
+import type { NavigationInvalidatedPayload, NavigationMutation, NavigationReadParams } from "@evener/appwire-client";
 import {
 	applyDelta,
 	type DecodedNavigationResponse,
@@ -20,43 +16,45 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { singleFlight } from "./singleFlight";
 
-interface PageState<T> {
+export interface PageState<T> {
 	loaded: boolean;
-	truncated: boolean;
 	rows: T[];
 	remaining: number;
 	loading: boolean;
 	error: string | null;
 	stale: boolean;
 }
-export type PageStatus = "loading" | "error" | "stale" | "more";
-/** What a list should say about a page beyond its rows. An error keeps its
- * retry even while the page is stale: a failed automatic re-read leaves both
- * set, and "Updating…" must never hide the way out. Views that show an
- * action's error beside the page pass that merged error in. */
-export function pageStatus(
-	page: Pick<PageState<unknown>, "loading" | "error" | "stale" | "remaining">,
-): PageStatus | null {
-	if (page.loading) return "loading";
-	if (page.error) return "error";
-	if (page.stale) return "stale";
-	if (page.remaining > 0) return "more";
-	return null;
-}
 /** Whether a list should say "Updating…": its rows are known to be outdated
- * and no error is on screen. Unlike the boundary row, this holds while the
- * re-read is in flight, since stale stays set until that read lands. */
-export function updating(page: Parameters<typeof pageStatus>[0]) {
+ * and no error is on screen. A failed automatic re-read leaves stale and
+ * error set together, and "Updating…" must never hide the error; views that
+ * show an action's error beside the page pass that merged error in. This
+ * holds while the re-read is in flight, since stale stays set until that
+ * read lands. */
+export function updating(page: Pick<PageState<unknown>, "loading" | "error" | "stale" | "remaining">) {
 	return page.stale && !page.error;
 }
-type NativeNavigationParams = Omit<
-	NavigationReadParams,
-	"representationVersion"
->;
-export class NavigationPages<T> {
+/** What a page list reads and drives: NavigationPages for navigation's own
+ * resources, and ArchivedPages (archivedPages.ts) for a project's archived
+ * sessions, which navigation doesn't serve. */
+export interface PageSource<T> {
+	/** Whether navigation versions this list. A confirm step checks a change
+	 * against the version it read; an unversioned source has none to check. */
+	readonly navigationVersioned: boolean;
+	getSnapshot(): PageState<T>;
+	getResourceVersion(): NormalizedResource["version"] | null;
+	subscribe(listener: () => void): () => void;
+	watch(owner?: () => void): () => void;
+	refresh(): Promise<unknown>;
+	refreshAfter(receipt: NavigationMutation): Promise<unknown>;
+	more(): Promise<unknown>;
+	cancel(): void;
+	resume(): void;
+}
+type NativeNavigationParams = Omit<NavigationReadParams, "representationVersion">;
+export class NavigationPages<T> implements PageSource<T> {
+	readonly navigationVersioned = true;
 	private state: PageState<T> = {
 		loaded: false,
-		truncated: false,
 		rows: [],
 		remaining: 0,
 		loading: false,
@@ -93,7 +91,7 @@ export class NavigationPages<T> {
 	) {
 		this.resourceKey = navigationParamsToResourceKey({
 			...params,
-			representationVersion: 2,
+			representationVersion: 3,
 		});
 	}
 	/** Follow hub invalidations. Newer data is re-read here without user
@@ -102,8 +100,7 @@ export class NavigationPages<T> {
 	watch(owner?: () => void) {
 		this.owner = owner ?? null;
 		return this.client.onNotification((event) => {
-			if (event.method === "evener/navigation/invalidated")
-				this.invalidate(event.params);
+			if (event.method === "evener/navigation/invalidated") this.invalidate(event.params);
 		});
 	}
 	getSnapshot = () => this.state;
@@ -131,8 +128,7 @@ export class NavigationPages<T> {
 	private async rereadLoadedDepth() {
 		const depth = this.offset;
 		if ((await this.load(true)) !== true) return;
-		while (this.offset < depth && this.state.remaining > 0)
-			if ((await this.load(false)) !== true) return;
+		while (this.offset < depth && this.state.remaining > 0) if ((await this.load(false)) !== true) return;
 	}
 	private invalidate(p: NavigationInvalidatedPayload) {
 		if (this.notifiedGeneration !== p.generationId) {
@@ -146,17 +142,12 @@ export class NavigationPages<T> {
 		this.notificationEpoch++;
 		const targets = matchingTargets(this.resourceKey, p.targets);
 		if (gap || targets.some((t) => t.revision === undefined)) this.uncertain++;
-		this.requiredRevision = Math.max(
-			this.requiredRevision,
-			requiredRevision(this.resourceKey, p.targets),
-		);
+		this.requiredRevision = Math.max(this.requiredRevision, requiredRevision(this.resourceKey, p.targets));
 		const loaded = this.version;
 		const held =
 			!gap &&
 			loaded?.generationId === p.generationId &&
-			targets.every(
-				(t) => t.revision !== undefined && t.revision <= loaded.revision,
-			);
+			targets.every((t) => t.revision !== undefined && t.revision <= loaded.revision);
 		if ((targets.length > 0 || gap) && !held) this.publish({ stale: true });
 		// A read in flight sees this notification through its revision checks
 		// and retries itself once, so only an idle store starts a re-read. That
@@ -167,10 +158,14 @@ export class NavigationPages<T> {
 		if (this.state.stale && !this.state.loading) this.scheduleReread();
 	}
 	/** Drop the read in flight and stop re-reading on the owner's behalf until
-	 * resume(); a re-read the hub still owes waits for it. */
+	 * resume(); a re-read the hub still owes waits for it. The dropped read may
+	 * never settle (a request the transport silently dropped while the app was
+	 * backgrounded), so the flight is abandoned here rather than left running:
+	 * otherwise every later invalidation for the page would be dropped too. */
 	cancel() {
 		this.request++;
 		this.paused = true;
+		this.rereads.abandon();
 		this.publish({ loading: false });
 		if (this.state.stale) this.scheduleReread();
 	}
@@ -191,28 +186,18 @@ export class NavigationPages<T> {
 		return this.load(false);
 	}
 	async refreshAfter(receipt: NavigationMutation) {
-		if (this.mutationGeneration !== receipt.generation_id)
-			this.mutationFloor = 0;
+		if (this.mutationGeneration !== receipt.generation_id) this.mutationFloor = 0;
 		this.mutationGeneration = receipt.generation_id;
-		this.mutationFloor = Math.max(
-			this.mutationFloor,
-			requiredRevision(this.resourceKey, receipt.targets),
-		);
+		this.mutationFloor = Math.max(this.mutationFloor, requiredRevision(this.resourceKey, receipt.targets));
 		if (!(await this.load(true, receipt)))
-			throw new Error(
-				"The change was accepted, but the updated list could not be loaded. Refresh the list.",
-			);
+			throw new Error("The change was accepted, but the updated list could not be loaded. Try again.");
 	}
 	private async load(
 		reset: boolean,
 		receipt?: NavigationMutation,
 		{ recovered = false, retried = false } = {},
 	): Promise<boolean | undefined> {
-		if (
-			!reset &&
-			(this.state.loading || this.state.stale || !this.state.remaining)
-		)
-			return;
+		if (!reset && (this.state.loading || this.state.stale || !this.state.remaining)) return;
 		const request = ++this.request,
 			uncertain = this.uncertain,
 			epoch = this.notificationEpoch;
@@ -221,15 +206,12 @@ export class NavigationPages<T> {
 			const offset = reset ? 0 : this.offset,
 				params = {
 					...this.params,
-					representationVersion: 2,
+					representationVersion: 3,
 					offset,
 					limit: this.limit,
 				},
 				key = navigationParamsToResourceKey(params),
-				base =
-					!recovered && reset && offset === 0 && this.normalized
-						? this.normalized.version
-						: undefined;
+				base = !recovered && reset && offset === 0 && this.normalized ? this.normalized.version : undefined;
 			const wire = await this.client.request("evener/navigation/read", {
 				...params,
 				...(base ? { base } : {}),
@@ -239,40 +221,24 @@ export class NavigationPages<T> {
 			try {
 				decoded = decodeNavigationResponse(key, base, wire);
 			} catch (cause) {
-				if (
-					!recovered &&
-					cause instanceof Error &&
-					cause.message.includes("installed base")
-				)
+				if (!recovered && cause instanceof Error && cause.message.includes("installed base"))
 					return this.load(true, receipt, { recovered: true, retried });
-				throw new Error(
-					"Could not read this navigation page. Refresh to try again.",
-				);
+				throw new Error("Could not read this navigation page. Try again.");
 			}
-			const receiptRevision = receipt
-				? requiredRevision(this.resourceKey, receipt.targets)
-				: 0;
-			if (
-				reset &&
-				epoch === this.notificationEpoch &&
-				decoded.version.generationId !== this.notifiedGeneration
-			) {
+			const receiptRevision = receipt ? requiredRevision(this.resourceKey, receipt.targets) : 0;
+			if (reset && epoch === this.notificationEpoch && decoded.version.generationId !== this.notifiedGeneration) {
 				this.notifiedGeneration = decoded.version.generationId;
 				this.requiredRevision = 0;
 				this.sequence = 0;
 			}
 			if (
 				(receipt &&
-					(decoded.version.generationId !== receipt.generation_id ||
-						decoded.version.revision < receiptRevision)) ||
-				(this.notifiedGeneration !== "" &&
-					decoded.version.generationId !== this.notifiedGeneration) ||
+					(decoded.version.generationId !== receipt.generation_id || decoded.version.revision < receiptRevision)) ||
+				(this.notifiedGeneration !== "" && decoded.version.generationId !== this.notifiedGeneration) ||
 				decoded.version.revision <
 					Math.max(
 						this.requiredRevision,
-						decoded.version.generationId === this.mutationGeneration
-							? this.mutationFloor
-							: 0,
+						decoded.version.generationId === this.mutationGeneration ? this.mutationFloor : 0,
 					) ||
 				uncertain !== this.uncertain
 			) {
@@ -301,7 +267,6 @@ export class NavigationPages<T> {
 					loaded: true,
 					rows: [],
 					remaining: 0,
-					truncated: false,
 					loading: false,
 					stale: false,
 					error: null,
@@ -311,8 +276,7 @@ export class NavigationPages<T> {
 			if (decoded.status === "not_modified") {
 				// Every loaded page shares this version, so all of them stand.
 				this.version = decoded.version;
-				if (decoded.version.revision >= this.mutationFloor)
-					this.mutationFloor = 0;
+				if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
 				this.rereads.settle();
 				this.publish({
 					loaded: true,
@@ -324,22 +288,13 @@ export class NavigationPages<T> {
 			}
 			const incoming =
 				decoded.status === "snapshot"
-					? reconcileSnapshot(
-							reset && offset === 0 ? this.normalized : null,
-							snapshotResource(key, decoded),
-						)
+					? reconcileSnapshot(reset && offset === 0 ? this.normalized : null, snapshotResource(key, decoded))
 					: this.normalized
 						? applyDelta(this.normalized, decoded.delta, decoded.version)
 						: null;
-			if (!incoming)
-				throw new Error(
-					"Could not read this navigation page. Refresh to try again.",
-				);
+			if (!incoming) throw new Error("Could not read this navigation page. Try again.");
 			if (reset && offset === 0) this.normalized = incoming;
-			const data = materializeNavigationResource(incoming) as Record<
-					string,
-					unknown
-				>,
+			const data = materializeNavigationResource(incoming) as Record<string, unknown>,
 				raw = data[this.field];
 			if (
 				!Array.isArray(raw) ||
@@ -347,9 +302,7 @@ export class NavigationPages<T> {
 				Number(data.remaining) < 0 ||
 				(!raw.length && Number(data.remaining) > 0)
 			)
-				throw new Error(
-					"The hub returned an invalid navigation page. Refresh to try again.",
-				);
+				throw new Error("The hub returned an invalid navigation page. Try again.");
 			if (
 				!reset &&
 				(this.version?.generationId !== decoded.version.generationId ||
@@ -359,25 +312,18 @@ export class NavigationPages<T> {
 				this.reread();
 				return;
 			}
-			const unique = new Map(
-				(reset ? [] : this.state.rows).map((row) => [this.key(row), row]),
-			);
+			const unique = new Map((reset ? [] : this.state.rows).map((row) => [this.key(row), row]));
 			for (const row of raw) {
 				const identity = this.key(row as T);
-				if (!identity)
-					throw new Error(
-						"The hub returned an invalid destination. Refresh to try again.",
-					);
+				if (!identity) throw new Error("The hub returned an invalid destination. Try again.");
 				unique.set(identity, row as T);
 			}
 			this.offset = offset + raw.length;
 			this.version = decoded.version;
-			if (decoded.version.revision >= this.mutationFloor)
-				this.mutationFloor = 0;
+			if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
 			this.rereads.settle();
 			this.publish({
 				loaded: true,
-				truncated: data.truncated === true || (!reset && this.state.truncated),
 				rows: [...unique.values()],
 				remaining: Number(data.remaining),
 				loading: false,
@@ -389,10 +335,7 @@ export class NavigationPages<T> {
 			if (request !== this.request) return;
 			this.publish({
 				loading: false,
-				error:
-					cause instanceof Error
-						? cause.message
-						: "Could not load this page. Try again.",
+				error: cause instanceof Error ? cause.message : "Could not load this page. Try again.",
 			});
 		} finally {
 			this.rereads.drain();

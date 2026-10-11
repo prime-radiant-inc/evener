@@ -61,6 +61,7 @@ func w3sub_readFileResult(t *testing.T, env execenv.ExecutionEnvironment, path s
 // read_file routes an [image: ...] ReadFile payload through the vision
 // side-channel (session_tools_file.go image arm).
 func TestW3Sub_RegisterFileTools_ImageResult(t *testing.T) {
+	t.Parallel()
 	payload := "[image: pic.png]\n" + base64.StdEncoding.EncodeToString(validPNGFixture(t))
 	res := w3sub_readFileResult(t, &w3sub_readFileEnv{output: payload}, "pic.png")
 	if res.IsError {
@@ -77,6 +78,7 @@ func TestW3Sub_RegisterFileTools_ImageResult(t *testing.T) {
 // read_file routes a [document: ...] ReadFile payload (PDFs) through the same
 // side-channel (session_tools_file.go document arm).
 func TestW3Sub_RegisterFileTools_DocumentResult(t *testing.T) {
+	t.Parallel()
 	payload := "[document: doc.pdf]\n" + base64.StdEncoding.EncodeToString([]byte("fakepdfbytes"))
 	res := w3sub_readFileResult(t, &w3sub_readFileEnv{output: payload}, "doc.pdf")
 	if res.IsError {

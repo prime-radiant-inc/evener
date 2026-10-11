@@ -24,7 +24,7 @@ var (
 	// (agent/job_notify.go's escapeNotificationText, kata 77sf), so a body
 	// never contains a literal '<' that could be mistaken for another
 	// block's opening tag. Mirrors the web side's splitNotificationBlocks
-	// (steeringClassify.ts), which carries the same "MUST be non-greedy"
+	// (steeringNotifications.ts), which carries the same "MUST be non-greedy"
 	// comment for the identical reason.
 	jobNotificationBlockRe = regexp.MustCompile(`(?s)<job-notification\s+([^>]*?)>(.*?)</job-notification>`)
 	jobNotificationAttrRe  = regexp.MustCompile(`(\w+)="([^"]*)"`)
@@ -99,20 +99,25 @@ func parseJobNotificationBlock(attrsRaw, body string) JobNotificationTie {
 	jobID := strings.TrimSpace(attrs["job_id"])
 	status := strings.ToLower(strings.TrimSpace(envvars.FirstNonEmpty(attrs["status"], attrs["event"])))
 	exit := strings.TrimSpace(attrs["exit_code"])
-	isError := strings.Contains(status, "fail") || status == "error" || (exit != "" && exit != "0")
+	// The command-outcome statuses are errors on their status alone: the
+	// exit_code attribute is optional on the wire, so matching the literals
+	// keeps the flag from depending on the exit attr being present.
+	isError := strings.Contains(status, "fail") || status == "error" ||
+		status == "command_exited_nonzero" || status == "command_killed" ||
+		(exit != "" && exit != "0")
 
 	var headline string
 	// Only a delegate's terminal block legitimately carries a communicate
 	// envelope in its excerpt (agent/session_tools_communicate.go writes it;
 	// agent/job_notify.go stamps job_type on every job block). Shell stdout
 	// is literal output even when it coincidentally parses as the envelope's
-	// shape — the same gate the web parser applies (steeringClassify.ts,
+	// shape — the same gate the web parser applies (steeringNotifications.ts,
 	// kata 9cnq; this is its TUI twin, kata sdvc).
 	if attrs["job_type"] == "delegate" {
 		headline = communicateHeadline(decodeNotificationEntities(body))
 	}
 	if headline == "" && status != "" {
-		headline = status
+		headline = JobStatusDisplay(status, strings.TrimSpace(attrs["reason"]))
 	}
 	return JobNotificationTie{JobID: jobID, Headline: headline, IsError: isError}
 }

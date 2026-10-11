@@ -134,7 +134,7 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		_, _ = resumeRequestForConfig(cfg, "past")
 
 		for _, raw := range []string{"", "turn_0", "turn_x", "turn_2"} {
-			_, _ = parseSourceTurnID(raw)
+			_, _ = parseSourceItemKey(raw)
 		}
 		_ = threadForkRequiresTurnCapability(appwire.ThreadForkParams{})
 		_ = threadForkRequiresTurnCapability(appwire.ThreadForkParams{Label: "x"})
@@ -143,10 +143,10 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		remote.forkErr = errors.New("fork")
 		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, remoteReg, appwire.ThreadForkParams{Ref: "remote:r"})
 		remote.forkErr = nil
-		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceTurnID: "x", EditedInput: "edit"})
-		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceTurnID: "1"})
-		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceTurnID: "1", EditedInput: "edit"})
-		_, _ = hubThreadFork(ctx, hubcore.WebConfig{StateDir: t.TempDir()}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceTurnID: "1", EditedInput: "edit"})
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceItemKey: "x", EditedInput: "edit"})
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceItemKey: "apptranscript-item-v2:t_1:0:0"})
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "edit"})
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{StateDir: t.TempDir()}, registry, appwire.ThreadForkParams{Ref: "local:past", SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "edit"})
 
 		extra := &pass6LifecycleSource{scriptedAppSource: &scriptedAppSource{id: "remote"}, listed: []appwire.Thread{{ID: "remote-id", Name: "Needle", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{Ref: "remote:remote-id"}}, {SessionID: "sid", Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}}}}
 		registry.Add(extra)

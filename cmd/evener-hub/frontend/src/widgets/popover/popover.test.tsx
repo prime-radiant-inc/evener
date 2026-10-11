@@ -1,8 +1,6 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { Popover } from "./index";
-
-afterEach(() => cleanup());
 
 // The §3.4 guarantee: the panel is an out-of-flow overlay portaled to
 // document.body, so opening it never pushes page content down (never reflows).

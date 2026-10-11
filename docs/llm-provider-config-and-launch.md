@@ -100,6 +100,64 @@ layer, keyed by instance name; every environment lookup — the provider's
 the registry's own job, in the order [`llm-providers.md`](llm-providers.md#credential-resolution-order)
 documents. The store never sees a separate lookup table for it.
 
+## Command expressions in credential values
+
+Wherever a credential value accepts an environment-variable reference —
+`api_key` and `credential_headers` — it also accepts a command
+expression, `$(...)`: the command runs through your shell and its
+whitespace-trimmed stdout becomes the value. This is how a gateway whose
+credentials live outside evener gets used: the key stays in your password
+manager, or a short-lived token gets minted per request. Display `headers`
+and transport `vars` do not run commands: a command's output is a
+credential, and those fields' values reach URLs and logs as ordinary
+text, so a `$(...)` there is refused when the file loads.
+
+```toml
+# An API key stored in Apple Passwords (Keychain), not in the file:
+[providers.anthropic-keychain]
+base = "anthropic"
+api_key = '''$(security find-generic-password -s "Anthropic" -w)'''
+
+# Any password-store CLI works the same way:
+[providers.pass-store]
+base = "openai"
+api_key = '''$(pass show llm-gateway/token)'''
+```
+
+If your command prints more than the value, pipe it down to what you want
+first — the trimmed stdout is the value, verbatim. MCP server config
+accepts the same forms in the fields it expands (command, args, env, url,
+headers) in the layers you author yourself — the global
+`~/.config/evener/mcp.json` and `--mcp-config` files. The project's
+`.evener/mcp.json` and plugin configs are content evener does not author,
+so they refuse `$(command)` at load and skip the layer with a warning.
+
+The rules that matter in practice:
+
+- A variable that is unset or empty counts as missing, and `${NAME:-default}`
+  fills a missing one (POSIX `:-` semantics); `$$` writes a literal `$`.
+  A `${...}` reference name must match `[A-Za-z_][A-Za-z0-9_]*` — anything
+  else is a load error. MCP config used to look such brace texts up
+  verbatim, so `${MY-VAR}` or `${MY.VAR}` used to expand; the shared
+  grammar now refuses them.
+- Commands run with the process environment, no TTY, a closed stdin, and a
+  30-second timeout; results are cached per command (until a token's JWT
+  `exp` is a minute away, else five minutes), so an agent loop mints once
+  and reuses.
+- A `$(...)` ends at the first `)` that brings the paren depth back to
+  zero; quotes are not parsed, so a literal `)` inside a quoted argument
+  ends the expression early — restructure the command or wrap it in a
+  helper script.
+- A failed command behaves like an unset variable: the credential resolves
+  to nothing, the warning carries the command's own stderr, and the next
+  request retries it. In MCP config the failure is a load error instead:
+  the layer or server entry does not load.
+- The output is a credential: it is never logged. A failing command's
+  error carries its exit status and stderr line, never its output.
+- The hub's credential-header field authors command expressions (as in
+  `Authorization=Bearer $(...)`); the stored-key form refuses one, because a
+  stored key is a literal secret that is never expanded.
+
 ## Environment-variable reference
 
 The complete list — API keys and base URLs together — lives in
@@ -153,6 +211,19 @@ naming the file, remedied with `evener openai logout --instance <name>` or
 deleting it by hand.
 
 ## Hub launch / spawn process model
+
+The hub's private [preview preparation](../cmd/evener-hub/app_launch_preview.go)
+owns directory and layer resolution for `plugin/preview` and the blank or
+missing-directory branches of `spawn/slashCatalog`. Blank CWD resolves only
+the user layer and launch overrides. A missing directory uses a disposable
+probe under the nearest existing ancestor, preserving the eventual target's
+project identity and excluding the ancestor's cwd-local launch layers. The
+probe stays alive through preview and command/skill discovery, and is removed
+on success or resolution failure without creating the target. Slash catalog's
+existing-directory branch retains its canonicalization and resolver seams and
+error classification. These previews apply no runtime defaults or model
+admission; `thread/start` owns scalar precedence and launch admission, while
+`launch/resolve` requires an existing directory and includes its display defaults.
 
 This is the part most worth internalizing: **the hub orchestrates, separate
 `evener` processes do the work.**

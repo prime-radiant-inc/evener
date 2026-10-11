@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../testing/fakeClient";
 import { createConnectionStore, onConnectionNotification } from "./core";

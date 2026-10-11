@@ -2,7 +2,7 @@
 
 import { expect, test } from "vitest";
 import type { ThreadModel } from "./model";
-import { sessionTokens } from "./threadUsage";
+import { sessionTokens, tokenUnitLabel } from "./threadUsage";
 
 function model(overrides: Partial<ThreadModel> = {}): ThreadModel {
   return { turns: [], usage: null, ...overrides } as unknown as ThreadModel;
@@ -56,4 +56,21 @@ test("turns carrying no usage sum to no data at all rather than a zero total", (
 
 test("a thread usage object whose counts are all zero is no data, not a zero total", () => {
   expect(sessionTokens(model({ usage: { inputTokens: 0, outputTokens: 0 } }))).toBeNull();
+});
+
+// --- token unit label --------------------------------------------------------
+// Moved from mobile-native's transcriptPresentation.test.ts (D18 B3 round 3):
+// the web details panel and the native transcript footer both render a
+// SessionTokens scope, so the mapping lives once, here.
+
+test("labels a whole-session total plainly", () => {
+  expect(tokenUnitLabel("session")).toBe("tokens");
+});
+
+test("labels a sum truncated to the loaded turns as covering only the loaded turns", () => {
+  expect(tokenUnitLabel("loaded")).toBe("tokens (loaded turns)");
+});
+
+test("labels the absence of any token figure plainly", () => {
+  expect(tokenUnitLabel(undefined)).toBe("tokens");
 });

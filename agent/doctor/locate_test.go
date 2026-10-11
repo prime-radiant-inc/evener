@@ -218,7 +218,12 @@ func TestLocate_EmptySelector(t *testing.T) {
 	}
 }
 
-func TestLocate_CleanBreakSkipsLegacyProjectAndSession(t *testing.T) {
+// TestLocate_ProjRefsResolveWithoutMutatingState is the clean-break contract
+// after the legacy-addressability fix: buckets with legacy (non-Project.ID)
+// names and well-formed names are BOTH addressable by explicit proj: refs,
+// and resolving either never mutates the on-disk state it reads — the
+// doctor stays a read-only forensics tool even over legacy layouts.
+func TestLocate_ProjRefsResolveWithoutMutatingState(t *testing.T) {
 	base := t.TempDir()
 	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
 	newBucket := stateHomeBucket(base, "project-new-0123456789")
@@ -234,10 +239,14 @@ func TestLocate_CleanBreakSkipsLegacyProjectAndSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Locate(base, "proj:0123456789abcdef:"+sidA); err == nil {
-		t.Fatal("legacy project ref unexpectedly resolved")
+	got, err := Locate(base, "proj:0123456789abcdef:"+sidA)
+	if err != nil {
+		t.Fatalf("legacy project ref must resolve: %v", err)
 	}
-	got, err := Locate(base, "proj:project-new-0123456789:"+sidB)
+	if got.ProjectID != "0123456789abcdef" || got.SessionID != sidA {
+		t.Fatalf("legacy ref resolved project/session = %q/%q", got.ProjectID, got.SessionID)
+	}
+	got, err = Locate(base, "proj:project-new-0123456789:"+sidB)
 	if err != nil {
 		t.Fatalf("new project/session did not resolve: %v", err)
 	}
@@ -255,5 +264,106 @@ func TestLocate_CleanBreakSkipsLegacyProjectAndSession(t *testing.T) {
 	}
 	if !bytes.Equal(after, before) || !afterInfo.ModTime().Equal(info.ModTime()) {
 		t.Fatal("legacy doctor fixture changed")
+	}
+}
+
+// TestLocate_LegacyBucketProjRefResolves is the reviewer's test: a bucket
+// directory whose name predates (or simply ignores) identifier.Project's
+// well-formedness is still enumerated by the sweep, so it must also be
+// addressable by an explicit proj: ref. Findable by bare id but not
+// nameable by ref would leave a located session impossible to follow up.
+func TestLocate_LegacyBucketProjRefResolves(t *testing.T) {
+	base := t.TempDir()
+	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	writeSession(t, legacyBucket, sidA)
+
+	got, err := Locate(base, "proj:0123456789abcdef:"+sidA)
+	if err != nil {
+		t.Fatalf("Locate legacy-named bucket by explicit ref: %v", err)
+	}
+	if got.ProjectID != "0123456789abcdef" || got.SessionID != sidA {
+		t.Errorf("resolved project/session = %q/%q, want 0123456789abcdef/%s", got.ProjectID, got.SessionID, sidA)
+	}
+	if want := filepath.Join(legacyBucket, "sessions", sidA+".transcript.jsonl"); got.TranscriptPath != want {
+		t.Errorf("TranscriptPath = %q, want %q", got.TranscriptPath, want)
+	}
+}
+
+// TestLocate_ProjRefTraversalTokensRejected pins that the relaxed project-id
+// policy refuses exactly the traversal shapes: path separators, the dot
+// components, empty, and NUL. Everything else is a directory name the sweep
+// may legitimately enumerate.
+func TestLocate_ProjRefTraversalTokensRejected(t *testing.T) {
+	base := t.TempDir()
+	writeSession(t, stateHomeBucket(base, hash1), sidA)
+	for _, bad := range []string{
+		"proj:../h:" + sidA,
+		"proj:..:" + sidA,
+		"proj:.:" + sidA,
+		"proj:a/b:" + sidA,
+		"proj:a\\b:" + sidA,
+		"proj:a\x00b:" + sidA,
+		"proj::" + sidA,
+	} {
+		if _, err := Locate(base, bad); err == nil {
+			t.Errorf("Locate(%q) = nil error, want traversal rejection", bad)
+		}
+	}
+}
+
+// TestLocate_NonConsumableBucketOmitsRefButSelectorAddresses proves the
+// emission contract for buckets whose directory names the shared agent ref
+// grammar rejects: locate emits NO transcript ref (never a handle the
+// agent-side transcript tools would refuse), while the session stays fully
+// addressable through the doctor's own selector grammar — a bare id sweeps
+// to it and the explicit proj: ref re-locates. Follow-up reads for such
+// buckets go through the doctor's transcript command, not read_transcript.
+func TestLocate_NonConsumableBucketOmitsRefButSelectorAddresses(t *testing.T) {
+	base := t.TempDir()
+	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	writeSession(t, legacyBucket, sidA)
+
+	first, err := Locate(base, sidA)
+	if err != nil {
+		t.Fatalf("bare-id Locate into legacy bucket: %v", err)
+	}
+	if first.TranscriptRef != "" {
+		t.Fatalf("TranscriptRef = %q, want empty — a legacy-named bucket is not consumable by the agent ref grammar", first.TranscriptRef)
+	}
+	if first.ProjectID != "0123456789abcdef" {
+		t.Fatalf("ProjectID = %q, want the bucket name", first.ProjectID)
+	}
+	second, err := Locate(base, "proj:0123456789abcdef:"+sidA)
+	if err != nil {
+		t.Fatalf("explicit legacy proj ref must still address the bucket: %v", err)
+	}
+	if second.TranscriptPath != first.TranscriptPath || second.ProjectID != first.ProjectID {
+		t.Errorf("round trip moved: first=%+v second=%+v", first, second)
+	}
+}
+
+// TestLocate_ColonNamedBucketOmitsRefButSelectorAddresses is the colon name
+// class of the emission contract: no ref is emitted (validIDToken rejects
+// colons), and the doctor's own last-colon selector grammar still addresses
+// the bucket — the round-2 reviewer's addressability, kept honest at the
+// emission site.
+func TestLocate_ColonNamedBucketOmitsRefButSelectorAddresses(t *testing.T) {
+	base := t.TempDir()
+	colonBucket := stateHomeBucket(base, "a:b")
+	writeSession(t, colonBucket, sidA)
+
+	first, err := Locate(base, sidA)
+	if err != nil {
+		t.Fatalf("bare-id Locate into colon-named bucket: %v", err)
+	}
+	if first.TranscriptRef != "" {
+		t.Fatalf("TranscriptRef = %q, want empty — colons are not consumable by the agent ref grammar", first.TranscriptRef)
+	}
+	second, err := Locate(base, "proj:a:b:"+sidA)
+	if err != nil {
+		t.Fatalf("explicit colon proj ref must still address the bucket: %v", err)
+	}
+	if second.TranscriptPath != first.TranscriptPath || second.ProjectID != first.ProjectID {
+		t.Errorf("round trip moved: first=%+v second=%+v", first, second)
 	}
 }

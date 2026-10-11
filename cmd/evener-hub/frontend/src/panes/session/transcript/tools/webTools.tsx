@@ -19,19 +19,24 @@
 // stays a short line-oriented preview, matching the legacy
 // webSearchRenderer's own "don't dump the whole page inline" restraint.
 
-import type { ItemModel } from "@evener/appwire-client";
-import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "@evener/appwire-client";
+import {
+  clip,
+  formatByteCount,
+  parseArgs,
+  str,
+  webFetchResult,
+  webFetchSummary,
+  webSearchResultLines,
+  webSearchSummary,
+} from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { ContextCard } from "../../../../widgets/contextcard";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 
-const QUERY_CLIP = 120;
+// Summaries and the result and size readers are @evener/appwire-client's
+// toolSummaries, which the phone reads too.
 const RESULT_LINE_CLIP = 200;
-
-function nonBlankLines(text: string): string[] {
-  return text.split("\n").filter((line) => line.trim() !== "");
-}
 
 // A conservative bare-URL matcher for web_search's free-form result text
 // (kata xw3t): unlike web_fetch, this tool has no structured URL field to
@@ -86,15 +91,6 @@ function linkifyLine(line: string): ReactNode {
   return nodes;
 }
 
-// webFetchByteCount prefers the JSON envelope's own size_bytes (the
-// fetched page's real size) over the output text's own length (which
-// would instead measure the pretty-printed JSON wrapper).
-function webFetchByteCount(output: string): number {
-  const parsed = parseJSONObject(output);
-  const sizeBytes = parsed?.size_bytes;
-  return typeof sizeBytes === "number" ? sizeBytes : output.length;
-}
-
 // The fetched URL, linkified so the reader can open it in their own browser
 // (kata tcp9). Sourced from argumentsJSON — the call's own input, present
 // even when the fetch failed and the output is bare error text — never from
@@ -116,13 +112,15 @@ function webFetchLink(item: { argumentsJSON?: string }): string | undefined {
 function WebFetchBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  const parsed = parseJSONObject(output);
-  const answer = parsed ? str(parsed, "answer") : undefined;
+  // The model's answer (or the page's content when both models refused) and
+  // its size, from one parse (@evener/appwire-client's webFetchResult, which
+  // the phone reads too).
+  const page = webFetchResult(output);
   return (
     <ContextCard
       source={str(parseArgs(item.argumentsJSON), "url") ?? ""}
-      snippet={clip(answer ?? output, 240)}
-      meta={formatByteCount(webFetchByteCount(output))}
+      snippet={clip(page?.text ?? output, 240)}
+      meta={formatByteCount(page?.bytes ?? output.length)}
       href={webFetchLink(item)}
     />
   );
@@ -132,11 +130,7 @@ registerToolRenderer({
   match: "web_fetch",
   icon: "globe",
   fold: "quiet",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const url = str(args, "url") ?? "";
-    return `Fetched ${url} · ${formatByteCount(webFetchByteCount(item.output ?? ""))}`;
-  },
+  summary: webFetchSummary,
   // kata xw3t: the collapsed row's own "Fetched <url> · N bytes" line reuses
   // the exact same http(s)-only URL webFetchLink already computes for the
   // expanded body (tcp9) - same source (argumentsJSON, not the output
@@ -149,7 +143,7 @@ registerToolRenderer({
 function WebSearchBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  const lines = nonBlankLines(output)
+  const lines = webSearchResultLines(output)
     .slice(0, 5)
     .map((line) => clip(line.trim(), RESULT_LINE_CLIP));
   return (
@@ -170,11 +164,6 @@ registerToolRenderer({
   match: "web_search",
   icon: "search",
   fold: "quiet",
-  summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
-    const query = clip(str(args, "query") ?? str(args, "q") ?? "", QUERY_CLIP);
-    const resultCount = nonBlankLines(item.output ?? "").length;
-    return `Searched the web for "${query}" · ${resultCount} results`;
-  },
+  summary: webSearchSummary,
   body: WebSearchBody,
 });

@@ -1,13 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import type {
-	ModelListResponse,
-	Thread,
-} from "@evener/appwire-client";
-import {
-	type ConversationClientLike,
-	createConversationService,
-} from "../../mobile/src/services/conversation";
+import type { ModelListResponse, Thread } from "@evener/appwire-client";
+import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
 import { SessionControls } from "./sessionControls";
 
 async function boundary(actions: {
@@ -55,7 +50,7 @@ async function boundary(actions: {
 			},
 		},
 	};
-	const wire: ConversationClientLike = {
+	const wire: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: async (method, params) => {
 			if (method === "thread/read") return { thread };
 			if (method === "model/list") return actions.models?.() ?? { data: [] };
@@ -71,17 +66,13 @@ async function boundary(actions: {
 				await actions.vision?.((params as { visionModel: string }).visionModel);
 				return {};
 			}
-			if (method === "evener/thread/name/set")
-				await actions.rename?.((params as { name: string }).name);
+			if (method === "evener/thread/name/set") await actions.rename?.((params as { name: string }).name);
 			else if (method === "thread/compact/start") await actions.compact?.();
 			else if (method === "thread/shutdown") await actions.shutdown?.();
-			else if (method === "evener/thread/forceStop")
-				await actions.forceStop?.();
+			else if (method === "evener/thread/forceStop") await actions.forceStop?.();
 			else if (method === "thread/resume") await actions.resume?.();
 			else if (method === "thread/reasoning-effort/set")
-				await actions.reasoning?.(
-					(params as { reasoningEffort: string }).reasoningEffort,
-				);
+				await actions.reasoning?.((params as { reasoningEffort: string }).reasoningEffort);
 			else throw new Error(`Unexpected method ${method}`);
 			return {};
 		},
@@ -91,7 +82,7 @@ async function boundary(actions: {
 			await actions.resume?.();
 			return { thread };
 		},
-	} as ConversationClientLike;
+	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike;
 	const service = createConversationService(wire);
 	await service.open("local:test");
 	return service;
@@ -112,6 +103,23 @@ describe("conversation-owned session controls", () => {
 		);
 		expect(await controls.forceStop()).toBe(true);
 		expect(stopped).toBe(1);
+	});
+
+	it("shuts down without narrating it: the screen confirms (ruling 19)", async () => {
+		let stopped = 0;
+		const controls = new SessionControls(
+			await boundary({ shutdown: async () => {} }),
+			async () => {},
+			() => {
+				stopped += 1;
+			},
+			() => true,
+			() => null,
+			() => true,
+		);
+		expect(await controls.shutdown()).toBe(true);
+		expect(stopped).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null, notice: null });
 	});
 
 	it("does not claim force stop success when recovery fails", async () => {
@@ -210,30 +218,251 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.forceStop()).toBe(false);
 		expect(attempts).toBe(0);
 	});
-	it.each([undefined, true])(
-		"sets a catalog vision model with support metadata %j",
-		async (supportsVision) => {
-			const applied: string[] = [];
-			const controls = new SessionControls(
-				await boundary({
-					models: async () => ({
-						data: [{ provider: "one", model: "vision", supportsVision }],
-					}),
-					vision: async (value) => {
-						applied.push(value);
-					},
+	it.each([undefined, true])("sets a catalog vision model with support metadata %j", async (supportsVision) => {
+		const applied: string[] = [];
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({
+					data: [{ provider: "one", model: "vision", supportsVision }],
 				}),
-				async () => {},
-				() => {},
-				() => true,
-				() => null,
-				() => true,
-			);
-			await controls.loadModels();
-			expect(await controls.changeVisionModel("one", "vision")).toBe(true);
-			expect(applied).toEqual(["one/vision"]);
-		},
-	);
+				vision: async (value) => {
+					applied.push(value);
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("one", "vision")).toBe(true);
+		expect(applied).toEqual(["one/vision"]);
+	});
+	// A load the binding moved on from must not strand the controls: the next
+	// load reads the catalog again, instead of returning early on a load that
+	// will never publish.
+	it("loads the catalog again after a load that answered once the binding had moved on", async () => {
+		let current = true;
+		let reads = 0;
+		const answered = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					if (reads === 1) await answered.promise;
+					return { data: [{ provider: "one", model: "m", displayName: "Model One" }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => current,
+			() => null,
+			() => true,
+		);
+		const first = controls.loadModels();
+		current = false;
+		answered.resolve();
+		await first;
+		current = true;
+		await controls.loadModels();
+		expect(reads).toBe(2);
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			catalog: { data: [{ displayName: "Model One" }] },
+		});
+	});
+	// The model's name comes from the catalog: a reload keeps the one it has
+	// until the new one lands, so the label never falls back to the raw id.
+	it("keeps the last catalog while it reloads", async () => {
+		let reads = 0;
+		const second = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					if (reads === 2) await second.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${reads}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const reload = controls.loadModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: true,
+			catalog: { data: [{ displayName: "Model One 1" }] },
+		});
+		second.resolve();
+		await reload;
+		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 2");
+	});
+
+	// The hub announces a refreshed model list on evener/auth/updated (#3539):
+	// a loaded catalog is read again and replaced in place, and a failed read
+	// keeps it, since the list the hub last served still stands.
+	it("refreshes a loaded catalog in place and keeps it when the read fails", async () => {
+		let reads = 0;
+		let failing = false;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					if (failing) throw new Error("hub unavailable");
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${reads}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		await controls.refreshModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			modelError: null,
+			catalog: { data: [{ displayName: "Model One 2" }] },
+		});
+		failing = true;
+		await controls.refreshModels();
+		expect(controls.getSnapshot()).toMatchObject({
+			loadingModels: false,
+			modelError: null,
+			catalog: { data: [{ displayName: "Model One 2" }] },
+		});
+	});
+	// Two announcements close together: the list the later read brings is the
+	// one that stays, whichever read answers last.
+	it("keeps the newest refresh's catalog when two overlap", async () => {
+		let reads = 0;
+		const first = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await first.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const older = controls.refreshModels();
+		const newer = controls.refreshModels();
+		await newer;
+		first.resolve();
+		await older;
+		expect(reads).toBe(3);
+		expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
+	});
+	// A load started after a refresh is the newer read: whatever it brings,
+	// including a failure that clears the catalog, the older refresh landing
+	// afterwards changes nothing.
+	it.each([
+		["fails", true],
+		["succeeds", false],
+	])("lets a load that %s after a refresh stand over the refresh", async (_, loadFails) => {
+		let reads = 0;
+		const held = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await held.promise;
+					if (read === 3 && loadFails) throw new Error("hub unavailable");
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const refresh = controls.refreshModels();
+		await controls.loadModels();
+		held.resolve();
+		await refresh;
+		if (loadFails) expect(controls.getSnapshot()).toMatchObject({ catalog: null, modelError: "hub unavailable" });
+		else expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3");
+	});
+	// An announcement that arrives while a load is out is not dropped: the load
+	// may have read the list before the hub refreshed it, so the catalog is read
+	// again once the load settles (Jesse, 2026-09-30).
+	it("reads again after a load when an announcement arrived during it", async () => {
+		let reads = 0;
+		const held = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					const read = reads;
+					if (read === 2) await held.promise;
+					return { data: [{ provider: "one", model: "m", displayName: `Model One ${read}` }] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const load = controls.loadModels();
+		await controls.refreshModels();
+		expect(reads).toBe(2);
+		held.resolve();
+		await load;
+		await vi.waitFor(() => expect(reads).toBe(3));
+		await vi.waitFor(() => expect(controls.getSnapshot().catalog?.data[0]?.displayName).toBe("Model One 3"));
+	});
+	it("refreshes nothing before a catalog is loaded", async () => {
+		let reads = 0;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					reads++;
+					return { data: [] };
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.refreshModels();
+		expect(reads).toBe(0);
+	});
+
+	// A screen that binds a session again hands its new controls the catalog
+	// it already knows, so the label doesn't wait on a read to name the model.
+	it("starts from the catalog it is given", async () => {
+		const known = { data: [{ provider: "one", model: "m", displayName: "Model One" }] };
+		const controls = new SessionControls(
+			await boundary({}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			known,
+		);
+		expect(controls.getSnapshot().catalog).toBe(known);
+	});
 	it("rejects a catalog model explicitly marked as not supporting vision", async () => {
 		let attempts = 0;
 		const service = await boundary({

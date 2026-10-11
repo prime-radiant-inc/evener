@@ -90,3 +90,25 @@
   color: var(--ink-low);
   font-variant-numeric: tabular-nums;
 }
+
+/* --- rail mode ------------------------------------------------------------
+ * Opt-in seating for the one consumer whose row owns an icon rail slot: the
+ * transcript's content-free "Thinking…" placeholder (ThinkBlock). The grid
+ * centres in a --speaker-avatar-size slot so its 15px of cells aligns on the
+ * same column the live/settled rows' bulb glyph centres on, and the row's own
+ * --space-2 gap also lands between grid and label, so the grid's margin-right
+ * is the speaker-gap MINUS that gap - the same arithmetic the shared rail
+ * seat's .seat rule uses (styles/railseat.module.css). The slot is a grid of
+ * cells rather than a glyph box, so only the ROW composes the shared
+ * .gutterPull: the pull rides the row root (the slot sits inside it), while
+ * the slot rule stays here, local to the shape only this widget has.
+ */
+.rail {
+  composes: gutterPull from "../../styles/railseat.module.css";
+}
+
+.rail .grid {
+  width: var(--speaker-avatar-size);
+  justify-content: center;
+  margin-right: calc(var(--speaker-gap) - var(--space-2));
+}

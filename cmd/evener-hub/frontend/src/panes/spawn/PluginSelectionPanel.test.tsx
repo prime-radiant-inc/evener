@@ -1,7 +1,7 @@
 import type { PluginPreviewResponse } from "@evener/appwire-client";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 
 const preview: PluginPreviewResponse = {
@@ -58,8 +58,6 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof PluginSelect
   );
   return { onSelectionChange };
 }
-
-afterEach(cleanup);
 
 test("renders named switches, source subheading, counts, and description", () => {
   renderPanel();

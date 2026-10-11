@@ -4,19 +4,23 @@
 // directly.
 
 import type {
+  CommandDescriptor,
   EvenerDelegateInfo,
   EvenerSkillInfo,
   EvenerTurnSlots,
   EvenerUsage,
   GoalState,
+  OverlayItem,
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
   SessionURL,
   TaskAggregate,
+  ThreadAccess,
   ThreadCapabilities,
   ThreadItemPosition,
   ThreadStatus,
+  ThreadTurnsListResponse,
 } from "./types.gen";
 
 // A single image handle on an item: `src` is the already-resolved fetch URL
@@ -44,13 +48,14 @@ export interface ItemModel {
   position?: ThreadItemPosition;
   // The item's 1-based position in the parent transcript's ENTRY list (wire
   // ThreadItem.transcriptEntryIndex), counting every entry - user, assistant,
-  // checkpoint - not just the ones that opened a turn. This is the only field
-  // that names a thread/fork divergence position: the hub reads
-  // ThreadForkParams.sourceTurnId as exactly this index
-  // (cmd/evener-hub/app_threadlifecycle.go's parseSourceTurnID, feeding
-  // agent.ForkSessionAtUserTurn). turnId is NOT interchangeable with it - a
-  // replayed transcript numbers turn_N off the entry index and makes the two
-  // look equal, but every live minter numbers turns off its own counter.
+  // checkpoint - not just the ones that opened a turn. transcriptKey above is
+  // what a thread/fork divergence position is actually sent as
+  // (ThreadForkParams.sourceItemKey, parsed by
+  // cmd/evener-hub/app_threadlifecycle.go's parseSourceItemKey into this same
+  // index before it feeds agent.ForkSessionAtUserTurn). turnId is NOT
+  // interchangeable with either - a replayed transcript numbers turn_N off
+  // the entry index and makes the two look equal, but every live minter
+  // numbers turns off its own counter.
   // Undefined when the wire carried none, which means "no persisted transcript
   // position" and never entry 0; a fork affordance must refuse rather than
   // guess (see UserMessageItem.tsx).
@@ -129,7 +134,23 @@ export interface ItemModel {
   observedCompletedAt?: string;
   // Populated only by the reducer's `case "warning"` fold (see reducer.ts);
   // undefined for every other item.
-  warning?: { source?: string; title?: string; hint?: string };
+  warning?: { source?: string; title?: string; hint?: string; code?: string };
+  /** The wire ThreadItem.version: the highest contributing entry ordinal + 1.
+   * Merges keep the higher version; undefined on overlay items and on items
+   * from a pre-v6 read. */
+  version?: number;
+  /** The wire ThreadItem.roundId: the round an ASSISTANT-projected item came
+   * from. History holding it covers that round's overlay streams. */
+  roundId?: string;
+  /** The wire ThreadItem.completedAtEntry: on a tool item, the entry ordinal + 1
+   * of the TOOL_RESULTS entry that completed it. Once set, the overlay's
+   * execution state for the item is dropped. */
+  completedAtEntry?: number;
+  /** Set on display items the overlay contributes: the OverlayItem.key of a
+   * stream, preview, notice or unmatched tool item, and of the tool overlay
+   * laid over a history item (whose id and version stay the history item's).
+   * Undefined on plain history items. */
+  overlayKey?: string;
 }
 
 export interface TurnModel {
@@ -142,6 +163,10 @@ export interface TurnModel {
   usage?: unknown;
   cost?: unknown;
   error?: unknown;
+  /** The wire Turn.version: the highest contributing entry ordinal + 1.
+   * Merges keep the higher version; undefined on a placeholder turn the overlay
+   * opened before history held the turn, and on pre-v6 reads. */
+  version?: number;
 }
 
 // SYSTEM_PRELUDE_TURN_ID is the synthetic turn id for content that belongs
@@ -203,10 +228,61 @@ export interface ModelRetryState {
 export type CapabilitySource = "read" | "statusFrame" | "none";
 
 export interface ThreadDiagnostics {
+  // Owning session's loaded inventory for live completion, never controller discovery.
+  commands?: CommandDescriptor[];
   // Snapshot-only plugin inventory. An absent diagnostics object, or an
   // object without plugins, means the daemon could not provide the inventory;
   // an empty array is an authoritative empty inventory.
   plugins?: Array<{ name: string }>;
+}
+
+/**
+ * The recorded history a thread holds and the read identity it was taken
+ * under (spec "Recorded length", "Reads", "Live history notifications").
+ * reducer.ts owns every field; stores read `invalidatedAtGeneration` and
+ * `failed` to decide when to issue a read and what to show.
+ */
+export interface HistoryState {
+  /** The boot generation token the held history was read under ("" before any
+   * v6 read). See bootGeneration.ts's compareBootGeneration. */
+  bootGeneration: string;
+  /** The resync epoch the held history was read under. Adopted only from
+   * successful latest-window reads. */
+  epoch: number;
+  /** The held snapshot's index incarnation: compared by equality only. */
+  incarnation?: string;
+  /** The held snapshot's recorded length: the latest-window read's, which is
+   * what a request's heldSnapshot names. */
+  length: number;
+  /** The highest request generation whose latest-window response was applied. */
+  appliedGeneration: number;
+  /** The newest request generation issued for this thread (issueLatestWindowRead).
+   * Never reset, not even when a read replaces the whole history. */
+  issuedGeneration: number;
+  /** Set while the thread is invalid (a higher boot generation, a newer epoch,
+   * another incarnation, a resync push, or invalidateHistory on reconnect): the
+   * newest request generation issued when it was last invalidated. Nothing
+   * merges until a latest-window response to a later generation replaces the
+   * whole history. A newer signal while invalid moves it again, so a store
+   * issues a latest-window read whenever this value changes (after the one in
+   * flight, if any, returns and is dropped). */
+  invalidatedAtGeneration?: number;
+  /** While invalid: the newest boot generation and epoch that invalidated the
+   * thread. The replacing read must be no older, and only a newer signal
+   * re-arms the thread. */
+  awaited?: { bootGeneration: string; epoch: number };
+  /** The incarnation an update or page announced while invalidating: backfill
+   * pages from it wait in `deferredPages` until its latest window applied. */
+  pendingIncarnation?: string;
+  /** Pages of `pendingIncarnation`, merged after its latest window replaces. */
+  deferredPages: ThreadTurnsListResponse[];
+  /** The one diagnostic to show while the thread's history failed
+   * (ErrorTranscriptHistoryFailed). History is held unchanged and nothing
+   * merges until a latest-window read succeeds; the overlay keeps updating. */
+  failed?: string;
+  /** The recorded turns, in display order, with their items ordered by
+   * position. ThreadModel.turns is this plus the overlay. */
+  turns: TurnModel[];
 }
 
 export interface ThreadModel {
@@ -235,6 +311,17 @@ export interface ThreadModel {
   // separating a fenced live+idle session from an editable one. Snapshot-only:
   // an explicit resume re-hydrates the model with the flag cleared.
   resumeRequired?: boolean;
+  // ResumeOnlyFoldable is the hub's own admission answer, carried straight from
+  // appwire.EvenerThread.ResumeOnlyFoldable on the snapshot: a turn/start sent
+  // right now would be admitted under the resume-only carve-out, so the send
+  // folds the pending resume into itself. The hub stamps it only when that
+  // admission would actually succeed, which is why the client keys its Send
+  // offer on this bit rather than inferring the shape from resumeRequired plus
+  // a missing send capability - that same overlay also clears send for a Stop
+  // drain, an unconfirmed force-stop exit, the connection-recovery fence, and
+  // a daemon on an incompatible protocol. Snapshot-only: a resume that clears
+  // the fence re-hydrates the model without it.
+  resumeOnlyFoldable?: boolean;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
@@ -246,13 +333,27 @@ export interface ThreadModel {
   // model-visible projection." THREAD-level, never a turn item; always an
   // array (hydrateThread defaults an absent wire value to []).
   pendingEscalations: SandboxEscalationRequested[];
+  // The display structure every consumer reads. For a v6 read it is derived
+  // from `history` and `overlay` (reducer.ts): recorded turns ordered by their
+  // first item's position, tool state laid over in-progress items, notices at
+  // their anchors, and streams and previews at the end of their turn.
   turns: TurnModel[];
   activeTurnId?: string;
+  /** The recorded history behind `turns`. Absent on a model built from a pre-v6
+   * read or assembled by hand, which then merges no versioned history. */
+  history?: HistoryState;
+  /** The live overlay (streams, previews, running tools, notices) by
+   * OverlayItem.key. Replaced by every read; absent where `history` is. */
+  overlay?: Record<string, OverlayItem>;
+  /** The running turn (thread/status/changed's activeTurnId; the read's
+   * evener.activeTurnId). An inProgress turn displays as running only while it
+   * is this one (itemFailure.ts's displayTurnStatus). */
+  runningTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
   tasks: TaskAggregate | null;
-  // Snapshot-only plugin diagnostics from thread/read. The palette uses this
-  // inventory to scope the global command catalog to the active session.
+  // Snapshot-only catalogs from the owning thread/read. Live completion uses
+  // commands directly, the separate palette still scopes its global plugins.
   diagnostics?: ThreadDiagnostics;
   // Stable delegates are controller-fold snapshots, never activation jobs.
   // Live updates are fenced by projectionRevision; latestActivityAt is
@@ -312,13 +413,13 @@ export interface ThreadModel {
   // are authoritative. goal/set's response-derived value is only an immediate
   // fallback until either authoritative path is accepted.
   goal: GoalState | null;
-  // HumanNote is the human's one-paragraph session whiteboard (wire:
+  // HumanNote is the human's session whiteboard, line breaks kept (wire:
   // EvenerThread.HumanNote, omitempty). Empty means unset. Hydration and
   // accepted evener/notes/updated pushes are authoritative. notes/human/set's
   // response-derived value is only an immediate fallback until either
   // authoritative path is accepted.
   humanNote: string;
-  // AgentNote is the agent's one-paragraph session whiteboard (wire:
+  // AgentNote is the agent's session whiteboard, line breaks kept (wire:
   // EvenerThread.AgentNote, omitempty). Empty means unset. Read-only in the
   // UI; updated by the same evener/notes/updated push as humanNote.
   agentNote: string;
@@ -365,11 +466,21 @@ export interface ThreadModel {
   // nothing: absent is unknown, and zero is not news.
   // Snapshot-only like usage/cost/workMillis; no live push.
   failedToolCalls?: number;
+  // The session's sandbox mode and network setting (wire EvenerThread.access,
+  // S15), for the Session sheet's Access section. Undefined when the daemon or
+  // hub predates it: not known, so the section is left out. Snapshot-only: a
+  // session's sandbox is fixed when it starts.
+  access?: ThreadAccess;
   workMillis: number;
   // activeTurnStartedAt is undefined when no turn is active (an ISO string,
   // like every other timestamp on this model, converted from the wire's
   // epoch-ms EvenerThread.ActiveTurnStartedAt). No live push.
   activeTurnStartedAt?: string;
+  // lastTurnEndedAt is when the session's last turn ended (S4), an ISO string
+  // converted from the wire's epoch-ms EvenerThread.LastTurnEndedAt; undefined
+  // before any turn has ended and from an older daemon. The phone marks a
+  // session seen through it. No live push: a re-read replaces it.
+  lastTurnEndedAt?: string;
   // reasoningEffortLevels/supportsReasoning DO get a live update, but only
   // via thread/model/changed (a model switch describes the new model's full
   // profile - see reducer.ts's own case) - never independently pushed.

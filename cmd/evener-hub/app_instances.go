@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -40,6 +41,8 @@ type hubInstancesController struct {
 	// of another. Every controller lock is taken in the order mu then
 	// auth.credMu, List included, so the read side adds no ordering.
 	mu sync.RWMutex
+	// providerFileSignature is the last external file observation, guarded by mu.
+	providerFileSignature string
 	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
 	// just before it takes auth.credMu. A race test uses it as a barrier: the
 	// test holds the credential lock, waits for this signal, and only then
@@ -60,11 +63,18 @@ func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 }
 
 func (c *hubInstancesController) write(l *registry.Layer) error {
-	err := registry.WriteConfigFile(c.providersConfigPath, l)
+	raw, err := registry.MarshalConfig(l)
+	if err != nil {
+		return err
+	}
+	err = registry.WriteConfigFile(c.providersConfigPath, l)
 	if err == nil {
 		// The primitive itself records the write the instant it lands; the
 		// mutation's rollback clears it again when it puts the prior file back.
 		c.applied.markApplied()
+		// The RPC announces local writes. Acknowledge exactly
+		// the writer's canonical bytes so the watcher only adopts later edits.
+		c.providerFileSignature = providerConfigSignature(raw)
 	}
 	return err
 }
@@ -218,7 +228,7 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 // has to come from the same resolution - otherwise the first key for a
 // credential-requiring provider would be refused as a moved endpoint.
 func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry.Instance, bool) {
-	resolved, err := r.ResolveInstance(id)
+	resolved, err := r.ResolveInstancePresence(id)
 	if err != nil {
 		return registry.Instance{}, false
 	}
@@ -249,13 +259,18 @@ func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry
 // another, and a credential write asserting that pair would describe a
 // destination that never existed.
 func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.Instance, authored *registry.Provider, key []byte) appwire.InstanceEntry {
+	// Resolve the row's instance once: the endpoint fingerprint and the
+	// credential-configuration revision both describe this one generation of
+	// providers.toml, and instanceStatus derives the revision from this
+	// resolution instead of resolving the name a second time.
+	resolved, resolvedOK := resolvedRowInstance(r, inst)
 	// A bare controller (a construction with no auth controller wired) still
 	// describes the registry it holds: there is no credential layer to derive a
 	// status from, so the row carries an empty one rather than dereferencing a
 	// nil controller.
 	var status appwire.AuthStatusResponse
 	if c.auth != nil {
-		status = c.auth.instanceStatus(inst)
+		status = c.auth.instanceStatusKeyed(key, inst, resolved)
 	}
 	entry := appwire.InstanceEntry{
 		Name:                inst.Name,
@@ -265,7 +280,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		Surface:             inst.Surface,
 		Auth:                inst.Auth,
 		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
-		EndpointFingerprint: destinationFingerprintKeyed(key, r, inst),
+		EndpointFingerprint: rowEndpointFingerprint(key, inst, resolved, resolvedOK),
 		Vars:                inst.Vars,
 		Implicit:            inst.Implicit,
 		Hidden:              inst.Hidden,
@@ -276,6 +291,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		HasStoredOAuth:      status.HasStoredOAuth,
 		EnvVar:              status.EnvVar,
 		ShadowedEnvVar:      status.ShadowedEnvVar,
+		ConfigRevision:      status.ConfigRevision,
 		RenameLeavesRow:     c.renameLeavesRow(r, inst),
 		StoredEmail:         status.StoredEmail,
 		CredentialRequired:  !keylessScheme(inst.Auth),
@@ -378,26 +394,6 @@ func fingerprintWithKey(key []byte, identity string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// destinationIdentity is what destinationFingerprint digests: the base URL an
-// instance resolves, the protocol that selects its request templates, and every
-// request path those templates contribute. A credential-bearing request is
-// built from exactly these, so a change to any of them moves where the secret
-// is sent - and a change to the protocol or a path template can leave the
-// sanitized URL the listing displays byte-identical, which is why the digest
-// cannot be of that URL alone. Nothing secret-bearing is here: not the
-// credential, not either header map, not vars.
-func destinationIdentity(resolved registry.Resolved) string {
-	t := resolved.Transport
-	return strings.Join([]string{
-		strings.TrimSpace(t.BaseURL),
-		resolved.Protocol,
-		strings.TrimSpace(t.Endpoint),
-		strings.TrimSpace(t.StreamEndpoint),
-		strings.TrimSpace(t.ModelsEndpoint),
-		strings.TrimSpace(t.CountTokensEndpoint),
-	}, "\x00")
-}
-
 // destinationInstance reports the instance behind inst when it has a
 // destination this hub can name at all: not hidden, resolvable, and carrying a
 // base URL. Whether the hub can *key* that destination's fingerprint is a
@@ -406,14 +402,47 @@ func destinationIdentity(resolved registry.Resolved) string {
 // (endpointFingerprintFor's empty answer conflates them; app_auth.go's
 // endpointHasDestination asks this question instead).
 func destinationInstance(r *registry.Registry, inst registry.Instance) (registry.Resolved, bool) {
-	if inst.Hidden || r == nil {
+	if inst.Hidden {
 		return registry.Resolved{}, false
 	}
-	resolved, err := r.ResolveInstance(inst.Name)
-	if err != nil || strings.TrimSpace(resolved.Transport.BaseURL) == "" {
+	resolved, ok := resolvedRowInstance(r, inst)
+	if !ok || !hasRowDestination(inst, resolved) {
 		return registry.Resolved{}, false
 	}
 	return resolved, true
+}
+
+// resolvedRowInstance resolves inst once, for the row fields that describe one
+// generation of providers.toml: the endpoint fingerprint and the
+// credential-configuration revision. ok is false when the name does not resolve
+// here at all, and the zero Resolved that travels with a false carries no
+// revision (CredentialConfigRevisionResolved). A listing row resolves with this
+// and hands the result to both consumers, so it resolves the name once instead
+// of once per field.
+func resolvedRowInstance(r *registry.Registry, inst registry.Instance) (registry.Resolved, bool) {
+	if r == nil {
+		return registry.Resolved{}, false
+	}
+	// Presence depth: the row's destination and the credential's source
+	// label, with no value materialized and no command expression executed
+	// (spec §10.1) — the pane renders this on every refresh, and the
+	// revision the entry serves resolves at this same depth so one
+	// configuration MACs to one revision wherever it is read.
+	resolved, err := r.ResolveInstancePresence(inst.Name)
+	if err != nil {
+		return registry.Resolved{}, false
+	}
+	return resolved, true
+}
+
+// hasRowDestination reports whether a resolved instance names a destination
+// this hub can fingerprint at all: not hidden, and carrying a base URL.
+// Whether the hub can *key* that fingerprint is a separate question - the key
+// file can be unreadable while the destination is perfectly real - which is why
+// destinationInstance's callers ask this of the resolved value rather than of
+// the key (see its doc).
+func hasRowDestination(inst registry.Instance, resolved registry.Resolved) bool {
+	return !inst.Hidden && strings.TrimSpace(resolved.Transport.BaseURL) != ""
 }
 
 // destinationFingerprint is the value a listing row serves and a credential
@@ -429,11 +458,20 @@ func destinationFingerprint(stateDir string, r *registry.Registry, inst registry
 // resolved (see fingerprintWithKey): List resolves one key for all its rows,
 // and every other caller resolves one per call.
 func destinationFingerprintKeyed(key []byte, r *registry.Registry, inst registry.Instance) string {
-	resolved, ok := destinationInstance(r, inst)
-	if !ok {
+	resolved, ok := resolvedRowInstance(r, inst)
+	return rowEndpointFingerprint(key, inst, resolved, ok)
+}
+
+// rowEndpointFingerprint is destinationFingerprintKeyed over a resolution the
+// caller already holds, so a row that resolved inst for its
+// credential-configuration revision does not resolve the name again here. Its
+// answer is destinationFingerprintKeyed's exactly: empty when the name did not
+// resolve or names no destination this hub can fingerprint.
+func rowEndpointFingerprint(key []byte, inst registry.Instance, resolved registry.Resolved, ok bool) string {
+	if !ok || !hasRowDestination(inst, resolved) {
 		return ""
 	}
-	return fingerprintWithKey(key, destinationIdentity(resolved))
+	return fingerprintWithKey(key, hubcore.DestinationIdentity(resolved))
 }
 
 // endpointFingerprintKeyFile is the key's name under the auth state root, the
@@ -822,6 +860,24 @@ func (c *hubInstancesController) requireAuth() error {
 	return nil
 }
 
+// requireCredentialStore refuses a mutation that has to read or move the
+// credentials store when this controller has no usable one. hubCredentialStore
+// leaves creds nil when credentials.toml cannot be loaded, and Store.Get, Move
+// and Clear all take the receiver's lock, so a nil store panics inside the RPC
+// handler. That unreadable store is a first-class state - the credential
+// surfaces answer from it rather than dereferencing it (hubAuthController's
+// storedKey and credentialsUnavailable) - so the instance mutations answer the
+// same way: typed, and before any providers.toml write, rather than panicking or
+// silently leaving a credential behind under a name they just gave up.
+//
+// Every caller runs requireAuth first, so c.auth is non-nil here.
+func (c *hubInstancesController) requireCredentialStore() error {
+	if c.auth.creds == nil {
+		return c.auth.credentialsUnavailable()
+	}
+	return nil
+}
+
 // refuseWhenBroken stops every write while there is no registry to write
 // against: a providers.toml that does not load (the hub has no way to rewrite
 // a file it could not read without destroying what the user wrote — spec §10,
@@ -1087,6 +1143,17 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		// overwrite it. The refusal belongs here rather than there: by the
 		// time moveCredentials runs the file is re-keyed and the registry
 		// reloaded, so there is no longer anything to refuse.
+		// The destination check below and the move at the end of this call both
+		// read and move the credentials store, and neither can be done without
+		// one: an unreadable credentials.toml (creds nil) would panic a direct
+		// Store.Get, and - worse than the panic - a rename that reached
+		// writeAndReload and then failed to move the key would leave the key
+		// stranded under the old name after providers.toml had moved. So the
+		// refusal is made here, before the destination check and long before any
+		// config change is persisted, rather than after the file is re-keyed.
+		if err := c.requireCredentialStore(); err != nil {
+			return err
+		}
 		if held := c.credentialsUnder(newName); len(held) > 0 {
 			return appwire.Conflict(fmt.Sprintf("renaming %q to %q would overwrite %s; clear that first", name, newName, strings.Join(held, " and ")))
 		}
@@ -1136,6 +1203,21 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			p.Transport.Vars = map[string]string{}
 		}
 		p.Transport.Vars[key] = value
+	}
+	// A clear-only edit on an implicit instance (one the environment or a
+	// curated provider supplies, with no authored entry) has no authored
+	// value to change: the entry it would write carries nothing but its id.
+	// That empty shadow changes no behavior — the name still inherits by
+	// matching (spec §4.2) — but leaves noise in providers.toml (#1024), so
+	// the edit is a no-op rather than a write. A rename is not this case: it
+	// re-keys the entry, and it pins a base below, so it always writes.
+	if !renaming && !authored && providerIsBare(p) {
+		if out != nil {
+			// Still under this edit's write locks, like the listing captured
+			// on the write path, so a concurrent edit cannot slip in.
+			*out = c.listLocked(key, keyErr)
+		}
+		return nil
 	}
 	if renaming {
 		// An entry with no base inherits protocol, surface and models from the
@@ -1243,6 +1325,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	return nil
 }
 
+// providerIsBare reports whether p carries nothing beyond its id: the
+// shape an implicit instance's row keeps when an edit authored no field, so
+// writing it back would only add an empty [providers.<name>] shadow (#1024).
+func providerIsBare(p registry.Provider) bool {
+	return reflect.DeepEqual(p, registry.Provider{ID: p.ID})
+}
+
 // credentialsUnder names the credentials already filed under name, in the
 // vocabulary describeImplicit uses for the same two sources. It is what a
 // rename onto name would overwrite, so the caller can go clear the one it
@@ -1251,7 +1340,12 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 // credential the hub merely failed to read is the same loss.
 func (c *hubInstancesController) credentialsUnder(name string) []string {
 	var held []string
-	if _, ok := c.auth.creds.Get(name); ok {
+	// Through storedKey, which answers "no key" rather than panicking when the
+	// hub has no usable store: the rename flow refuses such a rename up front
+	// (requireCredentialStore), but this read must be safe wherever it is
+	// reached from. "Not found" is still the only signal that nothing is there,
+	// so a record that exists but does not read back still counts as present.
+	if _, ok := c.auth.storedKey(name); ok {
 		held = append(held, fmt.Sprintf("a credentials.toml entry for %q", name))
 	}
 	if _, err := c.auth.loadAuth(c.auth.stateDir, name); !errors.Is(err, authopenai.ErrAuthNotFound) {
@@ -1308,11 +1402,24 @@ func removeApplied(err error) error {
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
 	var problems []string
+	// A backstop for the rename flow's own up-front refusal: with no usable
+	// store there is no Move to make, and dereferencing the nil store would
+	// panic. The flow refuses before it writes providers.toml; this keeps the
+	// primitive itself honest if a caller ever reaches it another way.
+	if err := c.requireCredentialStore(); err != nil {
+		return err
+	}
 	// One persist, so the key is never briefly filed under both names or
 	// neither: a copy-then-clear pair whose second half failed would leave
 	// the old name resolving a credential the config no longer names.
 	if err := c.auth.creds.Move(oldName, newName); err != nil {
 		problems = append(problems, fmt.Sprintf("stored key not copied: %v", err))
+	} else {
+		// The key left oldName and arrived under newName, so neither name
+		// holds a credential a provider rejected. A failed move left the key,
+		// and its rejection, where they were.
+		c.auth.forgetCredentialRejection(oldName)
+		c.auth.forgetCredentialRejection(newName)
 	}
 	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
 	switch {
@@ -1320,13 +1427,34 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	case err != nil:
 		problems = append(problems, fmt.Sprintf("OAuth record not read: %v", err))
 	default:
+		// The refusal marker (#2479) is keyed by the old instance name, so it
+		// does not follow the rename on its own: read it before the copy,
+		// under the name it is actually filed under.
+		refused := authopenai.RefreshRejected(c.auth.stateDir, oldName, record)
 		// The record's provider field names the instance it belongs to (the
 		// OAuth completion paths set it), so it follows the rename.
 		record.Provider = newName
 		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
 			problems = append(problems, fmt.Sprintf("OAuth record not copied: %v", err))
-		} else if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
-			problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+		} else {
+			if refused {
+				// Without this, the renamed instance reports signed in and
+				// healthy until its next failed refresh re-notes the refusal:
+				// reported like the record copy above, so a caller who reads
+				// "renamed" only for the marker to have silently not followed
+				// it has a way to know. Attempted regardless of what happens
+				// to the old record below, like every other layer here: this
+				// function reports each layer's own failure rather than
+				// gating one layer's attempt on another's success, which
+				// would otherwise leave the instance filed under both names
+				// at once.
+				if err := authopenai.RecordRefreshRejection(c.auth.stateDir, newName, record, c.auth.now()); err != nil {
+					problems = append(problems, fmt.Sprintf("refresh-refusal marker not copied: %v", err))
+				}
+			}
+			if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+				problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+			}
 		}
 	}
 	if len(problems) > 0 {
@@ -1443,6 +1571,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if !registry.ValidInstanceName(name) {
 		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
+	// The instance's credential is gone only once the removal stands: a
+	// removal that fails after its cleanup puts the credential back, and a
+	// provider's rejection of it still stands (removeCredentials only voids
+	// the probes in flight). A removal can stand and still return an error
+	// (removeAppliedError), when the credential could not be put back.
+	defer func() {
+		if _, standing := errors.AsType[removeAppliedError](err); err == nil || standing {
+			c.auth.forgetCredentialRejection(name)
+		}
+	}()
 
 	// The fingerprint key is resolved once, before either lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
@@ -1526,6 +1664,15 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 		return err
 	}
 
+	// The credential cleanup below reads and clears the store, and a removal
+	// that cannot see it would either panic (a direct Store.Get) or leave a
+	// stored key behind under a name nothing curates once the config entry is
+	// gone. As on the rename path, the refusal is made before anything is
+	// deleted, so no half-removal reaches providers.toml.
+	if err := c.requireCredentialStore(); err != nil {
+		return err
+	}
+
 	// Credentials first, then the authored entry: a cleanup that cannot
 	// complete fails the removal while the instance and its name still exist,
 	// so the caller can retry it. The reverse order would report a deletion
@@ -1537,11 +1684,12 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// removal failed, so the instance the caller still has must still
 	// authenticate. Capture and restore both sit inside this held lock, so no
 	// writer can slip between them.
-	storedKey, hasStoredKey := c.auth.creds.Get(name)
+	storedKey, hasStoredKey := c.auth.storedKey(name)
 	oauthBytes, hasOAuth, err := c.captureOAuthFile(name)
 	if err != nil {
 		return err
 	}
+	refusalBytes, hasRefusal := c.captureRefreshRejectionFile(name)
 
 	// Whether the config authored this instance is read before the cleanup, so
 	// its failure below is classified by the same question every later branch
@@ -1576,7 +1724,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 				frame = "the removal stands"
 			}
 		}
-		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, frame, supplies)
+		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, refusalBytes, hasRefusal && removed.oauthRecord, err, frame, supplies)
 		return restoreErr
 	}
 
@@ -1626,7 +1774,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 					frame = "the removal stands"
 				}
 			}
-			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, frame, supplies)
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal, err, frame, supplies)
 			if restored {
 				// The carrying layer is back, so the removal did not stand, and
 				// restoreFailedRemoval answers such a rollback with the
@@ -1662,7 +1810,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 			// row missing), and the state the file describes is unchanged, so a
 			// second attempt is the recovery rather than a repetition.
 			cause := fmt.Errorf("removing %q failed: %w", name, err)
-			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
 				cause, "the removal stands", supplyOf(locked))
 			if !restored {
 				return restoreErr
@@ -1707,7 +1855,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 			// credential restore below also fails, so the applied state is
 			// re-marked here rather than left to restoreFailedRemoval, which
 			// clears it when it puts every credential back.
-			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config", supplyAny)
 			c.applied.markApplied()
@@ -1757,7 +1905,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 		// removal stands, ..."). The rollback wording is built below, once the
 		// restore has actually carried the instance, the way the !configChanged
 		// sibling builds it.
-		restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+		restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
 			fmt.Errorf("removing %q failed: %w", name, err), frame, supplies)
 		if restored {
 			// The carrying layer is back, so the config this rollback restored is
@@ -1809,6 +1957,26 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 		return nil, false, nil
 	}
 	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
+}
+
+// captureRefreshRejectionFile reads the refresh-refusal marker (#2479) beside
+// the OAuth state file a removal's cleanup is about to delete, so a later
+// failure can write it back too. DeleteAuth clears the marker once the record
+// delete succeeds, so a rollback that restores only the record would report
+// the instance signed in and healthy even though its refresh token is still
+// permanently refused.
+//
+// Unlike captureOAuthFile, an unreadable marker never refuses the removal:
+// the marker is a best-effort, self-healing sidecar of the record (the next
+// failed refresh re-notes it), not the record itself, so losing it is a
+// smaller problem than blocking a removal the user asked for. A missing or
+// unreadable marker is (nil, false), the same shape as no marker at all.
+func (c *hubInstancesController) captureRefreshRejectionFile(name string) ([]byte, bool) {
+	raw, err := os.ReadFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name))
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }
 
 // removalSupply names the layer an instance resolves from, so a failed
@@ -1871,7 +2039,7 @@ func supplyOf(inst registry.Instance) removalSupply {
 // rewrites - and never reports a failure to rewrite - a credential that is
 // still where it was. A restore that puts every deleted layer back clears the
 // applied mark, because the removal is then undone.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string, supplies removalSupply) (bool, error) {
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, refusalBytes []byte, hasRefusal bool, cause error, frame string, supplies removalSupply) (bool, error) {
 	var problems []string
 	storedKeyRestored := true
 	if hasStoredKey {
@@ -1889,6 +2057,16 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
 			oauthRestored = false
 			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
+		} else if hasRefusal {
+			// The refresh-refusal marker (#2479) is a sidecar of the record
+			// that just came back: restore it too, best effort, so the
+			// instance does not report signed-in and healthy while its
+			// refresh token is still permanently refused. It never carries
+			// the instance on its own, so a failure here is a stray leftover
+			// rather than a reason to call the restore incomplete.
+			if err := authopenai.WriteAuthFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name), refusalBytes); err != nil {
+				problems = append(problems, fmt.Sprintf("its refresh-refusal marker could not be restored (%v)", err))
+			}
 		}
 	}
 	var carried bool
@@ -1952,7 +2130,13 @@ func (e removalLeftoversError) Error() string { return e.problems }
 // refusing writes.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
 	var deleted deletedCredentials
-	if _, stored := c.auth.creds.Get(name); stored {
+	// A backstop for the removal flow's own up-front refusal (see
+	// requireCredentialStore): the read below must not dereference a nil store,
+	// and the clear is a write the nil-store seam already refuses.
+	if err := c.requireCredentialStore(); err != nil {
+		return deleted, err
+	}
+	if _, stored := c.auth.storedKey(name); stored {
 		if err := c.auth.clearCredential(name); err != nil {
 			return deleted, fmt.Errorf("remove %s: clear stored credential: %w", name, err)
 		}
@@ -1969,6 +2153,10 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if removedRecord {
 		c.applied.markApplied()
 	}
+	// No probe that dialed the deleted credential may settle. The rejection
+	// itself stays until Remove knows the removal stands: a later failure
+	// puts the credential back.
+	c.auth.voidCredentialProbes(name)
 	return deleted, nil
 }
 
@@ -2074,7 +2262,7 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	if _, ok := reg.Instance(name); !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	return fetchInstanceLive(ctx, c.reg, name)
+	return fetchInstanceLive(ctx, c.reg, c.auth, name)
 }
 
 // writeAndReload persists a mutated layer and reloads the registry: the

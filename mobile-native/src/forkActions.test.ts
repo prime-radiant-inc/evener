@@ -1,9 +1,7 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import {
-	type ConversationClientLike,
-	createConversationService,
-} from "../../mobile/src/services/conversation";
+import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
 import { DraftLibrary } from "./draftLibrary";
 import { DraftRepository } from "./draftRepository";
 import { ForkActions } from "./forkActions";
@@ -50,8 +48,7 @@ async function boundary() {
 			values.set(key, value);
 		},
 		deleteIf: (key, expected) => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected))
-				return false;
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
 			return values.delete(key);
 		},
 	});
@@ -108,23 +105,25 @@ async function boundary() {
 		originalInput: "original input",
 	};
 	const io = { fork: async () => result };
-	const service = createConversationService({
-		request: async (method, params) => {
-			if (method === "thread/read") return { thread: parent };
-			if (method === "thread/fork") {
-				requests++;
-				expect(params).toEqual({
-					ref: "local:parent",
-					sourceTurnId: "7",
-					deferInput: true,
-				});
-				expect(journal.load()).toMatchObject({ target });
-				return io.fork();
-			}
-			throw Error(`Unexpected ${method}`);
-		},
-		onNotification: () => () => {},
-	} as ConversationClientLike);
+	const service = createConversationService(
+		Object.assign(new FakeClient("ready"), {
+			request: async (method, params) => {
+				if (method === "thread/read") return { thread: parent };
+				if (method === "thread/fork") {
+					requests++;
+					expect(params).toEqual({
+						ref: "local:parent",
+						sourceItemKey: "apptranscript-item-v2:mobile-fork-entry:6:0",
+						deferInput: true,
+					});
+					expect(journal.load()).toMatchObject({ target });
+					return io.fork();
+				}
+				throw Error(`Unexpected ${method}`);
+			},
+			onNotification: () => () => {},
+		} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">) as ConversationClientLike,
+	);
 	await service.open("local:parent");
 	const actions = () =>
 		new ForkActions(
@@ -173,18 +172,14 @@ it("persists a deferred fork and its composer before allowing navigation", async
 			child: { ref: "local:child", input: "original input" },
 			draftPrepared: true,
 		});
-		expect(
-			b.drafts.open({ hubId: "hub", sessionRef: "local:child" }).getSnapshot()
-				.record.draft,
-		).toBe("original input");
+		expect(b.drafts.open({ hubId: "hub", sessionRef: "local:child" }).getSnapshot().record.draft).toBe(
+			"original input",
+		);
 		expect(b.requests).toBe(1);
 		const location = savedLocations();
 		expect(
 			actions.finish(location.repository, (destination) => {
-				expect(
-					new LocationRepository(location.storage).read(["hub"])?.conversation
-						?.ref,
-				).toBe(destination.ref);
+				expect(new LocationRepository(location.storage).read(["hub"])?.conversation?.ref).toBe(destination.ref);
 				expect(b.journal.load()?.child?.ref).toBe(destination.ref);
 			}),
 		).toBe(true);
@@ -213,11 +208,7 @@ it("retains an acknowledged child through destination storage and navigation fai
 			}),
 		).toBe(false);
 		expect(navigations).toBe(0);
-		expect(
-			restoredStack(
-				new LocationRepository(location.storage).read(["hub"]),
-			).routes.at(-1)?.name,
-		).toBe("Fork");
+		expect(restoredStack(new LocationRepository(location.storage).read(["hub"])).routes.at(-1)?.name).toBe("Fork");
 		expect(b.journal.load()?.child?.ref).toBe("local:child");
 		location.fail = false;
 		expect(
@@ -228,11 +219,10 @@ it("retains an acknowledged child through destination storage and navigation fai
 		).toBe(false);
 		expect(navigations).toBe(1);
 		expect(b.journal.load()?.child?.ref).toBe("local:child");
-		expect(
-			restoredStack(
-				new LocationRepository(location.storage).read(["hub"]),
-			).routes.at(-1),
-		).toMatchObject({ name: "Conversation", params: { ref: "local:child" } });
+		expect(restoredStack(new LocationRepository(location.storage).read(["hub"])).routes.at(-1)).toMatchObject({
+			name: "Conversation",
+			params: { ref: "local:child" },
+		});
 		actions.dispose();
 		const restored = b.actions();
 		expect(restored.openChild()?.ref).toBe("local:child");

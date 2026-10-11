@@ -6,16 +6,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
 var nextPublicationEpoch atomic.Uint64
+
+// ErrTaskStoreUnavailable identifies a store whose last Load failed. A failed
+// load is not an empty authoritative list: callers must repair the file
+// externally and successfully Load it before mutating the store again.
+var ErrTaskStoreUnavailable = errors.New("task store unavailable after load failure")
 
 // TaskTemplate defines a default task in an agent's workflow. When a session
 // starts from such an agent, its templates seed the initial task list.
@@ -27,61 +32,27 @@ type TaskTemplate struct {
 	Insert          string `json:"insert,omitempty"`           // expansion marker, e.g. "parent_tasks"
 }
 
-// TaskStatus represents the state of a task.
-type TaskStatus string
+// Task and its enums share the persisted and AppWire representation. Aliases
+// preserve the task-store API without maintaining a second serialization shape.
+type Task = appwire.Task
 
+// TaskStatus is the shared lifecycle state of a task.
+type TaskStatus = appwire.TaskStatus
+
+// TaskType is the shared classification of task work.
+type TaskType = appwire.TaskType
+
+// Task status and type constants retain the task-store API names.
 const (
-	// TaskOpen is the status of a task that has not been started.
-	TaskOpen TaskStatus = "open"
-	// TaskInProgress is the status of a task that is currently being worked on.
-	TaskInProgress TaskStatus = "in_progress"
-	// TaskDone is the status of a task that has been completed.
-	TaskDone TaskStatus = "done"
-	// TaskCancelled is the status of a task that was cancelled.
-	TaskCancelled TaskStatus = "cancelled"
+	TaskOpen          = appwire.TaskOpen
+	TaskInProgress    = appwire.TaskInProgress
+	TaskDone          = appwire.TaskDone
+	TaskCancelled     = appwire.TaskCancelled
+	TaskTypeResearch  = appwire.TaskTypeResearch
+	TaskTypeImplement = appwire.TaskTypeImplement
+	TaskTypeVerify    = appwire.TaskTypeVerify
+	TaskTypeFix       = appwire.TaskTypeFix
 )
-
-// TaskType classifies what kind of work a task represents.
-type TaskType string
-
-const (
-	// TaskTypeResearch is a task that investigates or gathers information.
-	TaskTypeResearch TaskType = "research"
-	// TaskTypeImplement is a task that writes or changes code.
-	TaskTypeImplement TaskType = "implement"
-	// TaskTypeVerify is a task that checks or validates work.
-	TaskTypeVerify TaskType = "verify"
-	// TaskTypeFix is a task that corrects a problem.
-	TaskTypeFix TaskType = "fix"
-)
-
-// Task is a single work item in the agent's task list.
-type Task struct {
-	ID          int        `json:"id"`          // store-assigned, 1-based identifier
-	Type        TaskType   `json:"type"`        // classification of the work
-	Description string     `json:"description"` // short human-readable summary
-	Prompt      string     `json:"prompt"`      // full instruction handed to whoever runs the task
-	Status      TaskStatus `json:"status"`      // current lifecycle state
-	// DependsOn lists IDs of tasks that must complete before this one is ready.
-	DependsOn []int `json:"depends_on,omitempty"`
-	// Notes accumulates free-form progress notes appended over the task's life.
-	Notes []string `json:"notes,omitempty"`
-	// ReasoningEffort overrides the reasoning effort for a subagent that runs
-	// this task (low|medium|high); empty uses the session default.
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	// Insert is a template-expansion marker (e.g. "parent_tasks") carried over
-	// from the task template it was created from; empty for ordinary tasks.
-	Insert string `json:"insert,omitempty"`
-	// CreatedAt/UpdatedAt/CompletedAt are minted automatically by the store —
-	// never settable through the agent-facing tool (TaskInput/TaskUpdate carry
-	// no timestamp fields). CreatedAt is stamped once when the task is added;
-	// UpdatedAt advances on every mutation; CompletedAt is stamped when the task
-	// transitions to done and cleared if it is later reopened. Pointers so an
-	// unset stamp (and tasks persisted before timestamps existed) omit cleanly.
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
-}
 
 // TaskInput is the data needed to create a new task.
 type TaskInput struct {
@@ -97,7 +68,8 @@ type TaskInput struct {
 // Status empty means no status change; a non-empty value must be one of the
 // four statuses. The tool schema has always documented status as optional,
 // so notes/deps/effort-only updates are legal.
-// DependsOn nil means no change; &[]int{} clears the dependency list.
+// DependsOn nil means no change; &[]int{} clears the dependency list. The
+// task_list tool decodes [] and null as nil and [0] as &[]int{}.
 // ReasoningEffort empty means no change; a non-empty value replaces it.
 type TaskUpdate struct {
 	ID              int        `json:"id"`                         // identifies the task to update
@@ -113,6 +85,13 @@ type TaskUpdate struct {
 type TaskUpdateSnapshot struct {
 	Before []Task
 	After  []Task
+	// Settled reports which task IDs this batch transitioned into a
+	// terminal status. It is recorded where the store mints CompletedAt -
+	// the same per-update prev != u.Status rule - so the marker and the
+	// stamp cannot disagree: a round-trip batch that re-settles a task
+	// restamps AND reports it, a reassertion does neither, and a batch that
+	// settles a task and then reopens it nets to neither.
+	Settled map[int]bool
 }
 
 // ListSummary is the transport-neutral outcome and current-work view of a task
@@ -170,6 +149,15 @@ func cloneTime(value *time.Time) *time.Time {
 	return &cloned
 }
 
+// cloneInts copies an int slice. Both a nil input and an empty input yield
+// nil, so an empty non-nil caller slice is normalized to nil (which the
+// omitempty JSON tag and len-based checks treat identically to empty). It is
+// the shared clone the task store uses for DependsOn, both when copying
+// store-owned state out and when retaining a caller's input.
+func cloneInts(values []int) []int {
+	return append([]int(nil), values...)
+}
+
 func cloneTasks(tasks []Task) []Task {
 	if tasks == nil {
 		return nil
@@ -178,7 +166,7 @@ func cloneTasks(tasks []Task) []Task {
 	copy(cloned, tasks)
 	for i := range cloned {
 		if tasks[i].DependsOn != nil {
-			cloned[i].DependsOn = append([]int(nil), tasks[i].DependsOn...)
+			cloned[i].DependsOn = cloneInts(tasks[i].DependsOn)
 		}
 		if tasks[i].Notes != nil {
 			cloned[i].Notes = append([]string(nil), tasks[i].Notes...)
@@ -201,6 +189,7 @@ type TaskStore struct {
 	path                  string
 	now                   func() time.Time
 	fs                    afero.Fs
+	loadErr               error
 }
 
 // beforeMutationPublicationWaitHook, when non-nil, runs when MutateAndPublish
@@ -274,15 +263,20 @@ func (s *TaskStore) Load() error {
 
 	data, err := afero.ReadFile(s.fs, s.path)
 	if os.IsNotExist(err) {
+		s.tasks = nil
+		s.nextID = 1
+		s.loadErr = nil
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read tasks: %w", err)
+		s.loadErr = fmt.Errorf("read tasks: %w", err)
+		return s.loadErr
 	}
 
 	var tasks []Task
 	if err := json.Unmarshal(data, &tasks); err != nil {
-		return fmt.Errorf("unmarshal tasks: %w", err)
+		s.loadErr = fmt.Errorf("unmarshal tasks: %w", err)
+		return s.loadErr
 	}
 	// Persisted task files predate task-list effort validation and may contain
 	// an unsupported override. Normalize each task before publishing the loaded
@@ -291,13 +285,14 @@ func (s *TaskStore) Load() error {
 	// fields untouched. Load still assigns only after unmarshalling and
 	// normalization, so malformed input cannot partially replace the store.
 	for i := range tasks {
-		effort := strings.ToLower(strings.TrimSpace(tasks[i].ReasoningEffort))
+		effort := llm.NormalizeReasoningEffort(tasks[i].ReasoningEffort)
 		if err := llm.ValidateReasoningEffort(effort); err != nil {
 			effort = ""
 		}
 		tasks[i].ReasoningEffort = effort
 	}
 	s.tasks = tasks
+	s.loadErr = nil
 
 	// Set nextID to max existing ID + 1.
 	maxID := 0
@@ -308,6 +303,24 @@ func (s *TaskStore) Load() error {
 	}
 	s.nextID = maxID + 1
 	return nil
+}
+
+// LoadError reports the unavailable fence left by a failed Load, if any.
+func (s *TaskStore) LoadError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadErrorLocked()
+}
+
+func (s *TaskStore) loadErrorLocked() error {
+	if s.loadErr == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrTaskStoreUnavailable, s.loadErr)
+}
+
+func (s *TaskStore) ensureAvailableLocked() error {
+	return s.loadErrorLocked()
 }
 
 // save writes the task list to disk atomically.
@@ -340,11 +353,32 @@ func (s *TaskStore) saveTasks(tasks []Task) error {
 	return nil
 }
 
+// cloneTasksForReturn returns a deep, non-nil copy of a store-owned task list.
+// View and ViewWithError have always returned an empty (never nil) slice for an
+// empty store — the hub's absent-task-file path depends on it marshaling `[]`
+// rather than `null` — while cloneTasks returns nil for a nil slice, so
+// normalize the two read paths here.
+func cloneTasksForReturn(tasks []Task) []Task {
+	if cloned := cloneTasks(tasks); cloned != nil {
+		return cloned
+	}
+	return []Task{}
+}
+
 // View returns a copy of all tasks.
 func (s *TaskStore) View() []Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Task{}, s.tasks...)
+	return cloneTasksForReturn(s.tasks)
+}
+
+// ViewWithError returns one coherent copy of the tasks and their availability
+// status. The same store lock covers both values so a concurrent Load cannot
+// make the snapshot and error describe different states.
+func (s *TaskStore) ViewWithError() ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneTasksForReturn(s.tasks), s.loadErrorLocked()
 }
 
 // validateDependencies checks that all IDs in deps exist (in s.tasks or pending)
@@ -426,18 +460,35 @@ func hasCycle(adj map[int][]int) bool {
 	return false
 }
 
+// stagedLocked returns a mutation-local copy of s. Callers must hold s.mu.
+func (s *TaskStore) stagedLocked() *TaskStore {
+	return &TaskStore{
+		tasks:  cloneTasks(s.tasks),
+		nextID: s.nextID,
+		now:    s.now,
+		fs:     s.fs,
+		path:   s.path,
+	}
+}
+
 // Append adds new tasks with auto-assigned IDs and status=open. Returns the created tasks.
 func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	added, err := s.appendLocked(items)
+	if err := s.ensureAvailableLocked(); err != nil {
+		return nil, err
+	}
+	staged := s.stagedLocked()
+	added, err := staged.appendLocked(items)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.save(); err != nil {
+	if err := s.saveTasks(staged.tasks); err != nil {
 		return added, fmt.Errorf("save: %w", err)
 	}
-	return added, nil
+	s.tasks = staged.tasks
+	s.nextID = staged.nextID
+	return cloneTasks(added), nil
 }
 
 // appendLocked adds tasks to s.tasks but does not save. Callers must hold s.mu.
@@ -458,7 +509,7 @@ func (s *TaskStore) appendLocked(items []TaskInput) ([]Task, error) {
 			Description:     item.Description,
 			Prompt:          item.Prompt,
 			Status:          TaskOpen,
-			DependsOn:       item.DependsOn,
+			DependsOn:       cloneInts(item.DependsOn),
 			ReasoningEffort: item.ReasoningEffort,
 			Insert:          item.Insert,
 			CreatedAt:       ts,
@@ -536,7 +587,7 @@ func (s *TaskStore) NextEligible() []Task {
 			result = append(result, t)
 		}
 	}
-	return result
+	return cloneTasks(result)
 }
 
 // CurrentInProgress returns the first task with status in_progress, if any.
@@ -589,9 +640,13 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.ensureAvailableLocked(); err != nil {
+		return err
+	}
 	if len(s.tasks) > 0 {
 		return nil // already populated
 	}
+	staged := s.stagedLocked()
 
 	effective := ExpandParentTasks(templates, parentTasks)
 
@@ -601,9 +656,9 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 		if taskType == "" {
 			taskType = TaskTypeImplement
 		}
-		ts := s.stamp()
+		ts := staged.stamp()
 		t := Task{
-			ID:              s.nextID,
+			ID:              staged.nextID,
 			Type:            taskType,
 			Description:     tt.Title,
 			Prompt:          tt.Prompt,
@@ -613,17 +668,22 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 			CreatedAt:       ts,
 			UpdatedAt:       ts,
 		}
-		s.nextID++
-		s.tasks = append(s.tasks, t)
+		staged.nextID++
+		staged.tasks = append(staged.tasks, t)
 	}
 
 	// Auto-start the first task.
-	if len(s.tasks) > 0 {
-		s.tasks[0].Status = TaskInProgress
-		s.tasks[0].UpdatedAt = s.stamp()
+	if len(staged.tasks) > 0 {
+		staged.tasks[0].Status = TaskInProgress
+		staged.tasks[0].UpdatedAt = staged.stamp()
 	}
 
-	return s.save()
+	if err := s.saveTasks(staged.tasks); err != nil {
+		return err
+	}
+	s.tasks = staged.tasks
+	s.nextID = staged.nextID
+	return nil
 }
 
 // Update changes the status of existing tasks.
@@ -640,20 +700,30 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	before := cloneTasks(s.tasks)
-	if err := s.updateLocked(updates); err != nil {
+	if err := s.ensureAvailableLocked(); err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
-	if err := s.save(); err != nil {
+	before := cloneTasks(s.tasks)
+	staged := s.stagedLocked()
+	settled, err := staged.updateLocked(updates)
+	if err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
+	if err := s.saveTasks(staged.tasks); err != nil {
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
+	s.tasks = staged.tasks
 	return TaskUpdateSnapshot{
-		Before: before,
-		After:  cloneTasks(s.tasks),
+		Before:  before,
+		After:   cloneTasks(staged.tasks),
+		Settled: settled,
 	}, nil
 }
 
-func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
+func (s *TaskStore) updateLocked(updates []TaskUpdate) (map[int]bool, error) {
+	// Which task IDs this batch transitioned into a terminal status,
+	// recorded at the CompletedAt mint below.
+	settled := make(map[int]bool)
 	// Validate status values up front so a bad status doesn't half-apply;
 	// empty status means "no change" (see TaskUpdate).
 	for _, u := range updates {
@@ -664,7 +734,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		case TaskOpen, TaskInProgress, TaskDone, TaskCancelled:
 			// valid
 		default:
-			return fmt.Errorf("invalid status %q for task %d: must be open, in_progress, done, or cancelled", u.Status, u.ID)
+			return nil, fmt.Errorf("invalid status %q for task %d: must be open, in_progress, done, or cancelled", u.Status, u.ID)
 		}
 	}
 
@@ -676,7 +746,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 	}
 	for _, u := range updates {
 		if _, exists := projected[u.ID]; !exists {
-			return fmt.Errorf("unknown task ID %d", u.ID)
+			return nil, fmt.Errorf("unknown task ID %d", u.ID)
 		}
 		if u.Status != "" {
 			projected[u.ID] = u.Status
@@ -705,9 +775,9 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 			}
 		}
 		if blockers == 1 {
-			return fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array", blocker.ID, blocker.Description)
+			return nil, fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array", blocker.ID, blocker.Description)
 		}
-		return fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
+		return nil, fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
 	}
 
 	// Validate dependency changes against the PROJECTED graph up front — like the
@@ -733,21 +803,22 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		}
 		for _, dep := range *u.DependsOn {
 			if dep == u.ID {
-				return fmt.Errorf("task %d cannot depend on itself", u.ID)
+				return nil, fmt.Errorf("task %d cannot depend on itself", u.ID)
 			}
 			if !known[dep] {
-				return fmt.Errorf("task %d depends on unknown task %d", u.ID, dep)
+				return nil, fmt.Errorf("task %d depends on unknown task %d", u.ID, dep)
 			}
 		}
 	}
 	if hasCycle(projDeps) {
-		return errors.New("update would create a dependency cycle")
+		return nil, errors.New("update would create a dependency cycle")
 	}
 
 	for _, u := range updates {
 		found := false
 		for i := range s.tasks {
 			if s.tasks[i].ID == u.ID {
+				prev := s.tasks[i].Status
 				if u.Status != "" {
 					s.tasks[i].Status = u.Status
 				}
@@ -755,30 +826,37 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 					s.tasks[i].Notes = append(s.tasks[i].Notes, u.Notes)
 				}
 				if u.DependsOn != nil {
-					s.tasks[i].DependsOn = *u.DependsOn
+					s.tasks[i].DependsOn = cloneInts(*u.DependsOn)
 				}
 				if u.ReasoningEffort != "" {
 					s.tasks[i].ReasoningEffort = u.ReasoningEffort
 				}
-				// Mint timestamps: every update advances UpdatedAt; reaching done
-				// stamps CompletedAt, and reopening a done task clears it.
+				// Mint timestamps: every update advances UpdatedAt; a
+				// transition into a terminal status (done or cancelled)
+				// stamps CompletedAt as the settle moment, re-asserting the
+				// status the task already holds keeps the original stamp, and
+				// leaving the terminal state clears it.
 				ts := s.stamp()
 				s.tasks[i].UpdatedAt = ts
-				if u.Status == TaskDone {
-					s.tasks[i].CompletedAt = ts
+				if u.Status == TaskDone || u.Status == TaskCancelled {
+					if prev != u.Status {
+						s.tasks[i].CompletedAt = ts
+						settled[u.ID] = true
+					}
 				} else if u.Status != "" {
 					s.tasks[i].CompletedAt = nil
+					delete(settled, u.ID)
 				}
 				found = true
 				break
 			}
 		}
 		if !found {
-			return fmt.Errorf("unknown task ID %d", u.ID)
+			return nil, fmt.Errorf("unknown task ID %d", u.ID)
 		}
 	}
 
-	return nil
+	return settled, nil
 }
 
 // ApplyBatch atomically applies additions and updates as one task-list
@@ -790,21 +868,19 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.ensureAvailableLocked(); err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
 	if err := s.validateUpdateIDsLocked(updates); err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
 	before := cloneTasks(s.tasks)
-	staged := TaskStore{
-		tasks:  cloneTasks(s.tasks),
-		nextID: s.nextID,
-		now:    s.now,
-		fs:     s.fs,
-		path:   s.path,
-	}
+	staged := s.stagedLocked()
 	if _, err := staged.appendLocked(adds); err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
-	if err := staged.updateLocked(updates); err != nil {
+	settled, err := staged.updateLocked(updates)
+	if err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
 	if err := s.saveTasks(staged.tasks); err != nil {
@@ -812,7 +888,7 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 	}
 	s.tasks = staged.tasks
 	s.nextID = staged.nextID
-	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks)}, nil
+	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks), Settled: settled}, nil
 }
 
 // validateUpdateIDsLocked enforces the task_list contract that updates in a

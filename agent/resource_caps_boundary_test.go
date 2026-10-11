@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"io"
 	"strings"
 	"testing"
@@ -19,63 +17,25 @@ type renderedResourceCaps struct {
 	MemoryMB int64   `json:"memory_mb"`
 }
 
-func parseRenderedEnvironmentResourceCaps(t *testing.T, prompt string) (*renderedResourceCaps, bool) {
+// promptResourceCaps decodes the resource caps the session hands the
+// environment template, from the typed prompt input; ok is false when it
+// hands none.
+func promptResourceCaps(t *testing.T, s *Session) (renderedResourceCaps, bool) {
 	t.Helper()
-
-	const openEnvironment = "<environment>"
-	const closeEnvironment = "</environment>"
-	var section strings.Builder
-	capturing := false
-	found := false
-	scanner := bufio.NewScanner(strings.NewReader(prompt))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == openEnvironment {
-			if capturing || found {
-				t.Fatal("rendered prompt contains multiple environment sections")
-			}
-			capturing = true
-		}
-		if !capturing {
-			continue
-		}
-		section.WriteString(line)
-		section.WriteByte('\n')
-		if line == closeEnvironment {
-			capturing = false
-			found = true
-		}
+	data, _ := s.buildPromptData(s.env)
+	if data.ResourceCapsJSON == "" {
+		return renderedResourceCaps{}, false
 	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan rendered prompt: %v", err)
-	}
-	if capturing || !found {
-		t.Fatal("rendered prompt has no complete environment section")
-	}
-
-	var environment struct {
-		ResourceCaps []string `xml:"resource_caps"`
-	}
-	if err := xml.Unmarshal([]byte(section.String()), &environment); err != nil {
-		t.Fatalf("parse rendered environment section: %v", err)
-	}
-	if len(environment.ResourceCaps) == 0 {
-		return nil, false
-	}
-	if len(environment.ResourceCaps) != 1 {
-		t.Fatalf("rendered environment has %d resource payloads, want 1", len(environment.ResourceCaps))
-	}
-
 	var caps renderedResourceCaps
-	decoder := json.NewDecoder(strings.NewReader(environment.ResourceCaps[0]))
+	decoder := json.NewDecoder(strings.NewReader(data.ResourceCapsJSON))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&caps); err != nil {
-		t.Fatalf("parse rendered resource payload: %v", err)
+		t.Fatalf("decode resource caps %q: %v", data.ResourceCapsJSON, err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		t.Fatalf("rendered resource payload has trailing data: %v", err)
+		t.Fatalf("resource caps %q have trailing data: %v", data.ResourceCapsJSON, err)
 	}
-	return &caps, true
+	return caps, true
 }
 
 type maskedResourceFixtureEnv struct {
@@ -89,6 +49,7 @@ func (e *maskedResourceFixtureEnv) ExecCommand(context.Context, string, int, str
 }
 
 func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t *testing.T) {
+	t.Parallel()
 	env := &maskedResourceFixtureEnv{resourceFixtureEnv: newResourceFixtureEnv(t, resourceFixtureV2("100000 100000", "2147483648"))}
 	info := envInfoFromEnv(env, clock.Real())
 	if info.Resources == nil || info.Resources.CPUs != 1 || info.Resources.MemoryMB != 2048 {
@@ -96,7 +57,6 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 	}
 
 	sess := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			environmentInfo: func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo {
@@ -108,17 +68,24 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
-	caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt)
+	caps, ok := promptResourceCaps(t, sess)
 	if !ok {
-		t.Fatal("rendered environment omitted finite resource payload")
+		t.Fatal("prompt data carries no finite resource payload")
 	}
 	if caps.CPUs != info.Resources.CPUs || caps.MemoryMB != info.Resources.MemoryMB {
-		t.Fatalf("rendered resource payload = %+v, want cpus=%v memory_mb=%d",
+		t.Fatalf("prompt resource payload = %+v, want cpus=%v memory_mb=%d",
 			caps, info.Resources.CPUs, info.Resources.MemoryMB)
+	}
+	// The payload is Go-generated JSON, so the rendered prompt must carry it
+	// verbatim, once.
+	data, _ := sess.buildPromptData(sess.env)
+	if payload := data.ResourceCapsJSON; strings.Count(prompt, payload) != 1 {
+		t.Fatalf("rendered prompt carries resource payload %s %d times, want once", payload, strings.Count(prompt, payload))
 	}
 }
 
 func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
+	t.Parallel()
 	for name, resources := range map[string]*schema.ResourceCaps{
 		"unknown":   nil,
 		"unlimited": {},
@@ -126,7 +93,42 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			info := schema.EnvironmentInfo{WorkingDir: t.TempDir(), Platform: "linux", Resources: resources}
 			sess := newSession(t, withConfig(SessionConfig{
-				NoProjectPrompts: true,
+				testOnly: testConfig{
+					skipGitSnapshot: true,
+					environmentInfo: func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo {
+						return info
+					},
+				},
+			}))
+			_, warning := sess.renderSystemPrompt(sess.env)
+			if warning != "" {
+				t.Fatalf("render system prompt: %s", warning)
+			}
+			if caps, ok := promptResourceCaps(t, sess); ok {
+				t.Fatalf("prompt data carries a resource payload for %s resources: %+v", name, caps)
+			}
+		})
+	}
+}
+
+// TestRenderedEnvironmentDisclosesResourceCapsAreShared guards the prompt's
+// honesty about memory: the caps env_info advertises are the whole
+// environment's, shared by every session and delegate in it, not a per-session
+// allowance. Issue #496. The disclosure is tied to the caps: when there are none
+// to advertise, there is nothing to say they are shared.
+func TestRenderedEnvironmentDisclosesResourceCapsAreShared(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		resources *schema.ResourceCaps
+		want      bool
+	}{
+		"finite caps are disclosed as shared": {resources: &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}, want: true},
+		"no caps means no disclosure":         {resources: nil, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			info := schema.EnvironmentInfo{WorkingDir: t.TempDir(), Platform: "linux", Resources: tc.resources}
+			sess := newSession(t, withConfig(SessionConfig{
 				testOnly: testConfig{
 					skipGitSnapshot: true,
 					environmentInfo: func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo {
@@ -138,8 +140,8 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
-			if caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt); ok {
-				t.Fatalf("rendered environment resource payload for %s resources: %+v", name, caps)
+			if got := strings.Contains(prompt, "shared by every session and delegate"); got != tc.want {
+				t.Fatalf("prompt discloses shared caps = %v, want %v\nprompt:\n%s", got, tc.want, prompt)
 			}
 		})
 	}

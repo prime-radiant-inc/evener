@@ -87,29 +87,25 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 }
 
 // remoteForwardedThreadCapabilities lists the thread actions this source can
-// actually forward to the remote hub. It is the controller-side half of the
+// forward to the remote hub today. It is the controller-side half of the
 // capability answer: maskRemoteThreadCapabilities intersects it with the remote
-// hub's own claim, so an action is re-enabled by adding it here once its method
-// stops returning notImplemented (remote_hub_source.go):
+// hub's own claim, so an action reaches a remote session only when this set names
+// it AND the remote advertises it.
 //
-//   - Send (StartTurn, ResumeThread), Steer (SteerTurn), Interrupt
-//     (InterruptTurn), Queue (QueueTurn, DrainAsSteer, PromoteQueuedAsSteer,
-//     CancelQueued), Compact (CompactThread), Clear (ClearThread), ForkFromTurn
-//     (ForkThread), Shutdown (ShutdownThread), ChangeModel (SetThreadModel,
-//     SetThreadReasoningEffort), ChangeVisionModel (SetThreadVisionModel),
-//     Goal (GoalSet), SharedNotes (NotesHumanSet, UrlsRemove), and Rename
-//     (SetThreadName) are the turn mutations and lifecycle verbs component 05c
-//     implements in remote_hub_mutations.go.
-//   - SkillInput rides on the input-bearing turn mutations
-//     (appwire.ValidateSkillInputSupport).
+// Shutdown is the one entry. The controller forwards thread/shutdown on the owning
+// host's client, and the remote hub serves it against its own local daemon, so a
+// controller can stop a session it did not host. The intersection keeps the remote
+// daemon's own claim in charge: a remote that does not advertise Shutdown stays
+// refused. The remaining lifecycle verbs and the turn mutations are implemented in
+// remote_hub_mutations.go but stay masked until the host capability probe can say
+// the host supports them.
 //
-// The answer stays empty until component 05d supplies the host's own capability
-// probe: the remote hub's claim describes the REMOTE daemon, so forwarding it
-// verbatim would advertise actions this controller cannot verify the host
-// supports. 05d replaces this constant with that probe, intersected with the
-// remote hub's claim.
+// A capability not named here stays masked, so a field added to
+// appwire.ThreadCapabilities later starts masked until a component names the method
+// that answers for it. TestRemoteHubCapabilitiesMatchForwardedMethods holds the
+// correspondence between this set and those methods; change the two together.
 func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{}
+	return appwire.ThreadCapabilities{Shutdown: true}
 }
 
 // maskRemoteThreadCapabilities intersects the capability set a remote hub reported
@@ -120,8 +116,8 @@ func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
 // the remote's set verbatim would advertise an action this controller cannot carry:
 // it would fail with an internal error the moment a client used one (the hub gates
 // each of them on exactly these fields — cmd/evener-hub's threadActionAvailable).
-// Component 05c implements the mutations but forwards nothing here; the flags turn
-// on with 05d's host capability probe.
+// Component 05c implements the mutations but forwards only Shutdown here; the
+// other flags turn on with 05d's host capability probe.
 //
 // Fields are listed one by one rather than copied wholesale so a capability added
 // to appwire.ThreadCapabilities later starts masked until a component names the
@@ -143,6 +139,8 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 		SharedNotes:       remote.SharedNotes && forwarded.SharedNotes,
 		Rename:            remote.Rename && forwarded.Rename,
 		SkillInput:        remote.SkillInput && forwarded.SkillInput,
+		CommandInput:      remote.CommandInput && forwarded.CommandInput,
+		StopSubagent:      remote.StopSubagent && forwarded.StopSubagent,
 	}
 }
 
@@ -373,6 +371,10 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
 	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
+	// The remote hub stamps its own origin-relative image URLs into the thread;
+	// the shared visitor moves every one of them onto the host-qualified
+	// controller route the browser fetches them from.
+	rewriteThreadImageURLs(s.id, &thread)
 	return thread, nil
 }
 
@@ -496,9 +498,11 @@ func (s *RemoteHubSource) fromRemoteRefOrOpaque(raw string) string {
 	return translated
 }
 
-// translateOut applies outbound ref translation to whichever response type
-// embeds a Thread. Responses without refs (e.g. thread/turns/list, model/list)
-// pass through unchanged.
+// translateOut applies outbound translation to whichever response type embeds
+// a Thread, Turn, or ThreadItem: refs are rewritten into the controller
+// namespace and every remote-stamped image URL is moved onto the
+// host-qualified controller route (see rewriteThreadImageURLs). Responses
+// without either (e.g. model/list) pass through unchanged.
 func (s *RemoteHubSource) translateOut(out any) error {
 	switch response := out.(type) {
 	case *appwire.ThreadListResponse:
@@ -530,6 +534,7 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			return err
 		}
 		response.Thread = thread
+		rewriteTurnImageURLs(s.id, &response.Turn)
 	case *appwire.ThreadResumeResponse:
 		thread, err := s.fromRemoteThread(response.Thread)
 		if err != nil {
@@ -553,8 +558,54 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			return err
 		}
 		response.Ref = ref
+	case *appwire.ThreadTurnsListResponse:
+		for index := range response.Data {
+			rewriteTurnImageURLs(s.id, &response.Data[index])
+		}
+	case *appwire.ThreadTurnItemsListResponse:
+		for index := range response.Data {
+			rewriteItemImageURLs(s.id, &response.Data[index])
+		}
+	case *appwire.TurnStartResponse:
+		rewriteTurnImageURLs(s.id, &response.Turn)
+	case *appwire.EvenerSubagentPreviewResponse:
+		for index := range response.Items {
+			rewriteItemImageURLs(s.id, &response.Items[index])
+		}
+	case *appwire.SessionActivitySummary:
+		page := appwire.SessionActivityPage{Issues: response.Issues}
+		if err := s.translateSessionActivity(&response.Context, &page); err != nil {
+			return err
+		}
+		response.Issues = page.Issues
+		return nil
+	case *appwire.SessionDelegatesResponse:
+		refs := make([]*string, 0, 3*len(response.Delegates))
+		for i := range response.Delegates {
+			row := &response.Delegates[i]
+			refs = append(refs, &row.OwnerRef, &row.RootRef, &row.ChildRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
+	case *appwire.SessionJobsResponse:
+		refs := make([]*string, 0, len(response.Jobs))
+		for i := range response.Jobs {
+			row := &response.Jobs[i]
+			refs = append(refs, &row.OwnerRef)
+			row.TranscriptRef = s.fromRemoteRefOrOpaque(row.TranscriptRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
+	case *appwire.SessionWatchesResponse:
+		refs := make([]*string, 0, 3*len(response.Watches))
+		for i := range response.Watches {
+			row := &response.Watches[i]
+			refs = append(refs, &row.OwnerRef, &row.ReceiverRef, &row.SourceRef)
+		}
+		return s.translateSessionActivity(&response.Context, &response.Page, refs...)
 	case *appwire.JobsListResponse:
 		response.Data = s.translateActivityRefs(response.Data)
+	case *appwire.JobsGetResponse:
+		response.Data.OwnerRef = s.translateNestedRef(response.Data.OwnerRef)
+		response.Data.TranscriptRef = s.translateNestedRef(response.Data.TranscriptRef)
 	}
 	return nil
 }

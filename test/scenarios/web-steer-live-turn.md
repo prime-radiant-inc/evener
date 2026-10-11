@@ -143,7 +143,7 @@ HUB=http://127.0.0.1:$PORT
   cleared; the steer appears in the transcript as a **user-message item with
   no `data-opens-exchange` attribute** — a steer the human typed reuses
   `UserMessageView` with `opensExchange={false}`
-  (`transcript/messages/SteeringItem.tsx:143-146`,
+  (`transcript/messages/SteeringItem.tsx:124-127`,
   `UserMessageItem.tsx:98,112`), which is precisely what distinguishes it
   from an ordinary prompt; and the toast region is empty. Falsify: no chip in
   `sync` (the optimistic path never rendered — the bug kata `wymv` was

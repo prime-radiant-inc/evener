@@ -60,6 +60,11 @@ node --test scripts/editorial-preview*.test.mjs
 node scripts/editorial-preview-browser.mjs
 ```
 
+The HTTP route-isolation test admits no dependency optimizer: it checks fixture
+HTML routing and backend/filesystem denial without executing modules. Browser
+qualification keeps the preview’s normal dependency optimization.
+
+
 The private browser runner writes screenshots, computed geometry, RPC errors,
 network requests, task outcomes and process identities to ignored
 `.superpowers/sdd/2026-09-09-tufte-webui/task-4-evidence/` at the repository root.

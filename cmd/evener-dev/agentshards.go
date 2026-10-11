@@ -1,7 +1,11 @@
 package dev
 
-// agent-shards runs the agent package's tests as cost-balanced shards. It is
-// the port of scripts/agent-test-shards.sh, whose header carried the
+// agent-shards runs the agent package's tests as cost-balanced shards, and
+// hub-shards and cli-shards do the same for cmd/evener-hub and cmd/evener, whose
+// mostly-serial tests otherwise run one after another in a single binary. Each
+// reads its own variables: AGENT_SHARD_* below, and HUB_SHARD_* / CLI_SHARD_*
+// with the same suffixes. The
+// runner is the port of scripts/agent-test-shards.sh, whose header carried the
 // measurements this design rests on: one ~2750-test binary spends ~26-32s as
 // a single invocation, and cost-balanced shards (4 × -parallel 3) take it to
 // ~21s. BALANCE is what matters, not shard count — the weights come from a
@@ -22,7 +26,7 @@ package dev
 //	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
-//	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-agent-shards)
+//	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-<label>-shards)
 //
 // plus pass-through `go test` flags. Every test lands in exactly one shard,
 // proven before running anything; one PASS/FAIL line per shard with wall
@@ -36,7 +40,7 @@ package dev
 // the execve argument list: a large shard's regex can exceed Linux's
 // MAX_ARG_STRLEN (128KB per single argument string).
 //
-// Scratch is "agent-test-shards.<pid>" under TMPDIR, reclaimed from dead
+// Scratch is "<label>-test-shards.<pid>" under TMPDIR, reclaimed from dead
 // runs at startup (internal/devtool/scratch): the janitor this replaced is
 // gone, and a SIGKILLed run's debris lives exactly until the next run.
 
@@ -49,6 +53,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,17 +64,18 @@ import (
 	"primeradiant.com/evener/internal/devtool/scratch"
 )
 
-const shardScratchPrefix = "agent-test-shards"
-
 // defaultSurveyParallel is the survey pass's default -parallel. The shards get
 // their width from AGENT_SHARD_PARALLEL; the survey measures cost on a single
 // binary, which has always run slightly wider.
 const defaultSurveyParallel = 6
 
-// shardsConfig is one agent-shards run: which module to shard, how wide, and
+// shardsConfig is one shards run: which package to shard, how wide, and
 // where its words go.
 type shardsConfig struct {
-	agentDir       string
+	label          string
+	envPrefix      string
+	moduleDir      string
+	pkgDir         string
 	count          int
 	parallel       int
 	concurrency    int
@@ -82,32 +88,58 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// slotWait, when set, is called each time a shard has to wait for a free
+	// concurrency slot: the observable moment the runner holds a shard back.
+	// A test seam; nil in production.
+	slotWait func()
 }
 
-// runAgentShards is the subcommand entry: environment in, exit code out.
+// runAgentShards and runHubShards are the subcommand entries: environment in,
+// exit code out. Each package reads its own <PREFIX>_SHARD_* variables.
 func runAgentShards(args []string) int {
-	count, err := envPositiveInt("AGENT_SHARD_COUNT", 4)
+	return runPackageShards("agent", "agent", "agent", "AGENT", args)
+}
+
+// runHubShards builds from the repository root, the module cmd/evener-hub
+// belongs to, so path-valued build flags resolve where the gate's root-module
+// go test resolves them; the shards still run in the package directory.
+func runHubShards(args []string) int {
+	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", args)
+}
+
+// runCLIShards shards cmd/evener, the CLI's ~340 mostly-serial serve and run
+// lifecycle tests, the same way.
+func runCLIShards(args []string) int {
+	return runPackageShards("cli", ".", filepath.Join("cmd", "evener"), "CLI", args)
+}
+
+// runPackageShards shards the package in pkgDir, building it from moduleDir
+// (its module's root; both relative to the repository root), naming it label
+// in its output and reading envPrefix_SHARD_* for its settings.
+func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string) int {
+	env := func(name string) string { return envPrefix + "_SHARD_" + name }
+	count, err := envPositiveInt(env("COUNT"), 4)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
-	parallel, err := envPositiveInt("AGENT_SHARD_PARALLEL", 3)
+	parallel, err := envPositiveInt(env("PARALLEL"), 3)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
-	// Shards are independent processes; AGENT_SHARD_PARALLEL bounds each one's
+	// Shards are independent processes; _SHARD_PARALLEL bounds each one's
 	// tests but not how many run at once. Zero (and unset) means all of them,
 	// the historical behavior; a positive value is the total concurrency the
 	// load-aware gate lowers on a busy host.
-	concurrency, err := envNonNegativeInt("AGENT_SHARD_CONCURRENCY", 0)
+	concurrency, err := envNonNegativeInt(env("CONCURRENCY"), 0)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
-	surveyParallel, err := envPositiveInt("AGENT_SHARD_SURVEY_PARALLEL", defaultSurveyParallel)
+	surveyParallel, err := envPositiveInt(env("SURVEY_PARALLEL"), defaultSurveyParallel)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
 	// Two deep, because a second signal must be waiting when the first is
@@ -116,20 +148,39 @@ func runAgentShards(args []string) int {
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	return runShards(shardsConfig{
-		agentDir:       "agent",
+		label:          label,
+		envPrefix:      envPrefix,
+		moduleDir:      moduleDir,
+		pkgDir:         pkgDir,
 		count:          count,
 		parallel:       parallel,
 		concurrency:    concurrency,
 		surveyParallel: surveyParallel,
-		skip:           os.Getenv("AGENT_SHARD_SKIP"),
-		noSurvey:       envFlag("AGENT_SHARD_NO_SURVEY"),
-		resurvey:       envFlag("AGENT_SHARD_RESURVEY"),
-		cacheDir:       os.Getenv("AGENT_SHARD_CACHE_DIR"),
+		skip:           os.Getenv(env("SKIP")),
+		noSurvey:       envFlag(env("NO_SURVEY")),
+		resurvey:       envFlag(env("RESURVEY")),
+		cacheDir:       os.Getenv(env("CACHE_DIR")),
 		flags:          args,
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
 		signals:        signals,
 	})
+}
+
+// buildLocation is where the test binary is built from and the package path
+// it builds: the module root and the package relative to it, so path-valued
+// build flags (-overlay, -modfile, -pgo) resolve against the module root the
+// way a module-wide go test resolves them. A config with no moduleDir builds
+// in the package directory itself.
+func (cfg shardsConfig) buildLocation() (dir, target string, err error) {
+	if cfg.moduleDir == "" || cfg.moduleDir == cfg.pkgDir {
+		return cfg.pkgDir, ".", nil
+	}
+	rel, err := filepath.Rel(cfg.moduleDir, cfg.pkgDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("package %s is not inside module %s", cfg.pkgDir, cfg.moduleDir)
+	}
+	return cfg.moduleDir, "./" + filepath.ToSlash(rel), nil
 }
 
 // surveyArgs is the survey pass's test-binary arguments. The survey runs one
@@ -252,14 +303,14 @@ var signalNames = map[syscall.Signal]string{
 
 // runShards runs the module's tests as cost-balanced shards.
 func runShards(cfg shardsConfig) int {
-	if info, err := os.Stat(cfg.agentDir); err != nil || !info.IsDir() {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: no agent dir\n")
+	if info, err := os.Stat(cfg.pkgDir); err != nil || !info.IsDir() {
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: no %s dir\n", cfg.label, cfg.pkgDir)
 		return 2
 	}
 
-	dir, err := scratch.Acquire(shardScratchPrefix, cfg.stderr)
+	dir, err := scratch.Acquire(cfg.label+"-test-shards", cfg.stderr)
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: could not create a scratch directory: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: could not create a scratch directory: %v\n", cfg.label, err)
 		return 2
 	}
 	logdir := dir.Path()
@@ -282,7 +333,7 @@ func runShards(cfg shardsConfig) int {
 				}
 				if first {
 					first = false
-					_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: interrupted by %s\n", signalNames[s])
+					_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: interrupted by %s\n", cfg.label, signalNames[s])
 					in.interrupt(s)
 					continue
 				}
@@ -301,40 +352,45 @@ func runShards(cfg shardsConfig) int {
 				// was tried; the re-raised signal does not reliably take the
 				// default action before the process continues, so this exits
 				// under its own power instead.
-				_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %s again — abandoning the running shards; logs: %s\n", signalNames[s], logdir)
+				_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %s again — abandoning the running shards; logs: %s\n", cfg.label, signalNames[s], logdir)
 				os.Exit(128 + int(s))
 			}
 		}()
 	}
 
 	// Build the test binary once; every shard runs it.
-	build := filepath.Join(logdir, "agent.test")
+	build := filepath.Join(logdir, cfg.label+".test")
 	buildLog := filepath.Join(logdir, "build.log")
 	// The build gets the caller's build flags: a -race run has to compile a
 	// race-detector binary, and a -tags run has to compile the files that tag
 	// selects, or the shards test something the caller did not ask for.
-	parsed, err := parseFlags(cfg.flags)
+	parsed, err := parseFlags(cfg.flags, cfg.envPrefix)
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
 	goflags, err := effectiveGoflags()
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
-	if err := checkGoflags(goflags); err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+	if err := checkGoflags(goflags, cfg.envPrefix); err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
 	extraFlags := parsed.test
 	buildArgs := append([]string{"test", "-c"}, parsed.build...)
-	buildArgs = append(buildArgs, "-o", build, ".")
-	if err = cfg.runToLog(in, buildLog, cfg.agentDir, "go", buildArgs...); err != nil {
+	buildDir, buildTarget, err := cfg.buildLocation()
+	if err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
+		return 1
+	}
+	buildArgs = append(buildArgs, "-o", build, buildTarget)
+	if err = cfg.runToLog(in, buildLog, buildDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
 		}
-		_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: build failed")
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: build failed\n", cfg.label)
 		copyFileTo(cfg.stdout, buildLog)
 		return 1
 	}
@@ -344,7 +400,7 @@ func runShards(cfg shardsConfig) int {
 
 	// The test set's identity keys the survey cache; the same listing also
 	// backs the equal-weights fallback.
-	listOut, _ := cfg.captureChild(in, cfg.agentDir, build, "-test.list", ".*")
+	listOut, _ := cfg.captureChild(in, cfg.pkgDir, build, "-test.list", ".*")
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
@@ -365,14 +421,14 @@ func runShards(cfg shardsConfig) int {
 			// partial write caught mid-flight.
 		}
 		if !cacheHit {
-			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
+			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
 			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
-			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
+			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
 				}
-				_, _ = fmt.Fprintln(cfg.stderr, "agent-shards: the survey pass failed — the suite is red")
-				replayMatching(cfg.stderr, surveyLog, surveyRedLine, 20)
+				_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: the survey pass failed — the suite is red\n", cfg.label)
+				replaySurveyFailures(cfg.stderr, surveyLog, maxSurveyFailures)
 				_, _ = fmt.Fprintf(cfg.stderr, "full log: %s\n", surveyLog)
 				return 1
 			}
@@ -395,23 +451,23 @@ func runShards(cfg shardsConfig) int {
 		costs = equalWeights(listOut)
 	}
 	if len(costs) == 0 {
-		_, _ = fmt.Fprintln(cfg.stderr, "agent-shards: found no tests to shard")
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: found no tests to shard\n", cfg.label)
 		return 1
 	}
 
-	bins, _, err := packShards(costs, cfg.count)
+	bins, _, err := packShards(costs, cfg.count, cfg.envPrefix)
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
 	for i, bin := range bins {
 		names := filepath.Join(logdir, fmt.Sprintf("shard%d.names", i))
 		if err := os.WriteFile(names, []byte(strings.Join(bin, "\n")+"\n"), 0o644); err != nil {
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
 		}
 	}
-	_, _ = fmt.Fprintf(cfg.stdout, "agent-shards: %d shards, -parallel %d each\n", len(bins), cfg.parallel)
+	_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: %d shards, -parallel %d each\n", cfg.label, len(bins), cfg.parallel)
 
 	// A shard is one OS process, so cfg.parallel bounds only the tests inside
 	// it. limit bounds the processes themselves: on a busy host or a
@@ -424,7 +480,7 @@ func runShards(cfg shardsConfig) int {
 		limit = len(bins)
 	}
 	if limit < len(bins) {
-		_, _ = fmt.Fprintf(cfg.stdout, "agent-shards: at most %d of %d shards run at once\n", limit, len(bins))
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, len(bins))
 	}
 	slots := make(chan struct{}, limit)
 
@@ -441,7 +497,15 @@ func runShards(cfg shardsConfig) int {
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
-		slots <- struct{}{}
+		select {
+		case slots <- struct{}{}:
+		default:
+			// Every slot is taken: this shard waits for a running one to exit.
+			if cfg.slotWait != nil {
+				cfg.slotWait()
+			}
+			slots <- struct{}{}
+		}
 		// A signal that arrived while we waited for a slot must not start more
 		// work: the interrupter has already TERMed the live shards, and a shard
 		// started now would outlive the run we are trying to stop.
@@ -455,7 +519,7 @@ func runShards(cfg shardsConfig) int {
 		// reads it in-process, never touching the execve argument list.
 		runFile := filepath.Join(logdir, fmt.Sprintf("shard%d.run", i))
 		if err := os.WriteFile(runFile, []byte(nameRegex(bin)), 0o644); err != nil {
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
 		}
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
@@ -468,11 +532,11 @@ func runShards(cfg shardsConfig) int {
 		args = append(args, extraFlags...)
 		log, err := os.Create(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i)))
 		if err != nil {
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
 		}
 		cmd := exec.CommandContext(context.Background(), build, args...)
-		cmd.Dir = cfg.agentDir
+		cmd.Dir = cfg.pkgDir
 		cmd.Stdout, cmd.Stderr = log, log
 		cmd.Env = append(os.Environ(), "EVENER_SHARD_RUN_FILE="+runFile)
 		started := time.Now()
@@ -480,7 +544,7 @@ func runShards(cfg shardsConfig) int {
 		_ = log.Close()
 		if err != nil {
 			<-slots
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: starting shard %d: %v\n", i, err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: starting shard %d: %v\n", cfg.label, i, err)
 			launchFailed = true
 			break
 		}
@@ -501,9 +565,9 @@ func runShards(cfg shardsConfig) int {
 		}
 		r := <-result
 		if r.err == nil {
-			_, _ = fmt.Fprintf(cfg.stdout, "PASS  agent:%-2d %8s (%d tests)\n", i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
+			_, _ = fmt.Fprintf(cfg.stdout, "PASS  %s:%-2d %8s (%d tests)\n", cfg.label, i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
-			_, _ = fmt.Fprintf(cfg.stdout, "FAIL  agent:%-2d\n", i)
+			_, _ = fmt.Fprintf(cfg.stdout, "FAIL  %s:%-2d\n", cfg.label, i)
 			failed = append(failed, i)
 		}
 	}
@@ -525,7 +589,7 @@ func runShards(cfg shardsConfig) int {
 			_, _ = fmt.Fprintln(cfg.stdout, "=== failing shard output ===")
 			for _, i := range failed {
 				log := filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
-				_, _ = fmt.Fprintf(cfg.stdout, "----- agent:%d -----\n", i)
+				_, _ = fmt.Fprintf(cfg.stdout, "----- %s:%d -----\n", cfg.label, i)
 				if !copyFileTo(cfg.stdout, log) {
 					_, _ = fmt.Fprintf(cfg.stdout, "(no output captured: %s is empty or missing)\n", log)
 				}
@@ -554,11 +618,25 @@ func effectiveGoflags() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// surveyRedLine is the excerpt grep the script used when the survey pass came
-// back red. The survey has no per-shard verdict to sort by — it is one pass
-// over the whole suite whose log is pointed at in full — so the excerpt stays
-// a grep here.
-var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
+// surveyRedLine is the marker that announces a failure in a `go test -v` log:
+// a failing test's verdict, or the panic that ended the binary. The verdict is
+// matched through its colon, so `--- FAILURE: ...` — a test's own output — is
+// not a marker; `panic:` stays a prefix, since the message after it is the
+// panic's own text. The survey has no per-shard verdict to sort by — it is one
+// pass over the whole suite — so the excerpt is built around these markers.
+var surveyRedLine = regexp.MustCompile(`^(?:--- FAIL:|panic:)`)
+
+// The red survey's excerpt is one failure block per marker, never the suite
+// log: these bound how much of the failing test's own output a block carries,
+// how many blocks print at all, and how much of the log a markerless run's
+// tail fallback carries. The CI job summary shows the excerpt in full, so an
+// unbounded dump here would drown the job it exists to make readable.
+const (
+	surveyContextBefore = 10
+	surveyContextAfter  = 6
+	maxSurveyFailures   = 20
+	surveyTailLines     = surveyContextBefore + surveyContextAfter
+)
 
 // cachedSurveyPath resolves the survey cache file for this test set, or ""
 // when there is nowhere to cache. Cache trouble is never fatal — it only
@@ -570,7 +648,7 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, gof
 		if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 			return ""
 		}
-		cacheDir = filepath.Join(strings.TrimSpace(string(out)), "evener-agent-shards")
+		cacheDir = filepath.Join(strings.TrimSpace(string(out)), "evener-"+cfg.label+"-shards")
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
@@ -681,23 +759,527 @@ func fileHasContent(path string) bool {
 	return err == nil && info.Size() > 0
 }
 
-// replayMatching writes up to limit matching lines from a log, the script's
-// `grep | head` diagnostic excerpt.
-func replayMatching(w io.Writer, path string, re *regexp.Regexp, limit int) {
+// replaySurveyFailures writes the excerpt a red survey prints: the failing
+// tests' own output from a `go test -v` log, one failure block per marker,
+// bounded per block by surveyContextBefore/surveyContextAfter lines and in the
+// number of blocks by maxBlocks. Those bounds are what keep the excerpt an
+// excerpt — a CI job summary shows it in full.
+//
+// A block is the marker with the test's own output around it, and it runs from
+// the previous framework line to the next one, bounded by the two line counts.
+// That keeps the indented t.Log/t.Error lines and the test's unindented direct
+// output (fmt.Println, log.Print, a child process) alike; only the toolchain's
+// own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or another failure
+// marker such as `panic:` — ends the run, on either side of the marker.
+// If a mismatched owner separates a marker from its diagnostic context, or the
+// ordinary window is empty, owner-aware expansion recovers bounded context
+// instead.
+//
+// A survey that died with no marker at all — a fatal error, an os.Exit, a
+// killed binary — has no block to show, so a bounded tail of the log stands in.
+// The caller reaches this only after the survey pass exited nonzero — the run
+// is already known red — so there is no green verdict to consult here, and a
+// log tail that happens to end in a test's own `ok done` print must not
+// suppress the fallback. The excerpt is non-empty whenever the log has content:
+// the run has just written that log, so the only silent case is a path this
+// function cannot read (or one holding nothing but whitespace) — an unreadable
+// log, not an absent one.
+func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	printed := 0
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if printed >= limit {
-			return
+	trimmed := strings.TrimRight(string(data), "\n")
+	if trimmed == "" {
+		return
+	}
+	lines := strings.Split(trimmed, "\n")
+	matched := false
+	emitted := 0 // exclusive end of the last block written
+	emittedLines := make(map[int]struct{})
+	deferredLines := make(map[string][]int)
+	fallbackOwners := surveyFallbackOwnerStates(lines)
+	for i := 0; i < len(lines) && maxBlocks > 0; {
+		if !surveyRedLine.MatchString(lines[i]) {
+			i++
+			continue
 		}
-		if re.MatchString(line) {
+		maxBlocks--
+		matched = true
+		name := surveyFailureName(lines[i])
+		fallbackClaims := make(map[string]surveyFallbackClaim)
+		deferred := deferredLines[name]
+		delete(deferredLines, name)
+		start := i
+		for n := 0; n < surveyContextBefore && start > emitted && !surveyFrameworkLine(lines[start-1]); n++ {
+			start--
+		}
+		end := i + 1
+		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
+			end++
+		}
+		deferFallbackLine := func(index int) bool {
+			if surveyFrameworkLine(lines[index]) {
+				return false
+			}
+			owner := fallbackOwners[index].owner
+			if fallbackOwners[index].verdict {
+				owner = name
+			}
+			if owner == "" || owner == name {
+				return false
+			}
+			claim, ok := fallbackClaims[owner]
+			if !ok {
+				claim = surveyFallbackLaterFailureClaim(lines, i, maxBlocks, owner)
+				fallbackClaims[owner] = claim
+			}
+			if claim.name == "" || index < claim.lastRun {
+				return false
+			}
+			deferredLines[claim.name] = append(deferredLines[claim.name], index)
+			return true
+		}
+		if len(deferred) > 0 || start == i || surveyFailureHasMismatchedOwner(lines, i) {
+			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines, deferred); ok {
+				for index := start; index < i; index++ {
+					if _, alreadyEmitted := emittedLines[index]; !alreadyEmitted {
+						deferFallbackLine(index)
+					}
+				}
+				for _, excerpt := range expanded {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				for _, excerpt := range lines[i+1 : end] {
+					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				for index := i; index < end; index++ {
+					emittedLines[index] = struct{}{}
+				}
+				emitted = end
+				i = end
+				continue
+			}
+		}
+		for _, index := range deferred {
+			_, _ = fmt.Fprintln(w, lines[index])
+			emittedLines[index] = struct{}{}
+		}
+		for index := start; index < end; index++ {
+			if index < i {
+				if deferFallbackLine(index) {
+					continue
+				}
+			}
+			if _, alreadyEmitted := emittedLines[index]; alreadyEmitted {
+				continue
+			}
+			_, _ = fmt.Fprintln(w, lines[index])
+			emittedLines[index] = struct{}{}
+		}
+		// Scanning resumes past the ordinary window. Expansion can reach back
+		// earlier, so emittedLines prevents reprinting lines already emitted.
+		emitted = end
+		i = end
+	}
+	if !matched && maxBlocks > 0 {
+		for _, line := range lines[max(len(lines)-surveyTailLines, 0):] {
 			_, _ = fmt.Fprintln(w, line)
-			printed++
 		}
 	}
+}
+
+// surveyFailureName recovers the test name from the framing line the testing
+// package emits. The name lets a failure reach back to its own run, rather than
+// treating a completed subtest or an interleaved parallel test as the parent's
+// boundary.
+func surveyFailureName(line string) string {
+	if strings.HasPrefix(line, "panic:") {
+		return ""
+	}
+	name := strings.TrimPrefix(line, "--- FAIL:")
+	if end := strings.Index(name, " ("); end >= 0 {
+		name = name[:end]
+	}
+	return strings.TrimSpace(name)
+}
+
+// surveyFailedChildNames collects failed descendants from a parent's indented
+// verdict block. The scan stops at the first unindented line, which is the next
+// top-level frame or failure marker rather than another child verdict.
+func surveyFailedChildNames(lines []string, marker int, parent string) map[string]struct{} {
+	var failed map[string]struct{}
+	for index := marker + 1; index < len(lines); index++ {
+		line := lines[index]
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--- FAIL:") {
+			child := surveyFailureName(trimmed)
+			if strings.HasPrefix(child, parent+"/") {
+				if failed == nil {
+					failed = make(map[string]struct{})
+				}
+				failed[child] = struct{}{}
+			}
+		}
+	}
+	return failed
+}
+
+// surveyFailureHasMismatchedOwner reports whether the nearest ownership frame
+// before a failure differs from the failing test itself. Descendant frames
+// intentionally count as mismatches: their ordinary tail can hide the
+// parent's diagnostic window, so expansion must rank the combined owners.
+func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return false
+	}
+	for index := marker - 1; index >= 0; index-- {
+		if owner := surveyPhaseOwner(lines[index]); owner != "" {
+			return owner != name
+		}
+	}
+	return false
+}
+
+type surveyFallbackOwnerState struct {
+	owner   string
+	verdict bool
+}
+
+// surveyFallbackOwnerStates records the latest ownership frame before each
+// line once for the whole log. A verdict is kept separately because the
+// fallback associates it with the failure marker currently being expanded.
+func surveyFallbackOwnerStates(lines []string) []surveyFallbackOwnerState {
+	states := make([]surveyFallbackOwnerState, len(lines))
+	owner := ""
+	verdict := false
+	for index, line := range lines {
+		states[index] = surveyFallbackOwnerState{owner: owner, verdict: verdict}
+		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
+			owner = frameOwner
+			verdict = false
+		}
+		if surveyTestVerdictLine.MatchString(strings.TrimSpace(line)) {
+			verdict = true
+		}
+	}
+	return states
+}
+
+type surveyFallbackClaim struct {
+	name    string
+	lastRun int
+}
+
+// surveyFallbackLaterFailureClaim finds the first later failure that can claim
+// an owner's ordinary context. lastRun excludes lines before a repeated owner
+// or parent RUN; the caller can reuse this result for every line with that
+// owner in the current fallback window.
+func surveyFallbackLaterFailureClaim(lines []string, marker, maxBlocks int, owner string) surveyFallbackClaim {
+	for later, failures := marker+1, 0; later < len(lines); later++ {
+		if !surveyRedLine.MatchString(lines[later]) {
+			continue
+		}
+		failures++
+		laterName := surveyFailureName(lines[later])
+		if laterName != owner && !strings.HasPrefix(owner, laterName+"/") {
+			continue
+		}
+		if failures > maxBlocks {
+			return surveyFallbackClaim{}
+		}
+		lastRun := -1
+		for between := marker + 1; between < later; between++ {
+			if lines[between] == "=== RUN   "+owner || lines[between] == "=== RUN   "+laterName {
+				lastRun = between
+			}
+		}
+		return surveyFallbackClaim{name: laterName, lastRun: lastRun}
+	}
+	return surveyFallbackClaim{}
+}
+
+// surveyDiagnosticLine matches the source location that testing prefixes on
+// t.Error/t.Fatal output. These lines are the useful part of a parent failure
+// even when the test framework has put many subtest frames between them and
+// the parent's verdict.
+var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.go:[0-9]+:`)
+
+// expandSurveyFailure recovers a bounded set of a parent's output when the
+// nearby excerpt contains only its verdict or a different test owns the
+// nearest context. The lines from ordinaryStart up to marker are the
+// already-selected ordinary context. Selection starts with owned ordinary
+// output or, when that window has no lines owned by the failing test or its
+// descendants, descendant diagnostics. A diagnostic kind reserves a slot only
+// when its newest candidate would otherwise be dropped from the current
+// ordinary tail after other reservations. Newest parent diagnostics then fill
+// up to all but the failed-child reservation, followed by failed-child
+// diagnostics; remaining slots are backfilled from owned diagnostics, then
+// owned output, then unindented ordinary-window lines owned by other tests.
+// Source diagnostics are associated with the most recent go test RUN/CONT/NAME
+// frame; a verdict returns ownership to the failing test. If ordinary context
+// owned by the failing test or its descendants exists, expansion requires a
+// source diagnostic owned by the failing test or one of its failed children.
+// When ordinary context overflows its budget, the newest budget-sized tail is
+// kept contiguously, dropping only older lines.
+// Deferred context is emitted in addition to one block's ordinary before bound
+// and marker. It is bounded by the number of deferred windows admitted by the
+// remaining block budget.
+func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines map[int]struct{}, deferredLines []int) ([]string, bool) {
+	name := surveyFailureName(lines[marker])
+	if name == "" {
+		return nil, false
+	}
+	run := -1
+	for i := marker - 1; i >= 0; i-- {
+		if lines[i] == "=== RUN   "+name {
+			run = i
+			break
+		}
+	}
+	if run < 0 {
+		return nil, false
+	}
+
+	const maxExpandedLines = surveyContextBefore
+	appendNewest := func(candidates *[]int, index int) {
+		if len(*candidates) == maxExpandedLines {
+			copy(*candidates, (*candidates)[1:])
+			(*candidates)[maxExpandedLines-1] = index
+			return
+		}
+		*candidates = append(*candidates, index)
+	}
+	owner := name
+	ordinaryOwnedCandidates := make([]int, 0, maxExpandedLines)
+	parentDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	descendantDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	failedChildDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	ownedDiagnosticCandidates := make([]int, 0, maxExpandedLines)
+	ownedOutputCandidates := make([]int, 0, maxExpandedLines)
+	ordinaryContextCandidates := make([]int, 0, maxExpandedLines)
+	failedChildNames := surveyFailedChildNames(lines, marker, name)
+	for index, line := range lines[run+1 : marker] {
+		if frameOwner := surveyPhaseOwner(line); frameOwner != "" {
+			owner = frameOwner
+		}
+		trimmed := strings.TrimSpace(line)
+		if surveyTestVerdictLine.MatchString(trimmed) {
+			owner = name
+		}
+		if surveyFrameworkLine(line) || trimmed == "" {
+			continue
+		}
+		lineIndex := run + 1 + index
+		if _, alreadyEmitted := emittedLines[lineIndex]; alreadyEmitted {
+			continue
+		}
+		diagnostic := surveyDiagnosticLine.MatchString(line)
+		if diagnostic && owner == name {
+			appendNewest(&parentDiagnosticCandidates, lineIndex)
+		}
+		owned := owner == name || strings.HasPrefix(owner, name+"/")
+		ordinary := lineIndex >= ordinaryStart
+		if ordinary && owned {
+			appendNewest(&ordinaryOwnedCandidates, lineIndex)
+		}
+		if owned {
+			if diagnostic {
+				if owner != name {
+					appendNewest(&descendantDiagnosticCandidates, lineIndex)
+					for failedChild := range failedChildNames {
+						if owner == failedChild || strings.HasPrefix(owner, failedChild+"/") {
+							appendNewest(&failedChildDiagnosticCandidates, lineIndex)
+							break
+						}
+					}
+				}
+				appendNewest(&ownedDiagnosticCandidates, lineIndex)
+			} else {
+				appendNewest(&ownedOutputCandidates, lineIndex)
+			}
+		}
+		if ordinary && !owned && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			appendNewest(&ordinaryContextCandidates, lineIndex)
+		}
+	}
+	hasFailureDiagnostic := len(parentDiagnosticCandidates) > 0 || len(failedChildDiagnosticCandidates) > 0
+	if len(ordinaryOwnedCandidates) > 0 && !hasFailureDiagnostic {
+		return nil, false
+	}
+	reserveParentDiagnostic := false
+	reserveFailedChildDiagnostic := false
+	candidateInOrdinaryTail := func(candidates []int, ordinaryBudget int) bool {
+		candidate := candidates[len(candidates)-1]
+		start := max(len(ordinaryOwnedCandidates)-ordinaryBudget, 0)
+		return slices.Contains(ordinaryOwnedCandidates[start:], candidate)
+	}
+	ordinaryBudgetForReservations := func() int {
+		reservedDiagnostics := 0
+		if reserveParentDiagnostic {
+			reservedDiagnostics++
+		}
+		if reserveFailedChildDiagnostic {
+			reservedDiagnostics++
+		}
+		return maxExpandedLines - reservedDiagnostics
+	}
+	for {
+		ordinaryBudget := ordinaryBudgetForReservations()
+		changed := false
+		if !reserveParentDiagnostic && len(parentDiagnosticCandidates) > 0 && !candidateInOrdinaryTail(parentDiagnosticCandidates, ordinaryBudget) {
+			reserveParentDiagnostic = true
+			changed = true
+		}
+		if !reserveFailedChildDiagnostic && len(failedChildDiagnosticCandidates) > 0 && !candidateInOrdinaryTail(failedChildDiagnosticCandidates, ordinaryBudget) {
+			reserveFailedChildDiagnostic = true
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+	ordinaryBudget := ordinaryBudgetForReservations()
+	keep := make(map[int]struct{}, maxExpandedLines)
+	selectedCount := 0
+	for _, deferredLine := range slices.Backward(deferredLines) {
+		if deferredLine <= run {
+			continue
+		}
+		keep[deferredLine] = struct{}{}
+	}
+	selectNewest := func(candidates []int, limit int) {
+		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
+			if _, exists := keep[candidates[i]]; exists {
+				continue
+			}
+			keep[candidates[i]] = struct{}{}
+			selectedCount++
+		}
+	}
+	selectNewest(ordinaryOwnedCandidates, ordinaryBudget)
+	if len(ordinaryOwnedCandidates) == 0 {
+		selectNewest(descendantDiagnosticCandidates, ordinaryBudget)
+	}
+	if len(parentDiagnosticCandidates) > 0 {
+		parentBudget := maxExpandedLines
+		if reserveFailedChildDiagnostic {
+			parentBudget--
+		}
+		selectNewest(parentDiagnosticCandidates, parentBudget)
+	}
+	selectNewest(failedChildDiagnosticCandidates, maxExpandedLines)
+	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)
+	selectNewest(ownedOutputCandidates, maxExpandedLines)
+	selectNewest(ordinaryContextCandidates, maxExpandedLines)
+	if len(keep) == 0 {
+		return nil, false
+	}
+	result := make([]string, 0, len(keep)+1)
+	for index := run + 1; index < marker; index++ {
+		if _, exists := keep[index]; exists {
+			result = append(result, lines[index])
+		}
+	}
+	for index := range keep {
+		emittedLines[index] = struct{}{}
+	}
+	result = append(result, lines[marker])
+	return result, true
+}
+
+// surveyPhaseOwner extracts the test name from the testing package's RUN,
+// CONT, or NAME frame. PAUSE is a framing boundary without an owner.
+func surveyPhaseOwner(line string) string {
+	phase, owner, ok := surveyPhaseParts(line)
+	if !ok || phase == "PAUSE" {
+		return ""
+	}
+	return strings.TrimSpace(owner)
+}
+
+// surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
+// a test starts, `PAUSE` and `CONT` around a parallel test's wait, and `NAME`
+// when testing switches output ownership. The space after the directive
+// closes it off from the test name, so a test's own line that merely begins
+// with one of the words (`=== PAUSED ...`) is output.
+func surveyPhaseLine(line string) bool {
+	_, _, ok := surveyPhaseParts(line)
+	return ok
+}
+
+func surveyPhaseParts(line string) (phase, owner string, ok bool) {
+	if !strings.HasPrefix(line, "=== ") {
+		return "", "", false
+	}
+	line = line[len("=== "):]
+	switch {
+	case strings.HasPrefix(line, "RUN "):
+		phase = "RUN"
+		owner = line[len("RUN "):]
+	case strings.HasPrefix(line, "PAUSE "):
+		phase = "PAUSE"
+		owner = line[len("PAUSE "):]
+	case strings.HasPrefix(line, "CONT "):
+		phase = "CONT"
+		owner = line[len("CONT "):]
+	case strings.HasPrefix(line, "NAME "):
+		phase = "NAME"
+		owner = line[len("NAME "):]
+	default:
+		return "", "", false
+	}
+	return phase, owner, strings.TrimSpace(owner) != ""
+}
+
+// surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,
+// closed by the colon `go test -v` always writes. Without the colon a line is
+// a test's own output — a printed diff's `--- expected`, or `--- FAILURE: ...`.
+var surveyTestVerdictLine = regexp.MustCompile(`^--- (?:PASS|FAIL|SKIP):`)
+
+// surveyVerdictLine matches a `go test -v` verdict line and nothing that
+// merely begins like one. The test binary prints its bare `PASS` or `FAIL`
+// verdict with nothing after it, so those are whole lines; the package verdict
+// `go test` prints is `FAIL`, a tab, the package, and a tab (`FAIL\tpkg\t1.2s`);
+// its summary is `ok`, two spaces, a tab, the package, and a tab
+// (`ok  \tpkg\t1.2s`). The package and timing after the tab are left open —
+// import paths vary — but the tabs are not: a test's own `FAIL reason`,
+// `PASS details`, or `ok  details` starts like a form without being one, and
+// stays in the block rather than ending it.
+var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok  \t[^\t]+\t`)
+
+// surveyFrameworkLine reports whether a `go test -v` log line is the
+// toolchain's own framing rather than a test's output: a phase line, a test
+// verdict, one of the binary's or `go test`'s own verdicts, or another failure
+// marker. A failure's excerpt runs until the next such line, so a test's own
+// unindented output — fmt.Println, log.Print, a child process — stays in the
+// block instead of being cut at the first line that is not indented.
+//
+// Each form is matched through the delimiter the toolchain always writes, not
+// a prefix it merely starts with. A phase line is `=== ` plus `RUN`, `PAUSE`,
+// `CONT`, or `NAME` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
+// `PASS:`, `FAIL:`, or `SKIP:` (`surveyTestVerdictLine`); and the bare binary
+// verdict plus `go test`'s package verdict and summary come from
+// `surveyVerdictLine`. The variable tail of each — the test name and time, the
+// package path and timing — stays open, because the toolchain's own text there
+// can be anything; the delimiter is what tells framing from output. `panic:`
+// alone is still a prefix: `panic: ` is the whole framing and the message
+// after it is the panic's own. An ambiguous line is kept, and the ambiguous
+// ones here all broke the same way: a test's direct fmt.Println stays
+// unindented, so `--- expected` from a printed diff, `--- FAILURE: ...`,
+// `FAIL reason`, `PASS details`, and `ok  details` were mistaken for framing
+// and cut the diagnosis out of the excerpt it exists to show. Including a
+// lookalike costs a bounded amount of context; mis-classifying one loses the
+// diagnosis.
+func surveyFrameworkLine(line string) bool {
+	return surveyPhaseLine(line) ||
+		surveyTestVerdictLine.MatchString(line) ||
+		surveyVerdictLine.MatchString(line) ||
+		surveyRedLine.MatchString(line)
 }
 
 // copyFileTo writes a whole log to w and reports whether there was anything

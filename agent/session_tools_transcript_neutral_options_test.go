@@ -105,6 +105,7 @@ func TestRegistryExecuteCallNormalizesMaterializedRetainedDefaults(t *testing.T)
 }
 
 func TestRegistryExecuteCallNormalizesStringifiedSearchContextZero(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -133,32 +134,34 @@ func TestRegistryExecuteCallNormalizesStringifiedSearchContextZero(t *testing.T)
 	}
 }
 
-func TestRegistryRejectsExplicitSessionNullRetainedOptions(t *testing.T) {
+func TestRegistryTreatsSessionNullRetainedOptionsAsAbsent(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	registered := readTranscriptTool(nil)
-	executed := false
-	registered.Exec = func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
-		executed = true
-		return "unexpected execution", nil
+	var executedArgs map[string]any
+	registered.Exec = func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		executedArgs = args
+		return "executed", nil
 	}
 	if err := reg.Register(registered); err != nil {
 		t.Fatalf("register read_transcript: %v", err)
 	}
 	for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
 		t.Run(field, func(t *testing.T) {
-			executed = false
+			executedArgs = nil
 			result := executeReadTranscriptFromRegistry(t, reg, "session-null-"+field, map[string]any{"transcript_ref": "current", field: nil})
-			if !result.IsError {
-				t.Fatalf("session %s=null succeeded: %#v", field, result)
+			if result.IsError {
+				t.Fatalf("session %s=null failed: %s", field, result.Output)
 			}
-			if executed {
-				t.Fatalf("session %s=null reached executor", field)
+			if want := map[string]any{"transcript_ref": "current"}; !reflect.DeepEqual(executedArgs, want) {
+				t.Fatalf("session %s=null executor args = %#v, want %#v", field, executedArgs, want)
 			}
 		})
 	}
 }
 
 func TestRegistryPreservesSessionRetainedOptionRejections(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := reg.Register(readTranscriptTool(nil)); err != nil {
 		t.Fatalf("register read_transcript: %v", err)
@@ -181,11 +184,11 @@ func TestRegistryPreservesSessionRetainedOptionRejections(t *testing.T) {
 }
 
 func TestSessionPreToolUseUpdatedInputNormalizesRetainedDefaultsAtExecution(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sess := newSession(t, withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	jobID := identifier.MustNewJobID(sess.ID())
@@ -212,11 +215,11 @@ func TestSessionPreToolUseUpdatedInputNormalizesRetainedDefaultsAtExecution(t *t
 }
 
 func TestSessionRetainedReadNormalizationTelemetrySurvivesFinalSchemaFailure(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sess := newSession(t, withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	jobID := identifier.MustNewJobID(sess.ID())
@@ -256,22 +259,26 @@ func TestSessionRetainedReadNormalizationTelemetrySurvivesFinalSchemaFailure(t *
 	if err := json.Unmarshal([]byte(captured.startArgs), &startArgs); err != nil {
 		t.Fatalf("unmarshal normalized start args %q: %v", captured.startArgs, err)
 	}
+	// The start event carries the model's original argument bytes (before
+	// normalization) so live display matches reload, which uses
+	// SentArguments() = the original valid-JSON bytes. The normalization
+	// itself is still recorded via ToolCallRepaired (asserted above).
 	for _, field := range []string{"output_match", "context_lines"} {
-		if _, present := startArgs[field]; present {
-			t.Fatalf("normalized start arguments retain %q: %#v", field, startArgs)
+		if _, present := startArgs[field]; !present {
+			t.Fatalf("start arguments missing original field %q: %#v", field, startArgs)
 		}
 	}
 	if got := startArgs["offset_bytes"]; got != float64(-1) {
-		t.Fatalf("normalized start arguments offset_bytes = %#v, want -1", got)
+		t.Fatalf("start arguments offset_bytes = %#v, want -1", got)
 	}
 }
 
 func TestSessionSecondPassRetainedNormalizationTelemetryAppliesFinalArgs(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sess := newSession(t, withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	jobID := identifier.MustNewJobID(sess.ID())
@@ -310,11 +317,14 @@ func TestSessionSecondPassRetainedNormalizationTelemetryAppliesFinalArgs(t *test
 	if err := json.Unmarshal([]byte(captured.startArgs), &startArgs); err != nil {
 		t.Fatalf("unmarshal normalized start args %q: %v", captured.startArgs, err)
 	}
-	if _, present := startArgs["expand_turn"]; present {
-		t.Fatalf("second-pass normalized start arguments retain expand_turn: %#v", startArgs)
+	// The start event carries the model's original argument bytes (before
+	// normalization) so live display matches reload. The normalization is
+	// still recorded via ToolCallRepaired (asserted above).
+	if _, present := startArgs["expand_turn"]; !present {
+		t.Fatalf("start arguments missing original expand_turn: %#v", startArgs)
 	}
 	if got := startArgs["offset_bytes"]; got != float64(-1) {
-		t.Fatalf("second-pass normalized start arguments offset_bytes = %#v, want -1", got)
+		t.Fatalf("start arguments offset_bytes = %#v, want -1", got)
 	}
 }
 
@@ -356,12 +366,12 @@ func executeReadTranscriptFromRegistry(t *testing.T, reg *tool.Registry, id stri
 }
 
 func TestSessionExecToolRepairsMaterializedRetainedReadDefaults(t *testing.T) {
+	t.Parallel()
 	t.Run("job defaults reach the registered executor", func(t *testing.T) {
 		stateDir := t.TempDir()
 		sess := newSession(t, withConfig(SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -422,7 +432,45 @@ func TestSessionExecToolRepairsMaterializedRetainedReadDefaults(t *testing.T) {
 	})
 }
 
+// TestSessionExecToolTreatsNullSessionOptionsAsAbsent covers #4085: a model
+// that sends an optional field as null on a session ref means to leave it out,
+// so the read must return what the omitted call returns.
+func TestSessionExecToolTreatsNullSessionOptionsAsAbsent(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	omitted := execReadTranscriptThroughSession(t, sess, "session-omitted", map[string]any{"transcript_ref": "current"})
+	if omitted.IsError {
+		t.Fatalf("omitted session read failed: %s", omitted.Output)
+	}
+	for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
+		result := execReadTranscriptThroughSession(t, sess, "session-null-"+field, map[string]any{"transcript_ref": "current", field: nil})
+		if result.IsError {
+			t.Errorf("session %s=null failed: %s", field, result.Output)
+			continue
+		}
+		if got, want := firstJSONValue(t, result.Output), firstJSONValue(t, omitted.Output); !reflect.DeepEqual(got, want) {
+			t.Errorf("session %s=null changed result:\nomitted=%#v\nnull=%#v", field, want, got)
+		}
+	}
+}
+
+// firstJSONValue decodes the read result itself. The repeat breaker appends a
+// nudge after the JSON once the same result comes back twice in a row.
+func firstJSONValue(t *testing.T, output string) any {
+	t.Helper()
+	var value any
+	if err := json.NewDecoder(strings.NewReader(output)).Decode(&value); err != nil {
+		t.Fatalf("decode read result: %v\n%s", err, output)
+	}
+	return value
+}
+
 func TestReadTranscriptCompositeInvalidJobReportsParseAndModeFields(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -445,12 +493,12 @@ func TestReadTranscriptCompositeInvalidJobReportsParseAndModeFields(t *testing.T
 }
 
 func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
+	t.Parallel()
 	t.Run("job", func(t *testing.T) {
 		stateDir := t.TempDir()
 		sess := newSession(t, withConfig(SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -589,6 +637,7 @@ func assertReadRepairChanges(t *testing.T, repaired []events.ToolCallRepairedDat
 }
 
 func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
+	t.Parallel()
 	fields := []string{"range", "expand_turn", "format", "output_match", "context_lines"}
 	tests := []struct {
 		name        string
@@ -597,7 +646,7 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 		wantPresent []string
 	}{
 		{name: "session absent", ref: "current", args: map[string]any{}},
-		{name: "session null", ref: "current", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: fields},
+		{name: "session null", ref: "current", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}},
 		{name: "session empty and defaults", ref: "current", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: fields},
 		{name: "session meaningful", ref: "current", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "job absent", ref: "job:abc", args: map[string]any{}},
@@ -627,6 +676,7 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 }
 
 func TestNormalizeRetainedReadArgsPreservesExplicitZeroOffset(t *testing.T) {
+	t.Parallel()
 	for _, ref := range []string{"job:abc", "artifact:abc"} {
 		t.Run(ref, func(t *testing.T) {
 			normalized, _ := normalizeRetainedReadArgs(map[string]any{"transcript_ref": ref, "offset_bytes": float64(0)})
@@ -649,6 +699,7 @@ func mapWithTranscriptRef(args map[string]any, ref string) map[string]any {
 }
 
 func TestRetainedReadIncompatibleArgsDiagnostics(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		kind string
@@ -684,6 +735,7 @@ func TestRetainedReadIncompatibleArgsDiagnostics(t *testing.T) {
 }
 
 func TestRetainedReadDiagnosticBoundsLongReceivedRange(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -718,6 +770,7 @@ func TestRetainedReadDiagnosticBoundsLongReceivedRange(t *testing.T) {
 }
 
 func TestArtifactExplicitFormatsRemainRejected(t *testing.T) {
+	t.Parallel()
 	for _, format := range []any{nil, "", "markdown", "outline"} {
 		if incompatible := retainedReadIncompatibleFields("artifact", map[string]any{"format": format}); len(incompatible) == 0 {
 			t.Fatalf("format %#v was accepted for artifact ref", format)

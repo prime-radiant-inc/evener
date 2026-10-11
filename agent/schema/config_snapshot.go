@@ -11,6 +11,8 @@ import "maps"
 // See the engine's SessionConfig for the authoritative semantics and defaults
 // of each field.
 type ConfigSnapshot struct {
+	MemoryProjectID             string                     `json:"memory_project_id,omitempty"`
+	DisableMemory               bool                       `json:"disable_memory,omitempty"`
 	MaxToolRoundsPerInput       int                        `json:"max_tool_rounds_per_input,omitempty"`     // tool-call rounds per ProcessInput before TURN_LIMIT
 	MaxTurns                    int                        `json:"max_turns,omitempty"`                     // lifetime cap on user inputs (0 = unlimited)
 	DefaultCommandTimeoutMS     int                        `json:"default_command_timeout_ms,omitempty"`    // default shell/exec timeout
@@ -28,7 +30,6 @@ type ConfigSnapshot struct {
 	PluginDirs                  []string                   `json:"plugin_dirs,omitempty"`                   // directories scanned for plugins
 	SystemPromptFile            string                     `json:"system_prompt_file,omitempty"`            // replacement base instruction prelude
 	SystemPromptAppend          []string                   `json:"system_prompt_append,omitempty"`          // file paths appended to the system prompt
-	NoProjectPrompts            bool                       `json:"no_project_prompts,omitempty"`            // suppress loading .evener/prompts/
 	AgentsDocPath               string                     `json:"agents_doc_path,omitempty"`               // personal AGENTS.md loaded ahead of project docs; empty resolves the process environment's config root
 	NonInteractive              bool                       `json:"non_interactive,omitempty"`               // no human available for questions/confirmation
 	TurnEndsProcess             bool                       `json:"turn_ends_process,omitempty"`             // the process exits with the turn (one-shot run), so nothing reports later

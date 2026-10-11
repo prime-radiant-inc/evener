@@ -16,28 +16,13 @@ import {
   registerTranscriptView,
   resetTranscriptViewRegistryForTests,
 } from "../panes/session/transcript/flow/transcriptViewRegistry";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import {
   initTranscriptDisplay,
   resetTranscriptDisplayStoreForTests,
   transcriptDisplayStore,
 } from "./transcriptDisplay";
-
-class MemoryStorage {
-  private values = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-  setItem(key: string, value: string): void {
-    this.values.set(key, value);
-  }
-  removeItem(key: string): void {
-    this.values.delete(key);
-  }
-  clear(): void {
-    this.values.clear();
-  }
-}
 
 class FakeBroadcastChannel {
   static instances: FakeBroadcastChannel[] = [];
@@ -100,8 +85,7 @@ function viewSnapshot(id: string): CapturedTranscriptView {
 
 beforeEach(() => {
   storage.clear();
-  // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
-  globalThis.localStorage = storage;
+  installLocalStorage(storage);
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
   resetTranscriptDisplayStoreForTests();
   resetTranscriptViewRegistryForTests();
@@ -287,38 +271,8 @@ describe("effective transcript display state", () => {
     );
     expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 4, config: preset("full") });
-    expect(transcriptDisplayStore.getState().hubError).toBe("revision conflict");
-  });
-
-  test("resolves a post-apply PATCH failure by adopting the applied value without an error", async () => {
-    // The hub already published the new revision before a follow-up durable
-    // step failed (hubcore.TranscriptDisplayPostApplyError): the write
-    // applied, so the caller must reconcile from it rather than treat the
-    // write as rejected - unlike the narrow-conflict case above, whose write
-    // never landed.
-    const client = new FakeClient("ready");
-    const confirmed = preset("tools");
-    const applied = preset("activity");
-    client.on("evener/settings/transcriptDisplay/get", () => ({
-      desktop: { revision: 1, config: confirmed },
-      mobile: { revision: 0, config: shippedMobileConfig },
-    }));
-    client.on("evener/settings/transcriptDisplay/patch", () => {
-      throw new WireError("marketplace patch applied then a follow-up step failed", -32603, {
-        evenerErrorInfo: "transcriptDisplayPostApply",
-        layout: "desktop",
-        applied: { revision: 2, config: applied },
-      });
-    });
-    connectionStore.getState().connect(client);
-    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
-    await transcriptDisplayStore.getState().refreshHubDefaults();
-    const result = await transcriptDisplayStore.getState().patchHubDefault("desktop", applied);
-    expect(result).toEqual({ revision: 2, config: applied });
-    expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
-    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: applied });
+    expect(transcriptDisplayStore.getState().hubErrors.desktop).toBe("revision conflict");
     expect(transcriptDisplayStore.getState().hubError).toBeNull();
-    expect(transcriptDisplayStore.getState().hubErrors.desktop).toBeUndefined();
   });
 
   test("ignores a stale post-apply reconciliation once a newer patch has committed", async () => {
@@ -620,6 +574,16 @@ describe("effective transcript display state", () => {
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().hubSupport).toBe("unsupported");
     expect(client.calls).toHaveLength(0);
+  });
+
+  test("a relayed change does not write hub while the section is unsupported", async () => {
+    // An older hub whose handshake omits the capability resolves to
+    // "unsupported"; a change relayed for that section must not write hub.
+    const features = { ...(await new FakeClient("idle").connect()).features, transcriptDisplaySettings: false };
+    connectionStore.setState({ features });
+    expect(transcriptDisplayStore.getState().hubSupport).toBe("unsupported");
+    transcriptDisplayStore.getState().applyHubChange({ layout: "desktop", revision: 4, config: preset("chat") });
+    expect(transcriptDisplayStore.getState().hub).toEqual({});
   });
 
   test("fences notifications from a replaced client", async () => {

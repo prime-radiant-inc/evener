@@ -175,8 +175,9 @@ func compactSessionPromptTitle(prompt string) string {
 
 // stateLabel returns the unified display word (Track A §1) for a normalized
 // state. Delegates to hubapi.StateWord so the web and the TUI can never
-// independently drift on vocabulary. askPending selects the needs-you band
-// (Track A §2); pass false where the caller has no ask-pending information.
+// independently drift on vocabulary. askPending picks the awaiting word
+// ("Question waiting" or "Needs you"); pass false where the caller has no
+// ask-pending information.
 func stateLabel(state string, askPending bool) string {
 	return hubapi.StateWord(state, askPending)
 }

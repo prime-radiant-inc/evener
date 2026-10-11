@@ -42,6 +42,7 @@ func queueOneMutation(t *testing.T, sess *Session, clientMutationID, text string
 // follows must return the claim, because the entry is already out of the input
 // queue and the only other recovery for this state runs at startup.
 func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -105,6 +106,7 @@ func TestClaimedQueuedTurnIsReturnedWhenItNeverRan(t *testing.T) {
 // refusing while the UI says "working" is the failure the session-scoped rule
 // exists to prevent -- but it must not cost the queued message.
 func TestStopIsHonestAboutAQueuedMessage(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -201,6 +203,7 @@ func (a *stopHoldAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stre
 // under the Stop's own chain, and the Stop RPC blocked until that whole turn
 // finished.
 func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := newStopHoldAdapter()
 	sess := newSession(t,
@@ -208,7 +211,6 @@ func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 		withDir(dir),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			StateDir:         dir,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}),
@@ -357,6 +359,7 @@ func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 // that had been accepted but not yet finalized could still have the queue head
 // claimed out from under it.
 func TestQueueClaimRespectsAPendingInterruptFence(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -388,6 +391,7 @@ func TestQueueClaimRespectsAPendingInterruptFence(t *testing.T) {
 // user-authored rail, park instead (kata wms7,
 // TestStopParksTheQueueAgainstBothRestartRails).
 func TestStopCancelsTheTurnAndKeepsUserWorkDurable(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -443,6 +447,7 @@ func TestStopCancelsTheTurnAndKeepsUserWorkDurable(t *testing.T) {
 // parked, visible in the queue strip, payload intact -- until the user asks
 // for it to run (kata wms7).
 func TestStopKeepsAQueuedMessageDurable(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -489,6 +494,7 @@ func TestStopKeepsAQueuedMessageDurable(t *testing.T) {
 // it AFTER the completion returns -- so the branch can report it without
 // finalizing anything. That asymmetry is the whole fix.
 func TestCompletingAClaimedTurnReportsTheStopThatEndedIt(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -534,6 +540,7 @@ func TestCompletingAClaimedTurnReportsTheStopThatEndedIt(t *testing.T) {
 // on every cancelled claim, which is the behaviour PR #74 deliberately built
 // (TestDrainableInterruptClaimsQueueHeadInOneDurableTransition).
 func TestCompletingAClaimedTurnReportsNoStopWhenNothingStoppedIt(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -552,6 +559,7 @@ func TestCompletingAClaimedTurnReportsNoStopWhenNothingStoppedIt(t *testing.T) {
 }
 
 func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -582,6 +590,7 @@ func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
 }
 
 func TestAParkedQueueDoesNotMakeTheSessionLookBusy(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -609,6 +618,7 @@ func TestAParkedQueueDoesNotMakeTheSessionLookBusy(t *testing.T) {
 }
 
 func TestSendingAgainReleasesTheParkedQueue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		release func(t *testing.T, sess *Session)
@@ -677,6 +687,7 @@ func TestSendingAgainReleasesTheParkedQueue(t *testing.T) {
 // rejected record, so a clear above them unparks the queue on a request the
 // daemon refused -- and the next wake then runs the message the user stopped.
 func TestARejectedPromoteLeavesTheQueueParked(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -702,6 +713,7 @@ func TestARejectedPromoteLeavesTheQueueParked(t *testing.T) {
 }
 
 func TestQueueHeldIsReadableWithoutCloningTheSnapshot(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if err := sess.ensureClientMutationStore(); err != nil {

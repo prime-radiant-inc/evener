@@ -1,12 +1,22 @@
 // railNodes.ts is the pure tree-shaping layer between navigation resources
-// data and the widgets/tree Tree widget: it decides row identity, nesting,
-// and (given the caller's own expand-state map) each branch's `expanded`
-// flag. No React, no fetching - Rail.tsx owns the state these functions are
-// pure functions OF (the expand-override map, the lazily-loaded archived
-// project detail map) and wires the results into <Tree>.
+// data and the widgets/tree Tree widget: it decides row identity, the
+// project/host grouping, and (given the caller's own expand-state map) each
+// branch's `expanded` flag. No React, no fetching - Rail.tsx owns the state
+// these functions are pure functions OF (the expand-override map, the
+// lazily-loaded archived project detail map, the manifest's launch sources)
+// and wires the results into <Tree>.
+//
+// Primary navigation session rows are flat and carry compact own-session
+// counters. Archived lists separately retain fork-original conversations as
+// nested session rows; delegate/job/watch detail belongs to session activity.
 
-import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
-import { projectNodeExpansionKey } from "@evener/appwire-client/state/navigation";
+import { approvalWaiting, type NavigationSessionSummary, type SessionWatch, type Source } from "@evener/appwire-client";
+import {
+  canonicalHostId,
+  orderedHosts,
+  projectHostIds as ownerHostIds,
+  projectNodeExpansionKey,
+} from "@evener/appwire-client/state/navigation";
 
 export type TreeTier = "current" | "recent" | "archived";
 
@@ -21,12 +31,10 @@ export interface RailSession extends NavigationSessionSummary {
   tier?: string;
   pin_section_id?: string;
   model?: string;
+  // Fork-only inline children from archived lists; normalized graph rows
+  // remain flat.
   children: RailSession[];
   project_key?: string;
-}
-
-export interface RailJob extends NavigationJobSummary {
-  row_id: string;
 }
 
 export interface RailProject {
@@ -50,6 +58,11 @@ export interface RailProject {
   // to this hub's own project of the same ID or path.
   sources?: string[];
   session_count?: number;
+  /** The catalog the project was listed in; its archived list is keyed by it. */
+  catalog?: "projects" | "archived_projects" | "test_runs";
+  /** The navigation summary's archived session count. A loaded archived list
+   * whose total differs is stale (rows were archived elsewhere) and refetches. */
+  archived_total?: number;
   sessions: RailSession[];
   loaded?: boolean;
   resourceError?: string;
@@ -71,37 +84,15 @@ import type { TreeNode as WidgetTreeNode } from "../../widgets";
 export interface SessionRailNode extends WidgetTreeNode {
   kind: "session";
   session: RailSession;
-  // Always a real array (never absent) - an empty array reads as "leaf" to
-  // the Tree widget exactly the same way `undefined` would (see its own
-  // hasChildrenOf), so there's no reason to carry two representations of
-  // the same "nothing to expand" case.
-  //
-  // Its current subagents, running jobs, and own live watches, followed by
-  // independent inactive-subagent and completed-job folds when either has
-  // rows (see splitChildren).
-  children: (
-    | SessionRailNode
-    | JobRailNode
-    | WatchRailNode
-    | InactiveFoldRailNode
-    | CompletedJobsFoldRailNode
-    | OverflowRailNode
-  )[];
-}
-
-export interface JobRailNode extends WidgetTreeNode {
-  kind: "job";
-  job: RailJob;
-  active: boolean;
-}
-
-/** One of a session's own live watches, as a quiet leaf row in that
- * session's fold-out. Mirrors JobRailNode: it carries no children and no
- * rail-side state of its own - the wire row ("active", cadence, note) is the
- * whole truth RailRow renders. */
-export interface WatchRailNode extends WidgetTreeNode {
-  kind: "watch";
-  watch: NavigationWatchSummary;
+  // Archived rows may disclose fork originals; other session rows are leaves.
+  children: RailNode[];
+  // Set only on the ROOT rows of a flat cross-project tier - the ones
+  // sessionNodes builds (Live, Needs-you, Pinned): those rows name their
+  // project and suppress the pin star, wherever host grouping nests them.
+  // RailRow reads this mark instead of nesting depth: host subheaders put
+  // tier roots at depth 1, where project rows sit too, so depth no longer
+  // separates the two shapes.
+  crossProjectTier?: boolean;
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -119,26 +110,40 @@ export interface ProjectRailNode extends WidgetTreeNode {
   children: RailNode[];
   resourceError?: string;
   retry?: () => void;
+  // The host a row's launch affordances target, not this hub: the host a
+  // "Host, then project" copy nests under, or the first owning host in
+  // rail order on every row that renders a project's own shape
+  // (project-first, flat, test-runs, and the archived tiers). The
+  // builder's no-sources call leaves it absent: that call is for
+  // callers with no manifest to read.
+  spawnHost?: string;
+  // True on the ONE row that renders the project's aggregate facts - the
+  // overflow row and the rollup signal/badge - so they read once instead of
+  // claiming per-host counts the wire does not carry: every row that
+  // renders a project's own shape (flat, project-first, test-runs,
+  // the archived tiers), or the first rows-bearing copy in rail order in
+  // host-first. A hostless row (the builder's no-sources call) still reads
+  // its aggregate role from that absence.
+  canonicalCopy?: boolean;
 }
 
 export interface LoadingRailNode extends WidgetTreeNode {
   kind: "loading";
 }
 
-/** The "Inactive subagents (N)" disclosure one parent gets for its own
- * finished children (parity-m3-sidebar-tree.md §3). A synthetic branch: it
- * has no session of its own, only the count it hides and the rows behind
- * it. */
-export interface InactiveFoldRailNode extends WidgetTreeNode {
-  kind: "inactiveFold";
-  count: number;
-  children: (SessionRailNode | OverflowRailNode)[];
-}
-
-export interface CompletedJobsFoldRailNode extends WidgetTreeNode {
-  kind: "completedJobsFold";
-  count: number;
-  children: JobRailNode[];
+/** One configured host as a tree group - the rail's organize-by setting.
+ * Hosts are the top groups in "host, then project" mode, a sub-branch inside
+ * each project in "project, then host" mode, and the Live section's
+ * subheaders whenever its rows span more than one host. Carries no rollup
+ * of its own: the rows under it keep their own signals, and an honest
+ * per-host attention count would need wire support the manifest does not
+ * carry. */
+export interface HostRailNode extends WidgetTreeNode {
+  kind: "host";
+  // The manifest's own facts for this host: its display label (the one name
+  // the spawn picker shows too) and its display-view online flag.
+  host: { id: string; label: string; online: boolean };
+  children: RailNode[];
 }
 
 export interface OverflowPage {
@@ -153,23 +158,12 @@ export interface OverflowPage {
 
 /** A quiet "+N older" note standing for the rows the server capped away
  * (hubcore's maxSidebarSessionsPerTier, 50 per tier). Project overflow rows
- * carry the tier offsets needed to reveal those rows; synthetic child folds
- * leave pages empty because their omitted children are not project pages.
- *
- * A capped WATCH list reuses this same row shape (see MAX_INLINE_WATCHES) with
- * `suffix` set, so "+N more watches" reads in the rail's one existing overflow
- * grammar instead of inventing a second one. */
+ * carry the tier offsets needed to reveal those rows; a section's overflow
+ * carries its page descriptor the same way. */
 export interface OverflowRailNode extends WidgetTreeNode {
   kind: "overflow";
   count: number;
   pages: OverflowPage[];
-  /** The wording after the count. Absent means the tier cap's "older". */
-  suffix?: string;
-  /** True when the row stands for rows that cannot be revealed by a fetch
-   * (the local watch cap: the wire already carried every row). Such a row is a
-   * count, not a control: nothing activates it. Tier and catalog overflow rows
-   * leave this false and reveal their next page on activation. */
-  passive?: boolean;
 }
 
 export function sectionOverflowNode(
@@ -202,29 +196,22 @@ export function catalogOverflowNode(
   return overflowNode(id, remaining, [{ catalog, offset, limit }]);
 }
 
-export type RailNode =
-  | SessionRailNode
-  | JobRailNode
-  | WatchRailNode
-  | ProjectRailNode
-  | LoadingRailNode
-  | InactiveFoldRailNode
-  | CompletedJobsFoldRailNode
-  | OverflowRailNode;
+export type RailNode = SessionRailNode | ProjectRailNode | HostRailNode | LoadingRailNode | OverflowRailNode;
 
-type SessionNodeCacheEntry = Readonly<{
-  children: SessionRailNode["children"];
-  expanded: boolean;
-  value: SessionRailNode;
-}>;
 type ProjectNodeCacheEntry = Readonly<{
   children: RailNode[];
   displayName: string | undefined;
   expanded: boolean;
+  // Absent on every variant a host-grouped copy is not (see
+  // ProjectRailNode.spawnHost); compared as undefined against those.
+  spawnHost?: string;
+  canonicalCopy?: boolean;
   value: ProjectRailNode;
 }>;
-const sessionChildrenCache = new WeakMap<object, WeakMap<IsExpanded, SessionRailNode["children"]>>();
-const sessionNodeCache = new WeakMap<object, WeakMap<IsExpanded, SessionNodeCacheEntry>>();
+const sessionNodeCache = new WeakMap<object, SessionRailNode>();
+// The crossProjectTier variant of sessionNodeCache, kept apart so one tier
+// shape's node can never serve the other (see toSessionNode).
+const crossProjectSessionNodeCache = new WeakMap<object, SessionRailNode>();
 const projectChildrenCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, RailNode[]>>>();
 const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, ProjectNodeCacheEntry>>>();
 
@@ -232,22 +219,16 @@ const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, Pro
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
 // and a hydrated archived project shows all three.
-function overflowNode(
-  id: string,
-  count: number,
-  pages: OverflowPage[] = [],
-  suffix?: string,
-  passive = false,
-): OverflowRailNode[] {
-  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, suffix, passive }] : [];
+function overflowNode(id: string, count: number, pages: OverflowPage[] = []): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages }] : [];
 }
 
-function tierOverflow(p: RailProject, tiers: ("current" | "recent" | "archived")[]): number {
+function tierOverflow(p: RailProject, tiers: readonly ("current" | "recent" | "archived")[]): number {
   const field = { current: p.more_current, recent: p.more_recent, archived: p.more_archived };
   return tiers.reduce((sum, t) => sum + (field[t] ?? 0), 0);
 }
 
-function tierOverflowPages(p: RailProject, tiers: TreeTier[]): OverflowPage[] {
+function tierOverflowPages(p: RailProject, tiers: readonly TreeTier[]): OverflowPage[] {
   const fields = { current: p.more_current, recent: p.more_recent, archived: p.more_archived };
   return tiers.flatMap((tier) => {
     const count = fields[tier] ?? 0;
@@ -256,6 +237,7 @@ function tierOverflowPages(p: RailProject, tiers: TreeTier[]): OverflowPage[] {
       {
         projectKey: p.key,
         tier,
+        ...(tier === "archived" && p.catalog ? { catalog: p.catalog } : {}),
         offset: p.nextOffsets?.[tier] ?? p.sessions.filter((n) => (n.tier ?? "current") === tier).length,
         limit: Math.min(count, 50),
       },
@@ -263,7 +245,7 @@ function tierOverflowPages(p: RailProject, tiers: TreeTier[]): OverflowPage[] {
   });
 }
 
-function projectOverflowNode(id: string, p: RailProject, tiers: TreeTier[]): OverflowRailNode[] {
+function projectOverflowNode(id: string, p: RailProject, tiers: readonly TreeTier[]): OverflowRailNode[] {
   return overflowNode(id, tierOverflow(p, tiers), tierOverflowPages(p, tiers));
 }
 
@@ -283,320 +265,142 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
   return (id, defaultExpanded) => overrides.get(id) ?? defaultExpanded;
 }
 
-// The states that make a subagent CURRENT - something you might still be
-// supervising. Everything else (idle, ended, closed, errored, and any future
-// terminal state) is settled and folds away. Written as the positive list
-// because that is the side worth being conservative about: an unrecognized
-// state folding is a row one click away, while an unrecognized state
-// rendering inline forever is the clutter this exists to remove.
-//
-// "errored" folds with the rest, deliberately, even though the rail treats
-// `failed` as a signal state elsewhere: terminal is terminal, matching the
-// htmx UI this replaced (parity-m3-sidebar-tree.md §3).
-//
-// "idle" folds too: since sessions stopped closing on provider failure
-// (ff859dbbe), a finished child rests open at idle indefinitely, so an idle
-// child is settled work - it would otherwise sit in the current list forever.
-// A child that picks work back up (a drive turn, job_send) reports active and
-// surfaces again.
+/** A session rail row reads its own compact receiver count, never descendants. */
+export function activeWatchCount(node: NavigationSessionSummary): number {
+  return node.armed_watch_count ?? 0;
+}
+
+/** Counts armed states among the supplied domain rows. */
+export function armedWatchCount(watches: readonly SessionWatch[] | undefined): number {
+  return (watches ?? []).filter((watch) => watch.state === "armed").length;
+}
+
+/** Compact summary totals include retained and armed watches independently. */
+export function watchCountLabel(armed: number, total: number): string {
+  const label = `${total} watch${total === 1 ? "" : "es"}`;
+  return total === armed ? label : `${label} · ${armed} armed`;
+}
+
+// The states a subagent still has live work in, read through displayState
+// (approval_pending displays as "awaiting"). The same set marks every level:
+// a subagent is current when its own state is here, when it has a running
+// job, or when any descendant is current by this same rule - so an idle
+// subagent whose child awaits the user never folds as "inactive".
 const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
   "active",
   "awaiting",
   "warning",
   "restartRequired",
   "notLoaded",
+  // Not "done" in the fold's sense: a failed subagent needs the user (its
+  // row paints danger), and warning - the less severe signal - is current.
+  "errored",
 ]);
 
-// Namespaced the same way projectNodeExpansionKey is, and off the PARENT's row_id, so
-// every parent's fold is its own key at every nesting depth - expanding one
-// never opens another's.
-function inactiveFoldId(parentRowID: string): string {
-  return `inactive:${parentRowID}`;
+// The wire's children carry fork originals (kind "fork") beside subagents -
+// the rail renders those as nested session rows, and the activity surfaces
+// count and list agents only.
+export function subagentChildrenOf(session: NavigationSessionSummary): NavigationSessionSummary[] {
+  return (session.children ?? []).filter((child) => child.kind === "subagent");
 }
 
-function completedJobsFoldId(parentRowID: string): string {
-  return `completed-jobs:${parentRowID}`;
+// The activity sidebar's Agents tab splits its scope's children on this; the
+// rail itself no longer does (its rows follow the wire's order below). Reads
+// displayState, not the raw wire state: approval_pending displays as
+// "awaiting" (the rail's needs-you badge counts it), so a blocked subagent
+// is current here too, never folded as inactive about the same node.
+export function subagentIsCurrent(child: NavigationSessionSummary): boolean {
+  if (CURRENT_SUBAGENT_STATES.has(displayState(child))) return true;
+  if ((child.running_job_count ?? 0) > 0) return true;
+  return child.children.some(subagentIsCurrent);
 }
 
-function toJobNode(parent: RailSession, job: NavigationJobSummary): JobRailNode {
-  const rowID = `job:${parent.row_id}:${job.job_id}`;
-  return {
-    id: rowID,
-    kind: "job",
-    job: { ...job, row_id: rowID },
-    active: false,
-    children: [],
-  };
-}
-
-function activeJobNode(parent: RailSession, job: NavigationJobSummary): JobRailNode {
-  return { ...toJobNode(parent, job), active: true };
-}
-
-/** Watch rows a session renders inline before the rest fold behind one
- * "+N more watches" note. Three keeps a fold-out scannable in the rail's
- * ~280px column; past that the watches are inventory, and the count on the
- * summary line is the honest summary of them. */
-const MAX_INLINE_WATCHES = 3;
-
-// Namespaced off the PARENT's row_id like the job rows are, so two sessions
-// carrying a same-id watch (each the watch's own receiver) still get distinct
-// tree ids.
-function toWatchNode(parent: RailSession, watch: NavigationWatchSummary): WatchRailNode {
-  const rowID = `watch:${parent.row_id}:${watch.id}`;
-  return { id: rowID, kind: "watch", watch, children: [] };
-}
-
-function watchOverflowId(parentRowID: string): string {
-  return `watches:${parentRowID}`;
-}
-
-/** How many of a session's OWN live watches are still armed. Deliberately not
- * a subtree rollup: the hub projects each watch onto exactly the summary of
- * the session that receives it (navigation_projection.go's navigationWatches),
- * so summing descendants here would print a subagent's watch on every ancestor
- * row as well as on the subagent's own - one watch, several counts. A receiver
- * watch belongs to the session whose summary carries it. */
-export function activeWatchCount(node: RailSession): number {
-  // Include the armed rows the hub omitted: past the per-session cap they are
-  // not on `node.watches`, but they are still this session's armed watches, and
-  // counting only the retained rows understates the total.
-  return armedWatchCount(node.watches) + (node.omitted_armed_watches ?? 0);
-}
-
-/** The same count read straight off the wire list, so the activity panel's
- * Watches header and the rail row's count cannot drift apart: both numbers are
- * one predicate, not two copies of one. */
-export function armedWatchCount(watches: readonly NavigationWatchSummary[] | undefined): number {
-  return (watches ?? []).filter((watch) => watch.active).length;
-}
-
-/** The session's summary-line watch count. It reports ONE total per session -
- * the retained rows the fold-out lists plus the exact number of rows the
- * projector omitted (a session above its per-session cap, or rows its byte
- * fitter shed) as "+N more" - so the summary and the fold-out hanging under it
- * cannot disagree about how many watches the session holds.
- *
- * When every retained row is armed the base is the armed count, byte-identical
- * to the wording that shipped before the retained/inactive distinction existed
- * (`1 watch`, `2 watches · +1 more`). When a retained row is inactive - a fired
- * one-shot whose teardown is still pending projects inactive - the base is the
- * retained total and the armed count stays visible beside it
- * (`5 watches · 2 armed`, `5 watches · 2 armed · +3 more`), because the
- * summary's number must match the fold-out that shows all of them.
- *
- * `armed` is the session's TRUE armed total (activeWatchCount), so it already
- * includes armed rows the hub omitted. Whenever rows were omitted the figure is
- * labelled `N armed total`, because the retained rows alone cannot say what
- * covers the hidden ones - and the label must never understate the session's
- * armed watches. */
-export function watchCountLabel(armed: number, retained: number, omitted: number): string {
-  if (omitted > 0) {
-    // The byte fitter can shed every retained row, and a leading "0 watches"
-    // would then contradict the totals beside it: the session does hold watches,
-    // the hub just could not fit a single row. Dropping the base count there
-    // matches what the panel's own watch header says in the same case.
-    const total = `${armed} armed total · +${omitted} more`;
-    return retained === 0 ? total : `${retained} watch${retained === 1 ? "" : "es"} · ${total}`;
-  }
-  const retainedLabel = `${retained} watch${retained === 1 ? "" : "es"}`;
-  return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
-}
-
-function subagentIsCurrent(child: RailSession): boolean {
-  const activity = activeWorkSummary(child);
-  return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;
-}
-
-// Splits one parent's children into the rows that render inline and the
-// single fold node carrying the rest. Both sides keep their incoming order,
-// and the fold always lands last, so a parent's live work stays at the top of
-// its own subtree.
-//
-// A CLUSTER row is exempt. hubcore's repeated-title clustering (tree.go's
-// clusterable) only ever folds idle/ended sessions, so every member of a
-// cluster is terminal by construction - splitting on state here would put
-// every cluster's entire membership behind a second fold inside it, labelled
-// "Inactive subagents" for rows that are neither inactive-in-that-sense nor
-// subagents. A cluster is already a disclosure; its members are ordinary
-// top-level sessions (parity-m3-sidebar-tree.md §3).
-function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRailNode["children"] {
-  const cached = sessionChildrenCache.get(parent as object)?.get(isExpanded);
+// One session summary, one leaf row. The row's identity is the session
+// object itself: an unchanged summary keeps its node across renders (RailRow
+// memoizes on node identity), a fresh summary mints a fresh node. No
+// expansion state: there is nothing under the row to expand into.
+function toSessionNode(n: RailSession, crossProjectTier = false): SessionRailNode {
+  const cache = crossProjectTier ? crossProjectSessionNodeCache : sessionNodeCache;
+  const cached = cache.get(n as object);
   if (cached) return cached;
-  const current: SessionRailNode[] = [];
-  const inactive: SessionRailNode[] = [];
-  if (parent.kind === "cluster") {
-    const children = parent.children.map((c) => toSessionNode(c, isExpanded));
-    cacheSessionChildren(parent, isExpanded, children);
-    return children;
-  }
-  for (const child of parent.children) {
-    (subagentIsCurrent(child) ? current : inactive).push(toSessionNode(child, isExpanded));
-  }
-  const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
-  const children: SessionRailNode["children"] = [
-    ...current,
-    ...(parent.running_jobs ?? []).map((job) => activeJobNode(parent, job)),
-  ];
-  // The session's own live watches, after running work: an armed watch is
-  // pending, not happening, so it reads below the things currently running.
-  // Every row the wire sent stays reachable - the inline cap only hides the
-  // tail behind a count, it never drops it. The count also carries the rows the
-  // hub projector omitted (over the per-session cap, or shed by its byte
-  // fitter), which the summary line already reports as "+N more": a fold-out
-  // that ignored them would contradict the row it hangs under.
-  const watches = parent.watches ?? [];
-  const inlineWatches = watches.slice(0, MAX_INLINE_WATCHES);
-  children.push(...inlineWatches.map((watch) => toWatchNode(parent, watch)));
-  const hiddenWatches = watches.length - inlineWatches.length + (parent.omitted_watches ?? 0);
-  if (hiddenWatches > 0) {
-    children.push(
-      // The cap is local to the rail: the wire already carried every retained
-      // watch, and the omitted rows the hub dropped have no page to fetch
-      // either. The row is an honest count, not a control.
-      ...overflowNode(watchOverflowId(parent.row_id), hiddenWatches, [], "more watches", true),
-    );
-  }
-  if (inactiveCount > 0) {
-    const id = inactiveFoldId(parent.row_id);
-    const omitted = overflowNode(id, parent.more_subagents ?? 0);
-    children.push({
-      id,
-      kind: "inactiveFold",
-      count: inactiveCount,
-      expanded: isExpanded(id, false),
-      children: [...inactive, ...omitted],
-    });
-  }
-  const completedJobs = parent.completed_jobs ?? [];
-  if (completedJobs.length > 0) {
-    const id = completedJobsFoldId(parent.row_id);
-    children.push({
-      id,
-      kind: "completedJobsFold",
-      count: completedJobs.length,
-      expanded: isExpanded(id, false),
-      children: completedJobs.map((job) => toJobNode(parent, job)),
-    });
-  }
-  cacheSessionChildren(parent, isExpanded, children);
-  return children;
-}
-
-function cacheSessionChildren(
-  parent: RailSession,
-  isExpanded: IsExpanded,
-  children: SessionRailNode["children"],
-): void {
-  let entries = sessionChildrenCache.get(parent as object);
-  if (!entries) {
-    entries = new WeakMap();
-    sessionChildrenCache.set(parent as object, entries);
-  }
-  entries.set(isExpanded, children);
-}
-
-function toSessionNode(n: RailSession, isExpanded: IsExpanded): SessionRailNode {
-  const expanded = isExpanded(n.row_id, false);
-  const children = splitChildren(n, isExpanded);
-  const cached = sessionNodeCache.get(n as object)?.get(isExpanded);
-  if (cached && cached.expanded === expanded && cached.children === children) return cached.value;
-  const result: SessionRailNode = {
-    id: n.row_id,
-    kind: "session",
-    session: n,
-    expanded,
-    children,
-  };
-  let entries = sessionNodeCache.get(n as object);
-  if (!entries) {
-    entries = new WeakMap();
-    sessionNodeCache.set(n as object, entries);
-  }
-  entries.set(isExpanded, { children, expanded, value: result });
+  const result: SessionRailNode = crossProjectTier
+    ? { id: n.row_id, kind: "session", session: n, children: [], crossProjectTier: true }
+    : { id: n.row_id, kind: "session", session: n, children: [] };
+  cache.set(n as object, result);
   return result;
 }
 
-/** Builds rail nodes for a flat, childless-at-this-level session list - the
- * Needs-you, Live, and Pinned tiers, each of which is just TreeNode[] on
- * the wire. A session can still recurse into its own children (subagent
- * clusters), handled by toSessionNode regardless of which tier it's in. */
-export function sessionNodes(nodes: readonly RailSession[], isExpanded: IsExpanded): SessionRailNode[] {
-  return nodes.map((n) => toSessionNode(n, isExpanded));
+// Expansion callbacks are immutable snapshots, so each disclosure state gets
+// its own memoized archived tree while unchanged rows retain widget identity.
+const archivedSessionNodeCache = new WeakMap<RailSession, WeakMap<IsExpanded, SessionRailNode>>();
+function toArchivedSessionNode(session: RailSession, isExpanded: IsExpanded): SessionRailNode {
+  const originals = session.children.filter((child) => child.kind === "fork");
+  if (originals.length === 0) return toSessionNode(session);
+  let entries = archivedSessionNodeCache.get(session);
+  const cached = entries?.get(isExpanded);
+  if (cached) return cached;
+  const node: SessionRailNode = {
+    id: session.row_id,
+    kind: "session",
+    session,
+    expanded: isExpanded(session.row_id, false),
+    children: originals.map((child) => toArchivedSessionNode(child, isExpanded)),
+  };
+  if (!entries) {
+    entries = new WeakMap();
+    archivedSessionNodeCache.set(session, entries);
+  }
+  entries.set(isExpanded, node);
+  return node;
 }
 
-export function pinSectionNodes(section: RailPinSection, isExpanded: IsExpanded): SessionRailNode[] {
-  return sessionNodes(section.sessions, isExpanded);
+/** Builds rail nodes for a flat session list - the Needs-you, Live, and
+ * Pinned tiers, each of which is just TreeNode[] on the wire.
+ * Every row this returns is the root of a cross-project tier, so each one
+ * carries the crossProjectTier mark - host grouping nests these rows under
+ * subheaders, and the mark is how RailRow keeps telling a tier root from a
+ * project-nested row. */
+export function sessionNodes(nodes: readonly RailSession[]): SessionRailNode[] {
+  return nodes.map((n) => toSessionNode(n, true));
 }
 
 export function pinSectionDisclosureID(sectionID: string): string {
   return `pinsection:${sectionID}`;
 }
 
-// Inlined rather than imported from RailRow's cadenceStateFor: importing it
-// here would cycle railNodes.ts <-> RailRow.tsx (RailRow already imports
-// railNodes for its node types). Same two wire states RailRow's own
-// cadenceStateFor maps to Cadence's "needs-you" family.
+// The data projection uses the same needs-you family as
+// shell/SessionStatusIndicator.tsx without importing the UI renderer.
 function stateNeedsYou(state: string): boolean {
   return state === "awaiting" || state === "warning" || state === "restartRequired";
 }
 
-// The state a row PRESENTS, which is not always the wire state. "awaiting"
-// means "the turn ended; the next input comes from this session's owner" -
-// and a subagent's owner is its PARENT session, not the user (the user never
-// steers a subagent directly). So a turn-ended subagent is, on this triage
-// surface, simply idle: glossing it "your move" made every finished delegate
-// read as attention it does not need. Only a genuine ask_user (ask_pending)
-// keeps a subagent needs-you, because that question does reach the user.
-// Every per-node attention judgment (the row's dot and gloss in RailRow, the
-// badge count and sort below) reads this one helper, so they can never
-// disagree about the same row.
-export function displayState(node: RailSession): string {
-  if (node.kind === "subagent" && node.state === "awaiting" && node.ask_pending !== true) return "idle";
+// The state a row PRESENTS, which is not always the wire state. A row waiting
+// on an approval presents as needs-you from any state but a failure: the
+// escalation blocks its turn mid-tool, so the wire state stays "active"
+// (approvalWaiting). Every per-node attention judgment
+// (the row's dot and gloss in RailRow, the badge count, the working count and
+// the sort below, the palette's needs-you dots) reads this one helper, so
+// they can never disagree about the same row.
+export function displayState(node: Pick<NavigationSessionSummary, "state" | "approval_pending">): string {
+  if (approvalWaiting(node.state, node.approval_pending === true)) return "awaiting";
   return node.state;
 }
 
-/** Count of nodes in `node.children` (recursed through the whole subtree,
- * not just direct children) whose own state is needs-you - i.e. how many
- * things under this session need attention, excluding the node itself.
- * Backs both the session row's derived attention Badge (vbh8, §2.2) and
- * the needs-you-first sort below. */
-export function needsYouDescendantCount(node: RailSession): number {
-  return node.children.reduce(
-    (sum, c) => sum + (stateNeedsYou(displayState(c)) ? 1 : 0) + needsYouDescendantCount(c),
-    0,
-  );
-}
-
 export interface ActiveWorkSummary {
-  workingSubagents: number;
   runningJobs: number;
 }
 
 export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
-  let workingSubagents = 0;
-  let runningJobs = (node.running_jobs ?? []).length;
+  let runningJobs = node.running_job_count ?? 0;
   for (const child of node.children) {
-    const childActivity = activeWorkSummary(child);
-    workingSubagents += (child.state === "active" ? 1 : 0) + childActivity.workingSubagents;
-    runningJobs += childActivity.runningJobs;
+    runningJobs += activeWorkSummary(child).runningJobs;
   }
-  return { workingSubagents, runningJobs };
+  return { runningJobs };
 }
 
-export function runningJobCount(node: RailSession): number {
-  return activeWorkSummary(node).runningJobs;
-}
-
-export function workingDescendantCount(node: RailSession): number {
-  return activeWorkSummary(node).workingSubagents;
-}
-
-// A session "wants you" either directly (its own state) or transitively (a
-// needs-you descendant) - either way it should sort ahead of a quiet
-// sibling within the same project.
+// The session's own attention state determines its position in the compact rail.
 function sessionWantsYou(n: RailSession): boolean {
-  return stateNeedsYou(displayState(n)) || needsYouDescendantCount(n) > 0;
+  return stateNeedsYou(displayState(n));
 }
 
 // Namespaced so a project branch's own id can never collide with a
@@ -640,92 +444,483 @@ export function projectDisplayLabels(projects: readonly RailProject[]): Map<stri
   return labels;
 }
 
-// True when `nodes` (a project's session list or a tier) contains a session
-// with `ref`, recursing into subagent-cluster children.
-function sessionListHasRef(nodes: RailSession[], ref: string): boolean {
-  return nodes.some((n) => n.ref === ref || sessionListHasRef(n.children, ref));
-}
-
-/** The ref of the TOP-LEVEL session `ref` sits under - itself when it is
- * already top-level, or null when it is not in `projects` at all (a tier-only
- * entry, or an archived stub whose sessions have not been hydrated).
- *
- * A subagent opens beside the session that spawned it, and "the session that
- * spawned it" means the top-level row, not the immediate parent: a
- * three-deep subagent still belongs beside the one row that owns the whole
- * task tree. See docs/web-ui/specs/2026-07-26-subagent-opens-beside-main.md
- * §B. */
-export function topLevelAncestorRef(projects: readonly RailProject[], ref: string): string | null {
-  // A CLUSTER row is a repeated-title grouping, not the owner of a task tree:
-  // its members are ordinary top-level sessions that happen to share a title,
-  // and its own ref is synthetic (a SHA of project + title) naming no session
-  // at all. So the search descends THROUGH it and treats its members as the
-  // top-level rows they are - reporting the cluster instead would name a
-  // "parent" that cannot be opened.
-  const tops = (project: RailProject): RailSession[] =>
-    project.sessions.flatMap((n) => (n.kind === "cluster" ? n.children : [n]));
-  for (const project of projects) {
-    for (const top of tops(project)) {
-      if (top.ref === ref || sessionListHasRef(top.children, ref)) return top.ref;
-    }
-  }
-  return null;
-}
-
-/** The projectnode: id of the project (or test-run) whose sessions include
- * `ref`, or null when `ref` is a top-level tier entry (needs-you/live/pinned)
- * or lives in an unloaded archived stub - i.e. nothing to un-collapse before
- * scrolling. Rail's reveal effect (railController's /project) uses this to
- * expand the right project section, matching the id projectNodes assigns. */
-export function projectNodeIdForSessionRef(projects: readonly RailProject[], ref: string): string | null {
-  for (const project of projects) {
-    if (sessionListHasRef(project.sessions, ref)) return projectNodeExpansionKey(project.key);
-  }
-  return null;
-}
-
 /** Builds rail nodes for the Projects and Test-runs tiers: both are
  * TreeProject[] on the wire, both ship their sessions inline (no lazy
  * load - only archived-project stubs omit sessions; see
  * cmd/evener-hub/web_api_tree.go's apiTreeProject doc comment), so both use
  * this same builder. Sessions sort needs-you-first (vbh8, §2.2) - a stable
  * partition (Array.prototype.sort is stable in the target engines), so
- * sessions that don't need you keep their incoming relative order. */
-export function projectNodes(projects: readonly RailProject[], isExpanded: IsExpanded): ProjectRailNode[] {
+ * sessions that don't need you keep their incoming relative order.
+ *
+ * With sources the rows name their launch host, so a remote-owned
+ * project's "+" cannot fall back to this hub
+ * whatever the grouping, and a local project's launch always names this
+ * hub (a spawn draft left on a remote host cannot survive the click) -
+ * every tier in the rail passes its display sources. Without them the row
+ * stays hostless - the builder's contract for callers with no manifest
+ * to read. */
+export function projectNodes(
+  projects: readonly RailProject[],
+  isExpanded: IsExpanded,
+  sources?: readonly Source[],
+): ProjectRailNode[] {
+  return projectNodesWith(
+    projects,
+    isExpanded,
+    sources ? `active:${sourcesSignature(sources)}` : "active",
+    (p, id) => activeChildren(p, id),
+    sources ? (p) => projectLaunchHost(p, sources) : undefined,
+    sources !== undefined,
+  );
+}
+
+/** The shared shape of the flat and project-first builders: one cached node
+ * per (project, isExpanded, variant), so switching the rail's grouping keeps
+ * each variant's rows referentially stable. `childrenFor` is the single place
+ * a variant differs. Host-first's per-host copies (hostProjectCopyNode) do
+ * the same cache dance by hand because both their ids and their cache
+ * variants vary per host. */
+function projectNodesWith(
+  projects: readonly RailProject[],
+  isExpanded: IsExpanded,
+  variant: string,
+  childrenFor: (p: RailProject, id: string) => RailNode[],
+  spawnHostFor?: (p: RailProject) => string | undefined,
+  canonicalRow = false,
+): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
     const id = projectNodeExpansionKey(p.key);
     const expanded = isExpanded(id, p.default_expanded ?? false);
-    const displayName = labels.get(p.key);
-    const children = projectChildren(p, isExpanded, "active", () =>
-      p.sessions.length === 0 && p.loaded !== true && (p.session_count ?? 0) > 0
-        ? [{ id: `${id}:loading`, kind: "loading" as const }]
-        : [
-            ...p.sessions
-              .filter((n) => !isArchivedTier(n))
-              .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
-              .map((n) => toSessionNode(n, isExpanded)),
-            ...projectOverflowNode(id, p, ["current", "recent"]),
-          ],
-    );
-    const cached = projectNodeCache
-      .get(p as object)
-      ?.get(isExpanded)
-      ?.get("active");
-    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded)
-      return cached.value;
-    const result: ProjectRailNode = {
+    const children = projectChildren(p, isExpanded, variant, () => childrenFor(p, id));
+    const spawnHost = spawnHostFor?.(p);
+    return cachedProjectNode(p, isExpanded, variant, {
       id,
-      kind: "project",
-      project: p,
-      resourceError: p.resourceError,
-      displayName,
+      displayName: labels.get(p.key),
       expanded,
       children,
-    };
-    cacheProjectNode(p, isExpanded, "active", { children, displayName, expanded, value: result });
-    return result;
+      ...(spawnHost === undefined ? {} : { spawnHost }),
+      ...(canonicalRow ? { canonicalCopy: true } : {}),
+    });
   });
+}
+
+/** The cached-node dance every project row does: identity is keyed by
+ * (project, isExpanded, variant) so unchanged rows keep their object across
+ * renders (RailRow memoizes on node identity) while a changed expansion or
+ * children list produces a fresh node. */
+function cachedProjectNode(
+  p: RailProject,
+  isExpanded: IsExpanded,
+  variant: string,
+  fields: {
+    id: string;
+    displayName: string | undefined;
+    expanded: boolean;
+    children: RailNode[];
+    spawnHost?: string;
+    canonicalCopy?: boolean;
+  },
+): ProjectRailNode {
+  const cached = projectNodeCache
+    .get(p as object)
+    ?.get(isExpanded)
+    ?.get(variant);
+  if (
+    cached &&
+    cached.children === fields.children &&
+    cached.displayName === fields.displayName &&
+    cached.expanded === fields.expanded &&
+    cached.spawnHost === fields.spawnHost &&
+    cached.canonicalCopy === fields.canonicalCopy
+  )
+    return cached.value;
+  const result: ProjectRailNode = {
+    id: fields.id,
+    kind: "project",
+    project: p,
+    resourceError: p.resourceError,
+    displayName: fields.displayName,
+    expanded: fields.expanded,
+    children: fields.children,
+    ...(fields.spawnHost === undefined ? {} : { spawnHost: fields.spawnHost }),
+    ...(fields.canonicalCopy === true ? { canonicalCopy: true } : {}),
+  };
+  cacheProjectNode(p, isExpanded, variant, { ...fields, value: result });
+  return result;
+}
+
+/** True while a project promises rows (session_count > 0) but has shipped
+ * none and no page fetch has marked it loaded: its tier renders the loading
+ * placeholder rather than an empty branch. */
+function projectIsLoading(p: RailProject): boolean {
+  return p.sessions.length === 0 && p.loaded !== true && (p.session_count ?? 0) > 0;
+}
+
+/** A project's active-tier session rows in the needs-you-first order every
+ * tier uses. `hostId` narrows to one host's rows for the grouped variants;
+ * the filter copies before sorting, so the sort never touches the
+ * project's own list. */
+function activeSessionNodes(p: RailProject, hostId?: string): SessionRailNode[] {
+  return p.sessions
+    .filter((n) => !isArchivedTier(n) && (hostId === undefined || n.host_id === hostId))
+    .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
+    .map((n) => toSessionNode(n));
+}
+
+/** The envelope every active-tier children list shares: the loading
+ * placeholder while a project's rows have not loaded, else the variant's
+ * own rows followed by the overflow that can reveal more. `id` is the
+ * caller's own node id, so a grouped copy's placeholder and overflow rows
+ * re-id under the copy and two copies of one project never share a node id.
+ * `tiers` picks which hidden-row counts the overflow reports; an empty list
+ * renders no overflow at all (a host copy that is not its project's
+ * overflow carrier, see hostProjectNodes). */
+function activeTierChildren(
+  p: RailProject,
+  id: string,
+  rowsFor: () => RailNode[],
+  tiers: readonly TreeTier[] = ["current", "recent"],
+): RailNode[] {
+  if (projectIsLoading(p)) return [{ id: `${id}:loading`, kind: "loading" as const }];
+  return [...rowsFor(), ...projectOverflowNode(id, p, tiers)];
+}
+
+/** One project's active-tier session rows (optionally one host's) in the
+ * shared envelope above. */
+function activeChildren(p: RailProject, id: string, hostId?: string): RailNode[] {
+  return activeTierChildren(p, id, () => activeSessionNodes(p, hostId));
+}
+
+// Host grouping - the rail's organize-by setting. Three more projections of
+// data Rail.tsx already holds: a project's owning `sources`, a session's
+// `host_id`, and the manifest's Source rows themselves (label, online). No
+// fetching, no new wire fields.
+
+/** The rail's current grouping shape: the pref's two modes, or "flat" while
+ * the manifest lists no remote source (today's rail, whatever the pref
+ * says). */
+export type RailGroupingMode = "flat" | "host-project" | "project-host";
+
+/** The host-grouped id grammar, in one place: the same project renders under
+ * ids its flat mode never uses, and the reveal path (revealExpansionIds) has
+ * to compute exactly these to reach a row through the grouped shapes. */
+export function hostGroupId(hostId: string): string {
+  return `host:${hostId}`;
+}
+
+export function liveHostGroupId(hostId: string): string {
+  return `livehost:${hostId}`;
+}
+
+function hostProjectCopyId(projectId: string, hostId: string): string {
+  return `${projectId}@${hostId}`;
+}
+
+function hostBranchId(projectId: string, hostId: string): string {
+  return `${projectId}@host:${hostId}`;
+}
+
+/** Every host a project's rows can appear under: its owning sources plus any
+ * host its loaded sessions name (a project whose summary predates a host
+ * still lands where its rows are). A project naming neither is this hub's
+ * own. Memoized per project: the host-first top level asks about every
+ * project on every render, and project objects keep their identity between
+ * data changes. */
+const projectHostIdsCache = new WeakMap<
+  RailProject,
+  { sources: readonly string[] | undefined; sessions: readonly RailSession[]; hosts: string[] }
+>();
+
+function projectHostIds(p: RailProject): string[] {
+  const cached = projectHostIdsCache.get(p);
+  if (cached && cached.sources === p.sources && cached.sessions === p.sessions) return cached.hosts;
+  const result = ownerHostIds(p.sources, p.sessions);
+  projectHostIdsCache.set(p, { sources: p.sources, sessions: p.sessions, hosts: result });
+  return result;
+}
+
+/** Host group nodes keyed by their own id, one slot per host: the children
+ * are themselves identity-cached (project copies, session nodes), so an
+ * element-wise compare lets an unchanged group keep its object across
+ * renders (RailRow memoizes on node identity) while any real change - a new
+ * row, a toggle, an online flip - produces a fresh node. */
+type HostNodeCacheEntry = Readonly<{
+  host: HostRailNode["host"];
+  expanded: boolean;
+  children: RailNode[];
+  value: HostRailNode;
+}>;
+
+const hostNodeCache = new Map<string, HostNodeCacheEntry>();
+
+function cachedHostNode(id: string, host: HostRailNode["host"], expanded: boolean, children: RailNode[]): HostRailNode {
+  const cached = hostNodeCache.get(id);
+  if (
+    cached &&
+    cached.host.id === host.id &&
+    cached.host.label === host.label &&
+    cached.host.online === host.online &&
+    cached.expanded === expanded &&
+    cached.children.length === children.length &&
+    cached.children.every((child, index) => child === children[index])
+  )
+    return cached.value;
+  const value: HostRailNode = { id, kind: "host", host, expanded, children };
+  hostNodeCache.set(id, { host, expanded, children, value });
+  return value;
+}
+
+/** "Host, then project": one top-level host group per host in play (a host
+ * owning nothing renders nothing), each holding a copy of every project
+ * owned on that host. A copy is never dropped for having no loaded rows:
+ * the project's hidden rows can still be that host's, and revealed rows
+ * land under the host they name. The project's overflow row renders once,
+ * on the first copy in rail order that has loaded rows (the canonical copy
+ * below), so the project-wide count does not claim "+N" under every host. Copy ids suffix
+ * the host so two copies of one project never share expand state or
+ * overflow row ids. */
+export function hostProjectNodes(
+  projects: readonly RailProject[],
+  sources: readonly Source[],
+  isExpanded: IsExpanded,
+): HostRailNode[] {
+  const labels = projectDisplayLabels(projects);
+  const projectsByHost = new Map<string, RailProject[]>();
+  // The host whose copy carries the project-level overflow: the FIRST in
+  // the rail order the copies render in that has loaded active rows. The
+  // overflow's count and pages are the project's own, so it must read once
+  // instead of claiming "+N older" under every host that owns the project -
+  // and anchoring it to a host with no rows would park it inside an empty
+  // group, where collapsing the group hides the project's only "+N older".
+  // A project no loaded row names yet keeps the first ordered host, so the
+  // anchor cannot flip copy-to-copy while rows stream in.
+  const overflowHost = new Map<RailProject, string>();
+  for (const p of projects) {
+    overflowHost.set(
+      p,
+      canonicalHostId(
+        projectHostIds(p),
+        p.sessions.filter((n) => !isArchivedTier(n)),
+        sources,
+      ),
+    );
+    for (const hostId of projectHostIds(p)) {
+      const owned = projectsByHost.get(hostId) ?? [];
+      owned.push(p);
+      projectsByHost.set(hostId, owned);
+    }
+  }
+  return orderedHosts(projectsByHost.keys(), sources).map(({ id: hostId, label, online }): HostRailNode => {
+    const id = hostGroupId(hostId);
+    return cachedHostNode(
+      id,
+      { id: hostId, label, online },
+      isExpanded(id, true),
+      (projectsByHost.get(hostId) ?? []).map((p) =>
+        hostProjectCopyNode(p, hostId, labels.get(p.key), isExpanded, overflowHost.get(p) === hostId),
+      ),
+    );
+  });
+}
+
+/** One project's copy under one host (see hostProjectNodes).
+ * `carryProjectOverflow` names the one copy that renders the project-level
+ * overflow; the rest keep only their own rows and the loading placeholder. */
+function hostProjectCopyNode(
+  p: RailProject,
+  hostId: string,
+  displayName: string | undefined,
+  isExpanded: IsExpanded,
+  carryProjectOverflow: boolean,
+): ProjectRailNode {
+  // The carry decision rides the variant: it is derived from the live host
+  // order (see hostProjectNodes), so the same copy must not reuse children
+  // cached under the other decision when that order changes.
+  const variant = `host:${hostId}:${carryProjectOverflow ? "overflow" : "rows"}`;
+  const id = hostProjectCopyId(projectNodeExpansionKey(p.key), hostId);
+  const expanded = isExpanded(id, p.default_expanded ?? false);
+  const children = projectChildren(p, isExpanded, variant, () =>
+    carryProjectOverflow
+      ? activeChildren(p, id, hostId)
+      : activeTierChildren(p, id, () => activeSessionNodes(p, hostId), []),
+  );
+  return cachedProjectNode(p, isExpanded, variant, {
+    id,
+    displayName,
+    expanded,
+    children,
+    spawnHost: hostId,
+    canonicalCopy: carryProjectOverflow,
+  });
+}
+
+/** "Project, then host": project rows stay as they are today, but a loaded
+ * project's sessions group under per-host branches inside it. A branch with
+ * no loaded rows does not render: the project's own overflow row still sits
+ * at the project level and can reveal those rows, so there is no second
+ * copy guarding them (that is host-first's job). An unloaded project keeps
+ * its loading placeholder. */
+export function projectNodesWithHostBranches(
+  projects: readonly RailProject[],
+  sources: readonly Source[],
+  isExpanded: IsExpanded,
+): ProjectRailNode[] {
+  return projectNodesWith(
+    projects,
+    isExpanded,
+    `host-branches:${sourcesSignature(sources)}`,
+    (p, id) => activeTierChildren(p, id, () => hostBranchNodes(p, id, sources, isExpanded)),
+    (p) => projectLaunchHost(p, sources),
+    // The project row is the project's ONE aggregate row in this mode -
+    // rollup and overflow still read here, whatever rows its branches hold.
+    true,
+  );
+}
+
+/** The host a project row's launch targets when no copy names one: the first
+ * host in rail order among the project's owners (this hub orders first).
+ * Naming it keeps a remote-owned working_dir from silently launching on this
+ * hub through the draft's remembered source, and lets useHostLaunchable hide
+ * the affordance while that host is offline - the same contract the
+ * host-first copies already follow. Flat mode resolves it too: the
+ * call passes the display sources, so a local project names this hub
+ * and a remote-owned one names its host. */
+function projectLaunchHost(p: RailProject, sources: readonly Source[]): string | undefined {
+  return orderedHosts(projectHostIds(p), sources)[0]?.id;
+}
+
+// A manifest update swaps the sources ARRAY identity while the project
+// objects keep theirs, and the branches embed host facts (label, online)
+// read from that array - so the children cache must key on the facts too,
+// or the branches keep stale facts until the project object itself changes.
+// The signature is exactly the content the branches embed (ids, labels,
+// online flags, in array order - which orders the branches): an unchanged
+// revalidation reuses the built children, a change mints a fresh variant.
+// Content-keyed, not identity-keyed - identity would grow a new cache
+// entry per revalidation with nothing ever evicting the old ones.
+function sourcesSignature(sources: readonly Source[]): string {
+  return JSON.stringify(sources.map((source) => [source.id, source.label, source.online]));
+}
+
+/** The per-host branches inside one loaded project (see
+ * projectNodesWithHostBranches), in the host order every grouped tier uses.
+ * A branch holds only that host's loaded rows and starts collapsed; its
+ * identity rides the project's cached children, so it needs no cache of its
+ * own. Branches render only while the loaded rows themselves span hosts -
+ * the same line liveNodesGroupedByHost draws: a project whose rows sit on
+ * one host keeps today's flat children, so a lone "this host" branch cannot
+ * bury every session one expansion deeper for no grouping gained. */
+function hostBranchNodes(
+  p: RailProject,
+  projectId: string,
+  sources: readonly Source[],
+  isExpanded: IsExpanded,
+): RailNode[] {
+  const branches = orderedHosts(projectHostIds(p), sources).flatMap(({ id: hostId, label, online }): HostRailNode[] => {
+    const rows = activeSessionNodes(p, hostId);
+    if (rows.length === 0) return [];
+    const id = hostBranchId(projectId, hostId);
+    return [{ id, kind: "host", host: { id: hostId, label, online }, expanded: isExpanded(id, false), children: rows }];
+  });
+  if (branches.length <= 1) return activeSessionNodes(p);
+  return branches;
+}
+
+/** The Live tier's flat rows, grouped under host subheaders whenever they
+ * span more than one host; a single host (or none) keeps today's flat list,
+ * byte for byte. Like every host group these default expanded: collapsing
+ * them is the rare move. */
+export function liveNodesGroupedByHost(
+  nodes: SessionRailNode[],
+  sources: readonly Source[],
+  isExpanded: IsExpanded,
+): RailNode[] {
+  const hostIds = new Set(nodes.map((n) => n.session.host_id));
+  if (hostIds.size <= 1) return nodes;
+  return orderedHosts(hostIds, sources).map(({ id: hostId, label, online }): HostRailNode => {
+    const id = liveHostGroupId(hostId);
+    return cachedHostNode(
+      id,
+      { id: hostId, label, online },
+      isExpanded(id, true),
+      nodes.filter((n) => n.session.host_id === hostId),
+    );
+  });
+}
+
+/** The expansion chain, outermost first, a deep-link reveal must walk to
+ * expose the row `ref` renders at: the project's own node in flat mode, the
+ * owning host group then the project's copy in "Host, then project", the
+ * project then its per-host branch in "Project, then host", and a Live host
+ * subheader for a live row whenever Live groups. Only TOP-LEVEL rows can be
+ * found in the primary lists. Archived fork originals are found recursively
+ * through their continuation and each original's disclosure; activity children
+ * instead resolve through location to their carrier. An archived-tier row
+ * routes to its project's archived-group fold instead - the one tier no
+ * grouping mode rewrites - unless `options.rowsUnderProjectNode` says these
+ * projects render every row under the project's own node (whole-archived
+ * projects do; see archivedProjectNodes). Empty when nothing loaded holds the ref
+ * yet - the reveal's location-lookup path owns that case. Callers expand
+ * one id per pass and re-run, so reaching the end of the chain means every
+ * fold it needs is already open. */
+export function revealExpansionIds(
+  projects: readonly RailProject[],
+  live: readonly RailSession[],
+  ref: string,
+  mode: RailGroupingMode,
+  options?: { rowsUnderProjectNode?: boolean },
+): string[] {
+  for (const p of projects) {
+    const pathToRef = (row: RailSession): [RailSession, ...RailSession[]] | undefined => {
+      if (row.ref === ref) return [row];
+      if (!isArchivedTier(row)) return undefined;
+      for (const child of row.children) {
+        if (child.kind !== "fork") continue;
+        const path = pathToRef(child);
+        if (path) return [row, ...path];
+      }
+      return undefined;
+    };
+    const path = p.sessions.map(pathToRef).find((path) => path !== undefined);
+    if (!path) continue;
+    const carrier = path[0];
+    const originalFolds = path.slice(0, -1).map((row) => row.row_id);
+    // An archived-tier row renders in the Archived sessions section's
+    // archived-group fold (archivedSessionGroups), never under the flat or
+    // grouped project branch, whatever mode the rail is in - unless these
+    // projects render every row under their own node (whole-archived
+    // projects do; see archivedProjectNodes).
+    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key), ...originalFolds];
+    const id = projectNodeExpansionKey(p.key);
+    const carrierHost = carrier.host_id;
+    if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost)];
+    if (mode === "project-host") {
+      // Branches render only while the project's loaded rows span hosts
+      // (hostBranchNodes draws the same line), so a single-host chain stops
+      // at the project fold instead of naming a fold that does not exist.
+      const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map((n) => n.host_id));
+      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost)] : [id];
+    }
+    return [id, ...originalFolds];
+  }
+  const carrier = live.find((n) => n.ref === ref);
+  if (!carrier) return [];
+  // Flat mode renders Live ungrouped (Rail wraps it only while grouping),
+  // so a subheader id would name a fold that does not exist.
+  if (mode !== "flat" && new Set(live.map((n) => n.host_id)).size > 1) return [liveHostGroupId(carrier.host_id)];
+  return [];
+}
+
+/** The expansion ids that mean "this project's rows are in view" under the
+ * current grouping: the project's own node, plus - in host-first mode - one
+ * id per host copy. Rail's lazy-load effect loads whichever project has any
+ * of these expanded, so expanding a copy of an unloaded project fetches its
+ * rows instead of sticking on the loading placeholder forever. */
+export function projectLoadExpansionKeys(p: RailProject, mode: RailGroupingMode): string[] {
+  const id = projectNodeExpansionKey(p.key);
+  if (mode !== "host-project") return [id];
+  return [id, ...projectHostIds(p).map((hostId) => hostProjectCopyId(id, hostId))];
 }
 
 function projectChildren(
@@ -796,7 +991,11 @@ function archivedGroupId(key: string): string {
  *
  * Carries the REAL project object, so the row's menu acts on the project
  * itself rather than on a synthetic stand-in. */
-export function archivedSessionGroups(projects: readonly RailProject[], isExpanded: IsExpanded): ProjectRailNode[] {
+export function archivedSessionGroups(
+  projects: readonly RailProject[],
+  isExpanded: IsExpanded,
+  sources: readonly Source[],
+): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   const groups: ProjectRailNode[] = [];
   for (const p of projects) {
@@ -805,15 +1004,28 @@ export function archivedSessionGroups(projects: readonly RailProject[], isExpand
     const id = archivedGroupId(p.key);
     const displayName = labels.get(p.key);
     const expanded = isExpanded(id, false);
+    const spawnHost = projectLaunchHost(p, sources);
     const children = projectChildren(p, isExpanded, "archived-group", () => [
-      ...archived.map((n) => toSessionNode(n, isExpanded)),
+      ...archived.map((n) => toArchivedSessionNode(n, isExpanded)),
       ...projectOverflowNode(id, p, ["archived"]),
     ]);
+    // The launch host rides the node cache's key, so a manifest that
+    // reorders or renames sources rebuilds the row instead of serving a
+    // stale host (the same reason host-branches' variant carries a
+    // sources signature).
+    const variant = `archived-group:${sourcesSignature(sources)}`;
     const cached = projectNodeCache
       .get(p as object)
       ?.get(isExpanded)
-      ?.get("archived-group");
-    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded) {
+      ?.get(variant);
+    if (
+      cached &&
+      cached.children === children &&
+      cached.displayName === displayName &&
+      cached.expanded === expanded &&
+      cached.spawnHost === spawnHost &&
+      cached.canonicalCopy === true
+    ) {
       groups.push(cached.value);
       continue;
     }
@@ -825,8 +1037,17 @@ export function archivedSessionGroups(projects: readonly RailProject[], isExpand
       displayName,
       expanded,
       children,
+      spawnHost,
+      canonicalCopy: true,
     };
-    cacheProjectNode(p, isExpanded, "archived-group", { children, displayName, expanded, value: result });
+    cacheProjectNode(p, isExpanded, variant, {
+      children,
+      displayName,
+      expanded,
+      spawnHost,
+      canonicalCopy: true,
+      value: result,
+    });
     groups.push(result);
   }
   return groups;
@@ -866,6 +1087,7 @@ export function archivedProjectNodes(
   projects: readonly RailProject[],
   projectDetails: ReadonlyMap<string, RailProject>,
   isExpanded: IsExpanded,
+  sources: readonly Source[],
 ): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
@@ -876,7 +1098,7 @@ export function archivedProjectNodes(
       // The hydrated detail is the authority on both the rows and what was
       // capped away from them - the stub carried neither.
       children = projectChildren(detail, isExpanded, "archived-detail", () => [
-        ...detail.sessions.map((n) => toSessionNode(n, isExpanded)),
+        ...detail.sessions.map((n) => toArchivedSessionNode(n, isExpanded)),
         ...projectOverflowNode(id, detail, ["current", "recent", "archived"]),
       ]);
     } else if ((p.session_count ?? 0) > 0) {
@@ -886,11 +1108,20 @@ export function archivedProjectNodes(
     }
     const displayName = labels.get(p.key);
     const expanded = isExpanded(id, false);
+    const spawnHost = projectLaunchHost(p, sources);
+    const variant = `archived-project:${sourcesSignature(sources)}`;
     const cached = projectNodeCache
       .get(p as object)
       ?.get(isExpanded)
-      ?.get("archived-project");
-    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded)
+      ?.get(variant);
+    if (
+      cached &&
+      cached.children === children &&
+      cached.displayName === displayName &&
+      cached.expanded === expanded &&
+      cached.spawnHost === spawnHost &&
+      cached.canonicalCopy === true
+    )
       return cached.value;
     const result: ProjectRailNode = {
       id,
@@ -899,8 +1130,17 @@ export function archivedProjectNodes(
       displayName,
       expanded,
       children,
+      spawnHost,
+      canonicalCopy: true,
     };
-    cacheProjectNode(p, isExpanded, "archived-project", { children, displayName, expanded, value: result });
+    cacheProjectNode(p, isExpanded, variant, {
+      children,
+      displayName,
+      expanded,
+      spawnHost,
+      canonicalCopy: true,
+      value: result,
+    });
     return result;
   });
 }

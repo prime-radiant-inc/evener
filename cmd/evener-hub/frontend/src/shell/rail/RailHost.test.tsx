@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
 import { ClientProvider } from "../clientContext";
@@ -11,25 +12,6 @@ import { resetWorkspaceStoreForTests } from "../workspace";
 import railStyles from "./Rail.module.css";
 import { RailHost } from "./RailHost";
 import { revealSessionInRail, setRailRevealHandler } from "./railController";
-
-// Node 26 shadows jsdom's real localStorage with a non-functional global under
-// vitest; RailHost mounts <Rail/>, and prefsStore writes through on
-// setSidebarHidden - the same in-memory stand-in every rail/shell test uses.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 function emptyNavResponse(needsYou = 0) {
   return {
@@ -51,8 +33,7 @@ function render(ui: ReactElement, client = new FakeClient()) {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {
@@ -60,7 +41,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v2" });
+  navigationStore.setState({ mode: "v3" });
   resetWorkspaceStoreForTests();
   // Quiet, resolving fetch so any mounted <Rail/> refresh() doesn't throw.
   vi.stubGlobal(
@@ -120,7 +101,7 @@ describe("hide / show", () => {
   test("the chip surfaces the needs-you count in its accessible name (color-is-attention badge)", () => {
     prefsStore.getState().setSidebarHidden(true);
     navigationStore.setState({
-      mode: "v2",
+      mode: "v3",
       manifest: {
         key: { kind: "manifest" },
         data: navigationManifest({
@@ -144,7 +125,7 @@ describe("hide / show", () => {
 test("v1 badge ignores stale legacy tree attention and uses manifest section count", () => {
   prefsStore.getState().setSidebarHidden(true);
   navigationStore.setState({
-    mode: "v2",
+    mode: "v3",
     manifest: {
       key: { kind: "manifest" },
       data: navigationManifest({

@@ -43,3 +43,16 @@ func TrimLeadingPartial(b []byte) []byte {
 	}
 	return b[i:]
 }
+
+// Cut bounds s to at most maxBytes bytes without splitting a rune: when the
+// limit lands inside a rune, the cut walks back to that rune's start.
+func Cut(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := max(maxBytes, 0)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}

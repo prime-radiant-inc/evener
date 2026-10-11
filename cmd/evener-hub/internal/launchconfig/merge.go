@@ -143,12 +143,6 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["max_retained_terminal"] = name
 			nonEmpty = true
 		}
-		if l.NoProjectPrompts != nil {
-			v := *l.NoProjectPrompts
-			eff.NoProjectPrompts = &v
-			prov["no_project_prompts"] = name
-			nonEmpty = true
-		}
 		if l.NonInteractive != nil {
 			v := *l.NonInteractive
 			eff.NonInteractive = &v

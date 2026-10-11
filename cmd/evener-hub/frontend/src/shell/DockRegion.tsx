@@ -8,9 +8,11 @@
 // the whole tree and the user gets a white page (kata 1s47). Scoped here, the
 // same failure costs the workspace and nothing else: the rail, the connection
 // banner, the toasts and the command palette all stay up.
+
 import { Component, type LazyExoticComponent, lazy, type ReactNode, Suspense, useState } from "react";
 import { Button, EmptyState } from "../widgets";
 import { isStaleDockHostChunkError, loadDockHost } from "./dockHostChunk";
+import { reloadPage } from "./pageReload";
 
 interface DockChunkBoundaryProps {
   // Swaps in a fresh lazy component to load the chunk again. The boundary
@@ -54,7 +56,7 @@ class DockChunkBoundary extends Component<DockChunkBoundaryProps, DockChunkBound
             {this.props.reloadAvailable && isStaleDockHostChunkError(this.state.failure) && (
               <>
                 {" "}
-                <Button size="sm" variant="quiet" onClick={() => window.location.reload()}>
+                <Button size="sm" variant="quiet" onClick={reloadPage}>
                   Reload page
                 </Button>
               </>

@@ -48,7 +48,7 @@
 - [ ] **Step 1: Inspect the existing appwire RPC pattern**
 
 ```bash
-grep -n "appwireRequest\|callRPC\|fetchRPC\|function call" cmd/evener-hub/assets/appwire.js | head -10
+grep -n "appwireRequest\|callRPC\|fetchRPC\|function call" cmd/serf-hub/assets/appwire.js | head -10
 ```
 
 You should find an exported `appwire.request(method, params)` or similar JSON-RPC sender. Use it.

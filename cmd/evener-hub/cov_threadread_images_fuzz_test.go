@@ -13,8 +13,10 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -113,9 +115,9 @@ func covThreadReadSeed(t *testing.T) {
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c", ImageData: []byte("img")}},
 	}
 	turn := schema.Turn{Kind: "assistant", Message: llm.Message{Role: "assistant", Content: parts}}
-	_ = appItemsFromReplayTurn("turn", 0, turn, map[string]string{})
-	_ = appItemsFromReplayTurn("user", 1, schema.Turn{Kind: "USER_INPUT", Message: llm.Message{Role: "user", Content: []llm.ContentPart{{Kind: "image", Image: &llm.ImageData{}}, {Kind: "image", Image: &llm.ImageData{Data: []byte("named")}}}}}, map[string]string{})
-	_ = appItemsFromReplayTurn("tool", 2, schema.Turn{Kind: "TOOL_RESULTS", Message: llm.Message{Role: "tool", Content: []llm.ContentPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{}}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, map[string]string{})
+	_ = appItemsFromReplayTurn("turn", 0, turn, apptranscript.NewToolCallRegistry())
+	_ = appItemsFromReplayTurn("user", 1, schema.Turn{Kind: "USER_INPUT", Message: llm.Message{Role: "user", Content: []llm.ContentPart{{Kind: "image", Image: &llm.ImageData{}}, {Kind: "image", Image: &llm.ImageData{Data: []byte("named")}}}}}, apptranscript.NewToolCallRegistry())
+	_ = appItemsFromReplayTurn("tool", 2, schema.Turn{Kind: "TOOL_RESULTS", Message: llm.Message{Role: "tool", Content: []llm.ContentPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{}}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, apptranscript.NewToolCallRegistry())
 
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{})
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{ID: "x"})
@@ -185,17 +187,17 @@ func covDocServeSeed(t *testing.T) {
 	web.handleDocImage(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/image?session="+session+"&path=ok.png", nil))
 	web.handleDocImage(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/image?session="+session+"&path=.", nil))
 	web.handleDocFile(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/doc/file?session="+session+"&path=.", nil))
-	_, _ = (&WebServer{}).localSessionCWD(session)
+	_, _ = (&WebServer{}).localSessionCWD(context.Background(), session)
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{ThreadID: "live", SessionID: "live", WorkingDir: cwd}, SessionID: "live"})
 	liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
-	_, _ = liveWeb.localSessionCWD("live")
-	_, _ = liveWeb.localSessionCWD("missing")
-	_, _ = readDocFile(cwd)
-	_, _ = readDocFile(filepath.Join(cwd, "missing"))
+	_, _ = liveWeb.localSessionCWD(context.Background(), "live")
+	_, _ = liveWeb.localSessionCWD(context.Background(), "missing")
+	_, _ = readDocFile(cwd, cwd)
+	_, _ = readDocFile(cwd, filepath.Join(cwd, "missing"))
 	if err := os.WriteFile(filepath.Join(cwd, "empty"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = readDocFile(filepath.Join(cwd, "empty"))
+	_, _ = readDocFile(cwd, filepath.Join(cwd, "empty"))
 	large := append(make([]byte, 8193), 0)
 	_ = looksBinaryBytes(large)
 }
@@ -242,7 +244,7 @@ func covOutputImagesSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, _ = readOutputImageFile(large)
-	_ = outputImageSHA(png)
+	_ = imageSha(png)
 	_ = outputImageDisplayName("/")
 
 	base := appwire.Notification{}
@@ -250,22 +252,22 @@ func covOutputImagesSeed(t *testing.T) {
 	_ = enrichOutputImageNotification("s", "", map[string]string{}, base)
 	for _, n := range []appwire.Notification{
 		base,
-		{Method: appwire.NotifyItemStarted},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`x`)},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`{}`)},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`{"item":null}`)},
-		{Method: appwire.NotifyItemStarted, Params: json.RawMessage(`{"item":{"type":"text"}}`)},
+		{Method: appwire.NotifyOverlayUpserted},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`x`)},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`{}`)},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`{"item":null}`)},
+		{Method: appwire.NotifyOverlayUpserted, Params: json.RawMessage(`{"item":{"type":"text"}}`)},
 	} {
 		_ = enrichOutputImageNotification("s", cwd, map[string]string{}, n)
 	}
-	start := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", CallID: "c", ArgumentsJSON: `{"file_path":"x.png"}`}}).Notification
+	start := appwire.NotificationMessage(appwire.NotifyOverlayUpserted, map[string]any{"item": appwire.OverlayItem{Item: appwire.ThreadItem{Type: "commandExecution", CallID: "c", ArgumentsJSON: `{"file_path":"x.png"}`}}}).Notification
 	args := map[string]string{}
 	_ = enrichOutputImageNotification("s", cwd, args, *start)
-	done := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "write_file", CallID: "c"}}).Notification
+	done := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "write_file", CallID: "c"}}}).Notification
 	_ = enrichOutputImageNotification("s", cwd, args, *done)
-	direct := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "write_file", CallID: "d", ArgumentsJSON: `{"file_path":"x.png"}`}}).Notification
+	direct := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "write_file", CallID: "d", ArgumentsJSON: `{"file_path":"x.png"}`}}}).Notification
 	_ = enrichOutputImageNotification("s", cwd, args, *direct)
-	noImage := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{"item": appwire.ThreadItem{Type: "commandExecution", ToolName: "shell", CallID: "none", Output: "nothing"}}).Notification
+	noImage := appwire.NotificationMessage(appwire.NotifyHistoryUpdated, map[string]any{"items": []appwire.ThreadItem{{Type: "commandExecution", ToolName: "shell", CallID: "none", Output: "nothing"}}}).Notification
 	_ = enrichOutputImageNotification("s", cwd, args, *noImage)
 }
 

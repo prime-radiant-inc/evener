@@ -12,6 +12,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestStopReceiptIntersectsMembersLockedNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if c.stopReceiptIntersectsMembersLocked(nil, map[string]struct{}{"dlg_1": {}}) {
 		t.Fatalf("expected false for nil receipt")
@@ -19,6 +20,7 @@ func TestStopReceiptIntersectsMembersLockedNil(t *testing.T) {
 }
 
 func TestStopReceiptIntersectsMembersLockedSourceCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	receipt := &delegateWatchReceipt{sourceDelegateID: "dlg_1"}
 	if !c.stopReceiptIntersectsMembersLocked(receipt, map[string]struct{}{"dlg_1": {}}) {
@@ -27,6 +29,7 @@ func TestStopReceiptIntersectsMembersLockedSourceCovered(t *testing.T) {
 }
 
 func TestStopReceiptIntersectsMembersLockedReceiverCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	receipt := &delegateWatchReceipt{receiverDelegateID: "dlg_2"}
 	if !c.stopReceiptIntersectsMembersLocked(receipt, map[string]struct{}{"dlg_2": {}}) {
@@ -35,6 +38,7 @@ func TestStopReceiptIntersectsMembersLockedReceiverCovered(t *testing.T) {
 }
 
 func TestStopReceiptIntersectsMembersLockedNeitherCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	receipt := &delegateWatchReceipt{sourceDelegateID: "dlg_1", receiverDelegateID: "dlg_2"}
 	if c.stopReceiptIntersectsMembersLocked(receipt, map[string]struct{}{"dlg_3": {}}) {
@@ -47,6 +51,7 @@ func TestStopReceiptIntersectsMembersLockedNeitherCovered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateDepthLockedEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{durable: map[string]*delegatestore.Aggregate{}}
 	if c.delegateDepthLocked("dlg_missing") != 0 {
 		t.Fatalf("expected 0 for missing delegate")
@@ -54,6 +59,7 @@ func TestDelegateDepthLockedEmpty(t *testing.T) {
 }
 
 func TestDelegateDepthLockedRoot(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Descriptor: delegatestore.Descriptor{ParentDelegateID: ""}},
@@ -65,6 +71,7 @@ func TestDelegateDepthLockedRoot(t *testing.T) {
 }
 
 func TestDelegateDepthLockedNested(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Descriptor: delegatestore.Descriptor{ParentDelegateID: ""}},
@@ -78,6 +85,7 @@ func TestDelegateDepthLockedNested(t *testing.T) {
 }
 
 func TestDelegateDepthLockedNilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": nil,
@@ -93,6 +101,7 @@ func TestDelegateDepthLockedNilAggregate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClassifyDelegateStopAdmissionAlreadyIdle(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{CurrentRunOpen: false},
 	}
@@ -107,6 +116,7 @@ func TestClassifyDelegateStopAdmissionAlreadyIdle(t *testing.T) {
 }
 
 func TestClassifyDelegateStopAdmissionCancelledByRequest(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{CurrentRunOpen: true},
 	}
@@ -121,6 +131,7 @@ func TestClassifyDelegateStopAdmissionCancelledByRequest(t *testing.T) {
 }
 
 func TestClassifyDelegateStopAdmissionTargetRunningMemberIdle(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{CurrentRunOpen: true},
 		"dlg_2": &delegatestore.Aggregate{CurrentRunOpen: false},
@@ -136,6 +147,7 @@ func TestClassifyDelegateStopAdmissionTargetRunningMemberIdle(t *testing.T) {
 }
 
 func TestClassifyDelegateStopAdmissionNilTarget(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{}
 	members := map[string]struct{}{"dlg_1": {}}
 	lifecycle, outcome := classifyDelegateStopAdmission(state, "dlg_missing", members)
@@ -152,6 +164,7 @@ func TestClassifyDelegateStopAdmissionNilTarget(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopCoversLockedNoStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if c.stopCoversLocked("dlg_1") {
 		t.Fatalf("expected false with no stop")
@@ -159,6 +172,7 @@ func TestStopCoversLockedNoStop(t *testing.T) {
 }
 
 func TestStopCoversLockedCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{members: map[string]struct{}{"dlg_1": {}}},
 	}
@@ -168,6 +182,7 @@ func TestStopCoversLockedCovered(t *testing.T) {
 }
 
 func TestStopCoversLockedNotCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{members: map[string]struct{}{"dlg_2": {}}},
 	}
@@ -181,6 +196,7 @@ func TestStopCoversLockedNotCovered(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDeliveryIntersectsMembersLockedNil(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if c.deliveryIntersectsMembersLocked(nil, map[string]struct{}{"dlg_1": {}}) {
 		t.Fatalf("expected false for nil receipt")
@@ -188,6 +204,7 @@ func TestDeliveryIntersectsMembersLockedNil(t *testing.T) {
 }
 
 func TestDeliveryIntersectsMembersLockedSenderCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	receipt := &delegateDeliveryAdmission{delegateID: "dlg_1"}
 	if !c.deliveryIntersectsMembersLocked(receipt, map[string]struct{}{"dlg_1": {}}) {
@@ -196,6 +213,7 @@ func TestDeliveryIntersectsMembersLockedSenderCovered(t *testing.T) {
 }
 
 func TestDeliveryIntersectsMembersLockedOwnerCovered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	receipt := &delegateDeliveryAdmission{ownerID: "dlg_2"}
 	if !c.deliveryIntersectsMembersLocked(receipt, map[string]struct{}{"dlg_2": {}}) {
@@ -204,6 +222,7 @@ func TestDeliveryIntersectsMembersLockedOwnerCovered(t *testing.T) {
 }
 
 func TestDeliveryIntersectsMembersLockedNeither(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	receipt := &delegateDeliveryAdmission{delegateID: "dlg_1", ownerID: "dlg_2"}
 	if c.deliveryIntersectsMembersLocked(receipt, map[string]struct{}{"dlg_3": {}}) {
@@ -216,6 +235,7 @@ func TestDeliveryIntersectsMembersLockedNeither(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSubtreeMembersLockedSingle(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
@@ -226,6 +246,7 @@ func TestSubtreeMembersLockedSingle(t *testing.T) {
 }
 
 func TestSubtreeMembersLockedWithChildren(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Descriptor: delegatestore.Descriptor{ParentDelegateID: ""}},
@@ -234,6 +255,9 @@ func TestSubtreeMembersLockedWithChildren(t *testing.T) {
 			"dlg_4": {Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_2"}},
 		},
 	}
+	// Hand-seeded durable state must derive its children index the way the
+	// constructor does for a folded journal.
+	c.delegateChildren = deriveDelegateChildrenIndex(c.durable)
 	members := c.subtreeMembersLocked("dlg_1")
 	if len(members) != 4 {
 		t.Fatalf("expected 4 members, got %d: %v", len(members), members)
@@ -241,12 +265,16 @@ func TestSubtreeMembersLockedWithChildren(t *testing.T) {
 }
 
 func TestSubtreeMembersLockedNilAggregates(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1":   {Descriptor: delegatestore.Descriptor{ParentDelegateID: ""}},
 			"dlg_nil": nil,
 		},
 	}
+	// Hand-seeded durable state must derive its children index the way the
+	// constructor does for a folded journal.
+	c.delegateChildren = deriveDelegateChildrenIndex(c.durable)
 	members := c.subtreeMembersLocked("dlg_1")
 	if len(members) != 1 {
 		t.Fatalf("expected 1 member, got %d", len(members))
@@ -258,11 +286,13 @@ func TestSubtreeMembersLockedNilAggregates(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSignalStopProgressLockedNoStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	c.signalStopProgressLocked() // should be a no-op
 }
 
 func TestSignalStopProgressLocked(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{progress: make(chan struct{}, 1)},
 	}
@@ -276,6 +306,7 @@ func TestSignalStopProgressLocked(t *testing.T) {
 }
 
 func TestSignalStopProgressLockedFull(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		stop: &delegateStopState{progress: make(chan struct{}, 1)},
 	}
@@ -288,12 +319,14 @@ func TestSignalStopProgressLockedFull(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateStopDoneNil(t *testing.T) {
+	t.Parallel()
 	if !delegateStopDone(nil) {
 		t.Fatalf("expected true for nil stop")
 	}
 }
 
 func TestDelegateStopDoneDone(t *testing.T) {
+	t.Parallel()
 	stop := &delegateStopState{done: make(chan struct{})}
 	close(stop.done)
 	if !delegateStopDone(stop) {
@@ -302,6 +335,7 @@ func TestDelegateStopDoneDone(t *testing.T) {
 }
 
 func TestDelegateStopDoneNotDone(t *testing.T) {
+	t.Parallel()
 	stop := &delegateStopState{done: make(chan struct{})}
 	if delegateStopDone(stop) {
 		t.Fatalf("expected false for not-done stop")
@@ -313,6 +347,7 @@ func TestDelegateStopDoneNotDone(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopResultLocked(t *testing.T) {
+	t.Parallel()
 	stop := &delegateStopState{
 		targetID:          "dlg_1",
 		previousLifecycle: delegateLifecycleRunning,
@@ -344,6 +379,7 @@ func TestStopResultLocked(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMemberIDsLeafFirstLockedEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{durable: map[string]*delegatestore.Aggregate{}}
 	ids := c.memberIDsLeafFirstLocked(map[string]struct{}{})
 	if len(ids) != 0 {
@@ -352,6 +388,7 @@ func TestMemberIDsLeafFirstLockedEmpty(t *testing.T) {
 }
 
 func TestMemberIDsLeafFirstLockedSorted(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Descriptor: delegatestore.Descriptor{ParentDelegateID: ""}},
@@ -373,10 +410,12 @@ func TestMemberIDsLeafFirstLockedSorted(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecuteDelegateCancelPlanEmpty(t *testing.T) {
+	t.Parallel()
 	executeDelegateCancelPlan(delegateCancelPlan{}) // should be a no-op
 }
 
 func TestExecuteDelegateCancelPlanWithCancel(t *testing.T) {
+	t.Parallel()
 	cancelled := false
 	plan := delegateCancelPlan{
 		cancel: []context.CancelFunc{func() { cancelled = true }},
@@ -388,6 +427,7 @@ func TestExecuteDelegateCancelPlanWithCancel(t *testing.T) {
 }
 
 func TestExecuteDelegateCancelPlanNilCancel(t *testing.T) {
+	t.Parallel()
 	plan := delegateCancelPlan{
 		cancel: []context.CancelFunc{nil},
 	}
@@ -399,6 +439,7 @@ func TestExecuteDelegateCancelPlanNilCancel(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWaitForDelegateStopProgressDone(t *testing.T) {
+	t.Parallel()
 	stop := &delegateStopState{done: make(chan struct{}), progress: make(chan struct{}, 1)}
 	close(stop.done)
 	if err := waitForDelegateStopProgress(context.Background(), stop); err != nil {
@@ -407,6 +448,7 @@ func TestWaitForDelegateStopProgressDone(t *testing.T) {
 }
 
 func TestWaitForDelegateStopProgressProgress(t *testing.T) {
+	t.Parallel()
 	stop := &delegateStopState{done: make(chan struct{}), progress: make(chan struct{}, 1)}
 	stop.progress <- struct{}{}
 	if err := waitForDelegateStopProgress(context.Background(), stop); err != nil {

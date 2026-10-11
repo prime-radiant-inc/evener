@@ -2,17 +2,26 @@ name: Setup Go and Node toolchain
 description: >-
   setup-go pinned to go.work plus setup-node 22 with the hub frontend's npm
   cache. Used by every job that builds or tests both the Go and web sides.
+  With go-cache-kind it also restores that kind's Go caches through
+  go-cache-restore, and the job must run go-cache-save after its Go work.
+inputs:
+  go-cache-kind:
+    description: >-
+      The go-cache-restore kind for this job's Go caches. Leave it out to skip
+      Go caching, as the release build does.
+    required: false
 runs:
   using: composite
   steps:
     - uses: actions/setup-go@v7
       with:
         go-version-file: go.work
-        cache: true
-        cache-dependency-path: |
-          go.work
-          go.work.sum
-          **/go.sum
+        cache: false
+
+    - if: inputs.go-cache-kind != ''
+      uses: ./.github/actions/go-cache-restore
+      with:
+        kind: ${{ inputs.go-cache-kind }}
 
     - uses: actions/setup-node@v7
       with:

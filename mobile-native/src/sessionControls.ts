@@ -1,10 +1,8 @@
+import { useSyncExternalStore } from "react";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse } from "@evener/appwire-client";
-import {
-	effortOptionLevels,
-	sessionEffortLevels,
-} from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import { effortOptionLevels, sessionEffortLevels } from "@evener/appwire-client";
+import type { MobileConversation } from "./projectedRows";
 import type {
 	ConversationModelCatalog,
 	ConversationRecoveryActions,
@@ -20,7 +18,7 @@ type Operation =
 	| "setReasoningEffort"
 	| "setVisionModel"
 	| "changeModel";
-interface ControlsState {
+export interface ControlsState {
 	pending: Operation | null;
 	lastAction: Operation | null;
 	error: string | null;
@@ -43,11 +41,13 @@ export class SessionControls {
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
+	// Counts catalog reads (a refresh or a load), so a refresh publishes only
+	// when no newer read has started.
+	private catalogReads = 0;
+	// An announcement arrived while a load was out, to be read once it settles.
+	private refreshAfterLoad = false;
 	constructor(
-		private service: Pick<
-			ConversationService,
-			Exclude<Operation, "forceStop" | "resume">
-		> &
+		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume">> &
 			ConversationRecoveryActions &
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
@@ -58,7 +58,12 @@ export class SessionControls {
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
 		> | null,
 		private canMutate: () => boolean,
-	) {}
+		// The catalog the screen already knows, from its last binding: the
+		// model's name needs no read to show.
+		catalog: ModelListResponse | null = null,
+	) {
+		this.state = { ...this.state, catalog };
+	}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
@@ -94,77 +99,82 @@ export class SessionControls {
 	setReasoningEffort(effort: string) {
 		const current = this.getReasoning();
 		if (!current) return Promise.resolve();
-		const levels = sessionEffortLevels(
-			current.reasoningEffortLevels,
-			current.supportsReasoning,
-		);
+		const levels = sessionEffortLevels(current.reasoningEffortLevels, current.supportsReasoning);
 		const selected = current.reasoningEffort ?? "";
-		if (
-			!levels.length ||
-			!effortOptionLevels(levels, selected).includes(effort) ||
-			selected === effort
-		)
+		if (!levels.length || !effortOptionLevels(levels, selected).includes(effort) || selected === effort)
 			return Promise.resolve();
-		return this.run("setReasoningEffort", () =>
-			this.service.setReasoningEffort(effort),
-		);
+		return this.run("setReasoningEffort", () => this.service.setReasoningEffort(effort));
 	}
 	setVisionModel(visionModel: string) {
-		return this.run("setVisionModel", () =>
-			this.service.setVisionModel(visionModel),
-		);
+		return this.run("setVisionModel", () => this.service.setVisionModel(visionModel));
 	}
+	/** Reads the model catalog. The catalog it has stays until the new one
+	 * lands, so a model's name never falls back to its id mid-read; a failed
+	 * read clears it, so the picker offers no stale choices. A read the
+	 * binding moved on from still ends the load, so the next one reads again
+	 * rather than waiting on it forever. */
 	async loadModels() {
-		if (
-			this.disposed ||
-			!this.isCurrent() ||
-			this.state.loadingModels ||
-			this.state.pending
-		)
-			return;
-		this.publish({ catalog: null, loadingModels: true, modelError: null });
+		if (this.disposed || !this.isCurrent() || this.state.loadingModels || this.state.pending) return;
+		// A load is the newest read: a refresh still out answers older.
+		this.catalogReads++;
+		this.publish({ loadingModels: true, modelError: null });
 		try {
 			const catalog = await this.service.models();
-			if (this.disposed || !this.isCurrent()) return;
-			this.publish({ catalog, loadingModels: false });
+			if (this.disposed) return;
+			this.publish(this.isCurrent() ? { catalog, loadingModels: false } : { loadingModels: false });
 		} catch (error) {
-			if (this.disposed || !this.isCurrent()) return;
-			this.publish({
-				loadingModels: false,
-				modelError:
-					error instanceof Error ? error.message : "Could not load models.",
-			});
+			if (this.disposed) return;
+			this.publish(
+				this.isCurrent()
+					? {
+							catalog: null,
+							loadingModels: false,
+							modelError: error instanceof Error ? error.message : "Could not load models.",
+						}
+					: { loadingModels: false },
+			);
+		}
+		if (this.refreshAfterLoad) {
+			this.refreshAfterLoad = false;
+			void this.refreshModels();
+		}
+	}
+	/** Reads a loaded catalog again after the hub announced a refreshed list
+	 * (evener/auth/updated), replacing it in place. Unlike a load, a failed
+	 * read keeps the catalog: the list the hub last served still stands. With
+	 * no catalog loaded there is nothing on screen to refresh. A load in
+	 * flight may have read the list before the hub refreshed it, so an
+	 * announcement during one reads again once it settles. Each announcement
+	 * reads again, and the newest read's catalog is the one that stays. */
+	async refreshModels() {
+		if (this.state.loadingModels) {
+			this.refreshAfterLoad = true;
+			return;
+		}
+		if (this.disposed || !this.isCurrent() || !this.state.catalog) return;
+		const read = ++this.catalogReads;
+		try {
+			const catalog = await this.service.models();
+			if (!this.disposed && read === this.catalogReads && this.isCurrent()) this.publish({ catalog });
+		} catch {
+			// A failed refresh keeps the catalog on screen.
 		}
 	}
 	changeModel(provider: string, model: string): Promise<boolean> {
-		if (
-			!this.state.catalog?.data.some(
-				(entry) => entry.provider === provider && entry.model === model,
-			)
-		)
+		if (!this.state.catalog?.data.some((entry) => entry.provider === provider && entry.model === model))
 			return Promise.resolve(false);
-		return this.run("changeModel", () =>
-			this.service.changeModel(provider, model),
-		);
+		return this.run("changeModel", () => this.service.changeModel(provider, model));
 	}
 	changeVisionModel(provider: string, model: string): Promise<boolean> {
 		if (
 			!this.state.catalog?.data.some(
-				(entry) =>
-					entry.provider === provider &&
-					entry.model === model &&
-					entry.supportsVision !== false,
+				(entry) => entry.provider === provider && entry.model === model && entry.supportsVision !== false,
 			)
 		)
 			return Promise.resolve(false);
-		return this.run("setVisionModel", () =>
-			this.service.setVisionModel(`${provider}/${model}`),
-		);
+		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
 	}
-	private async run(
-		kind: Operation,
-		operation: () => Promise<void>,
-	): Promise<boolean> {
+	private async run(kind: Operation, operation: () => Promise<void>): Promise<boolean> {
 		if (
 			this.disposed ||
 			!this.isCurrent() ||
@@ -189,13 +199,12 @@ export class SessionControls {
 			}
 			if (this.disposed || !this.isCurrent()) return false;
 			if (kind === "shutdown" || kind === "forceStop") {
+				// A shutdown narrates nothing here: the session's own toast
+				// confirms it and the screen stays (ruling 19).
 				this.publish({
 					pending: null,
 					error: null,
-					notice:
-						kind === "forceStop"
-							? "Runtime stopped. Saved history is available to resume."
-							: "Runtime stop requested.",
+					notice: kind === "forceStop" ? "Runtime stopped. Saved history is available to resume." : null,
 				});
 				this.stopped();
 				return true;
@@ -221,10 +230,7 @@ export class SessionControls {
 			return true;
 		} catch (cause) {
 			if (this.disposed || !this.isCurrent()) return false;
-			if (
-				cause instanceof WireError &&
-				cause.evenerErrorInfo === "actionUnavailable"
-			) {
+			if (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable") {
 				try {
 					await this.refresh();
 				} catch {
@@ -243,4 +249,13 @@ export class SessionControls {
 			return false;
 		}
 	}
+}
+
+const noSubscription = () => () => {};
+const noState = () => null;
+
+/** The controls' state, or null while there are none: the hub is away, or
+ * the session isn't in front. */
+export function useControlsState(controls: SessionControls | null): ControlsState | null {
+	return useSyncExternalStore(controls?.subscribe ?? noSubscription, controls?.getSnapshot ?? noState);
 }

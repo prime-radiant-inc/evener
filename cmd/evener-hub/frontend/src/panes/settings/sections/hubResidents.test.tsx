@@ -15,7 +15,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
-import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
+import { daemonResidentsStore, resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { HubResidents } from "./hubResidents";
 
 const POLL_INTERVAL_MS = 2000;
@@ -796,8 +796,16 @@ describe("force-stop dialog", () => {
     });
     expect(isDisabled(forceStopBtn)).toBe(true);
 
-    // Clean up: resolve the forceStop so the test doesn't leak async work
+    // Resolve the forceStop and wait for what it sets off to settle: the row
+    // leaves the pending set and the store's follow-up list refresh lands.
+    const listCallsBefore = fake.calls.filter((c) => c.method === "evener/daemon/list").length;
     resolveForceStop();
+    await waitFor(() => {
+      expect(fake.calls.filter((c) => c.method === "evener/daemon/list").length).toBeGreaterThan(listCallsBefore);
+      expect(daemonResidentsStore.getState().loading).toBe(false);
+      const row = screen.getByRole("row", { name: /Pending target/ });
+      expect(isDisabled(within(row).getByRole("button", { name: "Force stop" }))).toBe(false);
+    });
   });
 
   // ─── I-3: Force-stop RPC failure shows error in row ──────────────────────

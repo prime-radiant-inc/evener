@@ -19,6 +19,7 @@ import (
 // TestValidateActivityRootRef_BadRef covers the decodeRef error path (line
 // 200-202).
 func TestValidateActivityRootRef_BadRef(t *testing.T) {
+	t.Parallel()
 	err := validateActivityRootRef(":::", "sess")
 	if err == nil {
 		t.Fatal("expected error for bad ref")
@@ -28,6 +29,7 @@ func TestValidateActivityRootRef_BadRef(t *testing.T) {
 // TestValidateActivityRootRef_ProjectBoundary covers the projectID != "" path
 // (line 204-205).
 func TestValidateActivityRootRef_ProjectBoundary(t *testing.T) {
+	t.Parallel()
 	ref := encodeRef("projX", "sess")
 	err := validateActivityRootRef(ref, "sess")
 	if err == nil {
@@ -38,6 +40,7 @@ func TestValidateActivityRootRef_ProjectBoundary(t *testing.T) {
 // TestValidateActivityRootRef_SessionMismatch covers the sessionID mismatch
 // path (line 207-208).
 func TestValidateActivityRootRef_SessionMismatch(t *testing.T) {
+	t.Parallel()
 	ref := encodeRef("", "other")
 	err := validateActivityRootRef(ref, "sess")
 	if err == nil {
@@ -47,6 +50,7 @@ func TestValidateActivityRootRef_SessionMismatch(t *testing.T) {
 
 // TestValidateActivityRootRef_OK covers the happy path (line 210).
 func TestValidateActivityRootRef_OK(t *testing.T) {
+	t.Parallel()
 	ref := encodeRef("", "sess")
 	if err := validateActivityRootRef(ref, "sess"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -56,6 +60,7 @@ func TestValidateActivityRootRef_OK(t *testing.T) {
 // TestValidateActivityRootRef_Empty covers the empty-ref early return (line
 // 197-198).
 func TestValidateActivityRootRef_Empty(t *testing.T) {
+	t.Parallel()
 	if err := validateActivityRootRef("", "sess"); err != nil {
 		t.Fatalf("unexpected error for empty ref: %v", err)
 	}
@@ -67,6 +72,7 @@ func TestValidateActivityRootRef_Empty(t *testing.T) {
 // TestLoadSessionJobActivityTree_BadRef covers the top-level ref validation
 // error (line 38-39).
 func TestLoadSessionJobActivityTree_BadRef(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, "sess", appwire.JobsListParams{Ref: ":::"})
 	if err == nil {
@@ -77,6 +83,7 @@ func TestLoadSessionJobActivityTree_BadRef(t *testing.T) {
 // TestLoadHistoricalActivityBase_RequiredChildMissing covers the required=true
 // path when the jobs file doesn't exist (line 78-79).
 func TestLoadHistoricalActivityBase_RequiredChildMissing(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "missingchild"
 	savePastActivityMeta(t, stateDir, sessionID, "Missing")
@@ -90,6 +97,7 @@ func TestLoadHistoricalActivityBase_RequiredChildMissing(t *testing.T) {
 // path (line 75-76) by making the jobs directory a regular file so the stat
 // fails with a non-IsNotExist error.
 func TestLoadHistoricalActivityBase_StatError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "staterrchild"
 	savePastActivityMeta(t, stateDir, sessionID, "StatErr")
@@ -117,6 +125,7 @@ func TestLoadHistoricalActivityBase_StatError(t *testing.T) {
 // TestLoadHistoricalActivityBase_ReadEventsError covers the jobstore.ReadEvents
 // error path (line 83-85) by writing a malformed jobs.jsonl.
 func TestLoadHistoricalActivityBase_ReadEventsError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "readerrchild"
 	savePastActivityMeta(t, stateDir, sessionID, "ReadErr")
@@ -138,6 +147,7 @@ func TestLoadHistoricalActivityBase_ReadEventsError(t *testing.T) {
 // delegatestore.ReadEventsWithDiagnostics error in loadHistoricalStableActivity
 // (line 108-110) by writing a malformed delegates.jsonl.
 func TestLoadHistoricalActivityBase_StableActivityReadError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "stablereaderr"
 	savePastActivityMeta(t, stateDir, sessionID, "StableReadErr")
@@ -160,6 +170,7 @@ func TestLoadHistoricalActivityBase_StableActivityReadError(t *testing.T) {
 // delegatestore.Fold error in loadHistoricalStableActivity (line 112-114)
 // by writing a delegates.jsonl with an orphan event that fails folding.
 func TestLoadHistoricalActivityBase_StableActivityFoldError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "stablefolderr"
 	savePastActivityMeta(t, stateDir, sessionID, "StableFoldErr")
@@ -184,6 +195,7 @@ func TestLoadHistoricalActivityBase_StableActivityFoldError(t *testing.T) {
 // TestLoadHistoricalStableActivityWithAttention_ReadError covers the
 // ReadEventsWithDiagnostics error in the WithAttention variant (line 136-138).
 func TestLoadHistoricalStableActivityWithAttention_ReadError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attnreaderr"
 	// Write malformed delegates.jsonl.
@@ -203,6 +215,7 @@ func TestLoadHistoricalStableActivityWithAttention_ReadError(t *testing.T) {
 // TestLoadHistoricalStableActivityWithAttention_FoldError covers the Fold
 // error in the WithAttention variant (line 140-142).
 func TestLoadHistoricalStableActivityWithAttention_FoldError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attnfolderr"
 	dlgPath := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
@@ -222,6 +235,7 @@ func TestLoadHistoricalStableActivityWithAttention_FoldError(t *testing.T) {
 // TestLoadHistoricalStableActivityWithAttention_SkipNonMatching covers the
 // continue path for non-matching delegates (line 146-147).
 func TestLoadHistoricalStableActivityWithAttention_SkipNonMatching(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attnskiproot"
 	otherID := "attnskipother"
@@ -274,6 +288,7 @@ func TestLoadHistoricalStableActivityWithAttention_UsesBoundedScan(t *testing.T)
 // rather than being silently ignored the way the unbounded
 // context.Background()-only read was.
 func TestLoadHistoricalStableActivityWithAttention_RespectsCancellation(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attncancel"
 	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childattncancel", "task"))
@@ -301,6 +316,7 @@ func TestLoadHistoricalStableActivityWithAttention_RespectsCancellation(t *testi
 // iterations, so cancellation is guaranteed to land inside the attention
 // loop, not the scan.
 func TestLoadHistoricalStableActivityWithAttention_ChecksCancellationDuringAttentionLoop(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attnloopcancel"
 	const delegateCount = 30
@@ -320,6 +336,7 @@ func TestLoadHistoricalStableActivityWithAttention_ChecksCancellationDuringAtten
 // TestLoadHistoricalStableActivityWithAttention_TornTailDiagnostic covers the
 // torn tail diagnostic path in the WithAttention variant (line 171-172).
 func TestLoadHistoricalStableActivityWithAttention_TornTailDiagnostic(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attntorntail"
 	childID := "childtorntail"
@@ -347,6 +364,7 @@ func TestLoadHistoricalStableActivityWithAttention_TornTailDiagnostic(t *testing
 
 // TestActivityRootIDFromMeta covers both branches (line 178-181).
 func TestActivityRootIDFromMeta(t *testing.T) {
+	t.Parallel()
 	// With root ID in meta.
 	meta := schema.SessionMeta{JobTreeRootSessionID: "root123"}
 	if got := activityRootIDFromMeta("sess", meta); got != "root123" {
@@ -366,6 +384,7 @@ func TestActivityRootIDFromMeta(t *testing.T) {
 
 // TestActivityRevisionFromMeta covers the revision extraction (line 184-185).
 func TestActivityRevisionFromMeta(t *testing.T) {
+	t.Parallel()
 	meta := schema.SessionMeta{JobTreeRevision: 42}
 	if got := activityRevisionFromMeta(meta); got != 42 {
 		t.Fatalf("got %d, want 42", got)
@@ -374,6 +393,7 @@ func TestActivityRevisionFromMeta(t *testing.T) {
 
 // TestActivityLabelFromMeta covers both branches (line 188-192).
 func TestActivityLabelFromMeta(t *testing.T) {
+	t.Parallel()
 	// No error — uses activitySessionLabel (which returns the session Name).
 	meta := schema.SessionMeta{ID: "sess", Name: "My Session"}
 	if got := activityLabelFromMeta("sess", meta, nil); got != "My Session" {
@@ -388,6 +408,7 @@ func TestActivityLabelFromMeta(t *testing.T) {
 // TestHistoricalActivityUsage_NoTranscript covers the error return when the
 // transcript file doesn't exist (line 29-31).
 func TestHistoricalActivityUsage_NoTranscript(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	got := historicalActivityUsage(stateDir, "noexist", schema.SessionMeta{})
 	if got != nil {
@@ -398,6 +419,7 @@ func TestHistoricalActivityUsage_NoTranscript(t *testing.T) {
 // TestLoadSessionJobActivityTree_ContinuationError covers the continuation
 // path error (line 52-53) when buildActivityFullSnapshot fails.
 func TestLoadSessionJobActivityTree_ContinuationError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "continuerr"
 	// Set up minimal state so the initial snapshot loads but the continuation
@@ -414,6 +436,7 @@ func TestLoadSessionJobActivityTree_ContinuationError(t *testing.T) {
 // TestLoadSessionJobActivityTree_EmptyRootRevision covers the fallback when
 // snapshot.RootID is empty (line 47-48).
 func TestLoadSessionJobActivityTree_EmptyRootRevision(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "emptyrootrev"
 	savePastActivityMeta(t, stateDir, rootID, "EmptyRoot")
@@ -427,6 +450,7 @@ func TestLoadSessionJobActivityTree_EmptyRootRevision(t *testing.T) {
 // TestLoadHistoricalStableActivity_TornTailDiagnostic covers the torn tail
 // diagnostic path in the base variant (line 128-129).
 func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "basetorntail"
 	childID := "childbasetorn"
@@ -455,6 +479,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 // TestLoadHistoricalStableActivity_NilAggregateSkipped covers the nil-aggregate
 // skip path (line 117-118).
 func TestLoadHistoricalStableActivity_NilAggregateSkipped(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "nilaggroot"
 	// Create a delegates.jsonl with a delegate that folds to nil.

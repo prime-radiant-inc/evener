@@ -12,6 +12,7 @@ import (
 // TestResolveDelegateSandboxRequest_Inherit covers the inherit path (line
 // 96-97): both args unset returns nil, nil.
 func TestResolveDelegateSandboxRequest_Inherit(t *testing.T) {
+	t.Parallel()
 	pol, err := resolveDelegateSandboxRequest("", nil, sandbox.ModeOff, true)
 	if err != nil || pol != nil {
 		t.Fatalf("inherit: pol=%v err=%v, want nil, nil", pol, err)
@@ -21,6 +22,7 @@ func TestResolveDelegateSandboxRequest_Inherit(t *testing.T) {
 // TestResolveDelegateSandboxRequest_NetOnlyUnderOffParent covers the error
 // when sandbox_net is set without a mode under an off parent (line 100-101).
 func TestResolveDelegateSandboxRequest_NetOnlyUnderOffParent(t *testing.T) {
+	t.Parallel()
 	netFalse := false
 	_, err := resolveDelegateSandboxRequest("", &netFalse, sandbox.ModeOff, true)
 	if err == nil || !strings.Contains(err.Error(), "sandbox_net requires") {
@@ -32,6 +34,7 @@ func TestResolveDelegateSandboxRequest_NetOnlyUnderOffParent(t *testing.T) {
 // the inherit-mode path when sandbox_net is set under a sandboxed parent
 // (line 103-104).
 func TestResolveDelegateSandboxRequest_NetOnlyUnderSandboxedParent(t *testing.T) {
+	t.Parallel()
 	netFalse := false
 	pol, err := resolveDelegateSandboxRequest("", &netFalse, sandbox.ModeReadOnly, true)
 	if err != nil {
@@ -45,6 +48,7 @@ func TestResolveDelegateSandboxRequest_NetOnlyUnderSandboxedParent(t *testing.T)
 // TestBuildDelegateSandboxPolicy_InvalidMode covers the parse error path
 // (line 133-135).
 func TestBuildDelegateSandboxPolicy_InvalidMode(t *testing.T) {
+	t.Parallel()
 	_, err := buildDelegateSandboxPolicy("bogus", nil, sandbox.ModeOff, true)
 	if err == nil || !strings.Contains(err.Error(), "invalid_request") {
 		t.Fatalf("error = %v, want invalid_request", err)
@@ -54,6 +58,7 @@ func TestBuildDelegateSandboxPolicy_InvalidMode(t *testing.T) {
 // TestBuildDelegateSandboxPolicy_NotConfining covers the no-escalation floor
 // violation (line 142-143).
 func TestBuildDelegateSandboxPolicy_NotConfining(t *testing.T) {
+	t.Parallel()
 	_, err := buildDelegateSandboxPolicy("off", nil, sandbox.ModeReadOnly, true)
 	if err == nil || !strings.Contains(err.Error(), "not at least as confining") {
 		t.Fatalf("error = %v, want not at least as confining", err)
@@ -63,6 +68,7 @@ func TestBuildDelegateSandboxPolicy_NotConfining(t *testing.T) {
 // TestBuildDelegateSandboxPolicy_OffWithNet covers the contradiction error
 // for sandbox="off" with sandbox_net set (line 150-151).
 func TestBuildDelegateSandboxPolicy_OffWithNet(t *testing.T) {
+	t.Parallel()
 	netTrue := true
 	_, err := buildDelegateSandboxPolicy("off", &netTrue, sandbox.ModeOff, true)
 	if err == nil || !strings.Contains(err.Error(), "applies no network confinement") {
@@ -73,6 +79,7 @@ func TestBuildDelegateSandboxPolicy_OffWithNet(t *testing.T) {
 // TestBuildDelegateSandboxPolicy_OffWithoutNet covers the off-inherit path
 // (line 156-157).
 func TestBuildDelegateSandboxPolicy_OffWithoutNet(t *testing.T) {
+	t.Parallel()
 	pol, err := buildDelegateSandboxPolicy("off", nil, sandbox.ModeOff, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -86,6 +93,7 @@ func TestBuildDelegateSandboxPolicy_OffWithoutNet(t *testing.T) {
 // sandbox_net=true would grant more network than the parent has (line
 // 163-164).
 func TestBuildDelegateSandboxPolicy_NetEscalation(t *testing.T) {
+	t.Parallel()
 	netTrue := true
 	_, err := buildDelegateSandboxPolicy("read-only", &netTrue, sandbox.ModeReadOnly, false)
 	if err == nil || !strings.Contains(err.Error(), "more network") {
@@ -96,6 +104,7 @@ func TestBuildDelegateSandboxPolicy_NetEscalation(t *testing.T) {
 // TestBuildDelegateSandboxPolicy_Success covers the happy path with a
 // valid policy (line 183).
 func TestBuildDelegateSandboxPolicy_Success(t *testing.T) {
+	t.Parallel()
 	netFalse := false
 	pol, err := buildDelegateSandboxPolicy("read-only", &netFalse, sandbox.ModeReadOnly, true)
 	if err != nil {
@@ -111,6 +120,7 @@ func TestBuildDelegateSandboxPolicy_Success(t *testing.T) {
 
 // TestAllowedDelegateModes covers the function (lines 112-119).
 func TestAllowedDelegateModes(t *testing.T) {
+	t.Parallel()
 	got := allowedDelegateModes(sandbox.ModeOff)
 	if got == "" {
 		t.Fatal("expected non-empty modes for off parent")
@@ -130,6 +140,7 @@ func TestAllowedDelegateModes(t *testing.T) {
 // TestSandboxSnapshotFromInputs_Off covers the off-mode nil return (line
 // 237-238).
 func TestSandboxSnapshotFromInputs_Off(t *testing.T) {
+	t.Parallel()
 	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{Mode: sandbox.ModeOff})
 	if snap != nil {
 		t.Fatal("expected nil for off mode")
@@ -139,6 +150,7 @@ func TestSandboxSnapshotFromInputs_Off(t *testing.T) {
 // TestSandboxSnapshotFromInputs_WithNetwork covers the snapshot with
 // network (lines 240-251).
 func TestSandboxSnapshotFromInputs_WithNetwork(t *testing.T) {
+	t.Parallel()
 	net := false
 	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{
 		Mode:    sandbox.ModeReadOnly,
@@ -158,6 +170,7 @@ func TestSandboxSnapshotFromInputs_WithNetwork(t *testing.T) {
 // TestSandboxSnapshotFromInputs_WithoutNetwork covers the snapshot without
 // network (lines 240-246, skipping 247-250).
 func TestSandboxSnapshotFromInputs_WithoutNetwork(t *testing.T) {
+	t.Parallel()
 	snap := sandboxSnapshotFromInputs(sandbox.SandboxPolicy{
 		Mode: sandbox.ModeReadOnly,
 	})
@@ -171,6 +184,7 @@ func TestSandboxSnapshotFromInputs_WithoutNetwork(t *testing.T) {
 
 // TestCloneSandboxSnapshot_Nil covers the nil input (line 260-261).
 func TestCloneSandboxSnapshot_Nil(t *testing.T) {
+	t.Parallel()
 	if got := cloneSandboxSnapshot(nil); got != nil {
 		t.Fatal("expected nil for nil input")
 	}
@@ -179,6 +193,7 @@ func TestCloneSandboxSnapshot_Nil(t *testing.T) {
 // TestCloneSandboxSnapshot_WithNetwork covers the clone with network
 // (lines 263-274).
 func TestCloneSandboxSnapshot_WithNetwork(t *testing.T) {
+	t.Parallel()
 	net := true
 	orig := &delegatestore.SandboxSnapshot{
 		Mode:    "read-only",
@@ -203,6 +218,7 @@ func TestCloneSandboxSnapshot_WithNetwork(t *testing.T) {
 
 // TestSandboxPolicyFromSnapshot_Nil covers the nil input (line 284-285).
 func TestSandboxPolicyFromSnapshot_Nil(t *testing.T) {
+	t.Parallel()
 	_, ok := sandboxPolicyFromSnapshot(nil)
 	if ok {
 		t.Fatal("expected false for nil snapshot")
@@ -212,6 +228,7 @@ func TestSandboxPolicyFromSnapshot_Nil(t *testing.T) {
 // TestSandboxPolicyFromSnapshot_InvalidMode covers the parse error path
 // (line 287-289).
 func TestSandboxPolicyFromSnapshot_InvalidMode(t *testing.T) {
+	t.Parallel()
 	_, ok := sandboxPolicyFromSnapshot(&delegatestore.SandboxSnapshot{Mode: "bogus"})
 	if ok {
 		t.Fatal("expected false for invalid mode")
@@ -221,6 +238,7 @@ func TestSandboxPolicyFromSnapshot_InvalidMode(t *testing.T) {
 // TestSandboxPolicyFromSnapshot_Success covers the happy path (lines
 // 291-302).
 func TestSandboxPolicyFromSnapshot_Success(t *testing.T) {
+	t.Parallel()
 	net := false
 	snap := &delegatestore.SandboxSnapshot{
 		Mode:    "read-only",
@@ -241,6 +259,7 @@ func TestSandboxPolicyFromSnapshot_Success(t *testing.T) {
 // TestSandboxPolicyFromSnapshot_SuccessNoNetwork covers the happy path
 // without network (line 298-300 skip).
 func TestSandboxPolicyFromSnapshot_SuccessNoNetwork(t *testing.T) {
+	t.Parallel()
 	snap := &delegatestore.SandboxSnapshot{Mode: "read-only"}
 	pol, ok := sandboxPolicyFromSnapshot(snap)
 	if !ok {
@@ -254,6 +273,7 @@ func TestSandboxPolicyFromSnapshot_SuccessNoNetwork(t *testing.T) {
 // TestSandboxSnapshotFromEnv_NonLocal covers the non-local env path (line
 // 226-227).
 func TestSandboxSnapshotFromEnv_NonLocal(t *testing.T) {
+	t.Parallel()
 	// Use a nil env — should return nil.
 	if got := sandboxSnapshotFromEnv(nil); got != nil {
 		t.Fatal("expected nil for non-local env")
@@ -263,6 +283,7 @@ func TestSandboxSnapshotFromEnv_NonLocal(t *testing.T) {
 // TestParentSandboxModeNet_NonLocal covers the non-local env path (line
 // 78-82).
 func TestParentSandboxModeNet_NonLocal(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// currentEnv returns nil for a bare Session — should return ModeOff, true.
 	mode, net := s.parentSandboxModeNet()
@@ -277,6 +298,7 @@ func TestParentSandboxModeNet_NonLocal(t *testing.T) {
 // TestProvisionRestoredSandbox_Off covers the off-mode early return (line
 // 197-198).
 func TestProvisionRestoredSandbox_Off(t *testing.T) {
+	t.Parallel()
 	cfg := SessionConfig{Sandbox: "off"}
 	if err := provisionRestoredSandbox(cfg, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -286,6 +308,7 @@ func TestProvisionRestoredSandbox_Off(t *testing.T) {
 // TestProvisionRestoredSandbox_NonLocalWithMode covers the non-local env
 // error path (line 200-202).
 func TestProvisionRestoredSandbox_NonLocalWithMode(t *testing.T) {
+	t.Parallel()
 	cfg := SessionConfig{Sandbox: "read-only"}
 	err := provisionRestoredSandbox(cfg, nil)
 	if err == nil {

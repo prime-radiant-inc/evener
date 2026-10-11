@@ -2,13 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { startTransition, useState } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
-
-afterEach(cleanup);
 
 function ControlledEditor({
   initial,

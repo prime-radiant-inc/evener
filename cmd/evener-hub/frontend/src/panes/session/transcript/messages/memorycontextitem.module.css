@@ -1,0 +1,77 @@
+/* The automatic memory refresh body, inside the shared steering divider. The
+ * summary reuses steeringitem.module.css (glyph, label, chevron); this module
+ * styles only the expanded formatted body and its folded literal Source. */
+
+.body {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  border-left: 2px solid var(--edge);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-mid);
+  overflow-wrap: break-word;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+  color: var(--ink-low);
+}
+
+/* Unavailable/revoked on the collapsed row and the truncation marker in the
+ * body - the same quiet chip both places, so the state reads without opening. */
+.state,
+.truncated {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-chip);
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.content {
+  margin-top: var(--space-1);
+  overflow-wrap: break-word;
+}
+
+.empty {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-low);
+}
+
+/* The decode-failure fallback is the complete original Text, verbatim. */
+.fallback {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+.source {
+  margin-top: var(--space-2);
+}
+
+.sourceSummary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.sourceSummary::-webkit-details-marker {
+  display: none;
+}
+
+.sourceText {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}

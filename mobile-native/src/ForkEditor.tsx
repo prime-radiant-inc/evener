@@ -1,5 +1,6 @@
 import { ScrollView, View } from "react-native";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export interface ForkEditorProps {
 	title: string;
@@ -24,32 +25,18 @@ export interface ForkEditorProps {
 export function ForkEditor(props: ForkEditorProps) {
 	const colors = useColors();
 	const busy = props.pending || props.storageUnavailable;
-	const preview =
-		props.preview.length > 1000
-			? `${props.preview.slice(0, 1000)}…`
-			: props.preview;
+	const preview = props.preview.length > 1000 ? `${props.preview.slice(0, 1000)}…` : props.preview;
 	return (
-		<ScrollView
-			style={styles.fill}
-			contentContainerStyle={{ padding: 20, gap: 16 }}
-		>
+		<ScrollView style={styles.fill} contentContainerStyle={{ padding: 20, gap: 16 }}>
 			<View style={{ gap: 4 }}>
 				<Copy>{props.title}</Copy>
 				<Copy muted>{props.hubName}</Copy>
 			</View>
 			<ErrorMessage message={props.sourceError} />
 			<ErrorMessage message={props.error} />
-			{!props.connected ? (
-				<Action onPress={props.retry}>Reconnect</Action>
-			) : null}
 			<View style={{ gap: 8 }}>
-				<Copy>
-					History before this message will be copied into a new session.
-				</Copy>
-				<Copy muted>
-					The message opens as an editable draft. You can change it before
-					sending.
-				</Copy>
+				<Copy>History before this message will be copied into a new session.</Copy>
+				<Copy muted>The message opens as an editable draft. You can change it before sending.</Copy>
 				<View
 					style={{
 						padding: 14,
@@ -71,43 +58,33 @@ export function ForkEditor(props: ForkEditorProps) {
 						</Copy>
 					) : null}
 					{props.hasChild ? (
-						<Action
-							disabled={!props.connected || busy}
-							onPress={props.openChild}
-							tone="primary"
-						>
-							Open fork
-						</Action>
+						<Button primary compact label="Open fork" disabled={!props.connected || busy} onPress={props.openChild} />
 					) : (
 						<View style={[styles.row, { flexWrap: "wrap" }]}>
-							<Action onPress={props.browseSessions}>Check Sessions</Action>
-							<Action
+							<Button text label="Check Sessions" onPress={props.browseSessions} />
+							<Button
+								text
+								quiet
+								label="Allow another fork"
 								disabled={!props.connected || busy}
 								onPress={props.allowAnother}
-								tone="quiet"
-							>
-								Allow another fork
-							</Action>
+							/>
 						</View>
 					)}
 				</View>
 			) : (
-				<Action
+				<Button
+					primary
+					compact
+					label="Create fork"
 					disabled={!props.connected || !props.canCreate || busy}
 					onPress={props.create}
-					tone="primary"
-				>
-					Create fork
-				</Action>
+				/>
 			)}
 			{props.storageUnavailable || (props.sourceError && props.connected) ? (
-				<Action disabled={props.pending} onPress={props.retry}>
-					Retry
-				</Action>
+				<Button text label="Retry" disabled={props.pending} onPress={props.retry} />
 			) : null}
-			<Action onPress={props.close} tone="quiet">
-				Close
-			</Action>
+			<Button text quiet label="Close" onPress={props.close} />
 		</ScrollView>
 	);
 }

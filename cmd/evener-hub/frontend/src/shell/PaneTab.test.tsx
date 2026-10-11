@@ -1,7 +1,7 @@
 import type { ThreadCapabilities, ThreadModel, ThreadStatus } from "@evener/appwire-client";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import type { IDockviewPanelHeaderProps } from "dockview-core";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneTab } from "./PaneTab";
 import type { PanePanelParams } from "./workspace";
@@ -74,10 +74,6 @@ function tabProps(params: PanePanelParams, title = "a pane"): IDockviewPanelHead
 
 beforeEach(() => {
   resetThreadsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 test("renders the panel's title", () => {

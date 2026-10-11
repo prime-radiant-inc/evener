@@ -161,7 +161,7 @@ export function AddInstanceDialog({
     }
     const trimmedCredentialHeader = credentialHeader.trim();
     if (trimmedCredentialHeader && !trimmedCredentialHeader.includes("$")) {
-      setError("Credential header must reference a $VARIABLE, never a literal secret.");
+      setError("Credential header must reference a $VARIABLE or run a $(command), never a literal secret.");
       return;
     }
     setError(null);
@@ -339,7 +339,7 @@ export function AddInstanceDialog({
             id="add-instance-credentialheader"
             value={credentialHeader}
             onChange={(event) => setCredentialHeader(event.target.value)}
-            placeholder="Authorization=Bearer $VAR"
+            placeholder="Authorization=Bearer $VAR or $(get-token)"
             disabled={busy}
           />
         </FormRow>

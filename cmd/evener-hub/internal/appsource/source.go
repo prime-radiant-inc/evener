@@ -41,7 +41,13 @@ type Source interface {
 	ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error)
 	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)
 	ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error)
+	ThreadActivityRead(context.Context, appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error)
+	ThreadDelegatesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionDelegatesResponse, error)
+	ThreadJobsList(context.Context, appwire.SessionActivityListParams) (appwire.SessionJobsResponse, error)
+	ThreadWatchesList(context.Context, appwire.SessionActivityListParams) (appwire.SessionWatchesResponse, error)
+
 	JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error)
+	JobGet(context.Context, appwire.JobsGetParams) (appwire.JobsGetResponse, error)
 	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)
 }
 
@@ -52,6 +58,45 @@ type ItemCandidateResult struct {
 	Candidates appitempaging.TranscriptItemWindow
 	Identity   appitempaging.CursorIdentity
 	Exhausted  bool
+	// History is the identity of the history read the candidates came from.
+	History HistoryIdentity
+}
+
+// HistoryIdentity is what a history read was projected under: what the
+// client merges a page by or replaces its history with. The hub's own cursor
+// identity is separate and rotates by its own rule.
+type HistoryIdentity struct {
+	BootGeneration string
+	Epoch          uint64
+	Snapshot       *appwire.SnapshotIdentity
+	Authoritative  bool
+}
+
+// ReadHistoryIdentity is the history identity a thread/read response carries.
+func ReadHistoryIdentity(response appwire.ThreadReadResponse) HistoryIdentity {
+	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative}
+}
+
+// PageHistoryIdentity is the history identity a thread/turns/list page carries.
+func PageHistoryIdentity(response appwire.ThreadTurnsListResponse) HistoryIdentity {
+	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative}
+}
+
+// StampPage gives a page the hub packed the history identity it came from.
+func (h HistoryIdentity) StampPage(response appwire.ThreadTurnsListResponse) appwire.ThreadTurnsListResponse {
+	response.BootGeneration = h.BootGeneration
+	response.Epoch = h.Epoch
+	response.Snapshot = h.Snapshot
+	response.Authoritative = h.Authoritative
+	return response
+}
+
+// DelegateStopSource is a source that can end one subagent's run at the
+// user's request (evener/delegate/stop, S6). The local daemon source and the
+// remote hub source implement it; a source without it answers Unavailable,
+// and a client keeps asking the coordinator instead.
+type DelegateStopSource interface {
+	StopDelegate(context.Context, appwire.DelegateStopParams) (appwire.DelegateStopResponse, error)
 }
 
 // ItemCandidateSource exposes positioned item candidates alongside the source
@@ -167,6 +212,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 			ProjectionVersion: localDaemonItemCursorProjectionVersion,
 		},
 		Exhausted: response.OlderCursor == "",
+		History:   ReadHistoryIdentity(response),
 	}, nil
 }
 
@@ -177,6 +223,7 @@ var localDaemonItemIncarnationSequence atomic.Uint64
 type localDaemonItemSnapshot struct {
 	Candidates []appitempaging.TranscriptItemCandidate
 	state      itemSnapshotState
+	history    HistoryIdentity
 }
 
 // ReadItemCandidates reads the daemon's authenticated bounded item view and
@@ -222,7 +269,7 @@ func (s *LocalDaemonSource) ReadItemCandidates(ctx context.Context, params appwi
 	if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
 		return ItemCandidateResult{}, err
 	}
-	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
 }
 
 // ListItemCandidates resolves a hub-owned cursor against the bounded native
@@ -232,6 +279,11 @@ func (s *LocalDaemonSource) ReadItemCandidates(ctx context.Context, params appwi
 // cache, so eviction safely turns a continuation into a typed stale error.
 func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
 	if err := ctx.Err(); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	// A before beside a cursor moves the cursor's boundary, whoever calls.
+	params, err := appitempaging.ApplyBefore(params)
+	if err != nil {
 		return ItemCandidateResult{}, err
 	}
 	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
@@ -244,11 +296,33 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		return ItemCandidateResult{}, err
 	}
 
-	if params.Cursor == "" {
-		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+
+	// A Before boundary with no cursor pages from a fresh snapshot, under its
+	// identity: from the snapshot itself when it holds the whole thread, or
+	// from its native cursor rebased onto the boundary. Two daemon reads at
+	// most, the snapshot and the page.
+	if params.Cursor == "" && params.Before != nil {
+		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, itemLimit)
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
+		if snapshot.state.NativeCursor == "" {
+			if !snapshot.state.Prefix {
+				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+			}
+			return s.localDaemonSnapshotWindow(ctx, resolved, snapshot, *params.Before, itemLimit)
+		}
+		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		return s.localDaemonNativeWindow(ctx, resolved, snapshot.state, localDaemonItemSnapshotIdentity(snapshot), *params.Before, params.ItemsView, itemLimit)
+	}
+
+	if params.Cursor == "" {
 		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, itemLimit)
 		if err != nil {
 			return ItemCandidateResult{}, err
@@ -269,7 +343,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
 			return ItemCandidateResult{}, err
 		}
-		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
 	}
 
 	state, ok := s.itemSnapshots.peek(resolved.pagingRef)
@@ -281,34 +355,15 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		if !state.Prefix {
 			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 		}
-		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
-		if err != nil {
-			return ItemCandidateResult{}, err
-		}
 		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, itemLimit)
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
-		identity := localDaemonItemSnapshotIdentity(snapshot)
-		before, err := appitempaging.DecodeCursor(params.Cursor, identity)
+		before, err := appitempaging.DecodeCursor(params.Cursor, localDaemonItemSnapshotIdentity(snapshot))
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
-		selected, hasOlder, err := appitempaging.SelectCandidates(snapshot.Candidates, &before, params.ItemLimit)
-		if err != nil {
-			return ItemCandidateResult{}, err
-		}
-		window := appitempaging.TranscriptItemWindow{Candidates: selected}
-		if hasOlder && len(selected) > 0 {
-			window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
-			if err != nil {
-				return ItemCandidateResult{}, err
-			}
-		}
-		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
-			return ItemCandidateResult{}, err
-		}
-		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+		return s.localDaemonSnapshotWindow(ctx, resolved, snapshot, before, itemLimit)
 	}
 	identity := appitempaging.CursorIdentity{
 		ThreadRef:         state.ThreadRef,
@@ -319,11 +374,34 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	nativeCursor, err := appitempaging.RebaseCursor(state.NativeCursor, before)
+	return s.localDaemonNativeWindow(ctx, resolved, state, identity, before, params.ItemsView, itemLimit)
+}
+
+// localDaemonSnapshotWindow is the page before a boundary out of a snapshot
+// that holds the whole thread, retained for the next page.
+func (s *LocalDaemonSource) localDaemonSnapshotWindow(ctx context.Context, resolved localDaemonItemThread, snapshot localDaemonItemSnapshot, before appwire.ThreadItemPosition, itemLimit int) (ItemCandidateResult, error) {
+	identity := localDaemonItemSnapshotIdentity(snapshot)
+	selected, hasOlder, err := appitempaging.SelectCandidates(snapshot.Candidates, &before, itemLimit)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	window := appitempaging.TranscriptItemWindow{Candidates: selected}
+	if hasOlder && len(selected) > 0 {
+		window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+	}
+	if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, snapshot.state); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder, History: snapshot.history}, nil
+}
+
+// localDaemonNativeWindow is the page before a boundary from the daemon, its
+// retained native cursor rebased onto the boundary.
+func (s *LocalDaemonSource) localDaemonNativeWindow(ctx context.Context, resolved localDaemonItemThread, state itemSnapshotState, identity appitempaging.CursorIdentity, before appwire.ThreadItemPosition, itemsView string, itemLimit int) (ItemCandidateResult, error) {
+	nativeCursor, err := appitempaging.RebaseCursor(state.NativeCursor, before)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -331,7 +409,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		Ref:       resolved.routeRef,
 		ThreadID:  resolved.threadID,
 		Cursor:    nativeCursor,
-		ItemsView: params.ItemsView,
+		ItemsView: itemsView,
 		ItemLimit: itemLimit,
 	})
 	if err != nil {
@@ -366,6 +444,14 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 		}
 	}
+	// Nothing precedes the boundary (the transcript's first item): an empty,
+	// exhausted page, as the daemon itself answers.
+	if len(candidates) == 0 && response.NextCursor == "" {
+		if err := s.itemSnapshots.putContext(ctx, resolved.pagingRef, state); err != nil {
+			return ItemCandidateResult{}, err
+		}
+		return ItemCandidateResult{Identity: identity, Exhausted: true, History: PageHistoryIdentity(response)}, nil
+	}
 	selected := localDaemonCandidatesBefore(candidates, before, itemLimit)
 	if len(selected) == 0 {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
@@ -380,6 +466,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: selected},
 		Identity:   identity,
 		Exhausted:  response.NextCursor == "",
+		History:    PageHistoryIdentity(response),
 	}, nil
 }
 
@@ -615,6 +702,7 @@ func (s *LocalDaemonSource) refreshLocalDaemonItemSnapshot(
 	current := localDaemonItemSnapshot{
 		Candidates: candidates,
 		state:      next,
+		history:    ReadHistoryIdentity(response),
 	}
 	return current, nil
 }

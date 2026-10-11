@@ -17,7 +17,7 @@ func TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent(t *testing.T) 
 	dir := t.TempDir()
 	sess := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	path := transcriptPath(dir, sess.ID())
-	before, err := readTranscriptFull(path)
+	before, err := readTranscriptFull(path, "")
 	if err != nil {
 		t.Fatalf("read transcript before compaction: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestS2Cov_HandleCompactionTurn_WritesTranscriptAndEmitsEvent(t *testing.T) 
 
 	sess.handleCompactionTurn(schema.NewTurn(schema.TurnSummary, llm.Assistant("a compaction summary")))
 
-	after, err := readTranscriptFull(path)
+	after, err := readTranscriptFull(path, "")
 	if err != nil {
 		t.Fatalf("read transcript after compaction: %v", err)
 	}

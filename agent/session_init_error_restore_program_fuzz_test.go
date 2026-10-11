@@ -130,7 +130,6 @@ func sierTestConfig() testConfig {
 
 func sierConfig(clk clock.Clock) SessionConfig {
 	return SessionConfig{
-		NoProjectPrompts: true,
 		MaxSubagentDepth: 1,
 		clock:            clk,
 		testOnly:         sierTestConfig(),
@@ -152,7 +151,7 @@ func sierMeta() schema.SessionMeta {
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		CreatedAt: time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC),
-		Config:    (SessionConfig{NoProjectPrompts: true, MaxSubagentDepth: 1}).toSnapshot(),
+		Config:    (SessionConfig{MaxSubagentDepth: 1}).toSnapshot(),
 	}
 }
 

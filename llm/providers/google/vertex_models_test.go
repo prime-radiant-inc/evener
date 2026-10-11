@@ -96,6 +96,37 @@ func TestVertexListModelsFollowsPagination(t *testing.T) {
 	}
 }
 
+// TestVertexListModelsExitsOnCancellation pins the catalog fetch cancellation
+// contract for the Vertex listing: a canceled context must end the in-flight
+// request promptly, not leave the fetch blocked on a silent endpoint.
+func TestVertexListModelsExitsOnCancellation(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (&Protocol{Client: srv.Client()}).ListModels(ctx, vertexRes(srv))
+		done <- err
+	}()
+	<-started
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ListModels did not exit after its context was canceled")
+	}
+}
+
 func TestVertexListModelsStopsOnARepeatedPageToken(t *testing.T) {
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

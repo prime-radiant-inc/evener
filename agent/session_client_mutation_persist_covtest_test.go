@@ -42,6 +42,7 @@ func validPersistSnapshot(sessionID string) clientMutationSnapshot {
 
 // TestValidateClientMutationSnapshot_VersionMismatch covers the unsupported-version branch.
 func TestValidateClientMutationSnapshot_VersionMismatch(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	s.Version = 999
 	if err := validateClientMutationSnapshot(s, "session-1"); err == nil ||
@@ -52,6 +53,7 @@ func TestValidateClientMutationSnapshot_VersionMismatch(t *testing.T) {
 
 // TestValidateClientMutationSnapshot_SessionMismatch covers the session-id mismatch branch.
 func TestValidateClientMutationSnapshot_SessionMismatch(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	if err := validateClientMutationSnapshot(s, "session-other"); err == nil ||
 		!contains(err.Error(), "does not match") {
@@ -61,6 +63,7 @@ func TestValidateClientMutationSnapshot_SessionMismatch(t *testing.T) {
 
 // TestValidateClientMutationSnapshot_MissingMaps covers the nil-map branches.
 func TestValidateClientMutationSnapshot_MissingMaps(t *testing.T) {
+	t.Parallel()
 	t.Run("nil journal", func(t *testing.T) {
 		s := validPersistSnapshot("session-1")
 		s.Journal = nil
@@ -90,6 +93,7 @@ func TestValidateClientMutationSnapshot_MissingMaps(t *testing.T) {
 // TestValidateClientMutationSnapshot_JournalKeyMismatch covers the
 // journal-key/record-id mismatch branch (line 298-300).
 func TestValidateClientMutationSnapshot_JournalKeyMismatch(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.ClientMutationID = "different-id"
@@ -101,6 +105,7 @@ func TestValidateClientMutationSnapshot_JournalKeyMismatch(t *testing.T) {
 }
 
 func TestValidateClientMutationSnapshot_EmptyJournalKey(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("")
 	s.Journal[""] = rec
@@ -113,6 +118,7 @@ func TestValidateClientMutationSnapshot_EmptyJournalKey(t *testing.T) {
 
 // TestValidateClientMutationSnapshot_NoMethod covers the empty-method branch (line 301-303).
 func TestValidateClientMutationSnapshot_NoMethod(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.Method = ""
@@ -126,6 +132,7 @@ func TestValidateClientMutationSnapshot_NoMethod(t *testing.T) {
 // TestValidateClientMutationSnapshot_EmptyPayloadNonTerminal covers the
 // no-payload-outside-terminal/rejected branch (line 304-308).
 func TestValidateClientMutationSnapshot_EmptyPayloadNonTerminal(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.Payload = nil
@@ -141,6 +148,7 @@ func TestValidateClientMutationSnapshot_EmptyPayloadNonTerminal(t *testing.T) {
 // TestValidateClientMutationSnapshot_EmptyPayloadTerminalNoHash covers the
 // terminal-no-payload-hash branch (line 309-311).
 func TestValidateClientMutationSnapshot_EmptyPayloadTerminalNoHash(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.Payload = nil
@@ -156,6 +164,7 @@ func TestValidateClientMutationSnapshot_EmptyPayloadTerminalNoHash(t *testing.T)
 // TestValidateClientMutationSnapshot_EmptyPayloadRejectedNoHash covers the
 // rejected-no-payload-hash branch.
 func TestValidateClientMutationSnapshot_EmptyPayloadRejectedNoHash(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.Payload = nil
@@ -171,6 +180,7 @@ func TestValidateClientMutationSnapshot_EmptyPayloadRejectedNoHash(t *testing.T)
 
 // TestValidateClientMutationSnapshot_InvalidPayload covers the invalid-JSON payload branch (line 313-315).
 func TestValidateClientMutationSnapshot_InvalidPayload(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.Payload = json.RawMessage(`{not json`)
@@ -185,6 +195,7 @@ func TestValidateClientMutationSnapshot_InvalidPayload(t *testing.T) {
 // TestValidateClientMutationSnapshot_PayloadHashMismatch covers the
 // payload-hash-mismatch branch (line 316-319).
 func TestValidateClientMutationSnapshot_PayloadHashMismatch(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.PayloadHash = "deadbeef"
@@ -198,6 +209,7 @@ func TestValidateClientMutationSnapshot_PayloadHashMismatch(t *testing.T) {
 // TestValidateClientMutationSnapshot_NoAttemptGeneration covers the
 // zero-attempt-generation branch (line 321-323).
 func TestValidateClientMutationSnapshot_NoAttemptGeneration(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.AttemptGeneration = 0
@@ -211,6 +223,7 @@ func TestValidateClientMutationSnapshot_NoAttemptGeneration(t *testing.T) {
 // TestValidateClientMutationSnapshot_NoExecutionState covers the
 // empty-execution-state branch (line 324-326).
 func TestValidateClientMutationSnapshot_NoExecutionState(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.ExecutionState = ""
@@ -224,6 +237,7 @@ func TestValidateClientMutationSnapshot_NoExecutionState(t *testing.T) {
 // TestValidateClientMutationSnapshot_RejectionOutsideRejected covers the
 // has-rejection-outside-rejected-state branch (line 329-331).
 func TestValidateClientMutationSnapshot_RejectionOutsideRejected(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.Rejection = &clientMutationRejection{Code: 1, Message: "no"}
@@ -238,6 +252,7 @@ func TestValidateClientMutationSnapshot_RejectionOutsideRejected(t *testing.T) {
 // TestValidateClientMutationSnapshot_RejectedNoRejection covers the
 // rejected-but-no-rejection branch (line 332-335).
 func TestValidateClientMutationSnapshot_RejectedNoRejection(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.OperationState = clientMutationOperationRejected
@@ -252,6 +267,7 @@ func TestValidateClientMutationSnapshot_RejectedNoRejection(t *testing.T) {
 // TestValidateClientMutationSnapshot_InvalidOperationState covers the
 // default-operation-state branch (line 336-337).
 func TestValidateClientMutationSnapshot_InvalidOperationState(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.OperationState = clientMutationOperationState("bogus")
@@ -265,6 +281,7 @@ func TestValidateClientMutationSnapshot_InvalidOperationState(t *testing.T) {
 // TestValidateClientMutationSnapshot_InvalidProjectionState covers the
 // default-projection-state branch (line 341-342).
 func TestValidateClientMutationSnapshot_InvalidProjectionState(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	rec := validPersistRecord("mutation-1")
 	rec.ProjectionState = appwire.MutationProjectionState("bogus")
@@ -278,6 +295,7 @@ func TestValidateClientMutationSnapshot_InvalidProjectionState(t *testing.T) {
 // TestValidateClientMutationSnapshot_PendingExecutionKeyMismatch covers
 // the pending-execution-key/mutation-id mismatch branch (line 346-348).
 func TestValidateClientMutationSnapshot_PendingExecutionKeyMismatch(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	s.PendingExecutions["pending-1"] = appwire.PendingMutation{
 		ClientMutationID: "different-id",
@@ -293,6 +311,7 @@ func TestValidateClientMutationSnapshot_PendingExecutionKeyMismatch(t *testing.T
 
 // TestValidateClientMutationSnapshot_Valid covers the success path.
 func TestValidateClientMutationSnapshot_Valid(t *testing.T) {
+	t.Parallel()
 	s := validPersistSnapshot("session-1")
 	// Add a rejected record with rejection to exercise that branch.
 	rec := validPersistRecord("mutation-2")
@@ -318,6 +337,7 @@ func TestValidateClientMutationSnapshot_Valid(t *testing.T) {
 
 // TestClientMutationSyncUnsupported covers the sync-unsupported classifier.
 func TestClientMutationSyncUnsupported(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		err  error
 		want bool
@@ -341,6 +361,7 @@ func TestClientMutationSyncUnsupported(t *testing.T) {
 
 // TestRejectTrailingClientMutationJSON covers the trailing-data and EOF branches.
 func TestRejectTrailingClientMutationJSON(t *testing.T) {
+	t.Parallel()
 	t.Run("eof is ok", func(t *testing.T) {
 		decoder := json.NewDecoder(bytes.NewReader([]byte(`{"a":1}`)))
 		var v map[string]any
@@ -382,6 +403,7 @@ func TestRejectTrailingClientMutationJSON(t *testing.T) {
 
 // TestClientMutationRejectionUnmarshalJSON covers the rejection unmarshal paths.
 func TestClientMutationRejectionUnmarshalJSON(t *testing.T) {
+	t.Parallel()
 	t.Run("valid", func(t *testing.T) {
 		data := `{"code":42,"message":"no","data":{"evener_error_info":"invalidParams","client_mutation_id":"m1","mutation_outcome":"notAccepted","retry_disposition":"automatic","cause":"because"}}`
 		var r clientMutationRejection
@@ -416,6 +438,7 @@ func TestClientMutationRejectionUnmarshalJSON(t *testing.T) {
 
 // TestClientMutationRejectionMarshalJSON covers the rejection marshal path.
 func TestClientMutationRejectionMarshalJSON(t *testing.T) {
+	t.Parallel()
 	r := clientMutationRejection{
 		Code:    7,
 		Message: "denied",
@@ -443,6 +466,7 @@ func TestClientMutationRejectionMarshalJSON(t *testing.T) {
 
 // TestClientMutationPendingExecutionsMarshalJSON covers the nil and non-nil marshal paths.
 func TestClientMutationPendingExecutionsMarshalJSON(t *testing.T) {
+	t.Parallel()
 	t.Run("nil marshals to null", func(t *testing.T) {
 		var pending clientMutationPendingExecutions
 		data, err := json.Marshal(pending)
@@ -474,6 +498,7 @@ func TestClientMutationPendingExecutionsMarshalJSON(t *testing.T) {
 
 // TestClientMutationPendingExecutionsUnmarshalJSON covers the unmarshal paths.
 func TestClientMutationPendingExecutionsUnmarshalJSON(t *testing.T) {
+	t.Parallel()
 	t.Run("null yields nil", func(t *testing.T) {
 		var pending clientMutationPendingExecutions
 		if err := json.Unmarshal([]byte(`null`), &pending); err != nil {
@@ -517,6 +542,7 @@ func TestClientMutationPendingExecutionsUnmarshalJSON(t *testing.T) {
 
 // TestForgetRunningTurnNoOneOwns covers the forgetRunningTurnNoOneOwns helper.
 func TestForgetRunningTurnNoOneOwns(t *testing.T) {
+	t.Parallel()
 	t.Run("empty active turn is noop", func(t *testing.T) {
 		s := newEmptyClientMutationSnapshot("s1")
 		forgetRunningTurnNoOneOwns(&s)
@@ -558,6 +584,7 @@ func TestForgetRunningTurnNoOneOwns(t *testing.T) {
 
 // TestClientMutationFilePath covers the path constructor.
 func TestClientMutationFilePath(t *testing.T) {
+	t.Parallel()
 	got := clientMutationFilePath("/state", "sess-1")
 	want := "/state/mutations/sess-1.json"
 	if got != want {

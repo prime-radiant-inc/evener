@@ -18,6 +18,8 @@
 // server on 9180 or the shared MCP Chrome. Every page load is pinned to the
 // guard's OWN loopback Vite origin by assertGuardOrigin.
 
+import os from "node:os";
+
 /**
  * Wrap a CDP operation with a timeout to prevent infinite hangs.
  *
@@ -40,7 +42,7 @@ function withTimeout(promise, ms, operation) {
     promise,
     new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error(`timeout calling ${operation} after ${ms}ms`)), ms);
-    })
+    }),
   ]).finally(() => clearTimeout(timer));
 }
 
@@ -164,15 +166,52 @@ function describeAttempts(attempts, lastAttempt) {
  * one of these and hands its signal down, and for a poll that signal is the
  * ONLY thing bounding total wall time: the attempt cap inside waitForHttp is a
  * backstop, not a clock.
+ *
+ * This is an ENVIRONMENT TRIPWIRE, not an assertion about startup time: the
+ * phase still ends only when the awaited event arrives, and the deadline only
+ * decides how long silence is read as "broken" rather than "slow". A FIXED
+ * floor therefore failed correct startups on loaded runners (runs 33803871850
+ * and 34257184696: "browser startup deadline exceeded after 30000ms" on a cold,
+ * contended machine). The announcement half was widened to
+ * CHROME_ANNOUNCEMENT_DEADLINE_MS; the endpoint/vite poll kept the bare floor.
+ * It is now load-aware: the floor on an idle machine, widening with the
+ * machine's oversubscription toward the announcement budget's ceiling.
  */
 export const STARTUP_DEADLINE_MS = 30000;
+export const STARTUP_DEADLINE_CAP_MS = 120000;
 
-export function createStartupDeadline(ms = STARTUP_DEADLINE_MS) {
+/**
+ * The startup deadline for a machine whose 1-minute load is `load1` over
+ * `cores` cores.
+ *
+ * Pressure is load per core, clamped to [0, 1]: an idle or lightly loaded box
+ * keeps the floor, a box at or past one runnable task per core gets the
+ * ceiling, and everything between interpolates. The signal is load AVERAGE, so
+ * it reflects contention that is already underway rather than a single
+ * instantaneous sample. An unreadable load (or a platform whose loadavg is
+ * meaningless, e.g. Windows) is treated as idle and keeps the floor -- an
+ * unknown machine must never look MORE pressured than it is.
+ */
+export function startupDeadlineMs({
+  floorMs = STARTUP_DEADLINE_MS,
+  capMs = STARTUP_DEADLINE_CAP_MS,
+  load1 = os.loadavg()[0],
+  cores = os.availableParallelism(),
+} = {}) {
+  // availableParallelism accounts for CPU affinity and, where the platform
+  // exposes one, a cgroup CPU quota -- the same effective-core signal
+  // scripts/lib/load-aware-workers.sh derives from nproc and the cgroup quota.
+  // An unreadable signal is treated as idle (pressure 0): an unknown machine
+  // must never look more pressured than it is.
+  const coresReadable = Number.isFinite(cores) && cores >= 1;
+  const load = Number.isFinite(load1) && load1 > 0 ? load1 : 0;
+  const pressure = coresReadable ? Math.min(1, load / cores) : 0;
+  return Math.round(floorMs + (capMs - floorMs) * pressure);
+}
+
+export function createStartupDeadline(ms = startupDeadlineMs()) {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)),
-    ms,
-  );
+  const timer = setTimeout(() => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)), ms);
   return {
     signal: controller.signal,
     clear: () => clearTimeout(timer),
@@ -224,7 +263,8 @@ export async function waitForHttp(
         if (response.ok) return;
         lastAttempt = `answered HTTP ${response.status}`;
       } catch (error) {
-        if (startupFailures.has(error) || deadline.aborted) throw startupFailures.has(error) ? error : abortReason(deadline);
+        if (startupFailures.has(error) || deadline.aborted)
+          throw startupFailures.has(error) ? error : abortReason(deadline);
         // The child process is still starting, or this attempt outlasted its
         // own bound and the next one gets a fresh connection.
         lastAttempt = error.message;
@@ -246,16 +286,38 @@ export async function waitForHttp(
   }
 }
 
+async function listPageTabs(endpoint) {
+  const targets = await (await requestDevtools(endpoint, "/json/list", "listPageTabs")).json();
+  return targets.filter((entry) => entry.type === "page");
+}
+
 /**
- * Find Chrome's page target over CDP and open a command channel to it.
+ * Connect to the browser's one page tab, the startup tab a guard that opens no
+ * tabs of its own drives. More than one listed tab is refused rather than
+ * guessed at: Chrome keeps listing a closing tab, first, for a moment (#3895).
+ */
+export async function connectOnlyPage(endpoint) {
+  const tabs = await listPageTabs(endpoint);
+  if (tabs.length === 0) throw new Error("expected one page tab, Chrome lists none");
+  if (tabs.length > 1) {
+    throw new Error(`expected one page tab, Chrome lists ${tabs.length}: ${tabs.map((tab) => tab.id).join(", ")}`);
+  }
+  return openTabChannel(tabs[0]);
+}
+
+/** Open a CDP command channel to the page tab with this target id. */
+export async function connectPage(endpoint, targetId) {
+  if (!targetId) throw new Error("connectPage needs the target id of the tab to connect to");
+  const target = (await listPageTabs(endpoint)).find((entry) => entry.id === targetId);
+  if (!target) throw new Error(`Chrome lists no page tab ${targetId}`);
+  return openTabChannel(target);
+}
+
+/**
  * send() rejects on a CDP error response so a failing command can never read
  * as a successful measurement. Callers close() in a finally.
  */
-export async function connectPage(endpoint) {
-  const targets = await (await fetch(devtoolsHttpURL(endpoint, "/json/list"))).json();
-  const target = targets.find((entry) => entry.type === "page");
-  if (!target) throw new Error("chrome exposed no page target");
-
+async function openTabChannel(target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   let id = 0;
   const pending = new Map();
@@ -266,55 +328,569 @@ export async function connectPage(endpoint) {
       pending.delete(message.id);
     }
   });
+  // A command in flight when the socket closes, or sent after (a closed socket
+  // drops it silently), fails rather than hanging the guard.
+  const closedReply = { error: { message: "CDP socket closed" } };
+  let closed = false;
+  ws.addEventListener("close", () => {
+    closed = true;
+    for (const settle of pending.values()) settle(closedReply);
+    pending.clear();
+  });
   await new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
+    // The ErrorEvent itself stringifies as a bare "[object ErrorEvent]" and,
+    // in Node, carries no message: name the socket instead.
+    ws.addEventListener("error", () => reject(new Error(`CDP socket to ${target.webSocketDebuggerUrl} failed`)), {
+      once: true,
+    });
   });
 
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const requestId = ++id;
-      pending.set(requestId, (message) => {
+      const settle = (message) => {
         if (message.error) reject(new Error(`${method}: ${JSON.stringify(message.error)}`));
         else resolve(message);
-      });
+      };
+      if (closed) return settle(closedReply);
+      pending.set(requestId, settle);
       ws.send(JSON.stringify({ id: requestId, method, params }));
     });
 
   return { ws, send, close: () => ws.close() };
 }
 
+async function requestDevtools(endpoint, pathname, operation, method = "GET") {
+  const response = await fetch(devtoolsHttpURL(endpoint, pathname), {
+    method,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`${operation}: HTTP ${response.status}`);
+  return response;
+}
+
+/** Chrome's browser WS announcement also names the DevTools HTTP listener. */
+export async function openPage(endpoint, url) {
+  const response = await requestDevtools(endpoint, `/json/new?${encodeURIComponent(url)}`, "openPage", "PUT");
+  return response.json();
+}
+
+export async function closePage(endpoint, targetId) {
+  await requestDevtools(endpoint, `/json/close/${encodeURIComponent(targetId)}`, `closePage ${targetId}`);
+}
+
+// The bounded re-navigation budget navigateTo's boot options use: a harness
+// page that loaded but never booted is re-navigated at most this many times.
+export const BOOT_RETRY_LIMIT = 2;
+
+/**
+ * The ceiling on every in-page evaluation, named like the Go tripwires in
+ * PR #852 and PR #873.
+ *
+ * Runtime.evaluate is a HARD bound on whatever the expression itself awaits:
+ * the guards' readiness spins run inside one such call, so every guard's own
+ * in-page tripwire must sit BELOW this. When it did not - the #900 diagnosis
+ * ran a 90 s in-page tripwire - the transport timed out first and the guard
+ * reported `timeout calling Runtime.evaluate after 30000ms` with its
+ * structured blocker lost (issue #919). At 30 s the ceiling now outlasts
+ * every guard's in-page budget (the longest is the font registration poll,
+ * FONT_POLL_DEADLINE_MS, at 20 s), so a page still making progress reports
+ * its own blocker first. It is deliberately NOT raised: a page whose frame
+ * loop stalls never re-reads its tripwire, and no finite ceiling recovers the
+ * blocker that case loses - it needs the host-side polling of issue #919's
+ * second fix shape, which is a separate design decision.
+ */
+export const CDP_EVALUATE_TRIPWIRE_MS = 30000;
+
+// The pause between those re-navigations, giving a transient network change
+// time to settle before the burst is asked for again.
+export const BOOT_RETRY_DELAY_MS = 250;
+
+// How long the loop holds a boot check for a navigation whose load resolved
+// before its Page.frameNavigated commit (a delayed load from the old document).
+// Bounded so a navigation that never commits cannot stall the guard.
+export const COMMIT_SETTLE_MS = 250;
+
+/**
+ * layoutguard's half of the boot seam, exported so the wire tests can call it
+ * against a stub document. It runs in the page via toString(), so it must not
+ * close over anything outside its own body: the documents come from the page's
+ * own globals and the answer is a plain boolean.
+ *
+ * A layoutguard case has no entry module that could leave a boot global -
+ * harness.html is static and window.measure comes from an inline script that
+ * always runs - so the case's boot contract is that every stylesheet link
+ * actually loaded, one document at a time (the top document's tokens.css and
+ * resolved.css, plus whatever any same-origin srcdoc fixture iframe links for
+ * itself): a request the burst died on leaves link.sheet null, and a page
+ * whose stylesheets died measures a fontless, unstyled page. A document that
+ * links NO stylesheet at all is not a booted case either - [].every(...) is
+ * vacuously true, so that shape has to be refused explicitly or an error page
+ * would pass as booted and die in waitForFonts as the fonts misfire.
+ */
+export function harnessStylesheetsLoadedInPage() {
+  const docs = [document];
+  for (const frame of document.querySelectorAll("iframe")) {
+    try {
+      if (frame.contentDocument) docs.push(frame.contentDocument);
+    } catch {}
+  }
+  return docs.every((doc) => {
+    const links = Array.from(doc.querySelectorAll('link[rel="stylesheet"]'));
+    if (links.length === 0) return false;
+    return links.every((link) => link.sheet !== null);
+  });
+}
+
+/**
+ * Group the Network.loadingFailed events captured during one attempt's boot
+ * window by what failed and how often, so the terminal error reports the
+ * burst ("Script net::ERR_NETWORK_CHANGED x3") instead of 40
+ * near-identical lines.
+ */
+function summarizeLoadingFailures(failures) {
+  if (failures.length === 0) return null;
+  const counts = new Map();
+  for (const failure of failures) {
+    const kind = `${failure?.type ?? "Unknown"} ${failure?.errorText ?? "(no error text)"}`;
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([kind, count]) => (count === 1 ? kind : `${kind} x${count}`)).join("; ");
+}
+
+// The error texts that name a host network-state change - the flake this seam
+// exists for (a Tailscale interface flap announces itself to Chrome as
+// ERR_NETWORK_CHANGED; the interface's own outage arrives as
+// ERR_INTERNET_DISCONNECTED). Anything else that fails on the wire - a
+// blocked request, an ERR_FAILED resource the harness itself caused - is
+// deterministic evidence about the harness: reported, but never counted as
+// the network-change signature that earns the environment framing. Extending
+// this set is a diagnosis decision, not a catch-all: a text added here lets
+// every guard's boot-death attribution claim an environment cause.
+const NETWORK_CHANGE_FAILURE_TEXTS = ["net::ERR_NETWORK_CHANGED", "net::ERR_INTERNET_DISCONNECTED"];
+
+function isNetworkChangeFailure(failure) {
+  return NETWORK_CHANGE_FAILURE_TEXTS.includes(failure?.errorText ?? "");
+}
+
 /**
  * Page.enable, navigate, and await the load event - the triple every guard
- * re-wrote.
+ * re-wrote. Resolves to the navigation's loaderId from the Page.navigate
+ * response, or null when it reports none. `onNavigated`, when given, runs the
+ * moment that response lands - before the load event and before the commit -
+ * so the boot seam can bind the coming Page.frameNavigated to THIS navigation
+ * rather than to whatever retry is in flight when the event arrives.
  *
  * The listener comes off in a finally, not only on the load event: on the
  * timeout path the load never fires, and a handler left behind keeps parsing
  * every later CDP message on a socket the guards reuse across cases.
  */
-export async function navigateTo({ ws, send }, url) {
+async function navigateToOnce({ ws, send }, url, onNavigated) {
   await withTimeout(send("Page.enable"), 30000, "Page.enable");
   let handler;
   let abandonLoad;
-  const loaded = withTimeout(new Promise((resolve) => {
-    abandonLoad = resolve;
-    handler = (event) => {
-      if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
-    };
-    ws.addEventListener("message", handler);
-  }), 30000, "navigateTo").finally(() => ws.removeEventListener("message", handler));
+  const loaded = withTimeout(
+    new Promise((resolve) => {
+      abandonLoad = resolve;
+      handler = (event) => {
+        if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
+      };
+      ws.addEventListener("message", handler);
+    }),
+    30000,
+    "navigateTo",
+  ).finally(() => ws.removeEventListener("message", handler));
   try {
     // Observe both immediately: the load tripwire can fire while Page.navigate
     // is still pending. Serial awaits leave that first rejection unhandled.
-    await Promise.all([
-      loaded,
-      withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate"),
-    ]);
+    const navigateCommand = withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate");
+    const observed = navigateCommand.then((navigated) => {
+      onNavigated?.(navigated?.result?.loaderId ?? null);
+      return navigated;
+    });
+    const [, navigated] = await Promise.all([loaded, observed]);
+    return navigated?.result?.loaderId ?? null;
   } finally {
     // A failed command may never produce a load event. Release that wait (and
     // its listener/timer) without replacing the error Promise.all observed.
     abandonLoad();
     await Promise.allSettled([loaded]);
+  }
+}
+
+/**
+ * Navigate, and on a boot-checked harness page prove the harness actually ran.
+ *
+ * THE UNBOOTED-PAGE FLAKE THIS ABSORBS: a transient network change on the
+ * host (measured on this machine: bursts of net::ERR_NETWORK_CHANGED, on
+ * 127.0.0.1 loopback requests too, whenever a Tailscale interface flaps)
+ * kills the Vite dev-server module burst mid-boot. The page still parses and
+ * fires its load event - document.readyState "complete", both script tags in
+ * the DOM - but the harness entry module never runs: its boot global is
+ * missing and no injected stylesheet arrives. Every guard then walked into
+ * waitForFonts on that dead page and reported the environment flake as "the
+ * top document declares no web fonts".
+ *
+ * THE SEAM: callers pass `bootExpression`, an in-page expression that is
+ * truthy exactly when the harness booted - for the tsx-entry harnesses, the
+ * module-scope global their entry assigns (window.settled and friends); for
+ * layoutguard's static case pages, that every stylesheet link actually loaded
+ * (a dead burst leaves link.sheet null). It is evaluated AFTER the load event:
+ * module scripts block the load event until their whole static import tree
+ * has evaluated, so at load time a marker that will ever exist already does.
+ * An unbooted page is re-navigated, bounded by BOOT_RETRY_LIMIT, and one that
+ * never recovers fails with the boot cause - never the fonts error - plus the
+ * Network.loadingFailed evidence captured inside the window.
+ *
+ * THE ATTRIBUTION IS EARNED, NOT ASSUMED: a missing boot marker alone does
+ * not name the cause. A harness entry whose module-init path throws at top
+ * level, a bad script href, or a broken import graph all leave the marker
+ * unset while every request succeeds - a deterministic code failure. Only a
+ * boot death whose FINAL attempt owned recognized network-change failures is
+ * framed as the environment flake. Evidence is scoped by DOCUMENT IDENTITY,
+ * never by the attempt counter or arrival time: a frame's loaderId is recorded
+ * at its Page.frameNavigated commit, every request is tagged with the loaderId
+ * it reported (Network.requestWillBeSent, first writer wins - redirects
+ * re-emit under the same pair), and each loadingFailed resolves through its
+ * request's loaderId to the attempt that committed that frame. A SEEN request
+ * is anchored at SEND time to the attempt that owned the live document then -
+ * both for a request that reported NO loaderId and for a loaderId whose frame
+ * never committed; an UNSEEN send alone anchors to the document live when the
+ * failure arrives, still the previous one in the gap before a new navigation
+ * commits. Ownership is resolved when the
+ * verdict is read, so a failure that arrives before its frame commits still
+ * resolves through the commit that later names it. The terminal attribution
+ * reads only the final attempt's failures, so a flap that killed an earlier
+ * attempt cannot launder a deterministic death on the final one.
+ * Navigation-induced aborts
+ * are never recorded at all. A final window that captured BOTH
+ * network-change and other failures is reported as INCONCLUSIVE with both
+ * summaries rather than issuing a definitive verdict either way; any other
+ * captured failure is reported under the harness diagnosis rather than
+ * flipping it.
+ *
+ * The legacy two-argument call is unchanged: no boot options, no Network
+ * domain, no extra evaluate - skillguard's driver and editorial-preview keep
+ * exactly the behavior they had.
+ *
+ * @param {{ws: object, send: Function}} page - the connected CDP page
+ * @param {string} url - where to navigate
+ * @param {object} [options]
+ * @param {string} [options.bootExpression] - in-page expression, truthy when booted
+ * @param {string} [options.bootLabel] - human name of the marker for errors and logs
+ * @param {number} [options.retryDelayMs] - pause before each re-navigation
+ */
+export async function navigateTo(
+  page,
+  url,
+  { bootExpression = null, bootLabel = null, retryDelayMs = BOOT_RETRY_DELAY_MS } = {},
+) {
+  if (!bootExpression) return navigateToOnce(page, url);
+  const { ws, send } = page;
+  // EVIDENCE IS SCOPED BY DOCUMENT IDENTITY, never by the attempt counter or
+  // arrival time: a frame's loaderId is recorded at its Page.frameNavigated
+  // commit, each request is tagged with the loaderId it reported (or, when it
+  // reported none, the attempt live at send time), and every loadingFailed
+  // resolves - at verdict time - through that ownership to the attempt that
+  // owns the request's document. The terminal attribution reads only the final
+  // attempt's failures, so a flap that killed an earlier attempt cannot
+  // launder a deterministic death on the final one however late its failures
+  // are delivered.
+  const requestLoaderIds = new Map();
+  const requestOwners = new Map();
+  const navigationAttempts = new Map();
+  const loaderAttempts = new Map();
+  // loaderIds a Page.frameNavigated has actually committed. loaderAttempts also
+  // holds send-time bindings, so a commit wait must test this set, not that map.
+  const committedLoaderIds = new Set();
+  // A top-level navigation whose response reported NO loaderId cannot be matched
+  // to its commit by identity. Its attempt is queued here and consumed, oldest
+  // first, by the next loaderless top commit - so a STALE loaderless commit from
+  // an earlier navigation cannot be adopted as the retry now in flight. A
+  // loaderless commit that matches no queued attempt is ignored for identity.
+  const pendingLoaderless = [];
+  const committedLoaderless = new Set();
+  // Waiters parked on a commit. A navigation's load event can resolve before its
+  // commit (a delayed load from the old document), so the loop holds the next
+  // boot check until THIS navigation's commit is recorded. Each waiter matches
+  // only its own navigation (by the loaderId its response named, or its queued
+  // attempt for a loaderless response), and is removed when it settles or times
+  // out, so a stale or unrelated commit can neither release it nor leak it.
+  const commitWaiters = new Set();
+  const failures = [];
+  // The last navigation whose main frame has COMMITTED (Page.frameNavigated).
+  // It advances only at that commit - never at the counter increment - so in
+  // the gap between attempts++ and the commit this still names the PREVIOUS
+  // document: the document that is live and emitting. The attempt number is
+  // tracked SEPARATELY from the loaderId because a committed document may
+  // report no loaderId (currentLoaderId null) while a still-live previous
+  // document keeps emitting - that document's requests must own the attempt
+  // that committed it, not the retry now in flight. A commit is bound to the
+  // navigation whose Page.navigate response named its loaderId
+  // (navigationAttempts), never to the ambient counter: a commit delivered
+  // late, after attempts++ has moved on, must still name its own navigation.
+  // The commit listener lives for this whole window, never only for one
+  // navigation, so a commit cannot be missed when a navigation's load event
+  // resolves early off stale input. A frame loaderId that is NOT a top-level
+  // navigation's (a subframe's) is bound at SEND time instead - a subframe
+  // document's own commit carries a stable frame id reused by later
+  // navigations, so keying on it would let a delayed iframe commit resolve to
+  // the newest attempt.
+  let currentLoaderId = null;
+  let currentAttempt = null;
+  // Attribute a failure only when the verdict is read, from evidence SETTLED
+  // by then. A request that reported a loaderId resolves through that frame's
+  // commit; a loaderId whose frame never committed has no document to settle,
+  // so it stays with the attempt owning the live document when the request was
+  // SENT - retry boundaries do not move attribution. A LOADERLESS request keeps
+  // that same send-time attempt, and an UNSEEN send alone anchors to the
+  // document live at failure arrival.
+  const resolveOwner = (failure) => {
+    if (!requestLoaderIds.has(failure.requestId)) return failure.ownerAtArrival;
+    const loaderId = requestLoaderIds.get(failure.requestId);
+    return loaderAttempts.get(loaderId) ?? requestOwners.get(failure.requestId) ?? failure.ownerAtArrival;
+  };
+  const failuresForAttempt = (attempt) => failures.filter((failure) => resolveOwner(failure) === attempt);
+  const settleCommitWaiters = () => {
+    for (const waiter of [...commitWaiters]) {
+      if (waiter.matches()) {
+        commitWaiters.delete(waiter);
+        waiter.settle();
+      }
+    }
+  };
+  const removePendingLoaderless = (attempt) => {
+    const at = pendingLoaderless.indexOf(attempt);
+    if (at >= 0) pendingLoaderless.splice(at, 1);
+  };
+  // Park until `matches()` holds, bounded by COMMIT_SETTLE_MS. The waiter leaves
+  // the set when it settles OR times out, so an abandoned promise cannot be
+  // resolved by a later unrelated commit and the set cannot grow across retries.
+  const waitForCommit = (matches, onTimeout) => {
+    if (matches()) return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer;
+      const waiter = {
+        matches,
+        settle: () => {
+          clearTimeout(timer);
+          commitWaiters.delete(waiter);
+          resolve();
+        },
+      };
+      timer = setTimeout(() => {
+        onTimeout?.();
+        waiter.settle();
+      }, COMMIT_SETTLE_MS);
+      commitWaiters.add(waiter);
+      if (matches()) waiter.settle();
+    });
+  };
+  const onLoadingFailed = (event) => {
+    // This handler sits on the guards' shared CDP socket, which other
+    // listeners (connectPage's pending-command resolver, the load tripwire)
+    // share: a frame it cannot parse, or an event without params, must be
+    // skipped, never thrown - an exception here breaks the dispatch of every
+    // later event on the socket.
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (!message?.params) return;
+    if (message.method === "Page.frameNavigated" && message.params.frame) {
+      // Only the TOP frame's commit records document identity, and it binds to
+      // the navigation whose Page.navigate response named its loaderId
+      // (navigationAttempts) - so a commit delivered after the next retry began
+      // still names its own attempt. Subframe loaderIds are instead bound at
+      // SEND time by the request that carries them (Network.requestWillBeSent),
+      // because a frame id is stable across navigations and cannot name the
+      // document that committed an iframe; see the parentId branch below.
+      const { loaderId, parentId } = message.params.frame;
+      if (parentId) {
+        // A subframe's loaderId is bound at SEND time by its own request, and
+        // its requests resolve through that binding (or their send-time owner).
+        // A subframe commit whose loaderId was never seen therefore has no owner
+        // we can prove: it is left UNATTRIBUTED rather than bound to the ambient
+        // retry, so a delayed iframe commit from an earlier document cannot
+        // claim a later attempt.
+        return;
+      }
+      if (loaderId) {
+        // Bound to the navigation whose response named the loaderId; otherwise
+        // (a response that reported none) the in-flight attempt.
+        const attempt = navigationAttempts.get(loaderId) ?? attempts;
+        loaderAttempts.set(loaderId, attempt);
+        committedLoaderIds.add(loaderId);
+        currentLoaderId = loaderId;
+        currentAttempt = attempt;
+        settleCommitWaiters();
+      } else {
+        // A top document that reported no loaderId has no identity to bind, so
+        // it takes the OLDEST pending loaderless navigation. A loaderless commit
+        // with nothing pending is stale: it names no document we are awaiting,
+        // so it must not be adopted into the live-document identity.
+        const attempt = pendingLoaderless.shift();
+        if (attempt != null) {
+          committedLoaderless.add(attempt);
+          currentLoaderId = null;
+          currentAttempt = attempt;
+          settleCommitWaiters();
+        }
+      }
+      return;
+    }
+    if (message.method === "Network.requestWillBeSent") {
+      // Tag by the event's OWN loaderId - the identity of the document that
+      // sent it - never by the counter: an old document can still emit while
+      // the counter already points at the new attempt. First writer wins: a
+      // request's redirects re-emit requestWillBeSent under the SAME
+      // requestId and loaderId, and the document that started the request owns
+      // its whole lifecycle. A first-seen loaderId is bound to the attempt live
+      // at SEND time; a top-level navigation's commit later overwrites it with
+      // the attempt its response named, while a subframe keeps the send-time
+      // binding (a frame id cannot name its document). Resolving at verdict
+      // time means a failure delivered before the commit still lands right.
+      if (message.params.requestId && !requestLoaderIds.has(message.params.requestId)) {
+        requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? null);
+        const ownerAtSend = loaderAttempts.get(currentLoaderId) ?? currentAttempt ?? attempts;
+        requestOwners.set(message.params.requestId, ownerAtSend);
+        if (message.params.loaderId && !loaderAttempts.has(message.params.loaderId)) {
+          loaderAttempts.set(message.params.loaderId, ownerAtSend);
+        }
+      }
+      return;
+    }
+    if (message.method !== "Network.loadingFailed") return;
+    // A re-navigation ABORTS the previous attempt's in-flight requests, so
+    // canceled:true / net::ERR_ABORTED arrivals are the seam's own doing, and
+    // a harness aborting its own request is equally deterministic. Neither is
+    // a wire death, so neither is recorded: evidence must be failures that
+    // happened to requests the page wanted kept alive.
+    if (message.params.canceled === true || message.params.errorText === "net::ERR_ABORTED") return;
+    // Record the failure with the anchor available NOW; the owning attempt is
+    // settled at verdict time (resolveOwner), once every navigation's commit
+    // has named its loaderId. An UNSEEN send has no send-time record, so its
+    // arrival-time anchor - the document live now, still the previous one in
+    // the navigate gap - is the only owner it can have.
+    failures.push({
+      params: message.params,
+      requestId: message.params.requestId,
+      ownerAtArrival: loaderAttempts.get(currentLoaderId) ?? currentAttempt ?? attempts,
+    });
+  };
+  ws.addEventListener("message", onLoadingFailed);
+  let attempts = 0;
+  try {
+    // Network events only flow while the domain is enabled, and only this
+    // window needs them. The enable sits inside the SAME cleanup scope as the
+    // loop: a command whose response times out may still have been applied by
+    // Chrome, and the guards reuse this page for every later case, so the
+    // disable must go out on every path - including the enable never
+    // answering.
+    await withTimeout(send("Network.enable"), 30000, "Network.enable");
+    for (;;) {
+      attempts++;
+      let expectedLoaderId = null;
+      const navigating = attempts;
+      // The navigation is queued for a loaderless commit BEFORE Page.navigate
+      // is issued: a loaderless Page.frameNavigated can arrive before its
+      // response, and would otherwise have no entry to consume and be lost.
+      pendingLoaderless.push(navigating);
+      // The commit that names this navigation's document is observed by the
+      // shared listener above, at Page.frameNavigated - not by anything the
+      // load event can stand in for. The navigate response registers which
+      // attempt owns this navigation's loaderId, so the commit binds to THIS
+      // attempt even if the load event resolved early off stale input.
+      await navigateToOnce(page, url, (navigatedLoaderId) => {
+        expectedLoaderId = navigatedLoaderId;
+        if (navigatedLoaderId) {
+          // A loaderId response is NOT a loaderless navigation: drop its queued
+          // entry so it cannot consume a later loaderless commit.
+          removePendingLoaderless(navigating);
+          navigationAttempts.set(navigatedLoaderId, navigating);
+        }
+      });
+      // A load event from the previous document can resolve the wait before
+      // THIS navigation commits. Hold the boot check until THIS navigation's
+      // commit lands (bounded): matched by the loaderId its response named, or -
+      // for a loaderless response - by its queued attempt being consumed.
+      const commitMatches = () =>
+        expectedLoaderId ? committedLoaderIds.has(expectedLoaderId) : committedLoaderless.has(navigating);
+      // A loaderless navigation that never commits must not stay queued to
+      // consume a LATER navigation's commit: expire it on timeout.
+      await waitForCommit(commitMatches, () => removePendingLoaderless(navigating));
+      if (await evaluate(send, bootExpression)) return;
+      if (attempts > BOOT_RETRY_LIMIT) {
+        const budget =
+          `after ${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
+          `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed)`;
+        const verdict =
+          `${bootLabel ?? bootExpression} did not hold even though the page's load event fired, ` +
+          `so the page is a dead document no measurement can read`;
+        // Only the FINAL attempt's owned failures name the cause: earlier
+        // attempts' failures exist but are never read here.
+        const finalFailures = failuresForAttempt(attempts).map((failure) => failure.params);
+        const networkEvidence = summarizeLoadingFailures(finalFailures.filter(isNetworkChangeFailure));
+        const otherEvidence = summarizeLoadingFailures(
+          finalFailures.filter((failure) => !isNetworkChangeFailure(failure)),
+        );
+        let diagnosis;
+        if (networkEvidence && otherEvidence) {
+          // A window holding BOTH a network change and deterministic failures
+          // cannot be named from the wire alone: either verdict would discard
+          // live evidence. Report both and let the reader judge.
+          diagnosis =
+            `inconclusive boot failure - the final attempt's window captured BOTH a network change and ` +
+            `deterministic failures, so the wire evidence alone cannot name the cause: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. Chrome reported these network-change failures during ` +
+            `the boot window: ${networkEvidence}. It also reported these deterministic failures: ` +
+            `${otherEvidence}. If the network-change failures explain the death (the transient change this ` +
+            `seam exists for - net::ERR_NETWORK_CHANGED is its signature), treat the run as an environment ` +
+            `flake and retry the gate; if the deterministic failures point at the harness, check what the ` +
+            `boot check measures - the harness entry and the product modules it imports (a top-level throw in ` +
+            `module init, a bad script href, or a broken import graph all leave the boot marker unset), or ` +
+            `the case's own stylesheet links.`;
+        } else if (networkEvidence) {
+          diagnosis =
+            `environment problem, not a test case failure: the harness page at ${url} never booted ${budget}: ` +
+            `${verdict}. Chrome reported these failed requests during the boot window: ${networkEvidence}. A ` +
+            `burst dying on the wire like that is the transient network change this seam exists for ` +
+            `(net::ERR_NETWORK_CHANGED is its signature) - an environment flake, not a test case regression.`;
+        } else if (otherEvidence) {
+          diagnosis =
+            `harness boot failure - likely a test case regression, not an environment flake: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. Chrome reported these failed requests during the boot ` +
+            `window: ${otherEvidence} - none of them the wire-death signature of the network-change flake this ` +
+            `seam exists for, so no host network change explains the missing marker: check what the boot check ` +
+            `measures - the harness entry and the product modules it imports (a top-level throw in module init, ` +
+            `a bad script href, or a broken import graph all leave the boot marker unset), or the case's own ` +
+            `stylesheet links.`;
+        } else {
+          diagnosis =
+            `harness boot failure - likely a test case regression, not an environment flake: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. No request failures were captured during the boot ` +
+            `window, so no request died on the wire: check what the boot check measures - the harness entry and ` +
+            `the product modules it imports (a top-level throw in module init, a bad script href, or a broken ` +
+            `import graph all leave the boot marker unset without reporting a failed request), or the case's ` +
+            `own stylesheet links.`;
+        }
+        throw new Error(diagnosis);
+      }
+      const captured = failuresForAttempt(attempts).length;
+      console.error(
+        `navigateTo: the harness page at ${url} never booted (attempt ${attempts}: ` +
+          `${bootLabel ?? bootExpression} is missing` +
+          (captured > 0 ? `, ${captured} request failure${captured === 1 ? "" : "s"} captured` : "") +
+          ") - re-navigating",
+      );
+      await delay(retryDelayMs);
+    }
+  } finally {
+    await withTimeout(send("Network.disable"), 30000, "Network.disable").catch(() => {});
+    ws.removeEventListener("message", onLoadingFailed);
   }
 }
 
@@ -330,8 +906,8 @@ export async function evaluate(send, expression) {
       awaitPromise: true,
       returnByValue: true,
     }),
-    30000,
-    "Runtime.evaluate"
+    CDP_EVALUATE_TRIPWIRE_MS,
+    "Runtime.evaluate",
   );
   if (response.result.exceptionDetails) {
     throw new Error(`page eval threw: ${JSON.stringify(response.result.exceptionDetails)}`);
@@ -381,29 +957,96 @@ export async function evaluate(send, expression) {
  * mono face alone. What must never pass is a face the page DID request failing
  * to arrive: that is the 404 which would otherwise leave every guard green and
  * permanently measuring the fallback, and it reports as status "error".
+ *
+ * fonts.ready settles INSTANTLY while a set is still empty, so racing the
+ * stylesheet application that registers the faces misreads "not arrived yet"
+ * as "declares none". Under sustained machine load that race fired across
+ * guards (overflowguard, then retirementguard) while every case passed
+ * standalone. The in-page wait runs on ONE coordinated deadline: the
+ * registration poll owns the whole FONT_POLL_DEADLINE_MS budget - it has to,
+ * because stylesheet application was observed taking more than 10s under
+ * sustained load - and the fonts.ready await, unbounded while any load
+ * hangs, races the budget's REMAINDER, capped at FONT_READY_TIMEOUT_MS, and
+ * reports a stall as data. No wait in the page can outlast FONT_POLL_DEADLINE_MS,
+ * pinned by test at 20000ms so the evaluate() wrapper's ceiling (CDP_EVALUATE_TRIPWIRE_MS)
+ * always fires last: a genuinely fontless or font-stalled document reports
+ * one of the actionable diagnostics below, never an opaque timeout.
  */
+
+// The registration poll's deadline, which is also the TOTAL in-page budget:
+// the fonts.ready await below runs on this deadline's remainder. It must
+// cover the stylesheet-application windows observed exceeding 10s under
+// sustained machine load, and it must lose to the evaluate() ceiling
+// (CDP_EVALUATE_TRIPWIRE_MS), never win against it.
+export const FONT_POLL_DEADLINE_MS = 20000;
+
+// The most the fonts.ready await may take once the poll exits early. When the
+// poll spends the whole budget waiting on a fontless document, the remainder
+// is zero and the await reports a stalled load immediately instead of
+// hanging on it.
+export const FONT_READY_TIMEOUT_MS = 8000;
+
+// The in-page half of waitForFonts, exported so the wire tests can call it
+// against a stub document. It runs in the page via toString(), so it must not
+// close over anything outside its own body: the budgets are passed in, the
+// documents come from the page's own globals, and it returns plain data (a
+// stalled flag plus each document's faces) for the node side to diagnose.
+export async function collectFontStatusInPage({ pollMs, readyMs }) {
+  const found = [{ label: "the top document", doc: document }];
+  const frames = document.querySelectorAll("iframe");
+  for (let index = 0; index < frames.length; index++) {
+    try {
+      const doc = frames[index].contentDocument;
+      if (doc) found.push({ label: `iframe #${index} (${frames[index].className || "no class"})`, doc });
+    } catch {
+      // Cross-origin: not reachable, and not something a guard builds.
+    }
+  }
+  const deadline = Date.now() + pollMs;
+  while (found.some(({ doc }) => doc.fonts.size === 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // fonts.ready is unbounded while any load hangs, so it is raced against the
+  // shared deadline's remainder (never more than readyMs); a stall reports as
+  // data, and clearing the cap timer keeps a settled wait from holding the
+  // guard process open for the loser's remaining ms.
+  const remaining = Math.max(deadline - Date.now(), 0);
+  let readyCap;
+  const settled = await Promise.race([
+    Promise.all(found.map(({ doc }) => doc.fonts.ready)).then(() => true),
+    new Promise((resolve) => {
+      readyCap = setTimeout(() => resolve(false), Math.min(readyMs, remaining));
+    }),
+  ]).finally(() => clearTimeout(readyCap));
+  return {
+    stalled: !settled,
+    documents: found.map(({ label, doc }) => {
+      const faces = [];
+      doc.fonts.forEach((face) => {
+        faces.push({ family: face.family, status: face.status });
+      });
+      return { label, faces };
+    }),
+  };
+}
+
 export async function waitForFonts(send) {
-  const documents = await evaluate(
+  const result = await evaluate(
     send,
-    `(async () => {
-       const found = [{ label: "the top document", doc: document }];
-       const frames = document.querySelectorAll("iframe");
-       for (let index = 0; index < frames.length; index++) {
-         try {
-           const doc = frames[index].contentDocument;
-           if (doc) found.push({ label: "iframe #" + index + " (" + (frames[index].className || "no class") + ")", doc });
-         } catch {
-           // Cross-origin: not reachable, and not something a guard builds.
-         }
-       }
-       await Promise.all(found.map(({ doc }) => doc.fonts.ready));
-       return found.map(({ label, doc }) => {
-         const faces = [];
-         doc.fonts.forEach((face) => faces.push({ family: face.family, status: face.status }));
-         return { label, faces };
-       });
-     })()`,
+    `(${collectFontStatusInPage.toString()})(${JSON.stringify({
+      pollMs: FONT_POLL_DEADLINE_MS,
+      readyMs: FONT_READY_TIMEOUT_MS,
+    })})`,
   );
+  if (result.stalled) {
+    throw new Error(
+      `environment problem, not a test case failure: web fonts did not settle within ${FONT_READY_TIMEOUT_MS}ms of the ` +
+        `${FONT_POLL_DEADLINE_MS}ms registration poll ending, so a font load is stalled and every text measurement ` +
+        `below would race a fallback. Check that Vite is serving node_modules/@fontsource-variable/* and that no ` +
+        `font request hangs.`,
+    );
+  }
+  const documents = result.documents;
   const fontless = documents.filter((entry) => entry.faces.length === 0).map((entry) => entry.label);
   if (fontless.length > 0) {
     throw new Error(
@@ -439,7 +1082,7 @@ export async function applyViewport(send, viewport) {
       screenHeight: viewport.height,
     }),
     30000,
-    "Emulation.setDeviceMetricsOverride"
+    "Emulation.setDeviceMetricsOverride",
   );
   // Metrics mobile:true alone does NOT flip the pointer media features; touch
   // emulation is what makes (pointer: coarse)/(hover: none) match, the same
@@ -449,17 +1092,21 @@ export async function applyViewport(send, viewport) {
     await withTimeout(
       send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }),
       30000,
-      "Emulation.setTouchEmulationEnabled"
+      "Emulation.setTouchEmulationEnabled",
     );
   }
 }
 
 /** Metrics overrides persist per target; clear between cases sharing one page. */
 export async function clearViewportOverride(send) {
-  await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(() => {});
-  await withTimeout(send("Emulation.setTouchEmulationEnabled", { enabled: false }), 30000, "Emulation.setTouchEmulationEnabled").catch(
-    () => {}
+  await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(
+    () => {},
   );
+  await withTimeout(
+    send("Emulation.setTouchEmulationEnabled", { enabled: false }),
+    30000,
+    "Emulation.setTouchEmulationEnabled",
+  ).catch(() => {});
 }
 
 /**
@@ -499,12 +1146,20 @@ export async function forcePseudoStates(send, states) {
   const doc = await withTimeout(send("DOM.getDocument", { depth: -1 }), 30000, "DOM.getDocument");
   const rootId = doc.result.root.nodeId;
   for (const { selector, pseudoClasses } of states) {
-    const found = await withTimeout(send("DOM.querySelector", { nodeId: rootId, selector }), 30000, "DOM.querySelector");
+    const found = await withTimeout(
+      send("DOM.querySelector", { nodeId: rootId, selector }),
+      30000,
+      "DOM.querySelector",
+    );
     // DOM.querySelector answers with nodeId 0 for "no match" rather than
     // failing - forcing nothing would leave the case measuring the resting
     // state while reporting the forced one, so it stops here instead.
     if (!found.result?.nodeId) throw new Error(`forcePseudoStates: no element matches ${selector}`);
-    await withTimeout(send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses }), 30000, "CSS.forcePseudoState");
+    await withTimeout(
+      send("CSS.forcePseudoState", { nodeId: found.result.nodeId, forcedPseudoClasses: pseudoClasses }),
+      30000,
+      "CSS.forcePseudoState",
+    );
   }
 }
 
@@ -523,3 +1178,13 @@ export async function assertGuardOrigin(send, expectedHost) {
     throw new Error(`refusing: expected origin http://${expectedHost}, got ${origin}`);
   }
 }
+
+/**
+ * Selector for a button that would refuse a click: natively disabled, itself
+ * or through an enclosing disabled fieldset (both are `:disabled`), or refused
+ * by the Button widget, which sets aria-disabled="true" and drops onClick
+ * while keeping the control hit-testable. Click helpers test it in the page
+ * before clicking: `button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})`.
+ * State reports and assertions keep reading native `.disabled`.
+ */
+export const REFUSED_BUTTON_SELECTOR = ':disabled, [aria-disabled="true"]';

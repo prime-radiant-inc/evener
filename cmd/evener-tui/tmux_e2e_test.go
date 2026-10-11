@@ -18,23 +18,46 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/cmd/evener-tui/internal/modeldisplay"
 	"primeradiant.com/evener/internal/e2ecap"
 
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
-var tuiE2EProjectDir = canonicalTUIE2EProjectDir()
+// tuiE2EFixtureRoot holds the fixture hub's project directories. TestMain
+// creates it for the run and removes it afterwards. It sits directly under /tmp
+// with a short prefix to keep the "Dir:" lines the tmux tests wait for short.
+var (
+	tuiE2EFixtureRoot string
+	tuiE2EProjectDir  string
+	tuiE2EOpsDir      string
+)
 
-func canonicalTUIE2EProjectDir() string {
-	tmp := "/tmp"
-	if canonical, err := filepath.EvalSymlinks(tmp); err == nil {
-		tmp = canonical
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("/tmp", "tui-e2e-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "evener-tui TestMain: %v\n", err)
+		os.Exit(2)
 	}
-	return filepath.Join(tmp, "evener-e2e", "evener")
+	if canonical, err := filepath.EvalSymlinks(root); err == nil {
+		root = canonical
+	}
+	tuiE2EFixtureRoot = root
+	tuiE2EProjectDir = filepath.Join(root, "evener")
+	tuiE2EOpsDir = filepath.Join(root, "ops")
+	code := m.Run()
+	if err := os.RemoveAll(root); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-tui TestMain: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // Generous backstop, not a target: WaitFor returns the instant the expected text
@@ -136,14 +159,15 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	// test do.
 	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
-	app.TypeText("/tmp/evener-e2e/custom")
-	app.WaitFor("Dir:      /tmp/evener-e2e/custom")
+	customDir := filepath.Join(tuiE2EFixtureRoot, "custom")
+	app.TypeText(customDir)
+	app.WaitFor("Dir:      " + customDir)
 	app.SendKeys("Enter", "Tab")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("evener / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].CWD != "/tmp/evener-e2e/custom" {
-		t.Fatalf("dashboard spawn cwd=%q, want /tmp/evener-e2e/custom", spawns[0].CWD)
+	if spawns[0].CWD != customDir {
+		t.Fatalf("dashboard spawn cwd=%q, want %s", spawns[0].CWD, customDir)
 	}
 	if testInputText(spawns[0].Input) != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", testInputText(spawns[0].Input))
@@ -397,23 +421,16 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	// /fork drops into browse mode with the fork prompt and footer hint.
 	app.TypeLine("/fork")
-	app.WaitFor("Select a user message, then press f to fork.", "f: fork selected user message")
+	app.WaitFor("Select a user message with ctrl+up/ctrl+down, then press ctrl+f to fork.", "ctrl+f: fork selected user message")
 	// The browse→compose transition must be synced on the DISAPPEARANCE of
 	// the browse action bar, not on "enter send": the browse footer keeps the
 	// composer panel — and with it the compose-mode "enter send" hint — on
-	// screen (hub_session_view.go's scrollMode branch), so a plain
-	// WaitFor("enter send") returns while the "i" can still be sitting
-	// unread in the pty. If "/help" is then written before the TUI's input
-	// reader consumes "i", tmux coalesces the two writes into one pty read,
-	// bubbletea reports "i/help" as a single KeyMsg, and browse mode drops
-	// it into the composer as draft text (kata fazd; fall-through pinned by
-	// kata 7hh0) — the TUI never leaves browse mode and /help never runs,
-	// which is the issue #540 flake. A frame showing "enter send" WITHOUT
-	// the browse action bar can only have been rendered from the post-"i"
-	// model, so this wait is a real happens-before edge: the "i" is provably
-	// consumed before "/help" is written.
-	app.SendKeys("i")
-	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
+	// screen (hub_session_view.go's scrollMode branch), so "enter send" alone
+	// cannot prove the exit was consumed. Browse is text-first (kata 7hh0), so
+	// the exit key is Escape, an escape sequence immune to the pty coalescing
+	// that made the old printable exit key unreliable (kata fazd, issue #540).
+	app.SendKeys("Escape")
+	app.WaitForWithout([]string{"esc: compose"}, "enter send")
 
 	// /help lists the slash commands and the browse keybindings.
 	app.TypeLine("/help")
@@ -549,8 +566,9 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	requireTmux(t)
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
-	// Browse-mode fork: k/j move the selection cursor across rows (auto-
-	// scrolling to keep it visible) so a user message can be reached and forked.
+	// Browse-mode fork: ctrl+up/ctrl+down move the selection cursor across rows
+	// (auto-scrolling to keep it visible) so a user message can be reached and
+	// forked; browse is text-first (kata 7hh0), so the chords are non-printable.
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	registerTUIE2EHubCleanup(t, hub)
@@ -561,8 +579,8 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	app.WaitFor("evener / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork selected user message", "▶ ▍ initial answer")
-	app.SendKeys("f")
+	app.WaitFor("esc: compose", "ctrl+f: fork selected user message", "▶ ▍ initial answer")
+	app.SendKeys("C-f")
 	app.WaitFor("Select a user message to fork.")
 	if forks := hub.Forks(); len(forks) != 0 {
 		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
@@ -570,25 +588,26 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	// Same sync rule as the /fork exit in SessionCommandsAndNavigation:
 	// "enter send" is visible in browse mode, so sync the transition on the
 	// action bar's disappearance, not on the hint text.
-	app.SendKeys("i")
-	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose")
-	// These k presses must move the browse cursor up to the user message.
-	app.SendKeys("k")
+	app.WaitForWithout([]string{"esc: compose"}, "enter send")
+	app.SendKeys("Escape")
+	app.WaitFor("esc: compose")
+	// These ctrl+up presses must move the browse cursor up to the user message.
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ▍ initial answer")
-	app.SendKeys("k")
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ▍ ✓ exec")
-	app.SendKeys("k")
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ┃  > initial question")
-	app.SendKeys("f")
+	app.SendKeys("C-f")
 	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 
 	app.SendKeys("Enter")
 	app.WaitFor("evener / session / fork child")
 	forks := hub.WaitForForks(t, 1)
-	if forks[0].SourceTurnID != "1" {
-		t.Fatalf("fork source turn=%q, want 1", forks[0].SourceTurnID)
+	_, gotPos, err := transcriptindex.ParseItemKey(forks[0].SourceItemKey)
+	if err != nil || gotPos.Entry != 1 {
+		t.Fatalf("fork source item key=%q (err=%v), want an item key naming entry 1", forks[0].SourceItemKey, err)
 	}
 	if forks[0].EditedInput != "initial question" {
 		t.Fatalf("fork edited input=%q, want initial question", forks[0].EditedInput)
@@ -613,18 +632,16 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	app.WaitFor("evener / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork selected user message")
+	app.WaitFor("esc: compose", "ctrl+f: fork selected user message")
 	// Await each selection render before the next press, the way
-	// TestTUITmuxE2E_BrowseAndFork does: consecutive printable command keys
-	// sent back-to-back can coalesce into one pty read on a loaded machine
-	// and arrive as a single batched KeyMsg, which browse mode reads as
-	// composer text rather than three commands (kata fazd — this test's CI
-	// failure pane had "kk" sitting in the composer).
-	app.SendKeys("k")
+	// TestTUITmuxE2E_BrowseAndFork does. Browse is now text-first (kata 7hh0),
+	// so these are ctrl+up escape sequences rather than printable command keys;
+	// awaiting the render still keeps the pane's cursor moves observable.
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ▍ ✓ exec")
-	app.SendKeys("k")
+	app.SendKeys("C-Up")
 	app.WaitFor("▶ ┃  > initial question")
-	app.SendKeys("f")
+	app.SendKeys("C-f")
 	app.WaitFor("Fork draft from transcript position 1", "> initial question")
 	app.TypeText(" with edit")
 	app.SendKeys("Enter")
@@ -853,7 +870,8 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 		"● WORKING",
 		"src evener",
 		"model gpt-5",
-		"dir "+tuiE2EProjectDir,
+		// The header elides a long dir; the fixture root's length varies by host.
+		"dir "+modeldisplay.AbbreviatePath(tuiE2EProjectDir, 32),
 		"2 turns",
 		"ctx 66%",
 		"status: hub connected",
@@ -1177,7 +1195,9 @@ func buildTUIBinary(t *testing.T) string {
 			errTUIBinary = err
 			return
 		}
-		dir, err := os.MkdirTemp("", "evener-e2e-bin-")
+		// Inside the run's fixture root, which TestMain removes: a sync.Once
+		// build outlives every test, so no t.TempDir can own it.
+		dir, err := os.MkdirTemp(tuiE2EFixtureRoot, "bin-")
 		if err != nil {
 			errTUIBinary = err
 			return
@@ -1912,7 +1932,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		Title:        "ops task",
 		State:        appwire.ThreadStatusIdle,
 		Project:      "ops",
-		WorkingDir:   "/tmp/evener-e2e/ops",
+		WorkingDir:   tuiE2EOpsDir,
 		Model:        "gpt-5",
 		Live:         true,
 		CreatedAt:    80,
@@ -2253,57 +2273,61 @@ func (h *tuiE2EHub) EndDashboardSessions() {
 }
 
 func (h *tuiE2EHub) BroadcastAgentDelta(threadID, delta string) {
-	h.app.Broadcast(threadID, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	h.app.Broadcast(threadID, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: threadID,
 		Ref:      "local:" + threadID,
-		TurnID:   "turn_stream",
-		ItemID:   "agent_stream",
-		Delta:    delta,
+		Item: appwire.OverlayItem{
+			Key: "stream:turn_stream/0:agentMessage", Kind: appwire.OverlayStream, TurnID: "turn_stream", RoundID: "turn_stream_r1", StreamID: "turn_stream/0",
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:turn_stream/0:agentMessage", TurnID: "turn_stream", Text: delta},
+		},
 	})
 }
 
 func (h *tuiE2EHub) BroadcastToolStarted(threadID string) {
-	h.app.Broadcast(threadID, appwire.NotifyItemStarted, map[string]any{
+	h.app.Broadcast(threadID, appwire.NotifyOverlayUpserted, map[string]any{
 		"threadId": threadID,
 		"ref":      "local:" + threadID,
-		"turnId":   "turn_tool",
-		"item": appwire.ThreadItem{
-			Type:          "commandExecution",
-			ID:            "tool_stream",
-			CallID:        "call_stream",
-			TurnID:        "turn_tool",
-			ToolName:      "read_file",
-			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
-			Status:        appwire.TurnStatusInProgress,
+		"item": appwire.OverlayItem{
+			Key: "tool:call_stream", Kind: appwire.OverlayTool, TurnID: "turn_tool", RoundID: "turn_tool_r1", CallID: "call_stream",
+			Item: appwire.ThreadItem{
+				Type:          "commandExecution",
+				ID:            "tool:call_stream",
+				CallID:        "call_stream",
+				TurnID:        "turn_tool",
+				ToolName:      "read_file",
+				ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
+				Status:        appwire.TurnStatusInProgress,
+			},
 		},
 	})
 }
 
 func (h *tuiE2EHub) BroadcastToolOutputDelta(threadID, delta string) {
-	h.app.Broadcast(threadID, appwire.NotifyToolOutputDelta, map[string]any{
+	h.app.Broadcast(threadID, appwire.NotifyOverlayDelta, map[string]any{
 		"threadId": threadID,
 		"ref":      "local:" + threadID,
-		"turnId":   "turn_tool",
-		"itemId":   "tool_stream",
+		"key":      "tool:call_stream",
+		"field":    appwire.OverlayDeltaOutput,
 		"delta":    delta,
 	})
 }
 
 func (h *tuiE2EHub) BroadcastToolCompleted(threadID string) {
-	h.app.Broadcast(threadID, appwire.NotifyItemCompleted, map[string]any{
+	h.app.Broadcast(threadID, appwire.NotifyHistoryUpdated, map[string]any{
 		"threadId": threadID,
 		"ref":      "local:" + threadID,
-		"turnId":   "turn_tool",
-		"item": appwire.ThreadItem{
+		"items": []appwire.ThreadItem{{
 			Type:          "commandExecution",
-			ID:            "tool_stream",
+			ID:            "item_tool_stream",
 			CallID:        "call_stream",
 			TurnID:        "turn_tool",
+			RoundID:       "turn_tool_r1",
 			ToolName:      "read_file",
 			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
 			Output:        "tmux tool output\n",
 			Status:        "completed",
-		},
+			Version:       1,
+		}},
 	})
 }
 

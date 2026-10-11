@@ -165,8 +165,8 @@ func exerciseClientCommands(t *testing.T) {
 		CmdInstanceList(client), CmdInstanceCreate(client, appwire.InstanceCreateParams{}),
 		CmdInstanceEdit(client, appwire.InstanceEditParams{}), CmdInstanceRemove(client, "x", "fp"),
 		CmdInstanceSetDefault(client, "x"), CmdMarketplaceList(client),
-		CmdMarketplaceAdd(client, appwire.MarketplaceAddParams{}), CmdMarketplaceRemove(client, "m"),
-		CmdMarketplaceRefresh(client, "m"), CmdMarketplaceBrowse(client, "m"), CmdPluginList(client),
+		CmdMarketplaceAdd(client, appwire.MarketplaceAddParams{}, 0), CmdMarketplaceRemove(client, "m", 0),
+		CmdMarketplaceRefresh(client, "m", 0), CmdMarketplaceBrowse(client, "m"), CmdPluginList(client),
 		CmdPluginInstall(client, "p", "m"), CmdPluginUpgrade(client, "p", "m"),
 		CmdPluginRemove(client, "p", "m"), CmdPluginEnable(client, "p", "m"),
 		CmdPluginDisable(client, "p", "m"), CmdPluginSetAutoUpgrade(client, "p", "m", true),
@@ -368,7 +368,7 @@ func exerciseApplyEditBranches(t *testing.T) {
 		{"agent", "x"}, {"context_strategy", "x"}, {"openai_responses_continuation", "x"},
 		{"export_atif_provider_handles", "x"}, {"max_subagent_depth", "bad"}, {"app_replay_size", "bad"},
 		{"max_subagent_depth", "2"}, {"app_replay_size", "2"},
-		{"no_project_prompts", "bad"}, {"no_project_prompts", "true"}, {"sandbox_net", "bad"}, {"sandbox_net", "true"},
+		{"sandbox_net", "bad"}, {"sandbox_net", "true"},
 		{"system_prompt_mode", "x"}, {"system_prompt_file", file}, {"system_prompt_append_mode", "x"},
 		{"system_prompt_append_file", file}, {"system_prompt_append_file", "(default)"}, {"system_prompt_append_text", "(default)"},
 		{"trace_file", filepath.Join(dir, "trace")}, {"cpu_profile", filepath.Join(dir, "cpu")},
@@ -379,8 +379,7 @@ func exerciseApplyEditBranches(t *testing.T) {
 		_, _ = applyEdit(appwire.LaunchConfigLayer{}, tc.field, tc.value)
 	}
 	i := 1
-	tr := true
-	_ = layerRows(appwire.LaunchConfigLayer{MaxRounds: &i, NoProjectPrompts: &tr}, appwire.LaunchConfigLayer{})
+	_ = layerRows(appwire.LaunchConfigLayer{MaxRounds: &i}, appwire.LaunchConfigLayer{})
 	originalMarshal := marshalMCPEditSpecs
 	marshalMCPEditSpecs = func([]mcpEditSpec) ([]byte, error) { return nil, errors.New("x") }
 	_ = mcpEditValue([]appwire.MCPServerSpec{{Name: "x"}})

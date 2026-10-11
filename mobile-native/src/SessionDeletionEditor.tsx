@@ -1,6 +1,7 @@
 import { ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button } from "./sheet/Grouped";
 
 export function SessionDeletionEditor({
 	title,
@@ -41,10 +42,7 @@ export function SessionDeletionEditor({
 }) {
 	const colors = useColors();
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
 				<Copy>{title}</Copy>
 				<Copy muted>{hubName}</Copy>
@@ -58,21 +56,17 @@ export function SessionDeletionEditor({
 					<>
 						<Copy>Deletion is unconfirmed.</Copy>
 						<Copy muted>
-							The request may have been applied. Check its current state before
-							deciding whether to allow another attempt.
+							The request may have been applied. Check its current state before deciding whether to allow another
+							attempt.
 						</Copy>
-						{retryAvailable ? (
-							<Action disabled={busy} onPress={allowRetry}>
-								Allow another attempt
-							</Action>
-						) : null}
+						{retryAvailable ? <Button text label="Allow another attempt" disabled={busy} onPress={allowRetry} /> : null}
 					</>
 				) : (
 					<>
 						<Copy>Delete saved session?</Copy>
 						<Copy muted>
-							This permanently removes the saved hub history for “{title}”.
-							Other sessions and your local unsent draft are kept.
+							This permanently removes the saved hub history for “{title}”. Other sessions and your local unsent draft
+							are kept.
 						</Copy>
 						{skippedReason ? (
 							<>
@@ -81,29 +75,23 @@ export function SessionDeletionEditor({
 							</>
 						) : null}
 						{lastKnown ? (
-							<Copy muted>
-								Refresh to check the current session before deleting.
-							</Copy>
+							<Copy muted>Check the current session before deleting.</Copy>
 						) : !eligible ? (
-							<Copy muted>
-								End the session runtime before deleting its saved history.
-							</Copy>
+							<Copy muted>End the session runtime before deleting its saved history.</Copy>
 						) : null}
-						<Action disabled={!canDelete} onPress={requestDelete}>
-							Delete saved session
-						</Action>
+						<Button text label="Delete saved session" disabled={!canDelete} onPress={requestDelete} />
 					</>
 				)}
 				{busy ? <Copy muted>Checking the session…</Copy> : null}
-				<Action disabled={busy} onPress={refresh}>
-					{ready ? "Refresh session" : "Reconnect"}
-				</Action>
-				<Action tone="quiet" disabled={busy} onPress={openSessions}>
-					{missing && !lastKnown ? "Return to Sessions" : "Open Sessions"}
-				</Action>
-				<Action tone="quiet" onPress={close}>
-					Close
-				</Action>
+				{ready ? <Button text label="Check again" disabled={busy} onPress={refresh} /> : null}
+				<Button
+					text
+					quiet
+					label={missing && !lastKnown ? "Return to Sessions" : "Open Sessions"}
+					disabled={busy}
+					onPress={openSessions}
+				/>
+				<Button text quiet label="Close" onPress={close} />
 			</ScrollView>
 		</SafeAreaView>
 	);

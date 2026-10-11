@@ -90,15 +90,8 @@ const PROJECT_RESOURCE: NavigationProjectResource = {
         ref: "ref_proj_1",
         title: "Add the surfaces gallery",
         state: "active",
-        running_jobs: [
-          {
-            job_id: "job_running_1",
-            job_type: "shell",
-            status: "running",
-            command: "go build ./... && go test ./internal/migrate/...",
-            intent: "Building the tree before running the migration tests",
-          },
-        ],
+        running_job_count: 1,
+        running_job_command: "go build ./... && go test ./internal/migrate/...",
       }),
     ],
     remaining: 0,
@@ -158,8 +151,8 @@ export default function RailSurfaceSection() {
       resourceState({ kind: "project", projectKey: "proj_evener" }, PROJECT_RESOURCE),
     );
     navigationStore.setState({
-      mode: "v2",
-      capability: { version: 1, generationId: GENERATION, sequence: 0, readVersions: [2] },
+      mode: "v3",
+      capability: { version: 1, generationId: GENERATION, sequence: 0, readVersions: [3] },
       clientGenerationID: GENERATION,
       lastSequence: 0,
       manifest: resourceState({ kind: "manifest" }, MANIFEST),

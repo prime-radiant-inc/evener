@@ -1,14 +1,6 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-	ActivityIndicator,
-	KeyboardAvoidingView,
-	Platform,
-	ScrollView,
-	TextInput,
-	useWindowDimensions,
-	View,
-} from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
@@ -19,14 +11,14 @@ import {
 } from "./keybindingOfflineRecovery";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
-import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import type { HubRoutes } from "./hub/hubSheetContext";
+import { allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
+import { Spinner } from "./sheet/Spinner";
+import { Button } from "./sheet/Grouped";
 
 function shortcutLabel(chord: string): string {
-	return chord
-		.replaceAll("$mod", "Command / Control")
-		.replaceAll("Meta", "Command")
-		.replaceAll("Alt", "Option");
+	return chord.replaceAll("$mod", "Command / Control").replaceAll("Meta", "Command").replaceAll("Alt", "Option");
 }
 
 function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
@@ -41,18 +33,11 @@ function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
 						key={JSON.stringify([
 							rule.action,
 							rule.chord,
-							rules
-								.slice(0, index)
-								.filter((other) => other.action === rule.action).length,
+							rules.slice(0, index).filter((other) => other.action === rule.action).length,
 						])}
 					>
-						<Copy>
-							{preview.rows.find((row) => row.actionId === rule.action)
-								?.title ?? rule.action}
-						</Copy>
-						<Copy muted>
-							{rule.chord === null ? "Unbound" : shortcutLabel(rule.chord)}
-						</Copy>
+						<Copy>{preview.rows.find((row) => row.actionId === rule.action)?.title ?? rule.action}</Copy>
+						<Copy muted>{rule.chord === null ? "Unbound" : shortcutLabel(rule.chord)}</Copy>
 					</View>
 				))
 			)}
@@ -63,7 +48,7 @@ function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
 export function KeybindingPreferencesScreen({
 	route,
 	navigation,
-}: NativeStackScreenProps<Routes, "KeybindingPreferences">) {
+}: NativeStackScreenProps<HubRoutes, "KeybindingPreferences">) {
 	const connection = useConnection();
 	const preferences = useNativePreferences();
 	const colors = useColors();
@@ -83,8 +68,7 @@ export function KeybindingPreferencesScreen({
 		revision: number;
 	} | null>(null);
 	const reviewedRevision = review?.scope === scope ? review.revision : null;
-	const setReviewedRevision = (revision: number | null) =>
-		setReview(revision === null ? null : { scope, revision });
+	const setReviewedRevision = (revision: number | null) => setReview(revision === null ? null : { scope, revision });
 	currentScope.current = scope;
 	const mounted = useRef(false);
 	useEffect(() => {
@@ -104,11 +88,7 @@ export function KeybindingPreferencesScreen({
 	const editor = route.params.editor;
 	const action = preview.rows.find((row) => row.actionId === editor?.actionId);
 	const model = preferences.model;
-	const available =
-		!!model &&
-		preferences.connected &&
-		domain?.support === "supported" &&
-		!!domain.confirmed;
+	const available = !!model && preferences.connected && domain?.support === "supported" && !!domain.confirmed;
 	const busy =
 		!available ||
 		!!domain?.loading ||
@@ -117,8 +97,7 @@ export function KeybindingPreferencesScreen({
 		!!domain?.storageUnavailable ||
 		!!domain?.confirmed?.loadError;
 	const run = (operation: () => Promise<unknown>, success?: () => void) => {
-		if (!scope.connected || !model || scope.hubId !== route.params.hubId)
-			return;
+		if (!scope.connected || !model || scope.hubId !== route.params.hubId) return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
 		void operation()
@@ -126,10 +105,7 @@ export function KeybindingPreferencesScreen({
 				if (active()) success?.();
 			})
 			.catch(() => {
-				if (active())
-					setError(
-						"The change could not be completed. Check current shortcuts and review your changes.",
-					);
+				if (active()) setError("The change could not be completed. Check current shortcuts and review your changes.");
 			});
 	};
 	const closeEditor = () => navigation.setParams({ editor: undefined });
@@ -139,72 +115,45 @@ export function KeybindingPreferencesScreen({
 			const next = checkedKeybindingChange(rules, editor.actionId, chord);
 			run(() => model.editKeybindings(next), closeEditor);
 		} catch (failure) {
-			setError(
-				failure instanceof Error
-					? failure.message
-					: "This shortcut cannot be used.",
-			);
+			setError(failure instanceof Error ? failure.message : "This shortcut cannot be used.");
 		}
 	};
-	if (connection.activeProfile?.id !== route.params.hubId)
-		return (
-			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
-		);
+	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
-			<KeyboardAvoidingView
-				style={styles.fill}
-				behavior={Platform.OS === "ios" ? "padding" : undefined}
-			>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
+			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
 				<ScrollView
 					keyboardShouldPersistTaps="handled"
+					keyboardDismissMode="on-drag"
 					contentContainerStyle={{ padding: 20, gap: 16 }}
 				>
 					<Copy>{connection.activeProfile.name}</Copy>
 					<Copy muted>
-						Configure this hub’s web keyboard shortcuts. This preview uses Apple
-						keys. The web character-key setting can turn the ? shortcut off.
+						Configure this hub’s web keyboard shortcuts. This preview uses Apple keys. The web character-key setting can
+						turn the ? shortcut off.
 					</Copy>
-					{!preferences.connected && (
-						<Action onPress={connection.retry}>Reconnect</Action>
-					)}
-					{domain?.support === "unsupported" && (
-						<Copy>This hub does not support keyboard shortcut settings.</Copy>
-					)}
-					{(!domain || domain.loading) && (
-						<ActivityIndicator accessibilityLabel="Loading keyboard shortcuts" />
-					)}
+					{domain?.support === "unsupported" && <Copy>This hub does not support keyboard shortcut settings.</Copy>}
+					{(!domain || domain.loading) && <Spinner label="Loading keyboard shortcuts" />}
 					<ErrorMessage
 						message={
 							error ??
 							domain?.error ??
-							(!preferences.connected
-								? offlineStorageErrorMessage(
-										preferences.offlineStorageUnavailable,
-									)
-								: null)
+							(!preferences.connected ? offlineStorageErrorMessage(preferences.offlineStorageUnavailable) : null)
 						}
 					/>
 					{domain?.writeUncertain && (
 						<Copy>
-							The save could not be confirmed. Your proposal is kept on this
-							phone. Check the hub before making another change.
+							The save could not be confirmed. Your proposal is kept on this phone. Check the hub before making another
+							change.
 						</Copy>
 					)}
 					{draftUnreadable && (
 						<View style={{ gap: 12 }}>
-							<Copy>
-								A saved draft on this phone could not be read. Discard it to
-								continue editing shortcuts.
-							</Copy>
-							<Action
-								disabled={unreadableDraftDiscardDisabled(
-									!!model && preferences.connected,
-									domain,
-								)}
+							<Copy>A saved draft on this phone could not be read. Discard it to continue editing shortcuts.</Copy>
+							<Button
+								text
+								label="Discard unreadable draft"
+								disabled={unreadableDraftDiscardDisabled(!!model && preferences.connected, domain)}
 								onPress={() => {
 									if (model && preferences.connected) {
 										run(() => model.discardKeybindingsDraft());
@@ -227,25 +176,19 @@ export function KeybindingPreferencesScreen({
 										// prior failure instead of reporting the one it describes.
 										if (outcome !== null) setError(null);
 									} catch {
-										setError(
-											"The change could not be completed. Check current shortcuts and review your changes.",
-										);
+										setError("The change could not be completed. Check current shortcuts and review your changes.");
 									}
 								}}
-							>
-								Discard unreadable draft
-							</Action>
+							/>
 						</View>
 					)}
 					{model && domain?.support === "supported" && (
-						<Action
-							disabled={
-								!preferences.connected || domain.loading || domain.saving
-							}
+						<Button
+							text
+							label="Check current shortcuts"
+							disabled={!preferences.connected || domain.loading || domain.saving}
 							onPress={() => run(() => model.refresh())}
-						>
-							Check current shortcuts
-						</Action>
+						/>
 					)}
 					{editor ? (
 						<>
@@ -258,9 +201,7 @@ export function KeybindingPreferencesScreen({
 							<TextInput
 								accessibilityLabel="Shortcut"
 								value={editor.chord}
-								onChangeText={(chord) =>
-									navigation.setParams({ editor: { ...editor, chord } })
-								}
+								onChangeText={(chord) => navigation.setParams({ editor: { ...editor, chord } })}
 								editable={!busy && !!action}
 								autoCapitalize="none"
 								autoCorrect={false}
@@ -274,34 +215,29 @@ export function KeybindingPreferencesScreen({
 									color: colors.text,
 									fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
 								}}
-								allowFontScaling={Platform.OS !== "ios"}
+								allowFontScaling={allowFontScaling}
 							/>
 							<Copy muted>
-								Use + between keys. Meta means Command, Alt means Option, and
-								$mod uses Command on Apple or Control elsewhere. Put a space
-								between successive key presses.
+								Use + between keys. Meta means Command, Alt means Option, and $mod uses Command on Apple or Control
+								elsewhere. Put a space between successive key presses.
 							</Copy>
-							<Action
-								tone="primary"
+							<Button
+								primary
+								compact
+								label="Use shortcut"
 								disabled={busy || !action || !editor.chord.trim()}
 								onPress={() => apply(editor.chord)}
-							>
-								Use shortcut
-							</Action>
-							<Action disabled={busy || !action} onPress={() => apply(null)}>
-								Unbind shortcut
-							</Action>
-							<Action disabled={busy || !action} onPress={() => apply()}>
-								Restore default
-							</Action>
-							<Action
+							/>
+							<Button text label="Unbind shortcut" disabled={busy || !action} onPress={() => apply(null)} />
+							<Button text label="Restore default" disabled={busy || !action} onPress={() => apply()} />
+							<Button
+								text
+								label="Cancel edit"
 								onPress={() => {
 									setError(null);
 									closeEditor();
 								}}
-							>
-								Cancel edit
-							</Action>
+							/>
 						</>
 					) : (
 						<>
@@ -310,20 +246,13 @@ export function KeybindingPreferencesScreen({
 									<Copy>Changes saved on this phone</Copy>
 									{domain.conflict ? (
 										<>
-											<Copy>
-												The hub has different shortcuts. Review both versions
-												before replacing its settings.
-											</Copy>
-											<Action
+											<Copy>The hub has different shortcuts. Review both versions before replacing its settings.</Copy>
+											<Button
+												text
+												label="Review current settings"
 												disabled={busy}
-												onPress={() =>
-													setReviewedRevision(
-														domain.confirmed?.revision ?? null,
-													)
-												}
-											>
-												Review current settings
-											</Action>
+												onPress={() => setReviewedRevision(domain.confirmed?.revision ?? null)}
+											/>
 											{reviewedRevision !== null && domain.confirmed && (
 												<>
 													<Copy>Current on the hub</Copy>
@@ -331,34 +260,24 @@ export function KeybindingPreferencesScreen({
 													<Copy>Your proposal</Copy>
 													<RuleSummary rules={domain.draft.rules} />
 													{reviewedRevision !== domain.confirmed.revision && (
-														<Copy>
-															The hub changed again. Review the current settings
-															again.
-														</Copy>
+														<Copy>The hub changed again. Review the current settings again.</Copy>
 													)}
-													<Action
-														disabled={
-															busy ||
-															reviewedRevision !== domain.confirmed.revision
-														}
+													<Button
+														text
+														label="Keep my proposal"
+														disabled={busy || reviewedRevision !== domain.confirmed.revision}
 														onPress={() => {
 															if (model)
 																run(
-																	() =>
-																		model.rebaseKeybindingsDraft(
-																			reviewedRevision,
-																		),
+																	() => model.rebaseKeybindingsDraft(reviewedRevision),
 																	() => setReviewedRevision(null),
 																);
 														}}
-													>
-														Keep my proposal
-													</Action>
-													<Action
-														disabled={
-															busy ||
-															reviewedRevision !== domain.confirmed.revision
-														}
+													/>
+													<Button
+														text
+														label="Use hub settings"
+														disabled={busy || reviewedRevision !== domain.confirmed.revision}
 														onPress={() => {
 															if (model)
 																run(
@@ -366,31 +285,29 @@ export function KeybindingPreferencesScreen({
 																	() => setReviewedRevision(null),
 																);
 														}}
-													>
-														Use hub settings
-													</Action>
+													/>
 												</>
 											)}
 										</>
 									) : (
 										<>
-											<Action
-												tone="primary"
+											<Button
+												primary
+												compact
+												label="Save changes"
 												disabled={busy}
 												onPress={() => {
 													if (model) run(() => model.saveKeybindings());
 												}}
-											>
-												Save changes
-											</Action>
-											<Action
+											/>
+											<Button
+												text
+												label="Discard changes"
 												disabled={busy}
 												onPress={() => {
 													if (model) run(() => model.discardKeybindingsDraft());
 												}}
-											>
-												Discard changes
-											</Action>
+											/>
 										</>
 									)}
 								</View>
@@ -404,14 +321,10 @@ export function KeybindingPreferencesScreen({
 										warning.conflictWith,
 										preview.warnings
 											.slice(0, index)
-											.filter(
-												(other) =>
-													JSON.stringify(other) === JSON.stringify(warning),
-											).length,
+											.filter((other) => JSON.stringify(other) === JSON.stringify(warning)).length,
 									])}
 								>
-									{warning.message}. This rule is kept when you edit other
-									shortcuts.
+									{warning.message}. This rule is kept when you edit other shortcuts.
 								</Copy>
 							))}
 							{domain?.confirmed &&
@@ -425,14 +338,14 @@ export function KeybindingPreferencesScreen({
 											gap: 2,
 										}}
 									>
-										<Action
+										<Button
+											text
+											label={row.title}
 											disabled={busy}
-											label={`Edit ${row.title}`}
+											accessibilityLabel={`Edit ${row.title}`}
 											onPress={() => {
 												setError(null);
-												const raw = rules.findLast(
-													(rule) => rule.action === row.actionId,
-												);
+												const raw = rules.findLast((rule) => rule.action === row.actionId);
 												navigation.setParams({
 													editor: {
 														actionId: row.actionId,
@@ -440,12 +353,9 @@ export function KeybindingPreferencesScreen({
 													},
 												});
 											}}
-										>
-											{row.title}
-										</Action>
+										/>
 										<Copy muted>
-											{row.shortcuts.map(shortcutLabel).join(" or ") ||
-												"Unbound"}
+											{row.shortcuts.map(shortcutLabel).join(" or ") || "Unbound"}
 											{row.customized ? " · Custom" : " · Default"}
 										</Copy>
 									</View>

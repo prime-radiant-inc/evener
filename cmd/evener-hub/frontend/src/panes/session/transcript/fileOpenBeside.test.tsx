@@ -1,45 +1,11 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import * as paneActions from "../../../shell/paneActions";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { cwdRelative, FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
-
-afterEach(cleanup);
-
-// --- cwdRelative: a file arg made relative to the session cwd, or undefined
-// (no affordance) when it is out of the cwd. Handles BOTH an absolute arg
-// (legacy renderer.js:2204-2210) and an already-relative arg (execenv resolve()
-// joins it against the cwd root, local.go:1533). --------------------------
-
-test("an absolute path inside the cwd is relativized (prefix stripped)", () => {
-  expect(cwdRelative("/home/proj/src/a.ts", "/home/proj")).toBe("src/a.ts");
-  expect(cwdRelative("/home/proj/src/a.ts", "/home/proj/")).toBe("src/a.ts"); // trailing slash tolerated
-});
-
-test("an absolute path OUTSIDE the cwd earns no affordance", () => {
-  expect(cwdRelative("/etc/passwd", "/home/proj")).toBeUndefined();
-  expect(cwdRelative("/home/project-other/a.ts", "/home/proj")).toBeUndefined(); // sibling prefix, not inside
-});
-
-test("the cwd directory itself is not a file", () => {
-  expect(cwdRelative("/home/proj", "/home/proj")).toBeUndefined();
-});
-
-test("an already-relative arg is accepted as cwd-relative", () => {
-  expect(cwdRelative("src/a.ts", "/home/proj")).toBe("src/a.ts");
-  expect(cwdRelative("a.ts", "/home/proj")).toBe("a.ts");
-});
-
-test("a relative arg that escapes the cwd earns no affordance", () => {
-  expect(cwdRelative("../secret.ts", "/home/proj")).toBeUndefined();
-  expect(cwdRelative("src/../../secret.ts", "/home/proj")).toBeUndefined();
-});
-
-test("empty inputs earn no affordance", () => {
-  expect(cwdRelative("", "/home/proj")).toBeUndefined();
-  expect(cwdRelative("/home/proj/a.ts", "")).toBeUndefined();
-});
+import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
+import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
+import "../../doc";
 
 // --- fileDocParams: builds a file DocParams, or undefined when anything the
 // affordance needs is missing (no ref, no cwd, or out-of-cwd path) ----------
@@ -78,16 +44,33 @@ function seedThreadCwd(ref: string, cwd: string): void {
   threadsStore.setState({ threads: new Map([[ref, model]]) });
 }
 
-beforeEach(() => resetThreadsStoreForTests());
+beforeEach(() => {
+  resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
+});
 
-test("renders an accessible Open beside button that opens a doc pane beside with the cwd-relative path", () => {
+test("renders an accessible Open beside button that opens a bound doc owned by the actual source pane", () => {
   seedThreadCwd("ref_a", "/home/proj");
-  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(<FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />);
+  const sourcePaneId = workspaceStore.getState().openPane("transcript", { ref: "ref_a" });
+  const model = threadsStore.getState().threads.get("ref_a");
+  render(
+    <TranscriptRenderProvider thread={model} sourcePaneId={sourcePaneId}>
+      <FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />
+    </TranscriptRenderProvider>,
+  );
   const button = screen.getByRole("button", { name: "Open beside: src/a.ts" });
   fireEvent.click(button);
-  expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "ref_a", path: "src/a.ts", kind: "file" } });
-  spy.mockRestore();
+  const source = workspaceStore.getState().panes.find((pane) => pane.id === sourcePaneId);
+  const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  if (!source || !document) throw new Error("actual opening action did not create source and document panes");
+  expect(document.params).toEqual({ session: "ref_a", path: "src/a.ts", kind: "file" });
+  expect(documentPaneState(document)?.origin).toBe(source);
+  expect(documentPaneState(document)?.reference).toEqual({
+    path: "src/a.ts",
+    cwd: "/home/proj",
+    readTarget: "/home/proj/src/a.ts",
+    provenance: "absolute",
+  });
 });
 
 // kata 3qnd: an icon-only control (surrounding pane chrome - Pop out, Fork
@@ -98,7 +81,12 @@ test("renders an accessible Open beside button that opens a doc pane beside with
 // decorative (aria-hidden, per ForkGlyph's own precedent).
 test("Open beside is icon-only: no visible text label, but keeps its accessible name and a title tooltip", () => {
   seedThreadCwd("ref_a", "/home/proj");
-  render(<FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />);
+  const sourcePaneId = workspaceStore.getState().openPane("transcript", { ref: "ref_a" });
+  render(
+    <TranscriptRenderProvider thread={threadsStore.getState().threads.get("ref_a")} sourcePaneId={sourcePaneId}>
+      <FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />
+    </TranscriptRenderProvider>,
+  );
   const button = screen.getByRole("button", { name: "Open beside: src/a.ts" });
   expect(button.textContent).toBe(""); // icon only - the SVG carries no text, aria-hidden
   // The tooltip is the one word everywhere; the PATH stays in the aria-label.

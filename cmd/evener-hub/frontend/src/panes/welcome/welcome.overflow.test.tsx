@@ -125,9 +125,9 @@ test("welcome.module.css overrides white-space: nowrap for the resume-candidate 
 // overflow-wrap so long unbroken text wraps.
 test("welcome.module.css caps width and wraps long text in the title/hints containers", () => {
   const css = welcomeCss();
-  // .actions is the flex column holding the resume button, the orientation
-  // paragraph and .hints. It must cap its own width so an unbreakable child
-  // cannot inflate it past the viewport.
+  // .actions is the flex column holding the resume button and .hints. It must
+  // cap its own width so an unbreakable child cannot inflate it past the
+  // viewport.
   const actionsBlock = css.match(/\.actions\s*\{([^}]*)\}/);
   expect(actionsBlock, "welcome.module.css must define an .actions rule").toBeTruthy();
   const actionsRules = actionsBlock?.[1] ?? "";

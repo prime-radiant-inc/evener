@@ -236,10 +236,9 @@ func startHandStartedDaemon(t *testing.T, stack hubStack, daemonDir string) <-ch
 	return exited
 }
 
-// The skill guard's capability-loss step, without the browser: a subscribed
-// client whose session's daemon exits must be told, so the pane can render
-// the session as ended. The daemon's own close frame is the racy part - it
-// is sent microseconds before the socket closes and the relay revokes
+// A subscribed client whose session's daemon exits must be told, so the pane
+// can render the session as ended. The daemon's own close frame is the racy
+// part - it is sent microseconds before the socket closes and the relay revokes
 // whatever is still unpublished at that moment - so this pins the handoff
 // the hub owes regardless: a resync after the daemon has left the roster,
 // and a re-read that answers the ended state the follow-up composer needs

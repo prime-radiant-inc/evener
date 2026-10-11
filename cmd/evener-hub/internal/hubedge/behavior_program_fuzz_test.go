@@ -23,6 +23,7 @@ func FuzzHubEdgeBehaviorProgram(f *testing.F) {
 		checkHandleAuth_IgnoresQueryToken,
 		checkHandleAuth_HonorsNextParam,
 		checkHandleAuth_RejectsExternalNext,
+		checkHandleAuth_NextStaysOnOrigin,
 		checkAuthURLFor,
 		checkLoadOrCreateAuthToken_EmptyRoot,
 		checkLoadOrCreateAuthToken_MkdirAllError,

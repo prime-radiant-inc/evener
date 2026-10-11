@@ -69,6 +69,9 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 		Finished:      &finished,
 		IncompleteMsg: res.Instance + " stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent) error {
+			if len(ev.Data) == 0 {
+				return nil
+			}
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
@@ -174,9 +177,14 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 
 			var chunk chatCompletionChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				// Skip a single malformed chunk and keep the stream alive;
-				// returning the error would abort the whole stream.
-				return nil //nolint:nilerr // unparseable chunk is intentionally skipped, not fatal
+				// Keep the stream alive for a single malformed chunk, but
+				// surface the undecodable bytes as a raw passthrough event
+				// rather than dropping them: silently discarding the chunk
+				// would make corruption indistinguishable from an empty
+				// successful stream. This matches the anthropic, google and
+				// responses transports.
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": data}})
+				return nil //nolint:nilerr // decode failure is surfaced as a raw passthrough event, not a fatal error
 			}
 			if chunk.Error != nil {
 				// In-band provider failure on an HTTP 200 stream. Decode it

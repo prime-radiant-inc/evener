@@ -70,7 +70,7 @@ function parseQuestion(raw: unknown, index: number): AskUserQuestion | undefined
 // treated the same as undefined defensively either way. Callers that need
 // to draw their own absent-vs-malformed distinction (e.g. AskUserBody's
 // fallback wording) do so with their own check alongside this one.
-export function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | undefined {
+export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): AskUserQuestion[] | undefined {
   const args = parseArgs(item.argumentsJSON);
   const raw = args.questions;
   if (!Array.isArray(raw)) return undefined;

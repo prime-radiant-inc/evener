@@ -33,7 +33,7 @@ cmd/evener-tui/hub_model.go                         modify  wire pendingCoordina
 cmd/evener-tui/optimistic_test.go                   new     end-to-end wrapper unit tests (using ScriptedTransport)
 
 cmd/evener-hub/assets/style.css                     modify  .optimistic-pending / .optimistic-failed / .optimistic-retry / @keyframes optimistic-pulse
-cmd/evener-hub/assets/appwire.js                    modify  optimisticCall helper + EvenerAppwire.pending hook; wrap startTurn/queueTurn/steer/drainAsSteer
+cmd/serf-hub/assets/appwire.js                    modify  optimisticCall helper + EvenerAppwire.pending hook; wrap startTurn/queueTurn/steer/drainAsSteer
 cmd/evener-hub/assets/pending.js                    new     EvenerAppwirePending registry (DOM render + tryReconcile) — own IIFE module loaded before renderer
 cmd/evener-hub/assets/renderer.js                   modify  register pending registry with EvenerAppwire; deliverNotification calls pending.tryReconcile after reducer dispatch
 cmd/evener-hub/templates/partials/workspace.html    modify  load assets/pending.js before renderer.js
@@ -2063,7 +2063,7 @@ EOF
 ## Task 10: Web: `optimisticCall` in EvenerAppwire + wire the four methods
 
 **Files:**
-- Modify: `cmd/evener-hub/assets/appwire.js`
+- Modify: `cmd/serf-hub/assets/appwire.js`
 - Create: `cmd/evener-hub/jstest/test-optimistic-rendering.js`
 
 - [ ] **Step 1: Write the failing wrapper unit test**
@@ -2154,7 +2154,7 @@ Expected: FAIL — `EvenerAppwire.setPendingRegistry` doesn't exist.
 
 - [ ] **Step 3: Add optimisticCall + setPendingRegistry**
 
-Edit `cmd/evener-hub/assets/appwire.js`. Inside the IIFE, after the existing `request` function:
+Edit `cmd/serf-hub/assets/appwire.js`. Inside the IIFE, after the existing `request` function:
 
 ```js
   // Optimistic-rendering hook. The renderer registers a registry via
@@ -2242,7 +2242,7 @@ Expected: all pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/jstest/test-optimistic-rendering.js
+git add cmd/serf-hub/assets/appwire.js cmd/evener-hub/jstest/test-optimistic-rendering.js
 git commit -m "$(cat <<'EOF'
 hub-web: optimisticCall wrap in EvenerAppwire for start/steer/queue/drain
 

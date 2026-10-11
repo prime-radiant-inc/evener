@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode/utf16"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -49,6 +50,8 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
 		queue.Texts = make([]string, len(snapshot.InputQueue))
 		queue.SkillNames = make([][]string, len(snapshot.InputQueue))
+		queue.CommandNames = make([][]string, len(snapshot.InputQueue))
+		queue.Mentions = make([][]appwire.InputMention, len(snapshot.InputQueue))
 	}
 	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
 	for id, pending := range snapshot.PendingExecutions {
@@ -67,6 +70,8 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.ClientMutationIDs[i] = entry.ClientMutationID
 		queue.Texts[i] = queued.Text
 		queue.SkillNames[i] = slices.Clone(queued.SkillNames)
+		queue.CommandNames[i] = slices.Clone(queued.CommandNames)
+		queue.Mentions[i] = slices.Clone(queued.Mentions)
 		if _, exists := pendingByID[entry.ClientMutationID]; exists {
 			continue
 		}
@@ -170,6 +175,12 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnQueueResponse{}, clientMutationRejectionError(lookup.Record)
 	}
+	// Only a FRESH application unparks: a replayed accept re-runs no effect
+	// callback, so it releases no QueueHeld, and a Stop that landed after the
+	// original must keep the rail parked.
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
+	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		// A retry of a queue that was accepted but never run -- the process died
 		// between the commit and the wake -- must still provoke a run. Replay is
@@ -181,6 +192,31 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	s.reflectDurableInputQueue()
 	s.wakeForPendingQueuedInput()
 	return response, nil
+}
+
+// hasPendingUserInputToRun reports whether ProcessPendingUserInput could find
+// anything to run, without claiming it or taking a retirement lease. It asks
+// the claim path's own questions -- a claimable queue head, or user steering
+// that is neither parked nor held and has a carrier to claim -- on the
+// committed store generation. It may over-report (the claims under the lease
+// re-decide on the generation they commit against) but never under-reports: a
+// store not yet opened may hold a durable queue, so it counts as work.
+func (s *Session) hasPendingUserInputToRun() bool {
+	s.clientMutationsInitMu.Lock()
+	store := s.clientMutations
+	s.clientMutationsInitMu.Unlock()
+	if store == nil {
+		return true
+	}
+	snapshot := store.snapshot()
+	if queueHeadClaimable(&snapshot) {
+		return true
+	}
+	if !s.hasPendingUserSteering() || s.steeringParkedNow() || !steeringCarrierRailOpen(&snapshot) {
+		return false
+	}
+	_, turnID := claimableSteeringCarrier(&snapshot, s.steeringInFlightSample())
+	return turnID != ""
 }
 
 // ProcessPendingUserInput runs input the user has already given but the session
@@ -211,6 +247,18 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 // the pending steer's own reserved id, not a freshly minted one, so the id the
 // client was told in its Applied receipt is the id that actually runs.
 func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+	// Wakes are unconditional and coalesce, so one can arrive after the work
+	// it was sent for has already run. A wake that finds nothing is not
+	// admitted work and must not take a retirement lease: beginning one
+	// restarts the idle interval, which would move the deadline from the
+	// settlement to whenever the wake happened to run. Returning without a
+	// lease is safe because input queued after this check sends its own wake,
+	// and until it is claimed queued input and pending steering are
+	// themselves retirement evidence (retirementInputBlockers). Input that is
+	// present here is claimed under the lease below, which re-decides it.
+	if !s.hasPendingUserInputToRun() {
+		return "", false, nil
+	}
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {
 		return "", false, admissionErr
@@ -231,14 +279,14 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if refusal != nil {
 		return "", false, refusal
 	}
-	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.steeringParkedNow() {
+	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.steeringParkedNow() {
 		// A wake the daemon buffered before the last attempt failed -- the
 		// steer's own acceptance wake, held while the input that then ran the
 		// carrier inline was still running. That attempt spent it; the next
 		// wake sender unparks (Session.steeringParked).
 		return "", false, nil
 	}
-	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
+	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.hasPendingUserSteering() {
 		carrier, carrierRefusal := s.claimSteeringCarrierInput()
 		if carrierRefusal != nil {
 			return "", false, carrierRefusal
@@ -257,7 +305,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// closed session before the loop (releaseSteeringCarrierClaim). One
 		// owner, so nothing here releases it a second time.
 	}
-	if inputHasContent(queued.Text, queued.Images, queued.SkillNames) || queued.SteeringCarrier {
+	if inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) || queued.SteeringCarrier {
 		// The claims above decided their refusals on the generations they
 		// committed against, so a poisoning can still land between a decision and
 		// its commit. The announcement is made under the transcript's write door
@@ -286,6 +334,12 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// one atomic group tied to this input's durable identity,
 		// all-or-nothing before any dependent work dispatches.
 		ctx = s.contextWithSelectedSkills(ctx, queued)
+		if queued.SteeringCarrier {
+			// The stand-down set is per-carrier-run: clear anything a previous
+			// run left so this claim's membership test reads only this call's
+			// stand-downs.
+			s.resetSteeringCarrierStoodDown()
+		}
 		result, err := s.ProcessInputKind(ctx, queued.Text, queued.Images, EntryUserInput)
 		// The pop above is durable and the turn loop's gate can refuse after it,
 		// when poisoning lands in between. Put the message back rather than
@@ -306,7 +360,16 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 				err = errors.Join(err, fmt.Errorf("return queued input: %w", restoreErr))
 			}
 		}
-		return result, true, err
+		// A steering carrier that stood down ran no model turn -- its steer was
+		// already gone, or its skill selection failed and nothing was carried.
+		// Report ran=false so the caller clears the interrupt runner it armed
+		// on the claim instead of leaving it pointed at a turn that never
+		// started (issue #185 item 3).
+		ran := true
+		if queued.SteeringCarrier && s.steeringCarrierStoodDown(queued.StableTurnID) {
+			ran = false
+		}
+		return result, ran, err
 	}
 	return "", false, nil
 }
@@ -365,7 +428,7 @@ func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 			// claim commits against. Returning it from the mutation is what
 			// keeps the refusal from committing anything -- a nil return would
 			// save the generation the claim then declined to change.
-			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+			if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 				return refusal
 			}
 			snapshot.ActiveTurnID = turnID
@@ -462,6 +525,42 @@ func (s *Session) carrierSteerOutcome(identity queuedClientMutationIdentity) car
 	return carrierSteerDelivered
 }
 
+// markSteeringCarrierStoodDown records that the carrier turn named turnID
+// stood down without running a model turn, so ProcessPendingUserInput can
+// report ran=false truthfully instead of claiming it ran a turn that never
+// started (issue #185 item 3).
+func (s *Session) markSteeringCarrierStoodDown(turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.steeringCarrierStoodDowns == nil {
+		s.steeringCarrierStoodDowns = map[string]struct{}{}
+	}
+	s.steeringCarrierStoodDowns[turnID] = struct{}{}
+	s.mu.Unlock()
+}
+
+// steeringCarrierStoodDown reports whether the carrier turn named turnID stood
+// down. Keyed by turn id so a stand-down of a different carrier drained in the
+// same input cannot false-positive on this one, and stored as a set so an
+// earlier stand-down is not erased by a later one (RoboRev #3437). The caller
+// resets the set at the start of the next carrier run.
+func (s *Session) steeringCarrierStoodDown(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, stoodDown := s.steeringCarrierStoodDowns[turnID]
+	return turnID != "" && stoodDown
+}
+
+// resetSteeringCarrierStoodDown empties the stand-down set so it never grows
+// past the one ProcessPendingUserInput call that observes it.
+func (s *Session) resetSteeringCarrierStoodDown() {
+	s.mu.Lock()
+	s.steeringCarrierStoodDowns = nil
+	s.mu.Unlock()
+}
+
 // AcceptClientMutationQueue durably accepts or replays one client-authored
 // queued input.
 func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
@@ -473,10 +572,9 @@ func rejectClientMutation(record *clientMutationRecord, err error) {
 	if !errors.As(err, &wireErr) {
 		wireErr = appwire.Conflict(err.Error())
 	}
-	data, _ := wireErr.Data.(appwire.ErrorData)
-	data.ClientMutationID = record.ClientMutationID
-	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-	data.RetryDisposition = appwire.RetryDispositionNone
+	wireErr = wireErr.NotAccepted(record.ClientMutationID)
+	// The record keeps the standard data, the part of a wrapped one it embeds.
+	data, _ := appwire.ErrorDataOf(wireErr.Data)
 	record.OperationState = clientMutationOperationRejected
 	record.ExecutionState = "rejected"
 	record.ProjectionState = appwire.MutationProjectionRemoved
@@ -592,6 +690,13 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 	for _, item := range entry.Input {
 		switch item.Type {
 		case "text":
+			if len(item.Mentions) > 0 {
+				offset := len(utf16.Encode([]rune(queued.Text)))
+				for _, mention := range item.Mentions {
+					mention.Offset += offset
+					queued.Mentions = append(queued.Mentions, mention)
+				}
+			}
 			queued.Text += item.Text
 		case "image":
 			queued.Images = append(queued.Images, ImageAttachment{MediaType: item.MediaType, Data: append([]byte(nil), item.Data...), Name: item.Name})
@@ -599,15 +704,21 @@ func queuedInputFromClientMutation(entry clientMutationQueueEntry) queuedInput {
 			// Canonical identities only: bodies load from the recorded sources
 			// at actual consumption, never from the input wire.
 			queued.SkillNames = append(queued.SkillNames, item.Name)
+		case "command":
+			queued.CommandNames = append(queued.CommandNames, item.Name)
 		}
 	}
 	return queued
 }
 
-func clientMutationInput(text string, images []ImageAttachment, skillNames []string) []appwire.InputItem {
+func clientMutationInput(text string, images []ImageAttachment, skillNames []string, commandNames ...[]string) []appwire.InputItem {
+	return clientMutationInputWithMentions(text, images, skillNames, nil, commandNames...)
+}
+
+func clientMutationInputWithMentions(text string, images []ImageAttachment, skillNames []string, mentions []appwire.InputMention, commandNames ...[]string) []appwire.InputItem {
 	input := make([]appwire.InputItem, 0, 1+len(images)+len(skillNames))
 	if text != "" {
-		input = append(input, appwire.InputItem{Type: "text", Text: text})
+		input = append(input, appwire.InputItem{Type: "text", Text: text, Mentions: slices.Clone(mentions)})
 	}
 	for _, image := range images {
 		input = append(input, appwire.InputItem{
@@ -619,6 +730,11 @@ func clientMutationInput(text string, images []ImageAttachment, skillNames []str
 	}
 	for _, name := range skillNames {
 		input = append(input, appwire.InputItem{Type: "skill", Name: name})
+	}
+	for _, names := range commandNames {
+		for _, name := range names {
+			input = append(input, appwire.InputItem{Type: "command", Name: name})
+		}
 	}
 	return input
 }
@@ -802,6 +918,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		// Draining is a user-initiated run, so the parked steer is released too
 		// (issue #174).
 		snapshot.SteeringHeld = false
+		carrySelectedCommandPreparations(snapshot, record, entries)
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
@@ -827,6 +944,10 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	}
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnDrainAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
+	}
+	// Only a FRESH application unparks (see the queue accept's note).
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnDrainAsSteerResponse
@@ -857,23 +978,32 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 	texts := make([]string, 0, len(entries)+1)
 	var images []ImageAttachment
 	var skillNames []string
-	for _, entry := range entries {
-		queued := queuedInputFromClientMutation(entry)
+	var commandNames []string
+	var mentions []appwire.InputMention
+	var textOffset int
+	appendInput := func(queued queuedInput) {
 		if strings.TrimSpace(queued.Text) != "" {
+			if len(texts) > 0 {
+				textOffset += 2 // The retained text entries are joined by "\n\n".
+			}
+			for _, mention := range queued.Mentions {
+				mention.Offset += textOffset
+				mentions = append(mentions, mention)
+			}
 			texts = append(texts, queued.Text)
+			textOffset += len(utf16.Encode([]rune(queued.Text)))
 		}
 		images = append(images, queued.Images...)
 		skillNames = append(skillNames, queued.SkillNames...)
+		commandNames = append(commandNames, queued.CommandNames...)
+	}
+	for _, entry := range entries {
+		appendInput(queuedInputFromClientMutation(entry))
 	}
 	if len(extra) > 0 {
-		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: extra})
-		if strings.TrimSpace(queued.Text) != "" {
-			texts = append(texts, queued.Text)
-		}
-		images = append(images, queued.Images...)
-		skillNames = append(skillNames, queued.SkillNames...)
+		appendInput(queuedInputFromClientMutation(clientMutationQueueEntry{Input: extra}))
 	}
-	return clientMutationInput(strings.Join(texts, "\n\n"), images, skillNames)
+	return clientMutationInputWithMentions(strings.Join(texts, "\n\n"), images, skillNames, mentions, commandNames)
 }
 
 func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
@@ -926,6 +1056,7 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 		// (issue #174).
 		snapshot.SteeringHeld = false
 		entry := snapshot.InputQueue[index]
+		carrySelectedCommandPreparations(snapshot, record, []clientMutationQueueEntry{entry})
 		snapshot.InputQueue = append(snapshot.InputQueue[:index], snapshot.InputQueue[index+1:]...)
 		snapshot.QueueRevision++
 		removeQueuedMutationSource(snapshot, entry, "transformed")
@@ -943,6 +1074,10 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	}
 	if lookup.Record.OperationState == clientMutationOperationRejected {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, clientMutationRejectionError(lookup.Record)
+	}
+	// Only a FRESH application unparks (see the queue accept's note).
+	if lookup.Disposition != clientMutationDispositionReplayed {
+		s.unparkRootDelegateAttention()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnPromoteQueuedAsSteerResponse
@@ -1271,10 +1406,11 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 			// while ordinary steering keeps the bytes the user typed. The record's
 			// method decides a kindless record, so a normal steer whose text
 			// imitates the note prefix is not mistaken for a note update.
-			Text:       rebuiltSteeringText(origin, queued.Text),
-			Images:     queued.Images,
-			SkillNames: queued.SkillNames,
-			Source:     events.SteeringSourceUser,
+			Text:         rebuiltSteeringText(origin, queued.Text),
+			Images:       queued.Images,
+			SkillNames:   queued.SkillNames,
+			CommandNames: queued.CommandNames,
+			Source:       events.SteeringSourceUser,
 			// The kind survives the restart because it rode the durable
 			// journal record (see SteeringKind on clientMutationRecord),
 			// not the reflected in-memory entry. Plain user steering
@@ -1293,6 +1429,11 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 // runtime queues before a restored Session becomes visible. It emits nothing:
 // reconnect projections read the already-restored fields.
 func (s *Session) restoreDurableClientMutationQueues() {
+	// The turn this process inherited from the durable snapshot, and only when a
+	// client turn/start owns it. See the recoveredTurnID field doc: a
+	// queue-origin owner leaves it empty on purpose, so no follow-up start is
+	// admitted behind a turn the claim path would never take.
+	s.recoveredTurnID = s.recoveredStartTurnID()
 	incorporated := make(map[string]string, len(s.restoredClientMutationTurns))
 	maps.Copy(incorporated, s.restoredClientMutationTurns)
 	// steeringOutcome is the terminal state the transcript's entry for a steer
@@ -1513,7 +1654,60 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 			record.Failure == nil {
 			continue
 		}
-		if err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment); err != nil {
+		// At restore no execution runs: the failed start's entries form its
+		// own execution, which ends failed. Inside a running turn they join it.
+		// A failure whose entries are all recorded has nothing to add, but a
+		// crash may have left its execution open without a completion: that is
+		// completed failed here, not left for a later restart to call
+		// interrupted.
+		items := s.clientMutationTranscriptItems(id, pending.TurnID)
+		idle := s.attachedTranscript().RunningTurnID() == ""
+		own := idle && (!items.User || !items.Failure)
+		// Only peeked here: taking it now, before the record below runs,
+		// would drop it for good if that record fails — closeAbandonedExecutions
+		// can then never close the turn. It is taken below, once the record
+		// that lets this branch complete the turn has actually succeeded.
+		wasOpen := idle && s.hasOpenPendingExecution(pending.TurnID)
+		if own {
+			s.beginExecution(pending.TurnID)
+		}
+		err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment)
+		switch {
+		case own && err == nil:
+			s.completeExecution(schema.TurnFailed)
+			if wasOpen {
+				// This turn also crashed open once before (closeCrashedExecutions
+				// left the marker at restore) and is completed above, now that
+				// the record it completes over has actually landed:
+				// closeAbandonedExecutions must not find the marker still here
+				// and complete it a second time, interrupted, over the failed
+				// completion just written.
+				s.takeOpenPendingExecution(pending.TurnID)
+			}
+		case wasOpen && err == nil:
+			// Take the marker only once the completion it lets close has
+			// actually landed: taking it first, before the write below runs,
+			// would drop it for good if that write fails, and nothing else
+			// ever completes this turn -- a later restart would then close
+			// it interrupted instead of failed (the same care the "own"
+			// branch above takes with this same marker).
+			rec, completeErr := s.completeTurn(pending.TurnID, schema.TurnFailed)
+			if retained := retainedUnsyncedError(completeErr); retained != nil {
+				// Recorded but not yet durable: adopted, not an error --
+				// chase durability the same way completeExecution does,
+				// rather than leaving the debt with nothing to retry it.
+				s.settleRetainedUnsynced(retained, "a turn completion")
+			} else if completeErr != nil {
+				err = fmt.Errorf("complete recovered failed turn: %w", completeErr)
+			}
+			if rec.Recorded {
+				s.takeOpenPendingExecution(pending.TurnID)
+				s.mu.Lock()
+				s.clientMutationAppendedTurn = true // restore re-reads what it appended
+				s.mu.Unlock()
+			}
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -1535,7 +1729,13 @@ func (s *Session) recordClientMutationFailure(
 		if err := s.appendEnvironmentContext(publishEnvironment); err != nil {
 			return fmt.Errorf("append environment context: %w", err)
 		}
+		// Persist the failed start's attachments before its turn is built so
+		// the message can name their durable paths (agent/image_persist.go);
+		// idempotent by content, so a first attempt that already wrote the
+		// bytes rewrites the same path.
+		queued.Images = s.persistInputImages(queued.Images)
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames))
+		turn.CommandInput = commandInputRecordFromQueued(queued)
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
 		// The typed selection must ride the persisted failed input before the
@@ -1777,6 +1977,10 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 	}
 	if fenceFinalized {
 		s.steeringMarked(recordedIDs)
+		// The Stop that fenced this turn has finalized, so a start the fence was
+		// holding back can now be claimed. Nothing else wakes it: a Stop parks
+		// the input queue, and wakeForPendingSteering only serves steering.
+		s.wakeRunnableClientMutationStartAfterFence()
 	}
 	if returned {
 		// The durable queue grew a message back. QueueDepth, QueuePreview,

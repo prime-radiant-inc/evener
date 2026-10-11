@@ -10,6 +10,7 @@ import (
 )
 
 func TestRestoreFailureEnvironmentIsSeededWithoutLiveReplay(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -30,11 +31,12 @@ func TestRestoreFailureEnvironmentIsSeededWithoutLiveReplay(t *testing.T) {
 	}
 	sess.Close()
 
-	restored := restoreQueuePersistTestSession(t, dir, id)
-	_, entries, ok := restored.RestoredTranscript()
-	if !ok {
-		t.Fatal("restore did not retain its transcript for projection")
+	var captured restoredTranscriptCapture
+	restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{OnRestoredTranscript: captured.record})
+	if !captured.opened {
+		t.Fatal("restore did not hand over its transcript for projection")
 	}
+	entries := captured.entries
 	environments, inputs := 0, 0
 	for _, entry := range entries {
 		switch entry.Turn.Kind {

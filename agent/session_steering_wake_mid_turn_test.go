@@ -79,8 +79,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess = newSession(t, withClient(client), withConfig(SessionConfig{
-		StateDir:         t.TempDir(),
-		NoProjectPrompts: true,
+		StateDir: t.TempDir(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -152,7 +151,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 		t.Fatalf("delivered steering count = %d, want 1", got)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id))
+	data, err := readTranscriptFull(transcriptPath(sess.stateDir, sess.id), "")
 	if err != nil {
 		t.Fatalf("read persisted transcript: %v", err)
 	}

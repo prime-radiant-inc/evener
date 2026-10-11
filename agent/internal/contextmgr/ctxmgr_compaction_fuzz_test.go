@@ -302,7 +302,7 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 			t.Fatalf("checkpoint missing closing frame: %q", cp[max(0, len(cp)-40):])
 		}
 		// Never-shed metadata survives verbatim into the rendered checkpoint.
-		for fpath := range got.modifiedFiles {
+		for fpath := range got.fileWrites {
 			if !strings.Contains(cp, fpath) {
 				t.Fatalf("modified file %q missing from checkpoint", fpath)
 			}
@@ -349,7 +349,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 			if withCheap {
 				profile = WithCheapModel(profile, "cheap-model")
 			}
-			client := ctxmgr_scriptedClient(profile.ID(), "handoff summary body", faultPlan)
+			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\nhandoff summary body", faultPlan)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 
 			result, err := cm.summarizeWithLLMSteered(context.Background(), history, preserve, instructions)
@@ -441,7 +441,7 @@ func FuzzCtxmgrCheckpointPredManageContext(f *testing.F) {
 			history := ctxmgr_buildHistory(r)
 
 			profile := testOpenAIProfileWithContextWindow(1000)
-			client := ctxmgr_scriptedClient(profile.ID(), "predicted checkpoint body", faultPlan)
+			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\npredicted checkpoint body", faultPlan)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
 
@@ -486,7 +486,7 @@ func FuzzCtxmgrSessionLogManageContext(f *testing.F) {
 			history := ctxmgr_buildHistory(r)
 
 			profile := testOpenAIProfileWithContextWindow(1000)
-			client := ctxmgr_scriptedClient(profile.ID(), "session summary body", faultPlan)
+			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\nsession summary body", faultPlan)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
 

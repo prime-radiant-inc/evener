@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -31,7 +31,6 @@ func task7LocalSession(t *testing.T) (*Session, string) {
 		SessionConfig{
 			StateDir:         t.TempDir(),
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -95,6 +94,7 @@ func task7ExecutedToolStarts(s *Session, toolName string) int {
 }
 
 func TestRecoverableGrepReceiptReplayEndToEnd(t *testing.T) {
+	t.Parallel()
 	s, workspace := task7LocalSession(t)
 	const pattern = `RECOVER_[0-9]{3}`
 	const matchCount = 70

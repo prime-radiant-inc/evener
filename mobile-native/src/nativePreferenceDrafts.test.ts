@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	classifyDraftRead,
@@ -8,12 +9,13 @@ import {
 	matchesStoredBytes,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
+	STORED_NULL_RECORD,
 	parseDraftBytes,
 	readDraftOutcome,
 	readDraftOutcomeWithValue,
-	type RawStringStorage,
 	rawStringDraftBackend,
 } from "./nativePreferenceDrafts";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 // The keybindings store's discardClassified and its settle paths (a save,
 // a discard or a rebase adopting a checkpoint replaced under them) branch on
@@ -30,7 +32,7 @@ const checkpoint = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: 
 // same function production calls over it, not a parallel reimplementation.
 function rawBytesBackend() {
 	const raw = new Map<string, string>();
-	const storage: RawStringStorage = {
+	const storage: SyncStringStorage = {
 		getItemSync: (key) => raw.get(key) ?? null,
 		setItemSync: (key, value) => raw.set(key, value),
 		removeItemSync: (key) => raw.delete(key),
@@ -92,7 +94,7 @@ describe("nativeKeybindingDrafts", () => {
 		expect(storage.load()).toBeNull();
 	});
 
-	it("classifies a stored JSON string \"null\" as an unreadable record, distinct from a stored JSON null", () => {
+	it('classifies a stored JSON string "null" as an unreadable record, distinct from a stored JSON null', () => {
 		// The stored bytes `"null"` (six characters, a JSON string) decode to
 		// the SAME primitive a stored JSON `null` would if either returned a
 		// bare string - the collision that used to let a corrupt checkpoint
@@ -268,29 +270,31 @@ describe("rawStringDraftBackend compare-and-swap", () => {
 });
 
 describe("nativeTranscriptDrafts", () => {
-	it("treats a stored JSON null as no draft, not an unreadable record", () => {
+	it("classifies a stored JSON null as an unreadable record, distinct from no record at all", () => {
 		// Both drafts share one backend.get(): parseDraftBytes hands back the
-		// RAW string "null" for a stored JSON null so the KEYBINDINGS port can
-		// classify it as a present-but-unreadable record (see above). The
-		// transcript port has no unreadable-record recovery path, so it keeps
-		// the pre-existing meaning of a stored null - no draft - rather than
-		// have TranscriptDraftRepository's validateCheckpoint throw on it and
-		// strand the section in storageUnavailable.
+		// tagged StoredNullRecord for a stored JSON null, so the shared store
+		// reads it as a present-but-unreadable record (draftUnreadable) and
+		// discarding it is what clears the notice - the same recovery path the
+		// keybindings port has (see above).
 		const { raw, b } = rawBytesBackend();
 		raw.set("evener.native.transcript-draft.hub", "null");
 		const storage = nativeTranscriptDrafts("hub", b);
 
+		const loaded = storage.load();
+		expect(loaded).not.toBeNull();
+		expect(isStoredNullRecord(loaded)).toBe(true);
+		expect(storage.removeIf(loaded as never)).toBe(true);
 		expect(storage.load()).toBeNull();
 	});
 
-	it("does not treat a stored JSON string \"null\" as no draft - it is a present, invalid checkpoint", () => {
+	it('does not treat a stored JSON string "null" as no draft - it is a present, invalid checkpoint', () => {
 		// Distinct from the stored-JSON-null case above: the bytes `"null"`
 		// (a JSON string) decode to the JS string "null", which used to be
 		// indistinguishable from a stored JSON null once both came back as
 		// the bare string "null" - silently treating a corrupt checkpoint as
-		// no draft at all, contrary to this repository's contract to reject
-		// invalid checkpoints (see preferenceDraftRepository's
-		// validateCheckpoint, which throws on exactly this shape).
+		// no draft at all, contrary to the shared store's contract to reject
+		// invalid checkpoints (its draftCheckpoint decoder throws on exactly
+		// this shape, surfacing draftUnreadable).
 		const { raw, b } = rawBytesBackend();
 		raw.set("evener.native.transcript-draft.hub", '"null"');
 		const storage = nativeTranscriptDrafts("hub", b);
@@ -306,11 +310,39 @@ describe("nativeTranscriptDrafts", () => {
 
 		expect(storage.load()).toEqual(transcriptCheckpoint);
 	});
+
+	it("satisfies the shared DraftPort contract: insertIfAbsent, replaceIf, raw-identity removeIf", () => {
+		// The shared transcript display store drives every checkpoint write
+		// through DraftPort's full compare-and-swap set; the deleted
+		// hand-rolled transcript repository's narrower port (no
+		// insertIfAbsent, no replaceIf) could not. The raw-identity half is what lets an
+		// unreadable record be discarded by handing back exactly what load()
+		// returned.
+		const { raw, b } = rawBytesBackend();
+		const storage = nativeTranscriptDrafts("hub", b);
+		const checkpoint = {
+			id: "t1",
+			layout: "mobile" as const,
+			baseRevision: 2,
+			config: makeTranscriptDisplayConfig(),
+			writeUncertain: false,
+		};
+
+		expect(storage.insertIfAbsent(checkpoint)).toBe(true);
+		expect(storage.insertIfAbsent({ ...checkpoint, id: "t2" })).toBe(false);
+		expect(storage.load()).toEqual(checkpoint);
+		expect(storage.replaceIf(checkpoint, { ...checkpoint, baseRevision: 3 })).toBe(true);
+		expect(storage.load()).toMatchObject({ baseRevision: 3 });
+
+		raw.set("evener.native.transcript-draft.hub", "{not json");
+		const unreadable = storage.load();
+		expect(storage.removeIf(unreadable)).toBe(true);
+		expect(raw.has("evener.native.transcript-draft.hub")).toBe(false);
+	});
 });
 
 describe("classifyDraftRead", () => {
-	const isReadable = (value: unknown) =>
-		typeof value === "object" && value !== null && "id" in value;
+	const isReadable = (value: unknown) => typeof value === "object" && value !== null && "id" in value;
 
 	it("is absent when nothing is stored", () => {
 		expect(classifyDraftRead(null, isReadable)).toBe("absent");
@@ -327,8 +359,7 @@ describe("classifyDraftRead", () => {
 });
 
 describe("readDraftOutcome", () => {
-	const isReadable = (value: unknown) =>
-		typeof value === "object" && value !== null && "id" in value;
+	const isReadable = (value: unknown) => typeof value === "object" && value !== null && "id" in value;
 
 	it("classifies a normal read the same as classifyDraftRead", () => {
 		expect(readDraftOutcome({ load: () => null }, isReadable)).toBe("absent");
@@ -348,8 +379,7 @@ describe("readDraftOutcome", () => {
 });
 
 describe("readDraftOutcomeWithValue", () => {
-	const isReadable = (value: unknown) =>
-		typeof value === "object" && value !== null && "id" in value;
+	const isReadable = (value: unknown) => typeof value === "object" && value !== null && "id" in value;
 
 	it("returns the classification and the exact value from one read", () => {
 		const record = { id: "d1" };
@@ -374,15 +404,15 @@ describe("readDraftOutcomeWithValue", () => {
 		expect(readDraftOutcomeWithValue(storage, isReadable).outcome).toBe("readable");
 		expect(calls).toBe(1);
 		expect(
-		readDraftOutcomeWithValue(
-			{
-				load: () => {
-					throw new Error("disk unavailable");
+			readDraftOutcomeWithValue(
+				{
+					load: () => {
+						throw new Error("disk unavailable");
+					},
 				},
-			},
-			isReadable,
-		),
-	).toEqual({ outcome: "storageUnavailable", value: undefined });
+				isReadable,
+			),
+		).toEqual({ outcome: "storageUnavailable", value: undefined });
 	});
 });
 
@@ -403,7 +433,7 @@ describe("matchesStoredBytes", () => {
 		expect(matchesStoredBytes("null", parseDraftBytes("null"))).toBe(true);
 	});
 
-	it("does not match a StoredNullRecord identity against a stored JSON string \"null\"", () => {
+	it('does not match a StoredNullRecord identity against a stored JSON string "null"', () => {
 		// The two decode to the same JS primitive if either comes back as a
 		// bare string - the collision parseDraftBytes's tagged markers exist
 		// to close.
@@ -461,7 +491,7 @@ describe("parseDraftBytes", () => {
 		expect(isStoredNullRecord(value)).toBe(true);
 	});
 
-	it("returns the plain JS string for a stored JSON string \"null\", distinct from a stored JSON null", () => {
+	it('returns the plain JS string for a stored JSON string "null", distinct from a stored JSON null', () => {
 		// Both used to collide on the bare string "null" - the bug this
 		// marker design closes (see nativeTranscriptDrafts' own test).
 		const value = parseDraftBytes('"null"');
@@ -508,6 +538,57 @@ describe("fakeDraftBackend", () => {
 
 		expect(b.replaceIf("k", undefined, checkpoint)).toBe(false);
 		expect(b.store.has("k")).toBe(false);
+	});
+
+	it("round-trips the unreadable-record markers without reducing them to their JSON shapes", () => {
+		// The markers' brands are unique symbols, invisible to structuredClone
+		// and canonicalJson alike, so an unaware clone reduces a stored-null
+		// marker to an ordinary empty object and an unparseable marker to its
+		// raw-only shape - the identity loss the real backend cannot have: its
+		// get() re-parses the stored bytes on every read, re-deriving the same
+		// marker (parseDraftBytes). The double must keep that contract - a
+		// marker that went in comes back out as the same marker.
+		const b = fakeDraftBackend();
+
+		b.set("k", STORED_NULL_RECORD);
+		expect(isStoredNullRecord(b.get("k"))).toBe(true);
+
+		b.set("k", parseDraftBytes("{not json"));
+		const unparseable = b.get("k");
+		expect(isUnparseableDraftBytes(unparseable)).toBe(true);
+		expect((unparseable as { raw: string }).raw).toBe("{not json");
+	});
+
+	it("deleteIf matches an unreadable record by its marker identity, never its JSON shape", () => {
+		// canonicalJson reduces the markers to those same ordinary shapes, so a
+		// bare canonical compare lets any equal-shaped value match the record:
+		// an ordinary empty object would delete a stored-null one, an ordinary
+		// { raw } an unparseable one. The compare must route through the shared
+		// marker-aware identity helper, which tells a marker from its lookalike.
+		const b = fakeDraftBackend();
+
+		b.store.set("k", STORED_NULL_RECORD);
+		expect(b.deleteIf("k", {})).toBe(false);
+		expect(b.store.has("k")).toBe(true);
+		expect(b.deleteIf("k", STORED_NULL_RECORD)).toBe(true);
+		expect(b.store.has("k")).toBe(false);
+
+		b.store.set("k2", parseDraftBytes("{not json"));
+		expect(b.deleteIf("k2", { raw: "{not json" })).toBe(false);
+		expect(b.store.has("k2")).toBe(true);
+		expect(b.deleteIf("k2", parseDraftBytes("{not json"))).toBe(true);
+		expect(b.store.has("k2")).toBe(false);
+	});
+
+	it("replaceIf matches an unreadable record by its marker identity, never its JSON shape", () => {
+		const b = fakeDraftBackend();
+		const next = { id: "draft-2", baseRevision: 5, rules: [], writeUncertain: false };
+
+		b.store.set("k", STORED_NULL_RECORD);
+		expect(b.replaceIf("k", {}, next)).toBe(false);
+		expect(b.store.has("k")).toBe(true);
+		expect(b.replaceIf("k", STORED_NULL_RECORD, next)).toBe(true);
+		expect(b.get("k")).toEqual(next);
 	});
 });
 

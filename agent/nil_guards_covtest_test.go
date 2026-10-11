@@ -16,6 +16,7 @@ import (
 // TestCovArmDelegateAttention_NilSession covers armDelegateAttention nil guard
 // (session_attention.go lines 420-423).
 func TestCovArmDelegateAttention_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	err := s.armDelegateAttention("")
 	if err == nil || err.Error() != "delegate attention wake identity is incomplete" {
@@ -26,6 +27,7 @@ func TestCovArmDelegateAttention_NilSession(t *testing.T) {
 // TestCovArmDelegateAttention_EmptyID covers armDelegateAttention empty ID
 // (session_attention.go lines 421-423).
 func TestCovArmDelegateAttention_EmptyID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	err := s.armDelegateAttention("")
 	if err == nil || err.Error() != "delegate attention wake identity is incomplete" {
@@ -36,6 +38,7 @@ func TestCovArmDelegateAttention_EmptyID(t *testing.T) {
 // TestCovIsRootDelegateAttentionReceiver_NilSession covers
 // isRootDelegateAttentionReceiver nil guard (session_attention.go lines 552-559).
 func TestCovIsRootDelegateAttentionReceiver_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if s.isRootDelegateAttentionReceiver() {
 		t.Fatal("nil session should return false")
@@ -45,6 +48,7 @@ func TestCovIsRootDelegateAttentionReceiver_NilSession(t *testing.T) {
 // TestCovAcceptDelegateAttention_NilSession covers acceptDelegateAttention nil guard
 // (session_attention.go lines 527-529).
 func TestCovAcceptDelegateAttention_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	err := s.acceptDelegateAttention(nil)
 	if err == nil || !errors.Is(err, errDelegateStaleLease) {
@@ -57,6 +61,7 @@ func TestCovAcceptDelegateAttention_NilSession(t *testing.T) {
 // TestCovDrainSteering_Empty covers drainSteering on empty queue
 // (session_queue.go lines 791-802).
 func TestCovDrainSteering_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	got := s.drainSteering()
 	if got != nil {
@@ -67,6 +72,7 @@ func TestCovDrainSteering_Empty(t *testing.T) {
 // TestCovPopSteeringHead_Empty covers popSteeringHead on empty queue
 // (session_queue.go lines 810-816).
 func TestCovPopSteeringHead_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	message, ok := s.popSteeringHead()
 	if ok || !reflect.DeepEqual(message, steeringMessage{}) {
@@ -76,6 +82,7 @@ func TestCovPopSteeringHead_Empty(t *testing.T) {
 
 // TestCovPopQueueHead_Empty covers popQueueHead on empty queue.
 func TestCovPopQueueHead_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	entry := s.popQueueHead()
 	if !reflect.DeepEqual(entry, queuedInput{}) {
@@ -85,6 +92,7 @@ func TestCovPopQueueHead_Empty(t *testing.T) {
 
 // TestCovQueuePreview_Empty covers QueuePreview on empty queue.
 func TestCovQueuePreview_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	preview := s.QueuePreview()
 	if len(preview) != 0 {
@@ -94,6 +102,7 @@ func TestCovQueuePreview_Empty(t *testing.T) {
 
 // TestCovQueueIDs_Empty covers QueueIDs on empty queue.
 func TestCovQueueIDs_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	ids := s.QueueIDs()
 	if len(ids) != 0 {
@@ -103,6 +112,7 @@ func TestCovQueueIDs_Empty(t *testing.T) {
 
 // TestCovQueueTexts_Empty covers QueueTexts on empty queue.
 func TestCovQueueTexts_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	texts := s.QueueTexts()
 	if len(texts) != 0 {
@@ -115,6 +125,7 @@ func TestCovQueueTexts_Empty(t *testing.T) {
 // TestCovRunDelegateQuietWatchdogTick_NilSession covers
 // runDelegateQuietWatchdogTick nil guard (delegate_runtime.go lines 118-121).
 func TestCovRunDelegateQuietWatchdogTick_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	err := s.runDelegateQuietWatchdogTick(delegateLease{}, time.Now())
 	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
@@ -125,6 +136,7 @@ func TestCovRunDelegateQuietWatchdogTick_NilSession(t *testing.T) {
 // TestCovRunDelegateQuietWatchdogTick_NoController covers
 // runDelegateQuietWatchdogTick with no controller.
 func TestCovRunDelegateQuietWatchdogTick_NoController(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	err := s.runDelegateQuietWatchdogTick(delegateLease{}, time.Now())
 	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
@@ -135,6 +147,7 @@ func TestCovRunDelegateQuietWatchdogTick_NoController(t *testing.T) {
 // TestCovStartDelegateQuietWatchdog_NilCtx covers startDelegateQuietWatchdog
 // with nil context (delegate_runtime.go lines 137-140).
 func TestCovStartDelegateQuietWatchdog_NilCtx(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	var ctx context.Context
 	cancel := s.startDelegateQuietWatchdog(ctx, delegateLease{})
@@ -147,6 +160,7 @@ func TestCovStartDelegateQuietWatchdog_NilCtx(t *testing.T) {
 // TestCovReportActivity_NilController covers ReportActivity nil guard
 // (delegate_runtime.go lines 84-87).
 func TestCovReportActivity_NilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	err := c.ReportActivity(delegateLease{}, time.Now())
 	if err == nil || !errors.Is(err, errDelegateStaleLease) {
@@ -157,6 +171,7 @@ func TestCovReportActivity_NilController(t *testing.T) {
 // TestCovBeginQuietAttention_NilController covers BeginQuietAttention nil guard
 // (delegate_runtime.go lines 176-178).
 func TestCovBeginQuietAttention_NilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	_, err := c.BeginQuietAttention(nil, delegateLease{}, time.Now())
 	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
@@ -166,6 +181,7 @@ func TestCovBeginQuietAttention_NilController(t *testing.T) {
 
 // TestCovBeginQuietAttention_NilReceiver covers BeginQuietAttention nil receiver.
 func TestCovBeginQuietAttention_NilReceiver(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	_, err := c.BeginQuietAttention(nil, delegateLease{}, time.Now())
 	if !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
@@ -176,6 +192,7 @@ func TestCovBeginQuietAttention_NilReceiver(t *testing.T) {
 // TestCovCompleteQuietAttention_NilController covers CompleteQuietAttention nil guard
 // (delegate_runtime.go lines 230-232).
 func TestCovCompleteQuietAttention_NilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	err := c.CompleteQuietAttention(nil, false)
 	if err == nil || !errors.Is(err, errDelegateStaleLease) {
@@ -185,6 +202,7 @@ func TestCovCompleteQuietAttention_NilController(t *testing.T) {
 
 // TestCovCompleteQuietAttention_NilClaim covers CompleteQuietAttention nil claim.
 func TestCovCompleteQuietAttention_NilClaim(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	err := c.CompleteQuietAttention(nil, false)
 	if err == nil || !errors.Is(err, errDelegateStaleLease) {
@@ -197,6 +215,7 @@ func TestCovCompleteQuietAttention_NilClaim(t *testing.T) {
 // TestCovProjectIsGitCheckout_NoPath covers projectIsGitCheckout with empty path
 // (session_tools_worktree.go lines 701-707).
 func TestCovProjectIsGitCheckout_NoPath(t *testing.T) {
+	t.Parallel()
 	if projectIsGitCheckout(identifier.Project{}) {
 		t.Fatal("empty project should return false")
 	}
@@ -205,6 +224,7 @@ func TestCovProjectIsGitCheckout_NoPath(t *testing.T) {
 // TestCovWorktreeRootForProject_EmptyProject covers worktreeRootForProject
 // with empty project (session_tools_worktree.go lines 683-691).
 func TestCovWorktreeRootForProject_EmptyProject(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	_, err := s.worktreeRootForProject("state", identifier.Project{})
 	if err == nil || !strings.Contains(err.Error(), "project identity is empty") {
@@ -217,6 +237,7 @@ func TestCovWorktreeRootForProject_EmptyProject(t *testing.T) {
 // TestCovStopNestedOrLocal_NilSession covers stopNestedOrLocal nil guard
 // (jobs_nested.go lines 346-349).
 func TestCovStopNestedOrLocal_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	_, err := s.stopNestedOrLocal("job1")
 	if err == nil {
@@ -229,6 +250,7 @@ func TestCovStopNestedOrLocal_NilSession(t *testing.T) {
 // TestCovJobStatusTool_EmptyTarget covers jobStatusTool with empty target
 // (session_tools_jobs.go lines 385-387).
 func TestCovJobStatusTool_EmptyTarget(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	_, err := jobStatusTool(s, map[string]any{}, 0)
 	if err == nil || !strings.Contains(err.Error(), "target is required") {

@@ -1,11 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { Banner } from "./index";
-
-afterEach(() => {
-  cleanup();
-});
 
 describe("Banner", () => {
   test("renders the message", () => {

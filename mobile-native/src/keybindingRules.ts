@@ -36,26 +36,21 @@ export function replaceKeybindingRule(
 	actionId: string,
 	chord?: string | null,
 ): KeybindingsRule[] {
-	if (!actionIds.has(actionId))
-		throw new Error("This shortcut belongs to a newer version of Evener.");
+	if (!actionIds.has(actionId)) throw new Error("This shortcut belongs to a newer version of Evener.");
 	return [
 		...rules.filter((rule) => rule.action !== actionId),
 		...(chord === undefined ? [] : [{ action: actionId, chord }]),
 	];
 }
 
-export function keybindingPreview(
-	rules: readonly KeybindingsRule[],
-	platform: KeybindingsPlatform = "apple",
-) {
+export function keybindingPreview(rules: readonly KeybindingsRule[], platform: KeybindingsPlatform = "apple") {
 	const registry = createKeybindingsRegistry(parseKeybinding);
 	registerDefaultBindings(registry);
 	// Native has no browser navigator. Resolve the portable alias explicitly;
 	// default registrations already contain both Command and Control bindings.
 	const transformed = rules.map((rule) => ({
 		...rule,
-		chord:
-			rule.chord === null ? null : resolveModifierAlias(rule.chord, platform),
+		chord: rule.chord === null ? null : resolveModifierAlias(rule.chord, platform),
 	}));
 	const result = validateOverrideRules(transformed, registry, platform);
 	const effective = new Set(result.rules.map((rule) => rule.action));
@@ -71,18 +66,12 @@ export function keybindingPreview(
 	return {
 		rows: ACTION_DISPLAY_ROWS.map((row) => {
 			const chord = authored.get(row.actionId);
-			const defaults = DEFAULT_BINDINGS.filter(
-				(binding) => binding.actionId === row.actionId,
-			)
+			const defaults = DEFAULT_BINDINGS.filter((binding) => binding.actionId === row.actionId)
 				.map((binding) => binding.chord)
 				.filter((value): value is string => typeof value === "string");
 			return {
 				...row,
-				shortcuts: effective.has(row.actionId)
-					? typeof chord === "string"
-						? [chord]
-						: []
-					: defaults,
+				shortcuts: effective.has(row.actionId) ? (typeof chord === "string" ? [chord] : []) : defaults,
 				customized: effective.has(row.actionId),
 			};
 		}),

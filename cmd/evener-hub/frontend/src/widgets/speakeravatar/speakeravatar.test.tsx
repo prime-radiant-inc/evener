@@ -2,10 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { expect, test } from "vitest";
 import { DEFAULT_SIZE, SpeakerAvatar } from ".";
-
-afterEach(cleanup);
 
 function tileOf(container: HTMLElement): HTMLElement {
   const tile = container.querySelector("[data-testid='speaker-avatar']");

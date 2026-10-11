@@ -2,9 +2,9 @@ import {
   advancedEnabledCount,
   type ContentLevel,
   type ContentVector,
+  contentVectorForConfig,
   type HookExitDetail,
   normalizeConfig,
-  presetContent,
   type TranscriptDisplayAdvancedV1,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
@@ -54,10 +54,6 @@ const HOOK_EXIT_OPTIONS: SelectOption[] = [
   { value: "all", label: "All" },
 ];
 
-function contentVector(content: TranscriptDisplayConfigV1["content"]): ContentVector {
-  return content.kind === "preset" ? presetContent(content.level) : { ...content };
-}
-
 function isHookExitDetail(value: string): value is HookExitDetail {
   return value === "none" || value === "successful" || value === "all";
 }
@@ -73,9 +69,9 @@ export function TranscriptDetailEditor({
   const lastCustom = useRef<ContentVector | undefined>(undefined);
   const config = normalizeConfig(value);
   useEffect(() => {
-    if (config.content.kind === "custom") lastCustom.current = contentVector(config.content);
-  }, [config.content]);
-  const vector = contentVector(config.content);
+    if (config.content.kind === "custom") lastCustom.current = contentVectorForConfig(config);
+  }, [config]);
+  const vector = contentVectorForConfig(config);
 
   function emit(next: TranscriptDisplayConfigV1) {
     onChange(normalizeConfig(next));
@@ -83,7 +79,7 @@ export function TranscriptDetailEditor({
 
   function selectContent(choice: ContentChoice) {
     if (choice === "custom") {
-      const customVector = lastCustom.current ?? contentVector(config.content);
+      const customVector = lastCustom.current ?? contentVectorForConfig(config);
       const next = { kind: "custom" as const, ...customVector };
       lastCustom.current = customVector;
       emit({ ...config, content: next });

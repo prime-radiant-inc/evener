@@ -394,3 +394,62 @@ func TestTranscriptHealth_UnreadableTranscriptIsLoudError(t *testing.T) {
 		t.Fatal("want error for unparseable transcript, got nil")
 	}
 }
+
+// TestTranscriptHealth_RejectedCallsDistinctSignatures verifies that two
+// rejected tool calls with DISTINCT raw (malformed) argument bytes produce
+// DISTINCT signatures, so they do not collapse into one identical run. Before
+// FU5, toolCallSignature hashed part.ToolCall.Arguments, which the durable
+// transcript records as {} for every rejected call regardless of what the
+// model actually sent — so two malformed calls with different raw bytes hashed
+// identically and merged into a single identical run, hiding the real repeat
+// shape. The fix mirrors doctor/transcript.go's SentArguments treatment
+// (#2162): the signature must hash the model's raw bytes (SentArguments) when
+// RawArguments is set, matching the runtime loop detector's own signature
+// (session_tool_round.go, which hashes resp.ToolCalls() — the original raw
+// args — not the persisted {} form).
+func TestTranscriptHealth_RejectedCallsDistinctSignatures(t *testing.T) {
+	t.Parallel()
+	// Two distinct malformed argument bodies. Both reject to Arguments={} in
+	// the durable transcript, but the model sent different bytes.
+	const rawA = `{command: "ls", }`
+	const rawB = `{command: "rm -rf /", }`
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		// Two rejected calls with distinct raw bytes, each paired with an error
+		// result. With the {} placeholder they would share a signature and form a
+		// 2-call identical run; with the raw bytes they must be distinct, so the
+		// longest identical run is length 1.
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			rejectedToolCallWithID("ra", "shell", rawA),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("ra", "shell", "arguments not valid JSON", true),
+		}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			rejectedToolCallWithID("rb", "shell", rawB),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("rb", "shell", "arguments not valid JSON", true),
+		}}),
+	}
+	base, sid := rejectedSignatureFixture(t, turns)
+	h, err := TranscriptHealth(base, sid)
+	if err != nil {
+		t.Fatalf("TranscriptHealth: %v", err)
+	}
+	if h.LongestIdenticalRun.Length != 1 {
+		t.Errorf("LongestIdenticalRun.Length = %d, want 1 (two distinct malformed calls must not collapse to one identical run); Tool=%q AllErrors=%v",
+			h.LongestIdenticalRun.Length, h.LongestIdenticalRun.Tool, h.LongestIdenticalRun.AllErrors)
+	}
+}
+
+// rejectedSignatureFixture writes a session's turns to a real transcript on
+// disk and returns the state base and session id for TranscriptHealth.
+func rejectedSignatureFixture(t *testing.T, turns []schema.Turn) (base, sid string) {
+	t.Helper()
+	base = t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid = sidA
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+	return base, sid
+}

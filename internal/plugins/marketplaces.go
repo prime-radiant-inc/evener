@@ -21,6 +21,9 @@ var (
 	marketplaceGitClone        = gitClone
 	marketplaceGitSparseClone  = gitSparseClone
 	marketplaceGitPull         = gitPull
+	marketplaceGitHeadSHA      = gitHeadSHA
+	marketplaceGitFetch        = gitFetch
+	marketplaceGitFastForward  = gitFastForward
 	marketplaceRemoveAll       = os.RemoveAll
 	marketplaceRemove          = os.Remove
 	marketplaceRename          = os.Rename
@@ -93,6 +96,18 @@ func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 // storeChangeRollbackFailed) wrap this already-scrubbed error with it; no
 // path can reach the wire either way.
 func (m *Manager) saveMarketplaces(mk Marketplaces) error {
+	if err := m.writeMarketplaces(mk); err != nil {
+		return err
+	}
+	m.markStoreChanged(StoreChanged{Marketplaces: true})
+	return nil
+}
+
+// writeMarketplaces writes known_marketplaces.json, scrubbed as
+// saveMarketplaces says, without marking the store changed: for a write that
+// changes nothing a client or an update check reads beyond LastUpdated
+// (stampRefreshed).
+func (m *Manager) writeMarketplaces(mk Marketplaces) error {
 	path, err := m.storePath(marketplacesFileName)
 	if err != nil {
 		return err
@@ -105,7 +120,24 @@ func (m *Manager) saveMarketplaces(mk Marketplaces) error {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: saving %s failed: %v\n", marketplacesFileName, err)
 		return fmt.Errorf("saving %s failed; see the hub's log for detail", marketplacesFileName)
 	}
-	m.markStoreChanged(StoreChanged{Marketplaces: true})
+	return nil
+}
+
+// stampRefreshed records that a refresh confirmed name's catalog current
+// now (LastUpdated, which doctor's staleness warning reads). A refresh that
+// changed the clone saves as any marketplace write does, broadcasting the
+// change and retiring update-check answers; one that changed nothing only
+// writes the time, so the hub's auto-upgrade tick and every check do not
+// retire answers or broadcast to every client for nothing.
+func (m *Manager) stampRefreshed(mk Marketplaces, name string, ref MarketplaceRef, changed bool) error {
+	ref.LastUpdated = m.now().UTC()
+	mk[name] = ref
+	if err := m.writeMarketplaces(mk); err != nil {
+		return m.saveFailed(name, marketplacesFileName, err)
+	}
+	if changed {
+		m.markStoreChanged(StoreChanged{Marketplaces: true})
+	}
 	return nil
 }
 
@@ -115,19 +147,13 @@ func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, des
 	switch src.Kind {
 	case SourceDirectory:
 		return src.Path, nil // referenced in place
-	case SourceGitHub:
-		url := "https://github.com/" + src.Repo + ".git"
-		if err := marketplaceGitClone(ctx, url, destDir, src.Ref, src.Sha); err != nil {
-			return "", err
-		}
-		return destDir, nil
-	case SourceURL:
-		if err := marketplaceGitClone(ctx, src.URL, destDir, src.Ref, src.Sha); err != nil {
+	case SourceGitHub, SourceURL:
+		if err := marketplaceGitClone(ctx, gitRemoteURL(src), destDir, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return destDir, nil
 	case SourceGitSubdir:
-		if err := marketplaceGitSparseClone(ctx, src.URL, destDir, src.Path, src.Ref, src.Sha); err != nil {
+		if err := marketplaceGitSparseClone(ctx, gitRemoteURL(src), destDir, src.Path, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
 		return filepath.Join(destDir, src.Path), nil
@@ -222,7 +248,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	cat, err := ParseCatalog(root)
 	if err != nil {
 		_ = marketplaceRemoveAll(staging)
-		return MarketplaceRef{}, fmt.Errorf("reading marketplace.json: %w", err)
+		return MarketplaceRef{}, m.storeFileFailed(err, "reading marketplace.json")
 	}
 	if name == "" {
 		name = cat.Name
@@ -243,6 +269,12 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 		old, err := m.swapInClone(staging, installLoc)
 		if err != nil {
 			_ = marketplaceRemoveAll(staging)
+			// A swap that handed its aside clone back could not restore dest
+			// itself; this caller has no undo to retry it, so dest is empty and
+			// the only copy sits under .old - the state is left between names.
+			if old != "" {
+				err = errors.Join(err, errRenameRollbackIncomplete)
+			}
 			return MarketplaceRef{}, err
 		}
 		aside = old
@@ -254,7 +286,7 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if src.Kind != SourceDirectory {
-			if rollbackErr := undoCloneSwap(installLoc, aside); rollbackErr != nil {
+			if rollbackErr := m.undoCloneSwap(installLoc, aside); rollbackErr != nil {
 				return MarketplaceRef{}, m.storeChangeRollbackFailed(name, err, rollbackErr)
 			}
 		}
@@ -298,8 +330,10 @@ func (m *Manager) saveFailed(name, fileName string, saveErr error) error {
 // the RPC caller. The one error a caller can still act on - cause wrapping
 // errStoreBetweenNames (saveRename's own between-names failure, whose
 // directory rollback then also failed) or errRenameRollbackIncomplete (a move
-// helper that left the store between the two names) - keeps that identity
-// through %w, because each sentinel's own text carries no path.
+// helper that left the store between the two names, or the swap's undo, which
+// marks its own failed retry) - keeps that identity through %w, because each
+// sentinel's own text carries no path. Either the cause or the rollback error
+// can carry it, so both are checked.
 func (m *Manager) storeChangeRollbackFailed(name string, cause, rollbackErr error) error {
 	if rollbackErr == nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: %v\n", name, cause)
@@ -307,7 +341,7 @@ func (m *Manager) storeChangeRollbackFailed(name string, cause, rollbackErr erro
 		_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: %v; rolling back failed too: %v\n", name, cause, rollbackErr)
 	}
 	for _, sentinel := range []error{errStoreBetweenNames, errRenameRollbackIncomplete} {
-		if errors.Is(cause, sentinel) {
+		if errors.Is(cause, sentinel) || errors.Is(rollbackErr, sentinel) {
 			return fmt.Errorf("marketplace %q's change could not be rolled back; see the hub's log for detail: %w", name, sentinel)
 		}
 	}
@@ -509,7 +543,14 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 		return m.saveFailed(name, marketplacesFileName, err)
 	}
 	if present && !protect {
-		if err := marketplaceRemoveAll(clone); err != nil {
+		removeClone := func() error {
+			if err := marketplaceRemoveAll(clone); err != nil {
+				return err
+			}
+			m.removeCloneLock(clone)
+			return nil
+		}
+		if err := m.withClone(ctx, clone, removeClone); err != nil {
 			return m.cloneRemovalFailed(name, err)
 		}
 	}
@@ -873,7 +914,10 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		if swappedIn == "" {
 			return nil
 		}
-		return undoCloneSwap(swappedIn, asideClone)
+		if err := m.undoCloneSwap(swappedIn, asideClone); err != nil {
+			return errors.Join(err, errRenameRollbackIncomplete)
+		}
+		return nil
 	}
 	fail := func(err error) (MarketplaceRef, error) {
 		// Before undo, which moves the install location back under its old
@@ -885,10 +929,12 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		// changed rather than back as it was found. That can be this call's
 		// own rollback (swapErr/undoErr) or the move helper's, which ran
 		// before it handed the error up and marked the state with
-		// errRenameRollbackIncomplete. Either way err and rollbackErr can
-		// carry this machine's absolute plugin-store path, so
-		// storeChangeRollbackFailed logs them and the caller learns only
-		// which marketplace was left half-edited.
+		// errRenameRollbackIncomplete. undoSwap marks its own retryable
+		// failure the same way, so the sentinel is present exactly when the
+		// store was left between names for real. Either way err and rollbackErr
+		// can carry this machine's absolute plugin-store path, so
+		// storeChangeRollbackFailed logs them and the caller learns only which
+		// marketplace was left half-edited.
 		if rollbackErr != nil || errors.Is(err, errRenameRollbackIncomplete) {
 			return MarketplaceRef{}, m.storeChangeRollbackFailed(name, err, rollbackErr)
 		}
@@ -934,7 +980,9 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 				sources := append(marketplaceProtectionPaths(mk, name), src.Path)
 				present, protect := m.sweepDestroysSource(sources, clone)
 				if present && !protect {
-					afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(clone) })
+					afterSave = append(afterSave, func() {
+						_ = m.withClone(context.Background(), clone, func() error { return marketplaceRemoveAll(clone) })
+					})
 				}
 			}
 			_ = marketplaceRemoveAll(staging)
@@ -950,10 +998,18 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 				return fail(fmt.Errorf("marketplace %q: the new install location %s holds a directory source another marketplace records", name, dest))
 			}
 			aside, err := m.swapInClone(staging, dest)
+			// A non-empty aside is the old clone the swap displaced: register
+			// it so the undo restores it - and, when the install failed and the
+			// swap's own restore failed too, retries that restore instead of
+			// stranding the only copy under .old. An empty aside with an error
+			// means dest was never touched; with no error it means dest held
+			// nothing, so a rollback just removes the fresh clone.
+			if err == nil || aside != "" {
+				swappedIn, asideClone = dest, aside
+			}
 			if err != nil {
 				return fail(err)
 			}
-			swappedIn, asideClone = dest, aside
 			if aside != "" {
 				afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(aside) })
 			}
@@ -997,6 +1053,29 @@ func restoreRename(what, from, to string) error {
 		return fmt.Errorf("restoring %s %s to %s: %w", what, from, to, err)
 	}
 	return nil
+}
+
+// renameUndo builds the undo step that puts one of a rename's moved
+// directories back, marking changed when it cannot: the directory is then left
+// under the new name while the store file that records it still names the old
+// one, so the store has changed even though this session wrote no store file.
+// changed names the file that record lives in, which the directory decides: the
+// clone's location is in known_marketplaces.json (Marketplaces), while a plugin
+// cache holds the installs installed_plugins.json records (Plugins).
+// moveMarketplace's own fail and a caller's later runUndo (EditMarketplace, the
+// migration barrier) run these closures through the same path, so a move that
+// fails mid-rename and a rename whose final save fails after it both report the
+// state (#1800). A rollback that succeeds marks nothing, because the store is
+// back at the old name and nothing observable moved — the same rule that keeps
+// moveMarketplace from marking on success.
+func (m *Manager) renameUndo(what, from, to string, changed StoreChanged) func() error {
+	return func() error {
+		if err := restoreRename(what, from, to); err != nil {
+			m.markStoreChanged(changed)
+			return err
+		}
+		return nil
+	}
 }
 
 // runUndo runs a rename's undo steps in reverse and joins what they could not
@@ -1057,10 +1136,10 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 			if displaced {
 				return fail(fmt.Errorf("renaming marketplace clone %s would move a directory source another marketplace records", oldDir))
 			}
-			if err := marketplaceRename(oldDir, newDir); err != nil {
+			if err := m.withClone(context.Background(), oldDir, func() error { return marketplaceRename(oldDir, newDir) }); err != nil {
 				return fail(fmt.Errorf("renaming marketplace clone: %w", err))
 			}
-			undo = append(undo, func() error { return restoreRename("marketplace clone", newDir, oldDir) })
+			undo = append(undo, m.renameUndo("marketplace clone", newDir, oldDir, StoreChanged{Marketplaces: true}))
 		}
 		// A recorded location says where the clone is, so it follows the
 		// clone that moved; with none to move the entry is unfetched, and the
@@ -1090,7 +1169,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// than deleted ahead of a commit that can still fail.
 		present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), oldDir)
 		if present && !protect {
-			if err := marketplaceRemoveAll(oldDir); err != nil {
+			if err := m.withClone(context.Background(), oldDir, func() error { return marketplaceRemoveAll(oldDir) }); err != nil {
 				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
 			}
 		}
@@ -1111,7 +1190,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		if err := marketplaceRename(oldCache, newCache); err != nil {
 			return fail(fmt.Errorf("renaming plugin cache: %w", err))
 		}
-		undo = append(undo, func() error { return restoreRename("plugin cache", newCache, oldCache) })
+		undo = append(undo, m.renameUndo("plugin cache", newCache, oldCache, StoreChanged{Plugins: true}))
 	}
 	return ref, rekeyRegistry(reg, owners, name, newName, oldCache, newCache), undo, nil
 }
@@ -1128,8 +1207,9 @@ var errStoreBetweenNames = errors.New("the store is left between the two names")
 // every directory back where it found it. A move writes neither store file, so
 // a failure whose undo succeeded leaves the store at the old name with nothing
 // left to resume; only one that could not leaves it between the two names. A
-// rename that wrote a marker keeps it for this state alone
-// (migrateMarketplaceName).
+// swap hands its aside clone to the caller's undo, which marks this only when
+// its own retry fails; a rename that wrote a marker keeps it for this state
+// alone (migrateMarketplaceName).
 var errRenameRollbackIncomplete = errors.New("a failed move could not be put back completely")
 
 // saveRename records a rename in both store files, the registry first: a
@@ -1441,6 +1521,11 @@ func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) er
 	}
 	old, err := m.swapInClone(staging, ref.InstallLocation)
 	if err != nil {
+		// As in AddMarketplace: no undo here retries the swap's own restore, so
+		// a returned aside clone leaves the store between names.
+		if old != "" {
+			err = errors.Join(err, errRenameRollbackIncomplete)
+		}
 		return err
 	}
 	if old != "" {
@@ -1457,7 +1542,10 @@ func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) er
 // It returns the path the old clone was set aside under, or "" when dest held
 // nothing. That directory is the caller's: it is the only copy of what dest
 // held, so a caller whose work can still fail keeps it until the work is
-// committed and every other caller removes it at once.
+// committed and every other caller removes it at once. A failed install whose
+// aside move succeeded returns that path alongside the error: the old clone is
+// then still the only copy of dest's contents, and a caller that can roll back
+// has to restore it - the swap's own attempt has already been made.
 func (m *Manager) swapInClone(staging, dest string) (string, error) {
 	// The aside name is this swap's own scratch, so a directory already there
 	// is residue a caller's best-effort cleanup failed to remove. It has to go
@@ -1465,6 +1553,11 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 	// the marketplace unable to re-source until someone deleted it by hand.
 	old := m.marketplaceDir(asideCloneName)
 	_ = marketplaceRemoveAll(old)
+	release, err := m.lockClone(context.Background(), dest)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	occupied, err := pathPresent(dest)
 	if err != nil {
 		return "", err
@@ -1479,16 +1572,16 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 	if err := marketplaceRename(staging, dest); err != nil {
 		if movedAside {
 			// Put the old clone back so dest keeps pointing at a real
-			// directory. If even that fails, .old still holds the only
-			// local copy — deliberately NOT swept — and the error says so.
-			// errRenameRollbackIncomplete marks the state a caller that
-			// scrubs before the wire (EditMarketplace's fail closure) has to
-			// report apart from a clean, restored failure.
-			if restoreErr := marketplaceRename(old, dest); restoreErr != nil {
-				return "", errors.Join(
-					fmt.Errorf("installing fresh clone failed (%w); restoring old clone: %w", err, restoreErr),
-					errRenameRollbackIncomplete,
-				)
+			// directory. If even that fails, .old still holds the only local
+			// copy — deliberately NOT swept — so the aside path is returned
+			// alongside the error and the caller's own undo retries the
+			// restore (and marks the state with errRenameRollbackIncomplete
+			// when it cannot). The helper does not mark it here: the caller
+			// whose undo is about to run is the one that can still put dest
+			// back, so only its outcome says whether the store is left between
+			// names.
+			if restoreErr := restoreRename("old clone", old, dest); restoreErr != nil {
+				return old, fmt.Errorf("installing fresh clone failed (%w); %w", err, restoreErr)
 			}
 		}
 		return "", fmt.Errorf("installing fresh clone: %w", err)
@@ -1504,7 +1597,12 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 // into dest. A caller whose work might still fail keeps the aside path for
 // exactly this, so the store keeps pointing at the clone the surviving store
 // file records instead of at the source the failed step had already fetched.
-func undoCloneSwap(dest, aside string) error {
+func (m *Manager) undoCloneSwap(dest, aside string) error {
+	release, err := m.lockClone(context.Background(), dest)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := marketplaceRemoveAll(dest); err != nil {
 		return fmt.Errorf("removing the swapped-in clone %s: %w", dest, err)
 	}
@@ -1528,6 +1626,9 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
+	// A directory catalog can change on disk without anything to compare, so
+	// its refresh always counts as a change.
+	changed := true
 	if ref.Source.Kind != SourceDirectory {
 		if ref.InstallLocation == "" {
 			// Never fetched (seeded pointer): clone now — that is the refresh.
@@ -1541,25 +1642,69 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 				return err
 			}
 			ref.InstallLocation = installLoc
-		} else if pullErr := marketplaceGitPull(ctx, ref.InstallLocation); pullErr != nil {
-			// A failed pull can mean the clone is wedged — e.g. a stale
-			// .git/index.lock stranded by a killed git — and a plain retry
-			// would then fail the same way forever. Self-heal with a staged
-			// reclone; on failure it leaves the existing clone untouched.
-			// When the pull failed because the request itself was canceled,
-			// skip the doomed reclone and surface the cancellation directly.
-			if ctx.Err() != nil {
-				return pullErr
+		} else if sourcePinned(ctx, ref) {
+			// The pinned commit is the catalog, so an intact clone has
+			// nothing to fetch; a pull of its detached HEAD would fail and
+			// reclone it on every refresh (#3844). One that is not intact is
+			// recloned at its pin, never pulled along a branch it was moved to.
+			if !m.pinnedCloneIntact(ctx, ref) {
+				if err := m.recloneMarketplace(ctx, ref); err != nil {
+					return fmt.Errorf("refreshing marketplace %q: restoring its pinned clone: %w", name, err)
+				}
+				changed = true
+			} else {
+				changed = false
 			}
-			if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
-				return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
-			}
+		} else if changed, err = m.pullMarketplace(ctx, name, ref); err != nil {
+			return err
 		}
 	}
-	ref.LastUpdated = m.now().UTC()
-	mk[name] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		return m.saveFailed(name, marketplacesFileName, err)
+	return m.stampRefreshed(mk, name, ref, changed)
+}
+
+// pinnedCloneIntact reports whether the clone of pinned ref (sourcePinned)
+// stands at its pin, the sha or the commit its ref names, with a catalog that
+// parses. Everything it reads is moved only under the store lock, which the
+// refresh holds; a check's fetch, the one git run without it, writes only
+// objects and remote refs.
+func (m *Manager) pinnedCloneIntact(ctx context.Context, ref MarketplaceRef) bool {
+	want := ref.Source.Sha
+	if want == "" {
+		resolved, err := gitResolveCommit(ctx, ref.InstallLocation, ref.Source.Ref)
+		if err != nil {
+			return false
+		}
+		want = resolved
 	}
-	return nil
+	head, err := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+	if err != nil || !sameCommit(head, want) {
+		return false
+	}
+	_, err = ParseCatalog(m.catalogRoot(ref))
+	return err == nil
+}
+
+// pullMarketplace pulls the clone of name and reports whether it changed:
+// its HEAD moved, or a failed pull was healed by a reclone, whose files are
+// fresh whatever commit it lands on. A HEAD it cannot read counts as moved.
+func (m *Manager) pullMarketplace(ctx context.Context, name string, ref MarketplaceRef) (bool, error) {
+	before, _ := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+	if pullErr := m.withClone(ctx, ref.InstallLocation, func() error { return marketplaceGitPull(ctx, ref.InstallLocation) }); pullErr != nil {
+		// A failed pull can mean the clone is wedged — e.g. a stale
+		// .git/index.lock stranded by a killed git — and a plain retry
+		// would then fail the same way forever. Self-heal with a staged
+		// reclone; on failure it leaves the existing clone untouched.
+		// When the pull failed because the request itself was canceled,
+		// skip the doomed reclone and surface the cancellation directly.
+		if ctx.Err() != nil {
+			return false, pullErr
+		}
+		if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
+			return false, fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
+		}
+		return true, nil
+	}
+	// An unreadable HEAD ("") on either side counts as moved.
+	after, _ := marketplaceGitHeadSHA(ctx, ref.InstallLocation)
+	return before == "" || after == "" || after != before, nil
 }

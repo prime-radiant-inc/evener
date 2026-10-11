@@ -2,14 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WireError } from "@evener/appwire-client";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 // ModelCatalog is both the component (value) and the envelope interface (type);
 // a single import brings in both meanings via declaration merging.
 import { ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel } from "./index";
-
-afterEach(() => cleanup());
 
 const SONNET: ModelCatalogEntry = {
   provider: "anthropic",
@@ -177,7 +175,7 @@ describe("open state", () => {
     const row = (await screen.findByText("Claude Sonnet 4.5")).closest("li");
     if (!row) throw new Error("expected the Sonnet option to render inside a listbox <li>");
 
-    expect(within(row).getByText("tools · vision · reasoning · $3 in · $15 out /Mtok · 200k")).toBeTruthy();
+    expect(within(row).getByText("tools · vision · reasoning · $3 in · $15 out /Mtok · 200K")).toBeTruthy();
   });
 
   test("there is no Cancel button", async () => {
@@ -641,4 +639,16 @@ test("the sheet variant's rows meet the 48px tap floor", () => {
   const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
   const rule = /\.sheetRow\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("min-height: 48px");
+});
+
+test("Enter on a non-matching typed text does not select anything", async () => {
+  const user = userEvent.setup();
+  const { onChange } = renderPicker();
+  const input = await openPicker(user);
+
+  // Type something that doesn't match any model exactly
+  await user.type(input, "nonexistent-model");
+  await user.keyboard("{Enter}");
+
+  expect(onChange).not.toHaveBeenCalled();
 });

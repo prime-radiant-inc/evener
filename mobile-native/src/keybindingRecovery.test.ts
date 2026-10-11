@@ -11,9 +11,7 @@ import { NativePreferences } from "./nativePreferences";
 
 const getMethod = "evener/settings/keybindings/get";
 const patchMethod = "evener/settings/keybindings/patch";
-const rules: KeybindingsRule[] = [
-	{ action: "composer.focus", chord: "Meta+P" },
-];
+const rules: KeybindingsRule[] = [{ action: "composer.focus", chord: "Meta+P" }];
 
 function fixture() {
 	const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
@@ -61,8 +59,7 @@ function fixture() {
 				storage,
 			),
 		emit: (params: KeybindingsOverrides) => {
-			for (const listener of listeners)
-				listener({ method: "evener/settings/keybindings/changed", params });
+			for (const listener of listeners) listener({ method: "evener/settings/keybindings/changed", params });
 		},
 		patches: () => requests.filter(({ method }) => method === patchMethod),
 	};

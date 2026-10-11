@@ -10,15 +10,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // These are integration tests for the manage_worktree create arm (spec §3),
@@ -159,6 +162,7 @@ func (p *worktreeMaintenanceProbe) published() {
 }
 
 func TestMain(m *testing.M) {
+	memoryEvalCaptureSources()
 	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
 		if out, err := exec.Command("go", "env", key).Output(); err == nil {
 			if v := strings.TrimSpace(string(out)); v != "" {
@@ -167,13 +171,11 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	// When evener dev agent-shards launches this binary as a shard, the
-	// -test.run regex is handed via EVENER_SHARD_RUN_FILE (a file path) to
-	// stay under the OS argument-list limit. flag.Parse must run before
-	// flag.Set so the command-line value (absent here) does not clobber
-	// the file contents after m.Run calls flag.Parse internally.
+	// When evener dev agent-shards launches this binary as a shard, its
+	// -test.run regex arrives through a file (see shardrun). flag.Parse must
+	// run first so the command line's (absent) -test.run cannot clobber it.
 	flag.Parse()
-	if err := configureShardRunFile(); err != nil {
+	if err := shardrun.ConfigureRunFile(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
 		os.Exit(2)
 	}
@@ -183,11 +185,29 @@ func TestMain(m *testing.M) {
 	// macOS and whenever the fast path cannot be resolved safely.
 	fastGitDirForTest = prependFastGitToPath()
 
+	// Every root below is created inside this one, which also collects the
+	// scratch and temp containers the sessions under test retain at close.
+	hostTemp, err := sandboxtest.RedirectHostTemp("evener-agent-test-")
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		os.Exit(2)
+	}
+
 	testHome, err := os.MkdirTemp("", "evener-agent-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", testHome)
 		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
+		// The user cache dir is a session scratch base (sandbox.SweepCrashedSessionScratch
+		// walks it), and XDG_CACHE_HOME outranks HOME there, so a developer's own
+		// value would hand the tests the real cache.
+		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
+	// A developer with EVENER_NO_USER_SKILLS exported would otherwise flip
+	// which user-global sources sessions discover: Discover skips the global
+	// MCP layer and DiscoverEvenerWideCommands skips the user-global commands
+	// dir (#3487), and sessions hide the operator's skills (#3227). Tests that
+	// pin one side of that behavior set the variable themselves.
+	_ = os.Unsetenv(envvars.EVENERNoUserSkills.Name)
 	sharedWorkspace, err := os.MkdirTemp("", "evener-agent-workspace-*")
 	if err == nil {
 		_ = os.Chmod(sharedWorkspace, 0o555)
@@ -216,29 +236,13 @@ func TestMain(m *testing.M) {
 	if intgMCPServerDir != "" {
 		_ = os.RemoveAll(intgMCPServerDir)
 	}
+	if err := hostTemp.Discard(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
-}
-
-func configureShardRunFile() error {
-	runFile, supplied := os.LookupEnv("EVENER_SHARD_RUN_FILE")
-	if !supplied {
-		return nil
-	}
-	data, err := os.ReadFile(runFile)
-	if err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: read failed: %w", runFile, err)
-	}
-	pattern := strings.TrimSpace(string(data))
-	if pattern == "" {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: run regex is empty", runFile)
-	}
-	if _, err := regexp.Compile(pattern); err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: invalid run regex: %w", runFile, err)
-	}
-	if err := flag.Set("test.run", pattern); err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: setting test.run failed: %w", runFile, err)
-	}
-	return nil
 }
 
 func packageFixtureTempDir(t *testing.T, pattern string) string {
@@ -306,8 +310,12 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 	return wtBaseRepoPath, wtBaseRepoHead
 }
 
+// buildWorktreeBaseRepo builds the repo worktreeBaseRepo caches for the whole
+// package run, so it lives in the package's fixture root, not the current
+// TMPDIR: a test that points TMPDIR at its own t.TempDir would otherwise leave
+// the cache naming a directory its cleanup removed.
 func buildWorktreeBaseRepo(run worktreeGitRunner) (path, head string, err error) {
-	dir, err := os.MkdirTemp("", "evener-worktree-base-*")
+	dir, err := os.MkdirTemp(sharedAgentTempRoot, "evener-worktree-base-*")
 	if err != nil {
 		return "", "", err
 	}
@@ -342,6 +350,23 @@ func copyWorktreeBaseRepo(t *testing.T, dst string) {
 	copyWorktreeBaseRepoFrom(t, base, dst)
 }
 
+// TestWorktreeBaseRepoLivesOutsideItsFirstUsersTempDir pins the CI trip from
+// the round-30 run: the base repo is a package fixture that must outlive the
+// test that first builds it, so it must be placed under the temp root the
+// process started with — never under an isolated test's own t.TempDir, which
+// Go removes when that test ends, taking the fixture and every later
+// consumer's copy with it. The red reproduces when this test is the first
+// user (the -run isolation mirrors the CI ordering that made the
+// TMPDIR-isolated retirement test the builder); in a full-suite run an
+// earlier user may already have built it, and the assertion holds either way.
+func TestWorktreeBaseRepoLivesOutsideItsFirstUsersTempDir(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	base, _ := worktreeBaseRepo(t)
+	if strings.HasPrefix(filepath.Clean(base), filepath.Clean(os.TempDir())+string(os.PathSeparator)) {
+		t.Fatalf("the worktree base repo %q was built inside the isolated TMPDIR %q: the package fixture dies with this test's cleanup", base, os.TempDir())
+	}
+}
+
 func copyWorktreeBaseRepoFrom(t *testing.T, base, dst string) {
 	t.Helper()
 	for _, rel := range []string{
@@ -372,6 +397,7 @@ func copyWorktreeBaseRepoFrom(t *testing.T, base, dst string) {
 }
 
 func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
+	t.Parallel()
 	probe := newWorktreeMaintenanceProbe()
 	base, _, err := buildWorktreeBaseRepo(probe.run(runWorktreeGit))
 	if base != "" {
@@ -403,6 +429,7 @@ func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
 }
 
 func TestWorktreeMaintenanceProbeUsesEffectiveBoolean(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		args   []string
@@ -469,6 +496,7 @@ func TestWorktreeMaintenanceProbeUsesEffectiveBoolean(t *testing.T) {
 }
 
 func TestWorktreeFixtureSetupErrorRetainsCleanupRoot(t *testing.T) {
+	t.Parallel()
 	base, _, err := buildWorktreeBaseRepo(func(string, ...string) (string, error) {
 		return "", errors.New("injected setup error")
 	})
@@ -546,7 +574,6 @@ func copyWorktreeFixtureFile(src, dst string, mode os.FileMode) error {
 func worktreeTestSessionConfig() SessionConfig {
 	return SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:             true,
 			minimalSystemPrompt:         true,
@@ -782,6 +809,37 @@ func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
 	}
 }
 
+// REAL git: the published path is the linked checkout git actually created and
+// the session installed, not a requested argument or a synthetic fixture path.
+func TestWorktreeCreate_PublishesInstalledCWD(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	ctx := t.Context()
+	changed := make(chan string, 8)
+	r.s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if data, ok := ev.Data.(events.EnvironmentChangedData); ok {
+			changed <- data.WorkingDir
+		}
+	}, func() {})
+
+	result, err := r.create(t, map[string]any{"name": "document-lane"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := result["path"].(string)
+	select {
+	case got := <-changed:
+		if got != want {
+			t.Fatalf("published cwd = %q, want %q", got, want)
+		}
+		if installed := r.s.currentEnv().WorkingDirectory(); installed != got {
+			t.Fatalf("published %q before installation %q", got, installed)
+		}
+	case <-ctx.Done():
+		t.Fatal("installed cwd was not published")
+	}
+}
+
 // REAL git: the subject is that `worktree add --lock --reason` really lands a
 // lock in git's registry, read back through real `--porcelain` output.
 func TestWorktreeCreate_AtomicLockWithOwnMarker(t *testing.T) {
@@ -857,6 +915,42 @@ func TestWorktreeCreate_AddFailureCleansSidecarSameCall(t *testing.T) {
 	// The session env was not swapped into a nonexistent worktree.
 	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
 		t.Errorf("env swapped to %q on a failed create; want it to stay at %q", got, r.mainRoot)
+	}
+}
+
+// REAL git: a lane cut with `worktree add -b` on a branch that differs from its
+// directory name is a registry effect — the branch really exists, the lane
+// really checks it out — and only git can prove it. The sidecar must record the
+// two independently: the directory name stays the machine key, the branch
+// carries the human-facing name (the delegate-lane branch-names design).
+func TestWorktreeCreateCore_BranchDiffersFromName(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	active := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	res, err := r.s.worktreeCreateCore(t.Context(), active, "lane-dir", "feat/mnemonic", "", worktree.EvCreate, worktree.FormatSessionMarker(r.s.id), "manage_worktree create", nil)
+	if err != nil {
+		t.Fatalf("worktreeCreateCore: %v", err)
+	}
+	defer res.Done()
+	if res.Branch != "feat/mnemonic" {
+		t.Errorf("result Branch = %q, want feat/mnemonic", res.Branch)
+	}
+	if filepath.Base(res.Path) != "lane-dir" {
+		t.Errorf("lane path = %q, want a directory named lane-dir", res.Path)
+	}
+	if !branchExistsInRepo(t, r.mainRoot, "feat/mnemonic") {
+		t.Error("branch feat/mnemonic was not created")
+	}
+	e := r.porcelainEntry(t, res.Path)
+	if e.Branch != "refs/heads/feat/mnemonic" {
+		t.Errorf("lane's checked-out branch = %q, want refs/heads/feat/mnemonic", e.Branch)
+	}
+	sc, err := worktree.ReadSidecar(r.metaDir(t, res.MainRoot), "lane-dir")
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if sc.Name != "lane-dir" || sc.Branch != "feat/mnemonic" {
+		t.Errorf("sidecar name/branch = %q/%q, want lane-dir/feat/mnemonic", sc.Name, sc.Branch)
 	}
 }
 
@@ -1088,7 +1182,7 @@ func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
 	r.s.mu.Unlock()
 
 	marker := worktree.FormatSessionMarker(r.s.id)
-	_, err := r.s.worktreeCreateCore(context.Background(), active, "x", "", worktree.EvCreate, marker, "test", nil)
+	_, err := r.s.worktreeCreateCore(context.Background(), active, "x", "x", "", worktree.EvCreate, marker, "test", nil)
 	if err == nil || !strings.Contains(err.Error(), "local execution environment") {
 		t.Fatalf("worktreeCreateCore with a decoupled non-local session env: err = %v, want a local-execution-environment error", err)
 	}
@@ -1180,6 +1274,61 @@ func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
 	}
 }
 
+// TestWorktreeCreate_CorruptReservationSurfaced: a create that died between its
+// O_EXCL open and its write leaves a malformed sidecar that ListSidecars hides.
+// Once that residue is past the reconciliation grace, a retry's O_EXCL write
+// fails with EEXIST and create must name the corrupt reservation (repairable by
+// hand) instead of reporting a live create that is not happening — and must not
+// delete the file, since malformed metadata does not authorize a destructive
+// cleanup. A fresh undecodable file is deliberately NOT named (see the sibling
+// case below): it may be the winner of a live race mid-write.
+func TestWorktreeCreate_CorruptReservationSurfaced(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	corruptPath := filepath.Join(metaDir, worktree.EncodeSidecarName("x")+".json")
+	if err := os.WriteFile(corruptPath, []byte("{torn"), 0o644); err != nil {
+		t.Fatalf("seed corrupt sidecar: %v", err)
+	}
+	ageSidecar(t, metaDir, "x", worktree.ReconcileGrace+time.Minute)
+
+	_, err := r.create(t, map[string]any{"name": "x"})
+	if err == nil || !strings.Contains(err.Error(), "reserved by a corrupt sidecar") {
+		t.Fatalf("create over a corrupt reservation: err = %v, want a corrupt-reservation message", err)
+	}
+	if _, statErr := os.Stat(corruptPath); statErr != nil {
+		t.Errorf("create removed the corrupt reservation: %v", statErr)
+	}
+}
+
+// TestWorktreeCreate_FreshUndecodableReservationReadsAsInFlight: an undecodable
+// sidecar younger than the reconciliation grace is indistinguishable from the
+// winner of a live concurrent create caught between its O_EXCL open and its
+// write, so create must fall back to the "already being created" message and
+// must never advise removing that file.
+func TestWorktreeCreate_FreshUndecodableReservationReadsAsInFlight(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t).wt()
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	// Zero bytes, exactly what a winner's file looks like before its write.
+	if err := os.WriteFile(filepath.Join(metaDir, worktree.EncodeSidecarName("y")+".json"), nil, 0o644); err != nil {
+		t.Fatalf("seed empty sidecar: %v", err)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "y"})
+	if err == nil || !strings.Contains(err.Error(), "already being created") {
+		t.Fatalf("create over a fresh undecodable reservation: err = %v, want the already-being-created message", err)
+	}
+}
+
 // TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile covers
 // step 6's MkdirAll(filepath.Dir(worktreePath)) failure branch for a
 // slash-nested name: a plain FILE occupying the exact path the worktree's
@@ -1221,4 +1370,11 @@ func branchExistsInRepo(t *testing.T, root, name string) bool {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	return cmd.Run() == nil
+}
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// agent-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	t.Parallel()
+	shardrun.RequireTestMainAppliesRunFile(t)
 }

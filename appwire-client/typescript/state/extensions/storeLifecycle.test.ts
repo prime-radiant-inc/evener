@@ -14,18 +14,21 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../client";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import { answerRequests, callsTo, FakeClient, failRequests, gateSettlements } from "../../testing/fakeClient";
+import { permissiveHubWriteGate } from "../../testing/hubWriteGate";
 import type { MethodName } from "../../types.gen";
+import { createHubWriteGate, type HubWriteGate } from "./hubWriteGate";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
 import { createListRevision } from "./listRevision";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
-import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
-type LifecycleStore<S> = FrameworkFreeStore<S> & Omit<StoreLifecycle<S>, "guard">;
+type LifecycleStore<S> = FrameworkFreeStore<S> & HostLifecycle<S>;
 
 interface LifecycleCase<S> {
-  /** A store over a fake of its own. */
-  create(): { fake: FakeClient; store: LifecycleStore<S> };
+  /** A store over a fake of its own, built with `gate` as its write gate
+   * (or a fresh real one). */
+  create(gate?: HubWriteGate): { fake: FakeClient; store: LifecycleStore<S> };
   debounceMs: number;
   /** The notification the store follows, and one it does not own. */
   notifyUpdated(fake: FakeClient): void;
@@ -54,9 +57,9 @@ interface LifecycleCase<S> {
 }
 
 const MARKETPLACES: LifecycleCase<MarketplacesState> = {
-  create: () => {
+  create: (gate = createHubWriteGate()) => {
     const fake = new FakeClient("ready");
-    return { fake, store: createMarketplacesStore(fake) };
+    return { fake, store: createMarketplacesStore(fake, gate) };
   },
   debounceMs: MARKETPLACE_REFETCH_DEBOUNCE_MS,
   notifyUpdated: (fake) => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }),
@@ -74,9 +77,9 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
 };
 
 const PLUGINS: LifecycleCase<PluginsState> = {
-  create: () => {
+  create: (gate = createHubWriteGate()) => {
     const fake = new FakeClient("ready");
-    return { fake, store: createPluginsStore(fake) };
+    return { fake, store: createPluginsStore(fake, gate) };
   },
   debounceMs: PLUGIN_REFETCH_DEBOUNCE_MS,
   notifyUpdated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
@@ -144,8 +147,15 @@ interface LifecycleKit<S> {
   fence(...states: ConnectionState[]): FakeClient;
 }
 
-function createLifecycleKit<S>(lifecycle: LifecycleCase<S>): LifecycleKit<S> {
-  const { fake, store } = lifecycle.create();
+// The revision fence's ordering cases issue two writes at once; see
+// testing/hubWriteGate.ts for why they use a permissive gate double.
+const permissiveGate = permissiveHubWriteGate();
+
+function createLifecycleKit<S>(
+  lifecycle: LifecycleCase<S>,
+  gate: HubWriteGate = createHubWriteGate(),
+): LifecycleKit<S> {
+  const { fake, store } = lifecycle.create(gate);
   return {
     fake,
     store,
@@ -494,7 +504,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       ["the newer", [1, 0]],
     ] as const) {
       test(`${name} of two failed writes failing first still lets the read it fenced land`, async () => {
-        const { fake, store, gatedRead, gatedWrite } = createLifecycleKit(lifecycle);
+        const { fake, store, gatedRead, gatedWrite } = createLifecycleKit(lifecycle, permissiveGate);
         const read = await gatedRead();
         const first = await gatedWrite();
         const second = await gatedWrite();
@@ -693,6 +703,38 @@ describe("a lifecycle given a list revision", () => {
     revisions.next();
     lifecycle.reset();
     expect(revisions.hasLive()).toBe(false);
+  });
+});
+
+// epoch() is how a store fences a request no revision covers: it moves on
+// every fence (reset, a replaced client, dispose) and on nothing else.
+describe("a lifecycle's epoch", () => {
+  test("moves on reset, a replaced client and dispose, and not on a flap of the same client", () => {
+    const client = new FakeClient("ready");
+    const lifecycle = createStoreLifecycle<{ marker: number }>(client, {
+      method: "evener/plugin/updated",
+      debounceMs: 250,
+      store: () => store,
+      refetch: () => {},
+      wantsList: () => false,
+    });
+    const store = createFrameworkFreeStore<{ marker: number }>((publish) => {
+      void lifecycle.guard(publish);
+      return { marker: 0 };
+    });
+
+    lifecycle.connectionChanged(client, "ready");
+    const start = lifecycle.epoch();
+    lifecycle.connectionChanged(client, "reconnecting");
+    lifecycle.connectionChanged(client, "ready");
+    expect(lifecycle.epoch()).toBe(start);
+
+    lifecycle.reset();
+    expect(lifecycle.epoch()).toBe(start + 1);
+    lifecycle.connectionChanged(new FakeClient("ready"), "ready");
+    expect(lifecycle.epoch()).toBe(start + 2);
+    lifecycle.dispose();
+    expect(lifecycle.epoch()).toBe(start + 3);
   });
 });
 

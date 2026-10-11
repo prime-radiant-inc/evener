@@ -16,10 +16,12 @@ import (
 	"strings"
 	"sync"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/searchresult"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -647,9 +649,7 @@ func (cm *Manager) MaybeCompact(
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
-			emitFn(events.EventWarning, events.WarningData{
-				Message: "LLM summarization failed: " + err.Error(),
-			})
+			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
 			*history = result
 			after := cm.estimateTokensFor(prof, *history)
@@ -722,9 +722,7 @@ func (cm *Manager) ForceCompact(
 			safeCutoff(*history, attentionTransparentRecentCutoff(*history, cm.PreserveRecentTurns)) >= 0
 		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
 		if err != nil {
-			emitFn(events.EventWarning, events.WarningData{
-				Message: "LLM summarization failed: " + err.Error(),
-			})
+			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
 			summarized = canSummarize && len(result) > 0 && result[0].Kind == schema.TurnSummary
 			*history = result
@@ -908,15 +906,15 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		exitCode := parseExitCode(contentStr)
 		return fmt.Sprintf("[shell: %q → exit %s]", cmd, exitCode)
 
-	case "grep":
+	case "grep", "memory_search":
 		pattern := getArg("pattern")
-		matches := countLines(contentStr)
-		return fmt.Sprintf("[grep: %q → %d matches]", pattern, matches)
+		matches := searchresult.EntryCount(contentStr)
+		return searchSummary(fmt.Sprintf("%s: %q → %d matches", toolName, pattern, matches), contentStr)
 
 	case "glob":
 		pattern := getArg("pattern")
-		files := countNonEmptyLines(contentStr)
-		return fmt.Sprintf("[glob: %q → %d files]", pattern, files)
+		files := searchresult.EntryCount(contentStr)
+		return searchSummary(fmt.Sprintf("glob: %q → %d files", pattern, files), contentStr)
 
 	case "edit_file":
 		path := getArg("file_path")
@@ -1033,6 +1031,14 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 
 // --- Deterministic checkpoint (Layer 3) ---
 
+// maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
+// checkpoint either feeds into the LLM summarizer (which replaces it) or — if
+// the summarizer is unavailable — becomes the sole history the main model sees.
+// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
+// alongside the instruction prefix, and leaves room for preserved recent turns
+// in the main model's context.
+const maxCheckpointChars = 60_000
+
 // checkpoint replaces old history with a structured state snapshot.
 // Returns a new history slice: [checkpoint_message, ...preserved_recent_turns].
 //
@@ -1050,14 +1056,6 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 		return history
 	}
 
-	// Budget: cap the checkpoint to avoid ballooning the context. The checkpoint
-	// either feeds into the LLM summarizer (which replaces it) or — if the
-	// summarizer is unavailable — becomes the sole history the main model sees.
-	// 60k chars ≈ 15k tokens: fits comfortably in the cheap model's context
-	// alongside the instruction prefix, and leaves room for preserved recent
-	// turns in the main model's context.
-	const maxCheckpointChars = 60_000
-
 	data := collectCheckpointData(history, cutoff, resultToolName)
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(formatCheckpoint(data, meta, maxCheckpointChars)))
 
@@ -1072,7 +1070,7 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 // the last few shell results, the conversation (user/agent turns), and the
 // assistant's working notes.
 type checkpointData struct {
-	modifiedFiles    map[string]bool
+	fileWrites       map[string]checkpointWriteStatus
 	activatedSkills  map[string]bool
 	toolCounts       map[string]int
 	lastShellResults []string
@@ -1080,12 +1078,37 @@ type checkpointData struct {
 	workingNotes     []string
 }
 
+// checkpointWriteStatus classifies a write tool call by the outcome of its
+// paired tool result. The checkpoint may only report a file as modified when a
+// result confirmed the write; an attempted write that failed or whose result is
+// absent from the compacted prefix is kept distinct and never inferred as
+// completed work.
+type checkpointWriteStatus int
+
+const (
+	// writeUnconfirmed is the zero value, so a missing fileWrites entry — or any
+	// unrecognized state — is never mistaken for confirmed completed work.
+	writeUnconfirmed checkpointWriteStatus = iota // no result in the compacted prefix
+	writeConfirmed                                // result present and not an error
+	writeFailed                                   // result present and IsError
+)
+
+// recordWrite keeps a confirmed write from being downgraded by a later attempt
+// of the same path, because the file was in fact modified. Otherwise the latest
+// outcome wins.
+func (d *checkpointData) recordWrite(path string, status checkpointWriteStatus) {
+	if prev, ok := d.fileWrites[path]; ok && prev == writeConfirmed {
+		return
+	}
+	d.fileWrites[path] = status
+}
+
 // collectCheckpointData walks history[:cutoff] and distills it into a
 // checkpointData: modified files, tool counts, shell results, user messages,
 // final agent responses, working notes, and activated skills.
 func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName string) checkpointData {
 	data := checkpointData{
-		modifiedFiles:   map[string]bool{},
+		fileWrites:      map[string]checkpointWriteStatus{},
 		activatedSkills: map[string]bool{},
 		toolCounts:      map[string]int{},
 	}
@@ -1098,6 +1121,13 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			// so they survive across repeated compactions.
 			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
 			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
+
+		case schema.TurnSteering:
+			// Steering the human partner sent during a turn is their message
+			// too; daemon nudges are not.
+			if text := t.Message.Text(); isPartnerSteering(t) && text != "" {
+				data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
+			}
 
 		case schema.TurnUserInput:
 			text := t.Message.Text()
@@ -1114,13 +1144,15 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 
 		case schema.TurnTool, schema.TurnToolResults:
 			// Extract terminal communicate results (agent responses to the user).
+			// Only an accepted result is a completed reply; a rejected result
+			// (IsError) stays out of the conversation.
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
 					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
-					if endTurn && msg != "" {
+					if endTurn && msg != "" && !p.ToolResult.IsError {
 						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
 					}
 					continue
@@ -1155,15 +1187,16 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				switch name {
 				case "edit_file", "write_file":
 					if path, ok := args["file_path"]; ok {
-						data.modifiedFiles[fmt.Sprint(path)] = true
+						data.recordWrite(fmt.Sprint(path), writeOutcome(history, i, cutoff, p.ToolCall.ID))
 					}
 				case "apply_patch":
 					if patch, ok := args["patch"]; ok {
+						status := writeOutcome(history, i, cutoff, p.ToolCall.ID)
 						for line := range strings.SplitSeq(fmt.Sprint(patch), "\n") {
 							line = strings.TrimSpace(line)
 							for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
 								if rest, ok := strings.CutPrefix(line, prefix); ok {
-									data.modifiedFiles[rest] = true
+									data.recordWrite(rest, status)
 								}
 							}
 						}
@@ -1203,7 +1236,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
-// notes first and then the oldest conversation entries.
+// notes first and then the oldest conversation entries after the original task
+// (the earliest user entry), which is pinned so budget pressure never drops what
+// the user asked for.
 func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
@@ -1214,14 +1249,28 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s.%s\n", meta.SessionID, meta.TranscriptRecoverySentence())
 	}
 
-	// Files modified.
-	if len(data.modifiedFiles) > 0 {
-		files := make([]string, 0, len(data.modifiedFiles))
-		for f := range data.modifiedFiles {
-			files = append(files, f)
+	// Files modified: only writes whose paired result confirmed success. Failed
+	// and result-missing attempts render distinctly, so the checkpoint never
+	// reports an attempted write as completed work.
+	modified := make([]string, 0, len(data.fileWrites))
+	attempted := make([]string, 0, len(data.fileWrites))
+	for f, status := range data.fileWrites {
+		switch status {
+		case writeConfirmed:
+			modified = append(modified, f)
+		case writeFailed:
+			attempted = append(attempted, f+" (failed)")
+		default:
+			attempted = append(attempted, f+" (no result)")
 		}
-		sort.Strings(files)
-		fmt.Fprintf(&fixed, "Files modified: %s\n", strings.Join(files, ", "))
+	}
+	sort.Strings(modified)
+	sort.Strings(attempted)
+	if len(modified) > 0 {
+		fmt.Fprintf(&fixed, "Files modified: %s\n", strings.Join(modified, ", "))
+	}
+	if len(attempted) > 0 {
+		fmt.Fprintf(&fixed, "Files attempted but not applied: %s\n", strings.Join(attempted, ", "))
 	}
 
 	// Tool call counts.
@@ -1282,24 +1331,64 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	variableBudget := max(maxChars-overhead, 1000)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
-	// first, then oldest user or agent messages if needed to fit budget.
-	conversation := data.conversation
+	// first — they may be shed entirely — then the oldest messages after the
+	// pinned original task, which itself is never shed.
+	// Clean once so the pin index and the rendered slice refer to the same
+	// entries; renderCheckpointConversation would otherwise drop whitespace-only
+	// entries after the pin was chosen, letting the pin land on a vanishing one.
+	conversation := cleanCheckpointConversation(data.conversation)
 	workingNotes := data.workingNotes
 	conversationMarkdown := renderCheckpointConversation(conversation)
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
 
+	// Pin the original task — the earliest user entry — so the checkpoint keeps
+	// what the user asked for instead of shedding it under budget pressure. With
+	// no user entry (-1) the pin is inactive and shedding keeps its oldest-first
+	// order.
+	pinnedOriginal := -1
+	for i, entry := range conversation {
+		if entry.Role == "user" {
+			pinnedOriginal = i
+			break
+		}
+	}
+
 	for len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
-		if len(workingNotes) > 1 {
+		if len(workingNotes) > 0 {
 			workingNotes = workingNotes[1:] // drop oldest note first
 			notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 			continue
 		}
 		if len(conversation) > 1 {
-			conversation = conversation[1:] // then drop oldest conversation entry
+			// Drop the oldest entry that is not the pinned original task.
+			drop := 0
+			if drop == pinnedOriginal {
+				drop = 1
+			}
+			conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
+			if drop < pinnedOriginal {
+				pinnedOriginal--
+			}
 			conversationMarkdown = renderCheckpointConversation(conversation)
 			continue
 		}
 		break
+	}
+
+	// Notes are exhaustible, so a lone over-budget conversation entry is all the
+	// loop can leave behind: it never sheds the pinned original task. Trim that
+	// entry — by its exact rendered length — so the checkpoint still honors its
+	// size cap instead of keeping an oversized task or dropping it.
+	if len(conversation) == 1 && len(conversationMarkdown) > variableBudget {
+		role := conversation[0].Role
+		render := func(text string) int {
+			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
+		}
+		conversation = []checkpointConversationEntry{{
+			Role: role,
+			Text: truncateRendered(conversation[0].Text, variableBudget, render),
+		}}
+		conversationMarkdown = renderCheckpointConversation(conversation)
 	}
 
 	// Assemble final checkpoint.
@@ -1318,6 +1407,25 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	return b.String()
 }
 
+// truncateRendered shortens text (via truncate, which appends an ellipsis) until
+// its rendered form fits in available bytes. Truncating never increases the
+// rendered length, so the largest fitting prefix is found by binary search.
+func truncateRendered(text string, available int, render func(string) int) string {
+	if render(text) <= available {
+		return text
+	}
+	lo, hi := 0, len(text)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if render(truncate(text, mid)) <= available {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return truncate(text, lo)
+}
+
 // findToolResultByCallID finds a tool result in a TurnTool by its ToolCallID
 // and returns the string content, or "" if not found.
 func findToolResultByCallID(t schema.Turn, toolCallID string) string {
@@ -1329,6 +1437,37 @@ func findToolResultByCallID(t schema.Turn, toolCallID string) string {
 		}
 	}
 	return ""
+}
+
+// writeOutcome classifies the write tool call at history[callIndex] by its
+// paired result. A result shed from the compacted prefix leaves the outcome
+// unconfirmed rather than inferring success.
+func writeOutcome(history []schema.Turn, callIndex, cutoff int, toolCallID string) checkpointWriteStatus {
+	result := findToolResultData(history, callIndex+1, cutoff, toolCallID)
+	switch {
+	case result == nil:
+		return writeUnconfirmed
+	case result.IsError:
+		return writeFailed
+	default:
+		return writeConfirmed
+	}
+}
+
+// findToolResultData scans history[from:cutoff] for the tool result part that
+// answers toolCallID and returns it, or nil when the prefix holds no result.
+func findToolResultData(history []schema.Turn, from, cutoff int, toolCallID string) *llm.ToolResultData {
+	for j := from; j < cutoff; j++ {
+		if history[j].Kind != schema.TurnTool && history[j].Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, p := range history[j].Message.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == toolCallID {
+				return p.ToolResult
+			}
+		}
+	}
+	return nil
 }
 
 func sumCounts(m map[string]int) int {
@@ -1397,31 +1536,70 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 // itself. This adds the second rung: summarization treats a wider class of
 // failures than a model refusal as worth another model, and retries on the
 // session model — but only when the cheap caller has not already run it.
-func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string) (llm.Response, error) {
+//
+// accept, when non-nil, judges a reply's text; a rejected reply also falls
+// through to the session model, and is returned as an error if that reply is
+// rejected too. A rejected reply was still a successful API call, so the
+// attempt group settles on the API error alone.
+func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(string) error) (llm.Response, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
 		return llm.Response{}, errors.New("summarization model is empty")
 	}
+	judge := func(resp llm.Response) error {
+		if accept == nil {
+			return nil
+		}
+		return accept(resp.Text())
+	}
 	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}, AdapterTimeout: cm.AdapterTimeout}
 	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
-	resp, ranSessionModel, err := cm.cheap.CompleteConfigured(callCtx, profile, req)
-	if err != nil && !ranSessionModel && len(routes) > 1 && shouldFallbackSummarizationModel(ctx, err) {
+	resp, ranSessionModel, apiErr := cm.cheap.CompleteConfigured(callCtx, profile, req)
+	var rejected error
+	if apiErr == nil {
+		rejected = judge(resp)
+	}
+	if !ranSessionModel && len(routes) > 1 && (rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
 		sessionRoute := routes[len(routes)-1]
 		req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
-		resp, err = cm.client.Complete(callCtx, req)
+		resp, apiErr = cm.client.Complete(callCtx, req)
+		rejected = nil
+		if apiErr == nil {
+			rejected = judge(resp)
+		}
 	}
-	attemptGroupScope.SettleResult(err)
-	return resp, err
+	attemptGroupScope.SettleResult(apiErr)
+	if apiErr != nil {
+		return resp, apiErr
+	}
+	return resp, rejected
 }
 
+// partnerAuthorityRule keeps a summary from adding or dropping the human
+// partner's permissions, approvals, holds and stops. The continuing agent
+// treats the summary as the record of what it may do, so a paraphrase that
+// hardens into a new hold, or drops a standing permission, changes its
+// behavior (#4173). Both summary prompts carry it, and caller instructions
+// cannot override it. Both put these quotes first in the summary, so when a
+// re-compaction caps an oversized previous summary to its head, the quotes are
+// what survives.
+const partnerAuthorityRule = `Quote every permission, approval, hold or stop your human partner gave, word for word from their "User:" message, and say which of their messages it came from. Carry forward only what the conversation contains: never add one it lacks, never turn a question, a suggestion or your own caution into one, and never drop one that is still in force. An earlier compaction counts only for what it quotes. If there are none, say "None."`
+
+// permissionsSection is the default summary's leading section, where the
+// summary quotes the human partner's permissions and holds.
+const permissionsSection = "Permissions and Holds"
+
 // defaultSummaryPrefix is the instruction block used when no caller instructions
-// are provided. It mandates seven specific sections and directs the LLM to
-// err on the side of verbosity.
+// are provided. It mandates eight specific sections, permissions and holds
+// first, and directs the LLM to err on the side of verbosity.
 var defaultSummaryPrefix = `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
 
-Your summary MUST include ALL of the following sections:
+Your summary MUST include ALL of the following sections, in this order:
+
+## ` + permissionsSection + `
+` + partnerAuthorityRule + `
 
 ## Conversation Timeline
 Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
@@ -1462,22 +1640,127 @@ Be thorough and structured. Err on the side of including too much rather than to
 
 `
 
+// summarySections are the section names the default summary prompt requires,
+// read from the prompt itself so the reply check and the prompt cannot drift.
+var summarySections = promptSectionNames(defaultSummaryPrefix)
+
+// promptSectionNames returns the names of a prompt's "## " headings, in order.
+func promptSectionNames(prompt string) []string {
+	var names []string
+	for line := range strings.Lines(prompt) {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "## "); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// checkSummaryReply rejects a summarization reply that cannot stand in for the
+// history it folds: an empty one, or, under the default prompt, one with none
+// of the required sections with content under it. Weak models sometimes
+// answer the prompt in character ("I'll read the plan, then...") instead of
+// summarizing (#3978). One filled section is enough, so a summary that drops
+// some sections still keeps what it has. Caller instructions replace the
+// sections, so under them only emptiness is checked.
+//
+// The permissions-and-holds section is not required either. Its presence
+// would not show the quotes are faithful or complete (a reply can say "None."
+// and drop them), and rejecting a summary for lacking it would discard
+// everything else the summary holds (TestSummarizeWithLLM_StoresReplyWithRequiredSection
+// pins that one filled section is accepted). This check does not guard the
+// human partner's permissions and holds: here they rest on the prompt rule
+// alone. Making their survival independent of the model is a separate change
+// (#4241), which carries the partner's messages verbatim beside the reply.
+func checkSummaryReply(reply, instructions string) error {
+	text := strings.TrimSpace(reply)
+	if text == "" {
+		return errors.New("summarizer returned an empty reply")
+	}
+	if instructions != "" {
+		return nil
+	}
+	// Once a section heading appears, any later line is content — subheadings,
+	// bold labels and "#3978" lines included — except another section heading
+	// and the summary's own framing markers.
+	// The permissions section restates the human partner's own words, so
+	// content there alone carries none of the folded work: a reply that is
+	// only "## Permissions and Holds\nNone." is no summary.
+	inSection := false
+	for line := range strings.Lines(text) {
+		line = strings.TrimSpace(line)
+		if section, rest, ok := summarySectionHeading(line); ok {
+			inSection = !strings.EqualFold(section, permissionsSection)
+			if inSection && isSummaryContent(rest) {
+				return nil
+			}
+			continue
+		}
+		if inSection && isSummaryContent(line) {
+			return nil
+		}
+	}
+	return errors.New("summarizer reply has no summary section with content")
+}
+
+// isSummaryContent reports whether trimmed text under or beside a section
+// heading carries content: it is not empty and not one of the summary's own
+// framing markers.
+func isSummaryContent(text string) bool {
+	return text != "" && text != "[CONTEXT SUMMARY]" && text != "[END SUMMARY]"
+}
+
+// summarySectionHeading reports whether line is a heading naming one of the
+// summary sections, and returns the section name as written and any text after
+// it on the same line:
+// "## Progress", "### progress", "**Progress**", "## Progress: fixed it",
+// "**Progress:** fixed it". It needs heading markup: a bare "Progress" is
+// prose, and "#3978" (no space after the #) is not a heading.
+func summarySectionHeading(line string) (section, rest string, ok bool) {
+	body := line
+	switch {
+	case strings.HasPrefix(line, "#"):
+		body = strings.TrimLeft(line, "#")
+		if !strings.HasPrefix(body, " ") {
+			return "", "", false
+		}
+	case !strings.HasPrefix(line, "**"):
+		return "", "", false
+	}
+	body = strings.ReplaceAll(body, "**", "")
+	name, rest, _ := strings.Cut(body, ":")
+	name = strings.TrimSpace(name)
+	if !slices.ContainsFunc(summarySections, func(section string) bool { return strings.EqualFold(name, section) }) {
+		return "", "", false
+	}
+	return name, strings.TrimSpace(rest), true
+}
+
 // buildSummaryPrompt constructs the full LLM prompt for context compaction.
 // When instructions are non-empty the prompt is instruction-led: the
-// mandatory-7-sections block is replaced by the caller's directive.
+// mandatory-sections block is replaced by the caller's directive.
 // When instructions are empty the default prompt is used unchanged.
 func buildSummaryPrompt(historyText, instructions string) string {
 	if instructions != "" {
 		return `You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
 
-## CALLER INSTRUCTIONS (these take precedence)
+## CALLER INSTRUCTIONS (these take precedence over the general guidance, never over your human partner's permissions and holds)
 ` + instructions + `
 
-Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win, except over the rule on your human partner's permissions and holds. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+
+` + partnerAuthorityRule + ` Put this first in your summary; the caller instructions do not override it.
 
 ` + historyText
 	}
 	return defaultSummaryPrefix + historyText
+}
+
+// isPartnerSteering reports whether a steering turn is the human partner's own
+// message, sent during a turn, rather than a daemon nudge. The checkpoint's
+// collector and the summarizer's "User:" label both use it, so they agree on
+// whose words a steer is.
+func isPartnerSteering(t schema.Turn) bool {
+	return t.Kind == schema.TurnSteering && t.SteeringSource == events.SteeringSourceUser
 }
 
 // noteElicitationPrompt asks the model, at compaction time, to enumerate the
@@ -1535,7 +1818,7 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn, loaded
 		return "", errors.New("no model available for note elicitation")
 	}
 	prompt := noteElicitationPrompt + loadedSkillsElicitSection(loaded) + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
-	resp, err := cm.completeSummarization(ctx, prof, prompt)
+	resp, err := cm.completeSummarization(ctx, prof, prompt, nil)
 	if err != nil {
 		return "", err
 	}
@@ -1657,8 +1940,14 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			b.WriteString(text)
 			b.WriteString("\n")
 		case schema.TurnCheckpoint, schema.TurnSummary:
+			// A previous compaction is the only record of the conversation it
+			// folded, so it gets up to a checkpoint's size: a deterministic
+			// checkpoint, the usual previous compaction, arrives whole, with
+			// every partner message it kept, and the rest of the budget stays
+			// for the turns it precedes. A longer one keeps its head, where
+			// both summary prompts put the permissions and holds it quotes.
 			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), 1000))
+			b.WriteString(truncText(t.Message.Text(), maxCheckpointChars))
 			b.WriteString("\n")
 		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
@@ -1695,7 +1984,12 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 				}
 			}
 		case schema.TurnSteering:
-			b.WriteString("System: ")
+			// Labeled for the summary prompt's quoting rule.
+			if isPartnerSteering(t) {
+				b.WriteString("User: ")
+			} else {
+				b.WriteString("System: ")
+			}
 			b.WriteString(t.Message.Text())
 			b.WriteString("\n")
 		}
@@ -1708,7 +2002,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
-	resp, err := cm.completeSummarization(ctx, sumProfile, prompt)
+	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply string) error {
+		return checkSummaryReply(reply, instructions)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1776,14 +2072,23 @@ func countLines(s string) int {
 	return strings.Count(s, "\n") + 1
 }
 
-func countNonEmptyLines(s string) int {
-	n := 0
-	for line := range strings.SplitSeq(s, "\n") {
-		if strings.TrimSpace(line) != "" {
-			n++
+// searchSummary is a search result's one-line summary, "[head]", with the
+// notes the tool put after its entries (searchresult.Split) added inside the
+// brackets, each without brackets of its own, so a compacted search still
+// says it was cut short or left paths out. Anything the registry appended
+// after another blank line is left out; after a result with no notes of its
+// own, a registry nudge reads as its note (#4223 tracks giving notes a field
+// of their own).
+func searchSummary(head, output string) string {
+	_, notes := searchresult.Split(output)
+	notes, _, _ = strings.Cut(notes, "\n\n")
+	parts := []string{head}
+	for line := range strings.SplitSeq(notes, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 		}
 	}
-	return n
+	return "[" + strings.Join(parts, "; ") + "]"
 }
 
 func parseExitCode(shellOutput string) string {
@@ -1830,4 +2135,19 @@ func countJSONArrayElements(s string) int {
 		return 0
 	}
 	return len(arr)
+}
+
+// summarizerFailureWarning is the warning for a failed LLM summarization. Its
+// message stays bare: the summarizer's error can carry a provider's body,
+// which can echo the conversation it was asked to summarize, and a strategy's
+// warnings reach Notification hooks (#3386). The error still classifies the
+// Title and Hint.
+func summarizerFailureWarning(err error) events.WarningData {
+	info := diagnostic.FromError(err)
+	return events.WarningData{
+		Message: "LLM summarization failed",
+		Source:  string(info.Source),
+		Title:   info.Title,
+		Hint:    info.Hint,
+	}
 }

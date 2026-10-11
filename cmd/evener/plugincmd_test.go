@@ -159,6 +159,17 @@ func TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter(t *
 		t.Fatalf("err = %v, want no absolute path in the CLI-facing error", err)
 	}
 
+	// The warning/error result is only half the outcome's account: the
+	// applied-with-litter marker also promises the clone itself still sits on
+	// disk, so the registry removal must leave the directory behind as litter.
+	info, statErr := os.Stat(clone)
+	if statErr != nil {
+		t.Fatalf("stat clone: %v, want the clone still on disk as litter", statErr)
+	}
+	if !info.IsDir() {
+		t.Fatalf("clone mode = %v, want a directory left behind as litter", info.Mode())
+	}
+
 	mk, listErr := mgr.ListMarketplaces(context.Background())
 	if listErr != nil {
 		t.Fatalf("ListMarketplaces: %v", listErr)

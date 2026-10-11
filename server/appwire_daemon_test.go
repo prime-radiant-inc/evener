@@ -253,13 +253,53 @@ func TestDaemonRacedMutationReturnsTypedLifecycleError(t *testing.T) {
 // hooks both methods fail with CodeUnavailable.
 func TestDaemonHandlersWithoutHooksReturnUnavailable(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	for _, method := range []string{appwire.MethodEvenerDaemonStatus, appwire.MethodEvenerDaemonRetire} {
+	for _, method := range []string{appwire.MethodEvenerDaemonStatus, appwire.MethodEvenerDaemonRetire, appwire.MethodEvenerDaemonIdleTimeoutSet} {
 		_, err := dispatchDaemon(t, s, method, nil)
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
 			t.Fatalf("%s without hooks = %v, want CodeUnavailable", method, err)
 		}
 	}
+}
+
+// TestDaemonIdleTimeoutSetReachesController proves the wired setter hook
+// retargets the controller and answers with the rendered lifecycle.
+func TestDaemonIdleTimeoutSetReachesController(t *testing.T) {
+	s, _, c := retirementEngineServer(t)
+	installDaemonLifecycle(s, c, &daemonRetireHold{})
+	s.SetDaemonIdleTimeoutSet(func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		if err := c.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond); err != nil {
+			return appwire.DaemonIdleTimeoutSetResponse{}, err
+		}
+		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: DaemonLifecycleFromSnapshot(c.Snapshot())}, nil
+	})
+	out, err := dispatchDaemon(t, s, appwire.MethodEvenerDaemonIdleTimeoutSet, appwire.DaemonIdleTimeoutSetParams{TimeoutMillis: 60000})
+	if err != nil {
+		t.Fatalf("idle-timeout set: %v", err)
+	}
+	resp, ok := out.(appwire.DaemonIdleTimeoutSetResponse)
+	if !ok {
+		t.Fatalf("idle-timeout set response type %T", out)
+	}
+	if resp.Lifecycle.TimeoutMillis != 60000 {
+		t.Fatalf("lifecycle TimeoutMillis = %d, want 60000", resp.Lifecycle.TimeoutMillis)
+	}
+	if got := c.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("controller timeout = %v, want 1m", got)
+	}
+}
+
+// TestDaemonIdleTimeoutSetLifecycleRaceTyped proves a setter that loses the
+// race with a lifecycle transition surfaces the same typed retryable
+// CodeUnavailable the retire path uses, not a raw error.
+func TestDaemonIdleTimeoutSetLifecycleRaceTyped(t *testing.T) {
+	s, _, c := retirementEngineServer(t)
+	installDaemonLifecycle(s, c, &daemonRetireHold{})
+	s.SetDaemonIdleTimeoutSet(func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		return appwire.DaemonIdleTimeoutSetResponse{}, agent.ErrRetirementUnavailable
+	})
+	_, err := dispatchDaemon(t, s, appwire.MethodEvenerDaemonIdleTimeoutSet, appwire.DaemonIdleTimeoutSetParams{TimeoutMillis: 60000})
+	assertLifecycleUnavailable(t, err, "resident")
 }
 
 // TestDaemonLostRetireResponseIsNotProofOfExit pins the wire semantics a Hub

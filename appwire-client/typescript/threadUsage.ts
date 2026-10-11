@@ -53,6 +53,14 @@ export interface SessionTokens {
   scope: "session" | "loaded";
 }
 
+// tokenUnitLabel names what a SessionTokens figure counts, shared by every
+// surface that renders sessionTokens's scope (the web details panel, the
+// native transcript footer): the daemon's own whole-session total reads
+// plainly, and a sum scoped to only the turns still loaded says so.
+export function tokenUnitLabel(scope: SessionTokens["scope"] | undefined): string {
+  return scope === "loaded" ? "tokens (loaded turns)" : "tokens";
+}
+
 // sessionTokens picks the most complete honest token total available.
 //
 // The thread-level cumulative usage is preferred: the daemon accumulated it

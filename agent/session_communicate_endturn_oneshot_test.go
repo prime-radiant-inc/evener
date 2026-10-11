@@ -53,7 +53,7 @@ func endTurnWarningWithRunningJob(t *testing.T, s *Session) (warning, jobID stri
 		t.Fatalf("communicate error: %s", res.Output)
 	}
 	var resp map[string]any
-	if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+	if err := json.Unmarshal([]byte(res.Output), &resp); err != nil {
 		t.Fatalf("unmarshal communicate output: %v", err)
 	}
 	got, ok := resp["warning"].(string)
@@ -77,7 +77,6 @@ func TestCommunicate_EndTurnWarningIsHonestInOneShot(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -100,7 +99,6 @@ func TestCommunicate_EndTurnWarningKeepsTheServeContract(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 
@@ -121,7 +119,6 @@ func TestCommunicate_EndTurnWarningKeepsTheServeContract(t *testing.T) {
 func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -160,7 +157,7 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 		t.Fatalf("communicate error: %s", communicate.Output)
 	}
 	var response map[string]any
-	if err := json.Unmarshal(toolResultJSON(communicate), &response); err != nil {
+	if err := json.Unmarshal([]byte(communicate.Output), &response); err != nil {
 		t.Fatalf("unmarshal communicate output: %v", err)
 	}
 	warning, ok := response["warning"].(string)
@@ -173,9 +170,9 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 }
 
 func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -208,7 +205,7 @@ func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
 		t.Fatalf("communicate error: %s", communicate.Output)
 	}
 	var response map[string]any
-	if err := json.Unmarshal(toolResultJSON(communicate), &response); err != nil {
+	if err := json.Unmarshal([]byte(communicate.Output), &response); err != nil {
 		t.Fatalf("unmarshal communicate output: %v", err)
 	}
 	if _, warned := response["warning"]; warned {

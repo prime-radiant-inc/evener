@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>transcript rail icon seats layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; transition:none !important; animation:none !important; }
+  html, body { margin:0; background:var(--surface-0); color:var(--ink-hi); }
+  body { padding:20px; font-family:var(--font-sans); font-size:var(--font-size-body); line-height:var(--line-height-body); }
+  .fixtures { display:flex; flex-direction:column; gap:16px; }
+  iframe { border:0; height:520px; }
+
+</style>
+</head>
+<body data-font-size="m">
+<div class="fixtures"></div>
+<script>
+const BULB_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M8 2.5 A3.8 3.8 0 0 0 5.8 9.1 C6.4 9.8 6.6 10.4 6.6 11 L6.6 11.6 H9.4 L9.4 11 C9.4 10.4 9.6 9.8 10.2 9.1 A3.8 3.8 0 0 0 8 2.5 Z M6.6 13.2 H9.4 M7.1 14.7 H8.9" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const CHECK_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M3.2 8.6 L6.5 11.9 L12.8 4.4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+// The three rows whose seats this case holds to one column. All class names
+// are the real modules' own local names (resolved.css de-scopes them): .turn
+// and .runContent from turnblock.module.css; .loader/.rail/.grid/.cell/.label
+// from loader.module.css (the content-free thinking row's real markup); .head/
+// .statusIcon/.headingText/.title from notificationcard.module.css. The think
+// row's own geometry is REPRODUCED under think-prefixed names in the frame
+// styles rather than linked as thinkblock.module.css: thinkblock and loader
+// both define .label, and resolved.css de-scopes every module into one flat
+// stylesheet, so linking both would merge the two .label rules into one
+// selector and measure a row the app never ships - and reproducing the real
+// NAMES would collide with the loader row's own .label span in this document
+// just the same. The same trade the transcript-stamp-rail case makes for the
+// pane container; the declarations are copied verbatim from
+// thinkblock.module.css, and this case's cross-row assertions mean a drift
+// there shows up as a seat mismatch against the two rows whose modules ARE
+// linked.
+function rows() {
+  return `
+    <div class="turn" data-turn>
+      <div class="runContent">
+        <div data-content-probe style="height:0"></div>
+        <div class="thinkBlock">
+          <div class="thinkLive">
+            <span class="thinkLabel">
+              <span class="thinkIcon" data-think-slot>${BULB_SVG}</span>
+              <span data-think-text>Thinking…</span>
+            </span>
+          </div>
+        </div>
+        <div class="thinkBlock">
+          <span class="loader rail" role="status" aria-label="Thinking…">
+            <span class="grid" data-loader-slot>${'<span class="cell"></span>'.repeat(9)}</span>
+            <span class="label" data-loader-text>Thinking… · ~679 tokens</span>
+          </span>
+        </div>
+        <details>
+          <summary class="head">
+            <span class="statusIcon" data-notification-slot>${CHECK_SVG}</span>
+            <span class="headingText"><span class="title" data-notification-text>Job completed</span></span>
+          </summary>
+        </details>
+      </div>
+    </div>`;
+}
+
+function frameDocument(mode) {
+  const width = mode === "phone" ? 390 : 920;
+  const turnWidth = mode === "phone" ? 320 : 560;
+  return `<!doctype html><html lang="en" data-theme="dark"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=${width}, initial-scale=1"><base href="${location.href}">
+    <link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css">
+    <style>
+      *, *::before, *::after { box-sizing: border-box; transition:none !important; animation:none !important; }
+      html, body { margin:0; background:var(--surface-0); color:var(--ink-hi); }
+      body { padding:16px; font-family:var(--font-sans); font-size:var(--font-size-body); line-height:var(--line-height-body); }
+      .thinkBlock { padding: var(--space-1) 0; }
+      .thinkLive { display: block; }
+      /* The live thinking row's rail geometry, reproduced under
+         think-prefixed names (the why is in this file's parent comment
+         block): the declarations are copied verbatim from
+         thinkblock.module.css's .block/.live/.label/.icon rules. */
+      .thinkLabel { display:flex; align-items:center; margin-bottom:var(--space-1); font-family:var(--font-sans); font-size:var(--font-size-body); color:var(--ink-mid); }
+      .thinkIcon { flex:none; align-self:center; display:inline-flex; align-items:center; justify-content:center; width:var(--speaker-avatar-size); margin-right:var(--speaker-gap); opacity:0.5; }
+      @media (min-width: 700px) { .thinkLabel { margin-left: calc(-1 * var(--speaker-gutter)); } }
+      .turn { width:${turnWidth}px; }
+    </style></head><body data-font-size="m">
+    ${rows()}
+    </body></html>`;
+}
+
+const specs = [{ mode:"desktop", width:920 }, { mode:"phone", width:390 }];
+const frames = specs.map((spec) => {
+  const frame = document.createElement("iframe");
+  frame.style.width = `${spec.width}px`;
+  frame.srcdoc = frameDocument(spec.mode);
+  document.querySelector(".fixtures").append(frame);
+  return { ...spec, frame };
+});
+
+function ready({ frame }) {
+  return new Promise((resolve) => {
+    const finish = () => frame.contentWindow.requestAnimationFrame(() => frame.contentWindow.requestAnimationFrame(resolve));
+    if (frame.contentDocument?.readyState === "complete") finish();
+    else frame.addEventListener("load", finish, { once: true });
+  });
+}
+
+function box(el) { const r = el.getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height }; }
+
+window.measure = async () => {
+  await Promise.all(frames.map(ready));
+  return frames.map(({ mode, frame }) => {
+    const doc = frame.contentDocument;
+    const turn = box(doc.querySelector("[data-turn]"));
+    const probe = box(doc.querySelector("[data-content-probe]"));
+    const think = {
+      slot: box(doc.querySelector("[data-think-slot]")),
+      text: box(doc.querySelector("[data-think-text]")),
+    };
+    const loader = {
+      slot: box(doc.querySelector("[data-loader-slot]")),
+      text: box(doc.querySelector("[data-loader-text]")),
+    };
+    const notification = {
+      slot: box(doc.querySelector("[data-notification-slot]")),
+      text: box(doc.querySelector("[data-notification-text]")),
+    };
+    return {
+      mode,
+      viewportWidth: frame.contentWindow.innerWidth,
+      turn, probe, think, loader, notification,
+    };
+  });
+};
+</script>
+</body>
+</html>

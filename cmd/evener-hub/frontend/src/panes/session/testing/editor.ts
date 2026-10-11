@@ -2,6 +2,21 @@ import { act, fireEvent } from "@testing-library/react";
 import { flushSync } from "react-dom";
 import "./editorGeometry";
 
+/** Paste an image through the composer's real clipboard handlers. */
+export function pastePngInto(el: HTMLElement, name = "shot.png", text = ""): void {
+  const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
+      files: [file],
+      types: ["Files", "text/plain"],
+      getData: (type: string) => (type === "text/plain" ? text : ""),
+    },
+  });
+  fireEvent(el, event);
+}
+
 /** Replace a composer's contents through its real selection and paste handlers. */
 export function replaceEditorText(editor: HTMLElement, text: string): void {
   selectEditorText(editor, 0, editor.textContent?.length ?? 0);

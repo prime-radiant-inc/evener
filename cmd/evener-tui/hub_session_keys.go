@@ -249,8 +249,21 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.session.scrollMode {
+		// Browse is text-first (kata 7hh0): every unmodified printable rune and
+		// every paste is composer text — whether the pty delivers the runes one
+		// KeyMsg at a time or coalesced into one. No plain printable key is a
+		// browse command, so the same keystrokes mean the same thing at any
+		// delivery timing. Row selection and fork live on non-printable chords
+		// (ctrl+up/ctrl+down, ctrl+f); esc returns to compose.
+		if msg.Type == tea.KeyRunes || msg.Paste {
+			prevHeight := m.session.input.Height()
+			var cmd tea.Cmd
+			m.session.input, cmd = m.session.input.Update(msg)
+			m.resizeSessionInputFrom(prevHeight)
+			return m, cmd
+		}
 		switch msg.String() {
-		case "esc", "i", "q":
+		case "esc":
 			m.exitSessionBrowse()
 		// The alt+shift live-session chords are dispatched in the early
 		// global switch above, before any view or mode early return - so
@@ -258,28 +271,21 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// round-4 low) without a per-mode case here.
 		case "up", "down", "left", "right":
 			return m.updateSessionBrowseComposerKey(msg)
-		case "k":
+		case "ctrl+up":
 			m.moveBrowseSelection(-1)
-		case "j":
+		case "ctrl+down":
 			m.moveBrowseSelection(1)
 		case "pgup":
 			m.moveBrowsePage(-1)
 		case "pgdown":
 			m.moveBrowsePage(1)
-		case "f":
+		case "ctrl+f":
 			m.startForkDraft()
 		case "enter":
 			m.toggleSelectedBrowseDetail()
 		case "ctrl+t":
 			m.toggleAllBrowseDetails()
 		default:
-			if msg.Type == tea.KeyRunes || msg.Paste {
-				prevHeight := m.session.input.Height()
-				var cmd tea.Cmd
-				m.session.input, cmd = m.session.input.Update(msg)
-				m.resizeSessionInputFrom(prevHeight)
-				return m, cmd
-			}
 			m.session.viewport, _ = m.session.viewport.Update(msg)
 		}
 		return m, nil
@@ -532,11 +538,11 @@ func (m hubModel) restoreInstructionMessage() string {
 // to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	if controls := m.sessionControls(); !controls.drain {
-		// A plain idle composer with nothing queued: silently no-op so the
-		// keybind doesn't fight with idle-state composing. Anything else --
+		// A plain resting composer with nothing queued: silently no-op so the
+		// keybind doesn't fight with resting-state composing. Anything else --
 		// a queue, a running turn, a harness without steer, a syncing revision
 		// -- gets the twin's own reason for refusing.
-		if m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth == 0 && !m.queueRevisionStale {
+		if appwire.IsRestingThreadStatus(m.detail.State) && m.detail.Queue.Depth == 0 && !m.queueRevisionStale {
 			return m, nil
 		}
 		m.addSessionSystem("Force-steer is not available: " + controls.drainReason + ".")

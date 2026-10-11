@@ -8,9 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -59,8 +57,14 @@ func TestEnvironmentChangesPreserveLiveTranscriptItemIdentity(t *testing.T) {
 	}
 	git("init", "--initial-branch=first")
 	git("-c", "user.name=Evener Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Environment fixture")
-	srv := NewServer(ServerConfig{})
-	installTranscriptIdentity(t, srv, sess.ID(), sess.TranscriptPath())
+	srv := NewServer(ServerConfig{AppReplaySize: parityReplaySize})
+	t.Cleanup(srv.Close)
+	published := watchHistoryPublications(t)
+	wireTranscriptHistory(t, sess, srv)
+	initial, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{ThreadID: sess.ID(), IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
 	environmentCount := 0
 	for input := range 2 {
 		if input == 1 {
@@ -92,17 +96,12 @@ func TestEnvironmentChangesPreserveLiveTranscriptItemIdentity(t *testing.T) {
 	if environmentCount != 2 {
 		t.Errorf("environment events = %d, want initial context and branch change", environmentCount)
 	}
-	full, _, err := appTurnsFromTranscriptFile(sess.TranscriptPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(sess.TranscriptPath(), appTranscriptMaxLineBytes,
-		apptranscript.ItemWindowOptions{ThreadRef: "local:" + sess.ID(), Limit: 40},
-		func(turn schema.Turn, turnID string, turnIndex int, names map[string]string) []appwire.ThreadItem {
-			return apptranscript.ProjectTurn(turnID, turnIndex, turn, names, nil, apptranscript.ToolResultOutputImages)
-		})
-	if err != nil {
-		t.Fatal(err)
+	published.await(t, srv.appHistoryForID(sess.ID()), sess.TranscriptRecordedLength())
+	client := newHistoryClient(initial)
+	for _, n := range srv.appNotifier.ReplayAfter(0, "") {
+		if n.Notification.Method == appwire.NotifyHistoryUpdated {
+			client.apply(t, notificationParams[appwire.HistoryUpdatedParams](t, n))
+		}
 	}
 	type identity struct {
 		TurnID, Type, Key string
@@ -123,18 +122,11 @@ func TestEnvironmentChangesPreserveLiveTranscriptItemIdentity(t *testing.T) {
 		}
 		return result
 	}
-	live := identities(srv.appTurns.Snapshot())
+	live := identities(client.turnsInOrder())
 	if len(live) != 8 {
 		t.Errorf("live relevant items = %d, want two environment/user/reasoning/answer sets: %+v", len(live), live)
 	}
-	if got := identities(full); !reflect.DeepEqual(live, got) {
-		t.Errorf("live/cold identity differs:\nlive: %+v\ncold: %+v", live, got)
-	}
-	var bounded []appwire.Turn
-	for _, candidate := range window.Candidates {
-		bounded = append(bounded, appwire.Turn{ID: candidate.Item.TurnID, Items: []appwire.ThreadItem{candidate.Item}})
-	}
-	if got := identities(bounded); !reflect.DeepEqual(live, got) {
+	if got := identities(fileHistoryTurns(t, sess.TranscriptPath())); !reflect.DeepEqual(live, got) {
 		t.Errorf("live/indexed identity differs:\nlive: %+v\nindexed: %+v", live, got)
 	}
 }

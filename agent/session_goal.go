@@ -37,10 +37,9 @@ func (s *Session) SetKickFunc(f func(prompt string)) {
 // idle-kick branch below would drive a turn straight past the unanswered ask.
 // The goal is still stored active; it resumes at the first settle once the
 // reply resolves the ask. The hold is keyed on the pending-ask set
-// (len(s.askPending) > 0), NOT on SessionAwaiting: under attention-status-model
-// v5, SessionAwaiting also covers a plain output-producing rest with nothing
-// pending, where an idle /goal must kick normally, exactly as it would on
-// SessionIdle.
+// (len(s.askPending) > 0), NOT on SessionAwaiting: SessionAwaiting also
+// covers a turn that ended on needs_response with nothing pending, where an
+// idle /goal must kick normally, exactly as it would on SessionIdle.
 func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, err error) {
 	release, admissionErr := s.beginRetirementMutation("autonomous")
 	if admissionErr != nil {
@@ -356,10 +355,9 @@ func (s *Session) reportGoalEnded() {
 // instead of being kicked past the user's unanswered ask. The normal resume
 // fold (armGoalContinuation's non-continuation branch, folded at the reply
 // turn's own drain tail) picks it up once the reply resolves it. The hold is
-// keyed on the pending-ask set, NOT on SessionAwaiting: under
-// attention-status-model v5, SessionAwaiting also covers a plain
-// output-producing rest with nothing pending, where the goal must kick
-// normally.
+// keyed on the pending-ask set, NOT on SessionAwaiting: SessionAwaiting also
+// covers a turn that ended on needs_response with nothing pending, where the
+// goal must kick normally.
 //
 // It reports whether it kicked, so the settle-state upgrade knows autonomy is
 // in flight (attention-status-model v5: a kicked goal suppresses awaiting —
@@ -469,6 +467,7 @@ func goalRootShutdown(ctx context.Context, err error) bool {
 // emitGoalEnded emits the terminal goal report from a snapshot. Every goal stop
 // path routes through here so the "told why it stopped" promise holds on each one.
 func (s *Session) emitGoalEnded(snap goal.Snapshot) {
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: string(snap.Status), Reason: snap.StopReason, Iterations: snap.Iterations}})
 	s.emit(events.EventGoalEnded, events.GoalEndedData{
 		Status:     string(snap.Status),
 		Reason:     snap.StopReason,

@@ -1,9 +1,31 @@
 // Per-delegate presentation state shared by the tool row and its card.
 
-import type { EvenerDelegateInfo, ItemModel, ThreadModel } from "@evener/appwire-client";
-import { parseArgs, parseJSONObject, stableDelegateDisplayStatus, str } from "@evener/appwire-client";
+import type { ActivityDelegate, EntityView, EvenerDelegateInfo, ItemModel, ThreadModel } from "@evener/appwire-client";
+import { findEntityView, parseArgs, parseJSONObject, stableDelegateDisplayStatus, str } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+
+export type DelegatePresentation = ActivityDelegate | EvenerDelegateInfo;
+
+// A populated entity scope owns current state; an absent match cannot be
+// replaced by a different owner or the launch receipt's historical status.
+export function currentDelegate(
+  delegateId: string | undefined,
+  sessionRef: string | undefined,
+  thread: ThreadModel | undefined,
+  entities?: ReadonlyMap<string, EntityView>,
+  childRef?: string,
+): DelegatePresentation | undefined {
+  if (!sessionRef || !delegateId) return undefined;
+  if (entities) {
+    const entity = findEntityView(entities, "delegate", delegateId, sessionRef);
+    if (entity?.kind !== "delegate" || (childRef && entity.open.ref !== childRef)) return undefined;
+    return entity.row?.delegate ?? entity.stable;
+  }
+  return thread?.delegates?.find(
+    (delegate) => delegate.delegateId === delegateId && (!childRef || delegate.transcriptRef === childRef),
+  );
+}
 
 export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unknown";
 
@@ -11,7 +33,6 @@ export interface SubagentRow {
   rowKey: string;
   receiptStatus?: string;
   launching?: boolean;
-  resumable?: boolean;
   exhaustionBudget?: string;
   exhaustionLimit?: number;
   delegateId?: string;
@@ -48,7 +69,7 @@ export function rowKeyForDelegateItem(item: ItemModel): string {
 
 // Only the owner projection or an explicitly in-flight launch proves current
 // activity. A frozen receipt remains evidence about the past, not a fallback.
-export function effectiveRowKind(row: Pick<SubagentRow, "launching">, stable?: EvenerDelegateInfo): SubagentRowKind {
+export function effectiveRowKind(row: Pick<SubagentRow, "launching">, stable?: DelegatePresentation): SubagentRowKind {
   if (stable) return classifyJobStatus(stableDelegateDisplayStatus(stable));
   return row.launching ? "running" : "unknown";
 }
@@ -64,13 +85,17 @@ export function delegateStableState(
   live: boolean,
   sessionRef: string | undefined,
   thread: ThreadModel | undefined,
-): { parsed: Record<string, unknown> | undefined; stable: EvenerDelegateInfo | undefined; kind: SubagentRowKind } {
+  entities?: ReadonlyMap<string, EntityView>,
+): { parsed: Record<string, unknown> | undefined; stable: DelegatePresentation | undefined; kind: SubagentRowKind } {
   const parsed = parseJSONObject(item.output);
   const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
-  const stable =
-    sessionRef === undefined || delegateId === undefined
-      ? undefined
-      : thread?.delegates?.find((delegate) => delegate.delegateId === delegateId);
+  const stable = currentDelegate(
+    delegateId,
+    sessionRef,
+    thread,
+    entities,
+    parsed ? str(parsed, "transcript_ref") : undefined,
+  );
   return { parsed, stable, kind: effectiveRowKind({ launching: live || item.status === "inProgress" }, stable) };
 }
 
@@ -107,7 +132,9 @@ export function removeSubagentRow(scopeKey: string, rowKey: string): void {
 // A deliberate stop is terminal but distinct from success or failure.
 export function classifyJobStatus(status: string | undefined): SubagentRowKind {
   if (status === undefined) return "unknown";
-  if (["failed", "errored", "error", "exhausted"].includes(status)) return "failed";
+  if (["failed", "errored", "error", "exhausted", "command_exited_nonzero", "command_killed"].includes(status)) {
+    return "failed";
+  }
   if (["cancelled", "stopped"].includes(status)) return "stopped";
   if (["completed", "done", "succeeded", "idle"].includes(status)) return "done";
   return status === "running" ? "running" : "unknown";

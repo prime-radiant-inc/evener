@@ -1,16 +1,19 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { paneFor } from "../../shell/paneRegistry";
+import { type PaneTypeId, paneFor } from "../../shell/paneRegistry";
 import { paneToURL } from "../../shell/routing";
 // Imported for its registration side effect: ./index is what calls registerPane.
 import "./index";
 
 test.each([
   ["sessionTasks", "Tasks"],
-  ["sessionActivity", "Activity"],
   ["sessionDetails", "Details"],
 ] as const)("registers the %s session panel pane", (id, label) => {
   expect(paneFor(id).title({ ref: "ref_a" }, { threadName: () => "Build" })).toBe(`${label} · Build`);
   expect(paneFor(id).title({ ref: "ref_a" }, {})).toBe(`${label} · ref_a`);
   expect(paneToURL(id, { ref: "ref_a" })).toBeNull();
+});
+
+test("Activity is absent from the production pane registry", () => {
+  expect(() => paneFor("sessionActivity" as PaneTypeId)).toThrow('no pane registered for type "sessionActivity"');
 });

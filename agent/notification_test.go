@@ -186,7 +186,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	client := llm.NewClient()
 	client.Register(adapter)
 	dir := t.TempDir()
-	sess = newSession(t, withClient(client), withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: dir}))
+	sess = newSession(t, withClient(client), withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	if _, err := sess.ProcessInput(context.Background(), "warm up", nil); err != nil {
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
 	owner := starts[0].TurnID
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 			func(req llm.Request) llm.Response { return finalResponse("notification handled") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{NoProjectPrompts: true, StateDir: dir}))
+	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 	if _, err := sess.ProcessInput(context.Background(), "completed user turn", nil); err != nil {
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("notification handled") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{NoProjectPrompts: true, StateDir: dir}))
+	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 	defer sess.Close()
 	if _, err := sess.ProcessInput(context.Background(), "completed user turn", nil); err != nil {
 		t.Fatalf("warmup ProcessInput: %v", err)
@@ -300,7 +300,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("notification EventTurnStarted = %#v, want one named boundary", starts)
 	}
 
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("direct steering owner=%q, want notification turn %q and not prior user turn %q", persistedOwner, starts[0].TurnID, priorTurnID)
 	}
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, nil, nil, nil)
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
 	}
 	liveEntries := make([]transcript.Entry, len(liveHistory))
 	for i, turn := range liveHistory {
@@ -372,7 +372,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 			func(llm.Request) llm.Response { return finalResponse("late ordinary round") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true}))
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
 	sess.RegisterTool(
 		"enqueue_test_notification",
 		"test-only: finish a managed job while another tool round is running",

@@ -32,10 +32,10 @@ type providerSection struct {
 // single hubAuthController, and AppWire serializes requests only within a
 // single connection - two browser tabs, or a browser and the TUI, can call
 // Set/Clear/Get concurrently. mu guards data (a plain map, unsafe for
-// concurrent read+write) and serializes save()'s temp-file-then-rename pair,
-// so two racing writers can't interleave on the same .tmp path and corrupt
-// or drop each other's update. path and fs are set once at construction
-// (loadStoreFS) and never mutated again, so reading them needs no lock.
+// concurrent read+write) and serializes each mutation's persist, so two racing
+// writers can't drop each other's update. path and fs are set once at
+// construction (loadStoreFS) and never mutated again, so reading them needs no
+// lock.
 type Store struct {
 	path string
 	fs   afero.Fs
@@ -182,33 +182,43 @@ func restoreEntry(providers map[string]providerSection, name string, prev provid
 	delete(providers, name)
 }
 
-// save persists s.data. Callers must hold mu (Lock, not RLock): it both
-// reads data for encoding and is the only place two concurrent writers could
-// otherwise interleave on the same .tmp path.
+// save persists s.data. Callers must hold mu (Lock, not RLock): it reads data
+// for encoding, and holding the lock across the temp-write-then-rename keeps a
+// racing pair from dropping one update. The temp file is created exclusively
+// under a random name (never a fixed <path>.tmp): a planted symlink at a
+// predictable temp name would otherwise redirect the saved credentials into a
+// file of the attacker's choosing, the same class #1040 fixed for the target
+// itself.
+// Because the temp name is random, a save killed between the exclusive create
+// and the rename (crash, SIGKILL, power loss) leaves a unique
+// credentials.toml.tmp-* file behind that nothing reclaims; that is the
+// accepted cost of never reusing a name an attacker could plant.
 func (s *Store) save() error {
 	if s.path == "" {
 		return nil
 	}
-	if err := s.fs.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := s.fs.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("credentials: mkdir: %w", err)
 	}
-	tmp := s.path + ".tmp"
-	f, err := s.fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := afero.TempFile(s.fs, dir, filepath.Base(s.path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("credentials: open: %w", err)
 	}
+	tmp := f.Name()
+	// A save that dies partway has already created the temp file, so clear it
+	// too: the rename takes the name with it, so this is a no-op once the save
+	// has landed.
+	defer func() { _ = s.fs.Remove(tmp) }()
 	if err := toml.NewEncoder(f).Encode(s.data); err != nil {
 		_ = f.Close()
-		_ = s.fs.Remove(tmp)
 		return fmt.Errorf("credentials: encode: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = s.fs.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		_ = s.fs.Remove(tmp)
 		return err
 	}
 	return s.fs.Rename(tmp, s.path)

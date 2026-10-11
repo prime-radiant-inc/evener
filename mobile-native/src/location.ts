@@ -1,10 +1,14 @@
+import { isPlainObject } from "@evener/appwire-client";
+import type { FileReference } from "@evener/appwire-client/docContent";
 import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
 import { localSessionId } from "./sessionDeletionResult";
+import { isSheetRoute } from "./sheet/sheetRoutes";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 export interface SavedLocation {
 	hubId: string;
-	keybindings?: { editor?: { actionId: string; chord: string } };
 	conversation?: { ref: string; title: string };
+	reader?: { sessionRef: string; path: string; reference?: FileReference; updatedAt?: string };
 	pinAssignment?: true;
 	deleteSession?: true;
 	fork?: ForkTarget;
@@ -18,37 +22,46 @@ export interface SavedLocation {
 		};
 	};
 }
-interface Storage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
 const key = "evener.last-location";
-function object(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+function fileReference(value: unknown): value is FileReference {
+	return (
+		isPlainObject(value) &&
+		typeof value.path === "string" &&
+		value.path !== "" &&
+		typeof value.cwd === "string" &&
+		value.cwd !== "" &&
+		typeof value.readTarget === "string" &&
+		value.readTarget.startsWith("/") &&
+		(value.provenance === "relative" || value.provenance === "absolute")
+	);
 }
 function conversation(value: unknown): value is { ref: string; title: string } {
 	return (
-		object(value) &&
-		typeof value.ref === "string" &&
-		value.ref.length > 0 &&
-		typeof value.title === "string"
+		isPlainObject(value) && typeof value.ref === "string" && value.ref.length > 0 && typeof value.title === "string"
+	);
+}
+function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
+	return (
+		isPlainObject(value) &&
+		typeof value.sessionRef === "string" &&
+		value.sessionRef.length > 0 &&
+		typeof value.path === "string" &&
+		value.path.length > 0 &&
+		(value.reference === undefined || (fileReference(value.reference) && value.reference.path === value.path)) &&
+		(value.updatedAt === undefined || typeof value.updatedAt === "string")
 	);
 }
 function pinned(value: unknown): value is NonNullable<SavedLocation["pinned"]> {
-	if (!object(value)) return false;
+	if (!isPlainObject(value)) return false;
 	if (
 		value.section !== undefined &&
-		(!object(value.section) ||
+		(!isPlainObject(value.section) ||
 			typeof value.section.id !== "string" ||
 			!value.section.id.trim() ||
 			typeof value.section.title !== "string")
 	)
 		return false;
-	return (
-		value.manage === undefined ||
-		(value.manage === true && value.section !== undefined)
-	);
+	return value.manage === undefined || (value.manage === true && value.section !== undefined);
 }
 function fork(value: unknown): ForkTarget | null {
 	try {
@@ -57,26 +70,12 @@ function fork(value: unknown): ForkTarget | null {
 		return null;
 	}
 }
-function keybindings(
-	value: unknown,
-): value is NonNullable<SavedLocation["keybindings"]> {
-	if (!object(value)) return false;
-	return (
-		value.editor === undefined ||
-		(object(value.editor) &&
-			typeof value.editor.actionId === "string" &&
-			!!value.editor.actionId.trim() &&
-			typeof value.editor.chord === "string")
-	);
-}
-function projects(
-	value: unknown,
-): value is NonNullable<SavedLocation["projects"]> {
-	if (!object(value) || typeof value.archived !== "boolean") return false;
+function projects(value: unknown): value is NonNullable<SavedLocation["projects"]> {
+	if (!isPlainObject(value) || typeof value.archived !== "boolean") return false;
 	const project = value.project;
 	return (
 		project === undefined ||
-		(object(project) &&
+		(isPlainObject(project) &&
 			typeof project.key === "string" &&
 			!!project.key.trim() &&
 			typeof project.title === "string" &&
@@ -84,7 +83,7 @@ function projects(
 	);
 }
 export class LocationRepository {
-	constructor(private readonly storage: Storage) {}
+	constructor(private readonly storage: SyncStringStorage) {}
 	read(savedHubIds: readonly string[]): SavedLocation | null {
 		const raw = this.storage.getItemSync(key);
 		if (!raw) return null;
@@ -94,37 +93,12 @@ export class LocationRepository {
 		} catch {
 			return null;
 		}
-		if (
-			!object(value) ||
-			typeof value.hubId !== "string" ||
-			!savedHubIds.includes(value.hubId)
-		)
-			return null;
-		if (value.conversation !== undefined && !conversation(value.conversation))
-			return null;
-		if (
-			value.keybindings !== undefined &&
-			(!keybindings(value.keybindings) ||
-				[
-					"conversation",
-					"pinned",
-					"pinAssignment",
-					"fork",
-					"deleteSession",
-					"projects",
-				].some((key) => value[key] !== undefined))
-		)
-			return null;
+		if (!isPlainObject(value) || typeof value.hubId !== "string" || !savedHubIds.includes(value.hubId)) return null;
+		if (value.conversation !== undefined && !conversation(value.conversation)) return null;
 		if (
 			value.projects !== undefined &&
 			(!projects(value.projects) ||
-				[
-					"conversation",
-					"pinned",
-					"pinAssignment",
-					"fork",
-					"deleteSession",
-				].some((key) => value[key] !== undefined))
+				["conversation", "pinned", "pinAssignment", "fork", "deleteSession"].some((key) => value[key] !== undefined))
 		)
 			return null;
 		const target = fork(value.fork);
@@ -140,29 +114,26 @@ export class LocationRepository {
 			return null;
 		if (
 			value.fork !== undefined &&
-			(!target ||
-				!conversation(value.conversation) ||
-				value.pinned !== undefined ||
-				value.pinAssignment !== undefined)
+			(!target || !conversation(value.conversation) || value.pinned !== undefined || value.pinAssignment !== undefined)
 		)
 			return null;
 		if (
 			value.pinned !== undefined &&
-			(!pinned(value.pinned) ||
-				value.conversation !== undefined ||
-				value.pinAssignment !== undefined)
+			(!pinned(value.pinned) || value.conversation !== undefined || value.pinAssignment !== undefined)
 		)
 			return null;
+		if (value.pinAssignment !== undefined && (value.pinAssignment !== true || !conversation(value.conversation)))
+			return null;
+		// A reader needs its session and stands alone.
 		if (
-			value.pinAssignment !== undefined &&
-			(value.pinAssignment !== true || !conversation(value.conversation))
+			value.reader !== undefined &&
+			(!reader(value.reader) ||
+				!conversation(value.conversation) ||
+				["pinAssignment", "fork", "deleteSession", "pinned", "projects"].some((key) => value[key] !== undefined))
 		)
 			return null;
 		return {
 			hubId: value.hubId,
-			...(keybindings(value.keybindings)
-				? { keybindings: value.keybindings }
-				: {}),
 			...(projects(value.projects) ? { projects: value.projects } : {}),
 			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
@@ -176,6 +147,16 @@ export class LocationRepository {
 						},
 					}
 				: {}),
+			...(reader(value.reader)
+				? {
+						reader: {
+							sessionRef: value.reader.sessionRef,
+							path: value.reader.path,
+							...(value.reader.reference ? { reference: value.reader.reference } : {}),
+							...(value.reader.updatedAt === undefined ? {} : { updatedAt: value.reader.updatedAt }),
+						},
+					}
+				: {}),
 		};
 	}
 	save(location: SavedLocation | null) {
@@ -183,21 +164,21 @@ export class LocationRepository {
 		else this.storage.removeItemSync(key);
 	}
 }
+/** The route a relaunch reopens: the frontmost one that isn't a sheet. A
+ * sheet is a moment over its screen, never a place to come back to. */
+export function routeToSave<Route extends { name: string }>(state: {
+	index: number;
+	routes: readonly Route[];
+}): Route | undefined {
+	return state.routes.slice(0, state.index + 1).findLast((route) => !isSheetRoute(route.name));
+}
 export function locationForRoute(
 	route: { name: string; params?: unknown },
 	hubId: string | null,
 ): SavedLocation | null {
 	if (!hubId || route.name === "Hubs") return null;
-	if (route.name === "KeybindingPreferences") {
-		if (!object(route.params) || route.params.hubId !== hubId) return null;
-		const destination =
-			route.params.editor === undefined ? {} : { editor: route.params.editor };
-		return keybindings(destination)
-			? { hubId, keybindings: destination }
-			: null;
-	}
 	if (route.name === "Projects" || route.name === "Project") {
-		if (!object(route.params) || route.params.hubId !== hubId) return null;
+		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
 		const destination = {
 			archived: route.params.archived ?? false,
 			...(route.name === "Project"
@@ -213,7 +194,7 @@ export function locationForRoute(
 		return projects(destination) ? { hubId, projects: destination } : null;
 	}
 	if (route.name === "Fork") {
-		if (!object(route.params) || route.params.hubId !== hubId) return null;
+		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
 		const target = fork({
 			instanceId: route.params.instanceId,
 			entryIndex: route.params.entryIndex,
@@ -228,12 +209,8 @@ export function locationForRoute(
 				}
 			: null;
 	}
-	if (
-		route.name === "PinSections" ||
-		route.name === "PinnedSection" ||
-		route.name === "PinSectionEditor"
-	) {
-		if (!object(route.params) || route.params.hubId !== hubId) return null;
+	if (route.name === "PinSections" || route.name === "PinnedSection" || route.name === "PinSectionEditor") {
+		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
 		if (route.name === "PinSections") return { hubId, pinned: {} };
 		const destination = {
 			section: { id: route.params.sectionId, title: route.params.title },
@@ -241,28 +218,42 @@ export function locationForRoute(
 		};
 		return pinned(destination) ? { hubId, pinned: destination } : null;
 	}
+	// A subagent's session, and a shell job's detail, reopen as their
+	// coordinator's session (ruling 21).
+	if (route.name === "Subagent" || route.name === "ShellJob") {
+		if (!isPlainObject(route.params) || route.params.hubId !== hubId || !isPlainObject(route.params.coordinator))
+			return null;
+		const session = { ref: route.params.coordinator.ref, title: route.params.coordinator.title };
+		return conversation(session) ? { hubId, conversation: { ref: session.ref, title: session.title } } : null;
+	}
+	if (route.name === "Reader") {
+		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
+		const { sessionRef, path, sessionTitle, updatedAt, reference } = route.params;
+		const destination = {
+			sessionRef,
+			path,
+			...(fileReference(reference) ? { reference } : {}),
+			...(typeof updatedAt === "string" ? { updatedAt } : {}),
+		};
+		const session = { ref: sessionRef, title: sessionTitle };
+		return reader(destination) && conversation(session)
+			? { hubId, conversation: { ref: session.ref, title: session.title }, reader: destination }
+			: null;
+	}
+	// A coordinator's Subagents list reopens as its session (ruling 21).
 	if (
 		route.name === "Conversation" ||
+		route.name === "Subagents" ||
 		route.name === "PinAssignment" ||
 		route.name === "SessionDeletion"
 	) {
-		if (
-			!object(route.params) ||
-			route.params.hubId !== hubId ||
-			!conversation(route.params)
-		)
-			return null;
-		if (route.name === "SessionDeletion" && !localSessionId(route.params.ref))
-			return null;
+		if (!isPlainObject(route.params) || route.params.hubId !== hubId || !conversation(route.params)) return null;
+		if (route.name === "SessionDeletion" && !localSessionId(route.params.ref)) return null;
 		return {
 			hubId,
 			conversation: { ref: route.params.ref, title: route.params.title },
-			...(route.name === "PinAssignment"
-				? { pinAssignment: true as const }
-				: {}),
-			...(route.name === "SessionDeletion"
-				? { deleteSession: true as const }
-				: {}),
+			...(route.name === "PinAssignment" ? { pinAssignment: true as const } : {}),
+			...(route.name === "SessionDeletion" ? { deleteSession: true as const } : {}),
 		};
 	}
 	return { hubId };
@@ -272,7 +263,6 @@ export function restoredStack(location: SavedLocation | null) {
 		name: string;
 		params?: {
 			hubId: string;
-			editor?: { actionId: string; chord: string };
 			ref?: string;
 			sectionId?: string;
 			title?: string;
@@ -282,16 +272,14 @@ export function restoredStack(location: SavedLocation | null) {
 			projectKey?: string;
 			archived?: boolean;
 			tier?: "current" | "recent" | "archived";
+			sessionRef?: string;
+			path?: string;
+			reference?: FileReference;
+			sessionTitle?: string;
+			updatedAt?: string;
 		};
 	}[] = [{ name: "Hubs" }];
 	if (location) routes.push({ name: "Sessions" });
-	if (location?.keybindings) {
-		routes.push({ name: "HubSettings", params: { hubId: location.hubId } });
-		routes.push({
-			name: "KeybindingPreferences",
-			params: { hubId: location.hubId, ...location.keybindings },
-		});
-	}
 	if (location?.projects) {
 		const params = {
 			hubId: location.hubId,
@@ -315,14 +303,25 @@ export function restoredStack(location: SavedLocation | null) {
 				title: location.pinned.section.title,
 			};
 			routes.push({ name: "PinnedSection", params });
-			if (location.pinned.manage)
-				routes.push({ name: "PinSectionEditor", params });
+			if (location.pinned.manage) routes.push({ name: "PinSectionEditor", params });
 		}
 	}
 	if (location?.conversation)
 		routes.push({
 			name: "Conversation",
 			params: { hubId: location.hubId, ...location.conversation },
+		});
+	if (location?.reader?.reference && location.conversation)
+		routes.push({
+			name: "Reader",
+			params: {
+				hubId: location.hubId,
+				sessionRef: location.reader.sessionRef,
+				path: location.reader.path,
+				reference: location.reader.reference,
+				sessionTitle: location.conversation.title,
+				...(location.reader.updatedAt === undefined ? {} : { updatedAt: location.reader.updatedAt }),
+			},
 		});
 	if (location?.pinAssignment && location.conversation)
 		routes.push({

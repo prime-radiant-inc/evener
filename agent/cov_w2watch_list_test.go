@@ -11,6 +11,7 @@ import (
 // receiverSessionID differs from the manager's own session is invisible and is
 // skipped in every rail.
 func TestW2Watch_watchListToolResultVisibleToSession(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t) // sessionID "S1"
 
 	// Two live watches share a source so the sort tie-breaks on watch id.
@@ -61,6 +62,7 @@ func TestW2Watch_watchListToolResultVisibleToSession(t *testing.T) {
 // two matching watches that share a source must tie-break on watch id (the
 // remaining uncovered comparator arm).
 func TestW2Watch_watchListToolResultForReceiverWatchIDTieBreak(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	const rsID, rdID = "RS", "RD"
 

@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel } from "../../model";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
@@ -46,15 +48,16 @@ interface FakeDraftState {
   revision: number;
   text: string;
   skillNames: string[];
+  commandNames: string[];
   cleared: string[];
 }
 
 function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraftPort & { state: FakeDraftState } {
-  const state: FakeDraftState = { revision: 0, text: "", skillNames: [], cleared: [], ...initial };
+  const state: FakeDraftState = { revision: 0, text: "", skillNames: [], commandNames: [], cleared: [], ...initial };
   return {
     state,
     readDraftRevision: () => state.revision,
-    readComposerDraft: () => ({ text: state.text, skillNames: state.skillNames }),
+    readComposerDraft: () => ({ text: state.text, skillNames: state.skillNames, commandNames: state.commandNames }),
     clearDraft: (ref) => {
       state.cleared.push(ref);
     },
@@ -62,6 +65,17 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
 }
 
 describe("createPendingTurnsStore", () => {
+  test("settling a send retains a draft whose command selection changed but text and skills match", () => {
+    const draft = fakeDraftPort({ text: "DATA_318", skillNames: ["probe"], commandNames: ["other"] });
+    const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft, identity: UNATTRIBUTED_ONLY_IDENTITY });
+    const submitted = { draftRevisionAtStart: 0, text: "DATA_318", skillNames: ["probe"], commandNames: ["probe"] };
+    expect(store.settleSubmittedDraft("ref-a", submitted).cleared).toBe(false);
+    expect(draft.state.cleared).toEqual([]);
+    draft.state.commandNames = ["probe"];
+    expect(store.settleSubmittedDraft("ref-a", submitted).cleared).toBe(true);
+    expect(draft.state.cleared).toEqual(["ref-a"]);
+  });
+
   test("starts with empty state", () => {
     const store = createPendingTurnsStore({
       threads: fakeThreadsPort(),
@@ -107,6 +121,82 @@ describe("createPendingTurnsStore", () => {
 
       store.recordSubmittedHere({ outbox: [own], optimistic: [] });
       expect(store.getState()).toBe(stateAfterFirst); // no new setState published
+    });
+
+    test("writes the id -> createdAt map entry from the record's createdAt", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      const own = outboxRecord({ clientMutationId: "own-1", originClientId: "client-x", createdAt: 1234 });
+      store.recordSubmittedHere({ outbox: [own], optimistic: [] });
+      expect(store.getState().submittedHere.get("own-1")).toBe(1234);
+    });
+
+    test("never prunes: the map outlives the settle that deletes the durable record", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      const own = outboxRecord({ clientMutationId: "own-1", originClientId: "client-x", createdAt: 1234 });
+      store.recordSubmittedHere({ outbox: [own], optimistic: [] });
+      // The settle deletes the durable record out of the projection...
+      store.setState({ outbox: new Map(), optimistic: new Map() });
+      // ...and the carrier still holds the createdAt a reload-after-settle cannot
+      // re-discover (steering-ghost spec §4).
+      expect(store.getState().submittedHere.get("own-1")).toBe(1234);
+    });
+  });
+
+  describe("projectSnapshot", () => {
+    // A durable read of ref-a as storage hands it back: new objects on every
+    // call, with the same content.
+    function readRefA() {
+      return {
+        outbox: [
+          outboxRecord({
+            clientMutationId: "out-1",
+            targetRef: "ref-a",
+            payload: { input: [{ type: "text", text: "queued" }] },
+          }),
+        ],
+        optimistic: [optimisticRecord({ clientMutationId: "opt-1", targetRef: "ref-a" })],
+        recovery: [recoveryRecord({ clientMutationId: "rec-1", targetRef: "ref-a", recoveryReason: "refused" })],
+      };
+    }
+
+    test("is a no-op when a fresh read holds what the store already does", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      store.projectSnapshot(new Set(["ref-a"]), readRefA());
+      const stateAfterFirst = store.getState();
+
+      store.projectSnapshot(new Set(["ref-a"]), readRefA());
+      expect(store.getState()).toBe(stateAfterFirst); // no new setState published
+    });
+
+    test("publishes a change, and the record maps it did not change keep their identity", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      store.projectSnapshot(new Set(["ref-a"]), readRefA());
+      const before = store.getState();
+
+      const changed = readRefA();
+      changed.outbox = [outboxRecord({ ...changed.outbox[0], state: "blockedUnknown" })];
+      store.projectSnapshot(new Set(["ref-a"]), changed);
+
+      const after = store.getState();
+      expect(after.outbox.get("out-1")?.state).toBe("blockedUnknown");
+      expect(after.optimistic).toBe(before.optimistic);
+      expect(after.recovery).toBe(before.recovery);
     });
   });
 
@@ -311,9 +401,9 @@ describe("createPendingTurnsStore", () => {
 });
 
 describe("awaitingFirstFrameSend", () => {
-  test("derives from the identified active turn and needs no confirmation timer", () => {
+  test("derives from the identified running turn and needs no confirmation timer", () => {
     const model = threadModel({
-      activeTurnId: "turn_1",
+      runningTurnId: "turn_1",
       turns: [{ id: "turn_1", status: "inProgress", items: [userMessageItem({ clientMutationId: "mutation_1" })] }],
     });
     expect(awaitingFirstFrameSend(model)).toBe(true);
@@ -321,7 +411,7 @@ describe("awaitingFirstFrameSend", () => {
 
   test("an authoritative assistant frame retires first-frame state by model identity", () => {
     const model = threadModel({
-      activeTurnId: "turn_1",
+      runningTurnId: "turn_1",
       turns: [
         {
           id: "turn_1",
@@ -336,8 +426,21 @@ describe("awaitingFirstFrameSend", () => {
     expect(awaitingFirstFrameSend(model)).toBe(false);
   });
 
-  test("returns false with no active turn or no model at all", () => {
-    expect(awaitingFirstFrameSend(threadModel({ activeTurnId: undefined, turns: [] }))).toBe(false);
+  test("a fresh read's activeTurnId alone (before any live status frame) still counts", () => {
+    // threadFields/runningTurn (reducer.ts) set runningTurnId from the read's
+    // own evener.activeTurnId at every hydrate, so a resumed cold session
+    // that has not yet received a live thread/status/changed frame still
+    // resolves through this same field.
+    const model = threadModel({
+      activeTurnId: "turn_1",
+      runningTurnId: "turn_1",
+      turns: [{ id: "turn_1", status: "inProgress", items: [userMessageItem({ clientMutationId: "mutation_1" })] }],
+    });
+    expect(awaitingFirstFrameSend(model)).toBe(true);
+  });
+
+  test("returns false with no running turn or no model at all", () => {
+    expect(awaitingFirstFrameSend(threadModel({ runningTurnId: undefined, turns: [] }))).toBe(false);
     expect(awaitingFirstFrameSend(undefined)).toBe(false);
   });
 });

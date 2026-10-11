@@ -2,7 +2,6 @@ package hub
 
 import (
 	"fmt"
-	"sort"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -11,42 +10,26 @@ import (
 
 func testNavigationSnapshot(t *testing.T, key navigationResourceKey, revision uint64, children map[string][]string) hubapi.NavigationSnapshot {
 	t.Helper()
-	metadata := navigationPagedMetadata{GenerationID: "g", Revision: revision, Offset: key.Offset, Limit: key.View().Limit}
-	snapshot := hubapi.NavigationSnapshot{Metadata: mustJSON(metadata), Entities: []hubapi.NavigationEntityRecord{}, Containers: []hubapi.NavigationOrderContainer{}}
-	seen := map[string]bool{}
-	addEntity := func(identity string) string {
-		entityKey := navigationEntityKey(key, "session", "local:"+identity)
-		if !seen[identity] {
-			seen[identity] = true
-			snapshot.Entities = append(snapshot.Entities, hubapi.NavigationEntityRecord{Key: entityKey, Kind: "session", Value: mustJSON(navigationSchemaSession("local:"+identity, identity))})
+	rows := func(ids []string) hubapi.NavigationArray[hubapi.NavigationSessionSummary] {
+		out := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], 0, len(ids))
+		for _, id := range ids {
+			out = append(out, navigationSchemaSession("local:"+id, id))
 		}
-		return entityKey
+		return out
 	}
-	top := make([]string, 0, len(children))
-	for owner := range children {
-		top = append(top, addEntity(owner))
-		for _, child := range children[owner] {
-			addEntity(child)
-		}
+	object := hubapi.NavigationProjectResource{GenerationID: "g", Revision: revision, Key: key.ProjectKey, Current: hubapi.NavigationTier{Sessions: rows(children["current"])}, Recent: hubapi.NavigationTier{Sessions: rows(children["recent"])}}
+	snapshot, err := normalizeNavigationResource(key, object)
+	if err != nil {
+		t.Fatal(err)
 	}
-	sort.Strings(top)
-	snapshot.Containers = append(snapshot.Containers, hubapi.NavigationOrderContainer{Key: navigationRootContainerKey(key, "sessions"), Owner: hubapi.NavigationContainerOwner{Kind: "resource_root", Slot: "sessions"}, Children: top})
-	for identity := range seen {
-		ownedChildren := make([]string, 0, len(children[identity]))
-		for _, child := range children[identity] {
-			ownedChildren = append(ownedChildren, navigationEntityKey(key, "session", "local:"+child))
-		}
-		ownerKey := navigationEntityKey(key, "session", "local:"+identity)
-		snapshot.Containers = append(snapshot.Containers, hubapi.NavigationOrderContainer{Key: navigationOwnedContainerKey(ownerKey, "children"), Owner: hubapi.NavigationContainerOwner{Kind: "entity", EntityKey: ownerKey, Slot: "children"}, Children: ownedChildren})
-	}
-	hubapi.SortNavigationSnapshot(&snapshot)
 	return snapshot
+
 }
 
-func TestNavigationDeltaReparentReplacesBothContainers(t *testing.T) {
-	key := navigationResourceKey{Kind: navigationResourceLive, Limit: 50}
-	base := testNavigationSnapshot(t, key, 1, map[string][]string{"left": {"s1", "s2"}, "right": {"s3"}})
-	current := testNavigationSnapshot(t, key, 2, map[string][]string{"left": {"s2"}, "right": {"s1", "s3"}})
+func TestNavigationDeltaMovesSessionBetweenBothTiers(t *testing.T) {
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p"}
+	base := testNavigationSnapshot(t, key, 1, map[string][]string{"current": {"s1", "s2"}, "recent": {"s3"}})
+	current := testNavigationSnapshot(t, key, 2, map[string][]string{"current": {"s2"}, "recent": {"s1", "s3"}})
 	delta, err := diffNavigationSnapshots(
 		key,
 		appwire.NavigationReadBase{GenerationID: "g", Revision: 1, ETag: "tag-1"},
@@ -63,9 +46,9 @@ func TestNavigationDeltaReparentReplacesBothContainers(t *testing.T) {
 }
 
 func TestNavigationDeltaEqualRecordsWithoutCountersProduceNoUpsert(t *testing.T) {
-	key := navigationResourceKey{Kind: navigationResourceLive, Limit: 50}
-	base := testNavigationSnapshot(t, key, 1, map[string][]string{"same": {"child"}})
-	current := testNavigationSnapshot(t, key, 2, map[string][]string{"same": {"child"}})
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p"}
+	base := testNavigationSnapshot(t, key, 1, map[string][]string{"current": {"same", "child"}})
+	current := testNavigationSnapshot(t, key, 2, map[string][]string{"current": {"same", "child"}})
 	delta, err := diffNavigationSnapshots(
 		key,
 		appwire.NavigationReadBase{GenerationID: "g", Revision: 1, ETag: "tag-1"},

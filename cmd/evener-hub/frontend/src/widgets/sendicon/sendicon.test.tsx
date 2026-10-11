@@ -1,8 +1,6 @@
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { SendIcon } from ".";
-
-afterEach(cleanup);
 
 // The button beside the glyph carries the verb ("Send" / "Start") as its
 // accessible name - on mobile it is the only thing that does - so the glyph

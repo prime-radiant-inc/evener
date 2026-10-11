@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"reflect"
 	"testing"
 )
@@ -33,15 +32,6 @@ func TestSessionRefMatchesIDLocalShortForm(t *testing.T) {
 func TestSessionRefMatchesIDNoMatch(t *testing.T) {
 	if sessionRefMatchesID("local:s1", "local:s2") {
 		t.Fatal("different sessions should not match")
-	}
-}
-
-func TestSessionRefMatchesIDClusterPrefix(t *testing.T) {
-	// The top-level session resolver returns ("", false) for a cluster prefix.
-	s := &WebServer{}
-	id, ok := s.resolveTopLevelSessionRef(context.Background(), "cluster:foo")
-	if ok || id != "" {
-		t.Fatalf("cluster: prefix should return empty/false, got %q %v", id, ok)
 	}
 }
 

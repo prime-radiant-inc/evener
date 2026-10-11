@@ -17,32 +17,6 @@ func TestIncrementTurns(t *testing.T) {
 	}
 }
 
-// TestSetPromoteQueuedAsSteerFunc covers the setter.
-func TestSetPromoteQueuedAsSteerFunc(t *testing.T) {
-	s := NewServer(ServerConfig{})
-	called := false
-	fn := func(index int, id string) error {
-		called = true
-		if index != 1 || id != "test" {
-			t.Fatalf("fn called with (%d, %q), want (1, test)", index, id)
-		}
-		return nil
-	}
-	s.SetPromoteQueuedAsSteerFunc(fn)
-	s.mu.RLock()
-	got := s.promoteSteerFunc
-	s.mu.RUnlock()
-	if got == nil {
-		t.Fatal("promoteSteerFunc not set")
-	}
-	if err := got(1, "test"); err != nil {
-		t.Fatalf("calling fn: %v", err)
-	}
-	if !called {
-		t.Fatal("fn was not called")
-	}
-}
-
 // TestSetCancelQueuedFunc covers the setter.
 func TestSetCancelQueuedFunc(t *testing.T) {
 	s := NewServer(ServerConfig{})

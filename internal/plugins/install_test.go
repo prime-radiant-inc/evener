@@ -449,3 +449,73 @@ func TestInstall_SaveRegistryFailureNamesNoPath(t *testing.T) {
 		t.Fatalf("err = %v, want it to name %s", err, registryFileName)
 	}
 }
+
+// Remove's registry save is attempted before the cache dir's own removal, so
+// once that save has landed a failure removing the now-orphaned cache dir is
+// litter the caller cannot undo. RemoveMarketplace already reports the same
+// save-then-delete failure this way; Remove adopting it is #1643. The error
+// must not carry os.RemoveAll's own absolute path, must wrap
+// ErrPluginUninstalledCacheRemains so a caller can tell this applied-with-litter
+// outcome from a plain refusal, and the session must still report the registry
+// change so the hub broadcasts the applied removal.
+func TestRemove_CacheRemovalFailureReportsAppliedLitter(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	entry, err := m.Install(ctx, "widget", name)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	cachePath := entry.InstallPath
+	if !strings.HasPrefix(cachePath, m.cacheDir()+string(os.PathSeparator)) {
+		t.Fatalf("install path %q is not under the cache %q", cachePath, m.cacheDir())
+	}
+
+	// Installed after the marketplace add, so this session counts only the
+	// removal's own registry write.
+	reports := recordStoreChanges(m)
+
+	origRemove := installRemoveAll
+	t.Cleanup(func() { installRemoveAll = origRemove })
+	installRemoveAll = func(p string) error {
+		if p == cachePath {
+			return &fs.PathError{Op: "remove", Path: cachePath, Err: errors.New("permission denied")}
+		}
+		return origRemove(p)
+	}
+
+	err = m.Remove(ctx, "widget", name)
+	if err == nil {
+		t.Fatal("Remove = nil, want the failed cache removal reported")
+	}
+	if !errors.Is(err, ErrPluginUninstalledCacheRemains) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrPluginUninstalledCacheRemains): a caller must be able to tell this applied-with-litter outcome from a plain refusal", err)
+	}
+	if strings.Contains(err.Error(), cachePath) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	// The registry save landed: the plugin is gone from the registry and the
+	// lock session reported the change, so the hub broadcasts the applied
+	// removal even though the cleanup failed.
+	reg, loadErr := LoadRegistry(m.registryPath())
+	if loadErr != nil {
+		t.Fatalf("LoadRegistry: %v", loadErr)
+	}
+	if _, ok := reg.Plugins["widget@"+name]; ok {
+		t.Fatalf("entry still present after remove: %+v", reg.Plugins)
+	}
+	if len(*reports) != 1 || !(*reports)[0].Plugins || (*reports)[0].Marketplaces {
+		t.Fatalf("OnStoreChanged reports = %+v, want one {Plugins:true Marketplaces:false}", *reports)
+	}
+	// The litter: the cache dir is still on disk.
+	if _, statErr := os.Stat(cachePath); statErr != nil {
+		t.Fatalf("cache dir gone despite the reported removal failure: %v", statErr)
+	}
+}

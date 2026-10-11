@@ -1,12 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { Tree, type TreeNode } from "./index";
-
-afterEach(cleanup);
 
 // Flattened visible order for this fixture: a, b, b1, c
 // (b is expanded so b1 shows; c is collapsed so c1 stays hidden).
@@ -26,6 +24,7 @@ function renderTree(overrides: Partial<Parameters<typeof Tree>[0]> = {}) {
       onToggle={overrides.onToggle ?? onToggle}
       renderRow={overrides.renderRow ?? ((node) => node.id)}
       releaseModifierKeys={overrides.releaseModifierKeys}
+      isSelected={overrides.isSelected}
     />,
   );
   return { ...utils, onActivate, onToggle };
@@ -329,6 +328,32 @@ test("renders an empty tree without crashing when nodes is empty", () => {
   render(<Tree nodes={[]} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={(node) => node.id} />);
   expect(screen.getByRole("tree")).toBeTruthy();
   expect(screen.queryAllByRole("treeitem")).toHaveLength(0);
+});
+
+test("with no selection supplied, no treeitem carries aria-selected", () => {
+  renderTree();
+  for (const id of ["a", "b", "b1", "c"]) expect(row(id).hasAttribute("aria-selected")).toBe(false);
+});
+
+test("aria-selected is true on the selected row and false on the others", () => {
+  renderTree({ isSelected: (node) => node.id === "b" });
+  expect(row("a").getAttribute("aria-selected")).toBe("false");
+  expect(row("b").getAttribute("aria-selected")).toBe("true");
+  expect(row("b1").getAttribute("aria-selected")).toBe("false");
+  expect(row("c").getAttribute("aria-selected")).toBe("false");
+});
+
+test("a node outside the selectable set omits aria-selected entirely", () => {
+  renderTree({ isSelected: (node) => (node.id === "b" ? true : undefined) });
+  expect(row("b").getAttribute("aria-selected")).toBe("true");
+  expect(row("a").hasAttribute("aria-selected")).toBe(false);
+});
+
+test("declares the selected-row wash on aria-selected, using tokens", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "tree.module.css"), "utf8");
+  expect(css).toMatch(/\.row\[aria-selected="true"\]/);
+  expect(css).toContain("var(--hover-2)");
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {

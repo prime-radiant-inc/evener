@@ -37,10 +37,10 @@ type composerPanel struct {
 	// is genuinely pending — an unresolved ask_user call in the transcript,
 	// per pendingAskQuestions (spec §6.2) — independent of ChipContext,
 	// which carries harness/model/branch metadata rather than transient
-	// state. This is NOT simply "the session is awaiting": under
-	// attention-status-model v5 a session re-arms State=="awaiting" after
-	// any clean output-producing turn, including the reply that resolves
-	// an ask_user question, so an awaiting rest can have nothing pending.
+	// state. This is NOT simply "the session is awaiting": a session also
+	// rests State=="awaiting" after a turn that ended on needs_response,
+	// including the reply that resolves an ask_user question, so an
+	// awaiting rest can have nothing pending.
 	AwaitingQuestion bool
 }
 
@@ -67,7 +67,7 @@ const (
 //
 //	stop   active && interrupt  (the hub advertises interrupt as harness support)
 //	steer  active && steer      (the hub advertises steer as harness support)
-//	drain  steer && (active || idle with a non-empty queue, the one a Stop parked),
+//	drain  steer && (active || resting with a non-empty queue, the one a Stop parked),
 //	       and not while the queue revision is stale after a partial drain
 //	queue  active && queue      (the hub advertises queue as harness support)
 //	send   !active && send      (the hub folds the status into send; the status is
@@ -83,7 +83,7 @@ type sessionControls struct {
 
 func (m hubModel) sessionControls() sessionControls {
 	active := m.detail.State == appwire.ThreadStatusActive
-	parked := m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth > 0
+	parked := appwire.IsRestingThreadStatus(m.detail.State) && m.detail.Queue.Depth > 0
 	caps := m.detail.Capabilities
 	c := sessionControls{
 		stop:  active && caps.Interrupt,
@@ -166,7 +166,7 @@ func (m hubModel) sessionTurnActionState() bool {
 }
 
 // sessionTurnRunning reports a genuinely in-flight turn (the composer should
-// offer Stop/steer/queue). A rested "awaiting" session — re-armed "your move"
+// offer Stop/steer/queue). A rested "awaiting" session ("Needs you")
 // with nothing running — is NOT running: it drops to plain Send. This is
 // narrower than sessionTurnActionState (which stays true for awaiting so the
 // status line's "busy" affordances and the !processing send-gating are
@@ -300,10 +300,9 @@ func (p composerPanel) View() string {
 	// Waiting chip (spec §6.2): shown whenever a question is genuinely
 	// pending (an unresolved ask_user call in the transcript), independent
 	// of the harness/model chip strip above — NOT merely whenever the
-	// session rests awaiting, since attention-status-model v5 can re-arm
-	// that rest state with nothing left pending. ctrl+q is the ONLY way to
-	// open the question overlay — this chip is discoverability chrome, not
-	// a button.
+	// session rests awaiting, since a needs_response turn rests there with
+	// nothing pending. ctrl+q is the ONLY way to open the question overlay —
+	// this chip is discoverability chrome, not a button.
 	if p.AwaitingQuestion {
 		waitingStyle := lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true)
 		b.WriteString(waitingStyle.Render("◆ question waiting — ctrl+q to answer"))

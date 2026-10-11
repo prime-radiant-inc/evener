@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import { createHubOverviewStore, type HubOverviewClient } from "./hubOverview";
 import { FakeClient, failing } from "./testing/fakeClient";

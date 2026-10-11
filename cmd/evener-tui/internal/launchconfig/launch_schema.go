@@ -144,8 +144,6 @@ func launchOptionLayerValue(opt appwire.LaunchOption, l appwire.LaunchConfigLaye
 		return ptrIntStr(l.MaxConcurrentDelegateTurns), ptrIntStr(l.MaxConcurrentDelegateTurns)
 	case "max_retained_terminal":
 		return ptrIntStr(l.MaxRetainedTerminal), ptrIntStr(l.MaxRetainedTerminal)
-	case "no_project_prompts":
-		return ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts)
 	case "app_replay_size":
 		return ptrIntStr(l.AppReplaySize), ptrIntStr(l.AppReplaySize)
 	case "system_prompt_mode":

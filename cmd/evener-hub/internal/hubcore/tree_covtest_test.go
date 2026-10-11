@@ -175,7 +175,7 @@ func TestCovResolveProjectMapLiveWithProjectID(t *testing.T) {
 // --- tree.go: FavoriteCandidates ---
 
 // TestCovFavoriteCandidatesCoversAllKinds exercises FavoriteCandidates with
-// session, fork, cluster, and empty-ID nodes to cover the switch branches
+// session, fork, other, and empty-ID nodes to cover the switch branches
 // (tree.go:62-71) and the empty-ID guard (tree.go:48-49).
 func TestCovFavoriteCandidatesCoversAllKinds(t *testing.T) {
 	tree := Tree{
@@ -187,11 +187,6 @@ func TestCovFavoriteCandidatesCoversAllKinds(t *testing.T) {
 				{ID: "", Kind: "session"},       // empty ID skipped
 				{ID: "live-1", Kind: "session"}, // duplicate skipped
 				{ID: "fork-1", Kind: "fork", Title: "fork"},
-				{Kind: "cluster", Children: []TreeNode{
-					{ID: "child-1", Kind: "session", Title: "child session"},
-					{ID: "child-2", Kind: "fork", Title: "child fork"},
-					{ID: "child-3", Kind: "subagent"}, // skipped
-				}},
 				{ID: "other-1", Kind: "other"}, // skipped
 			}},
 			{allRecent: []TreeNode{
@@ -203,8 +198,6 @@ func TestCovFavoriteCandidatesCoversAllKinds(t *testing.T) {
 	want := []TreeNode{
 		{ID: "live-1", Kind: "session", Title: "live"},
 		{ID: "fork-1", Kind: "fork", Title: "fork"},
-		{ID: "child-1", Kind: "session", Title: "child session"},
-		{ID: "child-2", Kind: "fork", Title: "child fork"},
 		{ID: "recent-1", Kind: "session", Title: "recent"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -375,36 +368,13 @@ func TestCovClassifyFavoriteProjectValid(t *testing.T) {
 	}
 }
 
-// TestCovClassifyFavoriteSessionAmbiguousNode covers the ambiguousIDs branch
-// (favorite_authority.go:280-281).
-func TestCovClassifyFavoriteSessionAmbiguousNode(t *testing.T) {
-	sessions := favoriteSessionIndex{}
-	nodes := favoriteNodeIndex{ambiguousIDs: map[string]bool{"s1": true}}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
-	if result.State != FavoriteDecisionDormant {
-		t.Fatalf("expected dormant, got %v", result.State)
-	}
-}
-
-// TestCovClassifyFavoriteSessionClusterNode covers the clusterIDs branch
-// (favorite_authority.go:283-287).
-func TestCovClassifyFavoriteSessionClusterNode(t *testing.T) {
-	sessions := favoriteSessionIndex{}
-	nodes := favoriteNodeIndex{clusterIDs: map[string]bool{"s1": true}}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
-	if result.State != FavoriteDecisionConfirmedInvalid {
-		t.Fatalf("expected confirmed-invalid, got %v", result.State)
-	}
-}
-
 // TestCovClassifyFavoriteSessionAmbiguousAlias covers the ambiguousAlias branch
 // (favorite_authority.go:290-291).
 func TestCovClassifyFavoriteSessionAmbiguousAlias(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		ambiguousAlias: map[string]bool{"s1": true},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -416,8 +386,7 @@ func TestCovClassifyFavoriteSessionNoIDsNoRef(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "not-a-ref"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "not-a-ref"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -429,8 +398,7 @@ func TestCovClassifyFavoriteSessionLocalRefDormant(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "local:02wMz5Txv1C3Hut0M8GCeB"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "local:02wMz5Txv1C3Hut0M8GCeB"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -445,8 +413,7 @@ func TestCovClassifyFavoriteSessionMultipleIDs(t *testing.T) {
 	sessions := favoriteSessionIndex{
 		byAlias: map[string][]string{"s1": {"a", "b"}},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -459,8 +426,7 @@ func TestCovClassifyFavoriteSessionAmbiguousID(t *testing.T) {
 		byAlias:      map[string][]string{"s1": {"a"}},
 		ambiguousIDs: map[string]bool{"a": true},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -478,24 +444,7 @@ func TestCovClassifyFavoriteSessionMultipleAuthorities(t *testing.T) {
 			},
 		},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
-	if result.State != FavoriteDecisionDormant {
-		t.Fatalf("expected dormant, got %v", result.State)
-	}
-}
-
-// TestCovClassifyFavoriteSessionAuthorityAmbiguousNode covers the
-// authority ambiguousIDs branch (favorite_authority.go:312-313).
-func TestCovClassifyFavoriteSessionAuthorityAmbiguousNode(t *testing.T) {
-	sessions := favoriteSessionIndex{
-		byAlias: map[string][]string{"s1": {"a"}},
-		byID: map[string][]FavoriteSessionAuthority{
-			"a": {{ID: "a", Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete, TopLevel: true}},
-		},
-	}
-	nodes := favoriteNodeIndex{ambiguousIDs: map[string]bool{"a": true}}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -510,8 +459,7 @@ func TestCovClassifyFavoriteSessionIncompleteLineage(t *testing.T) {
 			"a": {{ID: "a", Lineage: FavoriteAuthorityIncomplete, Source: FavoriteAuthorityComplete, TopLevel: true}},
 		},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -529,8 +477,7 @@ func TestCovClassifyFavoriteSessionIncompleteSource(t *testing.T) {
 			"a": {{ID: "a", Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityIncomplete, TopLevel: true}},
 		},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionDormant {
 		t.Fatalf("expected dormant, got %v", result.State)
 	}
@@ -545,8 +492,7 @@ func TestCovClassifyFavoriteSessionNotTopLevel(t *testing.T) {
 			"a": {{ID: "a", Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete, TopLevel: false}},
 		},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionConfirmedInvalid {
 		t.Fatalf("expected confirmed-invalid, got %v", result.State)
 	}
@@ -561,8 +507,7 @@ func TestCovClassifyFavoriteSessionValid(t *testing.T) {
 			"a": {{ID: "a", Lineage: FavoriteAuthorityComplete, Source: FavoriteAuthorityComplete, TopLevel: true}},
 		},
 	}
-	nodes := favoriteNodeIndex{}
-	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions, nodes)
+	result := classifyFavoriteSession(ArchiveKey{Kind: "session", ID: "s1"}, sessions)
 	if result.State != FavoriteDecisionValid {
 		t.Fatalf("expected valid, got %v", result.State)
 	}

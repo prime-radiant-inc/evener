@@ -1,0 +1,23 @@
+# codex_auth_scheme.txt — the one transport auth scheme whose sign-in is the
+# OpenAI device-code flow, and the single checked-in value BOTH languages' tests
+# read. The file holds exactly one non-comment, non-blank line: the scheme,
+# spelled exactly as llm/registry/types.go's AuthOAuthOpenAICodex and as the
+# wire's InstanceEntry.auth carries it.
+#
+# It exists because the two ends of this contract live in different languages
+# and were each pinned only against themselves:
+#
+#   Go        llm/registry/types.go's AuthOAuthOpenAICodex is what the hub's own
+#             gate compares (cmd/evener-hub/app_auth.go's instanceIsCodex:
+#             inst.Auth == registry.AuthOAuthOpenAICodex), asserted here by
+#             app_auth_scheme_pin_test.go.
+#
+#   frontend  cmd/evener-hub/frontend/src/panes/settings/sections/credentials/
+#             oauthFlow.ts's CODEX_AUTH_SCHEME decides which remote-host
+#             instances are offered "Sign in on host" (supportsHostDeviceSignIn),
+#             asserted there by oauthFlow.test.ts.
+#
+# Without the pin, renaming the Go constant - or editing the frontend literal -
+# left the other end green while the browser offered a sign-in the host would
+# refuse, or withheld one it would accept.
+oauth-openai-codex

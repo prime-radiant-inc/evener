@@ -1,5 +1,6 @@
 import type { ModelDescriptor } from "@evener/appwire-client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import {
   defaultsKeyFor,
   GLOBAL_LAST_WORKING_DIR_KEY,
@@ -12,35 +13,8 @@ import {
   sweepStaleModels,
 } from "./spawnDefaults";
 
-// See stores/prefs.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global, so
-// every test file touching localStorage needs this in-memory stand-in. This
-// one additionally implements length/key(i) because sweepStaleModels enumerates
-// keys via the Web Storage index API. Scoped to this file only.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  get length(): number {
-    return this.store.size;
-  }
-  key(index: number): string | null {
-    return Array.from(this.store.keys())[index] ?? null;
-  }
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  globalThis.localStorage = new MemoryStorage() as unknown as Storage;
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => localStorage.clear());

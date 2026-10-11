@@ -23,6 +23,14 @@ Scope boundaries with the other evergreen docs:
 Citations are `path` + symbol rather than line numbers, so they survive edits — grep
 the symbol in the cited file.
 
+Stable attention drives revalidate transcript-owned pending IDs after claiming
+the retained child for a start (`Session.driveStableDelegateAttention`). A delayed
+drive cannot reserve an ID an intervening generation already consumed and
+finished. A start already accepted into the transcript retains its exact
+reservation and generation across a failed delegate-journal commit; retry does
+not create a second marker or generation. Parents continue to drive the child's
+attention, and fresh owner work remains admissible after the attention settles.
+
 ## Effective capability policy
 
 A child agent can **narrow** but never **expand** the capability set available to its

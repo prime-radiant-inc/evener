@@ -1,0 +1,20 @@
+{
+  "name": "rail-host-glyph-leading-box",
+  "description": "The real host rail row and the real activity watch row share the drawn-mark grammar: each SVG occupies the same fixed 13px leading box despite independent CSS modules. A wider host glyph shifts its label and breaks that grammar.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css"
+  ],
+  "viewport": {
+    "width": 1000,
+    "height": 1200,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "RailRow.module.css: .hostGlyph's width reverted from 13px to 17px (the host mark outgrows the glyph grammar's leading box)",
+    "verified": "2026-09-30",
+    "expect": "fail",
+    "note": "The real HostRow glyph measures 17px against the real activity WatchRow glyph at 13px and fails on width; restoring width: 13px returns PASS."
+  }
+}

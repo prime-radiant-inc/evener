@@ -34,6 +34,7 @@ type delegateArgs struct {
 	WatchParent         bool
 	ForkContext         bool
 	Isolation           string
+	Name                string
 	Sandbox             string
 	SandboxNet          *bool
 	ResultSchema        map[string]any
@@ -59,6 +60,7 @@ type delegateResult struct {
 	ChildSessionID           string
 	Type                     string
 	Status                   jobstore.Status
+	Name                     string
 	Reason                   string
 	ExhaustionBudget         string
 	ExhaustionLimit          int
@@ -79,6 +81,11 @@ type delegateResult struct {
 	Model                    string
 	Warnings                 []string
 	Err                      error
+	// ArtifactsDir is the delegation's durable per-delegate artifacts directory
+	// (<stateDir>/sessions/<childSessionID>/artifacts), set on creation and
+	// named in the delegate tool's creation result so the controller can hand
+	// the path to the delegate and to later seats.
+	ArtifactsDir string
 }
 
 type sendMessageResult struct {
@@ -115,7 +122,11 @@ type sendMessageResult struct {
 	LatestActivityAt         string
 	CumulativeUsage          *schema.CumulativeUsage
 	WaitIgnoredReason        string
-	Err                      error
+	Name                     string
+	// Earlier holds results of the same delegate the caller had not yet
+	// received, oldest first, that an inline reply carries ahead of its own.
+	Earlier []delegatestore.TerminalPacket
+	Err     error
 }
 
 func (s *Session) resolveDelegateRestoreProfileRef(base *provider.Profile, profileID, model string) (*provider.Profile, error) {

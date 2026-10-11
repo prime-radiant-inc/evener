@@ -50,7 +50,8 @@ export interface UseTranscriptScrollKeysOptions {
    * actually moved the port, and in the same task as it, which is what the
    * classifier needs: the browser delivers the scroll event later, in the
    * frame's own scroll steps, never synchronously from the assignment. */
-  markGesture: () => void;
+  markGesture: (readerIntent?: boolean, beforeOffset?: number) => void;
+  onPositioningCommand?: () => void;
 }
 
 // Scrolls the port by `delta` and reports whether the offset actually changed.
@@ -75,6 +76,7 @@ export function useTranscriptScrollKeys({
   listRef,
   jumpToBottom,
   markGesture,
+  onPositioningCommand,
 }: UseTranscriptScrollKeysOptions): void {
   const isMobile = useIsMobile();
   // jumpToBottom's identity tracks useTranscriptScroll's renders; the ref
@@ -84,6 +86,8 @@ export function useTranscriptScrollKeys({
   jumpToBottomRef.current = jumpToBottom;
   const markGestureRef = useRef(markGesture);
   markGestureRef.current = markGesture;
+  const positioningCommandRef = useRef(onPositioningCommand);
+  positioningCommandRef.current = onPositioningCommand;
 
   useEffect(() => {
     if (isMobile) return undefined;
@@ -96,34 +100,41 @@ export function useTranscriptScrollKeys({
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        if (scrollPortBy(el, -TRANSCRIPT_LINE_SCROLL_PX)) markGestureRef.current();
+        const beforeOffset = el.scrollTop;
+        if (scrollPortBy(el, -TRANSCRIPT_LINE_SCROLL_PX)) markGestureRef.current(true, beforeOffset);
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptLineDown, () => {
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        if (scrollPortBy(el, TRANSCRIPT_LINE_SCROLL_PX)) markGestureRef.current();
+        const beforeOffset = el.scrollTop;
+        if (scrollPortBy(el, TRANSCRIPT_LINE_SCROLL_PX)) markGestureRef.current(true, beforeOffset);
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptPageUp, () => {
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        if (scrollPortBy(el, -el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO)) markGestureRef.current();
+        const beforeOffset = el.scrollTop;
+        if (scrollPortBy(el, -el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO))
+          markGestureRef.current(true, beforeOffset);
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptPageDown, () => {
         if (!focused()) return false;
         const el = scrollElement();
         if (!el) return false;
-        if (scrollPortBy(el, el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO)) markGestureRef.current();
+        const beforeOffset = el.scrollTop;
+        if (scrollPortBy(el, el.clientHeight * TRANSCRIPT_PAGE_SCROLL_RATIO))
+          markGestureRef.current(true, beforeOffset);
         return true;
       }),
       registry.registerAction(ACTIONS.transcriptScrollTop, () => {
         if (!focused()) return false;
         const list = listRef.current;
         if (!list) return false;
+        positioningCommandRef.current?.();
         list.scrollToIndex(0, { align: "start" });
         return true;
       }),

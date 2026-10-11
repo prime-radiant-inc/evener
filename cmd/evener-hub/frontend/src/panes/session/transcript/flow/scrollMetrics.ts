@@ -40,9 +40,9 @@ export function isAtBottom(metrics: ScrollMetrics, thresholdPx: number = AT_BOTT
  * True when `current` shows content measured in BELOW a transcript that was
  * already at the bottom, in the SAME scroll port, with the offset never moving
  * backwards: the virtualizer correcting its own estimates, not the reader
- * leaving. The geometry half of the bottom-hold correction, shared by the
- * scroll listener and the no-scroll-event re-anchor paths (a late webfont
- * swap, a ResizeObserver tick) so the two can never drift.
+ * leaving. The geometry half of the scroll listener's bottom-hold correction,
+ * where a scroll event may be the reader's own and the change has to be shown
+ * not to be theirs.
  *
  * The caller supplies the "was at bottom" and "no reader gesture" clauses,
  * which are hook state rather than geometry.
@@ -56,6 +56,17 @@ export function contentGrewBelowViewport(previous: ScrollMetrics, current: Scrol
   );
 }
 
+/**
+ * True when any of the content's true end sits below the fold - the exact
+ * bottom, with none of isAtBottom's rounding tolerance. The no-scroll-event
+ * re-anchor's condition (useTranscriptScroll's reanchorIfEndLeftView): a reader
+ * following the bottom is pinned to the true end, so a shortfall of even a few
+ * pixels (a pane header growing 4px over the transcript) is one to correct.
+ */
+export function isEndBelowFold(metrics: ScrollMetrics): boolean {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight > 0;
+}
+
 /** True when `scrollTop` is close enough to the top to trigger older-turn paging. */
 export function isNearTop(scrollTop: number, thresholdPx: number = NEAR_TOP_THRESHOLD_PX): boolean {
   return scrollTop < thresholdPx;
@@ -65,4 +76,39 @@ export function isNearTop(scrollTop: number, thresholdPx: number = NEAR_TOP_THRE
  * `measure` param defaults to; tests inject their own instead. */
 export function readScrollMetrics(el: HTMLElement): ScrollMetrics {
   return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+}
+
+/**
+ * Whether a transcript with older history should load a page now: true while
+ * the rendered content does not fill its scroll port.
+ *
+ * A page that already overflows is the near-top scroll trigger's job, on both
+ * surfaces. The one case that trigger cannot see is a page too short to scroll
+ * at all - nothing to scroll means no scroll event ever fires - and that is
+ * what this fills.
+ */
+export function shouldAutoLoadOlder(el: HTMLElement): boolean {
+  // A port with no rendered box has not been laid out yet (or is hidden):
+  // "nothing overflows" is vacuously true there, and reading that as "the page
+  // is too short" would load older history before the transcript is visible.
+  // The triggers re-check on every geometry change, so the load happens once
+  // the port does have a box.
+  if (el.clientHeight <= 0 && el.offsetHeight <= 0) return false;
+  return el.scrollHeight <= el.clientHeight;
+}
+
+/**
+ * The nodes a transcript paging trigger observes to re-check its geometry
+ * whenever it changes: the scroll port itself (a pane resize) and the port's
+ * content (the rows settling, or the transcript shrinking below the port).
+ *
+ * Both the scroll coordinator and the paging row need exactly these, and both
+ * depend on the VirtualList's `root > sizer` shape to find the second, so that
+ * assumption lives here rather than in two observers that could drift apart.
+ */
+export function portGeometryTargets(el: HTMLElement): HTMLElement[] {
+  const targets = [el];
+  const content = el.firstElementChild;
+  if (content instanceof HTMLElement) targets.push(content);
+  return targets;
 }

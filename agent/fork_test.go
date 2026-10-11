@@ -160,7 +160,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Read child transcript via readTranscript and verify structure.
-	_, entries, _, err := readTranscript(childTranscriptPath)
+	_, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -194,6 +194,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 }
 
 func TestForkAndAsidePreserveCheapModel(t *testing.T) {
+	t.Parallel()
 	operations := []struct {
 		name   string
 		create func(string, string) (string, error)
@@ -322,6 +323,7 @@ func TestForkSession_RejectsUnsupportedHeader(t *testing.T) {
 }
 
 func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		transform func(string) string
@@ -585,12 +587,16 @@ func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
 	_, err := ForkSession(stateDir, parentID, 0, "irrelevant", "")
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=0) should return an error")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=0 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 
 	// divergenceTurn exceeding count (parent has 2 USER_INPUT turns).
 	_, err = ForkSession(stateDir, parentID, 10, "irrelevant", "")
 	if err == nil {
 		t.Error("ForkSession(divergenceTurn=10) should return an error when parent has only 2 USER_INPUT turns")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=10 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 }
 

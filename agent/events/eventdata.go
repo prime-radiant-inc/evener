@@ -81,7 +81,9 @@ func (ForkSummaryData) eventKind() EventKind        { return EventForkSummary }
 func (PromptLoadedData) eventKind() EventKind       { return EventPromptLoaded }
 func (RoundTimings) eventKind() EventKind           { return EventRoundTimings }
 func (EnvironmentData) eventKind() EventKind        { return EventEnvironment }
+func (EnvironmentChangedData) eventKind() EventKind { return EventEnvironmentChanged }
 func (TurnEndedData) eventKind() EventKind          { return EventTurnEnded }
+func (StatusSettledData) eventKind() EventKind      { return EventStatusSettled }
 func (TurnStartedData) eventKind() EventKind        { return EventTurnStarted }
 func (GoalContinuationData) eventKind() EventKind   { return EventGoalContinuation }
 func (GoalEndedData) eventKind() EventKind          { return EventGoalEnded }
@@ -94,6 +96,10 @@ func (SandboxEscalationRequestedData) eventKind() EventKind {
 func (SandboxEscalationResolvedData) eventKind() EventKind {
 	return EventSandboxEscalationResolved
 }
+func (RoundStartedData) eventKind() EventKind     { return EventRoundStarted }
+func (RoundEndedData) eventKind() EventKind       { return EventRoundEnded }
+func (ExecutionStartedData) eventKind() EventKind { return EventExecutionStarted }
+func (ExecutionEndedData) eventKind() EventKind   { return EventExecutionEnded }
 
 // Compile-time assertions that every payload satisfies EventData. A new payload
 // added without a marker fails to build here.
@@ -139,7 +145,9 @@ var (
 	_ EventData = PromptLoadedData{}
 	_ EventData = RoundTimings{}
 	_ EventData = EnvironmentData{}
+	_ EventData = EnvironmentChangedData{}
 	_ EventData = TurnEndedData{}
+	_ EventData = StatusSettledData{}
 	_ EventData = TurnStartedData{}
 	_ EventData = GoalContinuationData{}
 	_ EventData = GoalEndedData{}
@@ -148,4 +156,8 @@ var (
 	_ EventData = UrlsUpdatedData{}
 	_ EventData = SandboxEscalationRequestedData{}
 	_ EventData = SandboxEscalationResolvedData{}
+	_ EventData = RoundStartedData{}
+	_ EventData = RoundEndedData{}
+	_ EventData = ExecutionStartedData{}
+	_ EventData = ExecutionEndedData{}
 )

@@ -18,11 +18,7 @@ function draft(value: unknown): PinSectionDraft {
 	);
 	return { id: record.id, name: record.name };
 }
-export function pinSectionDrafts(
-	hubId: string,
-	sectionId: string,
-	backend: NavigationActionBackend,
-) {
+export function pinSectionDrafts(hubId: string, sectionId: string, backend: NavigationActionBackend) {
 	valid(hubId.trim().length > 0 && sectionId.trim().length > 0);
 	const key = `evener.native.pin-section-name.${JSON.stringify([hubId, sectionId])}`;
 	const load = (): PinSectionDraft | null => {
@@ -42,12 +38,7 @@ export function pinSectionDrafts(
 		removeIf(expected: PinSectionDraft): boolean {
 			const checked = draft(expected),
 				current = load();
-			if (
-				!current ||
-				current.id !== checked.id ||
-				current.name !== checked.name
-			)
-				return false;
+			if (!current || current.id !== checked.id || current.name !== checked.name) return false;
 			return backend.deleteIf(key, current);
 		},
 	};

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
@@ -440,7 +441,8 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 // TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied covers step
 // 10's sidecar-mark-removed error branch (the survives, not-deleted arm):
 // the sidecar FILE itself (not its directory) is made read-only, so
-// UpdateSidecar's read succeeds but its truncating write fails.
+// UpdateSidecar's read succeeds but its atomic replace refuses the
+// write-permission check on the unwritable target.
 func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	sr := newScriptedLaneRepo(t)
@@ -598,7 +600,7 @@ func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) 
 	// git's normal one-checkout-per-branch rule) — lane is unchanged, so
 	// evener's merge gate passes trivially, and the only refusal is git's own
 	// "branch checked out elsewhere" rule at the `branch -D` step.
-	otherPath := filepath.Join(t.TempDir(), "other-checkout")
+	otherPath := filepath.Join(realTempDirForTest(t), "other-checkout")
 	wtGit(t, r.mainRoot, "worktree", "add", "--force", otherPath, "lane")
 
 	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
@@ -967,6 +969,55 @@ func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
 	}
 }
 
+// TestWorktreeRemove_PreservesLateDirtyWithoutForceDirty covers the race
+// between the force_dirty=false preflight and git's final removal. The real-Git
+// runner wrapper mutates this disposable fixture only after the real status
+// command has reported clean, so the final real `git worktree remove` sees the
+// edit that the preflight could not have observed. This must refuse with
+// force=true alone; only force_dirty is consent to discard the late edit.
+func TestWorktreeRemove_PreservesLateDirtyWithoutForceDirty(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	path := r.addManagedWorktreeFixture(t, "late-dirty-lane")
+	lateDirty := []byte("late dirty edit\n")
+	var injected atomic.Bool
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		next := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			out, err := next(args...)
+			if err == nil && len(args) == 5 && args[0] == "-C" && args[1] == path &&
+				args[2] == "status" && args[3] == "--porcelain=v1" &&
+				args[4] == "--untracked-files=all" && injected.CompareAndSwap(false, true) {
+				if writeErr := os.WriteFile(filepath.Join(path, "main.go"), lateDirty, 0o644); writeErr != nil {
+					return out, writeErr
+				}
+			}
+			return out, err
+		}
+	}
+
+	_, err := r.removeOp(t, map[string]any{"name": "late-dirty-lane", "force": true})
+	if err == nil {
+		t.Fatal("force alone must refuse a late uncommitted edit")
+	}
+	if !strings.Contains(err.Error(), "git worktree remove failed") {
+		t.Fatalf("late dirty refusal = %v, want git's final worktree-remove refusal", err)
+	}
+	if !injected.Load() {
+		t.Fatal("late-dirty mutation did not run after the real clean preflight")
+	}
+	got, readErr := os.ReadFile(filepath.Join(path, "main.go"))
+	if readErr != nil {
+		t.Fatalf("read preserved late edit: %v", readErr)
+	}
+	if !bytes.Equal(got, lateDirty) {
+		t.Errorf("late edit = %q, want %q", got, lateDirty)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("worktree removed despite final dirty refusal: %v", statErr)
+	}
+}
+
 // --- 14: remove-current whose restore lands in a foreign-locked managed
 // launch root surfaces a warning (mirrors
 // TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns,
@@ -1023,6 +1074,7 @@ func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
 // process table a concurrent close reaps. The fence has to cover the whole
 // operation, not just the swap some operations happen to perform.
 func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
@@ -1040,6 +1092,7 @@ func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
 	var cleanupDuringOp, holding atomic.Bool
 	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
 
 	// Begin the close from inside the operation, at remove's first git command.
 	// Installed after the setup creates, and the close cannot have run one
@@ -1056,10 +1109,8 @@ func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
 					r.s.Close()
 				}()
 				<-closeBegun
-				select {
-				case <-cleanupObserved:
+				if closeWalkedPastHeldWork(t, closeAwaiting, cleanupObserved) {
 					cleanupDuringOp.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -1088,6 +1139,7 @@ func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
 // concurrently with an operation that is still moving locks and lanes around.
 // The join belongs before any of that.
 func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
@@ -1108,6 +1160,7 @@ func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *
 	var cleanupDuringOp, holding atomic.Bool
 
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
 	base := r.s.cfg.testOnly.worktreeGitRunner
 	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		inner := base(ctx, env)
@@ -1122,10 +1175,8 @@ func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *
 					r.s.Close()
 				}()
 				<-closeBegun
-				select {
-				case <-ownLaneUnlocked:
+				if closeWalkedPastHeldWork(t, closeAwaiting, ownLaneUnlocked) {
 					cleanupDuringOp.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -1152,6 +1203,7 @@ func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *
 // refusal IS the answer, and it has to reach the caller instead of being
 // dropped on the floor while the operation runs anyway.
 func TestWorktreeOps_DispatchWhileClosingIsRefusedAndRunsNoGit(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	r.s.Close()

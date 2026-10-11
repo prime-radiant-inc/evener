@@ -191,7 +191,9 @@ test("openAndFocus from topNotesStore expands the panel and focuses textarea", a
   expect(screen.queryByTestId("top-notes-expanded-content")).toBeNull();
 
   putThreadModel(model.ref, model);
-  topNotesStore.getState().openAndFocus(model.ref);
+  act(() => {
+    topNotesStore.getState().openAndFocus(model.ref);
+  });
 
   await waitFor(() => {
     expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
@@ -301,7 +303,9 @@ test("focus requests stay scoped when a pane is reused for another session", asy
   const view = render(<TopNotesPanel sessionRef={modelA.ref} model={modelA} />);
 
   // A's request is served while A is mounted.
-  topNotesStore.getState().openAndFocus(modelA.ref);
+  act(() => {
+    topNotesStore.getState().openAndFocus(modelA.ref);
+  });
   const editorA = await screen.findByRole("textbox", { name: "Human note" });
   await waitFor(() => {
     expect(document.activeElement).toBe(editorA);
@@ -314,7 +318,9 @@ test("focus requests stay scoped when a pane is reused for another session", asy
 
   // /notes on B must focus B's editor: the request belongs to B, not to a
   // numeric epoch compared against A's already-served baseline.
-  topNotesStore.getState().openAndFocus(modelB.ref);
+  act(() => {
+    topNotesStore.getState().openAndFocus(modelB.ref);
+  });
   const editorB = await screen.findByRole("textbox", { name: "Human note" });
   await waitFor(() => {
     expect(document.activeElement).toBe(editorB);
@@ -369,13 +375,17 @@ test("a focus request never lands on another session's editor after pane reuse",
     const view = render(<TopNotesPanel sessionRef={modelA.ref} model={modelA} />);
 
     // A's request is taken and its frame queued, unfired.
-    topNotesStore.getState().openAndFocus(modelA.ref);
+    act(() => {
+      topNotesStore.getState().openAndFocus(modelA.ref);
+    });
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Human note" })).toBeTruthy());
     expect(frames.length).toBe(1);
 
     // The pane is reused for session B, and B gets its own request, all
     // before A's frame fires.
-    topNotesStore.getState().openAndFocus(modelB.ref);
+    act(() => {
+      topNotesStore.getState().openAndFocus(modelB.ref);
+    });
     view.rerender(<TopNotesPanel sessionRef={modelB.ref} model={modelB} />);
     const editorB = await screen.findByRole("textbox", { name: "Human note" });
     expect(frames.length).toBeGreaterThanOrEqual(2);
@@ -403,7 +413,9 @@ test("a focus request on a read-only session waits for the session to accept wri
 
   // /notes on an ended session: the panel opens, but there is no editor to
   // focus, so the request must be held rather than consumed.
-  topNotesStore.getState().openAndFocus(model.ref);
+  act(() => {
+    topNotesStore.getState().openAndFocus(model.ref);
+  });
   await waitFor(() => expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy());
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
   expect(topNotesStore.getState().hasPendingFocus(model.ref)).toBe(true);
@@ -421,7 +433,9 @@ test("a held request never steals focus from an active control", async () => {
   const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
   // /notes on an ended session: the request is held with no editor to serve.
-  topNotesStore.getState().openAndFocus(model.ref);
+  act(() => {
+    topNotesStore.getState().openAndFocus(model.ref);
+  });
   await waitFor(() => expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy());
 
   // The user moves on - focus lands in an unrelated control (the composer,
@@ -453,14 +467,16 @@ test("a request issued for a writable session focuses through a pane reused from
   const elsewhere = document.createElement("input");
   document.body.appendChild(elsewhere);
   elsewhere.focus();
-  topNotesStore.getState().openAndFocus(modelB.ref);
+  act(() => {
+    topNotesStore.getState().openAndFocus(modelB.ref);
+  });
   view.rerender(<TopNotesPanel sessionRef={modelB.ref} model={modelB} />);
 
   // B accepted writes when the request was issued, so the request is fresh:
   // the previous session's read-only era may not swallow it.
   const editorB = await screen.findByRole("textbox", { name: "Human note" });
   await waitFor(() => expect(topNotesStore.getState().hasPendingFocus(modelB.ref)).toBe(false));
-  await new Promise((resolve) => requestAnimationFrame(resolve));
+  await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   expect(document.activeElement).toBe(editorB);
   elsewhere.remove();
 });
@@ -471,7 +487,9 @@ test("a request held from a read-only era does not steal focus after a remount",
   const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
   // /notes on the ended session: the request is held with no editor to serve.
-  topNotesStore.getState().openAndFocus(model.ref);
+  act(() => {
+    topNotesStore.getState().openAndFocus(model.ref);
+  });
   await waitFor(() => expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy());
   expect(topNotesStore.getState().hasPendingFocus(model.ref)).toBe(true);
 
@@ -494,7 +512,7 @@ test("a request held from a read-only era does not steal focus after a remount",
   await waitFor(() => expect(topNotesStore.getState().hasPendingFocus(model.ref)).toBe(false));
   // Drain the frame the focus delivery rides on, so a steal is observed
   // rather than outrun.
-  await new Promise((resolve) => requestAnimationFrame(resolve));
+  await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   expect(document.activeElement).toBe(elsewhere);
   elsewhere.remove();
 });

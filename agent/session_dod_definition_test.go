@@ -332,7 +332,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	}
 
 	tpath := filepath.Join(dir, sessionsSubdir, sessID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(tpath)
+	_, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -830,9 +830,18 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	}
 	c.Register(f)
 
-	// Keep enough room for the full base prompt while constraining the window
-	// enough that this request crosses the warning threshold.
-	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 25_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// Size the window from this test's own standing request instead of a
+	// hardcoded constant: a prompt rewrite changes the system prompt and tool
+	// schemas, and a fixed window silently lands on the wrong side of the 80%
+	// threshold. The window must stay above the standing request (or local
+	// admission blocks ProcessInput outright) yet below 1.25x it (or the request
+	// drops under the threshold); 1.1x sits inside that band with margin both
+	// ways.
+	profile := namedInstanceProfile("tiny", "openai", "m")
+	input := strings.Repeat("a", 40)
+	window := standingRequestTokens(t, dir, profile, input) * 11 / 10
+
+	sess, err := NewSession(c, WithContextWindow(profile, window), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -841,7 +850,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	muteNoteElicitation(sess)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
+	_, err = sess.ProcessInput(ctx, input, nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -1170,10 +1179,9 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 	if !strings.Contains(out, "hello after interrupt") {
 		t.Fatalf("turn 2 output: %q (want it to contain follow-up reply)", out)
 	}
-	// Turn 2 completes cleanly with output and no autonomy in flight, so it
-	// settles to AWAITING (attention-status-model v5), not idle.
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after turn 2: got %q want %q", got, SessionAwaiting)
+	// Turn 2 completes cleanly on a plain reply, so it rests idle.
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after turn 2: got %q want %q", got, SessionIdle)
 	}
 }
 

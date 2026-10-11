@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { Skeleton } from "./index";
-
-afterEach(cleanup);
 
 test("defaults to 3 placeholder lines", () => {
   render(<Skeleton />);

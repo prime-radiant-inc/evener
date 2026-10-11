@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { searchForWorkspaceRoot } from "vite";
-import { defineConfig, type Plugin } from "vitest/config";
+import { configDefaults, defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
@@ -30,10 +30,13 @@ const appwirePackageDir = path.join(__dirname, "..", "..", "..", "appwire-client
 // otherwise forbids for good reason. Restoring the file HERE, as part of the
 // build itself, means every invocation path (`make build-web`, `npm run
 // build`, or `vite build` run directly during frontend dev) leaves the
-// tracked file's content byte-identical afterward instead of missing.
+// tracked file's content byte-identical afterward instead of missing. Vite
+// also calls closeBundle when a dev or test server closes, so the plugin
+// applies to builds only: a vitest run must write nothing into the checkout.
 function restoreDistPlaceholder(): Plugin {
   return {
     name: "restore-dist-placeholder",
+    apply: "build",
     closeBundle() {
       const outDir = path.join(__dirname, "dist");
       fs.mkdirSync(outDir, { recursive: true });
@@ -49,9 +52,9 @@ export default defineConfig({
   // install (docs/developing-evener/conventions/agent-fleets.md), so that
   // default's dep-cache temp dir is shared by every lane and every concurrent
   // Vite process - which races (issue #1586). path.join(__dirname, ...) is
-  // lexical and never follows the symlink, and the gate flows run one Vite
-  // process at a time (guards sequentially; make test-web starts only
-  // vitest's).
+  // lexical and never follows the symlink. make test-web starts only vitest's
+  // Vite, and make test-web-browser, which runs guards side by side, gives
+  // each guard its own cache (browserguard.vite.config.mjs).
   cacheDir: path.join(__dirname, ".vite-cache"),
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,
@@ -110,12 +113,23 @@ export default defineConfig({
       // last entry: the package's testing/hubWireFixtures.ts loads
       // authwire/responses.json through a `?raw` import, and Vitest's jsdom
       // suites transform that import through this server, which denies any
-      // file outside the allow list.
+      // file outside the allow list. The daemon's recorded notification frames
+      // (agent/testdata/notificationwire), its system events and steers
+      // (agent/testdata/systemeventwire), its tool calls
+      // (agent/testdata/toolwire), its subagent calls
+      // (agent/testdata/subagentwire) and its automatic memory refreshes
+      // (agent/testdata/memorycontextwire) reach the same suites the same way,
+      // through the package's testing/*WireFixtures.ts loaders.
       allow: [
         searchForWorkspaceRoot(__dirname),
         fs.realpathSync(path.join(__dirname, "node_modules")),
         appwirePackageDir,
         path.join(__dirname, "..", "testdata"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "notificationwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "subagentwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "memorycontextwire"),
       ],
     },
     proxy: {
@@ -146,10 +160,29 @@ export default defineConfig({
       "**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",
     ],
+    // The top-level scripts/*.test.mjs files are node:test suites that `npm test`
+    // runs with `node --test`. Vitest finds no suite in them, but loading one
+    // still starts its node:test run, and the worker teardown that follows skips
+    // its after hooks, so a bare `vitest run` leaked the processes they start.
+    exclude: [...configDefaults.exclude, "scripts/*.test.mjs"],
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],
-    pool: "threads",
+    // vmThreads keeps each file's module registry and jsdom isolated in its own
+    // VM context but reuses the worker, so jsdom itself (~450ms to load) loads
+    // once per worker instead of once per file: the threads pool spent more CPU
+    // re-loading jsdom than running tests (113s -> 41s wall at 8 workers). The
+    // global is then the jsdom window itself, so a test cannot replace its
+    // non-configurable members (location) or assign getter-only ones
+    // (localStorage: use installLocalStorage), and `instanceof` fails for
+    // objects built in the runner's realm, such as vi.mock's wrapper errors.
+    pool: "vmThreads",
+    // VM contexts grow a worker's memory file after file, and the default
+    // recycle point is 1/maxWorkers of SYSTEM memory - effectively never on a
+    // big host, and the whole machine on a small one. Recycling at 512MB held
+    // the suite to ~3GB peak RSS at 4 workers (8.3GB unbounded; 2GB on the
+    // threads pool) with no measurable wall-time cost.
+    vmMemoryLimit: "512MB",
     // Frontend stores, pane registrations, and module mocks are deliberately
     // module-scoped. Keep each file's module registry and jsdom isolated: a
     // worker-count change otherwise changes file-to-worker assignment and can
@@ -163,8 +196,10 @@ export default defineConfig({
     // Vitest use on many-core hosts; the canonical npm test command instead
     // sizes itself from the host's spare capacity (scripts/lib/load-aware-workers.sh),
     // keeping four workers on an idle host so the root gate retains capacity
-    // for its Go streams.
-    maxWorkers: Math.max(1, Math.min(os.availableParallelism(), 12)),
+    // for its Go streams. Never fewer than two, whatever the entry point: with
+    // one worker vitest shares a single VM context across every file (see
+    // src/testSetup.ts), so a one-CPU container must still get two.
+    maxWorkers: Math.max(2, Math.min(os.availableParallelism(), 12)),
     setupFiles: ["./src/testSetup.ts"],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in
@@ -206,6 +241,11 @@ export default defineConfig({
         `${appwirePackageDir}/fixtures/**`,
         `${appwirePackageDir}/testing/**`,
         "src/testSetup.ts",
+        // Test rigging, and the one-line reload seam every test spies on so
+        // no test can execute it: both would only ever score 0%.
+        "src/storageTestUtils.ts",
+        "src/resizeObserverTestUtils.ts",
+        "src/shell/pageReload.ts",
         // A benchmark is not run by `vitest run`, so counting it only ever
         // reports 0% for code no test was ever meant to execute.
         "src/**/*.bench.ts",

@@ -111,16 +111,44 @@ test("merges built-ins ahead of the catalog, each carrying its own invocation an
   const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG);
   expect(items).toEqual([
     { key: "builtin:goal", invocation: "/goal", label: "goal", hint: "sets the session goal", kind: "builtin" },
-    { key: "plugin::review", invocation: "/review", label: "review", hint: "review the diff", kind: "plugin" },
-    { key: "plugin::release", invocation: "/release", label: "release", hint: "cut a release", kind: "plugin" },
-    { key: "plugin::standup", invocation: "/standup", label: "standup", hint: "post standup", kind: "plugin" },
+    {
+      key: "plugin::review",
+      invocation: "/review",
+      label: "review",
+      hint: "review the diff",
+      kind: "plugin",
+      canonicalName: "review",
+    },
+    {
+      key: "plugin::release",
+      invocation: "/release",
+      label: "release",
+      hint: "cut a release",
+      kind: "plugin",
+      canonicalName: "release",
+    },
+    {
+      key: "plugin::standup",
+      invocation: "/standup",
+      label: "standup",
+      hint: "post standup",
+      kind: "plugin",
+      canonicalName: "standup",
+    },
   ]);
 });
 
 test("a qualified plugin command's invocation is /pluginName:name, matching slashCommandInvocation", () => {
   const items = mergeSlashCommands([], [{ name: "review", pluginName: "p", source: "plugin" }]);
   expect(items).toEqual([
-    { key: "plugin:p:review", invocation: "/p:review", label: "review", hint: "plugin: p", kind: "plugin" },
+    {
+      key: "plugin:p:review",
+      invocation: "/p:review",
+      label: "review",
+      hint: "plugin: p",
+      kind: "plugin",
+      canonicalName: "p:review",
+    },
   ]);
 });
 
@@ -168,7 +196,14 @@ test("skills merge after commands with canonical labels, invocations, and descri
   );
   expect(items).toEqual([
     { key: "builtin:goal", invocation: "/goal", label: "goal", hint: "sets the session goal", kind: "builtin" },
-    { key: "plugin::review", invocation: "/review", label: "review", hint: "review the diff", kind: "plugin" },
+    {
+      key: "plugin::review",
+      invocation: "/review",
+      label: "review",
+      hint: "review the diff",
+      kind: "plugin",
+      canonicalName: "review",
+    },
     {
       key: "skill:plugin:review",
       invocation: "/plugin:review",

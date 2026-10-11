@@ -15,6 +15,7 @@ export function seedCurrentDelegate(
   thread.ref = ref;
   thread.delegates = [
     {
+      runGeneration: 1,
       delegateId,
       ownerSessionId: "owner",
       rootSessionId: "owner",

@@ -9,6 +9,7 @@ import (
 // Absent means "inherit the default grant"; an explicit 0 means a leaf. The
 // two must stay distinguishable through decoding.
 func TestDecodeDelegateArgs_AllowanceAbsentIsDefaultAndZeroIsLeaf(t *testing.T) {
+	t.Parallel()
 	absent, err := decodeDelegateArgs(map[string]any{"prompt": "p"})
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +32,7 @@ func TestDecodeDelegateArgs_AllowanceAbsentIsDefaultAndZeroIsLeaf(t *testing.T) 
 }
 
 func TestDefaultDelegateGrant(t *testing.T) {
+	t.Parallel()
 	for own, want := range map[int]int{0: 0, 1: 0, 2: 1, 4: 3} {
 		if got := defaultDelegateGrant(own); got != want {
 			t.Errorf("defaultDelegateGrant(%d) = %d, want %d", own, got, want)
@@ -41,6 +43,7 @@ func TestDefaultDelegateGrant(t *testing.T) {
 // A delegate created without delegation_allowance inherits one level below
 // its granter, so it can delegate in turn; 0 has to be asked for.
 func TestCreateDelegate_DefaultGrantIsOneBelowTheGranter(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		rootAllowance int
@@ -73,8 +76,13 @@ func TestCreateDelegate_DefaultGrantIsOneBelowTheGranter(t *testing.T) {
 				t.Fatal("no live child session")
 			}
 			names := live.binding.runtime.reg.RegisteredNames()
-			if names["delegate"] != tc.wantDelegate || names["job_watch"] != tc.wantDelegate {
-				t.Errorf("child delegate=%v job_watch=%v, want both %v", names["delegate"], names["job_watch"], tc.wantDelegate)
+			if names["delegate"] != tc.wantDelegate {
+				t.Errorf("child delegate=%v, want %v", names["delegate"], tc.wantDelegate)
+			}
+			// job_watch is not delegation: a leaf keeps it so it can wait on
+			// its own promoted background jobs (#2645).
+			if !names["job_watch"] {
+				t.Error("child has no job_watch: a session that can run jobs watches its own jobs at any depth")
 			}
 		})
 	}

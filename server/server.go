@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
@@ -102,6 +103,7 @@ type JobStatusInfo struct {
 }
 
 type DelegateStatusInfo struct {
+	RunGeneration       uint64                       `json:"run_generation"`
 	DelegateID          string                       `json:"delegate_id"`
 	OwnerSessionID      string                       `json:"owner_session_id"`
 	RootSessionID       string                       `json:"root_session_id"`
@@ -114,6 +116,7 @@ type DelegateStatusInfo struct {
 	Status              string                       `json:"status"`
 	Outcome             string                       `json:"outcome,omitempty"`
 	Reason              string                       `json:"reason,omitempty"`
+	Error               string                       `json:"error,omitempty"`
 	Terminal            bool                         `json:"terminal,omitempty"`
 	Resumable           bool                         `json:"resumable"`
 	NeedsAttention      bool                         `json:"needs_attention"`
@@ -169,17 +172,18 @@ type HookEventStatus struct {
 
 // DetailedStatus captures the full session configuration for AppWire diagnostics.
 type DetailedStatus struct {
-	Tools            []ToolInfo              `json:"tools,omitempty"`
-	MCP              []MCPServerInfo         `json:"mcp,omitempty"`
-	Skills           []SkillInfo             `json:"skills,omitempty"`
-	SkillDiagnostics []SkillDiagnosticInfo   `json:"skill_diagnostics,omitempty"`
-	Plugins          []PluginStatusInfo      `json:"plugins,omitempty"`
-	HookEvents       []HookEventStatus       `json:"hook_events,omitempty"`
-	Jobs             []JobStatusInfo         `json:"jobs,omitempty"`
-	Delegates        []DelegateStatusInfo    `json:"delegates,omitempty"`
-	Watches          []agent.WatchStatusInfo `json:"watches,omitempty"`
-	TurnSlots        *TurnSlotStatus         `json:"turn_slots,omitempty"`
-	Agents           []string                `json:"agents,omitempty"`
+	Commands         []appwire.CommandDescriptor `json:"commands,omitzero"`
+	Tools            []ToolInfo                  `json:"tools,omitempty"`
+	MCP              []MCPServerInfo             `json:"mcp,omitempty"`
+	Skills           []SkillInfo                 `json:"skills,omitempty"`
+	SkillDiagnostics []SkillDiagnosticInfo       `json:"skill_diagnostics,omitempty"`
+	Plugins          []PluginStatusInfo          `json:"plugins,omitempty"`
+	HookEvents       []HookEventStatus           `json:"hook_events,omitempty"`
+	Jobs             []JobStatusInfo             `json:"jobs,omitempty"`
+	Delegates        []DelegateStatusInfo        `json:"delegates,omitempty"`
+	Watches          []agent.WatchStatusInfo     `json:"watches,omitempty"`
+	TurnSlots        *TurnSlotStatus             `json:"turn_slots,omitempty"`
+	Agents           []string                    `json:"agents,omitempty"`
 }
 
 // SkillDiagnosticInfo is one Stage 1 skill-discovery diagnostic (collision,
@@ -312,13 +316,11 @@ type ServerConfig struct {
 
 // appDescendantProjection is the in-memory AppWire view of one in-process
 // descendant. Descendants share the root daemon's transport, but each keeps an
-// independent projector and turn snapshot so their notification streams and
-// thread/read cuts remain isolated.
+// independent projector (and history, in appHistories) so their notification
+// streams and thread/read cuts remain isolated.
 type appDescendantProjection struct {
-	projector    *appprojector.AppEventProjector
-	turns        *appTurnSnapshot
-	thread       appwire.Thread
-	activeTurnID string
+	projector *appprojector.AppEventProjector
+	thread    appwire.Thread
 }
 
 type taskPublicationCursor struct {
@@ -343,19 +345,38 @@ type Server struct {
 	// revision per owner for the current root identity. It is internal routing
 	// state and resets with that identity.
 	appTaskPublications map[string]taskPublicationCursor
-	// appTurns is the daemon's one materialized turn authority. Every turn read
-	// -- thread/read, the latest window, an older page -- clones or windows this
-	// and nothing else.
-	appTurns        *appTurnSnapshot
+	// appBootGeneration is the served identity's boot generation, stamped on
+	// every history message (appwire.CompareBootGeneration).
+	appBootGeneration string
+	// appHistories holds the history of every thread served: the root's and
+	// each descendant's, projected from their transcripts.
+	appHistories *threadHistories
+	// appDescendantHistorySource is the descendants' recorded-entry hook's
+	// lock-free view of the served root (see descendantHistorySource).
+	appDescendantHistorySource atomic.Pointer[descendantHistorySource]
+	// appActiveTurnID is the running execution SetProcessingTurn published.
 	appActiveTurnID string
-	// appPendingStableTurnID publishes runnable identity while the ordered
-	// event consumer drains the previous turn. It is not an admission lock.
+	// appPendingStableTurnID is the execution SetProcessingTurn published
+	// until its EXECUTION_STARTED is projected, while the ordered event
+	// consumer may still drain the input before it. It is not an admission
+	// lock.
 	appPendingStableTurnID string
 	// appDeferredTerminalNotifications retains only the status/closed frames
-	// from a terminal event that raced a durable carrier. The projector has
-	// already applied the event; these frames are published if the carrier is
-	// abandoned, and discarded when its stable carrier arrives.
+	// from a terminal event that raced a published execution. They are
+	// published if the execution is abandoned, and discarded when its
+	// EXECUTION_STARTED arrives.
 	appDeferredTerminalNotifications []pendingAppNotification
+	// appHeldSettledEffect is the status effect of a resting state the session
+	// settled outside any turn (EventStatusSettled) while an input was being
+	// taken. It is applied when processing ends, unless a turn is published
+	// first (SetProcessingTurn; the turn's own end restates the state), the
+	// input ends on a SESSION_END, or the root is replaced.
+	appHeldSettledEffect func(*Server)
+	// appTurnEndStated records that the published turn's interrupted
+	// SESSION_END already stated the resting state while processing stays set
+	// for the turn to unwind, so the end of processing publishes that state
+	// rather than its idle placeholder.
+	appTurnEndStated bool
 	// appEnvelope is the daemon's one materialized thread envelope: every value
 	// a thread snapshot reports about the live session other than its identity
 	// and its turns. Reads copy it; nothing on a read path reaches the session.
@@ -364,31 +385,19 @@ type Server struct {
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
 	appEnvelopeSource ThreadEnvelopeSource
+	// appActivity is the root tree's pulse meter (S5). The projection commits
+	// feed it and the thread list reads it, all under mu; see activityMeter.
+	appActivity       activityMeter
 	appReservedTurnID string
-	// appProcessingReservedTurnID tracks a generic projector reservation that
-	// was superseded by a durable turn identity before its carrier arrived.
-	appProcessingReservedTurnID string
-	beforeAppProjectionCommit   func()
-	// appLastStampedFailedToolCalls is the failure count most recently
-	// stamped onto an item/completed notification (kata 895d) — nil means
-	// nothing has been stamped yet for the current identity. It exists so
-	// item/completed only carries the figure on the item whose completion
-	// actually moved it, not on every tool call: the running count already
-	// rides thread/status/changed unconditionally (every status change is a
-	// turn boundary, so it can only have moved there), but that leaves a live
-	// watcher unable to see a failure land partway through a long turn.
-	// Reset to nil on SetAppIdentity so a new session's first observation is
-	// never suppressed as "unchanged" by whatever the previous session on
-	// this server left behind.
-	appLastStampedFailedToolCalls *int
+	// appPushedFailedToolCalls is the failure count the root's last
+	// thread/status/changed carried, nil when none carried one: a running
+	// execution pushes the count when the envelope's moves past it.
+	appPushedFailedToolCalls  *int
+	beforeAppProjectionCommit func()
 	// appDescendantTranscriptPathFunc resolves a descendant thread ID to its
-	// backing transcript file path, when the caller has one. RecordDescendantAppEvent
-	// consults it on a descendant's first observation to seed that descendant's
-	// turn snapshot from persisted history, mirroring PrepareAppIdentity's seed
-	// of the ROOT thread — without it, a restored descendant's thread/read would
-	// only ever show events recorded after the restore point (ledger #110/#111).
-	// Nil is a legitimate answer: a fresh (never-persisted) descendant has
-	// nothing to seed from.
+	// backing transcript file path, when the caller has one: the descendant's
+	// history is projected from it (ledger #110/#111). Nil, or "", gives the
+	// descendant no history.
 	appDescendantTranscriptPathFunc func(threadID string) string
 	// appDescendantLiveWatchesFunc resolves the row IDs of one thread LIST page
 	// to the live watch rows that belong on each of them, when the daemon can
@@ -398,13 +407,16 @@ type Server struct {
 	// on no row. An ID the answer omits keeps its cached projection, which is the
 	// historical behavior when no watch source is wired.
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
-	retrySafeTurns               RetrySafeTurnFunctions
-	cancelFunc                   context.CancelFunc
-	steerFunc                    func(string) error
-	steerWithImagesFunc          func(string, []ImageAttachment) error
-	queueFunc                    func(string) error
-	queueWithImagesFunc          func(string, []ImageAttachment) error
-	goalFunc                     func(objective string) (bool, error)
+	// appSubagentTallyFunc reads the root session's whole-tree subagent tally
+	// for the thread list's root row (S3); nil disables it.
+	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
+	retrySafeTurns       RetrySafeTurnFunctions
+	cancelFunc           context.CancelFunc
+	steerFunc            func(string) error
+	steerWithImagesFunc  func(string, []ImageAttachment) error
+	queueFunc            func(string) error
+	queueWithImagesFunc  func(string, []ImageAttachment) error
+	goalFunc             func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
 	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)
@@ -413,27 +425,29 @@ type Server struct {
 	// outer clientMutationId travels with it so the session can journal the
 	// outer mutation (success replays after the entry is gone; a reused ID
 	// with a different entry id conflicts without mutating).
-	urlsRemoveFunc      func(outerID, id string) (bool, error)
-	drainSteerFunc      func() error
-	drainSteerInputFunc func(string, []ImageAttachment) error
-	promoteSteerFunc    func(int, string) error
-	cancelQueuedFunc    func(int, string) (string, int, error)
-	compactFunc         func(context.Context) error
-	clearFunc           func(context.Context, appwire.ThreadClearParams) error
-	clearJournalPath    string
-	clearRecords        map[string]threadClearRecord
-	clearJournalErr     error
-	modelFunc           func(string) error
-	visionModelFunc     func(string) error
-	nameFunc            func(string) error
-	reasoningEffortFunc func(string) error
-	listModelsFunc      func(context.Context) ([]appwire.ModelDescriptor, error)
-	tasksFn             func() any
-	jobsFn              func(appwire.JobsListParams) (any, error)
-	jobOutputFn         func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	shutdownFunc        func()
-	daemonStatusFunc    func() appwire.DaemonLifecycle
-	daemonRetireFunc    func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
+	urlsRemoveFunc           func(outerID, id string) (bool, error)
+	drainSteerFunc           func() error
+	drainSteerInputFunc      func(string, []ImageAttachment) error
+	cancelQueuedFunc         func(int, string) (string, int, error)
+	compactFunc              func(context.Context) error
+	clearFunc                func(context.Context, appwire.ThreadClearParams) error
+	clearJournalPath         string
+	clearRecords             map[string]threadClearRecord
+	clearJournalErr          error
+	modelFunc                func(string) error
+	visionModelFunc          func(string) error
+	nameFunc                 func(string) error
+	reasoningEffortFunc      func(string) error
+	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
+	appSessionActivity       sessionActivityHooks
+	tasksFn                  func() []appwire.Task
+	jobsFn                   func(appwire.JobsListParams) (any, error)
+	jobOutputFn              func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)
+	jobGetFn                 func(jobID string) (data appwire.JobActivityJob, found bool, err error)
+	shutdownFunc             func()
+	daemonStatusFunc         func() appwire.DaemonLifecycle
+	daemonRetireFunc         func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
+	daemonIdleTimeoutSetFunc func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error)
 
 	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
 	// projector calls the lookup from inside Project, which RecordAppEvent
@@ -445,7 +459,10 @@ type Server struct {
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
 	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
-	processing                   bool
+	// delegateStopFunc ends one delegate's current run at the user's request
+	// (S6). nil when no session is attached.
+	delegateStopFunc func(delegateID string) (appwire.DelegateStopOutcome, error)
+	processing       bool
 	// appMutationGate serializes retry-safe turn mutations with thread/clear.
 	// A clear must not rotate the live instance while an old-generation turn
 	// callback is still admitted, and a delayed turn must not enter after clear
@@ -493,17 +510,8 @@ func NewServer(cfg ServerConfig) *Server {
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
 			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
-				if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
-					return "", false
-				}
-				var params appwire.ThreadReadParams
-				if msg.Request.Method == appwire.MethodThreadUnsubscribe {
-					var unsubscribe appwire.ThreadUnsubscribeParams
-					if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
-						return "", false
-					}
-					params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
-				} else if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
+				params, ok := decodeSubscriptionAdmissionParams(msg)
+				if !ok {
 					return "", false
 				}
 				threadID, target := runtime.appReadTarget(params)
@@ -531,7 +539,7 @@ func NewServer(cfg ServerConfig) *Server {
 		// deltas, never what the thread contains.
 		appNotifier:         appserver.NewNotifier(replaySize),
 		appSourceID:         "local",
-		appTurns:            &appTurnSnapshot{},
+		appHistories:        newAppHistories(),
 		appDescendants:      make(map[string]*appDescendantProjection),
 		appTaskPublications: make(map[string]taskPublicationCursor),
 		clearJournalPath:    threadClearJournalPath(cfg.StateDir),
@@ -548,6 +556,32 @@ func NewServer(cfg ServerConfig) *Server {
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
 	return s
+}
+
+// decodeSubscriptionAdmissionParams decodes msg's thread/read or
+// thread/unsubscribe request params into a ThreadReadParams, the wire decode
+// step of SubscriptionAdmissionResolver above: ok is false for a message the
+// resolver does not apply to (not a request, or a method other than the two
+// it admits) or params it cannot decode. Pulled out as its own function so
+// the decode of client-supplied JSON, not the admission semantics that need a
+// live Server to resolve against, is what a fuzz target exercises
+// (FuzzDecodeSubscriptionAdmissionParams).
+func decodeSubscriptionAdmissionParams(msg appwire.Message) (params appwire.ThreadReadParams, ok bool) {
+	if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
+		return appwire.ThreadReadParams{}, false
+	}
+	if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+		var unsubscribe appwire.ThreadUnsubscribeParams
+		if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
+			return appwire.ThreadReadParams{}, false
+		}
+		params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
+		return params, true
+	}
+	if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
+		return appwire.ThreadReadParams{}, false
+	}
+	return params, true
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -637,6 +671,14 @@ func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, ap
 	s.mu.Unlock()
 }
 
+// SetDelegateStopFunc sets the callback evener/delegate/stop hands a delegate
+// id to (S6). Wiring it advertises the stopSubagent capability.
+func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.DelegateStopOutcome, error)) {
+	s.mu.Lock()
+	s.delegateStopFunc = fn
+	s.mu.Unlock()
+}
+
 // SetSteerFunc sets the function called by turn/steer. It is invoked
 // regardless of whether the session is currently processing.
 func (s *Server) SetSteerFunc(fn func(string) error) {
@@ -722,26 +764,13 @@ func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment)
 	s.mu.Unlock()
 }
 
-// SetPromoteQueuedAsSteerFunc sets the function called by appwire
-// turn/promoteQueuedAsSteer (issue #22). The callback should remove the
-// queued message at the given FIFO index and inject it as a user-sourced
-// STEERING message into the in-flight turn, leaving the rest of the queue
-// untouched. A non-empty expectedID must match the queue-entry id minted at
-// enqueue time so a queue that shifted under the client's snapshot is
-// rejected rather than promoting the wrong message (review F1).
-func (s *Server) SetPromoteQueuedAsSteerFunc(fn func(int, string) error) {
-	s.mu.Lock()
-	s.promoteSteerFunc = fn
-	s.mu.Unlock()
-}
-
 // SetCancelQueuedFunc sets the function called by appwire
 // turn/cancelQueued (issue #23). The callback should remove the queued
 // message at the given FIFO index so it is never consumed, returning the
 // removed entry's full text and image count. A non-empty expectedID must
 // match the queue-entry id minted at enqueue time so a queue that shifted
 // under the client's snapshot is rejected rather than removing the wrong
-// message (review F1). Unlike promote, no active turn is required.
+// message (review F1). Like promote, no active turn is required.
 func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {
 	s.mu.Lock()
 	s.cancelQueuedFunc = fn
@@ -832,9 +861,9 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDesc
 	s.mu.Unlock()
 }
 
-// SetTasksFunc sets the function called by evener/tasks/list. The function should
-// return a JSON-serializable slice (typically []task.Task).
-func (s *Server) SetTasksFunc(fn func() any) {
+// SetTasksFunc sets the task-list reader called by evener/tasks/list. A nil
+// slice means no data; a non-nil slice is authoritative, including an empty one.
+func (s *Server) SetTasksFunc(fn func() []appwire.Task) {
 	s.mu.Lock()
 	s.tasksFn = fn
 	s.mu.Unlock()
@@ -854,77 +883,73 @@ func (s *Server) SetJobsFunc(fn func(appwire.JobsListParams) (any, error)) {
 // SetJobOutputFunc sets the function backing evener/jobs/output. found=false
 // maps to an invalid-params wire error (the caller guessed a job id).
 // beforeBytes > 0 pages backwards through the job's output log.
-func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)) {
+func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes *int64, maxBytes int64) (data appwire.JobOutputPage, found bool, err error)) {
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()
 }
 
-// SetProcessing marks whether the session is currently processing input. A
-// generic processing transition reserves a projector turn ID so status and
-// ActiveTurnID change atomically. Durable client-mutation turns instead use
-// SetProcessingTurn because their stable identity is already authoritative.
+// SetJobGetFunc sets the function backing evener/jobs/get. found=false maps to
+// an invalid-params wire error (the caller guessed a job id).
+func (s *Server) SetJobGetFunc(fn func(jobID string) (data appwire.JobActivityJob, found bool, err error)) {
+	s.mu.Lock()
+	s.jobGetFn = fn
+	s.mu.Unlock()
+}
+
+// SetProcessing marks whether the session is currently processing input. It
+// publishes nothing when processing starts: the running execution's TurnID is
+// published by SetProcessingTurn, which the session calls before recording the
+// execution's first entry. When processing ends, finishProcessing publishes the
+// state the session's events stored (finishProcessing).
 func (s *Server) SetProcessing(processing bool) {
 	if !processing {
 		s.finishProcessing()
 		return
 	}
 	s.mu.Lock()
-	s.setProcessingLocked(processing)
+	s.processing = true
 	s.mu.Unlock()
 }
 
-// SetProcessingTurn atomically publishes a durable turn's stable identity as
-// the active AppWire turn until its ordered stable carrier is projected.
+// SetProcessingTurn publishes turnID as the running execution: the thread is
+// active with activeTurnId turnID, in one projection commit. serve installs it
+// as the session's Session.SetExecutionStartedFunc, which runs before the
+// execution's first entry is recorded, so before any history/updated for it.
 func (s *Server) SetProcessingTurn(turnID string) {
-	// Serialize admission with deferred terminal publication so their
-	// notification order and authoritative processing identity agree.
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
 		s.processing = true
-		s.ensureAppProjectorLocked("")
-		s.appProcessingReservedTurnID = s.appProjector.ReservedTurnID()
-		// The projector reservation is consumed by the ordered event stream. The
-		// callback can run ahead of that consumer, so mutating the projector here
-		// would let queued events from the previous turn use the new identity.
 		s.appActiveTurnID = turnID
+		// A new turn's end has not been stated yet, whatever the turn before
+		// it stated.
+		s.appTurnEndStated = false
+		// A rest held while the input was being taken settled before this
+		// turn started (Session.restMu), and the turn's end restates it.
+		s.appHeldSettledEffect = nil
+		// Until the execution's own EXECUTION_STARTED is projected, a
+		// terminal status still queued from the input before it must not be
+		// published over this one (RecordAppEvent defers it).
 		s.appPendingStableTurnID = turnID
 		s.appReservedTurnID = ""
+		threadID, ref := s.appRootIdentityLocked()
 		s.mu.Unlock()
-		return nil
+		return s.recordAppNotifications(threadID, []pendingAppNotification{{
+			threadID: threadID,
+			ref:      ref,
+			method:   appwire.NotifyThreadStatusChanged,
+			params:   appwire.ThreadStatusChangedParams{ThreadID: threadID, Ref: ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+		}})
 	})
 }
 
-func (s *Server) setProcessingLocked(processing bool) {
-	s.processing = processing
-	if !processing {
-		// The input runner has returned, including failed durable claims that
-		// emit no carrier. Buffered events retain their own ordered identity;
-		// keeping this reservation would advertise work that is no longer running.
-		if s.appPendingStableTurnID != "" {
-			if s.appActiveTurnID == s.appPendingStableTurnID {
-				s.appActiveTurnID = ""
-			}
-			s.appPendingStableTurnID = ""
-		}
-		if s.appProjector != nil && s.appProcessingReservedTurnID != "" {
-			s.appProjector.ReleaseReservedTurnID(s.appProcessingReservedTurnID)
-			s.appProcessingReservedTurnID = ""
-		}
-		if s.appProjector != nil && s.appReservedTurnID == "" {
-			reservedTurnID := s.appProjector.ReservedTurnID()
-			if reservedTurnID != "" && s.appActiveTurnID == reservedTurnID {
-				s.appProjector.ReleaseReservedTurnID(reservedTurnID)
-				s.appActiveTurnID = ""
-			}
-		}
-		return
-	}
-	if strings.TrimSpace(s.appActiveTurnID) == "" {
-		s.ensureAppProjectorLocked("")
-		s.appActiveTurnID = s.appProjector.ReserveTurnID()
-	}
-	s.appReservedTurnID = ""
+// endProcessingLocked ends the running input: nothing runs, so no turn is
+// active and no execution is pending its start. Callers hold s.mu.
+func (s *Server) endProcessingLocked() {
+	s.processing = false
+	s.appActiveTurnID = ""
+	s.appPendingStableTurnID = ""
+	s.appTurnEndStated = false
 }
 
 // InputCh returns the channel that receives user input messages.

@@ -99,7 +99,7 @@ func FuzzRPCLifecyclePass4(f *testing.F) {
 		_, _ = fuzzLifecycleDispatch(ctx, t, server, appwire.MethodThreadResume,
 			appwire.ThreadResumeParams{Ref: "remote:thread"})
 		_, _ = fuzzLifecycleDispatch(ctx, t, server, appwire.MethodThreadFork,
-			appwire.ThreadForkParams{Ref: "remote:thread", SourceTurnID: "turn_1", EditedInput: "edit"})
+			appwire.ThreadForkParams{Ref: "remote:thread", SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "edit"})
 		_, _ = fuzzLifecycleDispatch(ctx, t, server, appwire.MethodEvenerThreadTranscriptsList,
 			appwire.ThreadTranscriptListParams{Ref: "remote:thread"})
 		_, _ = hubThreadList(ctx, hubcore.WebConfig{}, registry, appwire.ThreadListParams{IncludeSubagents: true})

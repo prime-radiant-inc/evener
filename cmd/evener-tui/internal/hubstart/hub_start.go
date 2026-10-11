@@ -68,7 +68,11 @@ type TUIStartupOptions struct {
 	Debug        bool
 }
 
-func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStartupOptions, error) {
+// ParseTUIStartupOptions parses the evener-tui flags. output receives the
+// FlagSet's help and parse diagnostics so an embedding caller can route them
+// to its own stderr instead of the process's; a nil output falls back to
+// os.Stderr, matching the flag package's own default.
+func ParseTUIStartupOptions(args []string, getenv func(string) string, output io.Writer) (TUIStartupOptions, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
@@ -81,7 +85,7 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 		AutoStartHub: true,
 	}
 	fs := flag.NewFlagSet("evener-tui", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(output)
 	fs.StringVar(&opts.HubAddr, "hub-addr", opts.HubAddr, "evener hub address")
 	fs.StringVar(&opts.HubBin, "hub-bin", opts.HubBin, "path to evener binary (for the hub subcommand)")
 	noAutoStartHub := false
@@ -316,12 +320,19 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	client, err := waitForHubHealth(ctx, addr, httpClient, initialHealthTimeout, cfg.DialHub)
 	if err == nil {
 		if err := cfg.CheckHubEnvironment(ctx, addr, httpClient, cfg.StateDir); err != nil {
+			_ = client.Close()
 			return fail(err)
 		}
 		return HubRuntime{Address: addr, Client: client}, nil
 	}
 	if isTerminalStartupError(err) {
 		return fail(err)
+	}
+	// A canceled parent context is not "hub unavailable": the caller (the TUI
+	// on exit) has given up on this connection, so never fall through to
+	// autostart and launch a hub nobody will use.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(ctxErr)
 	}
 	if !cfg.AutoStart {
 		return fail(StartupError{Kind: StartupErrorHubUnavailable, Addr: addr.BaseURL, Err: err})
@@ -338,6 +349,12 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	bin, err := binresolve.Resolve("evener", cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
 	if err != nil {
 		return fail(StartupError{Kind: StartupErrorMissingHubBinary, Addr: addr.BaseURL, Err: err})
+	}
+	// Resolving walks the filesystem; the caller may have quit while it ran.
+	// Re-check before handing off to the detached launcher so a cancel during
+	// the resolve does not still spawn a hub nobody will use.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(ctxErr)
 	}
 	startLocalHubFn := cfg.StartLocalHub
 	if startLocalHubFn == nil {
@@ -357,9 +374,13 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 		if isTerminalStartupError(err) {
 			return fail(err)
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fail(ctxErr)
+		}
 		return fail(StartupError{Kind: StartupErrorUnhealthyHub, Addr: addr.BaseURL, Err: err})
 	}
 	if err := cfg.CheckHubEnvironment(ctx, addr, httpClient, cfg.StateDir); err != nil {
+		_ = client.Close()
 		return fail(err)
 	}
 	return HubRuntime{Address: addr, Client: client}, nil

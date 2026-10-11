@@ -13,6 +13,7 @@ import (
 // when unrepresentableContentKinds returns nil for a protocol with no
 // restricted kinds (session_set_model.go:46-47).
 func TestUnrepresentableHistoryKinds_UnknownProtocol(t *testing.T) {
+	t.Parallel()
 	history := newSetModelHistoryWithContent(llm.ContentDocument)
 	got := unrepresentableHistoryKinds(history, "unknown-protocol")
 	if got != nil {
@@ -23,6 +24,7 @@ func TestUnrepresentableHistoryKinds_UnknownProtocol(t *testing.T) {
 // TestValidateModelSwitchMembership_NilClient covers the nil-client/profile
 // guard.
 func TestValidateModelSwitchMembership_NilClient(t *testing.T) {
+	t.Parallel()
 	if err := validateModelSwitchMembership(nil, nil, llm.ModelListing{}); err != nil {
 		t.Fatalf("expected nil for nil client, got %v", err)
 	}
@@ -31,6 +33,7 @@ func TestValidateModelSwitchMembership_NilClient(t *testing.T) {
 // TestFormatModelAlternatives_Duplicate covers the dedupe branch: a listing
 // that names the same id twice reports it once.
 func TestFormatModelAlternatives_Duplicate(t *testing.T) {
+	t.Parallel()
 	models := []registry.Resolved{
 		{ModelID: "model-a"},
 		{ModelID: "model-a"}, // duplicate
@@ -48,6 +51,7 @@ func TestFormatModelAlternatives_Duplicate(t *testing.T) {
 // TestFormatModelAlternatives_MoreThanMax covers the truncation branch when
 // there are more than maxModelAlternatives rows.
 func TestFormatModelAlternatives_MoreThanMax(t *testing.T) {
+	t.Parallel()
 	// Generate more than maxModelAlternatives unique model IDs.
 	models := make([]registry.Resolved, maxModelAlternatives+5)
 	for i := range models {
@@ -61,6 +65,7 @@ func TestFormatModelAlternatives_MoreThanMax(t *testing.T) {
 
 // TestFormatModelAlternatives_Empty covers the empty case.
 func TestFormatModelAlternatives_Empty(t *testing.T) {
+	t.Parallel()
 	got := formatModelAlternatives(nil)
 	if got != "none" {
 		t.Fatalf("expected 'none', got %q", got)
@@ -70,6 +75,7 @@ func TestFormatModelAlternatives_Empty(t *testing.T) {
 // TestValidateModelSwitchMembership_ProfileNil covers the case where
 // only profile is nil.
 func TestValidateModelSwitchMembership_ProfileNil(t *testing.T) {
+	t.Parallel()
 	client := &llm.Client{}
 	if err := validateModelSwitchMembership(client, nil, llm.ModelListing{}); err != nil {
 		t.Fatalf("expected nil for nil profile, got %v", err)

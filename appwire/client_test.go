@@ -120,7 +120,7 @@ func TestClientNavigationReadRoundTrip(t *testing.T) {
 			Section:               "live",
 			Offset:                &zero,
 			Limit:                 &zero,
-			RepresentationVersion: 2,
+			RepresentationVersion: 3,
 			Base:                  &NavigationReadBase{GenerationID: "generation-a", Revision: 4, ETag: "etag-a"},
 		})
 		done <- struct {
@@ -142,11 +142,11 @@ func TestClientNavigationReadRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(written.Request.Params, &params); err != nil {
 		t.Fatalf("params decode: %v", err)
 	}
-	if params.Resource != "section" || params.Section != "live" || params.RepresentationVersion != 2 {
-		t.Fatalf("params = %+v, want section/live with representationVersion 2", params)
+	if params.Resource != "section" || params.Section != "live" || params.RepresentationVersion != 3 {
+		t.Fatalf("params = %+v, want section/live with representationVersion 3", params)
 	}
 	if params.Base == nil || params.Base.GenerationID != "generation-a" || params.Base.Revision != 4 || params.Base.ETag != "etag-a" {
-		t.Fatalf("params = %+v, want v2 base", params)
+		t.Fatalf("params = %+v, want v3 base", params)
 	}
 	if params.Offset == nil {
 		t.Fatal("decoded offset is nil; explicit zero was not preserved")
@@ -373,7 +373,7 @@ func TestClientBuffersBurstLargerThanLegacyCapWithoutOverflow(t *testing.T) {
 	}
 	// The whole burst arrives before anyone consumes Notifications().
 	for i := range burst {
-		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
+		transport.reads <- NotificationMessage(NotifyOverlayDelta, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_burst", Source: "evener"}}})
 
@@ -402,41 +402,31 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	}
 	client := NewClient(transport)
 
-	startCtx := t.Context()
-	client.Start(startCtx)
+	client.Start(t.Context())
 
-	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 250*time.Millisecond)
-	defer cancelRequest()
+	// No deadline on the request or on the waits below: the overflow is what
+	// must end the request, and a wall-clock bound races the read loop's
+	// drain of the burst, which a loaded -race runner can starve past it.
 	done := make(chan struct {
 		resp ThreadListResponse
 		err  error
 	}, 1)
 	go func() {
-		resp, err := client.ThreadList(requestCtx, ThreadListParams{Limit: 1})
+		resp, err := client.ThreadList(t.Context(), ThreadListParams{Limit: 1})
 		done <- struct {
 			resp ThreadListResponse
 			err  error
 		}{resp: resp, err: err}
 	}()
 
-	var written Message
-	select {
-	case written = <-transport.writes:
-	case <-time.After(time.Second):
-		t.Fatal("request was not written")
-	}
+	written := <-transport.writes
 	for i := 0; i < cap(client.notifications)+1; i++ {
 		transport.reads <- NotificationMessage(NotifyThreadStatusChanged, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_backpressure", Source: "evener"}}})
 
-	select {
-	case result := <-done:
-		if result.err == nil || !strings.Contains(result.err.Error(), "notification buffer overflow") {
-			t.Fatalf("ThreadList err=%v resp=%+v, want notification overflow", result.err, result.resp)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("pending request was not failed after notification buffer overflow")
+	if result := <-done; result.err == nil || !strings.Contains(result.err.Error(), "notification buffer overflow") {
+		t.Fatalf("ThreadList err=%v resp=%+v, want notification overflow", result.err, result.resp)
 	}
 }
 
@@ -462,7 +452,7 @@ func TestClientOrderedFrameHandlerOwnsNotificationsWithoutBufferOverflow(t *test
 	}()
 	request := <-transport.writes
 	for i := range burst {
-		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
+		transport.reads <- NotificationMessage(NotifyOverlayDelta, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(request.Request.ID, ThreadListResponse{})
 
@@ -480,21 +470,67 @@ func TestClientOrderedFrameHandlerOwnsNotificationsWithoutBufferOverflow(t *test
 func TestClientFailPendingPreservesRequestID(t *testing.T) {
 	client := NewClient(newMemoryTransport())
 	id := NewIntID(42)
-	ch := make(chan Message, 1)
+	ch := make(chan pendingResult, 1)
 	client.pending[id.String()] = pendingRequest{id: id, ch: ch}
 
 	client.failPending(context.Canceled)
 
 	select {
-	case msg := <-ch:
+	case res := <-ch:
+		msg := res.msg
 		if msg.Error == nil {
 			t.Fatalf("message=%+v, want error response", msg)
 		}
 		if msg.Error.ID.String() != id.String() {
 			t.Fatalf("error id=%s, want %s", msg.Error.ID.String(), id.String())
 		}
+		if !res.local {
+			t.Fatal("failPending delivery not marked as client-synthesized")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("pending request was not failed")
+	}
+}
+
+func TestClientFailPendingMarksTransportFailure(t *testing.T) {
+	client := NewClient(newMemoryTransport())
+	id := NewIntID(7)
+	ch := make(chan pendingResult, 1)
+	client.pending[id.String()] = pendingRequest{id: id, ch: ch}
+
+	client.failPending(errors.New("websocket: unexpected eof"))
+
+	res := <-ch
+	if !res.local || res.msg.Error == nil {
+		t.Fatalf("failPending delivery = %+v, want a client-synthesized error", res)
+	}
+}
+
+// A request that finds the read loop already gone gets a synthesized failure
+// the peer never sent. It is wrapped as TransportFailureError so an adapter can
+// tell it from an InternalError that arrived intact, while errors.As still
+// reaches the CodeInternalError WireError generic callers match.
+func TestClientRequestSynthesizedFailureIsTransportFailure(t *testing.T) {
+	transport := &deadPeerTransport{recvErr: errors.New("websocket: unexpected eof")}
+	client := NewClient(transport)
+	client.Start(t.Context())
+	for range client.Notifications() {
+	}
+
+	err := client.Request(context.Background(), "turn/start", EmptyParams{}, nil)
+	if err == nil {
+		t.Fatal("request returned nil error on a dead connection")
+	}
+	tf, ok := errors.AsType[TransportFailureError](err)
+	if !ok {
+		t.Fatalf("error = %T=%v, want appwire.TransportFailureError", err, err)
+	}
+	var wire WireError
+	if !errors.As(err, &wire) || wire.Code != CodeInternalError {
+		t.Fatalf("wrapped error = %+v, want an InternalError WireError via errors.As", wire)
+	}
+	if !strings.Contains(tf.Message, "unexpected eof") {
+		t.Fatalf("message = %q, want the transport failure text retained", tf.Message)
 	}
 }
 

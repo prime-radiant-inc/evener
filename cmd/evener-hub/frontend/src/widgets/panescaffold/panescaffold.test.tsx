@@ -1,12 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { PaneScaffold } from "./index";
-
-afterEach(cleanup);
 
 beforeEach(resetWorkspaceStoreForTests);
 
@@ -44,11 +42,39 @@ test("makes the content region focusable and consumes a toggle-open focus marker
   );
   expect(document.activeElement).toBe(previousFocus);
   // A raw DOM node appended straight to document.body, outside any React
-  // tree - cleanup() only unmounts React roots, so under isolate:false this
-  // would otherwise outlive the file and false-positive a later file's own
-  // plain getByRole("button")/queryByRole("button") query against the
-  // shared jsdom document.
+  // tree - cleanup() only unmounts React roots, so this would otherwise
+  // outlive the test and false-positive a later test's own plain
+  // getByRole("button")/queryByRole("button") query against the document.
   previousFocus.remove();
+});
+
+test.each([true, false])("requested focus stays in this pane when its footer editor exists: %s", (hasEditor) => {
+  requestPaneFocus("source");
+  const pane = (focused: boolean) => (
+    <>
+      <textarea aria-label="Other pane editor" />
+      <PaneScaffold
+        title="Source"
+        paneId="source"
+        focused={focused}
+        focusSelector="textarea"
+        scaffoldMarker="source"
+        footer={hasEditor ? <textarea aria-label="Source editor" /> : undefined}
+      >
+        content
+      </PaneScaffold>
+    </>
+  );
+  const { container, rerender } = render(pane(true));
+  const body = container.querySelector<HTMLElement>('[data-pane-scaffold="source"]');
+  const target = hasEditor ? screen.getByRole("textbox", { name: "Source editor" }) : body;
+  expect(document.activeElement).toBe(target);
+
+  const other = screen.getByRole("textbox", { name: "Other pane editor" });
+  other.focus();
+  rerender(pane(false));
+  rerender(pane(true));
+  expect(document.activeElement).toBe(other);
 });
 
 test("does not focus after a scaffold mounts inactive or on an ordinary remount", () => {
@@ -126,6 +152,23 @@ test("renders the footer when provided", () => {
   expect(screen.getByTestId("my-footer")).toBeTruthy();
 });
 
+test("renders a flush edge footer after the padded footer", () => {
+  render(
+    <PaneScaffold
+      title="Sessions"
+      footer={<span data-testid="my-footer" />}
+      edgeFooter={<span data-testid="my-edge-footer" />}
+    >
+      content
+    </PaneScaffold>,
+  );
+
+  const footer = screen.getByTestId("pane-footer");
+  const edgeFooter = screen.getByTestId("pane-edge-footer");
+  expect(footer.contains(edgeFooter)).toBe(false);
+  expect(footer.compareDocumentPosition(edgeFooter) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test("renders title, cadence, actions and children in that document order", () => {
   const { container } = render(
     <PaneScaffold
@@ -179,12 +222,8 @@ test("the header and footer are fixed slots around the scrolling body", () => {
 // footer - not on StackHost's container (StackHost.module.css's .host
 // comment): the footer's own chrome fills the home-indicator band while its
 // padding keeps the composer controls above it. env() is 0 on desktop, so
-// the padding resolves to plain --space-3 there. The rule PUBLISHES the
-// value (--pane-footer-pad-bottom) and spends the same variable, so the one
-// descendant that needs to know how much room the band holds - the
-// composer's repo location line, which translates down into it on the phone
-// (repoLocation.module.css) - reads the single source of truth instead of
-// duplicating the formula.
+// the padding resolves to plain --space-3 there. The phone's safe-area-only
+// padding is checked geometrically by overflowguard against the real Session.
 test("the footer fills to the screen's bottom edge while keeping its content clear of the home indicator", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   // Comments stripped: the rule's own comment names the inset (testing.md's
@@ -192,13 +231,11 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
   expect(footerRule).toContain(
-    "--pane-footer-pad-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+    "padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
   );
-  expect(footerRule).toContain("padding-bottom: var(--pane-footer-pad-bottom)");
-  // The phone override restates the padding (its shorthand resets it) and
-  // spends the same published value.
+  // The phone keeps only keyboard-aware safe-area clearance below the card.
   expect(css).toMatch(
-    /@media \(max-width: 899px\) \{[\s\S]*?\.footer \{[^}]*padding: var\(--space-3\) var\(--space-4\);[^}]*padding-bottom: var\(--pane-footer-pad-bottom\)/,
+    /@media \(max-width: 899px\) \{[\s\S]*?\.footer \{[^}]*padding: var\(--space-3\) var\(--space-4\);[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
   );
 });
 

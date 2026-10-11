@@ -11,14 +11,8 @@ import { PromptCompositeField, ScalarField } from "./fields";
 
 // The modelPicker kind renders the rich ModelCatalog widget, which calls the
 // typed model/list loader on open; mock it so these render tests stay hermetic.
-//
-// vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
-// pattern - under a shared module registry (isolate:false), a vi.mock()
-// factory registered here only replaces what THIS file's own import
-// resolves to, not what an already-loaded importer (e.g. ModelField.tsx,
-// ScalarField's own catalog picker, if loaded by an earlier file) calls
-// internally. Spying on the real module's own export patches the one
-// binding every importer actually shares, regardless of import order.
+// The spy is installed fresh before each test, so a test can script its own
+// catalog, and afterEach's vi.restoreAllMocks removes it.
 let fetchModelCatalog: typeof catalogClientModule.fetchModelCatalog;
 
 // The path kinds render PathField, whose completion loader is the extensions

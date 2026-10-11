@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // TestRemoteShellWordRendering pins the word sshconn puts into every remote
-// command string it builds. It renders through internal/shellquote (there is one
+// command string it builds. It renders through execsupport/shellquote (there is one
 // allow-list for the package, shared with the bridge's argv), and these cases
 // are kept here because they were originally the local helper's contract: the
 // tilde spelling a remote login shell must still expand, a hostile value
@@ -24,7 +24,7 @@ func TestRemoteShellWordRendering(t *testing.T) {
 		{"127.0.0.1:9180", "127.0.0.1:9180"},
 		{"4242", "4242"},
 		{"--stdio", "--stdio"},
-		{"evener-appwire-v5", "evener-appwire-v5"},
+		{"evener-appwire-v6", "evener-appwire-v6"},
 		{"~/bin/evener", "~/bin/evener"},
 		{"`id`", "'`id`'"},
 		{"/home/dev/my hub.log", "'/home/dev/my hub.log'"},

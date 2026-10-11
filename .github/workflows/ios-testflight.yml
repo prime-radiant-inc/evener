@@ -1,6 +1,13 @@
 name: iOS TestFlight
 
 on:
+  # TestFlight builds ship only from a tag on main. The mutable `snapshot`
+  # channel that binaries.yml refreshes on every green main build is not a
+  # release and does not match `v[0-9]*`. The pattern admits any tag starting
+  # with `v` and a digit (`v1.2.3`, but also `v1.2.3-rc1` and `v1hotfix`); the
+  # strongest guard is the archive job's check that the tag's commit is on main.
+  push:
+    tags: ["v[0-9]*"]
   workflow_dispatch:
     inputs:
       build_number:
@@ -31,7 +38,7 @@ env:
 
 jobs:
   validate-dispatch:
-    if: github.ref != 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Reject non-main dispatch
@@ -41,12 +48,30 @@ jobs:
           exit 1
 
   archive-and-upload:
-    if: inputs.recovery_run_id == '' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.recovery_run_id == '' && github.ref == 'refs/heads/main')
     runs-on: macos-26
     timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify the release tag is on main
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          # actions/checkout fetches a single commit for the tag; fetch main
+          # so the tag's ancestry can be checked.
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            # Deepen a shallow checkout before concluding the tag is off main:
+            # truncated history must not masquerade as a missing ancestor.
+            if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+              git fetch --no-tags --unshallow origin main
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+              echo "Release tag ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on main" >&2
+              exit 1
+            fi
+          fi
       - name: Select and verify Xcode
         run: |
           sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
@@ -74,16 +99,30 @@ jobs:
           npm ci --prefix appwire-client/typescript
       - name: Run existing native and API gates
         run: make test-native test-api-package
-      - name: Validate Apple build number
+      - name: Resolve Apple build number
+        working-directory: mobile-native
         env:
-          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+          IOS_BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
+          IOS_BUILD_NUMBER_OUTPUT: ${{ github.workspace }}/mobile-native/build/next-build-number.txt
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
         run: |
           set -euo pipefail
-          [[ "$IOS_BUILD_NUMBER" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}(\.[0-9]{1,2})?)?$ ]] || {
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # A tag-push run carries no manual input: take the next build
+            # number from App Store Connect for the current marketing version.
+            IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+              bundle exec fastlane ios next_build_number
+            build_number="$(cat "$IOS_BUILD_NUMBER_OUTPUT")"
+          else
+            build_number="$IOS_BUILD_NUMBER_INPUT"
+          fi
+          [[ "$build_number" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}(\.[0-9]{1,2})?)?$ ]] || {
             echo "build_number must be Apple-compatible: 1-4 digit major, optional 1-2 digit minor and patch components" >&2
             exit 1
           }
-          echo "IOS_BUILD_NUMBER=$IOS_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "IOS_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
       - name: Preflight distribution credentials
         env:
           IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
@@ -114,7 +153,6 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
-          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
             bundle exec fastlane ios preflight
@@ -192,7 +230,6 @@ jobs:
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
           IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
-          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
           IOS_BUNDLE_IDENTIFIER: ${{ env.IOS_BUNDLE_IDENTIFIER }}
           IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/testflight-receipt.json
           IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
@@ -246,7 +283,7 @@ jobs:
           exit "$cleanup_status"
 
   verify-upload:
-    if: inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
     runs-on: macos-26
     permissions:
       contents: read
@@ -280,11 +317,33 @@ jobs:
         working-directory: mobile-native
         run: |
           set -euo pipefail
-          ruby -rjson -e '
+          # A recovery run may be a manual dispatch from main or a version-tag
+          # push (the only other way this workflow starts). A tag push leaves
+          # head_branch null; a branch push names its branch, so the pre-change
+          # main-push lane cannot pass as a tag release.
+          tag_push="$(ruby -rjson -e '
             run = JSON.parse(File.read(ENV.fetch("RUNNER_TEMP") + "/recovery-run.json"))
-            abort "Recovery requires this workflow dispatched from main" unless run["path"] == ".github/workflows/ios-testflight.yml" && run["event"] == "workflow_dispatch" && run["head_branch"] == "main"
+            abort "Recovery requires a run of this workflow" unless run["path"] == ".github/workflows/ios-testflight.yml"
+            dispatch = run["event"] == "workflow_dispatch" && run["head_branch"] == "main"
+            head_branch = run["head_branch"]
+            tag_push = run["event"] == "push" && (head_branch.nil? || head_branch.match?(/\Av[0-9]/))
+            abort "Recovery requires a manual dispatch from main or a version-tag push run" unless dispatch || tag_push
             abort "Artifact source does not match the original run" unless File.read("build/source-revision.txt").strip == run.fetch("head_sha")
-          '
+            puts(tag_push ? "true" : "false")
+          ')"
+          if [ "$tag_push" = "true" ]; then
+            head_sha="$(ruby -rjson -e 'puts JSON.parse(File.read(ENV.fetch("RUNNER_TEMP") + "/recovery-run.json"))["head_sha"]')"
+            [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Recovery run has no valid commit sha" >&2; exit 1; }
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor "$head_sha" FETCH_HEAD; then
+              # This checkout is shallow, so an older commit can be missing from
+              # the object graph; deepen main before rejecting the run.
+              if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+                git fetch --no-tags --unshallow origin main
+              fi
+              git merge-base --is-ancestor "$head_sha" FETCH_HEAD || { echo "Recovery run commit $head_sha is not on main" >&2; exit 1; }
+            fi
+          fi
           shasum -a 256 -c build/artifact-sha256.txt
           bundle exec ruby -rfastlane_core/ipa_file_analyser -e '
             info = FastlaneCore::IpaFileAnalyser.fetch_info_plist_file("build/Evener.ipa")

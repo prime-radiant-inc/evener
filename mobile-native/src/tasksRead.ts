@@ -6,9 +6,6 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
  * client `current` returns at that moment, so one store keeps one entry per
  * session and the last loaded list survives a replacement that cannot
  * refresh it. */
-export function tasksReadThroughCurrentClient(
-  current: () => Pick<ConversationClientLike, "request">,
-): TasksListRead {
-  return async (ref) =>
-    (await current().request("evener/tasks/list", { ref })).data;
+export function tasksReadThroughCurrentClient(current: () => Pick<ConversationClientLike, "request">): TasksListRead {
+	return async (ref) => (await current().request("evener/tasks/list", { ref })).data;
 }

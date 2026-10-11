@@ -30,7 +30,11 @@ type Strategy interface {
 	// in place to reduce context pressure.
 	ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error
 
-	// AfterAction is called after each completed tool round.
+	// AfterAction is called after each completed tool round. A non-nil error
+	// reports an auxiliary failure the session surfaces as a deduplicated
+	// warning, not a turn failure; a cadence-gated strategy re-reports its
+	// recorded failure (auxFailure) from a skipped turn so the session does
+	// not read the skip as recovery.
 	AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error
 
 	// Tools returns additional tool definitions this strategy wants registered.
@@ -39,6 +43,26 @@ type Strategy interface {
 	// Name returns the strategy identifier for config/logging.
 	Name() string
 }
+
+// auxFailure records an opt-in memory strategy's most recent auxiliary
+// summarization failure. A strategy returns a failure to its caller (which
+// surfaces it as a deduplicated warning) and re-reports the recorded failure
+// from a call that does no work -- a turn its own cadence guard skipped an
+// attempt on -- so a persistent auxiliary outage stays one warning instead of
+// re-warning when the next eligible action retries. A successful auxiliary
+// call clears it.
+type auxFailure struct {
+	err error
+}
+
+func (a *auxFailure) record(err error) error {
+	a.err = err
+	return err
+}
+
+func (a *auxFailure) clear() { a.err = nil }
+
+func (a *auxFailure) stale() error { return a.err }
 
 // CompactStrategy wraps the existing 4-layer progressive compaction.
 type CompactStrategy struct {

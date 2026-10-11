@@ -1189,6 +1189,13 @@ cannot reuse it. It is never a control handle.
   next head.
 - Only the head pending delivery may be dispatched. Acknowledging that exact
   head removes it and returns the delivery plan for the next head, if any.
+- A delegate_update_posted event records a running generation's update and
+  joins the same per-delegate queue as the pending delivery
+  `<delegate_id>/update/<event seq>` with packet kind `update`. The
+  generation's updates are therefore dispatched in the order posted and ahead
+  of the report its finish appends. Only the open, running
+  generation may post one. An update at the head never claims the
+  generation's inline waiter; a `delegate_send` wait stays for the report.
 - Restart begins with the oldest unacknowledged packet and advances through the
   same acknowledge-then-release chain.
 - Receiver-side insertion is idempotent by delivery ID, so a crash between
@@ -1199,10 +1206,11 @@ cannot reuse it. It is never a control handle.
 If selected inline delivery cannot commit because the owner Session closes or
 its tool result fails, delivery remains pending and later uses the ordinary
 notification/replay path. The aggregate keeps an ordered collection keyed by
-delivery ID, with at most one entry per generation. A later generation may
-finish while an earlier delivery remains unacknowledged; it appends a second
-entry rather than overwriting the first, but receives no independent delivery
-plan until every earlier entry is acknowledged. Waiter selection occurs when
+delivery ID, with at most one report entry per generation plus any updates
+that generation posted. A later generation may finish while an earlier
+delivery remains unacknowledged; it appends its report entry rather than
+overwriting the earlier ones, but receives no independent delivery plan until
+every earlier entry is acknowledged. Waiter selection occurs when
 an entry becomes the head and looks up that entry's generation-keyed waiter,
 even if a successor generation is now current. A restart loses process-local
 waiters and therefore uses notification/replay for every remaining head. There
@@ -1281,7 +1289,8 @@ Required event kinds are:
 - delegate_run_finished;
 - delegate_resumability_closed;
 - delegate_subtree_stop_requested;
-- delegate_subtree_stop_completed; and
+- delegate_subtree_stop_completed;
+- delegate_update_posted; and
 - delegate_delivery_acknowledged.
 
 No event kind exists for a delegate activation JobRecord, current/latest job
@@ -1521,7 +1530,10 @@ is a normal delegate generation:
    before source acknowledgement replays by ID without appending a second
    steering turn;
 4. the retained runtime requests StartAttention from the tree controller with
-   its exact runtime pointer and one still-pending transcript attention ID;
+   its exact runtime pointer and one still-pending transcript attention ID,
+   revalidated after taking the child's drive claim so a completed intervening
+   generation cannot leave a stale selected ID; an already accepted reservation
+   retries its exact marker and generation across a journal-commit failure;
 5. the controller applies the same owner, ancestor, stop, and capacity checks
    as delegate_send;
 6. the controller starts a private generation with trigger=attention and binds
@@ -1529,6 +1541,29 @@ is a normal delegate generation:
 7. the child Session processes those model-bound transcript turns; and
 8. before that generation finishes, settlement appends and fsyncs one
    provider-excluded consumed resolution marker per bound ID.
+
+Attention that reaches a delegate while one of its generations runs, whatever
+started that generation, joins the generation's history and is presented at
+its next model request. A settled request that presented it covers it: when the
+turn ends successfully, still inside the generation's lease, the runtime appends
+and fsyncs a generation-less consumed marker for each covered ID that is still
+pending, so the delegate is not driven again for attention its model has
+already seen. Attention already pending when a generation starts is consumed
+the same way once one of that generation's settled requests shows it. The lease
+is the delegate's only start claim (no attention reservation is admitted while a
+generation holds a live binding), so the marker cannot conflict with a reserved
+generation. A failed turn leaves its covered
+IDs pending; attention appended after the generation's last request was built
+stays pending and starts its own attention generation; a turn outside a lease
+covers nothing. No attention reservation reports this consumption, so the
+delegate's noted wakes stay until a clear reconciles them against the
+transcript: when the generation lets go with nothing left pending it lowers the
+needs-attention projection and drops the wakes itself, and if that clear fails
+the root's attention drive retries it. A stop meanwhile discards only the
+attention the transcript still owes; a wake whose item is already resolved is
+only forgotten, and the clear leaves the wakes to a pending stop. A delegate
+that can no longer resume never acts on a wake, so its noted wakes do not block
+retirement (the transcript evidence still does for anything pending).
 
 There are no recordless model-bearing drive turns. A drive is not a JobRecord,
 but it is an exact delegate generation governed by the same lease.
@@ -1603,7 +1638,7 @@ are the only runtime-close paths. Reclamation may release process residency and
 worktree occupancy without closing resumability; it is not autonomous unload.
 
 Stable delegates participate in the existing live-work guards, root-close
-cleanup, scratch retention, explicit disposal, lock provenance, dirty/D0
+cleanup, scratch removal, explicit disposal, lock provenance, dirty/D0
 checks, force semantics, cleanup evidence, and idempotency. Isolation is
 resolved before stable create commit so failure is deterministic. Destructive
 teardown requires a durable resumability closure first. If that append fails,

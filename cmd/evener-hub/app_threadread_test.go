@@ -23,16 +23,18 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/appserver"
-	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
-func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) {
-	cfg, params := seedBoundedPastThread(t)
+// seedColdDelegate writes one idle delegate with the given brief fields to the
+// past thread's delegates journal and returns its session id.
+func seedColdDelegate(t *testing.T, cfg hubcore.WebConfig, params appwire.ThreadReadParams, task, description string) string {
+	t.Helper()
 	sessionID := strings.TrimPrefix(params.Ref, "local:")
 	entry, ok := cfg.Past.Find(sessionID)
 	if !ok {
@@ -44,7 +46,7 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	}
 	descriptor := map[string]any{
 		"child_session_id": "child-cold", "transcript_ref": "local:child-cold", "owner_session_id": sessionID,
-		"task": "cold task", "description": "cold description", "agent_type": "explorer", "resolved_profile_id": "openai", "resolved_model": "gpt-5",
+		"task": task, "description": description, "agent_type": "explorer", "resolved_profile_id": "openai", "resolved_model": "gpt-5",
 		"tool_name_ceiling": []string{"communicate"}, "delegation_allowance": 2, "parent_watch_granted": true, "resumable": true, "config": map[string]any{},
 	}
 	childWriter, err := transcript.NewWriter(filepath.Join(entry.StateDir, "sessions", "child-cold.transcript.jsonl"), transcript.Header{
@@ -69,6 +71,12 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	if err := os.WriteFile(path, rawJournal, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return sessionID
+}
+
+func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	sessionID := seedColdDelegate(t, cfg, params, "cold task", "cold description")
 
 	thread, found := requirePastThreadForRead(t, cfg, params)
 	if !found {
@@ -85,6 +93,22 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	}
 }
 
+func TestAppThreadReadColdDelegateRosterCapsBriefStoredTwice(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	brief := strings.Repeat("Investigate the flaky scheduler. ", 200)
+	seedColdDelegate(t, cfg, params, brief, brief)
+
+	thread, found := requirePastThreadForRead(t, cfg, params)
+	if !found {
+		t.Fatal("past thread not found")
+	}
+	got := thread.Evener.Diagnostics.Delegates[0]
+	if got.Description != "" || got.Task == "" || !strings.HasPrefix(brief, strings.TrimSuffix(got.Task, "…")) ||
+		len([]rune(got.Task)) > appwire.DelegateRosterTextMaxRunes {
+		t.Fatalf("cold roster label = task %d runes, description %d runes; want one capped copy", len([]rune(got.Task)), len([]rune(got.Description)))
+	}
+}
+
 func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
@@ -94,12 +118,12 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	if thread.Evener.Diagnostics == nil {
 		t.Fatal("past thread has no diagnostics")
 	}
-	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill"} {
+	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill", "gardening-memory"} {
 		if !hasSkill(thread.Evener.Diagnostics.Skills, want) {
 			t.Fatalf("skills = %+v, missing %q", thread.Evener.Diagnostics.Skills, want)
 		}
 	}
-	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "project-skill"}
+	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "gardening-memory", "project-skill"}
 	if len(thread.Evener.Diagnostics.Skills) != len(wantNames) {
 		t.Fatalf("skill catalog = %+v, want exactly %d entries", thread.Evener.Diagnostics.Skills, len(wantNames))
 	}
@@ -115,6 +139,9 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 		"doctoring-evener":            "extra override",
 	}
 	for _, got := range thread.Evener.Diagnostics.Skills {
+		if got.Name == "gardening-memory" && strings.TrimSpace(got.Description) == "" {
+			t.Fatal("gardening-memory description must be nonempty")
+		}
 		if want, ok := descriptions[got.Name]; ok && got.Description != want {
 			t.Fatalf("%s description = %q, want %q", got.Name, got.Description, want)
 		}
@@ -123,6 +150,26 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 		if strings.Contains(got.Name, string(filepath.Separator)) {
 			t.Fatalf("skill metadata contains a path: %+v", got)
 		}
+	}
+}
+
+// TestPastThreadReadAdvertisesSkillInputAlongsideCatalog pins the pair the
+// composer's skill gate reads: a past read that attaches the session's skill
+// catalog must also advertise skillInput. Withholding it made the web
+// composer offer those skills and then refuse them for sessions that support
+// skills the moment they are live again; why the advertisement is safe lives
+// at pastThreadCapabilities.
+func TestPastThreadReadAdvertisesSkillInputAlongsideCatalog(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Skills) == 0 {
+		t.Fatalf("past thread skill catalog = %+v, want the fixture catalog", thread.Evener.Diagnostics)
+	}
+	if !thread.Evener.Capabilities.SkillInput {
+		t.Fatalf("past thread capabilities = %+v, want skillInput so the composer's gate matches the catalog it serves", thread.Evener.Capabilities)
 	}
 }
 
@@ -559,6 +606,48 @@ func pricingRegistry(tb testing.TB) *hubcore.ProviderRegistry {
 		tb.Fatalf("registry: %v", err)
 	}
 	return holder
+}
+
+// The workspace and thread-list cost projections price a past session
+// through the registry row the session recorded — a fact, not a
+// credential: resolving it at full depth would execute a command-bearing
+// credential from a pane the user only opened (spec §10.1). The cost must
+// arrive with zero mints.
+func TestPastEntryCostNeverMintsCommandCredential(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, err := registry.Load(append([]registry.Option{
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{"gw": {Base: "anthropic", APIKey: "$(gw-mint)"}}),
+		}, extra...)...)
+		return r, nil, err
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	cfg := hubcore.WebConfig{Registry: reg}
+	entry := hubcore.PastEntry{Meta: schema.SessionMeta{ProfileID: "gw", Model: "claude-opus-4-5"}}
+	cost := pastEntryCost(cfg, entry)
+	if cost == nil {
+		t.Fatal("the cost projection lost the row's cost along with the credential stage")
+	}
+	if runs != 0 {
+		t.Fatalf("the cost projection executed the credential command %d time(s); pricing a past session is a read, and the hub never runs credential commands (spec §10.1)", runs)
+	}
+	// A legacy session recorded without a profile prices through the
+	// default instance, the rule the full resolve always applied.
+	legacy := pastEntryCost(cfg, hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}})
+	if legacy == nil {
+		t.Fatal("a legacy session with an empty profile lost its cost; the default instance must price it")
+	}
 }
 
 func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
@@ -1175,11 +1264,13 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 // TestPastEntryThreadAdvertisesResumableCapabilities asserts a past/exited
 // local thread advertises exactly the capabilities that actually succeed once
 // qp94's auto-resume is in place (kata xr4x). The resume-and-retry mutations
-// (compact, clear, change model, shutdown) plus the always-available ones
-// (send, fork, goal, rename) are true; steer, interrupt and queue are false
-// because the hub cannot carry them out for a thread with no daemon — it
-// resumes on send alone, so a cold set advertising them would promise a turn
-// action nothing is there to take.
+// (compact, clear, change model, shutdown, send and queue) plus the
+// always-available ones (fork, goal, rename, skill input) are true: a resumed
+// daemon runs current code and consumes skill selections, re-verified per
+// mutation against the live daemon. Steer and interrupt are false because the
+// hub cannot carry them out for a thread with no daemon: they act on a turn
+// that is already running, a cold session has none, and resuming one would
+// give the control nothing to act on.
 func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
@@ -1221,8 +1312,16 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		Goal:              true,
 		SharedNotes:       true,
 		Rename:            true,
-		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
-		// active turn on a cold exited session.
+		SkillInput:        true,
+		CommandInput:      true,
+		Queue:             true,
+		// The hub pages the saved transcript from a before position itself.
+		PageBefore: true,
+		// Steer and Interrupt stay false: they act on a turn that is already
+		// running, which a cold exited session does not have. Queue does not need
+		// one — the hub resumes for it and the queued message runs as the next
+		// turn (cmd/evener-hub/e2e_queue_prompt_exited_test.go drives that against
+		// a real hub and daemon).
 	}
 	if caps != want {
 		t.Fatalf("past thread capabilities:\n got  %+v\n want %+v", caps, want)
@@ -1279,18 +1378,13 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	if !ok || len(full.Turns) != 200 {
 		t.Fatalf("full saved thread found=%v turns=%d, want true/200", ok, len(full.Turns))
 	}
-	var projected []int
-	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
-	t.Cleanup(restore)
+	forbidWholeTranscriptProjection(t)
 	got, ok := requirePastThreadReadResponse(t, cfg, params)
 	if !ok {
 		t.Fatal("past thread not found")
 	}
 	if items := flattenTestItems(got.Thread.Turns); len(items) == 0 || len(items) > appwire.TranscriptItemPageLimit || got.OlderCursor == "" {
 		t.Fatalf("bounded saved read = %d items, cursor %q; want 1..%d items and continuation", len(items), got.OlderCursor, appwire.TranscriptItemPageLimit)
-	}
-	if len(projected) == 0 {
-		t.Fatalf("saved read did not report bounded projection: %v", projected)
 	}
 	// The newest logical turn is the user input plus its tool result; the
 	// command-execution item with the embedded image is the second item.
@@ -1365,9 +1459,7 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 
 func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
-	var projected []int
-	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
-	t.Cleanup(restore)
+	forbidWholeTranscriptProjection(t)
 	first, ok := requirePastThreadReadResponse(t, cfg, params)
 	if !ok || first.OlderCursor == "" {
 		t.Fatal("past thread initial item page missing continuation")
@@ -1379,9 +1471,18 @@ func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	if items := flattenTestItems(got.Data); len(items) == 0 || len(items) > 30 {
 		t.Fatalf("bounded saved page = %d items, want 1..30", len(items))
 	}
-	if len(projected) == 0 {
-		t.Fatalf("saved page did not report bounded projection: %v", projected)
+}
+
+// forbidWholeTranscriptProjection fails the test if anything projects a saved
+// session's whole transcript into turns: a bounded read pages the index.
+func forbidWholeTranscriptProjection(t *testing.T) {
+	t.Helper()
+	projection := pastEntryTurns
+	pastEntryTurns = func(hubcore.WebConfig, hubcore.PastEntry) ([]appwire.Turn, error) {
+		t.Fatal("a bounded read projected the whole saved transcript")
+		return nil, nil
 	}
+	t.Cleanup(func() { pastEntryTurns = projection })
 }
 
 func TestPastThreadItemReadPropagatesContextCancellation(t *testing.T) {
@@ -1599,7 +1700,7 @@ func TestStampSessionImageURLsLeavesDescriptorsAloneWithoutASession(t *testing.T
 
 // TestStampSessionImageURLsCoversReplayedInputImages pins kata ck8z: a
 // replayed user-attached image reaches the wire with only metadata sha/size
-// (projectReplayInputImage strips the bytes), and handleSessionImage serves
+// (apptranscript.AddressedImageProjector strips the bytes), and handleSessionImage serves
 // exactly that sha back — so the stamping pass must put the fetchable route
 // on the item, not leave the client to reconstruct it from metadata.
 func TestStampSessionImageURLsCoversReplayedInputImages(t *testing.T) {
@@ -1783,5 +1884,140 @@ func TestThreadReadPastSessionSkipsFullTurnProjection(t *testing.T) {
 	}
 	if projected != 0 {
 		t.Fatalf("thread/read computed the full past-turn projection %d times, want 0: the windowed page supplies the turns, so the O(transcript) projection is per-click waste", projected)
+	}
+}
+
+// TestPastEntryTurns_FlushesUnpairedCommunicate verifies that the full
+// past-entry read (computePastEntryTurns) flushes unpaired communicates —
+// a session whose last assistant turn issues a communicate call with no
+// paired result turn must render the flushed agentMessage. Before the fix,
+// computePastEntryTurns threaded the shared registry through
+// pastTranscriptCache.ItemTurnsFromFile but never called
+// FlushUnpairedCommunicates, so the trailing agentMessage was silently
+// dropped on the full past-entry read (while the paged read flushed
+// internally). This test proves the full read now agrees with the paged read.
+func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
+	sessionID := "01UNPAIRED"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	w, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID,
+		CreatedAt: now,
+		ProfileID: "anthropic",
+		Model:     "claude-opus-4-5",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Append(schema.Turn{
+		Kind:    schema.TurnUserInput,
+		Message: llm.User("do it"),
+	}); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	// Assistant turn with a valid-JSON communicate call and no paired result
+	// turn — the unpaired shape the flush must handle.
+	if err := w.Append(schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "thinking"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:        "call_unpaired_past",
+				Name:      "communicate",
+				Arguments: json.RawMessage(`{"message":"hello there"}`),
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entry := hubcore.PastEntry{
+		ID:       sessionID,
+		Meta:     schema.SessionMeta{ID: sessionID, ProfileID: "anthropic", Model: "claude-opus-4-5"},
+		StateDir: stateDir,
+	}
+	cfg := hubcore.WebConfig{}
+
+	// Full past-entry read must include the flushed agentMessage.
+	turns := requirePastEntryTurns(t, cfg, entry)
+	if len(turns) == 0 {
+		t.Fatalf("past-entry read produced %d turns, want at least 1", len(turns))
+	}
+	var fullFlushed string
+	for _, item := range turns[len(turns)-1].Items {
+		if item.Type == "agentMessage" && item.Text == "hello there" {
+			fullFlushed = item.Text
+		}
+	}
+	if fullFlushed == "" {
+		t.Fatalf("full past-entry read must flush the unpaired communicate agentMessage (Text %q not found); items: %+v", "hello there", turns[len(turns)-1].Items)
+	}
+
+	// Paged past-entry read already flushes internally (item-window path
+	// flushes), so it must also include the flushed agentMessage — proving
+	// full-read and paged-read parity.
+	page, err := pastEntryLatestItems(context.Background(), entry, 40, nil)
+	if err != nil {
+		t.Fatalf("pastEntryLatestItems: %v", err)
+	}
+	var pagedFlushed string
+	for _, c := range page.Candidates {
+		if c.Item.Type == "agentMessage" && c.Item.Text == "hello there" {
+			pagedFlushed = c.Item.Text
+		}
+	}
+	if pagedFlushed == "" {
+		t.Fatalf("paged past-entry read must flush the unpaired communicate agentMessage; candidates: %+v", page.Candidates)
+	}
+	if fullFlushed != pagedFlushed {
+		t.Errorf("full read flushed Text = %q, paged read flushed Text = %q, want equal", fullFlushed, pagedFlushed)
+	}
+}
+
+// A saved transcript pages before a boundary with no cursor the same as with
+// the cursor that points there.
+func TestPastThreadTurnsListBeforeWithoutACursor(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	latest, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5})
+	if !found || err != nil {
+		t.Fatalf("latest saved page: found=%v err=%v", found, err)
+	}
+	items := flattenTestItems(latest.Data)
+	if len(items) == 0 || items[0].Position == nil || latest.NextCursor == "" {
+		t.Fatalf("latest saved page = %+v, want positioned items and a cursor", latest)
+	}
+	withCursor, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Cursor: latest.NextCursor})
+	if err != nil {
+		t.Fatalf("saved page with a cursor: %v", err)
+	}
+	cursorless, _, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: items[0].Position})
+	if err != nil {
+		t.Fatalf("saved page before the latest page's first item: %v", err)
+	}
+	ids := func(page appwire.ThreadTurnsListResponse) []string {
+		var out []string
+		for _, item := range flattenTestItems(page.Data) {
+			out = append(out, item.ID)
+		}
+		return out
+	}
+	if got, want := ids(cursorless), ids(withCursor); len(want) == 0 || !slicesEqual(got, want) {
+		t.Fatalf("cursorless saved page = %v, want the cursor's page %v", got, want)
+	}
+	future := &appwire.ThreadItemPosition{Entry: items[0].Position.Entry + 10_000}
+	_, _, err = pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 5, Before: future})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("saved page before a future position: error = %T %v, want a stale cursor", err, err)
+	}
+	if data, ok := wireErr.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("saved page before a future position: error data = %#v, want stale cursor", wireErr.Data)
 	}
 }

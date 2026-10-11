@@ -48,26 +48,35 @@ type RetirementSnapshot struct {
 // This primitive is not a runtime eligibility proof; integration must add the
 // complete tree predicate before enabling retirement.
 type RetirementController struct {
-	mu            sync.Mutex
-	root          *Session
-	generation    uint64
-	phase         string
-	active        map[uint64]RetirementBlocker
-	nextLease     uint64
-	readers       int
-	readersDone   chan struct{}
-	changed       chan struct{}
-	clock         RetirementClock
-	timeout       time.Duration
-	eligibleSince time.Time
-	failure       string
-	claim         *RetirementClaim
+	mu                sync.Mutex
+	root              *Session
+	generation        uint64
+	phase             string
+	active            map[uint64]RetirementBlocker
+	nextLease         uint64
+	readers           int
+	readersDone       chan struct{}
+	changed           chan struct{}
+	clock             RetirementClock
+	timeout           time.Duration
+	configuredTimeout time.Duration
+	timeoutWrites     uint64
+	eligibleSince     time.Time
+	failure           string
+	claim             *RetirementClaim
 	// evidenceGate is a test-only observation seam: when set it runs inside
 	// nonBlockingEvidence, with the caller's captured root and generation already
 	// fixed, so a test can change the controller identity while that read is in
 	// flight. It is nil in production and is installed before the controller is
 	// used concurrently, so it needs no lock of its own.
 	evidenceGate func()
+	// namingHeld counts the active leases that are a session namer naming its
+	// session: work that settles on its own within sessionNameTimeout, which
+	// a manual retire waits for (TryManualClaim). namingWake is closed, and
+	// replaced, whenever the leases change while one of them is held, so a
+	// waiting retire re-checks.
+	namingHeld int
+	namingWake chan struct{}
 }
 
 // RetirementClaim is an identity-bound preparing fence owned by its controller.
@@ -81,24 +90,34 @@ type RetirementClaim struct {
 	finished   bool
 }
 
+// errRetirementTimeoutNegative is the single refusal a negative idle deadline
+// meets, whether at controller construction or at a runtime Retarget.
+var errRetirementTimeoutNegative = errors.New("retirement timeout must not be negative")
+
 // NewRetirementController constructs a dormant process admission controller.
 func NewRetirementController(timeout time.Duration, clk RetirementClock) (*RetirementController, error) {
 	if timeout < 0 {
-		return nil, errors.New("retirement timeout must not be negative")
+		return nil, errRetirementTimeoutNegative
 	}
 	if clk == nil {
 		return nil, errors.New("retirement clock is required")
 	}
 	return &RetirementController{
 		phase: "resident", active: make(map[uint64]RetirementBlocker),
-		changed: make(chan struct{}, 1), clock: clk, timeout: timeout,
+		changed: make(chan struct{}, 1), clock: clk, timeout: timeout, configuredTimeout: timeout,
+		namingWake: make(chan struct{}),
 	}, nil
 }
 
-// AttachRoot publishes the current serve root. The caller retains its mutation
-// lease through construction, publication and old-root settlement. Atomic Session
-// publication lets the phase check and generation change share one short critical
-// section without acquiring a Session lock or exposing a split-publication race.
+// AttachRoot publishes the current serve root and resets the idle deadline to
+// the configured baseline: the fresh root starts from the same deadline a
+// fresh spawn would boot with, not whatever the predecessor's archive
+// decision left armed, and minting that reset as a timeout write supersedes
+// every pending undo token, so a stale setter can never undo past the root
+// swap. The caller retains its mutation lease through construction,
+// publication and old-root settlement. Atomic Session publication lets the
+// phase check and generation change share one short critical section without
+// acquiring a Session lock or exposing a split-publication race.
 func (c *RetirementController) AttachRoot(root *Session) error {
 	if root == nil {
 		return errors.New("retirement root is required")
@@ -115,6 +134,8 @@ func (c *RetirementController) AttachRoot(root *Session) error {
 	c.root = root
 	c.generation++
 	c.eligibleSince = time.Time{}
+	c.timeout = c.configuredTimeout
+	c.timeoutWrites++
 	c.mu.Unlock()
 	c.Changed()
 	return nil
@@ -129,6 +150,17 @@ func (c *RetirementController) AttachRoot(root *Session) error {
 // actually passes must therefore be listed here, or its blocker reports as
 // unknown work.
 func (c *RetirementController) BeginMutation(sessionID, category string) (func(), error) {
+	return c.beginMutation(sessionID, category, false)
+}
+
+// BeginNamingMutation admits a session namer's naming of its session. It
+// blocks retirement as autonomous work, like any other lease, but a manual
+// retire waits for it to settle rather than being refused (TryManualClaim).
+func (c *RetirementController) BeginNamingMutation(sessionID string) (func(), error) {
+	return c.beginMutation(sessionID, "autonomous", true)
+}
+
+func (c *RetirementController) beginMutation(sessionID, category string, naming bool) (func(), error) {
 	switch category {
 	case "turn", "input", "autonomous", "question", "job", "watch", "delegate",
 		"environment", "persistence", "admission", "notification",
@@ -141,9 +173,13 @@ func (c *RetirementController) BeginMutation(sessionID, category string) (func()
 		c.mu.Unlock()
 		return nil, ErrRetirementUnavailable
 	}
+	c.wakeNamingWaitersLocked()
 	c.nextLease++
 	lease := c.nextLease
 	c.active[lease] = RetirementBlocker{Category: category, SessionID: sessionID}
+	if naming {
+		c.namingHeld++
+	}
 	c.eligibleSince = time.Time{}
 	c.mu.Unlock()
 	c.Changed()
@@ -151,11 +187,78 @@ func (c *RetirementController) BeginMutation(sessionID, category string) (func()
 	return func() {
 		once.Do(func() {
 			c.mu.Lock()
+			c.wakeNamingWaitersLocked()
 			delete(c.active, lease)
+			if naming {
+				c.namingHeld--
+			}
 			c.mu.Unlock()
 			c.Changed()
 		})
 	}, nil
+}
+
+// TryManualClaim is TryClaim for a user's retire. A session namer only names
+// the session and settles on its own, so a retire that arrives while namers
+// are the only work holding the process waits for them to release, up to
+// sessionNameTimeout, before claiming, rather than being refused over them
+// (#3921). With any other lease held the retire is refused at once, as
+// TryClaim does, since waiting would end in the same refusal. Work that holds
+// no lease (an open question, an active goal between turns) is not seen
+// here, so a retire beside it still waits out the namer before TryClaim
+// refuses it (#4055).
+func (c *RetirementController) TryManualClaim(ctx context.Context) (*RetirementClaim, RetirementSnapshot, error) {
+	c.awaitNaming(ctx, sessionNameTimeout)
+	if err := ctx.Err(); err != nil {
+		// The caller gave up while the retire waited: it must not claim.
+		return nil, RetirementSnapshot{}, err
+	}
+	return c.TryClaim(true)
+}
+
+// awaitNaming returns once namers are no longer the only work holding the
+// process, ctx is done or bound has passed on the controller's clock.
+func (c *RetirementController) awaitNaming(ctx context.Context, bound time.Duration) {
+	c.mu.Lock()
+	waiting := c.onlyNamingLocked()
+	c.mu.Unlock()
+	if !waiting {
+		return
+	}
+	timer := c.clock.NewTimer(bound)
+	defer timer.Stop()
+	for {
+		c.mu.Lock()
+		if !c.onlyNamingLocked() {
+			c.mu.Unlock()
+			return
+		}
+		wake := c.namingWake
+		c.mu.Unlock()
+		select {
+		case <-wake:
+		case <-timer.C():
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// wakeNamingWaitersLocked wakes a retire waiting on naming leases, if any
+// are held, so it re-checks after the lease change the caller is about to
+// make. Callers hold c.mu.
+func (c *RetirementController) wakeNamingWaitersLocked() {
+	if c.namingHeld != 0 {
+		close(c.namingWake)
+		c.namingWake = make(chan struct{})
+	}
+}
+
+// onlyNamingLocked reports whether the resident process is held by naming
+// leases and nothing else. Callers hold c.mu.
+func (c *RetirementController) onlyNamingLocked() bool {
+	return c.phase == "resident" && c.namingHeld != 0 && len(c.active) == c.namingHeld
 }
 
 // Changed coalesces notifications; callers notify only after dropping owner locks.
@@ -164,6 +267,72 @@ func (c *RetirementController) Changed() {
 	case c.changed <- struct{}{}:
 	default:
 	}
+}
+
+// Retarget changes the automatic-retirement idle deadline at runtime, from the
+// Hub's archive/unarchive decision. The settled instant is preserved, so the
+// new deadline is eligibleSince+timeout: shortening fires proportionally sooner
+// — immediately when the new timeout is below already-elapsed idle time — and
+// lengthening re-arms later. Zero restores the disabled state. A negative
+// timeout is refused without touching the armed interval. Refused while a
+// retirement claim is preparing or retiring, like every other entry point; the
+// claim re-proves the deadline against the current timeout, so a stale tick
+// from the pre-Retarget timer can never claim before the new deadline.
+func (c *RetirementController) Retarget(timeout time.Duration) error {
+	_, _, err := c.RetargetStamped(timeout)
+	return err
+}
+
+// RetargetStamped is Retarget for a caller that may later have to undo its
+// write: it also reports the deadline the write replaced and mints a write
+// token — the count of timeout writes after this one. The undo, UndoRetarget,
+// needs both: the previous deadline as its restore target, and the token as
+// the exact identity of the write being undone, because two writers can
+// legitimately choose the same deadline and a value comparison cannot tell
+// them apart.
+func (c *RetirementController) RetargetStamped(timeout time.Duration) (previous time.Duration, token uint64, err error) {
+	if timeout < 0 {
+		return 0, 0, errRetirementTimeoutNegative
+	}
+	c.mu.Lock()
+	if c.phase != "resident" {
+		c.mu.Unlock()
+		return 0, 0, ErrRetirementUnavailable
+	}
+	previous = c.timeout
+	c.timeout = timeout
+	c.timeoutWrites++
+	token = c.timeoutWrites
+	c.mu.Unlock()
+	c.Changed()
+	return previous, token, nil
+}
+
+// UndoRetarget restores the deadline to `to` only while `token` still names
+// the newest timeout write — a later Retarget, even one that chose the same
+// deadline, owns the controller's timeout now and must survive the caller's
+// undo. The token check and the restore share one critical section, so no
+// writer can slip between the guard and the undo. It reports whether the
+// restore ran; a controller that is no longer resident never restores, since
+// the process is preparing or retiring and the deadline no longer matters.
+func (c *RetirementController) UndoRetarget(token uint64, to time.Duration) bool {
+	// Token 0 never names a stamped write on a fresh controller (whose write
+	// count starts at 0), and a negative restore target is refused exactly
+	// like a negative Retarget: neither may bypass the stamped write's
+	// validation.
+	if token == 0 || to < 0 {
+		return false
+	}
+	c.mu.Lock()
+	if c.phase != "resident" || c.timeoutWrites != token {
+		c.mu.Unlock()
+		return false
+	}
+	c.timeout = to
+	c.timeoutWrites++
+	c.mu.Unlock()
+	c.Changed()
+	return true
 }
 
 // Borrow protects an in-flight read, not a subscription's lifetime. Reads may
@@ -257,11 +426,18 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 // new root's live leases; this is the same root/generation counter-idiom
 // validClaimLocked uses on the claim path. On mismatch the snapshot degrades to
 // live controller state only, and the next attempt reads the new root afresh.
-func (c *RetirementController) claimSnapshotCurrent(root *Session, generation uint64, manual bool) RetirementSnapshot {
+func (c *RetirementController) claimSnapshotCurrent(root *Session, generation uint64, manual bool, held ...RetirementBlocker) RetirementSnapshot {
 	var evidence []RetirementBlocker
 	if manual {
 		evidence = c.nonBlockingEvidence(root)
 	}
+	// held carries the leases captured under the admission predicate's own lock.
+	// claimSnapshotCurrent assembles its snapshot after this read, and re-reads
+	// c.active then, so a lease that releases in between would vanish and leave
+	// the refusal with no obligation behind it. The caller captures the leases it
+	// refused for; a captured lease from a root that a concurrent AttachRoot
+	// replaced is dropped with the rest of the stale evidence below.
+	evidence = append(evidence, held...)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.root != root || c.generation != generation {
@@ -336,8 +512,17 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	if len(c.active) != 0 || c.root == nil {
 		root, generation := c.root, c.generation
+		// Capture the leases under this lock, the one the predicate above read:
+		// claimSnapshotCurrent re-reads c.active when it assembles the snapshot,
+		// so a lease that releases in between would disappear and the refusal
+		// would present no obligation at all (#3009's empty "missing
+		// notification evidence" snapshot).
+		held := make([]RetirementBlocker, 0, len(c.active))
+		for _, blocker := range c.active {
+			held = append(held, blocker)
+		}
 		c.mu.Unlock()
-		return nil, c.claimSnapshotCurrent(root, generation, manual), nil
+		return nil, c.claimSnapshotCurrent(root, generation, manual, held...), nil
 	}
 	if !manual && (c.timeout == 0 || c.eligibleSince.IsZero() || now.Before(c.eligibleSince.Add(c.timeout))) {
 		root, generation := c.root, c.generation
@@ -445,7 +630,7 @@ func RealRetirementClock() RetirementClock { return clock.Real() }
 // Run returns nil when ctx is done; consumer errors are the consumer's
 // responsibility (it owns Abort/Commit), not the loop's.
 func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error) error {
-	var timer RetirementTimer
+	var timer clock.Timer
 	disarm := func() {
 		if timer != nil {
 			timer.Stop()

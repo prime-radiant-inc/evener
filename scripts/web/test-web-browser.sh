@@ -1,107 +1,20 @@
 #!/usr/bin/env bash
-# test-web-browser.sh — the real browser-only frontend guards. They stay out
-# of test-web because jsdom cannot evaluate the CSS cascade or browser
-# geometry. Every guard runs so one missing browser or failing case does not
-# hide the remaining guards' verdicts; the exit status is the first nonzero
-# one.
+# test-web-browser.sh — make test-web-browser's entry point. The gate itself is
+# `evener-dev dev web-browser-guards` (cmd/evener-dev/webbrowser.go): the real
+# browser-only frontend guards, their scheduling, verdicts and interrupt
+# handling. This script only supplies how many guards run at once: each is a
+# real browser (most with a Vite dev server) whose tripwires assume it gets
+# CPU, so by default the slots are the machine's spare cores
+# (scripts/lib/load-aware-workers.sh), all at once on an idle CI runner and one
+# at a time on a saturated one. BROWSER_GUARD_CONCURRENCY overrides that.
+#
+# It execs the prebuilt ./evener-dev (the make target's build-dev
+# prerequisite) rather than `go run`: go run neither relays SIGTERM or SIGHUP
+# nor dies with its child, so an interrupt would kill it and orphan the gate
+# with its browsers still running.
 set -u
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-. "$script_dir/../lib/scratch-lib.sh"
-
-cd "$script_dir/../../cmd/evener-hub/frontend" || exit 1
-
-dir=""
-guard_pid=""; status=0; complete=0
-
-stop_guard() {
-	[ -z "$guard_pid" ] || { kill -TERM "$guard_pid" 2>/dev/null || :; wait "$guard_pid" 2>/dev/null || :; guard_pid=""; }
-}
-
-finish_browser() {
-	finish_status=$?; stop_guard
-	if [ "$complete" -eq 1 ] && [ "$status" -eq 0 ] && [ "$finish_status" -eq 0 ]; then
-		scratch_rm || { finish_status=1; [ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2; }
-	else
-		[ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2
-	fi
-	trap - 0; exit "$finish_status"
-}
-
-interrupted_browser() { stop_guard; exit "$1"; }
-
-# The trap is armed before any scratch exists: a crash between mint and arming
-# would leak the directory (the trap-before-mkdir ordering the audit enforces).
-trap finish_browser EXIT
-trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interrupted_browser 143' 15
-
-scratch_dir dir evener-test-web-browser
-
-for guard in layoutguard overflowguard shellguard spawnguard transcriptscrollguard retirementguard; do
-	guard_dir="$dir/$guard"
-	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" || exit 1
-	if [ "$guard" = retirementguard ]; then
-		# retirementguard's contract is `npm run retirementguard`: it invokes the
-		# isolated Go fixture (TestRetirementBrowser), which starts the fixture Hub
-		# and drives scripts/retirementguard/run.mjs against it. That runner only
-		# talks to the supplied fixture; it never starts another Go test.
-		#
-		# Because it runs go test, its private HOME must PRESERVE the user's Go
-		# module/build caches (scripts/lib/private-go-home.sh): a bare private HOME
-		# makes Go build a private module cache of hundreds of MB whose read-only
-		# files then defeat this gate's scratch cleanup. `exec` keeps the
-		# backgrounded pid on the real command so stop_guard can terminate it.
-		(
-			. "$script_dir/../lib/private-go-home.sh"
-			evener_prepare_private_go_home "$guard_dir" || exit 1
-			TMPDIR="$guard_dir/tmp" NODE_DISABLE_COMPILE_CACHE=1 exec npm run retirementguard
-		) >"$dir/$guard.log" 2>&1 &
-	else
-		HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &
-	fi
-	guard_pid=$!
-	if wait "$guard_pid"; then
-		guard_pid=""
-		printf 'PASS  web-%s\n' "$guard"
-	else
-		guard_status=$?
-		guard_pid=""
-		printf 'FAIL  web-%s (exit %s)\n' "$guard" "$guard_status" >&2
-		cat "$dir/$guard.log"
-		[ "$status" -ne 0 ] || status="$guard_status"
-	fi
-done
-
-# web-skillguard is the full-stack browser guard: cmd/evener-hub's
-# TestSkillComposerBrowser (browserguard build tag) drives the PRODUCTION web
-# app in real Chrome through a real hub (roster, past index, auth) against two
-# real `evener serve` helper daemons, with only the external LLM provider
-# scripted. Unlike the pure-frontend guards above it needs the Go toolchain
-# and the BUILT frontend (the hub serves the embedded dist), so it runs last
-# with its own prerequisites: a missing dist is built here, not skipped.
-repo_root="$(cd "$script_dir/../.." && pwd -P)"
-if [ ! -f dist/index.html ]; then
-	printf 'building the production frontend for web-skillguard…\n'
-	if NODE_DISABLE_COMPILE_CACHE=1 npm run build >"$dir/skillguard-build.log" 2>&1; then
-		:
-	else
-		build_status=$?
-		cat "$dir/skillguard-build.log"
-		printf 'FAIL  web-skillguard (frontend build, exit %s)\n' "$build_status" >&2
-		exit "$build_status"
-	fi
-fi
-# The TestSkillGuard* unit tests ride along: they cover the failure reporting
-# this guard leans on, they need no browser, and the browserguard tag is the
-# only build that compiles them.
-if (cd "$repo_root" && go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$|^TestSkillGuard' -count=1 >"$dir/skillguard.log" 2>&1); then
-	printf 'PASS  web-skillguard\n'
-else
-	guard_status=$?
-	printf 'FAIL  web-skillguard (exit %s)\n' "$guard_status" >&2
-	cat "$dir/skillguard.log"
-	[ "$status" -ne 0 ] || status="$guard_status"
-fi
-
-complete=1
-exit "$status"
+. "$script_dir/../lib/load-aware-workers.sh"
+cd "$script_dir/../.." || exit 1
+BROWSER_GUARD_CONCURRENCY=${BROWSER_GUARD_CONCURRENCY:-$(load_aware_workers 0)} exec ./evener-dev dev web-browser-guards

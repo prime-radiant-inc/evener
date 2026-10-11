@@ -30,7 +30,11 @@ import (
 // instead of ErrDeploy: the supervisor stops, the cause is reported, and no
 // build, restart, or attach is attempted. The test drives the decision and the
 // supervisor's own per-iteration path (reconnectOnce), not BuildBinary alone —
-// which is how the round-twelve test missed the loop.
+// which is how the round-twelve test missed the loop. The build source here is a
+// BuildBinary that is not the controller's own executable (an embedder's own
+// compile of the controller's tree, or an operator's -deploy-binary); the
+// controller's own executable is deployable from a dirty controller and is
+// pinned by TestDirtyControllerDeploysItsOwnExecutable.
 func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -47,7 +51,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"` + dirty + `","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"` + dirty + `","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			// The host already reports the controller's identical dirty version.
 			return []byte(`{"version":"` + dirty + `","started_at":"2026-01-01T00:00:00Z","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -65,6 +69,8 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 		},
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	// Round twelve's rule stands: the identical dirty version on both sides is not
 	// a match, so the deploy is still required.
@@ -92,7 +98,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 		t.Fatalf("error does not name the dirty-tree cause: %v", err)
 	}
 	if builds != 0 {
-		t.Fatalf("build attempts = %d, want 0 (a dirty controller has no deployable build)", builds)
+		t.Fatalf("build attempts = %d, want 0 (a dirty controller has no deployable source build)", builds)
 	}
 	if got := len(fr.recordedStarts()); got != 0 {
 		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a host the dirty version cannot verify)", got)
@@ -105,7 +111,9 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 
 	// The supervisor's own iteration must stand down. If this returned true the
 	// reconnect loop would repeat the terminal refusal forever.
-	if more := m.reconnectOnce(context.Background(), host, m.hostLock(host.Name)); more {
+	hostGate := m.hostLock(host.Name)
+	defer m.releaseHostLock(host.Name)
+	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
 		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
 	}
 	if builds != 0 {
@@ -272,7 +280,7 @@ func TestRound13WaitHealthyRequiresProofAUnverifiableRestartTook(t *testing.T) {
 				sleep: func(context.Context, time.Duration) error { return nil },
 			})
 
-			err := m.waitHealthy(context.Background(), host, tc.expected, tc.replaced)
+			err := m.waitHealthy(context.Background(), host, tc.expected, "", tc.replaced)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("waitHealthy = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -304,7 +312,7 @@ func TestRound13BootstrapStartStillVerifiesAnUnverifiableBuild(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
@@ -467,6 +475,10 @@ func TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint(t *tes
 		return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 			joined := strings.Join(argv, " ")
 			switch {
+			case strings.Contains(joined, "id -un"):
+				return []byte("dev\n"), nil
+			case strings.Contains(joined, pidOwnerRemote("4242")):
+				return []byte("dev\n"), nil
 			case strings.Contains(joined, "lsof -ti :9180"):
 				if *killed {
 					return []byte(noListenerMarker + "\n"), nil

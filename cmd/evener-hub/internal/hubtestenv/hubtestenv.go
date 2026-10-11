@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -111,7 +112,15 @@ func Redirect(prefix string) *Env {
 	// launch-check` and enumerated that developer's real providers instead of
 	// the scripted "fake" instance the harness had just written.
 	// TestHostEvenerEnvNeverReachesTheTestEnvironment is the guard.
+	//
+	// The one value kept is the host temp bases a TestMain's
+	// sandboxtest.RedirectHostTemp exported before calling this: it is the rig's
+	// own, not the developer's, and it keeps the evener binaries the tests start
+	// from sweeping the developer's /tmp at startup.
 	for _, v := range ProductEvenerEnvVars() {
+		if sandboxtest.Redirected(v) {
+			continue
+		}
 		_ = os.Unsetenv(v.Name)
 	}
 	return env
@@ -172,8 +181,8 @@ func BaseRoots() []NamedPath {
 }
 
 // ProductEvenerEnvVars is every EVENER_* variable Evener itself reads. Redirect
-// clears the lot; TestHostEvenerEnvNeverReachesTheTestEnvironment asserts it
-// did. Deriving the set from envvars rather than writing it out is the point: a
+// clears the lot, bar the host temp bases a sandboxtest redirect set;
+// TestHostEvenerEnvNeverReachesTheTestEnvironment asserts it did. Deriving the set from envvars rather than writing it out is the point: a
 // variable added to the product is isolated from these tests the day it exists,
 // which a hand-kept list does not manage (EVENER_PROVIDERS_CONFIG was missing
 // from one for as long as it took a developer to export it).

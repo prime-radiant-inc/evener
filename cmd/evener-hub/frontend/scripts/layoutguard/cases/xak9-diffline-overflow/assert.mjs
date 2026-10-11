@@ -1,7 +1,7 @@
 // kata xak9: a diff line longer than its box must stop at the box edge WITH
 // a visible signal (an ellipsis) - never escape it silently. Primary
-// assertion mirrors p6g8's own containment check: the content span's
-// rendered box must stay inside its .root container. Secondary: the
+// assertion is containment: the content span's rendered box must stay
+// inside its .root container. Secondary: the
 // declared text-overflow must actually be "ellipsis", not merely "hidden"
 // (which clips with no signal at all - the exact defect being fixed).
 export default function assert(measurement) {

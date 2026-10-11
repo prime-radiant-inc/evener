@@ -8,6 +8,7 @@ import (
 )
 
 func TestExpandHistoryEmitsEnvironmentTurnAsUserMessage(t *testing.T) {
+	t.Parallel()
 	turns := []schema.Turn{
 		schema.NewTurn(schema.TurnEnvironment, llm.User("<environment_context>\ncwd: \"/w\"\n</environment_context>")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),

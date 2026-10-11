@@ -312,12 +312,10 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 	s.worktreeDisposeOnly = true
 	t := *existing
 	t.Definition = tool.DefManageWorktreeDisposeOnly()
-	// Force a fresh schema compile for the narrowed parameters: Register reuses
-	// the existing registration's compiled (full) schema when Schema is nil, so
-	// the old registration must be dropped first.
+	// Drop the copied full schema: Register compiles one for the narrowed
+	// parameters.
 	t.Schema = nil
 	t.Execute = nil
-	s.reg.Unregister("manage_worktree")
 	_ = s.reg.Register(t)
 }
 
@@ -668,7 +666,7 @@ func (s *Session) newWorktreeGitRunner(ctx context.Context, env execenv.Executio
 // when the lane is not part of a repository.
 func resolveLaneMainRoot(local *execenv.LocalExecutionEnvironment, lanePath string) string {
 	probe := local.WithWorkingDirectory(lanePath)
-	defer probe.DisposeUnadoptedScratch()
+	defer func() { _ = probe.DisposeSessionScratch() }()
 	return execenv.ResolveMainRepoRoot(probe, lanePath)
 }
 
@@ -685,7 +683,7 @@ func laneControlEnv(local *execenv.LocalExecutionEnvironment, lanePath string) (
 		return nil, "", nil, false
 	}
 	controlEnv = local.WithWorkingDirectory(mainRoot)
-	return controlEnv, mainRoot, controlEnv.DisposeUnadoptedScratch, true
+	return controlEnv, mainRoot, func() { _ = controlEnv.DisposeSessionScratch() }, true
 }
 
 // worktreeControlEnv returns a local env rooted at mainRepoRoot for lifecycle
@@ -1112,7 +1110,14 @@ type worktreeCreateCoreResult struct {
 // caller decides what, if anything, to do with the returned path; the
 // returned run is the control-env GitRunner (rooted at mainRoot) so a caller
 // that leaves/enters an env (worktreeCreate) does not have to rebuild it.
-func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalExecutionEnvironment, name, baseRef string, ev worktree.LockEvent, lockReason, errPrefix string, sidecarMutate func(*worktree.Sidecar)) (worktreeCreateCoreResult, error) {
+//
+// branch names the git branch cut for the lane and may differ from name: a
+// delegate isolation lane's directory stays keyed to its delegate id while its
+// branch carries a mnemonic name (the delegate-lane branch-names design). The
+// branch is ref-format-validated and existence-checked exactly as the name's
+// branch was when the two were one string; the name keeps its own validation
+// because it remains the directory component and the sidecar key.
+func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalExecutionEnvironment, name, branch, baseRef string, ev worktree.LockEvent, lockReason, errPrefix string, sidecarMutate func(*worktree.Sidecar)) (worktreeCreateCoreResult, error) {
 	activeRoot := active.WorkingDirectory()
 
 	// Step 1: resolve the shared canonical Project through linked-worktree
@@ -1139,7 +1144,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	handedOff := false
 	defer func() {
 		if !handedOff {
-			disposeUnadoptedScratch(controlEnv)
+			endEnvironmentScratch(controlEnv)
 		}
 	}()
 
@@ -1163,8 +1168,8 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	if verr := s.ensureWorktreeGitVersion(run); verr != nil {
 		return worktreeCreateCoreResult{}, verr
 	}
-	if _, verr := run("check-ref-format", "--branch", name); verr != nil {
-		return worktreeCreateCoreResult{}, fmt.Errorf("%s: %q is not a valid git branch name", errPrefix, name)
+	if _, verr := run("check-ref-format", "--branch", branch); verr != nil {
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: %q is not a valid git branch name", errPrefix, branch)
 	}
 
 	baseSHA, err := resolveBaseFromActiveRoot(run, activeRoot, baseRef)
@@ -1172,8 +1177,8 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		return worktreeCreateCoreResult{}, err
 	}
 
-	if branchExists(run, name) {
-		msg := fmt.Sprintf("%s: branch %q already exists", errPrefix, name)
+	if branchExists(run, branch) {
+		msg := fmt.Sprintf("%s: branch %q already exists", errPrefix, branch)
 		if managedWorktreeExists(worktreePath) {
 			msg += "; use manage_worktree switch to enter its worktree"
 		}
@@ -1188,9 +1193,30 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	if mkErr := os.MkdirAll(metaDir, 0o755); mkErr != nil {
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: create metadata dir: %w", errPrefix, mkErr)
 	}
+
+	// A branch claim is identity: refuse a branch an existing sidecar claims,
+	// even a stale one whose branch is already gone from git (the residue a
+	// failed sidecar delete can leave after a branch collection). Otherwise a
+	// stale sidecar and a new lane would both claim the branch, and prune
+	// sweep 2 would judge each claim by its own — possibly outdated —
+	// metadata, deleting the new lane's branch. A stale claim self-heals:
+	// sweep 2 removes it ("no worktree, no branch") on its next run. A
+	// sidecar under this create's own name is the name collision the O_EXCL
+	// sidecar write that follows already refuses with its own message. A
+	// refusal implies the claiming sidecar exists, so the metadata dir above
+	// was not created by this create.
+	if claims, cErr := worktree.ListSidecars(metaDir); cErr == nil {
+		for _, c := range claims {
+			if c.Name != name && c.BranchOrName() == branch {
+				return worktreeCreateCoreResult{}, fmt.Errorf("%s: branch %q is claimed by worktree %q; run manage_worktree prune or pick another branch", errPrefix, branch, c.Name)
+			}
+		}
+	} else if !os.IsNotExist(cErr) {
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: listing worktree claims: %w", errPrefix, cErr)
+	}
 	sc := worktree.Sidecar{
 		Name:           name,
-		Branch:         name,
+		Branch:         branch,
 		BaseSHA:        baseSHA,
 		MergeTarget:    mergeTarget,
 		OriginalRoot:   project.CanonicalPath,
@@ -1202,6 +1228,16 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	}
 	if werr := s.writeWorktreeSidecar(metaDir, name, sc); werr != nil {
 		if os.IsExist(werr) {
+			// The name is occupied. Either a live concurrent create won the
+			// race, or a create died between its O_EXCL open and its write,
+			// leaving a stale sidecar ListSidecars hides. Only the stale,
+			// undecodable case is named — a fresh undecodable file may be the
+			// winner mid-write, and directing repair at it would point at a
+			// live reservation. The file is never removed here: malformed
+			// metadata does not authorize a destructive cleanup.
+			if corrErr := worktree.CorruptStaleReservation(metaDir, name, worktree.ReconcileGrace); corrErr != nil {
+				return worktreeCreateCoreResult{}, fmt.Errorf("%s: worktree %q is reserved by a corrupt sidecar (%w); remove that file to repair", errPrefix, name, corrErr)
+			}
 			return worktreeCreateCoreResult{}, fmt.Errorf("%s: a worktree named %q is already being created", errPrefix, name)
 		}
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: write sidecar: %w", errPrefix, werr)
@@ -1227,7 +1263,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		_ = s.deleteWorktreeSidecar(metaDir, name)
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: create worktree parent dir: %w", errPrefix, mkErr)
 	}
-	if _, addErr := run("worktree", "add", "--lock", "--reason", lockReason, "-b", name, "--", worktreePath, baseSHA); addErr != nil {
+	if _, addErr := run("worktree", "add", "--lock", "--reason", lockReason, "-b", branch, "--", worktreePath, baseSHA); addErr != nil {
 		// Step 6 crash-safety: a failed add (e.g. a refs/heads D/F conflict)
 		// must delete the just-written sidecar in the same call, or the name
 		// becomes uncreatable until a post-grace prune (spec §3 step 6).
@@ -1238,13 +1274,13 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	handedOff = true
 	return worktreeCreateCoreResult{
 		Path:     worktreePath,
-		Branch:   name,
+		Branch:   branch,
 		BaseSHA:  baseSHA,
 		MainRoot: project.CanonicalPath,
 		MetaDir:  metaDir,
 		Project:  project,
 		Run:      run,
-		Done:     func() { disposeUnadoptedScratch(controlEnv) },
+		Done:     func() { endEnvironmentScratch(controlEnv) },
 	}, nil
 }
 
@@ -1260,7 +1296,7 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 		return WorktreeResult{}, errors.New("manage_worktree requires a local execution environment")
 	}
 	marker := worktree.FormatSessionMarker(s.id)
-	res, err := s.worktreeCreateCore(ctx, active, name, baseRef, worktree.EvCreate, marker, "manage_worktree create", nil)
+	res, err := s.worktreeCreateCore(ctx, active, name, name, baseRef, worktree.EvCreate, marker, "manage_worktree create", nil)
 	if err != nil {
 		return WorktreeResult{}, err
 	}
@@ -1331,17 +1367,24 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 // native worktree tools spec §9 lifecycle step 1: create the delegate's
 // isolation lane as a managed worktree named for the delegate id, branched
 // from the parent's active HEAD, locked with the delegate's evener:dlg: marker.
+// branch is the git branch cut for the lane, and this function owns its
+// empty-means-id default: callers pass the descriptor's raw value, and an empty
+// branch names the branch with the delegate id (the delegate-lane branch-names
+// design — the directory, sidecar, and all addressing stay id-keyed).
 // It does not touch the parent's own env at all — the caller (createDelegate)
 // roots the CHILD env at the returned path via prepareSubagentRun's
 // workingDir override. Only valid for a local execution environment; errors
 // clearly otherwise (spec §9 "Tool surface").
-func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string) (path, branch, baseSHA, mainRoot string, project identifier.Project, err error) {
+func (s *Session) createDelegateWorktree(ctx context.Context, delegateID, branch string) (path, laneBranch, baseSHA, mainRoot string, project identifier.Project, err error) {
 	active, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return "", "", "", "", identifier.Project{}, errors.New(`delegate isolation:"worktree" requires a local execution environment`)
 	}
+	if branch == "" {
+		branch = delegateID
+	}
 	lockReason := worktree.FormatDelegateMarker(delegateID, s.id)
-	res, err := s.worktreeCreateCore(ctx, active, delegateID, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
+	res, err := s.worktreeCreateCore(ctx, active, delegateID, branch, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
 		sc.DelegateID = delegateID
 	})
 	if err != nil {
@@ -1360,7 +1403,9 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string)
 // is a `manage_worktree list`-visible annoyance an operator can clean up by
 // hand, never data loss, and failing the caller's already-failed spawn on a
 // cleanup error would only obscure the original error.
-func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, project identifier.Project) {
+// branch is the git branch the lane was cut on, so the rollback deletes the
+// branch git actually holds while the sidecar stays keyed to the id.
+func (s *Session) rollbackFreshDelegateWorktree(delegateID, branch, lanePath string, project identifier.Project) {
 	if project.ID == "" || project.CanonicalPath == "" {
 		return
 	}
@@ -1377,7 +1422,7 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 	defer done()
 	// Swallowed here, not at the core: this rollback runs on a delegate-create
 	// path whose own failure is the one worth reporting.
-	_ = s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
+	_ = s.rollbackFreshWorktree(run, lanePath, branch, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
 }
 
 // rollbackFreshWorktree takes back a just-created, still-empty managed
@@ -1539,6 +1584,19 @@ func lockStateFromPorcelain(porcelain []worktree.PorcelainEntry, path string) (l
 	return false, ""
 }
 
+// branchOfCheckout resolves the branch checked out in the worktree at path
+// from git's own worktree list — the only authoritative source once the
+// metadata sidecar is gone. A bare or detached worktree names no branch.
+func branchOfCheckout(porcelain []worktree.PorcelainEntry, path string) (string, bool) {
+	target := canonicalOrClean(path)
+	for _, e := range porcelain {
+		if canonicalOrClean(e.Path) == target && e.Branch != "" {
+			return strings.TrimPrefix(e.Branch, "refs/heads/"), true
+		}
+	}
+	return "", false
+}
+
 // worktreeControlRun builds a GitRunner over the control env rooted at
 // mainRepoRoot (spec §2 "Git control environment"), for lifecycle git calls
 // that must run outside the (possibly worktree-rooted) user-facing env.
@@ -1547,18 +1605,22 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 	if err != nil {
 		return nil, nil, err
 	}
-	return s.newWorktreeGitRunner(ctx, controlEnv), func() { disposeUnadoptedScratch(controlEnv) }, nil
+	return s.newWorktreeGitRunner(ctx, controlEnv), func() { endEnvironmentScratch(controlEnv) }, nil
 }
 
 // worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
-// LaneClosePassBudget — the budget the close disposal pass spends
+// close-cascade budget — the budget the close disposal pass spends
 // (session_worktree_close.go); the close-time cleanup runners themselves are
 // deliberately unbudgeted. A rollback of a refused or failed op must not
 // inherit the request context, which the close that refused the swap has
 // already cancelled. The returned done cancels the context and disposes the
 // control environment; the caller runs it when the rollback is over.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
-	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	budget := closePassBudget(closeCtx)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()
@@ -2321,6 +2383,18 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// finding) with little safety value, so the lane proceeds.
 	sc, scErr := worktree.ReadSidecar(metaDir, name)
 	hasSidecar := scErr == nil
+	// The lane's git branch. The sidecar names it for a parent-named delegate
+	// lane; with no sidecar, git's own worktree list names the checkout, and a
+	// lane whose branch stays unresolved (sidecar gone, worktree bare or
+	// detached) gets an empty branch rather than a guess from the directory
+	// name: the directory name is not the branch of a named lane, and step 9
+	// refuses to delete a branch it cannot attribute.
+	branch := ""
+	if hasSidecar {
+		branch = sc.BranchOrName()
+	} else if b, ok := branchOfCheckout(porcelain, target); ok {
+		branch = b
+	}
 	if scErr != nil && !os.IsNotExist(scErr) {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: reading metadata: %w", scErr)
 	}
@@ -2446,7 +2520,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 			// The branch is deleted iff it is really gone, never asserted
 			// from the fact that a dispose ran (a failed branch delete
 			// downgrades to a warning inside dispose, keeping the branch).
-			return WorktreeRemoveResult{Path: target, Branch: name, BranchDeleted: !branchExists(run, name)}, nil
+			return WorktreeRemoveResult{Path: target, Branch: branch, BranchDeleted: !branchExists(run, branch)}, nil
 		}
 		// Belt and braces: a successful dispose always evicts its blocker's
 		// retained child (disposeExecute step 7) regardless of whether the
@@ -2460,10 +2534,10 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// Step 8: remove the worktree itself. --force covers git's own
 	// dirty/untracked refusal — never locks, which step 3 already resolved
 	// (spec §5 remove step 8). A dirty tree only reaches here under
-	// force_dirty (step 6), so git's --force is needed whenever either flag is
-	// set.
+	// force_dirty (step 6), so force alone must leave Git's final dirty check
+	// active.
 	rmArgs := []string{"worktree", "remove"}
-	if force || forceDirty {
+	if forceDirty {
 		rmArgs = append(rmArgs, "--force")
 	}
 	rmArgs = append(rmArgs, "--", target)
@@ -2471,7 +2545,7 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: git worktree remove failed: %w", err)
 	}
 
-	result := WorktreeRemoveResult{Path: target, Branch: name, Warning: removeWarning}
+	result := WorktreeRemoveResult{Path: target, Branch: branch, Warning: removeWarning}
 
 	// Step 9: delete_branch, gated by evener's own merge check — never git's
 	// `branch -d`, which is HEAD-relative (spec §5 remove step 9: rev-6 review
@@ -2480,10 +2554,16 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// entirely (unconditional -D). A branch checked out in any other worktree
 	// cannot be deleted by git at all, gate or no gate — that refusal is
 	// surfaced with the checkout location git itself reports.
-	if deleteBranch {
-		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+name)
+	if deleteBranch && branch == "" {
+		// The branch could not be attributed: no sidecar, and the worktree
+		// named no checked-out branch before its removal. Falling back to the
+		// directory name would delete any unrelated branch that happens to
+		// share it, so nothing is deleted.
+		result.BranchKeptReason = "branch could not be resolved (no metadata sidecar, no checked-out branch)"
+	} else if deleteBranch {
+		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+branch)
 		if tipErr != nil {
-			result.BranchKeptReason = fmt.Sprintf("branch %q not found: %v", name, tipErr)
+			result.BranchKeptReason = fmt.Sprintf("branch %q not found: %v", branch, tipErr)
 		} else {
 			tipSHA := strings.TrimSpace(tipOut)
 			passesGate := force
@@ -2500,15 +2580,15 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 					case mr.Merged:
 						passesGate = true
 					case mr.TargetUnknown:
-						evidence = fmt.Sprintf("branch %q merge target unknown; tip %s not verified merged; re-invoke with force to delete anyway", name, shortSHA(tipSHA))
+						evidence = fmt.Sprintf("branch %q merge target unknown; tip %s not verified merged; re-invoke with force to delete anyway", branch, shortSHA(tipSHA))
 					default:
-						evidence = fmt.Sprintf("branch %q is not merged into %s (tip %s); neither ancestry nor patch-equivalence holds; merge first or re-invoke with force to delete anyway", name, mr.TargetRef, shortSHA(tipSHA))
+						evidence = fmt.Sprintf("branch %q is not merged into %s (tip %s); neither ancestry nor patch-equivalence holds; merge first or re-invoke with force to delete anyway", branch, mr.TargetRef, shortSHA(tipSHA))
 					}
 				}
 			}
 			if passesGate {
-				if _, err := run("branch", "-D", name); err != nil {
-					result.BranchKeptReason = fmt.Sprintf("git refused to delete branch %q: %v", name, err)
+				if _, err := run("branch", "-D", branch); err != nil {
+					result.BranchKeptReason = fmt.Sprintf("git refused to delete branch %q: %v", branch, err)
 				} else {
 					result.BranchDeleted = true
 				}
@@ -2520,19 +2600,19 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 
 	// Step 10: sidecar disposition. Gone (deleted here) → delete the sidecar;
 	// survives → keep it and mark worktree_removed + tip_sha_at_removal. The
-	// mark write is UpdateSidecar's plain truncating write, not atomic — a
-	// crash mid-write can leave it torn or unwritten, which sweep 2's
-	// reconciliation (spec §5 prune sweep 2) explicitly tolerates via its "or
-	// no removal record" branch: a sidecar with no (or a torn) removal record
-	// is judged exactly like tip == base_sha for merge-gated collection, so an
-	// unmarked sidecar is still handled correctly, just less precisely
-	// reported meanwhile.
+	// mark write is UpdateSidecar's atomic replace (a temp write renamed over
+	// the target), so a crash mid-write leaves the pre-mark record rather than
+	// a torn one, which sweep 2's reconciliation (spec §5 prune sweep 2)
+	// explicitly tolerates via its "or no removal record" branch: a sidecar
+	// carrying no removal record is judged exactly like tip == base_sha for
+	// merge-gated collection, so an unmarked sidecar is still handled
+	// correctly, just less precisely reported meanwhile.
 	if result.BranchDeleted {
 		if err := s.deleteWorktreeSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
 			return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: deleting sidecar: %w", err)
 		}
 	} else if hasSidecar {
-		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+name)
+		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+branch)
 		if tipErr == nil {
 			tipSHA := strings.TrimSpace(tipOut)
 			if err := s.updateWorktreeSidecar(metaDir, name, func(sc *worktree.Sidecar) {
@@ -3049,7 +3129,7 @@ func (s *Session) worktreePruneSweep1(ctx context.Context, run worktree.GitRunne
 				continue
 			}
 		}
-		if cErr := s.collectLane(run, metaDir, e.Name, e.Path, true, policy); cErr != nil {
+		if cErr := s.collectLane(run, metaDir, e.Name, sc.BranchOrName(), e.Path, true, policy); cErr != nil {
 			// The release was made for a removal that did not happen. Put the
 			// marker back so a lane this pass could not collect is exactly as
 			// protected as it was, rather than left open to another session's
@@ -3129,7 +3209,10 @@ func (s *Session) restoreStrandedOwnMarker(run worktree.GitRunner, lanePath stri
 // wrapped, and the caller decides whether to abort (prune) or treat them as a
 // lost race (P3). The mark is best-effort inside markDisposed itself, so it never
 // blocks the branch/sidecar cleanup.
-func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, path string, hasWorktree bool, policy laneSweepPolicy) error {
+// collectLane deletes the lane's branch via the branch parameter — a
+// parent-named delegate lane's branch differs from the name its sidecar and
+// directory are keyed by.
+func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, branch, path string, hasWorktree bool, policy laneSweepPolicy) error {
 	if policy.prepareDispose != nil {
 		if err := policy.prepareDispose(name); err != nil {
 			return fmt.Errorf("preparing stable delegate %q for disposal: %w", name, err)
@@ -3144,8 +3227,17 @@ func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, path string
 			}
 		}
 	}
-	if _, err := run("branch", "-D", name); err != nil {
-		return fmt.Errorf("deleting branch %q: %w", name, err)
+	if _, err := run("branch", "-D", branch); err != nil {
+		// Another path may have completed this deletion first (a dispose that
+		// deletes the branch before its worktree, or a collection whose sidecar
+		// outlived the branch). An already-absent branch is this step's success
+		// state, so continue to the sidecar delete. Doubt is non-destructive, as
+		// in the worktree remove above: a branch that still exists, or a probe
+		// that could not answer, stays a real failure.
+		gone, probeErr := branchGone(run, branch)
+		if probeErr != nil || !gone {
+			return fmt.Errorf("deleting branch %q: %w", branch, err)
+		}
 	}
 	if err := s.deleteWorktreeSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("deleting sidecar for %q: %w", name, err)
@@ -3190,7 +3282,7 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 		registered[e.Name] = true
 	}
 
-	sidecars, err := worktree.ListSidecars(metaDir)
+	sidecars, corrupt, err := worktree.ListSidecarsWithErrors(metaDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -3203,6 +3295,36 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 	grace := policy.grace
 	if grace == 0 {
 		grace = worktree.ReconcileGrace
+	}
+
+	// A reserved name whose bytes do not decode — a crash-torn create that no
+	// error path could clean up — is invisible to ListSidecars, so reconciliation
+	// must surface it rather than skip it: the name stays uncreatable until a
+	// human removes the file, and naming it here is how that repair is
+	// discoverable. It is reported, never deleted: malformed metadata does not
+	// authorize a destructive cleanup. The same grace that protects an in-flight
+	// create's not-yet-written sidecar applies here, so a create caught between
+	// its O_EXCL open and its write is not misreported as corrupt.
+	for _, ce := range corrupt {
+		if ctxCancelled(ctx) {
+			break
+		}
+		if registered[ce.Name] {
+			continue // a live registered worktree exists; sweep 1 already reports it "sidecar-less"
+		}
+		age, ageErr := worktree.SidecarAge(metaDir, ce.Name)
+		switch worktree.ClassifyCorruptReservation(ce.Error, age, ageErr, grace) {
+		case worktree.CorruptReservationInGrace:
+			skipped = append(skipped, WorktreePruneEntry{Name: ce.Name, Reason: "in-grace"})
+		case worktree.CorruptReservationStaleCorrupt:
+			skipped = append(skipped, WorktreePruneEntry{
+				Name:   ce.Name,
+				Reason: "corrupt sidecar: " + ce.Error.Error(),
+			})
+		default:
+			// None: not an undecodable record. Indeterminate: deleted between the
+			// listing read and the age probe. Neither has anything to report.
+		}
 	}
 
 	for _, sc := range sidecars {
@@ -3223,7 +3345,8 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 			continue
 		}
 
-		if !branchExists(run, sc.Name) {
+		branch := sc.BranchOrName()
+		if !branchExists(run, branch) {
 			if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
 				if policy.abortOnError {
 					return nil, nil, fmt.Errorf("manage_worktree prune: deleting stale sidecar %q: %w", sc.Name, err)
@@ -3235,7 +3358,7 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 			continue
 		}
 
-		tipOut, tErr := run("rev-parse", "--verify", "refs/heads/"+sc.Name)
+		tipOut, tErr := run("rev-parse", "--verify", "refs/heads/"+branch)
 		if tErr != nil {
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "rev-parse failed: " + tErr.Error()})
 			continue
@@ -3280,9 +3403,9 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 				continue
 			}
 		}
-		if _, err := run("branch", "-D", sc.Name); err != nil {
+		if _, err := run("branch", "-D", branch); err != nil {
 			reason := "checked out"
-			if loc, ok := checkoutLocationOf(run, sc.Name); ok {
+			if loc, ok := checkoutLocationOf(run, branch); ok {
 				reason = "checked out at " + loc
 			}
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reason})
@@ -3357,6 +3480,27 @@ func resolveBaseFromActiveRoot(run worktree.GitRunner, activeRoot, baseRef strin
 func branchExists(run worktree.GitRunner, name string) bool {
 	_, err := run("show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	return err == nil
+}
+
+// branchGone reports whether refs/heads/<name> is confirmed absent. It uses
+// for-each-ref, which exits 0 when the pattern matches nothing, so a non-nil
+// error means the probe itself could not answer and callers must treat it as
+// doubt, not as absence: unlike branchExists, this distinguishes the two.
+func branchGone(run worktree.GitRunner, name string) (bool, error) {
+	out, err := run("for-each-ref", "--format=%(refname)", "refs/heads/"+name)
+	if err != nil {
+		return false, err
+	}
+	// for-each-ref also matches a literal pattern as a prefix up to a slash, so
+	// refs/heads/foo matches refs/heads/foo/bar. Only an exact refname line means
+	// the branch itself still exists; a descendant line means foo is gone.
+	want := "refs/heads/" + name
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.TrimSpace(line) == want {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // managedWorktreeExists reports whether a managed worktree already lives at

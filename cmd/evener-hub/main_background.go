@@ -49,7 +49,7 @@ func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
 	}
 }
 
-func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, past *hubcore.PastIndex, roster *hubcore.Roster, web *WebServer) {
+func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -60,7 +60,12 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	defer stop()
 	run := func() {
 		decisions, _ := archive.Decisions()
-		m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
+		// Derive from the same remote-inclusive metas/live the navigation tree
+		// uses: sessions on other hosts reach the hub only through the
+		// remote-thread cache, so reading the roster alone left their
+		// question/approval out of the broadcast (#2529).
+		snapshot := web.navigationSnapshot(ctx)
+		m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 		w.Tick(m, sum)
 	}
 	run()
@@ -74,6 +79,58 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 			run()
 		}
 	}
+}
+
+// refreshHubMessageSearch keeps the message search index (S14) in step with
+// the transcripts the past index lists: once now, then every interval (the
+// past index's own rebuild interval). A refresh reads again only the
+// transcripts that changed.
+func refreshHubMessageSearch(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex, interval time.Duration) {
+	if index == nil || ctx.Err() != nil {
+		return
+	}
+	ticks, stop := hubTicker(interval)
+	defer stop()
+	refresh := func() {
+		failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
+		for _, failure := range failures {
+			fmt.Fprintf(os.Stderr, "[hub] message search: session %s: %v\n", failure.SessionID, failure.Err)
+		}
+		if err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "[hub] message search: %v\n", err)
+		}
+	}
+	refresh()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			refresh()
+		}
+	}
+}
+
+// messageSearchSessions is every session the past index lists, with its
+// transcript.
+func messageSearchSessions(entries []hubcore.PastEntry) []hubcore.MessageSearchSession {
+	sessions := make([]hubcore.MessageSearchSession, 0, len(entries))
+	for _, entry := range entries {
+		sessions = append(sessions, hubcore.MessageSearchSession{ID: entry.Meta.ID, TranscriptPath: pastTranscriptPath(entry)})
+	}
+	return sessions
+}
+
+// watchHubNotices announces the hub's notice changes (S11) until ctx ends.
+func watchHubNotices(ctx context.Context, web *WebServer) {
+	if ctx.Err() != nil {
+		return
+	}
+	ticks, stop := hubTicker(noticeInterval)
+	defer stop()
+	runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
+		return web.notices.watchRead(ctx, web.appRPC)
+	}, web.appRPC)
 }
 
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go
@@ -105,7 +162,12 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	}
 }
 
-func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, cache *hubcore.RemoteThreadCache, web *WebServer) {
+// refreshHubRemoteThreads refreshes the web server's remote-thread cache on a
+// ~30s ticker + poke. Capture and publish both go through web's own
+// RemoteThreadCache — the walk reads its per-source generations at read time
+// and the publish compares them under the publish lock — so the two can never
+// disagree about which cache owns a registration.
+func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, web *WebServer) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -114,12 +176,21 @@ func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, cache *h
 	refresh := func() {
 		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
+		// The walk captures each source's identity generation immediately
+		// before it reads the source (refreshRemoteThreadSnapshot) and hands
+		// the read-time capture to the publish, which compares it under the
+		// publish lock: a source removed after its read — or removed and
+		// re-added, which registers a strictly newer generation (the round-10
+		// finding: the first registration's rows must not publish under the
+		// re-added identity) — mismatches, while a host added mid-walk is
+		// captured under the registration that owns its rows and still
+		// appears on this tick.
 		snapshot := web.refreshRemoteThreadSnapshot(refreshCtx)
-		cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		web.cfg.RemoteThreadCache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
 			Threads:  snapshot.threads,
 			Complete: snapshot.complete,
 			Sources:  snapshot.sources,
-		})
+		}, snapshot.sourceGenerations)
 	}
 	refresh()
 	for {

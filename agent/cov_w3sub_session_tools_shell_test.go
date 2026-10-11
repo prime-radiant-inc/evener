@@ -30,6 +30,7 @@ func w3sub_call(t *testing.T, reg *tool.Registry, env execenv.ExecutionEnvironme
 // The shell handler rejects a negative max_runtime_ms in parseShellToolArgs
 // before it ever touches the environment (session_tools_shell.go:131).
 func TestW3Sub_RegisterShellTools_ParseError(t *testing.T) {
+	t.Parallel()
 	reg := w3sub_shellReg(t, nil)
 	res := w3sub_call(t, reg, &captureEnv{wd: "/work"}, "shell", map[string]any{
 		"command": "echo hi", "max_runtime_ms": -5,
@@ -42,6 +43,7 @@ func TestW3Sub_RegisterShellTools_ParseError(t *testing.T) {
 // A StreamingExecutor environment with no initialized JobManager fails fast
 // (session_tools_shell.go:135). The local execenv is a StreamingExecutor.
 func TestW3Sub_RegisterShellTools_StreamingNoJobManager(t *testing.T) {
+	t.Parallel()
 	reg := w3sub_shellReg(t, nil) // nil session -> nil jobManager
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	res := w3sub_call(t, reg, env, "shell", map[string]any{"command": "echo hi"})
@@ -53,6 +55,7 @@ func TestW3Sub_RegisterShellTools_StreamingNoJobManager(t *testing.T) {
 // list_dir parses its optional offset and limit arguments before delegating to
 // the environment (session_tools_shell.go:158, 162).
 func TestW3Sub_RegisterShellTools_ListDirOffsetLimit(t *testing.T) {
+	t.Parallel()
 	reg := w3sub_shellReg(t, nil)
 	// captureEnv.ListDirectory returns an error, which is fine: the offset/limit
 	// arg-parsing arms run first, and the error arm is exercised too.
@@ -67,6 +70,7 @@ func TestW3Sub_RegisterShellTools_ListDirOffsetLimit(t *testing.T) {
 // grep parses its optional case_insensitive and max_results arguments before
 // delegating to the environment (session_tools_shell.go:182, 186).
 func TestW3Sub_RegisterShellTools_GrepArgs(t *testing.T) {
+	t.Parallel()
 	reg := w3sub_shellReg(t, nil)
 	res := w3sub_call(t, reg, &captureEnv{wd: "/work"}, "grep", map[string]any{
 		"pattern": "x", "path": "/work", "case_insensitive": true, "max_results": 5.0, "output_mode": "content",
@@ -78,6 +82,7 @@ func TestW3Sub_RegisterShellTools_GrepArgs(t *testing.T) {
 
 // glob surfaces an environment error from its lookup (session_tools_shell.go:207).
 func TestW3Sub_RegisterShellTools_GlobError(t *testing.T) {
+	t.Parallel()
 	reg := w3sub_shellReg(t, nil)
 	res := w3sub_call(t, reg, &captureEnv{wd: "/work"}, "glob", map[string]any{
 		"pattern": "*.go", "path": "/work",

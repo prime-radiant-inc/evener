@@ -15,6 +15,7 @@ import (
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/llm"
 )
 
@@ -179,10 +180,7 @@ func (s *Session) webFetchWithRuntime(ctx context.Context, rawURL string, questi
 
 	// Truncate content for the cheap model, retaining the complete converted
 	// content for the bounded raw fallback below.
-	modelContent := readableContent
-	if len(modelContent) > webFetchMaxContent {
-		modelContent = modelContent[:webFetchMaxContent]
-	}
+	modelContent := runetrim.Cut(readableContent, webFetchMaxContent)
 
 	// Call cheap model to answer the question.
 	p := s.currentProfile()

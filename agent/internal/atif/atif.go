@@ -138,6 +138,11 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 	for i := 0; i < len(entries); i++ {
 		entry := entries[i]
 		turn := entry.Turn
+		if turn.Kind.TranscriptOnly() {
+			// Written for the history projection, never conversation: a
+			// trajectory has no step for it.
+			continue
+		}
 
 		switch turn.Kind {
 		case schema.TurnUserInput:
@@ -154,10 +159,11 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 		case schema.TurnAssistant:
 			step := convertAssistantTurn(turn, stepID, opts)
 
-			// Resolution markers are private and transparent to tool-round
-			// structure, so look through them for this assistant's observation.
+			// Resolution markers and transcript-only entries are transparent to
+			// tool-round structure, so look through them for this assistant's
+			// observation.
 			resultIndex := i + 1
-			for resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution {
+			for resultIndex < len(entries) && (entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution || entries[resultIndex].Turn.Kind.TranscriptOnly()) {
 				resultIndex++
 			}
 			if resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnToolResults {

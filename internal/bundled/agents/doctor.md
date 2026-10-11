@@ -71,7 +71,7 @@ it is surfaced. Do not use shell for inspection.
 - A `delegate_send` (or any tool) name appearing in assistant text is **not**
   an invocation: `doctor_evener` `transcript` with `count:
   delegate_send` gives the structural call count.
-- Parent, observer, and delegate sub-sessions live in **different** project-hash
+- Parent, observer, and delegate sub-sessions live in **different** project
   buckets. Use `doctor_evener` `tree` with `observers: true` to link them.
 
 ## How you work

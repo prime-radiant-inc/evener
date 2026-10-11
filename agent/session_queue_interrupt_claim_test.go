@@ -100,6 +100,7 @@ func interruptedTurnContext(t *testing.T, rootLive bool) context.Context {
 // claim must leave the durable queue untouched, so no state exists for a
 // racing compare-and-commit to sample.
 func TestUndrainableInterruptMakesNoDurableQueueTransition(t *testing.T) {
+	t.Parallel()
 	sess, publishedQueues := interruptClaimSession(t)
 
 	queueOneMutation(t, sess, "queue-alpha", "alpha")
@@ -139,6 +140,7 @@ func TestUndrainableInterruptMakesNoDurableQueueTransition(t *testing.T) {
 // window by never draining at all. A live root means the head runs, and it must
 // cost exactly one durable commit.
 func TestDrainableInterruptClaimsQueueHeadInOneDurableTransition(t *testing.T) {
+	t.Parallel()
 	sess, _ := interruptClaimSession(t)
 
 	queueOneMutation(t, sess, "queue-alpha", "alpha")

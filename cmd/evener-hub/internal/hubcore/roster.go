@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -26,12 +27,38 @@ import (
 // rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID          string
-	Status             string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags        []string // the status flags the daemon reported alongside Status
-	Crashed            bool     // true only for a retained record whose daemon PID is confirmed gone
-	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
-	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	SessionID         string
+	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	ActiveFlags       []string // the status flags the daemon reported alongside Status
+	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
+	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
+	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	// PendingEscalations is the daemon's blocked escalation cards, in the order
+	// it raised them, so the oldest is first. Every producer sets it from the
+	// same read as PendingEscalation, which stays len(PendingEscalations) > 0.
+	// A card carries the full literal denied path for informed consent, so it
+	// reaches human clients only, as thread/read's cards already do.
+	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion is the first question of the daemon's pending ask
+	// (S1b), from the same root row as PendingAsk; nil while none waits and
+	// from a daemon that predates it. A row names it only while PendingAsk is
+	// set, and rosterFingerprint hashes it: a question answered and another
+	// asked between two probes leaves PendingAsk and Status where they were.
+	PendingQuestion *appwire.PendingQuestion
+	// Failure summarizes the failed turn the session rests on (S1c), from the
+	// same root row as Status; the daemon sends it only while that status is
+	// systemError. rosterFingerprint hashes it: a turn retried and failed
+	// again between two probes leaves Status where it was.
+	Failure *appwire.ThreadFailure
+	// Capabilities mirrors the daemon's own Evener capability set from the
+	// probe that produced this entry, so list projections can advertise the
+	// daemon's answer instead of a hand approximation (#1840's one-answer
+	// rule: the same session must not read differently from ListThreads and
+	// from ThreadRead). CapabilitiesKnown false means no probe read one and
+	// the approximation takes over; the zero value alone is not that signal,
+	// because a daemon can legitimately answer an all-false set.
+	Capabilities       appwire.ThreadCapabilities
+	CapabilitiesKnown  bool
 	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
 	// RunningSubagentStates carries each listed child's projected status
 	// ("active", "idle", ...) when the daemon reports it. Retained stable
@@ -70,15 +97,65 @@ type LiveEntry struct {
 	// LifecycleFresh reports whether Lifecycle (or its absence) came from a
 	// daemon/status answer in that same probe.
 	LifecycleFresh bool
+	// Tasks is the session's task-list progress as of the probe that produced
+	// this entry, which the row's task line shows. nil means the daemon cannot
+	// read its task state; a present zero is an authoritative empty list.
+	Tasks *appwire.TaskAggregate
+	// Activity is the daemon's pulse meter sample for the root's whole tree,
+	// from the probe that produced this entry (S5). evener/activity/read serves
+	// it and navigation never does. rosterFingerprint leaves it out on purpose:
+	// its bars move every minute a session works, and hashing them would bump
+	// navigation revisions and broadcast an invalidation on every probe.
+	Activity *appwire.ThreadActivity
+	// Subagents is the root's whole-tree subagent tally from its probe (S3). It
+	// renders on the row's last line and Subagents chip, so rosterFingerprint
+	// hashes it; the counts move only when a subagent's run starts or ends.
+	Subagents appwire.SubagentTally
+	// LastTurnEndedAt is when the session's last turn ended, stamped by its
+	// daemon at the turn boundary (S4). It decides Finished versus Idle against
+	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
+	// and ends between two probes leaves Status unchanged and moves only this.
+	LastTurnEndedAt time.Time
+	// Profile is the provider instance the session's current model runs on,
+	// from its probe; the embedded Entry's Provider is the one it started on,
+	// and a model switch leaves that behind. A sign-in notice counts the
+	// sessions it blocks by it (S11). No row shows it, so rosterFingerprint
+	// leaves it out.
+	Profile string
+	// LastMessage is the opening of the session's last agent message, from its
+	// probe (S1d): a Finished row's why line. rosterFingerprint hashes it: a
+	// message can land while the status and the turn end hold still.
+	LastMessage string
+	// CurrentModel is the model the session runs now, from its probe (S17);
+	// the embedded Entry's Model is the one it started on, and a model switch
+	// leaves that behind. A row names it, so rosterFingerprint hashes it: a
+	// switch moves nothing else a row shows.
+	CurrentModel string
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
 type ProbeResult struct {
-	SessionID             string
-	Status                string
-	ActiveFlags           []string
-	PendingAsk            bool
-	PendingEscalation     bool
+	SessionID         string
+	Status            string
+	ActiveFlags       []string
+	PendingAsk        bool
+	PendingEscalation bool
+	// PendingEscalations mirrors LiveEntry.PendingEscalations: the blocked
+	// cards from the same root row, in raise order.
+	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion mirrors LiveEntry.PendingQuestion: the first pending
+	// question from the same root row as PendingAsk (S1b).
+	PendingQuestion *appwire.PendingQuestion
+	// Failure mirrors LiveEntry.Failure: the failure summary from the same
+	// root row as Status (S1c).
+	Failure *appwire.ThreadFailure
+	// Capabilities is the daemon's own Evener capability set from the same
+	// projection cut as Status. CapabilitiesKnown reports whether this probe
+	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
+	// absent, and consumers fall back to their approximation — never to an
+	// empty set they would mistake for the daemon's answer.
+	Capabilities          appwire.ThreadCapabilities
+	CapabilitiesKnown     bool
 	RunningSubagentIDs    []string
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
@@ -90,6 +167,27 @@ type ProbeResult struct {
 	LifecycleFresh bool
 	Watches        []appwire.EvenerWatchInfo
 	ChildWatches   map[string][]appwire.EvenerWatchInfo
+	// Tasks mirrors LiveEntry.Tasks: the root's task-list progress from the
+	// same projection cut as Status.
+	Tasks *appwire.TaskAggregate
+	// Activity is the root tree's pulse meter sample (S5), nil from a daemon
+	// that predates it. See LiveEntry.Activity.
+	Activity *appwire.ThreadActivity
+	// Subagents is the listed root's whole-tree subagent tally (S3); zero from
+	// a daemon that predates it and for a tree with no subagent.
+	Subagents appwire.SubagentTally
+	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
+	// a daemon that predates it, or before any turn has ended.
+	LastTurnEndedAt time.Time
+	// Profile mirrors LiveEntry.Profile: the provider instance of the root's
+	// current model.
+	Profile string
+	// LastMessage mirrors LiveEntry.LastMessage: the opening of the listed
+	// root's last agent message (S1d), empty from a daemon that predates it.
+	LastMessage string
+	// CurrentModel mirrors LiveEntry.CurrentModel: the listed root's model as
+	// its daemon reports it now (S17).
+	CurrentModel string
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -136,9 +234,14 @@ func cloneChildWatches(in map[string][]appwire.EvenerWatchInfo) map[string][]app
 	return out
 }
 
-func cloneLiveEntry(in LiveEntry) LiveEntry {
+// CloneLiveEntry returns a copy of in that shares no slice, map or pointer
+// with it, so a roster hand-off never aliases the roster's own snapshot.
+func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
+	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
+	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
+	out.Failure = appwire.CloneThreadFailure(in.Failure)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -146,6 +249,8 @@ func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out.Lifecycle = cloneDaemonLifecycle(in.Lifecycle)
 	out.Watches = cloneWatches(in.Watches)
 	out.ChildWatches = cloneChildWatches(in.ChildWatches)
+	out.Tasks = appwire.CloneTaskAggregate(in.Tasks)
+	out.Activity = appwire.CloneThreadActivity(in.Activity)
 	return out
 }
 
@@ -331,7 +436,7 @@ func (r *Roster) SetProcessIdentity(probe func(rendezvous.Entry) ProcessIdentity
 func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 	r := NewRoster("", nil)
 	for _, e := range entries {
-		e = cloneLiveEntry(e)
+		e = CloneLiveEntry(e)
 		r.byPID[e.PID] = e
 		if e.SessionID != "" {
 			r.bySess[e.SessionID] = e
@@ -385,6 +490,71 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		}
 		_, _ = h.Write([]byte{0})
 		if bySess[id].PendingAsk {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		// An escalation moving while the status holds still changes the
+		// Clear bit list rows advertise — the fallback folds it out the way
+		// the daemon's clear gate does — so it must bump the fingerprint like
+		// its sibling ask flag, or onChange never invalidates.
+		if bySess[id].PendingEscalation {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		// A row names the oldest card's action and target, and a card replaced
+		// while another stays pending holds the flag above still, so each card
+		// moves the fingerprint too. A card's ID names it for its whole life, so
+		// the IDs in raise order cover every card field.
+		for _, card := range bySess[id].PendingEscalations {
+			_, _ = h.Write([]byte(card.EscalationID))
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0})
+		// A row names the first pending question, and a question answered and
+		// another asked between two probes holds the ask flag and the status
+		// still (S1b).
+		if question := bySess[id].PendingQuestion; question != nil {
+			_, _ = h.Write([]byte(question.Question))
+			_, _ = h.Write([]byte{0})
+			for _, label := range question.Options {
+				_, _ = h.Write([]byte(label))
+				_, _ = h.Write([]byte{0})
+			}
+			_, _ = h.Write([]byte(strconv.Itoa(question.Count)))
+		}
+		_, _ = h.Write([]byte{0})
+		// A Failed row says why, and a turn retried and failed again between
+		// two probes holds the status still (S1c).
+		if failure := bySess[id].Failure; failure != nil {
+			_, _ = h.Write([]byte(failure.Title))
+			_, _ = h.Write([]byte{0})
+			if cause := failure.Cause; cause != nil {
+				for _, field := range []string{cause.Kind, cause.Provider, cause.Model, strconv.Itoa(cause.Status)} {
+					_, _ = h.Write([]byte(field))
+					_, _ = h.Write([]byte{0})
+				}
+			}
+		}
+		_, _ = h.Write([]byte{0})
+		// The daemon's capability answer is per-session observable state in
+		// the same sense the status is: bits fold daemon state the status
+		// string itself does not (Clear folds the clear-blocked reason, Send
+		// folds activity), so a bit can flip while the status holds still.
+		// Reflection walks the whole set so a capability bit added later
+		// moves the fingerprint without anyone having to remember this site.
+		capsV := reflect.ValueOf(bySess[id].Capabilities)
+		for _, fieldValue := range capsV.Fields() {
+			// Hash every field whatever its kind: Bool() would panic on a
+			// future non-bool ThreadCapabilities field, and skipping a field
+			// would silently drop it from the fingerprint.
+			if fieldValue.Kind() != reflect.Bool {
+				_, _ = fmt.Fprintf(h, "%v", fieldValue.Interface())
+			} else if fieldValue.Bool() {
+				_, _ = h.Write([]byte{1})
+			}
+			_, _ = h.Write([]byte{0})
+		}
+		if bySess[id].CapabilitiesKnown {
 			_, _ = h.Write([]byte{1})
 		}
 		_, _ = h.Write([]byte{0})
@@ -468,6 +638,29 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// fingerprint or onChange never invalidates navigation. Sorted on a
 		// copy: a daemon listing its watches in another order is not a change.
 		writeWatchFingerprint(h, bySess[id].Watches)
+		_, _ = h.Write([]byte{0})
+		// The task line renders on the session row too, so a task finishing,
+		// being cancelled or starting must move the fingerprint while the
+		// status holds still, or onChange never invalidates navigation.
+		writeTaskFingerprint(h, bySess[id].Tasks)
+		// A subagent failing or finishing changes the row's last line (S3).
+		tally := bySess[id].Subagents
+		for _, count := range []int{tally.Running, tally.Failed, tally.Done} {
+			_, _ = h.Write([]byte(strconv.Itoa(count)))
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0})
+		// A turn that starts and ends between two probes leaves Status where it
+		// was and moves only this, and it turns the row Finished (S4).
+		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
+		_, _ = h.Write([]byte{0})
+		// A Finished row shows its last message, which can land while the
+		// status and the turn end hold still (S1d).
+		_, _ = h.Write([]byte(bySess[id].LastMessage))
+		_, _ = h.Write([]byte{0})
+		// A row names its session's model, which a switch moves while
+		// everything else a row shows holds still (S17).
+		_, _ = h.Write([]byte(bySess[id].CurrentModel))
 	}
 	return h.Sum64()
 }
@@ -528,6 +721,29 @@ func writeWatchFingerprint(h hash.Hash64, watches []appwire.EvenerWatchInfo) {
 			_, _ = h.Write([]byte(at))
 			_, _ = h.Write([]byte{0})
 		}
+		_, _ = h.Write([]byte{0})
+	}
+}
+
+// writeTaskFingerprint folds one session's task-list progress into the roster
+// hash: the counts and the current task that the row's task line shows.
+// Remaining is left out because the three counts determine it, and a daemon
+// that cannot read its task state (nil) hashes like an empty list because
+// neither puts a task line on the row.
+func writeTaskFingerprint(h hash.Hash64, tasks *appwire.TaskAggregate) {
+	var progress appwire.TaskAggregate
+	if tasks != nil {
+		progress = *tasks
+	}
+	var current appwire.TaskSummary
+	if progress.Current != nil {
+		current = *progress.Current
+	}
+	for _, field := range []string{
+		strconv.Itoa(progress.Total), strconv.Itoa(progress.Done), strconv.Itoa(progress.Cancelled),
+		strconv.Itoa(current.ID), current.Description,
+	} {
+		_, _ = h.Write([]byte(field))
 		_, _ = h.Write([]byte{0})
 	}
 }
@@ -844,7 +1060,7 @@ func sessionsGone(prev map[string]LiveEntry, prevUnconfirmed []rendezvous.Entry,
 		if named(unconfirmed, id) {
 			continue
 		}
-		gone = append(gone, cloneLiveEntry(was))
+		gone = append(gone, CloneLiveEntry(was))
 	}
 	sort.Slice(gone, func(i, j int) bool { return gone[i].SessionID < gone[j].SessionID })
 	return gone
@@ -966,7 +1182,7 @@ func (r *Roster) listLocked() []LiveEntry {
 	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
-		e = cloneLiveEntry(e)
+		e = CloneLiveEntry(e)
 		sessionID := envvars.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
@@ -991,6 +1207,26 @@ func (r *Roster) listLocked() []LiveEntry {
 func (r *Roster) IsSubagentActive(sessionID string) bool {
 	_, live := r.SubagentState(sessionID)
 	return live
+}
+
+// RestartRequired reports whether any live daemon on this roster needs a
+// restart (an incompatible build: thread status restart-required). It is the
+// direct local scan evener/host/running's health predicate evaluates — under
+// the roster's read lock, without List's per-entry clones and sort — and never
+// the authenticated-probe path (restartRequiredDaemon), which dials and
+// verifies ownership.
+func (r *Roster) RestartRequired() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.byPID {
+		if !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired {
+			return true
+		}
+	}
+	return false
 }
 
 // SubagentState resolves a running in-process child's own projected status.
@@ -1125,7 +1361,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.bySess[sessionID]
-	e = cloneLiveEntry(e)
+	e = CloneLiveEntry(e)
 	return e, ok
 }
 
@@ -1212,7 +1448,7 @@ func (r *Roster) ResidentEntries() []ResidentEntry {
 	}
 	sort.Ints(pids)
 	for _, pid := range pids {
-		live := cloneLiveEntry(r.byPID[pid])
+		live := CloneLiveEntry(r.byPID[pid])
 		out = append(out, ResidentEntry{Entry: live.Entry, Confirmed: &live})
 	}
 	for _, claim := range r.unconfirmed {
@@ -1221,23 +1457,27 @@ func (r *Roster) ResidentEntries() []ResidentEntry {
 	return out
 }
 
+// liveEntryFromProbe publishes a probe's answer as a roster entry. The shared
+// thread-row facts come through LiveEntryThreadFacts and the result copies
+// through CloneLiveEntry, so the roster never shares a slice, map or pointer
+// with the prober's result, and a row fact added to both types is copied in
+// one place.
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
-	return LiveEntry{
+	// LiveEntryThreadFacts returns a CloneLiveEntry copy, so a field assigned
+	// straight from result (PendingEscalations, Watches, and so on) does not
+	// alias the probe's copy.
+	return LiveEntryThreadFacts(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
-		Status:                result.Status,
-		ActiveFlags:           append([]string(nil), result.ActiveFlags...),
-		PendingAsk:            result.PendingAsk,
-		PendingEscalation:     result.PendingEscalation,
-		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
-		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
-		RunningJobs:           cloneRunningJobs(result.RunningJobs),
-		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
-		Lifecycle:             cloneDaemonLifecycle(result.Lifecycle),
+		ActiveFlags:           result.ActiveFlags,
+		Capabilities:          result.Capabilities,
+		CapabilitiesKnown:     result.CapabilitiesKnown,
+		RunningSubagentIDs:    result.RunningSubagentIDs,
+		RunningSubagentStates: result.RunningSubagentStates,
+		Lifecycle:             result.Lifecycle,
 		LifecycleFresh:        result.LifecycleFresh,
-		Watches:               cloneWatches(result.Watches),
-		ChildWatches:          cloneChildWatches(result.ChildWatches),
-	}
+		ChildWatches:          result.ChildWatches,
+	}, result)
 }
 
 // RefreshEntry confirms one freshly spawned daemon without depending on other
@@ -1295,12 +1535,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" || root.ID != entry.ThreadID || statusThreadID(root) == "" || (entry.SessionID != "" && statusThreadID(root) != entry.SessionID) {
 		return response, errors.New("spawned daemon read did not confirm its identity")
 	}
-	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
-	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
-		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
-		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
-		RunningJobs: runningJobs, CompletedJobs: completedJobs,
-		Watches: diagnosticsWatches(root.Evener.Diagnostics)}
+	result := ProbeResultFromThread(root)
+	result.OK = true
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

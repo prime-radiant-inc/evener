@@ -9,6 +9,7 @@ help text, and tests should refer to those rows instead of hard-coding names.
 |---|---|
 | `EVENER_ALLOWED_DECISIONS` | Restricts tool-decision modes allowed by the active profile. |
 | `EVENER_CREDENTIALS_CONFIG` | Path to `credentials.toml`. Unset means the sibling of the resolved providers-config path. |
+| `EVENER_HOST_TEMP_BASES` | Replaces the world-usable host temp bases, `/tmp` then `/var/tmp`, with an OS path list (`:`-separated on POSIX) of absolute directories. Session temp containers (see `TMPDIR`) are created in the first entry that serves, and the startup crashed-scratch sweep reclaims abandoned containers only in these bases. Each entry must be an existing world-writable, world-traversable sticky directory, the same test `/tmp` has to pass; an entry that fails it is skipped. Unset means the defaults. A value that is set but empty, or that has an empty or relative entry, is refused rather than replaced by `/tmp` and `/var/tmp`: every `evener` and `evener serve` start prints a warning naming the variable, the sweep skips the host temp bases, and no session temp container is created, so commands keep the inherited `TMPDIR` as they do when no base serves. POSIX platforms only. The test rig (`agent/sandbox/sandboxtest`) sets it so the `evener` processes a test starts stay inside the test's own temp root. |
 | `EVENER_HUB_ADDR` | Default hub address for `evener tui`. |
 | `EVENER_HUB_AUTH_TOKEN` | Hub capability token for `evener tui`. |
 | `EVENER_HUB_BIN` | Path to the `evener hub` binary used by `evener tui` autostart. |
@@ -35,7 +36,7 @@ set them by hand.
 | `EVENER_HUB_SPAWNED` | Set by `evener hub` for spawned `evener serve` daemons. |
 | `EVENER_HUB_TOKEN` | Per-hub bearer token passed to spawned `evener serve` daemons. |
 | `EVENER_RUN_DIR` | Rendezvous directory passed by `evener hub` to spawned daemons. |
-| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It may be deleted when the session closes or Evener restarts; move durable artifacts into the workspace or another durable location. |
+| `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one session, at `<tmp>/evener-scratch-<root session id>/<session id>`. It is kept across the session's ends and reopened on resume, with its Go (including its private GOPATH), npm and cargo caches pruned at each end; it is deleted when the hub archives or deletes the root session (by an explicit archive, by age, or by archiving its project) and its daemon is not running. Move durable artifacts into the workspace or another durable location. |
 
 ## Provider Configuration
 
@@ -102,12 +103,13 @@ process environments.
 | Variable | Description |
 |---|---|
 | `XDG_CACHE_HOME` | Base for Evener cache data. |
-| `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery. |
+| `XDG_CONFIG_HOME` | Base for Evener config, skills, plugins, and MCP config discovery; inherited by core-only command environments, so a spawned `go` finds the same go env file the sandbox read. |
 | `XDG_STATE_HOME` | Base for the Evener state root (`$XDG_STATE_HOME/evener`); also the fallback in the per-invocation state-dir override chain when `EVENER_STATE_DIR` is unset. |
 | `CARGO_HOME` | Inherited by core-only command environments. |
 | `DISPLAY` | Used to auto-detect graphical sessions for OpenAI login. |
+| `GOENV` | Inherited by core-only command environments; a sandboxed session reads the go env file it names (`off` disables it) at start to find Go settings made with `go env -w` (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
 | `GOMODCACHE` | Inherited by core-only command environments; the sandbox environment floor redirects it into the session scratch directory under the session-private cache strategy (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
-| `GOPATH` | Inherited by core-only command environments. |
+| `GOPATH` | Inherited by core-only command environments; under the session-private cache strategy the sandbox environment floor puts the session scratch directory first, keeping the ambient value after it where the spawned layer can read it (see [docs/sandboxing.md](../sandboxing.md#caches-are-contained-never-poisoned)). |
 | `HOME` | Home directory fallback for state/config paths and path expansion. |
 | `HOMEDRIVE` | Windows home drive fallback. |
 | `HOMEPATH` | Windows home path fallback. |
@@ -120,7 +122,7 @@ process environments.
 | `SSH_CONNECTION` | Used to auto-detect headless OpenAI login sessions. |
 | `SSH_TTY` | Used to auto-detect headless OpenAI login sessions. |
 | `TERM` | Inherited by core-only command environments. |
-| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `EVENER_SCRATCH_DIR`). |
+| `TMPDIR` | Inherited by core-only command environments; a session/daemon env overrides it to the session scratch directory (see `EVENER_SCRATCH_DIR`) for a sandboxed spawn and for an unsandboxed spawn whose file tools are confined, and to a world-usable session temp container instead when an unsandboxed spawn's file tools are unconfined — a privilege-dropping child cannot write the private `0700` scratch. The container exists on POSIX platforms only; elsewhere the scratch is kept. Its leaf is world-writable and world-readable like `/tmp`, so it must not hold secrets: session-private intermediates belong in `EVENER_SCRATCH_DIR`. |
 | `USER` | Inherited by core-only command environments. |
 | `USERPROFILE` | Windows user profile fallback. |
 | `WAYLAND_DISPLAY` | Used to auto-detect graphical sessions and clipboard support. |
@@ -130,8 +132,10 @@ process environments.
 | Variable | Description |
 |---|---|
 | `EVENER_FLUENCY_MODEL` | Default model for the tool-fluency development harness. |
+| `EVENER_PPROF_ADDR` | Serves live `net/http/pprof` profiles from `evener serve` and `evener hub` on this loopback `host:port`; port `0` picks a free port, logged at startup. Unset disables it; a non-loopback host is refused, and an address that cannot be bound logs a warning and runs without pprof. Hub-spawned daemons inherit it. See [live profiling](performance-profiling.md#live-profiling-of-evener-serve-and-evener-hub). |
 | `EVENER_RECORD_APPWIRE` | Records raw AppWire WebSocket frames to `appwire-frames.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. To diagnose traffic on individual browser connections instead, use the hub's [`--appwire-trace` option](../evener-hub.md#trace-browser-appwire-traffic). |
 | `EVENER_RECORD_HTTP` | Records inbound hub HTTP requests to `hub-http.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `EVENER_FUZZ_RECORD` | Master switch enabling the AppWire and hub HTTP fuzz-corpus recorders by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`EVENER_RECORD_APPWIRE`/`EVENER_RECORD_HTTP`) overrides it. Intended for local development; unset everywhere else. Provider attempts are recorded independently in each attached session API log. |
 | `EVENER_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `evener fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal evener state root source. |
+| `EVENER_NO_USER_SKILLS` | Set to `1` to omit the operator's user-global sources: their home skills (`~/.agents/skills`), the user config skills directory, installed plugins' skills, the global MCP config (`~/.config/evener/mcp.json`), and evener-wide commands (`~/.config/evener/commands`). Bundled, project, and explicitly added sources remain. The tool-fluency harness sets it so an eval round depends only on the revision under test, not on who runs it. |
 | `OPENAI_CHATGPT_CLIENT_ID` | OpenAI OAuth client id override for tests and development. |

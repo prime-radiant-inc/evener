@@ -137,6 +137,26 @@ test("pressing Escape dismisses the bar", () => {
   expect(screen.queryByRole("toolbar", { name: "Selection actions" })).toBeNull();
 });
 
+test("dismissing the bar claims the Escape, so later listeners (the activity sidebar) stand down", () => {
+  // The app-wide claim contract: a surface that consumes Esc preventDefaults
+  // it (Menu/Popover/OverlayPanel's precedent), and the sidebar's window-
+  // level listener reads defaultPrevented and stands. Without the claim one
+  // Esc dismisses both surfaces.
+  const { messageNode, containerRef } = renderHarness(() => {});
+  installFakeSelection({ text: "quoted prose", anchorNode: messageNode });
+  act(() => {
+    containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+  // fireEvent returns false when the event was preventDefaulted.
+  expect(fireEvent.keyDown(document, { key: "Escape" })).toBe(false);
+  expect(screen.queryByRole("toolbar", { name: "Selection actions" })).toBeNull();
+});
+
+test("with nothing captured, Escape is not claimed", () => {
+  renderHarness(() => {});
+  expect(fireEvent.keyDown(document, { key: "Escape" })).toBe(true);
+});
+
 test("scrolling dismisses a visible bar - it is position:fixed and does not track the selection", () => {
   const { messageNode, containerRef } = renderHarness(() => {});
   installFakeSelection({ text: "quoted prose", anchorNode: messageNode });

@@ -18,16 +18,19 @@ func modelRetryNotification(t *testing.T, params appwire.ThreadModelRetryParams)
 	return appwire.Notification{Method: appwire.NotifyEvenerThreadModelRetry, Params: raw}
 }
 
-// itemLifecycleNotification builds an item/completed notification carrying
-// the given item type, for exercising clearModelRetryOnProgress's
-// per-item-kind rule.
-func itemLifecycleNotification(t *testing.T, method, itemType string) appwire.Notification {
+// historyUpdatedItemNotification builds a history/updated notification
+// carrying one item of the given type, for exercising
+// clearModelRetryOnProgress's per-item-kind rule. history/updated always
+// carries an item's final recorded form (there is no started-vs-completed
+// distinction the way item/started|completed had), so this only needs one
+// helper where the old path needed two.
+func historyUpdatedItemNotification(t *testing.T, itemType string) appwire.Notification {
 	t.Helper()
-	raw, err := json.Marshal(appwire.ItemLifecycleParams{Item: appwire.ThreadItem{Type: itemType}})
+	raw, err := json.Marshal(appwire.HistoryUpdatedParams{Items: []appwire.ThreadItem{{Type: itemType}}})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	return appwire.Notification{Method: method, Params: raw}
+	return appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: raw}
 }
 
 // kata e79v: the daemon reports a model-call retry on evener/thread/modelRetry
@@ -70,44 +73,14 @@ func TestModelRetrySurvivesModelOutputDelta(t *testing.T) {
 		t.Fatal("precondition: modelRetry not recorded")
 	}
 
-	raw, err := json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "hello"})
+	raw, err := json.Marshal(appwire.OverlayDeltaParams{Key: "stream:round_1/0:agentMessage", Field: appwire.OverlayDeltaText, Delta: "hello"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: raw})
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: raw})
 
 	if m.modelRetry == nil {
-		t.Error("modelRetry cleared on an assistant delta; deltas must not clear the chip")
-	}
-}
-
-// Reasoning and tool-output deltas are the same "still grinding" signal as
-// an assistant delta and must not clear the chip either.
-func TestModelRetrySurvivesReasoningAndToolOutputDeltas(t *testing.T) {
-	for _, method := range []string{appwire.NotifyReasoningSummaryDelta, appwire.NotifyToolOutputDelta} {
-		m := newSessionHubModel(nil)
-		m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
-			Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 1000, ErrorClass: "rate_limit", StatusCode: 429,
-		}))
-		if m.modelRetry == nil {
-			t.Fatalf("precondition: modelRetry not recorded for %s", method)
-		}
-
-		var raw json.RawMessage
-		var err error
-		if method == appwire.NotifyReasoningSummaryDelta {
-			raw, err = json.Marshal(appwire.ReasoningSummaryDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "thinking"})
-		} else {
-			raw, err = json.Marshal(appwire.ToolOutputDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "output"})
-		}
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		m.applyHubNotification(appwire.Notification{Method: method, Params: raw})
-
-		if m.modelRetry == nil {
-			t.Errorf("modelRetry cleared on %s; deltas must not clear the chip", method)
-		}
+		t.Error("modelRetry cleared on an overlay delta; deltas must not clear the chip")
 	}
 }
 
@@ -123,30 +96,10 @@ func TestModelRetrySurvivesSystemMessageItemCompletion(t *testing.T) {
 		t.Fatal("precondition: modelRetry not recorded")
 	}
 
-	m.applyHubNotification(itemLifecycleNotification(t, appwire.NotifyItemCompleted, "systemMessage"))
+	m.applyHubNotification(historyUpdatedItemNotification(t, "systemMessage"))
 
 	if m.modelRetry == nil {
 		t.Error("modelRetry cleared on a systemMessage item completion; only model-output items may clear it")
-	}
-}
-
-// item/started always precedes the deltas for the item it announces — if it
-// cleared the chip, the retried call's own first delta would find modelRetry
-// already nil, silently defeating the delta-survival rule above. Only a
-// model-output item's COMPLETION (or a turn boundary) may clear it.
-func TestModelRetrySurvivesModelOutputItemStart(t *testing.T) {
-	m := newSessionHubModel(nil)
-	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
-		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 1000, ErrorClass: "rate_limit", StatusCode: 429,
-	}))
-	if m.modelRetry == nil {
-		t.Fatal("precondition: modelRetry not recorded")
-	}
-
-	m.applyHubNotification(itemLifecycleNotification(t, appwire.NotifyItemStarted, "agentMessage"))
-
-	if m.modelRetry == nil {
-		t.Error("modelRetry cleared on item/started; only completion of a model-output item may clear it")
 	}
 }
 
@@ -161,7 +114,7 @@ func TestModelRetrySurvivesUserItemCompletion(t *testing.T) {
 		t.Fatal("precondition: modelRetry not recorded")
 	}
 
-	m.applyHubNotification(itemLifecycleNotification(t, appwire.NotifyItemCompleted, "userMessage"))
+	m.applyHubNotification(historyUpdatedItemNotification(t, "userMessage"))
 
 	if m.modelRetry == nil {
 		t.Error("modelRetry cleared on a userMessage item completion; only model-output items may clear it")
@@ -180,33 +133,10 @@ func TestModelRetryClearsOnModelOutputItemCompletion(t *testing.T) {
 			t.Fatalf("precondition: modelRetry not recorded for %s", itemType)
 		}
 
-		m.applyHubNotification(itemLifecycleNotification(t, appwire.NotifyItemCompleted, itemType))
+		m.applyHubNotification(historyUpdatedItemNotification(t, itemType))
 
 		if m.modelRetry != nil {
 			t.Errorf("modelRetry survived completion of a %s item; model-output completion must clear it", itemType)
-		}
-	}
-}
-
-// Turn boundaries always end the wait, regardless of item kind.
-func TestModelRetryClearsOnTurnBoundaries(t *testing.T) {
-	for _, method := range []string{appwire.NotifyTurnCompleted, appwire.NotifyTurnStarted} {
-		m := newSessionHubModel(nil)
-		m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
-			Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 1000, ErrorClass: "rate_limit", StatusCode: 429,
-		}))
-		if m.modelRetry == nil {
-			t.Fatalf("precondition: modelRetry not recorded for %s", method)
-		}
-
-		raw, err := json.Marshal(appwire.TurnCompletedParams{Turn: appwire.Turn{ID: "turn_1"}})
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		m.applyHubNotification(appwire.Notification{Method: method, Params: raw})
-
-		if m.modelRetry != nil {
-			t.Errorf("modelRetry survived %s; turn boundaries must clear it", method)
 		}
 	}
 }
@@ -317,35 +247,26 @@ func TestComposerRetryChipReadsInProgressWhileStreaming(t *testing.T) {
 // delay describes. The chip stays up (clearing it is the vanishing-chip bug)
 // but must stop counting down.
 func TestModelRetryChipReadsInProgressAfterDelta(t *testing.T) {
-	for _, method := range []string{appwire.NotifyAgentMessageDelta, appwire.NotifyReasoningSummaryDelta, appwire.NotifyToolOutputDelta} {
+	for _, field := range []appwire.OverlayDeltaField{appwire.OverlayDeltaText, appwire.OverlayDeltaOutput} {
 		m := newSessionHubModel(nil)
 		m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
 			Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 45000, ErrorClass: "rate_limit", StatusCode: 429,
 		}))
 		if m.modelRetryInProgress {
-			t.Fatalf("a freshly reported retry is a wait, not progress (%s)", method)
+			t.Fatalf("a freshly reported retry is a wait, not progress (%s)", field)
 		}
 
-		var raw json.RawMessage
-		var err error
-		switch method {
-		case appwire.NotifyReasoningSummaryDelta:
-			raw, err = json.Marshal(appwire.ReasoningSummaryDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "thinking"})
-		case appwire.NotifyToolOutputDelta:
-			raw, err = json.Marshal(appwire.ToolOutputDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "output"})
-		default:
-			raw, err = json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "hello"})
-		}
+		raw, err := json.Marshal(appwire.OverlayDeltaParams{Key: "stream:round_1/0:agentMessage", Field: field, Delta: "hello"})
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		m.applyHubNotification(appwire.Notification{Method: method, Params: raw})
+		m.applyHubNotification(appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: raw})
 
 		if m.modelRetry == nil {
-			t.Fatalf("modelRetry cleared on %s; deltas must not clear the chip", method)
+			t.Fatalf("modelRetry cleared on an overlay %s delta; deltas must not clear the chip", field)
 		}
 		if got := composerRetryChip(m.modelRetry, "", m.modelRetryInProgress); !strings.Contains(got, "in progress") {
-			t.Errorf("chip after %s = %q, want it to read %q", method, got, "in progress")
+			t.Errorf("chip after an overlay %s delta = %q, want it to read %q", field, got, "in progress")
 		}
 	}
 }
@@ -357,11 +278,11 @@ func TestModelRetryChipCountsDownAgainAfterANewRetry(t *testing.T) {
 	m.applyHubNotification(modelRetryNotification(t, appwire.ThreadModelRetryParams{
 		Attempt: 1, MaxAttempts: 11, AttemptCap: 11, DelayMS: 1000, ErrorClass: "rate_limit", StatusCode: 429,
 	}))
-	raw, err := json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_1", Delta: "hello"})
+	raw, err := json.Marshal(appwire.OverlayDeltaParams{Key: "stream:round_1/0:agentMessage", Field: appwire.OverlayDeltaText, Delta: "hello"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: raw})
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: raw})
 	if !m.modelRetryInProgress {
 		t.Fatal("precondition: delta did not mark the retry in progress")
 	}
@@ -416,13 +337,13 @@ func TestModelRetryInProgressIgnoresForeignSessionDeltas(t *testing.T) {
 		t.Fatal("precondition: modelRetry not recorded")
 	}
 
-	raw, err := json.Marshal(appwire.AgentMessageDeltaParams{
-		Ref: "local:01OTHER", ThreadID: "01OTHER", TurnID: "turn_1", ItemID: "item_1", Delta: "hello",
+	raw, err := json.Marshal(appwire.OverlayDeltaParams{
+		Ref: "local:01OTHER", ThreadID: "01OTHER", Key: "stream:round_1/0:agentMessage", Field: appwire.OverlayDeltaText, Delta: "hello",
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: raw})
+	m.applyHubNotification(appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: raw})
 
 	if m.modelRetryInProgress {
 		t.Error("a delta from another session marked the viewed session's retry in progress")

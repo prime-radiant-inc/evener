@@ -25,6 +25,51 @@ export class WireError extends Error {
   }
 }
 
+// Wire values of appwire's CodeInvalidRequest / CodeMethodNotFound /
+// CodeInvalidParams (appwire/errors.go), the standard JSON-RPC codes.
+const CODE_INVALID_REQUEST = -32600;
+const CODE_METHOD_NOT_FOUND = -32601;
+const CODE_INVALID_PARAMS = -32602;
+
+/** The hub or daemon doesn't know the method: an older build, whose refusal is
+ * a client's cue to keep its fallback. appwire.MethodNotFound stamps both the
+ * code and the discriminator. */
+export function isMethodNotFound(error: unknown): boolean {
+  return (
+    error instanceof WireError && (error.code === CODE_METHOD_NOT_FOUND || error.evenerErrorInfo === "methodNotFound")
+  );
+}
+
+// refusedBeforeRunning says whether the hub refused a request on its shape
+// alone, before running any of it (a validation refusal): nothing the request
+// asked for happened, and resending it unchanged can only get the same answer.
+// Any other failure, a timeout or a lost connection among them, leaves open
+// whether it ran. It holds only for a request the hub validates before running
+// any of it, as the mutation dispatcher's are. thread/start is not one, since it
+// can refuse the initial input after spawning the session; the hub marks the
+// refusals that came before any session with mutationOutcome "notAccepted"
+// instead (#3184).
+export function refusedBeforeRunning(error: unknown): error is WireError {
+  return error instanceof WireError && (error.code === CODE_INVALID_PARAMS || error.code === CODE_INVALID_REQUEST);
+}
+
+// ErrorInvalidHostField is the hub's discriminator for a host mutation's
+// validation refusal, whose data names the input that failed
+// (appwire.ErrorInvalidHostField, appwire/errors.go). It shares its code with
+// every other validation refusal, so the field is only ever read off this
+// discriminant. The binding test (errors.test.ts) reads the Go constant.
+export const ErrorInvalidHostField = "invalidHostField";
+
+// hostFieldError returns the input a host-mutation refusal blames, or undefined
+// for any other rejection — including a refusal that blames the entry as a
+// whole, which carries no field. The returned name is the wire spelling the
+// dialog's own inputs use, so a caller maps it onto an input directly.
+export function hostFieldError(error: unknown): string | undefined {
+  return wireRejectionPayload(error, ErrorInvalidHostField, "field", (value) =>
+    typeof value === "string" && value !== "" ? value : undefined,
+  );
+}
+
 // errorText flattens a rejected value to the text worth showing. It is the
 // one definition of a conversion the whole app needs: every caller that
 // reports a failure to the user starts here.
@@ -59,7 +104,31 @@ export function wireRejectionPayload<T>(
   decode: (value: unknown) => T | undefined,
 ): T | undefined {
   if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
+  if (!error.data || typeof error.data !== "object") return undefined;
   return decode((error.data as Record<string, unknown>)[key]);
+}
+
+// ErrorTranscriptHistoryFailed is the hub's discriminator for a history read of
+// a thread whose history failed (appwire.ErrorTranscriptHistoryFailed,
+// appwire/errors.go). Its data carries the boot generation and epoch the read
+// ran under, which a client never adopts: it keeps the history it holds, marks
+// the thread's history failed (reducer.ts's applyHistoryReadFailure) and shows
+// one diagnostic until a later read succeeds. The binding test (errors.test.ts)
+// reads the Go constant.
+export const ErrorTranscriptHistoryFailed = "transcriptHistoryFailed";
+
+export function isTranscriptHistoryFailedError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptHistoryFailed;
+}
+
+// ErrorUpgradeRequired is the hub's discriminator for initialize refusing a
+// client that announced an older AppWire protocol (appwire.ErrorUpgradeRequired,
+// appwire/errors.go). Retrying cannot help; the client itself must update. The
+// binding test (errors.test.ts) reads the Go constant.
+export const ErrorUpgradeRequired = "upgradeRequired";
+
+export function isUpgradeRequiredError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorUpgradeRequired;
 }
 
 // ErrorInstanceRenamePersisted is the hub's discriminator for a provider-instance
@@ -224,16 +293,38 @@ function isClientUnreachableError(error: unknown): boolean {
   return message !== undefined && CLIENT_UNREACHABLE_PATTERN.test(message);
 }
 
+// HostMutationOutcomeError is thrown by committedMutationRow (hostMutations.ts)
+// for a host mutation-result arm that is NOT a committed success (registry spec
+// 08 §11): a keyless add's `ambiguous` arm, a `collision-dropped` arm, or a
+// mutation that committed but whose teardown failed. `outcome` names the arm so
+// a caller can branch on it (the remnant repair affordances are slice 16's).
+// Unlike an arbitrary JS exception its message was written for a person to read
+// - it names what happened and, for a teardown failure, the `remnantId` to
+// repair - so friendlyErrorMessage shows it instead of the generic sentence.
+export type HostMutationOutcome = "ambiguous" | "collision-dropped" | "committed-with-teardown-failure" | "unknown";
+
+export class HostMutationOutcomeError extends Error {
+  readonly outcome: HostMutationOutcome;
+  constructor(message: string, outcome: HostMutationOutcome) {
+    super(message);
+    this.name = "HostMutationOutcomeError";
+    this.outcome = outcome;
+  }
+}
+
 // friendlyErrorMessage is the one conversion every user-facing error display
 // must go through instead of errorText/err.message: a WireError's message
 // came from the hub and was written for a person to read, so it survives
-// untouched; the client-unreachable family (see CLIENT_UNREACHABLE_PATTERN)
-// becomes one plain sentence; everything else - a plain JS exception, a
-// timeout, a string, anything this module doesn't otherwise recognize -
-// becomes the same generic sentence. Never returns a class name or an
-// internal method name.
+// untouched, and so does a HostMutationOutcomeError's (hostMutations.ts wrote
+// it for a person too); the client-unreachable family (see
+// CLIENT_UNREACHABLE_PATTERN) becomes one plain sentence; everything else - a
+// plain JS exception, a timeout, a string, anything this module doesn't
+// otherwise recognize - becomes the same generic sentence. Never returns a
+// class name or an arbitrary exception's method name; the two recognized
+// client-side families (WireError, HostMutationOutcomeError) may name the hub
+// operation their message is about, since its author wrote it for a person.
 export function friendlyErrorMessage(error: unknown): string {
-  if (error instanceof WireError) {
+  if (error instanceof WireError || error instanceof HostMutationOutcomeError) {
     const detail = error.message.trim();
     return detail === "" ? GENERIC_ERROR_MESSAGE : detail;
   }

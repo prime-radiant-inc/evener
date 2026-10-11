@@ -27,8 +27,8 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -91,7 +91,7 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 		t.Fatalf("restore root: %v", err)
 	}
 	defer root.Close()
-	var recorder currentWorkEventRecorder
+	var recorder sessionEventRecorder
 	root.SetDescendantEventFunc(recorder.record)
 
 	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
@@ -1516,7 +1516,7 @@ func TestDelegateResourceRuntime_RootStoreCloseJoinsReconciliationDriver(t *test
 	if err := root.closeOwnedDelegateStore(); !errors.Is(err, driverErr) {
 		t.Fatalf("root store close ignored its reconciliation driver result: %v", err)
 	}
-	if _, _, _, err := root.delegateController.StopSubtreeAndDrive(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID); !errors.Is(err, errDelegateTargetBusy) {
+	if _, _, _, err := root.delegateController.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.delegateRootSessionID), fixture.delegateID); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("stable stop retry crossed the root store-close fence: %v", err)
 	}
 	root.delegateController.mu.Lock()
@@ -1773,6 +1773,7 @@ func abortUnpersistedStableDelegateOutcome(t *testing.T, outcome stableDelegateS
 }
 
 func TestDelegateResourceRuntime_TerminalOutcomeSnapshotDoesNotAliasResumability(t *testing.T) {
+	t.Parallel()
 	resumable := true
 	aggregate := &delegatestore.Aggregate{
 		DelegateID: "dlg_target",
@@ -1815,14 +1816,16 @@ func TestDelegateResourceRuntime_TerminalPacketUsesProductionActivityBoundary(t 
 }
 
 func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testing.T) {
+	t.Parallel()
 	var captured any
 	deps := &toolDeps{
-		emit:            func(events.EventKind, events.EventData) {},
-		abort:           func(context.Context) error { return nil },
-		drainSteering:   func() []steeringMessage { return nil },
-		prependSteering: func([]steeringMessage) {},
-		resultToolName:  func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
+		emit:               func(events.EventKind, events.EventData) {},
+		deliverCommunicate: func(events.CommunicateData) error { return nil },
+		abort:              func(context.Context) error { return nil },
+		drainSteering:      func() []steeringMessage { return nil },
+		prependSteering:    func([]steeringMessage) {},
+		resultToolName:     func() string { return "communicate" },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
 			captured = raw
 			return true
 		},
@@ -1869,6 +1872,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 }
 
 func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t *testing.T) {
+	t.Parallel()
 	structured := map[string]any{"wrong": true}
 	sess := &Session{comm: communicateResult{called: true, structured: structured}}
 	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
@@ -1936,6 +1940,7 @@ func TestDelegateResourceRuntime_TurnExhaustionClosesResumabilityAtomically(t *t
 }
 
 func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsageAndWorktree(t *testing.T) {
+	t.Parallel()
 	startedAt := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	endedAt := startedAt.Add(90 * time.Second)
 	activityAt := endedAt.Add(-2 * time.Second)
@@ -2012,6 +2017,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 // directory into the terminal packet metadata, the same way worktree evidence
 // already does regardless of outcome.
 func TestDelegateResourceRuntime_CancelledRunCapturesScratchPath(t *testing.T) {
+	t.Parallel()
 	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
 		runErr:      context.Canceled,
 		descriptor:  delegatestore.Descriptor{Task: "rebuild the search index"},
@@ -2078,6 +2084,7 @@ func selfReportedCancelledPacket(t *testing.T) delegatestore.TerminalPacket {
 // ("cancelled"). The durable outcome must win for Status the same way it
 // already does for Reason.
 func TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber(t *testing.T) {
+	t.Parallel()
 	const delegateID = "dlg_target"
 	started := stoppedDelegateStartCommit(delegateID)
 	plans := delegateMutationPlans{

@@ -1,13 +1,17 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // TestForkSessionAtUserTurn_CopiesPrefixWithoutAppendingInput verifies the
@@ -65,7 +69,7 @@ func TestForkSessionAtUserTurn_CopiesPrefixWithoutAppendingInput(t *testing.T) {
 	// Child transcript must contain ONLY the prefix entries [U1, A1] — no
 	// trailing USER_INPUT turn that would auto-run on resume.
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(childTranscriptPath)
+	_, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
@@ -102,12 +106,137 @@ func TestForkSessionAtUserTurn_FirstTurnProducesEmptyChild(t *testing.T) {
 		t.Errorf("originalInput: got %q, want %q", originalInput, "first task")
 	}
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(childTranscriptPath)
+	_, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
 	if len(entries) != 0 {
 		t.Fatalf("child transcript entry count: got %d, want 0", len(entries))
+	}
+}
+
+// TestForkSessionAtUserTurn_OmitsMachineryNoteFromOriginalInput: a persisted
+// image-bearing user turn carries the attachment machinery note as an extra
+// text part, and originalInput feeds the hub's fork/edit surface — it must be
+// the user's own prose, never the raw <system-notification> block.
+func TestForkSessionAtUserTurn_OmitsMachineryNoteFromOriginalInput(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	parentID := "01PARENT00000000000000001"
+	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID:  parentID,
+		CreatedAt:  time.Now().UTC(),
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		WorkingDir: "/tmp/test",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	msg := buildUserInputMessage("look at this picture", []ImageAttachment{{
+		MediaType: "image/png",
+		Data:      []byte{0x89, 0x50, 0x4e, 0x47},
+		Name:      "shot.png",
+		Path:      "/state/sessions/x/attachments/abcdef0123456789-shot.png",
+	}})
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
+		schema.NewTurn(schema.TurnUserInput, msg),
+	}
+	for _, turn := range turns {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	meta := schema.SessionMeta{
+		ID:        parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/test"},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		TurnCount: 1,
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	_, originalInput, err := ForkSessionAtUserTurn(stateDir, parentID, 3, "")
+	if err != nil {
+		t.Fatalf("ForkSessionAtUserTurn: %v", err)
+	}
+	if got, want := originalInput, "look at this picture"; got != want {
+		t.Fatalf("originalInput=%q, want %q (the machinery note must not reach the fork/edit prefill)", got, want)
+	}
+}
+
+// TestForkSessionAtUserTurn_KeepsVerbatimMachineryPaste: originalInput must
+// keep a user's own paste of the exact machinery block — here with an image
+// attached, the shape the old text-shape filter silently emptied. The entry
+// is marked (written by a build that flags machinery parts), so the
+// unflagged block is the user's words, not machinery.
+func TestForkSessionAtUserTurn_KeepsVerbatimMachineryPaste(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	parentID := "01PARENT00000000000000001"
+	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID:  parentID,
+		CreatedAt:  time.Now().UTC(),
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		WorkingDir: "/tmp/test",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	paste := "<system-notification>attachment shot.png saved to /state/sessions/x/attachments/abcdef0123456789-shot.png</system-notification>"
+	msg := llm.Message{
+		Role: llm.RoleUser,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}}},
+			{Kind: llm.ContentText, Text: paste},
+		},
+	}
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
+		schema.NewTurn(schema.TurnUserInput, msg),
+	}
+	for _, turn := range turns {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	meta := schema.SessionMeta{
+		ID:        parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/test"},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		TurnCount: 1,
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	_, originalInput, err := ForkSessionAtUserTurn(stateDir, parentID, 3, "")
+	if err != nil {
+		t.Fatalf("ForkSessionAtUserTurn: %v", err)
+	}
+	if got, want := originalInput, paste; got != want {
+		t.Fatalf("originalInput=%q, want %q (a marked entry's unflagged block is the user's own paste and must survive)", got, want)
 	}
 }
 
@@ -124,19 +253,30 @@ func TestForkSessionAtUserTurn_RejectsNonUserDivergence(t *testing.T) {
 	if !strings.Contains(err.Error(), "USER_INPUT") {
 		t.Errorf("error should mention USER_INPUT, got %v", err)
 	}
+	// The hub maps this refusal to appwire.InvalidParams rather than an
+	// internal error, so a client can tell "you named a bad item" apart from
+	// a hub failure. errors.Is is what the hub's mapping checks.
+	if !errors.Is(err, ErrDivergencePositionNotUserInput) {
+		t.Errorf("error should wrap ErrDivergencePositionNotUserInput, got %v", err)
+	}
 }
 
 // TestForkSessionAtUserTurn_RejectsOutOfRange verifies divergenceTurn=0 and
-// divergenceTurn beyond the parent's entry count both error.
+// divergenceTurn beyond the parent's entry count both error, and both wrap
+// ErrDivergencePositionOutOfRange so the hub can map them to InvalidParams.
 func TestForkSessionAtUserTurn_RejectsOutOfRange(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
 
 	if _, _, err := ForkSessionAtUserTurn(stateDir, parentID, 0, ""); err == nil {
 		t.Error("ForkSessionAtUserTurn(divergenceTurn=0) should return an error")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=0 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 	if _, _, err := ForkSessionAtUserTurn(stateDir, parentID, 10, ""); err == nil {
 		t.Error("ForkSessionAtUserTurn(divergenceTurn=10) should return an error when the parent has 4 entries")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=10 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 }
 

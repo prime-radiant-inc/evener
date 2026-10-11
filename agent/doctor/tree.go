@@ -16,6 +16,7 @@ const maxTreeDepth = 50
 // linked to its parent ("delegate" or "observer"); it is empty for the root.
 type TreeNode struct {
 	SessionID     string         `json:"session_id"`
+	Name          string         `json:"name,omitempty"`
 	TranscriptRef string         `json:"transcript_ref,omitempty"`
 	AgentType     string         `json:"agent_type,omitempty"`
 	Status        string         `json:"status,omitempty"`
@@ -83,7 +84,7 @@ func stableDelegateChildren(stateBase, ownerSessionID string, state delegatestor
 	for _, row := range rows {
 		child := TreeNode{
 			SessionID: row.ChildSessionID, TranscriptRef: row.TranscriptRef,
-			AgentType: row.AgentType, Status: row.Phase, Edge: "delegate",
+			Name: row.Name, AgentType: row.AgentType, Status: row.Phase, Edge: "delegate",
 		}
 		childSelector := row.TranscriptRef
 		if childSelector == "" {
@@ -161,6 +162,9 @@ func RenderTree(root TreeNode) string {
 
 func renderTreeNode(b *strings.Builder, n TreeNode, prefix string, isRoot bool) {
 	label := n.SessionID
+	if n.Name != "" {
+		label += " " + n.Name
+	}
 	if n.AgentType != "" {
 		label += " (" + n.AgentType + ")"
 	}

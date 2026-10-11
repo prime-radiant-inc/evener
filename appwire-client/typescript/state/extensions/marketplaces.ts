@@ -15,20 +15,22 @@
 // be replaced (the web's connection store) hands in an object that resolves
 // the current client on each call.
 
-import type { AppwireClient } from "../../client";
+import type { AppwireClientLike, RequestPort } from "../../clientLike";
 import { ErrorMarketplaceRemoveApplied, errorText, WireError } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type {
+  HostRequestMethod,
   MarketplaceAddParams,
   MarketplaceCatalogPlugin,
   MarketplaceEditParams,
   MarketplaceEntry,
 } from "../../types.gen";
+import { HubWriteBusyError, type HubWriteGate } from "./hubWriteGate";
 import { createKeyedRevision } from "./keyedRevision";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
-import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { attachLifecycle, createStoreLifecycle, type HostLifecycle } from "./storeLifecycle";
 
-export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
+export type MarketplacesClient = RequestPort<HostRequestMethod> & Pick<AppwireClientLike, "onNotification">;
 
 // One cached browse result per marketplace name - permanent until an explicit
 // refreshMarketplace/removeMarketplace/editMarketplace/reloadCatalog retires
@@ -69,9 +71,7 @@ export interface MarketplacesState {
   reloadCatalog(name: string): Promise<void>;
 }
 
-export interface MarketplacesStore
-  extends FrameworkFreeStore<MarketplacesState>,
-    Omit<StoreLifecycle<MarketplacesState>, "guard"> {
+export interface MarketplacesStore extends FrameworkFreeStore<MarketplacesState>, HostLifecycle<MarketplacesState> {
   /** Follows evener/marketplace/updated, which the hub broadcasts to every
    * client after any client's successful mutation: every cached catalog is
    * retired (the notification names nothing) and the list is refetched after
@@ -100,9 +100,11 @@ export const MARKETPLACE_REFETCH_DEBOUNCE_MS = 250;
  *    though the call still rejects, the same way keybindingsStore's
  *    rejectionPayload reads a post-rename durable failure's applied state.
  *    A recognized marker with missing, unavailable, or malformed applied
- *    data is still an applied-but-unconfirmed outcome: the unregister
- *    already landed, but callers must reconcile rather than treat the zero
- *    value as an authoritative empty list.
+ *    data - a list whose members do not each decode as an
+ *    appwire.MarketplaceEntry counts as malformed - is still an
+ *    applied-but-unconfirmed outcome: the unregister already landed, but
+ *    callers must reconcile rather than treat the zero value as an
+ *    authoritative empty list.
  *  - marketplaceRemoveApplied (appwire.MarketplaceRemoveAppliedData): the
  *    removal and its clone cleanup completed, but the fresh list read
  *    failed - removed, with no clone litter to warn about.
@@ -111,6 +113,31 @@ export type MarketplaceRemovalOutcome =
   | { kind: "applied"; marketplaces: MarketplaceEntry[] }
   | { kind: "unavailable" }
   | { kind: "removed" };
+
+/** Structural check for one applied-list member: appwire.MarketplaceEntry's
+ * wire shape, as generated into types.gen.ts - name a string, lastUpdated a
+ * number, installLocation a string when present, and source an object whose
+ * kind is a string (every other source field is omitempty, so each is checked
+ * only when present, the same string-or-absent rule fromWireOverrides applies
+ * to loadError). The hub's own validation already ran; this is the
+ * trust-boundary re-check, so a malformed member degrades the whole payload to
+ * the applied-but-unconfirmed outcome instead of being miscast into the one
+ * list this failure path publishes as authoritative. */
+function isMarketplaceEntry(value: unknown): value is MarketplaceEntry {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.name !== "string") return false;
+  if (typeof entry.lastUpdated !== "number") return false;
+  if (entry.installLocation !== undefined && typeof entry.installLocation !== "string") return false;
+  const source = entry.source;
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return false;
+  const candidate = source as Record<string, unknown>;
+  if (typeof candidate.kind !== "string") return false;
+  for (const field of ["repo", "url", "path", "ref", "sha"] as const) {
+    if (candidate[field] !== undefined && typeof candidate[field] !== "string") return false;
+  }
+  return true;
+}
 
 /** Classifies the hub's post-apply marketplace removal rejections for UI
  * consumers; each marker's reconcile rule is documented on
@@ -127,7 +154,7 @@ export function marketplaceRemovalOutcome(error: unknown): MarketplaceRemovalOut
   if (data.appliedUnavailable) return { kind: "unavailable" };
   if (!data.applied || typeof data.applied !== "object") return { kind: "unavailable" };
   const marketplaces = (data.applied as { marketplaces?: unknown }).marketplaces;
-  return Array.isArray(marketplaces)
+  return Array.isArray(marketplaces) && marketplaces.every(isMarketplaceEntry)
     ? { kind: "applied", marketplaces: marketplaces as MarketplaceEntry[] }
     : { kind: "unavailable" };
 }
@@ -137,7 +164,7 @@ function cloneLitterApplied(error: unknown): MarketplaceEntry[] | undefined {
   return outcome?.kind === "applied" ? outcome.marketplaces : undefined;
 }
 
-export function createMarketplacesStore(client: MarketplacesClient): MarketplacesStore {
+export function createMarketplacesStore(client: MarketplacesClient, gate: HubWriteGate): MarketplacesStore {
   // A browse response is keyed by marketplace name, so it can outlive the
   // catalog it describes: a request started before an edit, a re-source or a
   // removal resolves afterwards and would put the retired catalog straight
@@ -161,8 +188,8 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // monotonic and a catalog stale under the older list is stale under the
   // newer one too. That holds only WITHIN a generation - after a reset the
   // store has forgotten what it read, and a browse since then is about the
-  // state the reset left behind, not the one an older reply belongs to.
-  let generation = 0;
+  // state the reset left behind, not the one an older reply belongs to. The
+  // lifecycle's epoch() counts those generations.
   let nextMarketplacesPublicationVersion = 0;
 
   /** Drops these names' cached catalogs and retires their keys, returning
@@ -220,10 +247,9 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       store.setState((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [...s.browseCatalogs.keys()]) })),
     // Every browse still on the wire is fenced alongside the list revision:
     // reset and dispose both want a reply that started before them to land
-    // nothing - its catalogs included, which is what the generation below
-    // counts.
+    // nothing - its catalogs included. (The lifecycle bumps its epoch() on
+    // every fence, which ends the generation a write was issued in.)
     onFence: (set) => {
-      generation += 1;
       const fenced = browses.retireInFlight();
       // A fenced browse's catalog entry is "loading" - nothing else was going
       // to answer it - and left behind it reads as settled: browseMarketplace
@@ -248,52 +274,57 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {
     const set = lifecycle.guard(publish);
 
-    /** Runs one mutation: its response's list is written only if no later
-     * revision has committed since, and the catalogs it names are retired
-     * either way within the generation it was issued in (retiring is
-     * monotonic). Rejects as the request does. */
-    function mutate(
+    /** Runs one mutation under the shared hub write gate: its response's list
+     * is written only if no later revision has committed since, and the
+     * catalogs it names are retired either way within the generation it was
+     * issued in (retiring is monotonic). Rejects as the request does, or with
+     * HubWriteBusyError when another plugin or marketplace write already holds
+     * the gate. */
+    async function mutate(
       request: () => Promise<{ marketplaces: MarketplaceEntry[] }>,
       retire: (string | undefined)[],
       onFailure?: (error: unknown) => MarketplaceEntry[] | undefined,
     ): Promise<void> {
-      const issuedIn = generation;
-      return writeRevisioned(
-        listRevision,
-        request,
-        (resp) => {
-          // A reset or a dispose ended the generation this write was issued in:
-          // its answer is about a store that has forgotten everything it read.
-          if (issuedIn !== generation) return null;
-          // The catalogs this write names are retired whether or not its list is
-          // the live answer: retiring is monotonic within the generation, so a
-          // catalog stale under an older list is stale under a newer one too.
-          if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
-          // The list, and the two fields that belong to it, go through the fence:
-          // see plugins.ts's mutate for why the live answer owns all three.
-          return () =>
-            set((s) => ({
-              ...publishMarketplaceSnapshot(resp.marketplaces),
-              browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
-            }));
-        },
-        onFailure
-          ? (error) => {
-              const applied = onFailure(error);
-              if (applied === undefined || issuedIn !== generation) return null;
-              return () => {
-                if (issuedIn !== generation) return;
-                set((s) => ({
-                  ...publishMarketplaceSnapshot(applied),
-                  browseCatalogs: retireCatalogsAbsentFrom(
-                    retire.length ? retireBrowseCatalogs(s.browseCatalogs, retire) : s.browseCatalogs,
-                    applied,
-                  ),
-                }));
-              };
-            }
-          : undefined,
-      );
+      const ran = await gate.run(() => {
+        const issuedIn = lifecycle.epoch();
+        return writeRevisioned(
+          listRevision,
+          request,
+          (resp) => {
+            // A reset or a dispose ended the generation this write was issued in:
+            // its answer is about a store that has forgotten everything it read.
+            if (issuedIn !== lifecycle.epoch()) return null;
+            // The catalogs this write names are retired whether or not its list is
+            // the live answer: retiring is monotonic within the generation, so a
+            // catalog stale under an older list is stale under a newer one too.
+            if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
+            // The list, and the two fields that belong to it, go through the fence:
+            // see plugins.ts's mutate for why the live answer owns all three.
+            return () =>
+              set((s) => ({
+                ...publishMarketplaceSnapshot(resp.marketplaces),
+                browseCatalogs: retireCatalogsAbsentFrom(s.browseCatalogs, resp.marketplaces),
+              }));
+          },
+          onFailure
+            ? (error) => {
+                const applied = onFailure(error);
+                if (applied === undefined || issuedIn !== lifecycle.epoch()) return null;
+                return () => {
+                  if (issuedIn !== lifecycle.epoch()) return;
+                  set((s) => ({
+                    ...publishMarketplaceSnapshot(applied),
+                    browseCatalogs: retireCatalogsAbsentFrom(
+                      retire.length ? retireBrowseCatalogs(s.browseCatalogs, retire) : s.browseCatalogs,
+                      applied,
+                    ),
+                  }));
+                };
+              }
+            : undefined,
+        );
+      });
+      if (!ran) throw new HubWriteBusyError();
     }
 
     const setCatalog = (name: string, entry: MarketplaceCatalogEntry): void =>

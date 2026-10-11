@@ -114,7 +114,7 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		{"/__retired__/session-rest/{id}/compact", sandboxSessionID, ""},
 		{"/__retired__/session-rest/{id}/shutdown", sandboxSessionID, ""},
 		{"/__retired__/session-rest/{id}/send", sandboxSessionID, `{"text":"hi"}`},
-		{"/__retired__/session-rest/{id}/fork", sandboxSessionID, `{"sourceTurnId":"turn_1","editedInput":"x"}`},
+		{"/__retired__/session-rest/{id}/fork", sandboxSessionID, `{"sourceItemKey":"apptranscript-item-v2:turn_1:0:0","editedInput":"x"}`},
 		{"/s/{id}/steer", sandboxSessionID, `{"text":"go"}`},
 		{"/s/{id}/queue", sandboxSessionID, `{"text":"later"}`},
 		{"/s/{id}/drain-as-steer", sandboxSessionID, `{}`},

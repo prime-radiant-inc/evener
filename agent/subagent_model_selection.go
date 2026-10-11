@@ -151,7 +151,7 @@ func (s *Session) resolvePluginAgentModel(
 	if err != nil {
 		return pluginAgentModelResolution{reason: "unverified"}
 	}
-	if listing.Live {
+	if listing.Usable {
 		if _, ok := liveModelFor(listing.Models, candidate.Model()); !ok {
 			return pluginAgentModelResolution{reason: "unavailable"}
 		}

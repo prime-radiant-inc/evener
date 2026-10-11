@@ -1,8 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { TaskCheck, TOUCHES } from "./taskCheck";
-
-afterEach(cleanup);
 
 test("every touch renders one square, aria-hidden checkbox glyph tagged with its touch", () => {
   for (const touch of TOUCHES) {

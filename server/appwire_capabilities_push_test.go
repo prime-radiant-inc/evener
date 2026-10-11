@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // A client holds ThreadCapabilities as a snapshot from its last thread/read,
@@ -22,7 +23,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	wireRetrySafeCapabilities(srv)
 	srv.SetCancelFunc(context.CancelFunc(func() {}))
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 
 	statuses := statusNotifications(t, srv, "th_1")
 	if len(statuses) != 1 {
@@ -68,6 +69,32 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	}
 }
 
+// A session resting on a failed turn is open: its status frame says
+// systemError, carries Send so the composer offers the next message, and the
+// daemon never announces it closed.
+func TestFailedTurnStatusFrameKeepsTheSessionOpen(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	wireRetrySafeCapabilities(srv)
+
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "turn_failed", State: appwire.ThreadStatusSystemError}})
+
+	statuses := statusNotifications(t, srv, "th_1")
+	failed := statuses[len(statuses)-1]
+	if failed.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("last status = %q, want systemError", failed.Status.Type)
+	}
+	if failed.Capabilities == nil || !failed.Capabilities.Send {
+		t.Fatalf("failed status capabilities = %+v, want Send true: the session takes the next message", failed.Capabilities)
+	}
+	for _, n := range srv.AppNotificationsAfter(0, "th_1") {
+		if n.Notification.Method == appwire.NotifyThreadClosed {
+			t.Fatalf("a failed turn announced thread/closed: %+v", n.Notification)
+		}
+	}
+}
+
 // A daemon announcing its own close is describing a thread it is about to
 // stop running, and the actions still on offer for that thread are the HUB's
 // to state: it answers an exited session's read from the past index and
@@ -84,7 +111,7 @@ func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	wireRetrySafeCapabilities(srv)
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "shutdown", State: "closed"}})
 
 	statuses := statusNotifications(t, srv, "th_1")
@@ -104,7 +131,7 @@ func TestStatusChangeCapabilitiesRespectAnUnwiredHarness(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 
 	statuses := statusNotifications(t, srv, "th_1")
 	if len(statuses) == 0 {

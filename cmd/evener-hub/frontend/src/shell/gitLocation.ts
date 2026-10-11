@@ -3,7 +3,7 @@
 //
 //   - the Spawn pane's branch chip, which needs only the branch
 //     (resolveHeadBranch), and
-//   - the session composer's location line, which also links the branch to its
+//   - the session location line, which also links the branch to its
 //     forge repo page and so needs the "origin" remote (resolveGitLocation).
 //
 // Origin is opt-in on the wire: resolveHeadBranch does not ask for it, so the
@@ -59,9 +59,9 @@ export async function resolveHeadBranch(
 }
 
 export async function resolveGitLocation(client: AppwireClientLike, cwd: string): Promise<GitLocation> {
-  // The session composer's location line reads a SESSION's directory, and the
+  // The session location line reads a SESSION's directory, and the
   // session surfaces are not host-scoped yet, so this keeps the controller's
-  // own call (a tracked follow-up, not a regression: the composer never had a
+  // own call (a tracked follow-up, not a regression: the session surface has no
   // remote host to pass).
   return requestGitHead(client, cwd, true, "local");
 }

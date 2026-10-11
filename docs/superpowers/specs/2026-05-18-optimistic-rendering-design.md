@@ -35,7 +35,7 @@ Out of scope:
 
 One coordinator per renderer, structured as a thin wrapper inside the existing appwire client.
 
-- **Web**: `window.EvenerAppwire` (in `cmd/evener-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `EvenerAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
+- **Web**: `window.EvenerAppwire` (in `cmd/serf-hub/assets/appwire.js`) gains a new internal helper `optimisticCall(method, params, intent)`. Every UI callsite that today calls `EvenerAppwire.send` / `queue` / `steer` / `drainAsSteer` is rewritten to go through `optimisticCall`. The four named functions on the public API become thin facades over `optimisticCall`.
 - **TUI**: `internal/appwire.Client` (Go) gains the same shape. The wrapper lives inside `TurnStart`, `TurnSteer`, `TurnQueue`, `TurnDrainAsSteer` — those are the existing public methods, no rename. The renderer (hub_model + hub_transcript_reducer) consumes a tiny "pending message" interface to plumb the visual state.
 
 `optimisticCall` owns the **call lifecycle**, not the event-matching:
@@ -179,7 +179,7 @@ Under `test/scenarios/`:
 New / modified files (no exhaustive line counts — that's the plan's job):
 
 ```
-cmd/evener-hub/assets/appwire.js              modify: add optimisticCall + four facade wrappers + event subscriber
+cmd/serf-hub/assets/appwire.js              modify: add optimisticCall + four facade wrappers + event subscriber
 cmd/evener-hub/assets/renderer.js             modify: pending registry; convert send/queue/steer/drain callsites
 cmd/evener-hub/assets/style.css               modify: add .optimistic-pending / -failed / -retry, @keyframes
 cmd/evener-hub/jstest/test-optimistic-rendering.js   new

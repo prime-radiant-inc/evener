@@ -29,6 +29,22 @@ func (s *countingRemoteSource) ListThreads(ctx context.Context, params appwire.T
 	return s.scriptedAppSource.ListThreads(ctx, params)
 }
 
+// hookedRemoteSource lists its scripted row after running onList, so a test
+// can land registry churn at an exact point inside a walk — the mid-walk
+// window between the walk's enumeration of one source and its read of the
+// next.
+type hookedRemoteSource struct {
+	*scriptedAppSource
+	onList func()
+}
+
+func (s *hookedRemoteSource) ListThreads(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	if s.onList != nil {
+		s.onList()
+	}
+	return s.scriptedAppSource.ListThreads(ctx, params)
+}
+
 // A non-explicit (empty SourceIDs) fleet-wide thread/list must run only against
 // already-attached sources: an unattached remote host is skipped without a call
 // and the dialing connector is never reached (component 05, §"The same gate
@@ -223,6 +239,117 @@ func TestRefreshRemoteThreadSnapshotKeepsLastKnownGoodWhenHostDetaches(t *testin
 	}
 	if second.complete {
 		t.Fatal("snapshot reported complete with a detached source serving carried-forward rows")
+	}
+}
+
+// TestRefreshRemoteThreadSnapshotDropsRowsWhenChurnLandsAfterRead pins the
+// round-10 fix on the real walk path: the remove and re-add fire from the
+// second-listed source's list, so they land after the walk has read the
+// victim — the rows the walk holds belong to the removed registration, and
+// the walk's own read-time capture mismatches the re-added one at the
+// publish. A capture taken once before the walk started reading published
+// those rows under the re-added identity.
+func TestRefreshRemoteThreadSnapshotDropsRowsWhenChurnLandsAfterRead(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
+	sources := appsource.NewRegistry()
+	// The registration discipline the host manager follows: generations are
+	// assigned before the sources become registry-visible.
+	cache.RegisterSource("aaa-victim")
+	cache.RegisterSource("zzz-churner")
+	// The walk reads its sources in name order, so aaa-victim is read first
+	// and the churn the churner's list performs lands strictly after that
+	// read — the round-10 window between the read and the publish.
+	churned := make(chan struct{})
+	sources.Add(&scriptedAppSource{id: "aaa-victim", thread: appwire.Thread{ID: "victim-thread", Source: "aaa-victim"}})
+	sources.Add(&hookedRemoteSource{
+		scriptedAppSource: &scriptedAppSource{id: "zzz-churner", thread: appwire.Thread{ID: "churner-thread", Source: "zzz-churner"}},
+		onList: func() {
+			cache.RemoveSource("aaa-victim")
+			cache.RegisterSource("aaa-victim")
+			close(churned)
+		},
+	})
+	web.sources = sources
+
+	fetch := web.refreshRemoteThreadSnapshot(context.Background())
+	select {
+	case <-churned:
+	default:
+		t.Fatal("walk finished without the churner's list running; fixture ordering broken")
+	}
+	if len(fetch.threads) != 2 {
+		t.Fatalf("walk threads = %+v, want both sources' rows read", fetch.threads)
+	}
+	cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+		Threads:  fetch.threads,
+		Complete: fetch.complete,
+		Sources:  fetch.sources,
+	}, fetch.sourceGenerations)
+	for _, thread := range cache.Snapshot().Threads {
+		if thread.Source == "aaa-victim" {
+			t.Fatalf("late walk published thread %q under the re-added identity", thread.ID)
+		}
+	}
+	if _, ok := cache.Snapshot().Sources["aaa-victim"]; ok {
+		t.Fatal("late walk published the re-added name's per-source snapshot from the removed registration's rows")
+	}
+	if got := cache.Snapshot().Threads; len(got) != 1 || got[0].ID != "churner-thread" {
+		t.Fatalf("threads after the late publish = %+v, want the churner's row alone", got)
+	}
+}
+
+// TestRefreshRemoteThreadSnapshotPublishesRowsReadAfterMidWalkChurn pins the
+// immediacy the read-time capture buys on the real walk path: the remove and
+// re-add fire from the first-listed source's list, so they land BEFORE the
+// walk reads the churned name — the walk reads the re-added registration's
+// rows and captures the re-added generation, and they publish on this tick.
+// A capture taken once at walk start would still hold the removed
+// registration's generation and drop the rows the re-added registration
+// owns.
+func TestRefreshRemoteThreadSnapshotPublishesRowsReadAfterMidWalkChurn(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
+	sources := appsource.NewRegistry()
+	cache.RegisterSource("aaa-churner")
+	cache.RegisterSource("zzz-victim")
+	churned := make(chan struct{})
+	sources.Add(&hookedRemoteSource{
+		scriptedAppSource: &scriptedAppSource{id: "aaa-churner", thread: appwire.Thread{ID: "churner-thread", Source: "aaa-churner"}},
+		onList: func() {
+			cache.RemoveSource("zzz-victim")
+			cache.RegisterSource("zzz-victim")
+			close(churned)
+		},
+	})
+	sources.Add(&scriptedAppSource{id: "zzz-victim", thread: appwire.Thread{ID: "victim-thread", Source: "zzz-victim"}})
+	web.sources = sources
+
+	fetch := web.refreshRemoteThreadSnapshot(context.Background())
+	select {
+	case <-churned:
+	default:
+		t.Fatal("walk finished without the churner's list running; fixture ordering broken")
+	}
+	// The walk captured the re-added registration's generation when it read
+	// the victim — not the removed registration the walk started under.
+	current, ok := cache.SourceGeneration("zzz-victim")
+	if !ok {
+		t.Fatal("re-added source carries no generation")
+	}
+	if captured, ok := fetch.sourceGenerations["zzz-victim"]; !ok || captured != current {
+		t.Fatalf("walk captured zzz-victim at %d (ok=%v), want the read-time generation %d", captured, ok, current)
+	}
+	cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+		Threads:  fetch.threads,
+		Complete: fetch.complete,
+		Sources:  fetch.sources,
+	}, fetch.sourceGenerations)
+	if got := cache.Snapshot().Threads; len(got) != 2 {
+		t.Fatalf("threads after the publish = %+v, want both sources' rows: the rows read under the re-added registration must publish", got)
+	}
+	if _, ok := cache.Snapshot().Sources["zzz-victim"]; !ok {
+		t.Fatal("publish dropped the re-added source's per-source snapshot")
 	}
 }
 

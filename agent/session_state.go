@@ -2,10 +2,15 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -17,11 +22,13 @@ const (
 	SessionIdle SessionState = "idle"
 	// SessionProcessing indicates the session is actively processing.
 	SessionProcessing SessionState = "active"
-	// SessionAwaiting indicates the session is idle with the ball in the
-	// user's court: the last completed turn ended with agent output and no
-	// autonomous work (goal kick, pending notifications, queued input, live
-	// child subagents) is in flight. It is the daemon-truth source for the
-	// hub's "needs you" attention state (spec: attention-status-model v5).
+	// SessionAwaiting indicates the session is idle with the ball in its
+	// human partner's court: a question is pending, or the last completed
+	// turn ended on a communicate that said needs_response and no autonomous
+	// work (goal kick, pending notifications, queued input, a pending
+	// delegate report, working child subagents) is in flight. A plain reply
+	// rests idle. It is the daemon-truth source for the hub's "needs you"
+	// attention state.
 	// The string must stay byte-equal to appwire.ThreadStatusAwaiting
 	// ("awaiting"): every status pass-through switch on the wire journey
 	// defaults unrecognized strings to idle, so changing this string would
@@ -51,50 +58,145 @@ func (s *Session) awaitingOrHasPendingAsk() bool {
 	return s.state == SessionAwaiting || len(s.askPending) > 0
 }
 
-// WireState is the externally-reported session state. It equals State()
-// except for one override: an idle session with undelivered job notifications
-// or claimable queued input reads as "active" because work the session owns
-// can resume it without user input. A queue parked by a Stop is not claimable
-// and reads idle -- nothing will move it until the user acts (kata wms7).
-// Live child activity belongs to the child's wire state, not the settled
-// parent's.
+// WireState is the externally-reported session state: RestingWireState, with
+// one override. A resting session (idle, or resting on a failed turn) with
+// undelivered job notifications or claimable queued input reads as "active",
+// because work the session owns can start its next turn without user input. A
+// queue parked by a Stop is not claimable and reads as resting -- nothing will
+// move it until the user acts (kata wms7). Live child activity belongs to the
+// child's wire state, not the settled parent's.
 //
-// Precedence: the override upgrades idle ONLY. awaiting always projects as
-// awaiting, even with autonomy in flight — a session that asked its user
-// (ask-user-question design) cannot proceed without them, and masking the
-// question as "working" would deadlock: the wakes that could move the
-// session are gated behind the very answer the user was never told to give.
-// TestWireState_AwaitingOutranksAutonomy pins this.
+// Precedence: the override raises a resting state ONLY. A session awaiting
+// its user projects as awaiting even with autonomy in flight: a session that
+// asked its user (ask-user-question design) cannot proceed without them, and
+// masking the question as "working" would deadlock, since the wakes that
+// could move the session are gated behind the very answer the user was never
+// told to give. TestWireState_AwaitingOutranksAutonomy pins this.
 func (s *Session) WireState() string {
-	state := s.State()
-	if state == SessionIdle && s.sessionWorkPending() {
+	state := s.RestingWireState()
+	if appwire.IsRestingThreadStatus(state) && s.sessionWorkPending() {
 		return string(SessionProcessing)
 	}
-	return string(state)
+	return state
+}
+
+// RestingWireState is State() with one substitution: a session resting on a
+// failed turn publishes appwire.ThreadStatusSystemError, which every client
+// shows as Failed. It rests on a failed turn when it is idle, or awaiting with
+// no pending question, and its history ends in a recorded turn failure
+// (restingFailureLocked). A pending question keeps awaiting: answering it
+// is what moves the session, and the failure stays readable in the
+// transcript. The next turn to start ends the failure, since it records a
+// turn-bearing entry; an interrupt never records a failure at all.
+//
+// It reads state, the pending asks and the history under one lock, and
+// restore rebuilds all three from the transcript, so a restored session
+// derives the answer the live session published. RestoreSession stamps
+// WireState (this state plus the work-pending override) on its SessionStart
+// event, and serve publishes the same WireState before the first turn, so the
+// bridge and the synchronous startup write agree (#251).
+func (s *Session) RestingWireState() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, failed := s.restingFailureLocked(); failed {
+		return appwire.ThreadStatusSystemError
+	}
+	return string(s.state)
+}
+
+// RestingFailure summarizes the failed turn the session rests on for its row's
+// why line (S1c): the failure's headline and its structured cause, never its
+// message, which can quote a provider's error body. It reads what
+// RestingWireState reads, under the same one hold, so it is present only while
+// the session publishes systemError, and a restored session summarizes the
+// failure the live one did. It is nil when the session rests on no failed
+// turn, or when the failure recorded no diagnostic (a legacy entry): the row
+// still reads Failed, and there is nothing more to say.
+func (s *Session) RestingFailure() *appwire.ThreadFailure {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turn, failed := s.restingFailureLocked()
+	if !failed || turn.Error == nil {
+		return nil
+	}
+	failure := &appwire.ThreadFailure{Title: appwire.Excerpt(turn.Error.Title, appwire.MaxFailureTitleRunes)}
+	if cause := turn.Error.Cause; cause != nil {
+		failure.Cause = &appwire.DiagnosticCause{Kind: cause.Kind, Provider: cause.Provider, Model: cause.Model, Status: cause.Status}
+	}
+	if failure.Title == "" && failure.Cause == nil {
+		return nil
+	}
+	return failure
+}
+
+// restingFailureLocked is the recorded turn failure the session rests on: it is
+// idle, or awaiting with no pending question, and its history ends in the
+// failure (historyTurnFailure). The caller holds s.mu.
+func (s *Session) restingFailureLocked() (schema.Turn, bool) {
+	resting := s.state == SessionIdle || s.state == SessionAwaiting
+	if !resting || len(s.askPending) != 0 {
+		return schema.Turn{}, false
+	}
+	return historyTurnFailure(s.history)
+}
+
+// historyTurnFailure returns the recorded turn failure the history ends in,
+// when its last turn-bearing record is one (a TurnFailure, written by
+// emitTurnFailure and emitSteeringCarrierTurnFailure): the session's last turn
+// failed and no turn has started since. A turn-bearing record is one a turn
+// writes as it runs: user input, steering (the interrupt marker included), an
+// assistant response, tool results. Bookkeeping records (TurnSystem,
+// TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnHookCompleted,
+// TurnEnvironment, TurnNotesContext, TurnAttentionResolution) are skipped, so
+// a model switch or a hook line after the failure leaves the session failed.
+func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
+	for i := range slices.Backward(history) {
+		switch history[i].Kind {
+		case schema.TurnFailure:
+			return history[i], true
+		case schema.TurnUserInput, schema.TurnSteering, schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults:
+			return schema.Turn{}, false
+		}
+	}
+	return schema.Turn{}, false
 }
 
 // sessionWorkPending reports whether work owned by this session can resume it
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
+	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
 }
 
 func (s *Session) hasPendingStableDelegateAttention() bool {
 	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
 }
 
+// hasPendingStableSteering reports whether this session's own delegate
+// generation holds an admitted steering message no model request has consumed
+// yet. A delegate run parked in its finalization drain reads this to run a turn
+// so the steering is acted on rather than stranded until an owned job ends
+// (#2796). The root session owns no delegate generation, so it is always false
+// there.
+func (s *Session) hasPendingStableSteering() bool {
+	return s != nil && s.owningDelegateID != "" && s.delegateController != nil && s.delegateController.generationOwesSteering(s.owningDelegateID)
+}
+
 // autonomyInFlight reports whether autonomous work will move this session
-// without user input: pending job notifications, queued input, or live child
-// subagents. Reads take each signal's own lock sequentially — never nested —
-// per the settle lock discipline (spec v5). A restored-but-unkicked goal is
-// deliberately NOT autonomy: nothing will move until the user acts, and amber
-// is what surfaces that stall.
+// without user input: pending job notifications, queued input, a pending
+// delegate report, or a working child subagent (hasWorkingSubagent). Reads
+// take each signal's own lock sequentially — never nested — per the settle
+// lock discipline (spec v5). A restored-but-unkicked goal is deliberately NOT
+// autonomy: nothing will move until the user acts, and amber is what surfaces
+// that stall.
 func (s *Session) autonomyInFlight() bool {
-	if s.sessionWorkPending() {
+	// Children first: a child's finalize tail delivers its report before it
+	// stops reading as working, so a child read as idle has already delivered
+	// whatever the pending-work read after it then sees.
+	if s.hasWorkingSubagent() {
 		return true
 	}
-	return len(s.liveSubagentSessions()) > 0
+	return s.sessionWorkPending()
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to
@@ -162,6 +264,10 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		}
 		jobTreeRevision = s.jobActivityClock.revision.Load()
 	}
+	scratchTreeRootID := ""
+	if root := s.scratchTreeRootID(); root != s.id {
+		scratchTreeRootID = root
+	}
 	skills := s.skillLifecycle.Clone()
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	return schema.SessionMeta{
@@ -198,8 +304,12 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,
 		WorkMillis:               s.workMillis,
+		LastTurnEndedAt:          s.lastTurnEndedAt,
+		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
+		ScratchTempDir:           sandbox.ProcessScratchTempDir(),
+		ScratchTreeRootID:        scratchTreeRootID,
 		JobTreeRevision:          jobTreeRevision,
 		EnvContext:               s.envContextState,
 	}
@@ -273,7 +383,7 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 func (s *Session) transitionProcessingAtBoundaryLocked(state SessionState) (transitioned bool, turnMS int64) {
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
-		turnMS = s.accumulateWorkLocked()
+		turnMS = s.endTurnLocked()
 		transitioned = true
 	}
 	return transitioned, turnMS
@@ -304,9 +414,9 @@ func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
 // finishProcessingAtRestoredFailureBoundary settles an interrupt whose marker
 // was rejected by the same transcript-tail rule restore uses. Marker rejection
 // can follow an admitted reply, which clears askPending before a completed
-// tool-results turn leaves the durable session awaiting. Generic failures keep
-// the pending-set rule above; this path is only for an interrupt marker that
-// never became a boundary record.
+// tool-results turn that ended on needs_response leaves the durable session
+// awaiting. Generic failures keep the pending-set rule above; this path is
+// only for an interrupt marker that never became a boundary record.
 func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
 	// recordTurn retains the live pair before an ordinary transcript write
 	// reports a clean rollback. Read the transcript while attentionMu excludes
@@ -321,14 +431,14 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	// identifies it) instead of the full file.
 	var restoredHistory []schema.Turn
 	var restoredRepairInsertions []int
-	retained := 0
+	var restoredEntries []transcript.Entry
 	path := s.TranscriptPath()
 	s.attentionMu.Lock()
 	if path != "" {
-		_, entries, _, err := readTranscript(path)
+		_, entries, _, err := readTranscript(path, s.stateDir)
 		if err == nil {
 			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
-			retained = retainedFrom(entries)
+			restoredEntries = entries
 		}
 	}
 	release := func(transitioned bool, turnMS int64) {
@@ -344,9 +454,9 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	divergence := s.fork.divergence
 	if restoredHistory != nil {
 		// Map the immutable full-transcript divergence into the resumed
-		// history's coordinates (retained window plus repair insertions)
-		// before consulting journal provenance.
-		divergence = mapDivergenceThroughResumedHistory(divergence, retained, restoredRepairInsertions)
+		// history's coordinates (retained window, skipped transcript-only
+		// entries and repair insertions) before consulting journal provenance.
+		divergence = resumedDivergence(restoredEntries, divergence, restoredRepairInsertions)
 	}
 	origins := s.clientMutations.steeringOrigins()
 	if restoredHistory == nil {
@@ -367,8 +477,10 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 		// The settlement is atomic with the state publication: a no-op
 		// transition (already settled, or closing) leaves the live pending
 		// set untouched rather than half-settling it against an unchanged
-		// state.
-		s.askPending = pending
+		// state. setAskPendingLocked also clears askPendingCallArgs: pending
+		// is a re-derivation from the transcript, carrying no raw call
+		// arguments of its own to keep in step with it.
+		s.setAskPendingLocked(pending)
 	}
 	release(transitioned, turnMS)
 	if transitioned && isAskRound && len(pending) == 0 {
@@ -384,17 +496,29 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	}
 }
 
-// accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
-// returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
-// (no turn was timed) contributes nothing.
-func (s *Session) accumulateWorkLocked() int64 {
+// accumulateWorkLocked adds the just-ended turn's wall-clock, up to end, to
+// workMillis and returns that turn's duration in ms. Caller holds s.mu; a zero
+// turnStartedAt (no turn was timed) contributes nothing.
+func (s *Session) accumulateWorkLocked(end time.Time) int64 {
 	if s.turnStartedAt.IsZero() {
 		return 0
 	}
-	ms := max(s.sclock().Now().Sub(s.turnStartedAt).Milliseconds(), 0)
+	ms := max(end.Sub(s.turnStartedAt).Milliseconds(), 0)
 	s.workMillis += ms
 	s.turnStartedAt = time.Time{}
 	return ms
+}
+
+// endTurnLocked settles the turn that just ended: it adds the turn's
+// wall-clock to workMillis, stamps lastTurnEndedAt, and returns the turn's
+// duration in ms. Both places a turn ends call it: the processing boundary,
+// and a Close that lands mid-turn, which never reaches the boundary. Caller
+// holds s.mu.
+func (s *Session) endTurnLocked() int64 {
+	end := s.sclock().Now()
+	turnMS := s.accumulateWorkLocked(end)
+	s.lastTurnEndedAt = end.UTC()
+	return turnMS
 }
 
 func (s *Session) abortIfClosing(ctx context.Context) error {
@@ -455,69 +579,164 @@ func (s *Session) isClosingOrClosed() bool {
 // turns return from ProcessInputKind before the settle), so turn outcome is
 // implied by reachability. awaiting arms only when the turn produced
 // user-visible output and nothing autonomous will move the session next.
-func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, childrenLive bool) SessionState {
-	if !hadOutput || goalKicked || notifsPending || queuePending || childrenLive {
+func settleTerminalState(hadOutput, goalKicked, queuePending, autonomyPending bool) SessionState {
+	if !hadOutput || goalKicked || queuePending || autonomyPending {
 		return SessionIdle
 	}
 	return SessionAwaiting
 }
 
-// recomputeRestoredState reruns deriveRestoredState — the single
-// resume-derivation function (session_tools_ask.go) — for a restored
-// session, now that history, goal restore, and (unless deferred for nested
+// recomputeRestoredState settles a restored session the way the live settle
+// does, now that history, goal restore, and (unless deferred for nested
 // delegate reconstruction) notification/watch-send side effects are all in
-// place. It only ever upgrades from idle: the initial derivation in
-// RestoreSession already decided from history alone (including awaiting,
-// when this second pass is not needed), so this call exists purely to rule
-// an upgrade back out once autonomy signals that were not yet restored the
-// first time — live children, pending notifications, queued input — are
-// available to check. Restored active goals are deliberately not autonomy —
-// they are not re-kicked on restore ("loaded but idle"), so amber is what
-// surfaces the stall (spec v5, round-3 A2). divergenceTurn is the same value
-// its one caller (RestoreSessionFromMetaWithConfig) already computed for
-// escapeHistoryWithSessionProvenance, in the same units as s.history at this
-// point: a forked child's inherited prefix must not be decided by this
+// place. The initial derivation in RestoreSession decided from history
+// alone; this pass reruns deriveRestoredState (session_tools_ask.go) once
+// autonomy signals (working children, pending notifications, queued input)
+// are available to check. A pending question rests awaiting regardless. A
+// needs_response rest with autonomy in flight rests idle and is owed, so a
+// later wake that runs no turn arms it once nothing moves the session; with
+// none in flight it rests awaiting. Restored active goals are deliberately
+// not autonomy: they are not re-kicked on restore ("loaded but idle").
+// divergenceTurn is the same value its one caller
+// (RestoreSessionFromMetaWithConfig) already computed for
+// escapeHistoryWithSessionProvenance, in the same units as s.history at
+// this point: a forked child's inherited prefix must not be decided by this
 // session's own journal (steeringOriginBoundary).
 func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
-	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
-	target := deriveRestoredState(s.history, divergenceTurn, s.clientMutations.steeringOrigins())
+	origins := s.clientMutations.steeringOrigins()
+	target := deriveRestoredState(s.history, divergenceTurn, origins)
+	_, askRound := deriveRestoredAskPending(s.history, divergenceTurn, origins)
 	s.mu.Unlock()
-	if !idle || target != SessionAwaiting {
-		return
-	}
-	if s.autonomyInFlight() {
-		return
-	}
-	s.mu.Lock()
-	if s.state == SessionIdle && !s.closingOrClosedLocked() {
-		s.state = SessionAwaiting
-	}
-	s.mu.Unlock()
-}
-
-// armAwaitingAtSettle upgrades idle -> awaiting at the drain-loop settle when
-// settleTerminalState says the ball is in the user's court. It runs after
-// settleGoalOnIdle (so the goal kick is known) and before the EventSessionEnd
-// emit (so the emitted State carries the upgrade). The upgrade respects the
-// same closed-guard as finishProcessingAtBoundary and only ever upgrades from
-// SessionIdle, so interrupt/failure paths (which never reach the settle) and
-// closed sessions are untouched.
-func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
-	// Runnable user steering is queued input for this purpose: a carrier that
-	// returned its steer undelivered leaves it for the next wake, and a
-	// session that will move on its own is not waiting on the user.
-	target := SessionAwaiting
-	if s.askPendingCount() == 0 {
-		target = settleTerminalState(hadOutput, goalKicked,
-			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
-	}
 	if target != SessionAwaiting {
 		return
 	}
+	held := !askRound && s.autonomyInFlight()
 	s.mu.Lock()
-	if s.state == SessionIdle && !s.closingOrClosedLocked() {
-		s.state = SessionAwaiting
+	defer s.mu.Unlock()
+	if (s.state != SessionIdle && s.state != SessionAwaiting) || s.closingOrClosedLocked() {
+		return
 	}
-	s.mu.Unlock()
+	if !held {
+		s.state = SessionAwaiting
+		return
+	}
+	s.state = SessionIdle
+	s.comm.endReason = tool.CommunicateEndReasonNeedsResponse
+	s.restGeneration++
+	s.restOwedGeneration = s.restGeneration
 }
+
+// armAwaitingAtSettle upgrades idle -> awaiting at the drain-loop settle when
+// the session waits on its human partner: a question is pending, or the turn
+// ended on a communicate that said needs_response and settleTerminalState
+// finds nothing autonomous in flight. A plain reply (done) and a wait on
+// work (waiting_on_work) rest idle. It runs after settleGoalOnIdle (so the
+// goal kick is known) and before the EventSessionEnd emit. A pending question
+// upgrades at once, so the emitted State carries it; a needs_response rest
+// upgrades after its quiet period and announces itself with
+// EventStatusSettled. The upgrade respects the same closed-guard as
+// finishProcessingAtBoundary and only ever upgrades from SessionIdle, and a
+// turn starting since the settle cancels a pending one (restGeneration).
+func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
+	s.mu.Lock()
+	s.restGeneration++
+	generation := s.restGeneration
+	if len(s.askPending) > 0 {
+		// Only the answer resolves a pending question; queued input waits
+		// behind it, so nothing else is read here.
+		if s.restStillPendingLocked(generation) {
+			s.state = SessionAwaiting
+		}
+		s.mu.Unlock()
+		return
+	}
+	// A wake that ran no turn produced no output of its own; the rest it
+	// interrupted had output at its own settle, and everything else is
+	// checked again from here.
+	hadOutput = hadOutput || s.resumeQuietRest
+	s.resumeQuietRest = false
+	s.mu.Unlock()
+	if s.communicateEndReason() != tool.CommunicateEndReasonNeedsResponse || !hadOutput {
+		return
+	}
+	// From here the turn owes its human partner a rest, even when queued
+	// input, steering, a goal kick or work in flight holds it idle for now: a
+	// later wake that runs no turn settles again and arms it once nothing
+	// moves the session. hadOutput is true from here on.
+	s.mu.Lock()
+	s.restOwedGeneration = generation
+	s.mu.Unlock()
+	// Runnable user steering is queued input for this purpose: a carrier that
+	// returned its steer undelivered leaves it for the next wake, and a
+	// session that will move on its own is not waiting on the user.
+	moves := s.QueueDepth() > 0 || s.hasRunnableUserSteering()
+	if settleTerminalState(hadOutput, goalKicked, moves, s.autonomyInFlight()) != SessionAwaiting {
+		return
+	}
+	// A needs_response rest waits out a quiet period first, so a session that
+	// ends a turn and starts the next one at once never flickers to awaiting.
+	// The timer re-checks everything the settle checked: a newer settle, a new
+	// turn, a close, or work that arrived in the meantime leaves it idle.
+	delay := needsResponseQuietPeriodDefault
+	if override := s.cfg.testOnly.needsResponseQuietPeriod; override != nil {
+		delay = *override
+	}
+	if delay <= 0 {
+		// Nothing moved since the checks above, and the input's SESSION_END,
+		// emitted right after this settle, carries the state.
+		s.restAwaiting(generation)
+		return
+	}
+	s.sclock().AfterFunc(delay, func() {
+		// The cheap check first, so a timer outliving its session or turn
+		// reads no work state. restAwaiting re-reads queued input and
+		// steering under the transition's hold.
+		if !s.restStillPending(generation) || s.autonomyInFlight() {
+			return
+		}
+		// Held across the emit so a turn start can't slip in between.
+		// STATUS_SETTLED must stay out of job_watch.go's modelEventKinds: a
+		// watch fired from this emit could start a turn, which waits on restMu.
+		s.restMu.Lock()
+		defer s.restMu.Unlock()
+		if s.restAwaiting(generation) {
+			if hook := s.cfg.testOnly.needsResponseRestBeforeAnnounce; hook != nil {
+				hook()
+			}
+			s.emit(events.EventStatusSettled, events.StatusSettledData{State: string(SessionAwaiting)})
+		}
+	})
+}
+
+// restStillPending reports whether the rest numbered generation can still
+// arm: no turn started and no settle ran since, and the session is idle and
+// open.
+func (s *Session) restStillPending(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restStillPendingLocked(generation)
+}
+
+func (s *Session) restStillPendingLocked(generation uint64) bool {
+	return s.restGeneration == generation && s.state == SessionIdle && !s.closingOrClosedLocked()
+}
+
+// restAwaiting moves the session to awaiting if the rest numbered generation
+// can still arm, and reports whether it did. Queued input and runnable user
+// steering are read again under the same hold as the transition, since
+// neither starts a turn the moment it arrives.
+func (s *Session) restAwaiting(generation uint64) bool {
+	steeringHeld := s.userSteeringHeld()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.restStillPendingLocked(generation) || len(s.inputQueue) > 0 || s.runnableUserSteeringLocked(steeringHeld) {
+		return false
+	}
+	s.state = SessionAwaiting
+	return true
+}
+
+// needsResponseQuietPeriodDefault is how long a turn that ended on
+// needs_response rests idle before it rests awaiting.
+const needsResponseQuietPeriodDefault = 5 * time.Second

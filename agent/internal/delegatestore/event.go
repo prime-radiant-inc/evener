@@ -16,6 +16,7 @@ const (
 	EventDelegateSubtreeStopCompleted EventKind = "delegate_subtree_stop_completed"
 	EventDelegateDeliveryAcknowledged EventKind = "delegate_delivery_acknowledged"
 	EventDelegateAttentionChanged     EventKind = "delegate_attention_changed"
+	EventDelegateUpdatePosted         EventKind = "delegate_update_posted"
 )
 
 type Event struct {
@@ -33,6 +34,7 @@ type Event struct {
 	SubtreeStopCompleted *SubtreeStopCompleted     `json:"subtree_stop_completed,omitempty"`
 	DeliveryAcknowledged *DeliveryAcknowledged     `json:"delivery_acknowledged,omitempty"`
 	AttentionChanged     *DelegateAttentionChanged `json:"attention_changed,omitempty"`
+	UpdatePosted         *UpdatePosted             `json:"update_posted,omitempty"`
 }
 
 type DelegateCreated struct {
@@ -85,6 +87,21 @@ type DeliveryAcknowledged struct {
 
 type DelegateAttentionChanged struct {
 	NeedsAttention bool `json:"needs_attention"`
+}
+
+// UpdatePosted is a running generation's mid-work message to its owner. The
+// fold queues it as a pending delivery behind the delegate's earlier
+// deliveries and ahead of the report the same generation settles.
+//
+// This journal records and orders updates only. Which tool call posts one
+// belongs to the delegate controller that appends the event. The controller
+// also owns its delivery shape: an update head never claims the generation's
+// inline waiter (newHeadDeliveryPlanLocked in package agent). How an update
+// is presented, as a notification frame, as an earlier result carried into a
+// delegate_send reply, or in a client, belongs to those renderers.
+type UpdatePosted struct {
+	Generation uint64 `json:"generation"`
+	Message    string `json:"message"`
 }
 
 type versionRecord struct {

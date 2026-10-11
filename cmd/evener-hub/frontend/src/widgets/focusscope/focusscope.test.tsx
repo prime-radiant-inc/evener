@@ -1,9 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
+import { expect, test } from "vitest";
 import { FocusScope } from "./index";
-
-afterEach(cleanup);
 
 test("renders its children", () => {
   render(

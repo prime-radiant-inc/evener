@@ -1,11 +1,8 @@
 package hub
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -422,40 +419,7 @@ func TestCovSplitProviderModelNoSlash(t *testing.T) {
 	}
 }
 
-// --- doc_serve.go: docRawTotalSize ---
-
-// TestCovDocRawTotalSizeStatError covers the fallback to read size when stat
-// fails (doc_serve.go:230-231).
-func TestCovDocRawTotalSizeStatError(t *testing.T) {
-	missingPath := filepath.Join(t.TempDir(), "missing", "document.txt")
-	got := docRawTotalSize(missingPath, 42)
-	if got != 42 {
-		t.Fatalf("expected 42 (read fallback), got %d", got)
-	}
-}
-
-// TestCovDocRawTotalSizeStatOK covers the stat-success path (doc_serve.go:229).
-func TestCovDocRawTotalSizeStatOK(t *testing.T) {
-	payload := []byte("known document bytes")
-	path := filepath.Join(t.TempDir(), "doc.txt")
-	if err := os.WriteFile(path, payload, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := docRawTotalSize(path, 1), int64(len(payload)); got != want {
-		t.Fatalf("docRawTotalSize = %d, want stat size %d", got, want)
-	}
-}
-
 // --- web_api_tree.go: resolveTopLevelSessionRef ---
-
-// TestCovTopLevelFavoriteSessionIDClusterPrefix covers the cluster-prefix
-// rejection in the top-level session resolver.
-func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	if _, ok := web.resolveTopLevelSessionRef(context.TODO(), "cluster:foo"); ok {
-		t.Fatal("cluster: prefix should return false")
-	}
-}
 
 // --- web_api_tree.go: apiTreeSources ---
 

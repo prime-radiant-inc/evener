@@ -683,8 +683,8 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "env-fold-provider", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSaved work summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir(), testOnly: testConfig{
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir(), testOnly: testConfig{
 		envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }},
 	}}))
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
@@ -744,7 +744,7 @@ func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 	if got := countEnvironmentTurns(s); got != 1 {
 		t.Fatalf("deferred fold flush reset the fresh tracker: got %d environment turns", got)
 	}
-	data, err := readTranscriptFull(s.TranscriptPath())
+	data, err := readTranscriptFull(s.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,8 +764,9 @@ func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 }
 
 func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing.T) {
+	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "env-preserved-tail", func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
 	seedNumberedSessionHistory(t, s, 6)
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
@@ -788,6 +789,7 @@ func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing
 }
 
 func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *testing.T) {
+	t.Parallel()
 	now := envctxFixedTime
 	s := newTestSessionForEnvctx(t, withConfig(SessionConfig{testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return now }}}}))
 	if err := s.maybeAppendEnvironmentContext(); err != nil {
@@ -834,6 +836,7 @@ func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *
 }
 
 func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSilent(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
@@ -842,7 +845,7 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 	s := newScriptedSummaryCompactSession(t, "env-merge-tail", func(llm.Request) llm.Response {
 		once.Do(func() { close(started) })
 		<-release
-		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
 	t.Cleanup(releaseProvider)
 	seedNumberedSessionHistory(t, s, 12)
@@ -871,7 +874,7 @@ func TestEnvironmentContextFirstAppendBetweenFoldSnapshotAndPublicationStaysSile
 	if countEnvironmentTurns(s) != before {
 		t.Fatalf("merged environment duplicated after fold: before=%d after=%d", before, countEnvironmentTurns(s))
 	}
-	data, err := readTranscriptFull(s.TranscriptPath())
+	data, err := readTranscriptFull(s.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

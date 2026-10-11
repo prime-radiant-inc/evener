@@ -4,6 +4,39 @@ import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { Loader } from "./index";
+import styles from "./loader.module.css";
+
+// One read of the CSS module's source, shared by every declaration-level
+// test below (the same module-scope read notificationStatusIcon.contract.
+// test.ts uses for its module).
+const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "loader.module.css"), "utf8");
+
+// Splits the stylesheet at ONE media query into what sits inside its block
+// and what sits outside it, by counting braces from the block's opening one
+// (nesting included). Throws when the query is absent, so a deleted gate
+// fails the tests that depend on it instead of silently passing them.
+function mediaBlock(query: string): { inside: string; outside: string } {
+  const mediaStart = css.indexOf(query);
+  if (mediaStart === -1) throw new Error(`no such media query in loader.module.css: ${query}`);
+  const blockOpen = css.indexOf("{", mediaStart);
+  let depth = 0;
+  let blockEnd = -1;
+  for (let i = blockOpen; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        blockEnd = i;
+        break;
+      }
+    }
+  }
+  if (blockEnd === -1) throw new Error(`unbalanced braces in loader.module.css from ${query}`);
+  return {
+    inside: css.slice(blockOpen, blockEnd),
+    outside: css.slice(0, mediaStart) + css.slice(blockEnd + 1),
+  };
+}
 
 afterEach(() => {
   cleanup();
@@ -92,32 +125,43 @@ test("never re-renders on its own - no internal timers (now is fully prop-driven
 // declaration is nested inside that one media block, the same source-reading
 // technique token-contract.test.ts and skeleton.test.tsx already use.
 test("its CSS module gates all animation behind prefers-reduced-motion: no-preference", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "loader.module.css"), "utf8");
+  const { inside, outside } = mediaBlock("@media (prefers-reduced-motion: no-preference)");
+  expect(outside).not.toMatch(/@keyframes|animation\s*:/);
+  expect(inside).toMatch(/@keyframes|animation\s*:/);
+});
 
-  const mediaStart = css.indexOf("@media (prefers-reduced-motion: no-preference)");
-  expect(mediaStart).toBeGreaterThan(-1);
+// --- rail mode: the transcript's icon-rail seating ---------------------------
+// The content-free "Thinking…" row (ThinkBlock) seats the pulsing grid in the
+// same rail column the live/settled rows seat their bulb glyph in. jsdom
+// cannot measure the seat, so the geometry is pinned at the declaration
+// level - the same source-reading technique as the motion test above.
 
-  // Find the media block's matching closing brace by counting braces from
-  // its opening one.
-  const blockOpen = css.indexOf("{", mediaStart);
-  let depth = 0;
-  let blockEnd = -1;
-  for (let i = blockOpen; i < css.length; i++) {
-    if (css[i] === "{") depth++;
-    else if (css[i] === "}") {
-      depth--;
-      if (depth === 0) {
-        blockEnd = i;
-        break;
-      }
-    }
-  }
-  expect(blockEnd).toBeGreaterThan(-1);
+test("rail sets the variant class on the row; the default loader does not", () => {
+  const { unmount } = render(<Loader label="Thinking…" rail />);
+  expect(screen.getByRole("status").className).toContain(styles.rail);
+  unmount();
+  render(<Loader label="Thinking…" />);
+  expect(screen.getByRole("status").className).not.toContain(styles.rail);
+});
 
-  const outsideMediaBlock = css.slice(0, mediaStart) + css.slice(blockEnd + 1);
-  expect(outsideMediaBlock).not.toMatch(/@keyframes|animation\s*:/);
+test("rail seats the grid in the standard icon slot: avatar-size, centred, speaker-gap net of the row gap", () => {
+  // The slot is the avatar column, and the 15px grid centres inside it.
+  expect(css).toMatch(/\.rail \.grid\s*\{[^}]*width:\s*var\(--speaker-avatar-size\)/);
+  expect(css).toMatch(/\.rail \.grid\s*\{[^}]*justify-content:\s*center/);
+  // The row's own --space-2 gap also lands between the grid and the label,
+  // so the grid's margin-right is the speaker-gap MINUS that gap - the same
+  // arithmetic ToolRow's .rowIcon uses to seat its row's text at the content
+  // edge (see toolcallitem.module.css).
+  expect(css).toMatch(/\.rail \.grid\s*\{[^}]*margin-right:\s*calc\(var\(--speaker-gap\) - var\(--space-2\)\)/);
+});
 
-  const insideMediaBlock = css.slice(blockOpen, blockEnd);
-  expect(insideMediaBlock).toMatch(/@keyframes|animation\s*:/);
+test("the rail row composes the shared gutter pull rather than restating it", () => {
+  // The pull lives in the shared rail seat (styles/railseat.module.css) so
+  // the three rail pulls cannot drift apart; this module keeps no copy of
+  // it. The gate around the shared .gutterPull is pinned where the shared
+  // geometry lives, in railseat.contract.test.ts; a local restatement is
+  // what this test forbids.
+  expect(css).toMatch(/\.rail\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/styles\/railseat\.module\.css"/);
+  expect(css).not.toMatch(/@media\s*\(min-width:\s*700px\)/);
+  expect(css).not.toMatch(/margin-left:\s*calc\(-1/);
 });

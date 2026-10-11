@@ -83,6 +83,29 @@ platform :ios do
     UI.user_error!("App Store Connect already contains this version/build") unless builds.empty?
   end
 
+  desc "Write the next TestFlight build number for the current marketing version"
+  lane :next_build_number do
+    marketing_version = ENV.fetch("IOS_MARKETING_VERSION")
+    api_key()
+    app = Spaceship::ConnectAPI::App.find(ENV.fetch("IOS_BUNDLE_IDENTIFIER"))
+    UI.user_error!("App Store Connect app record was not found") unless app
+    builds = Spaceship::ConnectAPI::Build.all(
+      app_id: app.id,
+      version: marketing_version,
+      platform: "IOS",
+    )
+    # The ConnectAPI Build model carries the Apple build number in `version`;
+    # `pre_release_version.version` is the marketing version.
+    next_number = builds.map { |build| build.version.to_i }.max.to_i + 1
+    # Lane bodies run with the working directory set to the fastlane folder, so
+    # the default is anchored to this file rather than the invocation directory.
+    output_path = ENV.fetch("IOS_BUILD_NUMBER_OUTPUT", File.expand_path("../build/next-build-number.txt", __dir__))
+    require "fileutils"
+    FileUtils.mkdir_p(File.dirname(output_path))
+    File.write(output_path, "#{next_number}\n")
+    UI.success("Next TestFlight build number for #{marketing_version}: #{next_number}")
+  end
+
   desc "Upload the signed archive to the internal TestFlight track"
   lane :testflight do
     required = %w[APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_CONTENT IOS_INTERNAL_TESTFLIGHT_GROUP IOS_BUILD_NUMBER IOS_MARKETING_VERSION]

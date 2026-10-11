@@ -123,7 +123,18 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
     state: "blockedUnknown",
     options?: { onlyAttempted: boolean },
   ): Promise<boolean>;
+  // Records an authoritative receipt. One semantic side effect is part of the
+  // contract, not a host extra: settling a notes/human/set record must, in the
+  // SAME transaction, discard the ref's earlier notes/human/set recovery rows -
+  // those with the same targetRef and a lower intentSequence, whatever their
+  // recoveryKind - because the user's later save is the note editor's only
+  // retry. Every other method, every other target, and every newer row (a note
+  // saved after this one) is preserved. The port declares no separate discard
+  // method for this: it is the settlement's own side effect, so structural
+  // interface conformance alone does not prove it.
   settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;
+  // Records an authoritative apply, with the same notes/human/set supersede
+  // side effect as settleReceipt.
   settleApplied(clientMutationId: string): Promise<boolean>;
   // Records the authoritative snapshot proves never landed, restored for
   // another dispatch attempt; returns the ids restored.
@@ -138,6 +149,15 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
 // A channel to sibling clients of the same storage: one browser tab telling
 // the others a record just landed. Structural, so a BroadcastChannel satisfies
 // it and a host with no siblings passes nothing.
+//
+// Deliberately NOT the frontend's `stores/versionedChannel.ts` helper (#3619):
+// that helper's envelope requires a sourceId, so adopting it would change this
+// source-less wakeup wire — and mid-deploy a new receiver would reject old
+// tabs' sends — while the policies that differ (validation, own-source
+// skipping, lifetime/epoch gates) are the bulk of the code. A transport-only
+// core is possible (an injected factory needs no DOM naming), but it would
+// share only the lifecycle sliver while this module keeps its own start/stop
+// gating and lifecycle listeners; #3619 records the trade-off.
 export interface MutationOutboxChannel {
   postMessage(message: unknown): void;
   close(): void;
@@ -238,15 +258,26 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#clearInterval = cancellableTimer ? options.clearInterval : undefined;
   }
 
+  // Startup is transactional. Every listener, channel and timer is acquired
+  // first, the started state published only after all of them succeed, and a
+  // setup step that throws - an injected timer port's first call, say - unwinds
+  // whatever it acquired. Nothing stays live and nothing stays latched, so the
+  // next start runs the whole setup again instead of returning early on a
+  // half-initialized outbox.
   async start(): Promise<void> {
     if (this.#started) return;
+    try {
+      this.#channel = this.#createChannel?.(CHANNEL_NAME);
+      this.#channel?.addEventListener("message", this.#handleBroadcast);
+      this.#lifecycleTarget?.addEventListener("online", this.#handleOnline);
+      this.#lifecycleTarget?.addEventListener("focus", this.#handleFocus);
+      this.#visibilityTarget?.addEventListener("visibilitychange", this.#handleVisibility);
+      this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), SCAN_INTERVAL_MS);
+    } catch (error) {
+      this.#releaseAcquired();
+      throw error;
+    }
     this.#started = true;
-    this.#channel = this.#createChannel?.(CHANNEL_NAME);
-    this.#channel?.addEventListener("message", this.#handleBroadcast);
-    this.#lifecycleTarget?.addEventListener("online", this.#handleOnline);
-    this.#lifecycleTarget?.addEventListener("focus", this.#handleFocus);
-    this.#visibilityTarget?.addEventListener("visibilitychange", this.#handleVisibility);
-    this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), SCAN_INTERVAL_MS);
     // Submissions need the runtime's listeners, not a scan of earlier work.
     // Queue startup discovery so a stalled read cannot delay their own commit.
     this.#schedule(() => this.#discoverAll("startup"));
@@ -255,6 +286,13 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   async stop(): Promise<void> {
     if (!this.#started) return this.#pendingDiscovery;
     this.#started = false;
+    this.#releaseAcquired();
+    await this.#pendingDiscovery;
+  }
+
+  // Releases every resource start() acquires, shared by stop() and start()'s
+  // failure path so a newly acquired resource is torn down by both.
+  #releaseAcquired(): void {
     this.#channel?.removeEventListener("message", this.#handleBroadcast);
     this.#channel?.close();
     this.#channel = undefined;
@@ -263,7 +301,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#visibilityTarget?.removeEventListener("visibilitychange", this.#handleVisibility);
     if (this.#intervalId !== undefined) this.#clearInterval?.(this.#intervalId);
     this.#intervalId = undefined;
-    await this.#pendingDiscovery;
   }
 
   async enqueueIntent(

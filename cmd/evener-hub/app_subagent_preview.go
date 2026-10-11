@@ -1,9 +1,11 @@
 package hub
 
 import (
+	"context"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 const (
@@ -39,6 +41,20 @@ func subagentPreviewFromThread(thread appwire.Thread, ref string, limit int) app
 		Items:     items,
 		Truncated: start > 0,
 	}
+}
+
+// pastSubagentPreview previews a session no daemon serves from its transcript
+// index's latest window: the preview needs only the newest few items, and
+// whether older ones exist.
+func pastSubagentPreview(ctx context.Context, cfg hubcore.WebConfig, ref string, limit int) (appwire.EvenerSubagentPreviewResponse, bool, error) {
+	limit = clampSubagentPreviewLimit(limit)
+	read, ok, err := pastThreadItemReadResponse(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: limit})
+	if !ok || err != nil {
+		return appwire.EvenerSubagentPreviewResponse{}, ok, err
+	}
+	preview := subagentPreviewFromThread(read.Thread, ref, limit)
+	preview.Truncated = preview.Truncated || read.OlderCursor != ""
+	return preview, true, nil
 }
 
 func subagentPreviewItem(item appwire.ThreadItem) appwire.ThreadItem {

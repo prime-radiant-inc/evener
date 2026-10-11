@@ -2,7 +2,9 @@ import {
   activityDelegateState,
   delegateModel,
   type EntityView,
+  entityKindOf,
   entityOpenTarget,
+  findEntityView,
   formatByteCount,
   formatClockTime,
   formatElapsed,
@@ -11,21 +13,23 @@ import {
   plainQuoteLine,
   sourceLabel,
   stableDelegateDisplayStatus,
+  watchTriggerPhrases,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { useEntityViews } from "../../../transcriptDisplay/entityViews";
+import { useEntityOwnerRef, useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { HoverCard } from "../../../widgets/hovercard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenButton } from "../../../widgets/openbutton";
-import { formatQuietAge, formatUsagePair } from "../chrome/activityFormat";
+import { formatQuietAge, formatUsagePair, jobStatusDisplay } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";
 import { classifyJobStatus } from "./tools/subagentModuleStore";
-import { watchTriggerPhrases } from "./watchConditionPhrase";
 
 export interface EntityRefProps {
   view?: EntityView;
   id: string;
+  ownerRef?: string;
+  kind?: EntityView["kind"];
   display?: string;
   triggerOnly?: boolean;
   embedded?: boolean;
@@ -71,12 +75,7 @@ function elapsedBetween(startedAt: string | undefined, endedAt: string | undefin
 }
 
 function usageText(usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number } | undefined) {
-  if (usage?.inputTokens === undefined || usage.outputTokens === undefined) return null;
-  return formatUsagePair({
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens,
-  });
+  return formatUsagePair(usage);
 }
 
 function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; live: boolean }) {
@@ -87,13 +86,14 @@ function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; l
   const command = job.command && job.command !== detail ? job.command : undefined;
   const statusKind = classifyJobStatus(job.status);
   const failed = isActivityFailure(job.outcome, job.status);
-  const status = live
-    ? job.status
-    : failed
-      ? "failed"
-      : statusKind === "done" || statusKind === "failed" || statusKind === "stopped"
-        ? job.status
-        : undefined;
+  // The card states the same display word every other surface uses, so a
+  // command-outcome run reads "Command failed", never the collapsed or raw
+  // machine status.
+  const display = jobStatusDisplay(job.status, job.reason);
+  const status =
+    live || failed || statusKind === "done" || statusKind === "failed" || statusKind === "stopped"
+      ? display
+      : undefined;
   return (
     <div className={CLASS.card} data-entity-kind="job">
       <div className={CLASS.head}>
@@ -232,9 +232,13 @@ function EntityCard({ view }: { view: EntityView }) {
   return <WatchCard view={view} />;
 }
 
-export function EntityRef({ view, id, display, triggerOnly, embedded }: EntityRefProps) {
+export function EntityRef({ view, id, ownerRef, kind, display, triggerOnly, embedded }: EntityRefProps) {
   const entities = useEntityViews();
-  const resolved = view ?? entities?.get(id);
+  const contextRef = useEntityOwnerRef();
+  const entityKind = kind ?? entityKindOf(id);
+  const owner = ownerRef ?? contextRef;
+  const resolved =
+    view ?? (entities && owner && entityKind ? findEntityView(entities, entityKind, id, owner) : undefined);
   const text = display ?? id;
   if (!resolved) return <span>{text}</span>;
 

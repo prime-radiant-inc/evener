@@ -235,7 +235,6 @@ func pifSessionConfig(
 		PluginDirs:         []string{pluginDir},
 		SystemPromptFile:   promptFile,
 		SystemPromptAppend: []string{appendFile},
-		NoProjectPrompts:   true,
 		ContextStrategy:    program.strategy,
 		ResultToolName:     program.resultToolName,
 		NonInteractive:     program.nonInteractive,
@@ -430,7 +429,7 @@ func pifAssertPersistedMeta(
 
 func pifAssertInitialTranscript(t *testing.T, path, id, workspace string) {
 	t.Helper()
-	header, entries, skipped, err := readTranscript(path)
+	header, entries, skipped, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("read initial transcript: %v", err)
 	}

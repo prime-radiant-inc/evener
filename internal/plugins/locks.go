@@ -83,7 +83,7 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
 	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
-		return nil, err
+		return nil, m.lockFailed(err)
 	}
 	release = m.reportingRelease(release)
 	if err := m.migrateMarketplaceNames(); err != nil {
@@ -92,6 +92,138 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 	}
 	return release, nil
 }
+
+// lockClone takes the lock on the marketplace clone at dir and returns its
+// release. A check fetches a clone with the store lock free
+// (fastForwardMarketplace), so whatever else runs git in a clone or removes
+// or renames one takes this too: two gits in one clone collide on its ref
+// locks, and Windows refuses to delete or rename a directory a git is
+// running in. It is a file lock, so it holds against other evener processes
+// as the store lock does, keyed by the clone directory's name (every clone
+// lives in the marketplaces directory). Taken after the store lock, never
+// before it, and held for no store-lock wait. Its error carries the lock
+// file's path only to the log, as lockFailed's does.
+func (m *Manager) lockClone(ctx context.Context, dir string) (func(), error) {
+	path, err := m.cloneLockPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	release, err := acquireLockAtPath(ctx, path)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: taking the lock on marketplace clone %s: %v\n", dir, err)
+		msg := fmt.Sprintf("the lock on marketplace clone %q could not be taken; see the hub's log for detail", filepath.Base(dir))
+		if cause := editFailureIdentity(err); cause != nil {
+			msg = fmt.Sprintf("%s: %v", msg, cause)
+		}
+		return nil, &lockAcquisitionError{msg: msg, cause: err}
+	}
+	return release, nil
+}
+
+// acquireLockAtPath takes the lock on the file at path, as it is when the
+// lock is granted. removeCloneLock deletes a clone's lock file while holding
+// it, so a waiter can be granted the lock on the deleted file while a later
+// taker creates and locks a new one; each would think it held the lock. So
+// the file at path is looked up before the wait and again once the lock is
+// granted, and a lock on any other file is let go and taken again. The file
+// is made first, so a first lock has one to compare and is taken once, and
+// the passes share one 30s wait.
+func acquireLockAtPath(ctx context.Context, path string) (func(), error) {
+	deadline := lockNow().Add(30 * time.Second)
+	if err := lockMkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating lock parent: %w", err)
+	}
+	f, err := lockOpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening lock %s: %w", path, err)
+	}
+	_ = f.Close()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		before, err := os.Stat(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		remaining := deadline.Sub(lockNow())
+		if remaining <= 0 {
+			return nil, fmt.Errorf("%w (locked: %s)", errLockContention, path)
+		}
+		release, err := acquireLock(ctx, path, remaining)
+		if err != nil {
+			return nil, err
+		}
+		// A file removed and made again since the first look is another
+		// taker's; the next pass compares afresh.
+		if after, err := os.Stat(path); before != nil && err == nil && os.SameFile(before, after) {
+			return release, nil
+		}
+		release()
+	}
+}
+
+func (m *Manager) cloneLockPath(dir string) (string, error) {
+	return m.storePath(cloneLocksDirName, filepath.Base(dir)+".lock")
+}
+
+// removeCloneLock removes the lock file of the clone at dir, whose lock the
+// caller holds, once the clone itself is gone. Best effort: a file left
+// behind is reused if the name comes back.
+func (m *Manager) removeCloneLock(dir string) {
+	if path, err := m.cloneLockPath(dir); err == nil {
+		_ = os.Remove(path)
+	}
+}
+
+// withClone runs op holding the lock on the clone at dir (lockClone).
+func (m *Manager) withClone(ctx context.Context, dir string, op func() error) error {
+	release, err := m.lockClone(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return op()
+}
+
+// lockFailed scrubs a failed store-lock acquisition's absolute lock-file path -
+// acquireLock and flockUntil build their errors around the lock path directly -
+// before it reaches an RPC caller, logging the raw error server-side first, the
+// way saveFailed scrubs a failed write. lockStore is where every writer takes
+// the lock first, so this is the one place that text is turned into wire text.
+// The reasons a caller still acts on survive as sentinels, path-free: lock
+// contention (errLockContention, retry shortly), an unusable store root
+// (errStoreRootUnset/errStoreRootNotAbsolute), and a cancellation or deadline.
+//
+// The raw acquisition error is kept as the result's cause, so errors.Is still
+// reaches whatever the acquirer failed with - one of those sentinels, an fs
+// error, or a test's own injected error - while the wire text names none of it.
+//
+// acquireStoreLock is also reached by Doctor's read-only walk, which does not
+// come through here: Doctor reports locally, so naming the lock file it could
+// not take is the point for its admin.
+func (m *Manager) lockFailed(err error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: taking the plugin store lock: %v\n", err)
+	msg := "the plugin store lock could not be taken; see the hub's log for detail"
+	// A refusal a caller has to act on - contention to retry, a store root to
+	// fix, a cancellation - is named on the wire, path-free.
+	if cause := editFailureIdentity(err); cause != nil {
+		msg = fmt.Sprintf("%s: %v", msg, cause)
+	}
+	return &lockAcquisitionError{msg: msg, cause: err}
+}
+
+// lockAcquisitionError is lockFailed's result: path-free wire text laid over the
+// raw acquisition error, which a caller reaches through Unwrap (so errors.Is
+// still finds it) but never sees in the message (so the lock file's absolute
+// path stays in the hub's log).
+type lockAcquisitionError struct {
+	msg   string
+	cause error
+}
+
+func (e *lockAcquisitionError) Error() string { return e.msg }
+func (e *lockAcquisitionError) Unwrap() error { return e.cause }
 
 // reportingRelease wraps release so that, in order: this session's
 // accumulated change is captured and cleared, the store lock is let go, and
@@ -126,9 +258,16 @@ func (m *Manager) migrateStore(ctx context.Context) error {
 // acquireBundledLock takes the bundled cache's lock for one mutation of
 // <Root>/bundled. Every bundled-cache mutation acquires here and nowhere else,
 // and it goes through acquireStoreLock so the store-root check lands on this
-// lock the same way it lands on the store lock.
+// lock the same way it lands on the store lock. Its failure is scrubbed through
+// lockFailed too: PreviewForLaunch readies the bundled store, and the hub's
+// plugin/preview copies that error onto its wire diagnostic, so the bundled
+// lock file's absolute path must not be in it.
 func (m *Manager) acquireBundledLock(ctx context.Context, timeout time.Duration) (func(), error) {
-	return m.acquireStoreLock(ctx, acquireLock, m.bundledLockPath(), timeout)
+	release, err := m.acquireStoreLock(ctx, acquireLock, m.bundledLockPath(), timeout)
+	if err != nil {
+		return nil, m.lockFailed(err)
+	}
+	return release, nil
 }
 
 // acquireLock takes an exclusive flock on lockPath, retrying with capped

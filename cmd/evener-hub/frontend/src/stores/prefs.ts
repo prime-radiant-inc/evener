@@ -80,6 +80,7 @@ import {
   type TranscriptDisplayConfigV1,
   type TranscriptViewportClass,
 } from "@evener/appwire-client";
+import { useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
@@ -93,12 +94,22 @@ export type TranscriptMeasurePref = "reading" | "wide";
 export type TranscriptStatusKey = "roundTimings" | "tokenCounts" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
 export type NotificationsLoudScopePref = "asks" | "all";
+// How the rail's session tree groups (the organize-by control in the rail
+// body): "host-project" puts hosts above projects, "project-host" nests
+// per-host branches inside each project whose loaded rows span hosts (a
+// single-host project stays flat, so single-host hubs keep today's rail).
+// Defaulting to "project-host" is deliberate: a multi-host project DOES
+// change shape out of the box - its rows sit behind collapsed per-host
+// branches - because the grouping is the feature, not something the
+// control must unlock first.
+export type SidebarGroupingPref = "host-project" | "project-host";
 
 export interface PrefsStoreState {
   theme: ThemePref;
   phoneDensity: PhoneDensityPref;
   sidebarHidden: boolean;
   sidebarWidth: number;
+  sidebarGrouping: SidebarGroupingPref;
   fontSize: FontSizePref;
   transcriptMeasure: TranscriptMeasurePref;
   transcript: Record<TranscriptStatusKey, boolean>;
@@ -127,6 +138,7 @@ export interface PrefsStoreState {
   setPhoneDensity(value: PhoneDensityPref): void;
   setSidebarHidden(value: boolean): void;
   setSidebarWidth(value: number): void;
+  setSidebarGrouping(value: SidebarGroupingPref): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptMeasure(value: TranscriptMeasurePref): void;
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
@@ -322,6 +334,7 @@ const PHONE_DENSITY_VALUES: readonly PhoneDensityPref[] = ["compact", "comfortab
 const FONT_SIZE_VALUES: readonly FontSizePref[] = ["s", "m", "l", "xl"];
 const TRANSCRIPT_MEASURE_VALUES: readonly TranscriptMeasurePref[] = ["reading", "wide"];
 const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"];
+const SIDEBAR_GROUPING_VALUES: readonly SidebarGroupingPref[] = ["host-project", "project-host"];
 
 // Per-field localStorage key names for the two grouped record fields -
 // transcript/notifications are exposed as small in-memory records for a
@@ -412,11 +425,25 @@ function systemPrefersDark(): boolean {
     : window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
+// Pairs with systemPrefersDark for useResolvedScheme's useSyncExternalStore:
+// systemPrefersDark is the snapshot, this is the change subscription. Same
+// matchMedia-less guard as systemPrefersDark and ensureSystemSchemeListener, so
+// a jsdom environment degrades to the dark default rather than throwing.
+function subscribeSystemScheme(callback: () => void): () => void {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia("(prefers-color-scheme: dark)");
+  query.addEventListener("change", callback);
+  return () => query.removeEventListener("change", callback);
+}
+
 // --- document application: the DOM side effects the legacy mirrored
 // alongside localStorage (assets/theme.js; assets/settings-appearance.js's
 // two script-parse-time IIFEs) - see this file's own top comment for which
-// prefs get one.
+// prefs get one. Guarded on `document`: this store is hydrated at module load,
+// and a node-environment importer (no DOM) must not throw - the same
+// best-effort contract the localStorage access above keeps.
 function applyTheme(value: ThemePref): void {
+  if (typeof document === "undefined") return;
   if (value === "system") {
     // Resolves to one of the same two document states an explicit pick
     // would - light sets the attribute, dark removes it (never the
@@ -455,14 +482,17 @@ function ensureSystemSchemeListener(): void {
 }
 
 function applyPhoneDensity(value: PhoneDensityPref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.phoneDensity = value;
 }
 
 function applyFontSize(value: FontSizePref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.fontSize = value;
 }
 
 function applyTranscriptMeasure(value: TranscriptMeasurePref): void {
+  if (typeof document === "undefined") return;
   document.body.dataset.transcriptMeasure = value;
 }
 
@@ -476,6 +506,7 @@ function loadInitialState(): Omit<
   | "setPhoneDensity"
   | "setSidebarHidden"
   | "setSidebarWidth"
+  | "setSidebarGrouping"
   | "setFontSize"
   | "setTranscriptMeasure"
   | "setTranscriptStatus"
@@ -499,6 +530,7 @@ function loadInitialState(): Omit<
     phoneDensity,
     sidebarHidden: readBool("sidebarHidden", false),
     sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
+    sidebarGrouping: readEnum("sidebarGrouping", SIDEBAR_GROUPING_VALUES, "project-host"),
     fontSize,
     transcriptMeasure,
     transcript: loadTranscript(),
@@ -543,6 +575,11 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     const width = clampSidebarWidth(value);
     writeNumber("sidebarWidth", width);
     set({ sidebarWidth: width });
+  },
+
+  setSidebarGrouping(value) {
+    writeRaw("sidebarGrouping", value);
+    set({ sidebarGrouping: value });
   },
 
   setFontSize(value) {
@@ -607,6 +644,20 @@ export function usePrefsStore<T>(selector?: (state: PrefsStoreState) => T): T | 
   // `selector = identity` JS default param, so both arms run identically).
   // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(prefsStore, selector) : useStore(prefsStore);
+}
+
+/**
+ * The theme actually in effect: the theme pref, with "system" resolved live
+ * against the OS's prefers-color-scheme. The one place that resolution lives -
+ * widget consumers (the inline mermaid diagram) import this rather than
+ * re-deriving it. Stays consistent with applyTheme's own document states (an
+ * absent data-theme attribute means dark), the canonical signal paneActions
+ * watches.
+ */
+export function useResolvedScheme(): "light" | "dark" {
+  const theme = usePrefsStore((state) => state.theme);
+  const systemIsDark = useSyncExternalStore(subscribeSystemScheme, systemPrefersDark);
+  return theme === "system" ? (systemIsDark ? "dark" : "light") : theme;
 }
 
 // hydrate re-derives every field from whatever's in localStorage right now

@@ -1,6 +1,9 @@
 package llm
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrorKind names the category of a provider failure. It is the category axis,
 // orthogonal to [ErrorClass] (the retry-disposition axis returned by [Classify]):
@@ -111,6 +114,24 @@ func Kind(err error) ErrorKind {
 	default:
 		return KindUnknown
 	}
+}
+
+// ProviderFailureSummary renders a provider failure as its kind and HTTP
+// status, with no provider text: "HTTP 401 (authentication)", or "sign-in
+// required". A provider's error body can carry a credential fragment or the
+// user's own request, so surfaces that log or warn about a failure render it
+// through this rather than its Error() string. An error outside the llm
+// taxonomy, or one with no HTTP status, falls back to the bare kind.
+func ProviderFailureSummary(err error) string {
+	if errors.Is(err, ErrSignInRequired) {
+		return "sign-in required"
+	}
+	kind := Kind(err).String()
+	var llmErr Error
+	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
+		return fmt.Sprintf("HTTP %d (%s)", llmErr.StatusCode(), kind)
+	}
+	return kind
 }
 
 // errorIs reports whether err's chain contains an error of concrete type T.

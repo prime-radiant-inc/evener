@@ -17,6 +17,7 @@ import (
 // redesigning a test in it; both branches are merged now, so the entry must
 // be gone. This test fails RED until the GREEN phase empties the map.
 func TestDeadlineAuditAllowlistIsEmpty(t *testing.T) {
+	t.Parallel()
 	if len(deadlineAuditAllowlist) != 0 {
 		t.Fatalf("deadlineAuditAllowlist should be empty (issue #142), has %d entries: %v",
 			len(deadlineAuditAllowlist), deadlineAuditAllowlist)
@@ -37,6 +38,7 @@ func TestDeadlineAuditAllowlistIsEmpty(t *testing.T) {
 // directory (cmd/evener-dev agent-shards), so a poison file written into "."
 // races another shard's TestNoBareWallClockDeadlineInAgentTests scan of ".".
 func TestDeadlineAuditCatchesFreshBareBound(t *testing.T) {
+	t.Parallel()
 	const offendingFile = "delegate_resource_runtime_test.go"
 	source := `package agent
 

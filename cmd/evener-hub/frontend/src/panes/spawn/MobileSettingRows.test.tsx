@@ -2,13 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginPreviewResponse } from "@evener/appwire-client";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { MobileSettingRows, type MobileSettingRowsProps } from "./MobileSettingRows";
 import { GLOBAL_LAST_WORKING_DIR_KEY, setGlobalLastWorkingDir } from "./spawnDefaults";
-
-afterEach(cleanup);
 
 function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRowsProps {
   return {

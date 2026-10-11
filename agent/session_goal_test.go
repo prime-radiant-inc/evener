@@ -76,6 +76,7 @@ func assertGoalUpdatedMatchesStore(t *testing.T, sess *Session, data events.Goal
 }
 
 func TestGoalUpdatedEventSetClearAndContinuation(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -101,6 +102,7 @@ func TestGoalUpdatedEventSetClearAndContinuation(t *testing.T) {
 }
 
 func TestGoalUpdatedEventErrorBlocking(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -115,6 +117,7 @@ func TestGoalUpdatedEventErrorBlocking(t *testing.T) {
 }
 
 func TestGoalUpdatedEmissionDoesNotHoldSessionMutex(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -139,6 +142,7 @@ func TestGoalUpdatedEmissionDoesNotHoldSessionMutex(t *testing.T) {
 }
 
 func TestConcurrentGoalMutationsEmitInCommittedOrder(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 

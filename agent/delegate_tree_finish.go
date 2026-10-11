@@ -8,9 +8,23 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 const delegateFinishReasonLimit = 512
+
+// cutFinishText bounds text a finish records to delegateFinishReasonLimit
+// bytes, cutting at a rune boundary so the journal and the wire never carry
+// half a character.
+func cutFinishText(text string) string {
+	return runetrim.Cut(text, delegateFinishReasonLimit)
+}
+
+// boundedFinishText is a finish's reason or error as recorded: trimmed, then
+// bounded (cutFinishText).
+func boundedFinishText(text string) string {
+	return cutFinishText(strings.TrimSpace(text))
+}
 
 type delegateSupervisionBoundary uint8
 
@@ -135,10 +149,16 @@ func (c *delegateTreeController) RequireFinalizationRecovery(claim *delegateSett
 
 // ReportFinalizationQuiesced releases only the process-local runner fence for
 // the exact generation and resident runtime. Durable recovery authority remains
-// latched until reconciliation closes or repairs that generation.
+// latched until reconciliation closes or repairs that generation. It is also
+// the finalization's release: the delegate takes its next start from here.
 func (c *delegateTreeController) ReportFinalizationQuiesced(lease delegateLease, runtime *Session) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The finished generation's lease is no longer exact here, so the
+	// finalizing runtime is released by identity before the lease check.
+	if live := c.live[lease.delegateID]; live != nil && live.finalizing != nil && live.finalizing.runtime == runtime && live.finalizing.generation == lease.generation {
+		c.releaseFinalizationLocked(live)
+	}
 	decision := c.reduceReportQuiescedIntent(finishIntent{lease: lease, runtime: runtime, stalePolicy: finishStaleSwallow})
 	return decision.err
 }
@@ -228,13 +248,95 @@ func (c *delegateTreeController) hasSteeringClaimLocked(lease delegateLease) boo
 	return false
 }
 
+// setResidentRuntimeLocked makes runtime live's resident runtime. A finished
+// generation still finalizing on the runtime it replaces no longer holds the
+// delegate (see finalizingLocked), so its finalization is released here and
+// a send waiting on it tries again at once. The caller holds c.mu.
+func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveState, runtime *Session) {
+	if live.finalizing != nil && live.finalizing.runtime != runtime {
+		c.releaseFinalizationLocked(live)
+	}
+	live.runtime = runtime
+}
+
+// stillFinalizing reports whether delegateID's finished generation is still
+// finalizing on its resident runtime: the delegate isn't released, and its
+// result may not be announced yet.
+func (c *delegateTreeController) stillFinalizing(delegateID string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.finalizingLocked(delegateID) != nil
+}
+
+// releaseFinalizationLocked releases live's finalization, if any, waking
+// every send waiting on it. The root's attention drive skips a delegate
+// while it finalizes, and nothing else wakes the drive for attention it
+// skipped, so a release that leaves attention owed to the delegate wakes the
+// drive here. The caller holds c.mu, and the drive re-enters the controller,
+// so the wake runs on its own goroutine.
+func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveState) {
+	finalizing := live.finalizing
+	if finalizing == nil {
+		return
+	}
+	close(finalizing.released)
+	live.finalizing = nil
+	if state := c.attention[finalizing.delegateID]; state != nil && len(state.wakeIDs) != 0 {
+		if root := c.rootRuntime; root != nil {
+			go root.notify()
+		}
+	}
+}
+
+// finalizingLocked is delegateID's finished generation still finalizing on
+// its resident runtime, which holds the delegate from any new generation
+// until the finalize tail releases it; nil otherwise. A finalizing runtime a
+// restore replaced, or that was released as idle, no longer holds it. The
+// caller holds c.mu.
+func (c *delegateTreeController) finalizingLocked(delegateID string) *delegateFinalization {
+	live := c.live[delegateID]
+	if live == nil || live.finalizing == nil || live.finalizing.runtime != live.runtime {
+		return nil
+	}
+	return live.finalizing
+}
+
+// finishGenerationLocked executes a generation finish and, when it finished
+// the generation, marks that generation's runtime as finalizing until its
+// finalize tail (or, for a generation no run finalizes, its caller) reports
+// quiescence for that runtime and generation. A finalization it replaces is
+// released first, so nothing waits on it forever. The caller holds c.mu.
+func (c *delegateTreeController) finishGenerationLocked(intent finishIntent) (delegateMutationPlans, context.CancelFunc, error) {
+	var runtime *Session
+	if live := c.live[intent.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == intent.lease {
+		runtime = live.binding.runtime
+	}
+	decision := c.reduceGenerationFinishIntent(intent)
+	plans, cancel, err := c.executeFinishDecisionLocked(decision)
+	if err == nil && runtime != nil && decision.releaseGeneration && decision.events != nil {
+		if live := c.live[intent.lease.delegateID]; live != nil {
+			c.releaseFinalizationLocked(live)
+			live.finalizing = &delegateFinalization{
+				delegateID: intent.lease.delegateID,
+				runtime:    runtime,
+				generation: intent.lease.generation,
+				released:   make(chan struct{}),
+			}
+		}
+	}
+	return plans, cancel, err
+}
+
 func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish delegateFinish) (delegateMutationPlans, error) {
 	c.mu.Lock()
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:       lease,
 		finish:      finish,
 		stalePolicy: finishStaleSuppress,
-	}))
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -252,11 +354,11 @@ func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) 
 		c.mu.Unlock()
 		return delegateMutationPlans{}, noAction.err
 	}
-	plans, cancel, err := c.executeFinishDecisionLocked(c.reduceGenerationFinishIntent(finishIntent{
+	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:              claim.lease,
 		finish:             noAction.finish,
 		authorizedNoAction: true,
-	}))
+	})
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -278,6 +380,13 @@ func cloneDelegateFinish(finish delegateFinish) delegateFinish {
 }
 
 func delegateFinishMetadataEvents(events []delegatestore.Event, lease delegateLease, finish delegateFinish, outcome delegatestore.OutcomeStatus, reason string) []delegatestore.Event {
+	if outcome == delegatestore.OutcomeFailed && finish.errorText != "" {
+		for i := range events {
+			if events[i].RunFinished != nil {
+				events[i].RunFinished.Outcome.Error = finish.errorText
+			}
+		}
+	}
 	if outcome != delegatestore.OutcomeExhausted {
 		return events
 	}
@@ -349,8 +458,56 @@ func delegateMissingTerminalPacket() delegatestore.TerminalPacket {
 	return delegateTerminalErrorPacket("delegate completed without an accepted communicate result")
 }
 
+// delegateStoppedTerminalPacket is the packet a parent's stop settles when the
+// run left none. Its metadata carries the same outcome and reason as the
+// RunFinished event it rides (stoppedGenerationFinishEvent), so the owner's
+// delegate-notification frame says the subagent was stopped instead of
+// leaving clients to read a bare terminal_error as a failure.
 func delegateStoppedTerminalPacket() delegatestore.TerminalPacket {
-	return delegateTerminalErrorPacket("stopped by parent")
+	packet := delegateTerminalErrorPacket("stopped by parent")
+	// Marshal cannot fail on a struct of strings.
+	packet.Metadata, _ = json.Marshal(delegateTerminalPacketMetadata{
+		Outcome: delegatestore.OutcomeStopped,
+		Reason:  delegatestore.ReasonStoppedByParent,
+	})
+	return packet
+}
+
+// delegateStoppedRunPacket is the packet a parent's stop settles over a run
+// that reported before the stop landed. The report — its message, structured
+// result, warnings and evidence metadata — is kept; only the outcome and
+// reason are restamped as stopped, so the owner's frame reads the stop instead
+// of the report's own "completed". The kind becomes terminal_error to match
+// the stop finish's disposition, which also stops the fold (applyRunFinished)
+// from replacing it with its bare stop literal (#3114). A packet the run
+// already ended as is cloned untouched.
+func delegateStoppedRunPacket(packet delegatestore.TerminalPacket) delegatestore.TerminalPacket {
+	stopped := cloneDelegateTerminalPacket(packet)
+	if stopped.Kind != delegatestore.PacketReported {
+		return stopped
+	}
+	stopped.Kind = delegatestore.PacketTerminalError
+	// Rewrite only the outcome and reason so every other key the run wrote —
+	// name, task, worktree, scratch path, and any key this build does not know
+	// — survives. Malformed metadata cannot come from this process's own
+	// packets; a fresh stamp is still the right fallback if it somehow does.
+	metadata := map[string]json.RawMessage{}
+	if len(stopped.Metadata) > 0 {
+		if err := json.Unmarshal(stopped.Metadata, &metadata); err != nil {
+			metadata = map[string]json.RawMessage{}
+		}
+	}
+	// JSON null is valid terminal-packet metadata and unmarshals to a nil map;
+	// the assignments below would panic on it.
+	if metadata == nil {
+		metadata = map[string]json.RawMessage{}
+	}
+	metadata["outcome"], _ = json.Marshal(delegatestore.OutcomeStopped)
+	metadata["reason"], _ = json.Marshal(delegatestore.ReasonStoppedByParent)
+	if raw, err := json.Marshal(metadata); err == nil {
+		stopped.Metadata = raw
+	}
+	return stopped
 }
 
 func delegateIsMissingTerminalPacket(packet delegatestore.TerminalPacket) bool {
@@ -369,10 +526,7 @@ func delegateTerminalErrorPacket(reason string) delegatestore.TerminalPacket {
 	if message == "" {
 		message = "delegate generation ended before reporting a result"
 	}
-	if len(message) > delegateFinishReasonLimit {
-		message = message[:delegateFinishReasonLimit]
-	}
-	raw, _ := json.Marshal(message)
+	raw, _ := json.Marshal(cutFinishText(message))
 	return delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: raw}
 }
 
@@ -412,13 +566,10 @@ func delegatePreparedFinish(packet delegatestore.TerminalPacket) delegateFinish 
 		}
 		return finish
 	case delegatestore.OutcomeFailed:
-		reason := strings.TrimSpace(metadata.Reason)
-		if reason != "" {
-			if len(reason) > delegateFinishReasonLimit {
-				reason = reason[:delegateFinishReasonLimit]
-			}
+		if reason := boundedFinishText(metadata.Reason); reason != "" {
 			finish.reason = reason
 		}
+		finish.errorText = boundedFinishText(metadata.Error)
 		return finish
 	case delegatestore.OutcomeExhausted:
 	default:

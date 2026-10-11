@@ -37,9 +37,7 @@ func (e *serveDrainWedgeEnvironment) releaseRead() {
 // read_file wedge is reached through the real tool path, and StopSubtree is the
 // same mutation job_stop uses; no durable/controller state is hand-seeded.
 func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
-	oldBudget := LaneClosePassBudget
-	LaneClosePassBudget = 10 * time.Millisecond
-	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+	shortenCloseCascadeBudget(t, 10*time.Millisecond)
 
 	clk := agenttest.NewFakeClock()
 	wedge := &serveDrainWedgeEnvironment{
@@ -60,7 +58,6 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 	root, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), wedge, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		TurnEndsProcess:  false,
 		clock:            clk,
 	})

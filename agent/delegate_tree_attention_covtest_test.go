@@ -7,6 +7,7 @@ import (
 // TestReconcileDelegateAttentionFromTranscripts_NilController covers the
 // nil-controller guard (lines 64-65).
 func TestReconcileDelegateAttentionFromTranscripts_NilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	err := c.reconcileDelegateAttentionFromTranscripts()
 	if err == nil {

@@ -1,18 +1,10 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	AnyNotification,
-	AppwireClient,
-	InitializeResponse,
-} from "@evener/appwire-client";
-import {
-	NativePreferencesProvider,
-	useNativePreferences,
-} from "./NativePreferencesProvider";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-	true;
+import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
+import { DRAFT_RESTORE_FAILED_MESSAGE } from "@evener/appwire-client";
+import { NativePreferencesProvider, useNativePreferences } from "./NativePreferencesProvider";
+import { render, unmountMountedTrees } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const values = new Map<string, string>();
@@ -124,12 +116,8 @@ function mountProvider() {
 		current = useNativePreferences();
 		return null;
 	}
-	const app = () =>
-		createElement(NativePreferencesProvider, null, createElement(Probe));
-	let tree!: ReactTestRenderer;
-	act(() => {
-		tree = create(app());
-	});
+	const app = () => createElement(NativePreferencesProvider, null, createElement(Probe));
+	const tree = render(app());
 	return {
 		get current() {
 			return current;
@@ -160,6 +148,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	unmountMountedTrees();
 	harness.storage.throwOnGet = false;
 });
 
@@ -266,6 +255,64 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		mounted.unmount();
 	});
 
+	it("surfaces a refused live-model nudge through the retained error path", async () => {
+		const connection = clientFixture();
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "ready",
+		};
+		const mounted = mountProvider();
+		await settleConnection(connection);
+		// Park the live store's own discard gate: a save whose reply never
+		// arrived leaves it writeUncertain, which assertDiscardable refuses.
+		await act(async () => {
+			await expect(mounted.current.model?.saveKeybindings()).rejects.toThrow();
+		});
+
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "closed",
+		};
+		mounted.rerender();
+		writeDraft("hub-a", "{not json");
+		harness.connection = {
+			activeProfile: { id: "hub-a" },
+			client: connection.client,
+			state: "reconnecting",
+		};
+		mounted.rerender();
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: true,
+			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+		});
+
+		let outcome: unknown;
+		await act(async () => {
+			outcome = mounted.current.discardUnreadableKeybindingsDraft();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		// The store-free discard itself succeeded - the record is gone and the
+		// offline notice is down. What failed is the NUDGE: the live model's
+		// own discard gate refused (its parked writeUncertain), and that
+		// rejection is a fact the store-free outcome does not carry, so it
+		// must surface through the retained snapshot's error instead of
+		// being swallowed.
+		expect(outcome).toBe("removed");
+		expect(mounted.current.offlineDraftUnreadable).toBe(false);
+		expect(mounted.current.snapshot?.keybindings).toMatchObject({
+			draft: null,
+			draftUnreadable: false,
+			storageUnavailable: false,
+		});
+		expect(mounted.current.snapshot?.keybindings.draftError).toBe("Hub keybindings settings are unavailable.");
+		expect(mounted.current.snapshot?.keybindings.error).toBe("Hub keybindings settings are unavailable.");
+		mounted.unmount();
+	});
+
 	it("reconciles a readable replacement into the retained snapshot while the same-hub client waits", async () => {
 		writeDraft("hub-a", "{not json");
 		const first = clientFixture();
@@ -339,8 +386,9 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			confirmed,
 			draft: null,
 			draftUnreadable: true,
-			draftError:
-				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			// The shared store literal: retained/offline and live restore copy
+			// cannot drift while the provider imports the constant it asserts.
+			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
 			storageUnavailable: true,
 			writeUncertain: false,
 		});
@@ -430,8 +478,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: null,
 			draftUnreadable: true,
-			draftError:
-				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
 			storageUnavailable: true,
 			writeUncertain: false,
 		});
@@ -447,8 +494,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: null,
 			draftUnreadable: true,
-			draftError:
-				"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
 			storageUnavailable: true,
 		});
 

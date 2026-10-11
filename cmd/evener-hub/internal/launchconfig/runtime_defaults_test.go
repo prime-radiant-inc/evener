@@ -27,7 +27,6 @@ func schemaForTest() []LaunchOption {
 		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt2},
 		{Field: "max_concurrent_delegate_turns", WireField: "maxConcurrentDelegateTurns", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt50},
 		{Field: "max_retained_terminal", WireField: "maxRetainedTerminal", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt2048},
-		{Field: "no_project_prompts", WireField: "noProjectPrompts", Kind: LaunchControlBoolean, BuiltinDefaultBool: &builtinBoolFalse},
 		{Field: "verbose", WireField: "verbose", Kind: LaunchControlBoolean, BuiltinDefaultBool: &builtinBoolFalse},
 		{Field: "app_replay_size", WireField: "appReplaySize", Kind: LaunchControlInteger, BuiltinDefaultInt: &builtinInt1000},
 		{Field: "export_atif_provider_handles", WireField: "exportATIFProviderHandles", Kind: LaunchControlSelect, BuiltinDefault: "redacted"},
@@ -66,9 +65,6 @@ func TestApplyRuntimeDefaultsFillsBuiltinsFromSchema(t *testing.T) {
 	}
 	if got.Effective.MaxRetainedTerminal == nil || *got.Effective.MaxRetainedTerminal != 2048 {
 		t.Errorf("MaxRetainedTerminal = %v, want builtin 2048", got.Effective.MaxRetainedTerminal)
-	}
-	if got.Effective.NoProjectPrompts == nil || *got.Effective.NoProjectPrompts {
-		t.Errorf("NoProjectPrompts = %v, want builtin false", got.Effective.NoProjectPrompts)
 	}
 	if got.Effective.Verbose == nil || *got.Effective.Verbose {
 		t.Errorf("Verbose = %v, want builtin false", got.Effective.Verbose)
@@ -128,7 +124,6 @@ func TestApplyRuntimeDefaultsProvenance(t *testing.T) {
 		"max_subagent_depth":            LayerBuiltin,
 		"max_concurrent_delegate_turns": LayerBuiltin,
 		"max_retained_terminal":         LayerBuiltin,
-		"no_project_prompts":            LayerBuiltin,
 		"verbose":                       LayerBuiltin,
 		"app_replay_size":               LayerBuiltin,
 		"export_atif_provider_handles":  LayerBuiltin,
@@ -287,15 +282,12 @@ func TestSchemaBuiltinsMatchAgentDefaults(t *testing.T) {
 	}
 
 	// Bool fields: agent applyDefaults (EnableLoopDetection true) and flag
-	// defaults (verbose=false, sandbox_net=true, no_project_prompts=false).
+	// defaults (verbose=false, sandbox_net=true).
 	if got := opt("sandbox_net"); got.BuiltinDefaultBool == nil || *got.BuiltinDefaultBool != true {
 		t.Errorf("sandbox_net builtin = %v, want true", got.BuiltinDefaultBool)
 	}
 	if got := opt("verbose"); got.BuiltinDefaultBool == nil || *got.BuiltinDefaultBool != false {
 		t.Errorf("verbose builtin = %v, want false", got.BuiltinDefaultBool)
-	}
-	if got := opt("no_project_prompts"); got.BuiltinDefaultBool == nil || *got.BuiltinDefaultBool != false {
-		t.Errorf("no_project_prompts builtin = %v, want false", got.BuiltinDefaultBool)
 	}
 
 	// String fields: agent flag defaults (session_tools.go: defaultAgentName),

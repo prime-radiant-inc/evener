@@ -116,6 +116,13 @@ export interface CredentialInstancesState {
   // rows", and, together with listingFromPreviousConnection, tells a
   // refreshModels answer whether a name it does not find was removed.
   listingEstablished: boolean;
+  // refreshingInstances names the instances whose refreshModels call is out: the
+  // store's own publication of the fact its private in-flight counts already
+  // hold, so a view reads it here instead of tracking the same calls again (and
+  // clearing on its own schedule). A name leaves when its last outstanding
+  // refresh settles, and when the bookkeeping is dropped for a replaced
+  // connection.
+  refreshingInstances: ReadonlySet<string>;
   // A marker that changes ONLY when a state transition came from the store's
   // own self-marked refresh (fetchSelf, or scheduleRefetch(true)).
   // Subscriptions that watch for unrelated changes compare it across a
@@ -441,6 +448,17 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     return true;
   }
 
+  // publishRefreshingInstances mirrors the private in-flight refresh counts into
+  // the state set views read. Guarded so a transition only fires when the
+  // membership actually moves: a second refresh for an instance already named,
+  // and a settled refresh whose instance still has another out, change nothing.
+  function publishRefreshingInstances(): void {
+    const published = store.getState().refreshingInstances;
+    if (published.size === inFlightRefreshes.size && [...published].every((name) => inFlightRefreshes.has(name)))
+      return;
+    store.setState({ refreshingInstances: new Set(inFlightRefreshes.keys()) });
+  }
+
   // landedListing is the one transition that installs a listing: every applied
   // read or write goes through it. The rows are this connection's (the same
   // claim whichever request made them), a listing has now been applied, and
@@ -663,6 +681,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshVersions.clear();
     inFlightRefreshes.clear();
     landedMutations.clear();
+    publishRefreshingInstances();
   }
 
   async function refreshModels(name: string): Promise<void> {
@@ -686,6 +705,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshVersions.set(name, version);
     const marker = noteLocalMutation(undefined);
     bump(inFlightRefreshes, name);
+    publishRefreshingInstances();
     try {
       const response = await client.request("evener/instance/refreshModels", {
         name,
@@ -753,6 +773,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
         const remaining = (inFlightRefreshes.get(name) ?? 1) - 1;
         if (remaining > 0) inFlightRefreshes.set(name, remaining);
         else inFlightRefreshes.delete(name);
+        publishRefreshingInstances();
       }
     }
   }
@@ -1037,6 +1058,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     selfRefresh: 0,
     listingFromPreviousConnection: false,
     listingEstablished: false,
+    refreshingInstances: new Set<string>(),
 
     async fetch() {
       return readListing(false);

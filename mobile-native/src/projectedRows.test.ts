@@ -1,0 +1,2361 @@
+import { describe, expect, it } from "vitest";
+import {
+	hydrateThread,
+	makeTranscriptDisplayConfig,
+	parseMemoryContext,
+	THREAD_ITEM_EVENT_KINDS,
+	WarningCodeMCPReconnected,
+} from "@evener/appwire-client";
+import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
+import {
+	memoryContextWireItem,
+	memoryContextWireItems,
+} from "@evener/appwire-client/testing/memoryContextWireFixtures";
+import type {
+	AskQuestionRef,
+	ContentLevel,
+	EvenerThread,
+	ItemModel,
+	ProjectedEntry,
+	Thread,
+	ThreadCapabilities,
+	ThreadItem,
+	ThreadModel,
+	ThreadReadResponse,
+	TurnModel,
+	Turn,
+} from "@evener/appwire-client";
+import {
+	activityDetail,
+	boundQuestion,
+	liveAsksFor,
+	MAX_ITEM_BYTES,
+	noteFromSteer,
+	projectConversation,
+	projectedRow,
+	projectTimeline,
+	truncateItem,
+	truncateText,
+} from "./projectedRows";
+import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
+import { readerKey } from "./readerPosition";
+import { runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { stepEvidence } from "./session/evidence";
+import { groupTimeline, isCriticalNotice } from "./timeline";
+import { projectNativeTranscript } from "./transcriptPresentation";
+
+// The row adapter maps the shared projector's ProjectedEntry kinds onto the
+// native MobileTimelineItem union. D24-6 re-homed the row vocabulary and the
+// timeline projection into this module (the private family
+// mobile/src/conversation/ is deleted), so these tests pin BOTH the entry→row
+// mapping and the whole-model pipeline: clustering, attachments, failure rows,
+// the per-turn cache, and the five-level differential the deleted oracle owned.
+
+function item(overrides: Partial<ItemModel> & { type: string }): ItemModel {
+	return { id: "i1", turnId: "t1", text: "", ...overrides };
+}
+
+function itemEntry(it: ItemModel, isMessage = false): ProjectedEntry {
+	return { kind: "item", id: it.id, turnId: it.turnId, sourceIndex: 0, item: it, isMessage };
+}
+
+function thinkingEntry(it: ItemModel): ProjectedEntry {
+	return { kind: "thinking", id: it.id, turnId: it.turnId, sourceIndex: 0, item: it };
+}
+
+function intentEntry(it: ItemModel, over: { failed?: boolean } = {}): ProjectedEntry {
+	return {
+		kind: "intent",
+		id: `intent:${it.id}`,
+		turnId: it.turnId,
+		sourceIndex: 0,
+		sourceItemId: it.id,
+		rationale: it.description?.trim() || "Action summary unavailable",
+		failed: over.failed ?? false,
+		item: it,
+	};
+}
+
+function criticalEntry(it: ItemModel, summary = "Action summary unavailable", redacted = false): ProjectedEntry {
+	return {
+		kind: "critical",
+		id: it.id,
+		turnId: it.turnId,
+		sourceIndex: 0,
+		sourceItemId: it.id,
+		item: it,
+		summary,
+		redacted,
+	};
+}
+
+const ask: AskQuestionRef = {
+	key: "call-1:0",
+	callId: "call-1",
+	header: "Confirm",
+	question: "Proceed?",
+	options: [{ label: "Yes", detail: "go" }],
+	multiSelect: false,
+};
+
+function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
+	return new Map([[callId, [{ ...ask, callId, key: `${callId}:0` }]]]);
+}
+
+describe("projectedRow — item entries", () => {
+	it.each(["warning", "systemMessage"])("MCP recovery through %s is quiet full-detail history", (type) => {
+		const warning = { code: WarningCodeMCPReconnected };
+		const model = {
+			turns: [
+				{
+					id: "t1",
+					status: "completed",
+					items: [
+						item({ id: "recovery", type, eventKind: "warning", text: "connection-1", warning, raw: { warning } }),
+						item({
+							id: "retry",
+							type: "commandExecution",
+							toolName: "server__probe",
+							status: "failed",
+							description: "probe-1",
+							error: "failure-1",
+						}),
+						item({ id: "signin", type: "warning", text: "signin-1", warning: { source: "mcp" } }),
+						item({
+							id: "interruption",
+							type: "systemMessage",
+							eventKind: "error",
+							text: "interruption-1",
+							raw: { warning },
+						}),
+					],
+				},
+			],
+		} as unknown as ThreadModel;
+		for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+			const rows = projectTimeline(model, new Map(), makeTranscriptDisplayConfig({ kind: "preset", level }));
+			const recovery = rows.find((row) => row.id === "recovery");
+			if (level === "full") expect(recovery).toMatchObject({ kind: "notice", tone: "system", text: "connection-1" });
+			else expect(recovery).toBeUndefined();
+			expect(rows.find((row) => row.id === "signin")).toMatchObject({ kind: "failure", attention: true });
+			expect(rows.find((row) => row.id === "interruption")).toMatchObject({ kind: "notice", tone: "warning" });
+			expect(rows.some((row) => row.kind === "activity" && row.id === "retry" && row.state === "failed")).toBe(true);
+		}
+	});
+
+	it("maps a user message to the user row, carrying its transcript entry index", () => {
+		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi", transcriptEntryIndex: 7 }), true));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "user",
+			id: "i1",
+			text: "hi",
+			transcriptEntryIndex: 7,
+			turnId: "t1",
+		});
+	});
+
+	it("omits transcriptEntryIndex when the user item has none", () => {
+		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi" }), true));
+		expect(row).toEqual<MobileTimelineItem>({ kind: "user", id: "i1", text: "hi", turnId: "t1" });
+	});
+
+	it("maps a user-sourced steering item to the same user row, without an entry index", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "steering", text: "steer", source: "user", transcriptEntryIndex: 3 })),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "user",
+			id: "i1",
+			text: "steer",
+			origin: "steered",
+			turnId: "t1",
+		});
+	});
+
+	it("maps a human-note steer to a note row, stripping the daemon's prefix (spec 8.8)", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "steering",
+					text: "human updated their whiteboard: Fix causes",
+					source: "user",
+					steeringKind: "human-note",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({ kind: "note", id: "i1", text: "Fix causes", turnId: "t1" });
+	});
+
+	it("maps a cleared human-note steer to an empty note row", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "steering",
+					text: "human updated their whiteboard: (whiteboard cleared)",
+					source: "user",
+					steeringKind: "human-note",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({ kind: "note", id: "i1", text: "", turnId: "t1" });
+	});
+
+	it("keeps a user-sourced steer without the human-note kind as a user row", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "steering", text: "steer", source: "user", steeringKind: "interrupted" })),
+		);
+		expect(row).toMatchObject({ kind: "user" });
+	});
+
+	it("maps an agent message to the assistant row and joins pending deltas", () => {
+		const row = projectedRow(itemEntry(item({ type: "agentMessage", text: "hel", pendingText: ["lo", "!"] }), true));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "assistant",
+			id: "i1",
+			markdown: "hello!",
+			streaming: false,
+			turnId: "t1",
+		});
+	});
+
+	it("marks an assistant row streaming while the item is in progress", () => {
+		const row = projectedRow(itemEntry(item({ type: "agentMessage", text: "x", status: "inProgress" }), true));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "assistant",
+			id: "i1",
+			markdown: "x",
+			streaming: true,
+			turnId: "t1",
+		});
+	});
+
+	it("maps a reasoning item to a collapsed reasoning activity with its joined text", () => {
+		const row = projectedRow(itemEntry(item({ type: "reasoning", text: "thought" })));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "Reasoning",
+			family: "reasoning",
+			state: "completed",
+			detail: { output: "thought" },
+			turnId: "t1",
+		});
+	});
+
+	it("marks a reasoning activity running while the turn is in progress", () => {
+		const row = projectedRow(itemEntry(item({ type: "reasoning", text: "t" })), { turnStatus: "inProgress" });
+		expect(row).toMatchObject({ kind: "activity", family: "reasoning", state: "running" });
+	});
+
+	it("maps a command execution to a tool activity with its full detail", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					description: "Run ls",
+					argumentsJSON: '{"cmd":"ls"}',
+					output: "a\nb",
+					callId: "call-1",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: {
+				description: "Run ls",
+				summary: "Ran ls",
+				words: { verb: "Ran", target: "ls" },
+				arguments: '{"cmd":"ls"}',
+				output: "a\nb",
+				callId: "call-1",
+			},
+			turnId: "t1",
+		});
+	});
+
+	it("clusters a completed memory step with tools and keeps its package words", () => {
+		const memoryWrite = item({
+			id: "memory-write",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "memory_write",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", content: "# Page" }),
+		});
+		const shell = item({
+			id: "shell",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "shell",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ command: "echo done" }),
+		});
+		const rows = projectTimeline(
+			{ turns: [{ id: "t1", status: "completed", items: [memoryWrite, shell] }] } as unknown as ThreadModel,
+			new Map(),
+		);
+
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			kind: "activity",
+			family: "tool",
+			state: "completed",
+			detail: {
+				summary: "Wrote memory personal/page.md",
+				words: { verb: "Wrote memory", target: "personal/page.md" },
+			},
+			members: [
+				{ id: "memory-write", family: "tool", detail: { summary: "Wrote memory personal/page.md" } },
+				{ id: "shell", family: "tool" },
+			],
+		});
+	});
+
+	it("keeps a rejected session-memory write as a failed row beside completed tools", () => {
+		const error = "session memory belongs to the root session; report this to your parent instead";
+		const memoryWrite = item({
+			id: "memory-write",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "memory_write",
+			status: "failed",
+			error,
+			argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+		});
+		const shell = item({
+			id: "shell",
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "shell",
+			status: "completed",
+			argumentsJSON: JSON.stringify({ command: "echo done" }),
+		});
+		const rows = projectTimeline(
+			{ turns: [{ id: "t1", status: "completed", items: [memoryWrite, shell] }] } as unknown as ThreadModel,
+			new Map(),
+		);
+
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toMatchObject({
+			kind: "activity",
+			id: "memory-write",
+			family: "tool",
+			state: "failed",
+			detail: { error },
+		});
+		expect(rows[0]).not.toHaveProperty("members");
+		expect(rows[1]).toMatchObject({ kind: "activity", id: "shell", state: "completed" });
+	});
+
+	// Only what the checklist draws: a task's prompt, notes and times would ride
+	// every retained task_list row, past the row's text bound.
+	it("carries a task_list call's returned tasks on its detail, only what the checklist draws", () => {
+		const raw = [
+			{
+				id: 1,
+				type: "fix",
+				description: "Fix the drain",
+				prompt: "Make the drain finish before settle reads the tree.",
+				status: "in_progress",
+				notes: ["Seen in 3 of 20 runs."],
+				created_at: "2026-09-28T20:00:00Z",
+			},
+		];
+		const tasks = (toolName: string) =>
+			projectedRow(itemEntry(item({ type: "commandExecution", toolName, argumentsJSON: "{}", raw })));
+		const row = tasks("task_list");
+		expect(row?.kind === "activity" && row.detail.tasks).toEqual([
+			{ id: 1, status: "in_progress", description: "Fix the drain" },
+		]);
+		expect(tasks("shell")).not.toHaveProperty("detail.tasks");
+	});
+
+	it("falls back to the description, then Tool, for a tool's label", () => {
+		expect(projectedRow(itemEntry(item({ type: "commandExecution", description: " List " })))).toMatchObject({
+			label: "List",
+		});
+		expect(projectedRow(itemEntry(item({ type: "commandExecution" })))).toMatchObject({ label: "Tool" });
+	});
+
+	it("falls back to Tool for a blank or whitespace-only tool label", () => {
+		expect(projectedRow(itemEntry(item({ type: "commandExecution", description: "   " })))).toMatchObject({
+			label: "Tool",
+		});
+		expect(projectedRow(itemEntry(item({ type: "commandExecution", toolName: "  " })))).toMatchObject({
+			label: "Tool",
+		});
+	});
+
+	it("drops a tool duration whose timestamps do not parse", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					startedAt: "not-a-date",
+					completedAt: "also-not",
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "activity" });
+		expect((row as Extract<MobileTimelineItem, { kind: "activity" }>).detail.durationMs).toBeUndefined();
+	});
+
+	it("summarizes an ask_user activity's questions in its detail description", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "ask_user",
+					argumentsJSON: JSON.stringify({
+						questions: [{ header: "Confirm", question: "Proceed?", options: [{ label: "Yes", detail: "go" }] }],
+					}),
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "activity", family: "tool", detail: { description: "Questions: Confirm" } });
+	});
+
+	it("marks a failed tool activity failed, regardless of its settled status", () => {
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", error: "boom" })));
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
+	});
+
+	it("maps a daemon steering item to an informational notice labelled by its kind", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({ type: "steering", text: "<SYSTEM-REMINDER>steer</SYSTEM-REMINDER>", steeringKind: "hook-context" }),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "notice",
+			id: "i1",
+			origin: "steering",
+			steeringKind: "hook-context",
+			family: "informational",
+			tone: "info",
+			text: "steer",
+			label: "System steered: Hook context",
+			turnId: "t1",
+		});
+	});
+
+	it("labels a steer of a kind it has no label for as System steered, never its raw text", () => {
+		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", steeringKind: "note" })));
+		expect(row).toMatchObject({ kind: "notice", label: "System steered", text: "steer" });
+	});
+
+	it("reads a loop-detected or provider-failure steer as a quiet notice: the turn's error is the failure", () => {
+		for (const steeringKind of ["loop-detected", "provider-failure"]) {
+			const row = projectedRow(itemEntry(item({ type: "steering", text: "loop", steeringKind })));
+			expect(row).toMatchObject({ kind: "notice", origin: "steering", family: "informational", tone: "info" });
+		}
+	});
+
+	it("leaves out the current task and the task list", () => {
+		for (const steeringKind of ["current-task", "task-list"]) {
+			expect(projectedRow(itemEntry(item({ type: "steering", text: "task", steeringKind })))).toBeNull();
+		}
+	});
+
+	it("maps a system message to a notice carrying its event kind, family and exit code", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "systemMessage", text: "failed", eventKind: "error", exitCode: 1 })),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "notice",
+			id: "i1",
+			origin: "system",
+			family: "warning",
+			tone: "warning",
+			text: "failed",
+			eventKind: "error",
+			exitCode: 1,
+			turnId: "t1",
+		});
+	});
+
+	it.each<[string, string, string]>([
+		["system_prompt", "hidden-instruction", "system"],
+		["prompt_loaded", "hidden-instruction", "system"],
+		["environment", "system-prelude", "system"],
+		["round_timings", "diagnostic", "system"],
+		["plugin_loaded", "lifecycle", "system"],
+		["hook_completed", "lifecycle", "system"],
+		["notes-context", "lifecycle", "system"],
+		["approval_decision", "approval", "system"],
+		["unknown_future_kind", "unknown-system", "system"],
+	])("classifies system event %s as family %s / tone %s", (eventKind, family, tone) => {
+		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family, tone });
+	});
+
+	// Every generated event kind gets a deliberate family, so a new kind cannot
+	// fall through to unknown-system unnoticed.
+	it.each(THREAD_ITEM_EVENT_KINDS)("gives generated event kind %s a family", (eventKind) => {
+		const row = projectedRow(itemEntry(item({ type: "systemMessage", text: "x", eventKind })));
+		expect(row).toMatchObject({ kind: "notice", origin: "system" });
+		expect(row).not.toMatchObject({ family: "unknown-system" });
+	});
+
+	// An interrupted model round reads as a plain notice line, as on the web:
+	// quiet, never the warning tone, and never folded into the details.
+	it("reads an interrupted round as a plain notice line", () => {
+		// The package projects it as critical, so it shows at every level.
+		const row = projectedRow(
+			criticalEntry(item({ type: "systemMessage", text: "x", eventKind: "interrupted" })),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "lifecycle", tone: "system" });
+		expect(isCriticalNotice(row)).toBe(false);
+		expect(groupTimeline([row])).toEqual([row]);
+	});
+
+	it("maps a warning item to the attention failure row", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "warning", text: "disk low", warning: { title: "Space", hint: "free some" } })),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "failure",
+			id: "i1",
+			title: "Space",
+			detail: "disk low — free some",
+			attention: true,
+			turnId: "t1",
+		});
+	});
+
+	// A daemon warning (#3387): a systemMessage with eventKind "warning". One a
+	// human should see reads in the attention tone, amber per spec, with its
+	// hint as a quiet second line; an informational one stays a quiet system
+	// line; the WARNING_EVENT_KINDS stay the red warning tone.
+	it("reads an uncoded daemon warning in the attention tone, with its hint", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "inspect delegate attention: permission denied",
+					raw: { warning: { title: "Evener error", hint: "Check the state directory." } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			family: "warning",
+			tone: "attention",
+			text: "inspect delegate attention: permission denied",
+			hint: "Check the state directory.",
+		});
+	});
+
+	// The phone draws no title chip (Jesse's ruling), so a warning's message
+	// is its row's words; one with no message reads its hint, then its title
+	// (the package's warningWords, which the web reads too).
+	it("reads a daemon warning's message over its title, and the title when it has no message", () => {
+		const warning = (text: string | undefined, fields: Record<string, unknown>) =>
+			projectedRow(itemEntry(item({ type: "systemMessage", eventKind: "warning", text, raw: { warning: fields } })));
+		expect(warning("disk full", { title: "Evener error" })).toMatchObject({ tone: "attention", text: "disk full" });
+		expect(warning(" ", { title: "Evener error" })).toMatchObject({ tone: "attention", text: "Evener error" });
+		const hintOnly = warning(undefined, { hint: "Check the state directory." });
+		expect(hintOnly).toMatchObject({ tone: "attention", text: "Check the state directory." });
+		expect(hintOnly).not.toHaveProperty("hint");
+		expect(warning(undefined, { title: "Evener error", hint: "Check the state directory." })).toMatchObject({
+			text: "Check the state directory.",
+		});
+	});
+
+	it("draws a daemon warning's hint once when it repeats the message", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "disk full",
+					raw: { warning: { hint: "disk full" } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({ tone: "attention", text: "disk full" });
+		expect(row).not.toHaveProperty("hint");
+	});
+
+	// A warning item's row has a title of its own, so a title-only one reads
+	// as the web's does: the generic title, and the title as its words.
+	it("reads a title-only warning item's title as its words, under the generic title", () => {
+		const row = projectedRow(itemEntry(item({ type: "warning", text: "", warning: { title: "Heads up" } })));
+		expect(row).toMatchObject({ kind: "failure", title: "Warning", detail: "Heads up", attention: true });
+	});
+
+	it("keeps an informational daemon warning a quiet system line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					eventKind: "warning",
+					text: "Output clamped",
+					raw: { warning: { title: "Context budget", code: "context_budget" } },
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "notice", family: "unknown-system", tone: "system" });
+	});
+
+	// An informational warning item (a coded "no action needed" notice) is a
+	// quiet line, as the web draws it, never the amber attention row (#3387).
+	it("reads an informational warning item as a quiet line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "warning",
+					text: "Output clamped to fit the context window",
+					warning: { title: "Context budget", code: "context_budget" },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			tone: "system",
+			text: "Output clamped to fit the context window",
+		});
+	});
+
+	// An informational warning's hint is news of its own (the web keeps it as
+	// the hover title and VisuallyHidden text), so the quiet row carries it.
+	it("keeps an informational warning item's hint for its quiet second line", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "warning",
+					text: "Output clamped to fit the context window",
+					warning: { title: "Context budget", hint: "Free some context.", code: "context_budget" },
+				}),
+			),
+		);
+		expect(row).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			tone: "system",
+			text: "Output clamped to fit the context window",
+			hint: "Free some context.",
+		});
+	});
+
+	it("drops a warning whose every part is blank", () => {
+		expect(projectedRow(itemEntry(item({ type: "warning" })))).toBeNull();
+	});
+
+	it("maps an unknown item type to a neutral unknown activity", () => {
+		const row = projectedRow(itemEntry(item({ type: "futureThing", text: "body", output: "out" })));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "Activity",
+			family: "unknown",
+			state: "completed",
+			detail: { output: "body" },
+			turnId: "t1",
+		});
+	});
+
+	it("maps an answerable ask_user call to a question row", () => {
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "ask_user", callId: "call-1" })), {
+			asks: asksFor("call-1"),
+		});
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "question",
+			id: "i1",
+			questions: [{ ...ask, callId: "call-1", key: "call-1:0" }],
+			turnId: "t1",
+		});
+	});
+
+	it("keeps an ask_user with no answerable ask as an ordinary tool activity", () => {
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "ask_user", callId: "call-1" })));
+		expect(row).toMatchObject({ kind: "activity", family: "tool" });
+	});
+
+	it("carries the item's transcript identity onto every row it builds", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					transcriptKey: "tk-1",
+					position: { entry: 2, item: 5 },
+				}),
+			),
+		);
+		expect(row).toMatchObject({ transcriptKey: "tk-1", position: { entry: 2, item: 5 } });
+	});
+
+	it("returns null for a ProjectedEntry kind outside the known union", () => {
+		expect(projectedRow({ kind: "futureKind" } as unknown as ProjectedEntry)).toBeNull();
+	});
+});
+
+it("renders recorded memory calls and an ordinary file read through the phone timeline and run pipeline", () => {
+	const page = [
+		"# Implementation delegation",
+		"",
+		"Delegate a focused change with the exact files and check it needs.",
+		"State the branch and why the change matters.",
+		"List verified facts and unresolved constraints.",
+		"Name the commands that prove completion.",
+		"Keep the delegated scope narrow and independent.",
+		"Use a worktree when writers could collide.",
+		"Require evidence from the actual test output.",
+		"Review each result before relying on it.",
+		"Save durable project decisions before finishing.",
+	].join("\n");
+	const oldIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work";
+	const newIndexLine = "- [Implementation delegation](implementation-delegation.md): focused work and evidence";
+	const recorded = (id: string, toolName: string, argumentsJSON: string, output?: string) =>
+		item({
+			id,
+			turnId: "t1",
+			type: "commandExecution",
+			toolName,
+			status: "completed",
+			argumentsJSON,
+			...(output === undefined ? {} : { output }),
+		});
+	const model = {
+		turns: [
+			{
+				id: "t1",
+				status: "completed",
+				items: [
+					recorded(
+						"write",
+						"memory_write",
+						JSON.stringify({ scope: "personal", file_path: "implementation-delegation.md", content: page }),
+					),
+					recorded(
+						"edit",
+						"memory_edit",
+						JSON.stringify({
+							scope: "project",
+							file_path: "MEMORY.md",
+							old_string: oldIndexLine,
+							new_string: newIndexLine,
+						}),
+					),
+					recorded(
+						"search",
+						"memory_search",
+						JSON.stringify({ scope: "project", pattern: "delegation", path: "." }),
+						"MEMORY.md:1:implementation delegation\npages/implementation-delegation.md:1:delegation",
+					),
+					recorded(
+						"file-read",
+						"read_file",
+						JSON.stringify({ path: "docs/developing-evener/testing.md" }),
+						"# Testing\n\nDeterministic tests prove behavior.",
+					),
+				],
+			},
+		],
+	} as unknown as ThreadModel;
+
+	const projected = projectTimeline(model, new Map());
+	expect(projected).toHaveLength(1);
+	const conversation: MobileConversation = { ...model, items: projected };
+	const presentation = projectNativeTranscript(conversation, undefined);
+	const transcript = sessionRows(groupTimeline(presentation.items), model.turns);
+	const run = transcript.find((row) => row.kind === "run");
+	if (run?.kind !== "run") throw new Error("expected the four settled calls in one tool run");
+
+	const byTool = new Map(run.steps.map((step) => [step.label, step]));
+	const write = byTool.get("memory_write");
+	const edit = byTool.get("memory_edit");
+	const search = byTool.get("memory_search");
+	const fileRead = byTool.get("read_file");
+	if (!write || !edit || !search || !fileRead) throw new Error("missing one of the recorded journey steps");
+
+	expect(write.detail.summary).toBe("Wrote memory personal/implementation-delegation.md");
+	expect(edit.detail.summary).toBe("Edited memory project/MEMORY.md · +1 -1");
+	expect(search.detail.summary).toBe('Searched memory for "delegation" in project · 2 hits');
+	expect(runSummaryText(runSummary(run.steps))).toBe("4 steps · updated memory twice, read 1 file");
+
+	expect(stepEvidence(write)).toEqual([
+		{ kind: "markdown", title: "personal/implementation-delegation.md", markdown: page },
+	]);
+	const editEvidence = stepEvidence(edit);
+	expect(editEvidence[0]).toMatchObject({ kind: "diff", added: 1, removed: 1 });
+	if (editEvidence[0]?.kind !== "diff") throw new Error("memory edit did not produce diff evidence");
+	expect(editEvidence[0].text).toContain(oldIndexLine);
+	expect(editEvidence[0].text).toContain(newIndexLine);
+	expect(stepEvidence(search).map((evidence) => evidence.kind)).toEqual(["output"]);
+	expect(stepEvidence(fileRead)).toEqual([
+		{ kind: "output", text: "# Testing\n\nDeterministic tests prove behavior.", lines: 3 },
+	]);
+	expect(runSummary(run.steps).parts.map((part) => part.text)).toEqual(["updated memory twice", "read 1 file"]);
+});
+
+describe("noteFromSteer (spec 8.8)", () => {
+	it("strips the daemon's prefix", () => {
+		expect(noteFromSteer("human updated their whiteboard: Fix causes")).toBe("Fix causes");
+	});
+
+	it("reads the cleared marker as an empty note", () => {
+		expect(noteFromSteer("human updated their whiteboard: (whiteboard cleared)")).toBe("");
+	});
+
+	it("returns text with no known prefix unchanged", () => {
+		expect(noteFromSteer("no prefix here")).toBe("no prefix here");
+	});
+
+	it("recovers a multi-line note by removing the continuation indent", () => {
+		const steer = "human updated their whiteboard: Ship Friday\n  Agent: not you\n\n  Then rest";
+		expect(noteFromSteer(steer)).toBe("Ship Friday\nAgent: not you\n\nThen rest");
+	});
+});
+
+describe("projectedRow: how long a thought took", () => {
+	// The wire never times reasoning; the phone's reducer stamps the times it
+	// saw the thought arrive and settle.
+	it("falls back to the times the phone saw when the wire has none", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "reasoning",
+					text: "hmm",
+					status: "completed",
+					observedStartedAt: "2024-01-01T00:00:00.000Z",
+					observedCompletedAt: "2024-01-01T00:00:12.000Z",
+				}),
+			),
+		);
+		expect(row?.kind === "activity" && row.detail.durationMs).toBe(12_000);
+	});
+
+	it("keeps the wire's times when it has them", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "reasoning",
+					text: "hmm",
+					status: "completed",
+					startedAt: "2024-01-01T00:00:00.000Z",
+					completedAt: "2024-01-01T00:00:03.000Z",
+					observedStartedAt: "2024-01-01T00:00:00.000Z",
+					observedCompletedAt: "2024-01-01T00:00:12.000Z",
+				}),
+			),
+		);
+		expect(row?.kind === "activity" && row.detail.durationMs).toBe(3_000);
+	});
+});
+
+describe("projectedRow — thinking entries", () => {
+	it("maps a thinking entry to a content-free live-thought placeholder activity", () => {
+		const row = projectedRow(thinkingEntry(item({ type: "reasoning", text: "secret thought" })));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "Reasoning",
+			family: "reasoning",
+			state: "running",
+			detail: {},
+			turnId: "t1",
+		});
+	});
+
+	it("never leaks the thought's text from a thinking placeholder", () => {
+		const row = projectedRow(thinkingEntry(item({ type: "reasoning", text: "secret thought" })));
+		expect(JSON.stringify(row)).not.toContain("secret thought");
+	});
+});
+
+describe("projectedRow — intent entries", () => {
+	it("maps an intent entry to the tool activity row it summarizes", () => {
+		const row = projectedRow(
+			intentEntry(item({ type: "commandExecution", toolName: "read_file", description: "Read a.ts" })),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "read_file",
+			family: "tool",
+			state: "completed",
+			// The operator's summary-only ruling marks the row: it carries
+			// only its summary line, nothing to expand.
+			summaryOnly: true,
+			detail: { description: "Read a.ts", words: { verb: "Read a file" } },
+			turnId: "t1",
+		});
+	});
+
+	it("marks a failed intent's activity failed", () => {
+		const row = projectedRow(
+			intentEntry(item({ type: "commandExecution", toolName: "shell", error: "boom" }), { failed: true }),
+		);
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
+	});
+
+	it("carries the projector's rationale as the activity detail description", () => {
+		const row = projectedRow(
+			intentEntry(item({ type: "commandExecution", toolName: "read_file", description: "  Read a.ts  " })),
+		);
+		expect(row).toMatchObject({ kind: "activity", detail: { description: "Read a.ts" } });
+	});
+
+	// The operator's ruling (Sep-25): a summarized tool-action row carries
+	// ONLY its summary line at compact levels — its full detail (arguments,
+	// output, error, exit code, duration, call id) appears at
+	// tools/activity/full, where the projector routes the call through its
+	// item entry instead. The row is marked summaryOnly so the presentation
+	// layer renders the line without an expansion affordance. It keeps its
+	// two clock times as metadata, which nothing shows on the row itself, so
+	// the run it folds into can say how long it took (Jesse, 2026-09-27).
+	it("carries only its summary line, clock times, call id and words, dropping the rest of the source item's detail", () => {
+		const row = projectedRow(
+			intentEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					description: "Run ls",
+					argumentsJSON: '{"cmd":"ls"}',
+					output: "a\nb",
+					exitCode: 0,
+					startedAt: "2024-01-01T00:00:00.000Z",
+					completedAt: "2024-01-01T00:00:01.000Z",
+					callId: "call-1",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			summaryOnly: true,
+			detail: {
+				description: "Run ls",
+				startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
+				endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
+				callId: "call-1",
+				// What it acted on, which its line sets in Menlo under the rationale.
+				words: { verb: "Ran", target: "ls" },
+			},
+			turnId: "t1",
+		});
+	});
+
+	it("keeps the arguments the summary fallback parses when the projector's summary is unavailable", () => {
+		// RoboRev panel: replacing the detail wholesale left the
+		// presentation layer's write_file fallback nothing to parse, so a
+		// descriptionless write_file rendered the literal placeholder
+		// instead of its write line. ACTION_SUMMARY_UNAVAILABLE means the
+		// source carried no description; the ruling still drops the output,
+		// exit code, duration and call id, and only the arguments the derived
+		// summary reads survive, beside the clock times every summarized row
+		// keeps for its run.
+		const row = projectedRow(
+			intentEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					argumentsJSON: '{"cmd":"ls"}',
+					output: "a\nb",
+					startedAt: "2024-01-01T00:00:00.000Z",
+					completedAt: "2024-01-01T00:00:01.000Z",
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "activity", summaryOnly: true });
+		expect(row?.kind === "activity" && row.detail).toEqual({
+			arguments: '{"cmd":"ls"}',
+			// The step's words, read before its output went.
+			summary: "Ran ls",
+			words: { verb: "Ran", target: "ls" },
+			startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
+			endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
+		});
+	});
+
+	// A job_watch step's words come from the watch's state, not its footer
+	// text: a timer's line is its cadence and its note, a clear's the watch.
+	it("words a recorded job_watch step from the watch's state", () => {
+		const words = (call: "call_watch_timer" | "call_watch_clear") => {
+			const row = projectedRow(intentEntry(toolWireStep(call)));
+			return row?.kind === "activity" ? row.detail?.words : undefined;
+		};
+		expect(words("call_watch_timer")).toEqual({ verb: "Remind me in 5m", detail: "Check the deploy finished." });
+		expect(words("call_watch_clear")).toEqual({ verb: "Cleared", target: "watch_fixture_1" });
+	});
+
+	// The native attention rule outranks the projector's summarization (the
+	// D24-4 disclosed contract: a failed/running activity renders critical,
+	// with its full detail, at every level). The summary-only ruling covers
+	// the SETTLED summarized row; a failed or still-running call the projector
+	// routed through its intent entry keeps everything.
+	it("keeps a failed call's full detail and renders it critical, not summary-only", () => {
+		const row = projectedRow(
+			intentEntry(item({ type: "commandExecution", toolName: "shell", error: "boom", exitCode: 1 }), { failed: true }),
+		);
+		expect(row).toMatchObject({
+			kind: "activity",
+			state: "failed",
+			detail: { error: "boom", exitCode: 1 },
+		});
+		expect(row?.kind === "activity" && row.summaryOnly).toBeUndefined();
+	});
+
+	it("keeps a running call's full detail while its turn is in progress", () => {
+		const row = projectedRow(
+			intentEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					description: "Read config",
+					output: "partial output",
+					status: "inProgress",
+				}),
+			),
+			{ turnStatus: "inProgress" },
+		);
+		expect(row).toMatchObject({
+			kind: "activity",
+			state: "running",
+			detail: { description: "Read config", output: "partial output" },
+		});
+		expect(row?.kind === "activity" && row.summaryOnly).toBeUndefined();
+	});
+
+	it("honors the projector's failed intent classification even when the source item carries no signal", () => {
+		// The projector sets intent.failed (hasItemFailure at projection time); the
+		// adapter must render a failed activity from that classification rather
+		// than re-deriving from the item alone.
+		const row = projectedRow(intentEntry(item({ type: "commandExecution", toolName: "shell" }), { failed: true }));
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
+	});
+});
+
+describe("projectedRow — critical entries", () => {
+	it("maps a redacted critical reasoning to a neutral failure row, never the thought", () => {
+		const row = projectedRow(
+			criticalEntry(item({ type: "reasoning", text: "secret thought" }), "Thought not shown", true),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "failure",
+			id: "i1",
+			title: "Thought not shown",
+			detail: "",
+			// A thought's failure row, so the transcript can read it quietly.
+			thought: true,
+			turnId: "t1",
+		});
+		expect(JSON.stringify(row)).not.toContain("secret thought");
+	});
+
+	it("maps a critical system message to a warning notice", () => {
+		const row = projectedRow(criticalEntry(item({ type: "systemMessage", text: "boom", eventKind: "tool_repair" })));
+		expect(row).toMatchObject({ kind: "notice", origin: "system", family: "lifecycle" });
+	});
+
+	it("maps a critical warning item to the attention failure row", () => {
+		const row = projectedRow(
+			criticalEntry(item({ type: "warning", text: "msg", warning: { title: "Title" } }), "Title"),
+		);
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "failure",
+			id: "i1",
+			title: "Title",
+			detail: "msg",
+			attention: true,
+			turnId: "t1",
+		});
+	});
+
+	it("maps a critical failed tool call to a failed tool activity, not a failure row", () => {
+		const row = projectedRow(criticalEntry(item({ type: "commandExecution", toolName: "shell", error: "boom" })));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "activity",
+			id: "i1",
+			label: "shell",
+			family: "tool",
+			state: "failed",
+			detail: { error: "boom", summary: "Ran a command", words: { verb: "Ran a command" } },
+			turnId: "t1",
+		});
+	});
+
+	it("maps a critical answerable interaction to a question row", () => {
+		const row = projectedRow(
+			criticalEntry(item({ type: "commandExecution", toolName: "ask_user", callId: "call-1" })),
+			{ asks: asksFor("call-1") },
+		);
+		expect(row).toMatchObject({ kind: "question", id: "i1" });
+	});
+
+	it("maps a critical user-sourced steering to the user row", () => {
+		const row = projectedRow(criticalEntry(item({ type: "steering", text: "steer", source: "user" })));
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "user",
+			id: "i1",
+			text: "steer",
+			origin: "steered",
+			turnId: "t1",
+		});
+	});
+});
+
+describe("projectedRow: turn id, origin, and step timing", () => {
+	it("carries the item's turn id onto a user message row", () => {
+		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi", turnId: "turn_2" }), true));
+		expect(row).toMatchObject({ kind: "user", turnId: "turn_2" });
+	});
+
+	it("carries the item's turn id onto an agent message row", () => {
+		const row = projectedRow(itemEntry(item({ type: "agentMessage", text: "hi", turnId: "turn_2" }), true));
+		expect(row).toMatchObject({ kind: "assistant", turnId: "turn_2" });
+	});
+
+	it("marks a user-sourced steering item's row as steered", () => {
+		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", source: "user" })));
+		expect(row).toMatchObject({ kind: "user", origin: "steered" });
+	});
+
+	it("never carries an origin on a plain user message", () => {
+		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi" }), true));
+		expect(row).not.toHaveProperty("origin");
+	});
+
+	it("parses a tool's started/completed timestamps into its activity detail", () => {
+		const startedAt = "2024-01-01T00:00:00.000Z";
+		const completedAt = "2024-01-01T00:00:01.500Z";
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", startedAt, completedAt })));
+		expect(row).toMatchObject({
+			kind: "activity",
+			detail: { startedAtMs: Date.parse(startedAt), endedAtMs: Date.parse(completedAt) },
+		});
+	});
+
+	it("omits startedAtMs and endedAtMs when the timestamps do not parse", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					startedAt: "not-a-date",
+					completedAt: "also-not",
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "activity" });
+		const detail = (row as Extract<MobileTimelineItem, { kind: "activity" }>).detail;
+		expect(detail.startedAtMs).toBeUndefined();
+		expect(detail.endedAtMs).toBeUndefined();
+	});
+
+	it("keeps neither time, and no duration, when only one of them is known", () => {
+		for (const times of [
+			{ startedAt: "2024-01-01T00:00:00.000Z" },
+			{ startedAt: "2024-01-01T00:00:00.000Z", completedAt: "also-not" },
+			{ startedAt: "", completedAt: "2024-01-01T00:00:01.000Z" },
+		]) {
+			const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", ...times })));
+			const detail = (row as Extract<MobileTimelineItem, { kind: "activity" }>).detail;
+			expect([detail.startedAtMs, detail.endedAtMs, detail.durationMs]).toEqual([undefined, undefined, undefined]);
+		}
+	});
+
+	it("gives a turn-error failure row its turn's id, not any item's", () => {
+		const turn = { id: "turn_9", status: "failed", items: [], error: { message: "boom" } } as TurnModel;
+		const rows = projectTimeline({ turns: [turn] } as unknown as ThreadModel, new Map());
+		const failure = rows.find((row) => row.kind === "failure");
+		expect(failure).toMatchObject({ turnId: "turn_9" });
+	});
+});
+
+// --- the re-homed pipeline coverage (D24-6) ------------------------------------
+//
+// The deleted private family's oracle (mobile/src/conversation/project.test.ts,
+// 2931 lines) pinned the pre-re-home projection. Its obligations re-home here:
+// the per-kind entry→row mapping was already this suite's 42 landed tests; the
+// blocks below port the pipeline obligations the oracle owned — question
+// recaps, the per-turn cache, and the D24-3 five-level differential — updated
+// where the operator's summary-only ruling (Sep-25) changed what a summarized
+// row carries at compact levels.
+
+const ALL_TRUE_CAPS: ThreadCapabilities = {
+	send: true,
+	steer: true,
+	interrupt: true,
+	compact: true,
+	clear: true,
+	forkFromTurn: true,
+	shutdown: true,
+	changeModel: true,
+	changeVisionModel: true,
+	sharedNotes: false,
+	queue: true,
+	goal: true,
+	rename: true,
+};
+
+function evenerThread(over: Partial<EvenerThread> = {}): EvenerThread {
+	return {
+		ref: "ref-1",
+		capabilities: ALL_TRUE_CAPS,
+		queue: { revision: 0 },
+		...over,
+	};
+}
+
+function wireTurn(id: string, items: ThreadItem[], over: Partial<Turn> = {}): Turn {
+	return { id, items, itemsView: "default", status: "completed", ...over };
+}
+
+function wireItem(over: Partial<ThreadItem> & { id: string; type: string }): ThreadItem {
+	return { turnId: "turn-1", ...over } as ThreadItem;
+}
+
+function wireThread(turns: Turn[], over: Partial<Thread> = {}): Thread {
+	return {
+		id: "thread-1",
+		sessionId: "session-1",
+		preview: "",
+		ephemeral: false,
+		modelProvider: "anthropic",
+		createdAt: 1_000_000,
+		updatedAt: 1_000_000,
+		status: { type: "ready" },
+		cwd: "/tmp",
+		cliVersion: "1.0.0",
+		source: "local",
+		turns,
+		evener: evenerThread(),
+		...over,
+	} as unknown as Thread;
+}
+
+describe("completed question recaps", () => {
+	const argumentsJson = JSON.stringify({
+		questions: [
+			{
+				header: "header-alpha",
+				question: "prompt-alpha",
+				options: [{ label: "option-alpha", detail: "detail-alpha" }],
+			},
+			{
+				header: "header-beta",
+				question: "prompt-beta",
+				options: [{ label: "option-beta", detail: "detail-beta" }],
+			},
+		],
+	});
+
+	// An answered ask_user is an ordinary (failed or completed) tool
+	// activity: the projector routes an unanswered ask to critical and the
+	// mapping's question card only while it is still answerable.
+	function recap(overrides: Partial<ThreadItem> = {}, answered = true) {
+		const projected = projectConversation(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [
+							wireItem({
+								id: "ask-recap",
+								type: "commandExecution",
+								toolName: "ask_user",
+								status: "completed",
+								argumentsJson,
+								...overrides,
+							}),
+							...(answered
+								? [
+										wireItem({
+											id: "answer-recap",
+											type: "userMessage",
+											text: "opaque-answer",
+										}),
+									]
+								: []),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(projected.items.map((row) => row.kind)).not.toContain("question");
+		const activity = projected.items.find((row) => row.kind === "activity");
+		expect(activity?.kind).toBe("activity");
+		if (activity?.kind !== "activity") throw new Error("question recap missing");
+		return activity;
+	}
+
+	it("retains posted headers and arguments after a later answer", () => {
+		const activity = recap();
+		expect(activity.state).toBe("completed");
+		expect(activity.detail.description).toContain("header-alpha");
+		expect(activity.detail.description).toContain("header-beta");
+		expect(activity.detail.description).not.toContain("opaque-answer");
+		expect(activity.detail.arguments).toBe(argumentsJson);
+	});
+
+	it("preserves an authoritative description without adding inferred details", () => {
+		expect(recap({ description: "authored-description" }).detail.description).toBe("authored-description");
+	});
+
+	it("keeps failed questions non-actionable with their question context and error", () => {
+		const activity = recap({ error: "opaque-error", output: "opaque-output" }, false);
+		expect(activity.state).toBe("failed");
+		expect(activity.detail.description).toContain("header-alpha");
+		expect(activity.detail).toMatchObject({
+			error: "opaque-error",
+			output: "opaque-output",
+			arguments: argumentsJson,
+		});
+	});
+
+	it.each(["{", "{}", JSON.stringify({ questions: [{ header: "unvalidated-header" }] })])(
+		"does not invent context from malformed arguments %s",
+		(malformed) => {
+			const activity = recap({ argumentsJson: malformed });
+			expect(activity.detail.description).toBeUndefined();
+			expect(activity.detail.arguments).toBe(malformed);
+		},
+	);
+});
+
+describe("rowsForProjectedTurn's per-turn cache", () => {
+	function askItem(callId: string): ItemModel {
+		return {
+			id: `item_${callId}`,
+			turnId: "t1",
+			type: "commandExecution",
+			toolName: "ask_user",
+			callId,
+			status: "completed",
+			argumentsJSON: JSON.stringify({
+				questions: [{ header: "H", question: "Q", options: [{ label: "A", detail: "d" }] }],
+			}),
+		} as ItemModel;
+	}
+
+	function askRefs(callId: string): AskQuestionRef[] {
+		return [
+			{
+				key: `${callId}:0`,
+				callId,
+				header: "H",
+				question: "Q",
+				options: [{ label: "A", detail: "d" }],
+				multiSelect: false,
+			},
+		];
+	}
+
+	// A turn's own question row depends on `asks` too — whether ITS OWN
+	// ask_user calls are still answerable. Two projectTimeline calls over the
+	// SAME turn object, with call_1 answerable the first time and resolved the
+	// second, must not reuse the first call's question row.
+	it("does not reuse a cached question row once the turn's own ask becomes resolved", () => {
+		const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+		const answerable = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+		const firstPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, answerable);
+		expect(firstPass.some((row) => row.kind === "question")).toBe(true);
+
+		const resolved = new Map<string, AskQuestionRef[]>(); // call_1 no longer answerable
+		const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, resolved);
+		expect(secondPass.some((row) => row.kind === "question")).toBe(false);
+	});
+
+	// The inverse: a genuinely unrelated `asks` map is exactly the case the
+	// cache SHOULD reuse for — measured so the hit path stays covered, not just
+	// the invalidation path.
+	it("reuses the cached row set when the turn's own asks are unaffected", () => {
+		const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+		const asksA = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+		const firstPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asksA);
+		const asksB = new Map<string, AskQuestionRef[]>([
+			["call_1", askRefs("call_1")],
+			["call_unrelated", askRefs("call_unrelated")],
+		]);
+		const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asksB);
+		expect(secondPass).toEqual(firstPass);
+	});
+
+	// The cache keys on the config's VALUE, not its object identity: the seam
+	// resolves the user's display config per publish (a fresh object every
+	// call), so a reference-keyed cache would re-derive every turn's rows on
+	// every frame despite the value never changing.
+	it("reuses cached rows across value-equal config objects", () => {
+		const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+		const asks = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+		const config = makeTranscriptDisplayConfig(
+			{ kind: "preset", level: "chat" },
+			{ roundTimings: true, systemEvents: true, promptEvents: true, hookExits: "all" },
+		);
+		const firstPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, config);
+		const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, {
+			...config,
+		});
+		expect(secondPass[0]).toBe(firstPass[0]);
+	});
+
+	// RoboRev panel: a level-carrying publish alternates configs over every
+	// turn — the user's level for the display rows, show-everything for the
+	// retention window (retentionWindowItems) — so a single-fingerprint slot
+	// thrashes and every publish re-derives the whole transcript's width.
+	// Each live config keeps its own cached row set.
+	it("keeps each config's cached rows while the levels alternate", () => {
+		const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+		const asks = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+		const intent = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+		const firstIntent = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, intent);
+		// The retention window's show-everything pass.
+		const firstEverything = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks);
+		// The next publish's display pass must hit, not re-derive.
+		const secondIntent = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks, intent);
+		expect(secondIntent[0]).toBe(firstIntent[0]);
+		// ...and so must the next window pass.
+		const secondEverything = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asks);
+		expect(secondEverything[0]).toBe(firstEverything[0]);
+	});
+});
+
+// --- the D24-3 differential, re-homed (D24-6) ----------------------------------
+//
+// projectTimeline hands visibility and ordering to the package's projectThread
+// and maps each surviving ProjectedEntry onto the native row. FULL_ROWS below
+// is the pre-re-home projection captured verbatim on main (the deleted oracle's
+// own golden); every content-level case must reproduce exactly the subset the
+// shared projector keeps — byte-identical rows for surviving items, with only
+// the projector's own reclassifications differing: a live current thought
+// becomes a content-free placeholder, a redacted critical reasoning becomes a
+// neutral failure row, and (the summary-only ruling) an intent row carries ONLY
+// its summary line at compact levels.
+
+const DIFF_ASK_ARGS = JSON.stringify({
+	questions: [
+		{
+			header: "Proceed?",
+			question: "Run the full audit?",
+			options: [{ label: "Yes", detail: "go" }],
+		},
+	],
+});
+
+// One thread that walks every row family: user input with images, human
+// steering, every notice origin, a tool run that clusters, a failed tool, a
+// settled thought, a warning, an unknown forward-compatible type, a pending
+// ask, a running tool run with output images, a streaming reply, a live
+// current thought, and a failed turn that still owes the reader its error.
+function differentialThread(): Thread {
+	return wireThread(
+		[
+			wireTurn("t1", [
+				wireItem({
+					id: "u1",
+					turnId: "t1",
+					type: "userMessage",
+					text: "please audit the config",
+					images: [{ type: "image", name: "cat.png", mediaType: "image/png", url: "http://x/cat.png" }],
+				}),
+				wireItem({ id: "steer-user", turnId: "t1", type: "steering", source: "user", text: "include the diff" }),
+				wireItem({
+					id: "sys-prompt",
+					turnId: "t1",
+					type: "systemMessage",
+					eventKind: "system_prompt",
+					text: "PROMPT LOADED",
+				}),
+				wireItem({ id: "sys-error", turnId: "t1", type: "systemMessage", eventKind: "error", text: "provider hiccup" }),
+				wireItem({
+					id: "sys-compact",
+					turnId: "t1",
+					type: "systemMessage",
+					eventKind: "compaction",
+					text: "context compacted",
+				}),
+				wireItem({
+					id: "c1",
+					turnId: "t1",
+					type: "commandExecution",
+					toolName: "shell",
+					description: "  run the audit  ",
+					status: "completed",
+					startedAt: 1000,
+					completedAt: 1500,
+					callId: "call-1",
+				}),
+				wireItem({
+					id: "c2",
+					turnId: "t1",
+					type: "commandExecution",
+					toolName: "grep",
+					description: "grep the results",
+					status: "completed",
+				}),
+				wireItem({
+					id: "c3",
+					turnId: "t1",
+					type: "commandExecution",
+					toolName: "shell",
+					status: "completed",
+					error: "boom",
+					exitCode: 1,
+				}),
+				wireItem({ id: "r1", turnId: "t1", type: "reasoning", text: "auditing quietly", status: "completed" }),
+				wireItem({ id: "w1", turnId: "t1", type: "warning", text: "disk almost full", status: "completed" }),
+				wireItem({ id: "unk1", turnId: "t1", type: "telemetryPing", text: "opaque payload" }),
+				wireItem({
+					id: "ask1",
+					turnId: "t1",
+					type: "commandExecution",
+					toolName: "ask_user",
+					callId: "call-ask",
+					status: "completed",
+					argumentsJson: DIFF_ASK_ARGS,
+				}),
+			]),
+			wireTurn(
+				"t2",
+				[
+					wireItem({
+						id: "c4",
+						turnId: "t2",
+						type: "commandExecution",
+						toolName: "read_file",
+						description: "read config",
+						status: "inProgress",
+					}),
+					wireItem({
+						id: "c5",
+						turnId: "t2",
+						type: "commandExecution",
+						toolName: "view",
+						status: "completed",
+						outputImages: [{ source: "screenshot", name: "shot.png", url: "http://x/shot.png" }],
+					}),
+					wireItem({ id: "a2", turnId: "t2", type: "agentMessage", text: "working on it" }),
+					wireItem({ id: "r2", turnId: "t2", type: "reasoning", text: "secret live thought", status: "inProgress" }),
+				],
+				{ status: "inProgress" },
+			),
+			wireTurn(
+				"t3",
+				[wireItem({ id: "r3", turnId: "t3", type: "reasoning", text: "final thought", status: "completed" })],
+				{ status: "failed", error: { message: "provider exploded", title: "Provider error", hint: "retry" } },
+			),
+		],
+		{ evener: evenerThread({ askPending: true }) },
+	);
+}
+
+// The wire cannot carry a warning map (only the reducer's live fold stamps
+// one), so the differential model stamps it the way the live fixtures do.
+function differentialModel(): ThreadModel {
+	const model = hydrateThread({ thread: differentialThread() }, "ref-1", 0);
+	const warning = model.turns[0]?.items.find((entry) => entry.id === "w1");
+	if (!warning) throw new Error("differential fixture lost its warning item");
+	warning.warning = { title: "Low disk", hint: "clean up" };
+	return model;
+}
+
+// Every advanced gate open, so the content vector is the only axis that
+// varies across the five levels.
+function levelConfig(level: ContentLevel) {
+	return makeTranscriptDisplayConfig(
+		{ kind: "preset", level },
+		{ roundTimings: true, systemEvents: true, promptEvents: true, hookExits: "all" },
+	);
+}
+
+function rowsAt(model: ThreadModel, level: ContentLevel): MobileTimelineItem[] {
+	return projectTimeline(model, liveAsksFor(model), levelConfig(level));
+}
+
+const rowId = (row: MobileTimelineItem): string => row.id;
+
+// The projection of the differential thread under the show-everything default
+// — the byte-identical contract the seam's config-less callers rely on. The
+// last activity row merges the live thought (r2) and the failed turn's settled
+// thought (r3) into one cross-turn run.
+const FULL_ROWS: MobileTimelineItem[] = [
+	{ kind: "user", id: "u1", text: "please audit the config", turnId: "t1" },
+	{
+		kind: "attachments",
+		id: "u1:attachments",
+		items: [{ id: "u1:0", src: "http://x/cat.png", name: "cat.png" }],
+		turnId: "t1",
+	},
+	{ kind: "user", id: "steer-user", text: "include the diff", origin: "steered", turnId: "t1" },
+	{
+		kind: "notice",
+		id: "sys-prompt",
+		origin: "system",
+		family: "hidden-instruction",
+		tone: "system",
+		text: "PROMPT LOADED",
+		eventKind: "system_prompt",
+		turnId: "t1",
+	},
+	{
+		kind: "notice",
+		id: "sys-error",
+		origin: "system",
+		family: "warning",
+		tone: "warning",
+		text: "provider hiccup",
+		eventKind: "error",
+		turnId: "t1",
+	},
+	{
+		kind: "notice",
+		id: "sys-compact",
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		text: "context compacted",
+		label: "Context summary",
+		rendersMarkdown: true,
+		eventKind: "compaction",
+		turnId: "t1",
+	},
+	{
+		kind: "activity",
+		id: "c1",
+		label: "shell",
+		family: "tool",
+		state: "completed",
+		detail: {
+			description: "  run the audit  ",
+			summary: "Ran a command",
+			words: { verb: "Ran a command" },
+			durationMs: 500,
+			callId: "call-1",
+			startedAtMs: 1000,
+			endedAtMs: 1500,
+		},
+		turnId: "t1",
+		members: [
+			{
+				id: "c1",
+				label: "shell",
+				family: "tool",
+				state: "completed",
+				detail: {
+					description: "  run the audit  ",
+					summary: "Ran a command",
+					words: { verb: "Ran a command" },
+					durationMs: 500,
+					callId: "call-1",
+					startedAtMs: 1000,
+					endedAtMs: 1500,
+				},
+				turnId: "t1",
+			},
+			{
+				id: "c2",
+				label: "grep",
+				family: "tool",
+				state: "completed",
+				detail: { description: "grep the results", summary: "Searched files", words: { verb: "Searched files" } },
+				turnId: "t1",
+			},
+		],
+	},
+	{
+		kind: "activity",
+		id: "c3",
+		label: "shell",
+		family: "tool",
+		state: "failed",
+		detail: { error: "boom", exitCode: 1, summary: "Ran a command", words: { verb: "Ran a command" } },
+		turnId: "t1",
+	},
+	{
+		kind: "activity",
+		id: "r1",
+		label: "Reasoning",
+		family: "reasoning",
+		state: "completed",
+		detail: { output: "auditing quietly" },
+		turnId: "t1",
+	},
+	{
+		kind: "failure",
+		id: "w1",
+		title: "Low disk",
+		detail: "disk almost full — clean up",
+		attention: true,
+		turnId: "t1",
+	},
+	{
+		kind: "activity",
+		id: "unk1",
+		label: "Activity",
+		family: "unknown",
+		state: "completed",
+		detail: { output: "opaque payload" },
+		turnId: "t1",
+	},
+	{
+		kind: "question",
+		id: "ask1",
+		questions: [
+			{
+				key: "call-ask:0",
+				callId: "call-ask",
+				header: "Proceed?",
+				question: "Run the full audit?",
+				options: [{ label: "Yes", detail: "go", recommended: false }],
+				multiSelect: false,
+			},
+		],
+		turnId: "t1",
+	},
+	{
+		kind: "activity",
+		id: "c4",
+		label: "read_file",
+		family: "tool",
+		state: "running",
+		detail: { description: "read config", summary: "Read a file", words: { verb: "Read a file" } },
+		turnId: "t2",
+		members: [
+			{
+				id: "c4",
+				label: "read_file",
+				family: "tool",
+				state: "running",
+				detail: { description: "read config", summary: "Read a file", words: { verb: "Read a file" } },
+				turnId: "t2",
+			},
+			{
+				id: "c5",
+				label: "view",
+				family: "tool",
+				state: "completed",
+				detail: { summary: "Used view", words: { verb: "Used view" } },
+				turnId: "t2",
+			},
+		],
+	},
+	{
+		kind: "attachments",
+		id: "c5:attachments",
+		items: [{ id: "c5:out:0", src: "http://x/shot.png", name: "shot.png", source: "screenshot" }],
+		sourceTranscriptKey: "c5",
+		turnId: "t2",
+	},
+	{ kind: "assistant", id: "a2", markdown: "working on it", streaming: true, turnId: "t2" },
+	{
+		kind: "activity",
+		id: "r2",
+		label: "Reasoning",
+		family: "reasoning",
+		state: "running",
+		detail: { output: "secret live thought" },
+		turnId: "t2",
+		members: [
+			{
+				id: "r2",
+				label: "Reasoning",
+				family: "reasoning",
+				state: "running",
+				detail: { output: "secret live thought" },
+				turnId: "t2",
+			},
+			{
+				id: "r3",
+				label: "Reasoning",
+				family: "reasoning",
+				state: "completed",
+				detail: { output: "final thought" },
+				turnId: "t3",
+			},
+		],
+	},
+	{
+		kind: "failure",
+		id: "failure:t3",
+		title: "Provider error",
+		detail: "provider exploded\nretry",
+		turnId: "t3",
+	},
+];
+
+describe("the timeline projection delegates to the shared projector", () => {
+	const model = differentialModel();
+
+	it("reproduces the show-everything rows byte-for-byte under the default config", () => {
+		// The config-less call is the seam's default: the swap must not change
+		// one byte of what it produces.
+		expect(projectConversation(model).items).toEqual(FULL_ROWS);
+		// The no-config default is exactly the full-visibility config.
+		expect(projectTimeline(model)).toEqual(rowsAt(model, "full"));
+	});
+
+	it.each([
+		["chat", true],
+		["intent", true],
+		["tools", false],
+		["activity", false],
+	] as const)(
+		"level %s: keeps exactly the rows the shared projector keeps, byte-identical except its own reclassifications",
+		(level, intentRows) => {
+			const rows = rowsAt(model, level);
+			// Visibility: every show-everything row survives except the settled
+			// thought r1, which the projector hides while the reasoning flag is
+			// off. The cross-turn r2+r3 cluster cannot form — the projector
+			// reclassifies both members — so r3 becomes its own row here. At
+			// the compact levels the settled c5 is the summarized member of
+			// the running c4's cluster, and its attachments leave with its
+			// output (review round 3: the attachments ARE output — the same
+			// summaryOnly condition drops the images with the text); at the
+			// call levels c5 is an item entry and the row returns.
+			expect(rows.map(rowId)).toEqual([
+				"u1",
+				"u1:attachments",
+				"steer-user",
+				"sys-prompt",
+				"sys-error",
+				"sys-compact",
+				"c1",
+				"c3",
+				"w1",
+				"unk1",
+				"ask1",
+				"c4",
+				...(intentRows ? [] : ["c5:attachments"]),
+				"a2",
+				"r2",
+				"r3",
+				"failure:t3",
+			]);
+
+			// Byte parity: every surviving row the projector did not reclassify
+			// is the show-everything row for the same item, field for field.
+			// The summary-only ruling reclassifies the summarized cluster (c1)
+			// at compact levels; the thinking placeholder (r2) and the redacted
+			// critical reasoning (r3) are the projector's own reclassifications.
+			// The running c4 also joins that set at compact levels — not its own
+			// row (the attention rule keeps the running call's full detail,
+			// pinned below) but its cluster's SECOND member, the settled view
+			// call c5, which the ruling summarizes. The failed c3 stays
+			// byte-identical at every level.
+			const reclassified = intentRows ? ["c1", "c4", "r2", "r3"] : ["r2", "r3"];
+			for (const row of rows) {
+				if (reclassified.includes(rowId(row))) continue;
+				expect(row).toEqual(FULL_ROWS.find((golden) => rowId(golden) === rowId(row)));
+			}
+
+			// The live current thought becomes a content-free placeholder.
+			expect(rows.find((row) => rowId(row) === "r2")).toEqual({
+				kind: "activity",
+				id: "r2",
+				label: "Reasoning",
+				family: "reasoning",
+				state: "running",
+				detail: {},
+				turnId: "t2",
+			});
+			// The failed turn's settled thought explains the turn without its text.
+			expect(rows.find((row) => rowId(row) === "r3")).toEqual({
+				kind: "failure",
+				id: "r3",
+				title: "Thought not shown",
+				detail: "",
+				thought: true,
+				turnId: "t3",
+			});
+
+			// A summarized tool call is a summary-only row at compact levels:
+			// the same activity, carrying ONLY the projector's trimmed
+			// rationale as its summary line (the cluster and each member —
+			// the operator's summary-only ruling). At call levels the row is
+			// the show-everything one verbatim.
+			const c1 = rows.find((row) => rowId(row) === "c1");
+			if (c1?.kind !== "activity") throw new Error("differential lost the c1 cluster");
+			expect(c1.detail.description).toBe(intentRows ? "run the audit" : "  run the audit  ");
+			if (intentRows) {
+				expect(c1.summaryOnly).toBe(true);
+				expect(c1.detail.arguments).toBeUndefined();
+				expect(c1.detail.output).toBeUndefined();
+				expect(c1.detail.durationMs).toBeUndefined();
+				// The clock times stay, as metadata for the run's duration, and
+				// the call id, which a subagent row finds its subagent by.
+				expect(c1.detail.startedAtMs).toBe(1000);
+				expect(c1.detail.endedAtMs).toBe(1500);
+				expect(c1.detail.callId).toBe("call-1");
+			} else {
+				expect(c1.summaryOnly).toBeUndefined();
+				expect(c1.detail).toEqual({
+					description: "  run the audit  ",
+					summary: "Ran a command",
+					words: { verb: "Ran a command" },
+					durationMs: 500,
+					callId: "call-1",
+					startedAtMs: 1000,
+					endedAtMs: 1500,
+				});
+			}
+			const c1Member = c1.members?.[0];
+			expect(c1Member?.detail.description).toBe(intentRows ? "run the audit" : "  run the audit  ");
+			expect(c1Member?.summaryOnly).toBe(intentRows ? true : undefined);
+			expect(c1.members?.[1]?.detail.description).toBe("grep the results");
+
+			// The attention carve-out: a failed call the projector routed through
+			// its intent entry keeps its full detail and its failed state at
+			// every level, so the reader can always see why it failed.
+			const c3 = rows.find((row) => rowId(row) === "c3");
+			if (c3?.kind !== "activity") throw new Error("differential lost c3");
+			expect(c3.state).toBe("failed");
+			expect(c3.summaryOnly).toBeUndefined();
+			expect(c3.detail).toEqual({
+				error: "boom",
+				exitCode: 1,
+				summary: "Ran a command",
+				words: { verb: "Ran a command" },
+			});
+
+			// The running call is the same attention carve-out: full detail,
+			// running state, at every level.
+			const c4 = rows.find((row) => rowId(row) === "c4");
+			if (c4?.kind !== "activity") throw new Error("differential lost the c4 cluster");
+			expect(c4.state).toBe("running");
+			expect(c4.summaryOnly).toBeUndefined();
+			expect(c4.detail).toEqual({ description: "read config", summary: "Read a file", words: { verb: "Read a file" } });
+			// The cluster's settled member is the summarized one.
+			expect(c4.members?.[1]?.summaryOnly).toBe(intentRows ? true : undefined);
+		},
+	);
+
+	it("never leaks a hidden thought's text at any level", () => {
+		for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+			if (level === "full") continue;
+			const shown = JSON.stringify(rowsAt(model, level));
+			expect(shown).not.toContain("auditing quietly");
+			expect(shown).not.toContain("secret live thought");
+			expect(shown).not.toContain("final thought");
+		}
+		// ...while the full level still shows all three, exactly as the
+		// show-everything projection does.
+		const fullShown = JSON.stringify(rowsAt(model, "full"));
+		expect(fullShown).toContain("auditing quietly");
+		expect(fullShown).toContain("secret live thought");
+		expect(fullShown).toContain("final thought");
+	});
+});
+
+// capAndTruncate runs over every retained row on every publish. A settled row
+// is already under the bound, so bounding it must hand back the same object —
+// otherwise the clone discards the row identity rowsForProjectedTurn's per-turn
+// cache preserves for an untouched turn, and every frame allocates a fresh row
+// per retained row while streaming.
+describe("truncateItem keeps a row's identity when the bound cuts nothing", () => {
+	const bound = (text: string) => truncateText(text, MAX_ITEM_BYTES);
+	const questionRef = (): AskQuestionRef => ({
+		key: "call_1:0",
+		callId: "call_1",
+		header: "Deploy?",
+		question: "Ship now?",
+		options: [{ label: "Yes", detail: "ship it" }],
+		multiSelect: false,
+	});
+
+	it("returns every settled kind by reference", () => {
+		const rows: MobileTimelineItem[] = [
+			{ kind: "user", id: "u1", text: "hi" },
+			{ kind: "note", id: "n1", text: "a note" },
+			{ kind: "assistant", id: "a1", markdown: "answer", streaming: false },
+			{ kind: "notice", id: "w1", origin: "system", family: "informational", tone: "info", text: "notice" },
+			{ kind: "failure", id: "f1", title: "boom", detail: "stack" },
+			{ kind: "question", id: "q1", questions: [questionRef()] },
+			{
+				kind: "activity",
+				id: "act1",
+				label: "run",
+				family: "tool",
+				state: "completed",
+				detail: { description: "run it", output: "ok" },
+				members: [{ id: "m1", label: "grep", family: "tool", state: "completed", detail: { description: "grep" } }],
+			},
+			{ kind: "attachments", id: "at1", items: [{ id: "img1", src: "data:image/png;base64,AAAA", name: "pic.png" }] },
+		];
+		for (const row of rows) {
+			expect(truncateItem(row, bound)).toBe(row);
+		}
+	});
+
+	it("still clones a row the bound cuts, so no cut is swallowed", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = { kind: "user", id: "u1", text: big };
+		const bounded = truncateItem(row, bound);
+		expect(bounded).not.toBe(row);
+		expect(bounded.kind).toBe("user");
+		if (bounded.kind === "user") expect(bounded.text.length).toBeLessThan(big.length);
+	});
+
+	it("clones only the streaming row, leaving the settled one's identity intact", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const settled: MobileTimelineItem = { kind: "assistant", id: "a1", markdown: "short", streaming: false };
+		const streaming: MobileTimelineItem = { kind: "assistant", id: "a2", markdown: big, streaming: true };
+		const out = [settled, streaming].map((row) => truncateItem(row, bound));
+		expect(out[0]).toBe(settled);
+		expect(out[1]).not.toBe(streaming);
+	});
+
+	it("keeps an untouched activity member's identity while cloning the cut one", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "run",
+			family: "tool",
+			state: "completed",
+			detail: {},
+			members: [
+				{ id: "m1", label: "grep", family: "tool", state: "completed", detail: { description: "ok" } },
+				{ id: "m2", label: "cat", family: "tool", state: "completed", detail: { output: big } },
+			],
+		};
+		const out = truncateItem(row, bound);
+		expect(out).not.toBe(row);
+		expect(out.kind).toBe("activity");
+		if (out.kind === "activity") {
+			expect(out.members?.[0]).toBe(row.members?.[0]);
+			expect(out.members?.[1]).not.toBe(row.members?.[1]);
+		}
+	});
+
+	it("bounds a watch's evidence like the rest of a step's text", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "job_watch",
+			family: "tool",
+			state: "completed",
+			detail: { watchEvidence: big },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).not.toBe(row);
+		if (out.kind === "activity") expect(out.detail?.watchEvidence?.length).toBeLessThan(big.length);
+	});
+
+	it("keeps a send's detail by reference when its earlier replies fit", () => {
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "delegate_send",
+			family: "tool",
+			state: "completed",
+			detail: { sendReply: "third", sendEarlierReplies: [{ text: "first", status: "completed" }] },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).toBe(row);
+	});
+
+	it("bounds a message to a subagent's reply and wait note like the rest of a step's text", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "delegate_send",
+			family: "tool",
+			state: "completed",
+			detail: { sendReply: big, sendEarlierReplies: [{ text: big, status: "failed" }], sendWaitIgnored: big },
+		};
+		const out = truncateItem(row, bound);
+		expect(out).not.toBe(row);
+		if (out.kind === "activity") {
+			expect(out.detail?.sendReply?.length).toBeLessThan(big.length);
+			expect(out.detail?.sendEarlierReplies?.[0]?.text.length).toBeLessThan(big.length);
+			expect(out.detail?.sendEarlierReplies?.[0]?.status).toBe("failed");
+			expect(out.detail?.sendWaitIgnored?.length).toBeLessThan(big.length);
+		}
+	});
+
+	// Only a message to a subagent carries a reply: any other step's output
+	// would otherwise read as one, since a reply is the output above a send's
+	// footer, and all of an output that has none.
+	it("reads a reply only for a message to a subagent", () => {
+		const detail = activityDetail(toolWireStep("call_shell"));
+		expect(detail.output).toBeTruthy();
+		expect(detail).not.toHaveProperty("sendReply");
+		expect(detail).not.toHaveProperty("sendEarlierReplies");
+		expect(detail).not.toHaveProperty("sendWaitIgnored");
+	});
+
+	it("keeps boundQuestion's identity and the bounded question's replacement in step", () => {
+		const settled = questionRef();
+		expect(boundQuestion(settled, bound)).toBe(settled);
+		const cut = { ...questionRef(), header: "h".repeat(MAX_ITEM_BYTES + 1) };
+		const bounded = boundQuestion(cut, bound);
+		expect(bounded).not.toBe(cut);
+		expect(bounded.header.length).toBeLessThan(cut.header.length);
+	});
+});
+
+describe("a streamed reply's key once history records its round", () => {
+	const ask = wireItem({ id: "u1", turnId: "t1", type: "userMessage", text: "go" });
+	const recorded = (id: string, type: string, item: number, over: Partial<ThreadItem> = {}) =>
+		wireItem({
+			id,
+			turnId: "t1",
+			type,
+			roundId: "r1",
+			transcriptKey: `t1:1:${item}`,
+			position: { entry: 1, item },
+			status: "completed",
+			...over,
+		});
+	// The list's keys, the way the Session screen derives them.
+	const keys = (model: ThreadModel) =>
+		sessionRows(groupTimeline(projectConversation(model).items), model.turns).map(readerKey);
+	// A read of the session mid-round: the reply is still an overlay stream,
+	// after any other overlay items the round has.
+	function streaming(before: unknown[] = []): ThreadModel {
+		const key = "stream:r1/0:agentMessage";
+		return hydrateThread(
+			{
+				thread: wireThread([wireTurn("t1", [ask], { status: "inProgress" })]),
+				bootGeneration: "boot-1",
+				epoch: 1,
+				snapshot: { incarnation: "inc-1", length: 1 },
+				overlay: [
+					...before,
+					{
+						key,
+						kind: "stream",
+						turnId: "t1",
+						roundId: "r1",
+						streamId: "r1/0",
+						item: { id: key, type: "agentMessage", turnId: "t1", roundId: "r1", text: "Looking", status: "inProgress" },
+					},
+				],
+			} as unknown as ThreadReadResponse,
+			"ref-1",
+			0,
+		);
+	}
+
+	it("keeps the streamed reply's key when the round is recorded", () => {
+		const live = keys(streaming());
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [ask, recorded("item_assistant_1_0", "agentMessage", 0, { text: "Looking" })]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(live).toHaveLength(after.length);
+		expect(after.at(-1)).toBe(live.at(-1));
+	});
+
+	it("leaves the round's key to its stream when a communicate preview comes first", () => {
+		// A communicate preview keys by its call, so it leaves the round's key
+		// to the round's own stream.
+		const preview = {
+			key: "preview:call-9",
+			kind: "preview",
+			turnId: "t1",
+			roundId: "r1",
+			streamId: "r1/0",
+			callId: "call-9",
+			item: {
+				id: "preview:call-9",
+				type: "agentMessage",
+				turnId: "t1",
+				roundId: "r1",
+				callId: "call-9",
+				text: "Heads up",
+				status: "inProgress",
+			},
+		};
+		const live = keys(streaming([preview]));
+		expect(live).toContain("call:call-9:agentMessage");
+		expect(live.at(-1)).toBe(keys(streaming()).at(-1));
+	});
+
+	it("keeps a communicate preview's key when history records its message", () => {
+		const preview = {
+			key: "preview:call-9",
+			kind: "preview",
+			turnId: "t1",
+			roundId: "r1",
+			streamId: "r1/0",
+			callId: "call-9",
+			item: {
+				id: "preview:call-9",
+				type: "agentMessage",
+				turnId: "t1",
+				roundId: "r1",
+				callId: "call-9",
+				text: "Heads up",
+				status: "inProgress",
+			},
+		};
+		const live = keys(streaming([preview]));
+		expect(live).toContain("call:call-9:agentMessage");
+		// The recorded message carries the call id the preview keyed by, so it
+		// keeps the same row key.
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [
+							ask,
+							recorded("item_assistant_9_0", "agentMessage", 0, { callId: "call-9", text: "Heads up" }),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(after).toContain("call:call-9:agentMessage");
+		expect(after).not.toContain("preview:call-9");
+	});
+
+	it("keeps every key unique when a round records two replies around a delegate_send", () => {
+		// The round's first reply takes the stream's key; the second keeps its
+		// own, and the delegate_send between them starts a run of its own.
+		const streamed = keys(streaming()).at(-1);
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("t1", [
+							ask,
+							recorded("item_assistant_1_0", "agentMessage", 0, { text: "Sending" }),
+							recorded("item_tool_1_1", "commandExecution", 1, {
+								toolName: "delegate_send",
+								callId: "call-1",
+								argumentsJson: JSON.stringify({ delegate_id: "d1", message: "go on" }),
+							}),
+							recorded("item_assistant_1_2", "agentMessage", 2, { text: "Sent" }),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		expect(new Set(after).size).toBe(after.length);
+		expect(after).toContain(streamed);
+		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("t1:1:1"));
+		expect(after).toContain("t1:1:2");
+	});
+
+	// The web renders an automatic memory refresh as a "Refreshed my memory"
+	// disclosure, and native now matches: the shared projector keeps the typed
+	// memory-context event visible at every level, and native maps it to a
+	// standalone "Refreshed my memory" notice carrying the decoded observation
+	// beside the exact recorded Text. These run the real producer fixture
+	// (agent/testdata/memorycontextwire) through hydrateThread ->
+	// projectTimeline / projectNativeTranscript, with no mocks.
+	describe("memory-context native presentation", () => {
+		it("maps every recorded refresh to a standalone 'Refreshed my memory' notice with its exact Text at every level", () => {
+			for (const wire of memoryContextWireItems()) {
+				const thread = {
+					id: "thread-1",
+					sessionId: "session-1",
+					preview: "",
+					ephemeral: false,
+					modelProvider: "anthropic",
+					createdAt: 0,
+					updatedAt: 0,
+					status: { type: "ready" },
+					cwd: "/tmp",
+					cliVersion: "1.0.0",
+					source: "local",
+					turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: [wire] }],
+					evener: { ref: "ref-1", queue: { revision: 0 } },
+				} as unknown as Thread;
+				const model = hydrateThread({ thread }, "ref-1", 0);
+				// The exact recorded Text is preserved on every case, decoded or not.
+				const expectedObservation = parseMemoryContext(wire.raw);
+				for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+					// The refresh is never hidden by the Advanced.system-events
+					// gate: the shared projector decides memory-context before
+					// that gate (transcriptProjector.ts), so native keeps the
+					// notice with the gate off as well as on.
+					for (const systemEvents of [false, true]) {
+						const rows = projectTimeline(
+							model,
+							new Map(),
+							makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents }),
+						);
+						const row = rows.find((candidate) => candidate.id === wire.id);
+						expect(row).toMatchObject({
+							kind: "notice",
+							origin: "system",
+							// The typed kind keeps its family, so it stays a
+							// standalone tone-system notice rather than folding into
+							// groupTimeline's internal families.
+							family: "lifecycle",
+							tone: "system",
+							eventKind: "memory-context",
+							text: wire.text,
+						});
+						if (row?.kind !== "notice") throw new Error("no memory-context notice row");
+						expect(row.label ?? "").toContain("Refreshed my memory");
+						// The decoded observation rides the row only when the payload
+						// validates; the record is never manufactured.
+						expect(row.memoryContext).toEqual(expectedObservation);
+						// Standalone, never folded into the internal details group.
+						const grouped = groupTimeline(row ? [row] : []);
+						expect(grouped).toHaveLength(1);
+						expect(grouped[0]).toMatchObject({ kind: "notice", id: wire.id });
+					}
+				}
+			}
+		});
+
+		it("keeps a malformed refresh's exact Text and no decoded observation through projectNativeTranscript", () => {
+			const wire = memoryContextWireItem("malformed-project");
+			expect(wire.raw).toBeFalsy();
+			const thread = {
+				id: "thread-1",
+				sessionId: "session-1",
+				preview: "",
+				ephemeral: false,
+				modelProvider: "anthropic",
+				createdAt: 0,
+				updatedAt: 0,
+				status: { type: "ready" },
+				cwd: "/tmp",
+				cliVersion: "1.0.0",
+				source: "local",
+				turns: [{ id: "turn_1", itemsView: "full", status: "completed", items: [wire] }],
+				evener: { ref: "ref-1", queue: { revision: 0 } },
+			} as unknown as Thread;
+			const model = hydrateThread({ thread }, "ref-1", 0);
+			const conversation: MobileConversation = {
+				...model,
+				items: projectTimeline(
+					model,
+					new Map(),
+					makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true }),
+				),
+			};
+			const presentation = projectNativeTranscript(
+				conversation,
+				makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true }),
+			);
+			const row = presentation.items.find((candidate) => candidate.id === wire.id);
+			expect(row).toMatchObject({ kind: "notice", text: wire.text, label: "Refreshed my memory" });
+			if (row?.kind === "notice") expect(row.memoryContext).toBeUndefined();
+		});
+	});
+});

@@ -9,12 +9,12 @@ import (
 func TestNotifierAssignsSequence(t *testing.T) {
 	notifier := NewNotifier(10)
 	first := notifier.Record("th_1", appwire.NotifyThreadStatusChanged, map[string]string{"threadId": "th_1"})
-	second := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{ThreadID: "th_1", Delta: "hi"})
+	second := notifier.Record("th_1", appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{ThreadID: "th_1", Delta: "hi"})
 
 	if first.Seq != 1 || second.Seq != 2 {
 		t.Fatalf("seqs=%d,%d", first.Seq, second.Seq)
 	}
-	if second.Notification.Method != appwire.NotifyAgentMessageDelta {
+	if second.Notification.Method != appwire.NotifyOverlayDelta {
 		t.Fatalf("method=%q", second.Notification.Method)
 	}
 }
@@ -22,7 +22,7 @@ func TestNotifierAssignsSequence(t *testing.T) {
 func TestNotifierReplaysAfterCursor(t *testing.T) {
 	notifier := NewNotifier(10)
 	notifier.Record("th_1", appwire.NotifyThreadStatusChanged, nil)
-	second := notifier.Record("th_1", appwire.NotifyAgentMessageDelta, nil)
+	second := notifier.Record("th_1", appwire.NotifyOverlayDelta, nil)
 	third := notifier.Record("th_2", appwire.NotifyThreadStatusChanged, nil)
 
 	replayed := notifier.ReplayAfter(1, "th_1")
@@ -37,9 +37,9 @@ func TestNotifierReplaysAfterCursor(t *testing.T) {
 
 func TestNotifierRetainedWindowReportsGlobalLowerBoundary(t *testing.T) {
 	notifier := NewNotifier(2)
-	notifier.Record("current", appwire.NotifyAgentMessageDelta, nil)
-	notifier.Record("old", appwire.NotifyAgentMessageDelta, nil)
-	notifier.Record("old", appwire.NotifyAgentMessageDelta, nil)
+	notifier.Record("current", appwire.NotifyOverlayDelta, nil)
+	notifier.Record("old", appwire.NotifyOverlayDelta, nil)
+	notifier.Record("old", appwire.NotifyOverlayDelta, nil)
 
 	window := notifier.RetainedWindow("current")
 	if window.LowerSeq != 2 {
@@ -51,7 +51,7 @@ func TestNotifierRetainedWindowReportsGlobalLowerBoundary(t *testing.T) {
 	if window.UpperSeq != 3 || !notifier.RetainedWindowCurrent(window.UpperSeq) {
 		t.Fatalf("window upper/current = %d/%v, want 3/true", window.UpperSeq, notifier.RetainedWindowCurrent(window.UpperSeq))
 	}
-	notifier.Record("old", appwire.NotifyAgentMessageDelta, nil)
+	notifier.Record("old", appwire.NotifyOverlayDelta, nil)
 	if notifier.RetainedWindowCurrent(window.UpperSeq) {
 		t.Fatal("stale retained window remained current after notifier advance")
 	}

@@ -9,10 +9,14 @@
 // host (rather than reading it back out of a live DockviewApi) is also what
 // lets a future mobile host (Task 4) share it without dockview at all.
 
+import type { FileReference } from "@evener/appwire-client/docContent";
 import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-core";
+import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
+import { paramString, refParam } from "./routing";
+import { isMobileViewport } from "./useIsMobile";
 
 // Which of the workspace's two slots a pane lives in. The main slot holds
 // exactly ONE pane - the big one in the top left, beside the rail - and
@@ -27,12 +31,10 @@ export interface OpenPaneRecord {
   id: string;
   type: PaneTypeId;
   params: unknown;
-  // Which slot this pane belongs to. Assigned once, at open time, by the
-  // policy in openPane below; DockHost turns it into the dockview addPanel
-  // `position` that actually places the panel (see its own comment on the
-  // slot -> position mapping). It is not re-derived afterward - dockview owns
-  // geometry (splits, drag-reorder) from that point forward, and DockHost's
-  // reconciliation only ever adds a panel for an id once.
+  // Which slot this pane belongs to. openPane assigns it initially and
+  // promotePane swaps existing record slots without replacing their identities.
+  // DockHost turns changes into dockview addPanel/moveTo operations while
+  // leaving all other split and drag geometry under dockview's control.
   slot: PaneSlot;
 }
 
@@ -40,6 +42,27 @@ export interface OpenPaneRecord {
 // a same-ref SESSION and transcript are distinct retained contexts. Object keys
 // bind each edge to these pane lifetimes, not IDs a restore/reset can reuse.
 const transcriptOpenOrigins = new Map<OpenPaneRecord, OpenPaneRecord>();
+
+export interface DocumentPaneState {
+  readonly reference: FileReference;
+  readonly origin: OpenPaneRecord | undefined;
+  readonly reopen: number;
+}
+
+const documentPaneStates = new Map<OpenPaneRecord, DocumentPaneState>();
+
+export function documentPaneState(pane: OpenPaneRecord): DocumentPaneState | undefined {
+  return documentPaneStates.get(pane);
+}
+
+export function recordDocumentPaneState(pane: OpenPaneRecord, state: DocumentPaneState): void {
+  const panes = workspaceStore.getState().panes;
+  if (!panes.includes(pane)) return;
+  documentPaneStates.set(pane, state);
+  // The retained value deliberately lives outside dedup params, but consumers
+  // still need one workspace publication when an existing document is reopened.
+  workspaceStore.setState({ panes: [...panes] });
+}
 
 export function recordTranscriptOpenOrigin(pane: OpenPaneRecord, origin: OpenPaneRecord | undefined): void {
   transcriptOpenOrigins.delete(pane);
@@ -65,6 +88,22 @@ export function transcriptOpenOrigin(pane: OpenPaneRecord): OpenPaneRecord | und
   return transcriptOpenOrigins.get(pane);
 }
 
+const paneRetypeListeners = new Set<(previous: OpenPaneRecord, replacement: OpenPaneRecord) => void>();
+
+// Runtime owners transfer before removal observers see the replacement. Keep
+// the dependency one-way so workspace never imports recovery-backed owners.
+export function onPaneRetype(listener: (previous: OpenPaneRecord, replacement: OpenPaneRecord) => void): () => void {
+  paneRetypeListeners.add(listener);
+  return () => paneRetypeListeners.delete(listener);
+}
+
+const workspaceRestoreListeners = new Set<(panes: readonly OpenPaneRecord[]) => void>();
+
+export function onWorkspaceRestore(listener: (panes: readonly OpenPaneRecord[]) => void): () => void {
+  workspaceRestoreListeners.add(listener);
+  return () => workspaceRestoreListeners.delete(listener);
+}
+
 export interface WorkspaceStoreState {
   panes: OpenPaneRecord[];
   focusedPaneId: string | null;
@@ -88,8 +127,8 @@ export interface WorkspaceStoreState {
   // slot: "secondary" means "place this beside the main pane, never as it" -
   // for a caller that knows its pane is not a primary one (the rail, opening
   // a subagent). Omitted, placement follows the default rule above. It only
-  // affects a pane being CREATED: slot is assign-once, so reopening an
-  // already-open pane resolves to that pane wherever it already sits.
+  // affects a pane being CREATED: reopening an already-open pane resolves to
+  // that pane wherever it currently sits. Only promotePane changes its slot.
   openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
   togglePane(type: PaneTypeId, params?: unknown): { paneId: string; opened: boolean };
   // Makes (type, params) the one pane in the main slot, keeping that pane (and
@@ -97,6 +136,8 @@ export interface WorkspaceStoreState {
   // primary - which for a session means the same ref. See primaryMatches for
   // why the identity is derived here rather than named by the caller.
   replacePrimary(type: PrimaryPaneType, params: unknown): string;
+  promotePane(paneId: string): void;
+  retypePane(expected: OpenPaneRecord, type: PaneTypeId, params: unknown): boolean;
   closePane(paneId: string): void;
   // The pane occupying the main slot, or null when it is empty (the state
   // DockHost relaunches welcome into). Exposed because "is the main slot
@@ -105,7 +146,9 @@ export interface WorkspaceStoreState {
   mainPane(): OpenPaneRecord | null;
   focusPane(paneId: string): void;
   layoutJSON(): unknown;
-  restoreLayout(json: unknown): boolean;
+  // On host reconstruction the live store still owns pane lifetimes, slots
+  // and focus. Restore only dockview geometry, never saved runtime ownership.
+  restoreLayout(json: unknown, opts?: { preserveLivePanes?: boolean }): boolean;
 }
 
 // The wire shape stored in each dockview panel's own `params` bag - how a
@@ -131,6 +174,52 @@ const pendingPaneFocus = new Set<string>();
 
 export function isPaneOpen(state: WorkspaceStoreState, type: PaneTypeId, params: unknown): boolean {
   return state.panes.some((pane) => pane.type === type && sameParams(pane.params, params));
+}
+
+// A transcript names its SUBJECT in `ref`, and a job log's subject is a job
+// ("job:<id>" - the prefix panes/transcript/Transcript.tsx switches on), not a
+// session. A job log belongs to the session that owns the job, which the
+// opener records in `parentRef`; a ref with this prefix therefore reads as no
+// session on its own.
+const JOB_REF_PREFIX = "job:";
+
+// Conversation sources retain raw owner fields, callers decide whether they
+// match a requested session. Job transcripts name that owner in parentRef.
+export function sourcePaneSessionRef(pane: OpenPaneRecord): unknown {
+  if (pane.type !== "session" && pane.type !== "transcript") return undefined;
+  const params = pane.params as { ref?: unknown; parentRef?: unknown };
+  if (pane.type === "transcript" && typeof params.ref === "string" && params.ref.startsWith(JOB_REF_PREFIX)) {
+    return params.parentRef;
+  }
+  return params.ref;
+}
+
+// The session a pane is about, or null when it is about none. The key that
+// names it depends on the pane: the session pane and its companion panels
+// name it `ref`; a transcript names its subject in `ref`, falling to
+// `parentRef` when that subject is a job; a doc names its session under
+// `session` (panes/doc/openDoc.ts). Every other pane (welcome, settings,
+// spawn) names no session at all.
+function paneSessionRef(pane: OpenPaneRecord | undefined): string | null {
+  const params = pane?.params as { ref?: unknown; parentRef?: unknown; session?: unknown } | null | undefined;
+  const ref = refParam(params);
+  if (ref !== null) return ref.startsWith(JOB_REF_PREFIX) ? paramString(params?.parentRef) : ref;
+  return paramString(params?.session);
+}
+
+// The session the workspace is currently SHOWING: the session the focused
+// pane is about, or - when it is about none, e.g. a settings pane focused
+// beside a session still holding main - the session the main pane is about.
+// That is the rail's answer to "which session am I looking at", and what marks
+// its row as the selected item.
+//
+// Deliberately wider than AppShell's own focusedSessionRef, which answers a
+// narrower question ("is a session PANE the focused pane?") for the
+// composer/needs-you chords and must ignore a subagent's companion panel.
+// This one follows those panels and falls back to main.
+export function currentSessionRef(state: WorkspaceStoreState): string | null {
+  const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+  return paneSessionRef(focused) ?? paneSessionRef(state.panes.find((pane) => pane.slot === "main"));
 }
 
 export function requestPaneFocus(paneId: string): void {
@@ -178,9 +267,18 @@ function nextPaneId(type: PaneTypeId): string {
 // threads.ts's own precedent for "the live thing a store rides but doesn't
 // own the lifecycle of".
 let dockviewApi: DockviewApi | null = null;
+let workspaceHasMounted = false;
 
-export function registerDockviewApi(api: DockviewApi | null): void {
+// A cold route creates records before any host mounts, but does not create
+// runtime owners. A presented phone workspace or an explicit document/transcript
+// open is already living, even when this is its first desktop registration.
+// The marker lasts for this page's workspace, not for an individual host mount.
+export function registerDockviewApi(api: DockviewApi | null): boolean {
+  const reconstructing =
+    api !== null && (workspaceHasMounted || documentPaneStates.size > 0 || transcriptOpenOrigins.size > 0);
+  if (api !== null) workspaceHasMounted = true;
   dockviewApi = api;
+  return reconstructing;
 }
 
 // getDockviewApi exposes the live api (or null when no dockview host is
@@ -229,7 +327,10 @@ function isRegistered(type: unknown): type is PaneTypeId {
 function readPanelParams(panel: IDockviewPanel): PanePanelParams | null {
   const raw = panel.params;
   if (!raw || !isRegistered(raw.paneType)) return null;
-  return { paneType: raw.paneType, paneParams: raw.paneParams };
+  const parse = paneFor(raw.paneType).parseParams;
+  const params = parse ? parse(raw.paneParams) : raw.paneParams;
+  if (parse && params === null) return null;
+  return { paneType: raw.paneType, paneParams: params };
 }
 
 // Restored panel ids came from a PREVIOUS page load's own independently-
@@ -354,6 +455,33 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     return id;
   },
 
+  promotePane(paneId) {
+    const panes = get().panes;
+    const source = panes.find((pane) => pane.id === paneId);
+    if (!source || source.slot === "main") return;
+    for (const pane of panes) {
+      if (pane === source) pane.slot = "main";
+      else if (pane.slot === "main") pane.slot = "secondary";
+    }
+    set({ panes: [...panes] });
+  },
+
+  retypePane(expected, type, params) {
+    const state = get();
+    if (!state.panes.includes(expected)) return false;
+    paneFor(type);
+    if (expected.type === type && expected.params === params) return true;
+    const replacement = { ...expected, type, params };
+    for (const listener of paneRetypeListeners) listener(expected, replacement);
+    const origins = [...transcriptOpenOrigins];
+    transcriptOpenOrigins.clear();
+    for (const [pane, origin] of origins) {
+      transcriptOpenOrigins.set(pane === expected ? replacement : pane, origin === expected ? replacement : origin);
+    }
+    set({ panes: state.panes.map((pane) => (pane === expected ? replacement : pane)) });
+    return true;
+  },
+
   closePane(paneId) {
     const state = get();
     if (!state.panes.some((p) => p.id === paneId)) return; // already closed: no-op
@@ -371,10 +499,16 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   },
 
   layoutJSON() {
-    return dockviewApi ? dockviewApi.toJSON() : null;
+    if (!dockviewApi) return null;
+    const layout = dockviewApi.toJSON();
+    for (const pane of get().panes) {
+      const panel = layout.panels?.[pane.id];
+      if (panel) panel.params = { ...panel.params, paneType: pane.type, paneParams: pane.params };
+    }
+    return layout;
   },
 
-  restoreLayout(json) {
+  restoreLayout(json, opts) {
     if (!dockviewApi) return false;
     try {
       dockviewApi.fromJSON(json as SerializedDockview);
@@ -402,6 +536,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       for (const entry of entries) {
         if (entry.params === null) dockviewApi.removePanel(entry.panel);
       }
+      // A host swap is not a cold load. Even valid saved geometry can be
+      // stale after phone opens, closes, promotion or focus changes. Keep the
+      // exact living records and their object-keyed state; DockHost reconciles
+      // the restored grid against them before applying the current focus.
+      if (opts?.preserveLivePanes) return true;
       const restored = entries.filter(
         (entry): entry is { panel: IDockviewPanel; params: PanePanelParams } => entry.params !== null,
       );
@@ -411,6 +550,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         params: entry.params.paneParams,
         slot: index === 0 ? "main" : "secondary",
       }));
+      for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
       // The api's active panel may be one the skip dropped; focus only an id
       // that actually survived, else the first survivor.
@@ -421,12 +561,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       });
       return true;
     } catch {
-      // fromJSON's own structural failures leave dockview already cleared
-      // (see dockview-core's source), and nothing else throws anymore:
-      // readPanelParams skips unloadable panels instead of raising, so this
-      // catch now covers only a layout dockview itself rejects.
+      // Dockview may have partially rebuilt its grid. Clear that failed grid,
+      // but keep the committed records so reconciliation can remount their
+      // original views without discarding runtime source work.
       dockviewApi?.clear();
-      set({ panes: [], focusedPaneId: null });
       return false;
     }
   },
@@ -440,11 +578,19 @@ workspaceStore.subscribe((state, previous) => {
   for (const [pane, origin] of transcriptOpenOrigins) {
     if (!state.panes.includes(pane) || !state.panes.includes(origin)) transcriptOpenOrigins.delete(pane);
   }
+  for (const pane of documentPaneStates.keys()) {
+    if (!state.panes.includes(pane)) documentPaneStates.delete(pane);
+  }
 });
 
 export function useWorkspaceStore(): WorkspaceStoreState;
 export function useWorkspaceStore<T>(selector: (state: WorkspaceStoreState) => T): T;
 export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => T): T | WorkspaceStoreState {
+  // Record a committed phone workspace, not a render-time cold route. Desktop
+  // registers synchronously in onReady; phone has no DockviewApi to register.
+  useEffect(() => {
+    if (isMobileViewport()) workspaceHasMounted = true;
+  }, []);
   // Not a real conditional hook call - see stores/connection.ts's own
   // useConnectionStore for the full explanation (zustand's useStore has a
   // `selector = identity` JS default param, so both arms run identically).
@@ -460,7 +606,9 @@ export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => 
 // threads.ts's resetThreadsStoreForTests precedent).
 export function resetWorkspaceStoreForTests(): void {
   dockviewApi = null;
+  workspaceHasMounted = false;
   nextPaneSeq = 0;
   pendingPaneFocus.clear();
+  documentPaneStates.clear();
   workspaceStore.setState({ panes: [], focusedPaneId: null });
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -49,6 +50,7 @@ type hubRow struct {
 	projectKey  string // server-supplied canonical project ID; empty is non-actionable
 	groupKey    string // presentation-only grouping key; never sent to the server
 	state       string
+	isSubagent  bool // a delegate thread at any depth; caps its rollupContribution (#2558)
 	askPending  bool
 	live        bool
 	model       string
@@ -79,7 +81,13 @@ type hubModel struct {
 	frames *hubFrameFeed
 	// dialHub opens a replacement connection after this one dies. A model
 	// without one reports the loss and tells the user to restart instead.
-	dialHub          hubDialer
+	dialHub hubDialer
+	// lifecycleCtx is owned by Run and canceled when the TUI exits. Reconnect
+	// backoff and dial work hang off it so a quit does not leave a retry to
+	// dial (and, with autostart on, launch a hub) after the model is gone. A
+	// nil value means no lifetime owner — models built outside Run, and tests,
+	// keep retrying as before.
+	lifecycleCtx     context.Context
 	connectionLost   bool
 	reconnectAttempt int
 	hubURL           string
@@ -163,11 +171,66 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
-	credentialsPanel     *launchconfig.CredentialsPanel
-	launchSettingsPanel  *launchconfig.LaunchSettingsPanel
-	pluginsPanel         *launchconfig.PluginsPanel
-	followupModal        *tuipick.TextInputModal
-	launchOverridesModal *launchconfig.LaunchOverridesModal
+	credentialsPanel    *launchconfig.CredentialsPanel
+	launchSettingsPanel *launchconfig.LaunchSettingsPanel
+	pluginsPanel        *launchconfig.PluginsPanel
+	// marketplaceRemovePending fences a remove until its outcome is settled.
+	// An applied-with-litter outcome clears the identity right away - its own
+	// snapshot is authoritative - and schedules the replacement read that
+	// confirms the post-removal state; an unavailable or removed outcome
+	// keeps the fence until that confirming read lands.
+	marketplaceRemovePending       string
+	marketplaceReconcilePending    bool
+	marketplaceReconcileGeneration uint64
+	// marketplaceOutcomeWarning is the standing marketplace-removal outcome
+	// account — the warning a landed removal outcome raised (clone-remains
+	// applied, clone-remains unconfirmed, or removed-and-refreshing). Only a
+	// removal outcome writes it (a newer outcome replaces an older one), and
+	// only the reconciliation settle rewrites or retires it: the
+	// removed-outcome account clears at its settle, the unconfirmed suffix
+	// strips at its settle, and the clone-remains fact stands — nothing
+	// re-derives it, so no fresh response may erase it. The transient slot
+	// is separate; an ordinary failure never touches this account.
+	marketplaceOutcomeWarning error
+	// marketplaceListReadsOrdered turns on the first time a marketplace
+	// removal lands on the hub, whatever the outcome carried. Every list
+	// read is generation-tagged from the first one the model issues, so
+	// this flag no longer governs tagging: it only arms the floor that
+	// rejects every read whose generation predates the latest landed
+	// removal - such a read was issued before that removal stood and can
+	// never describe the post-removal state, so accepting it - however
+	// late it arrives - would resurrect the removed marketplace's row.
+	marketplaceListReadsOrdered bool
+	// marketplaceListReadIssued is the generation of the newest list read
+	// this model has issued. The reconciliation gate holds back failed
+	// reads older than it, so only the newest list read's own failure
+	// reaches the panel: an add or refresh issuance shares the ordering
+	// counter but never moves this marker, and can never outrank a read's
+	// failure - which is the panel's only way out of its loading state.
+	//
+	// marketplaceListFloor is the read generation at the moment the latest
+	// marketplace removal landed. Reads at or below it were issued before
+	// that landing and are stale by construction; reads above it were issued
+	// after and carry post-removal truth.
+	//
+	// marketplaceListApplied is the generation of the newest read whose
+	// successful response has been accepted. A smaller generation arriving
+	// later was issued before that one and carries a snapshot the applied
+	// read already superseded, so it is rejected however late it arrives -
+	// failures never advance it, so an outstanding reconciliation's success
+	// still settles while a newer request has merely been issued or failed.
+	marketplaceListReadIssued uint64
+	marketplaceListFloor      uint64
+	marketplaceListApplied    uint64
+	// marketplaceListAppliedRows is the marketplace list of the newest
+	// applied state. It is updated wherever marketplaceListApplied
+	// advances and wherever a landed removal's certainty strips its
+	// name, so a removal response older than the newest applied read can
+	// merge down to the applied rows instead of resurrecting what that
+	// read dropped.
+	marketplaceListAppliedRows []appwire.MarketplaceEntry
+	followupModal              *tuipick.TextInputModal
+	launchOverridesModal       *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress
@@ -321,6 +384,16 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 	return model
 }
 
+// reconnectContext is the context reconnect work runs under. A model with no
+// lifetime owner dials and backs off under a background context, which is the
+// uncancelable behavior a bare model had before Run wired its own.
+func (m *hubModel) reconnectContext() context.Context {
+	if m.lifecycleCtx == nil {
+		return context.Background()
+	}
+	return m.lifecycleCtx
+}
+
 func newHubFilterInput() textinput.Model {
 	input := textinput.New()
 	input.Prompt = "filter: "
@@ -335,6 +408,21 @@ func newSpawnDirInput() textinput.Model {
 	input.Placeholder = "working directory"
 	input.CharLimit = 0
 	return input
+}
+
+// prominentErrors returns every live account the hub model should render as
+// an error line, transient first, then the standing marketplace-removal
+// outcome warning. It is nil-safe: a model with no live account renders
+// nothing.
+func (m hubModel) prominentErrors() []error {
+	var errs []error
+	if m.err != nil {
+		errs = append(errs, m.err)
+	}
+	if m.marketplaceOutcomeWarning != nil {
+		errs = append(errs, m.marketplaceOutcomeWarning)
+	}
+	return errs
 }
 
 func (m hubModel) Init() tea.Cmd {

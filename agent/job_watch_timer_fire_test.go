@@ -41,6 +41,7 @@ func recvNotification(t *testing.T, got chan jobNotification) jobNotification {
 }
 
 func TestRepeatTimer_FiresEveryIntervalWithNote(t *testing.T) {
+	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 60, Note: "check the deploy"})
 	if err != nil {
@@ -66,6 +67,7 @@ func TestRepeatTimer_FiresEveryIntervalWithNote(t *testing.T) {
 }
 
 func TestOneShotTimer_FiresOnceAndEndsWithReasonFired(t *testing.T) {
+	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600, Note: "job_x should be done"})
 	if err != nil {
@@ -105,6 +107,7 @@ func TestOneShotTimer_FiresOnceAndEndsWithReasonFired(t *testing.T) {
 }
 
 func TestOneShotTimer_ClearBeforeDeadlineLeavesNoTimer(t *testing.T) {
+	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60})
 	if err != nil {
@@ -126,6 +129,7 @@ func TestOneShotTimer_ClearBeforeDeadlineLeavesNoTimer(t *testing.T) {
 }
 
 func TestPeriodicTicks_DoNotTripTheDeliveryBudget(t *testing.T) {
+	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 60})
 	if err != nil {
@@ -150,6 +154,7 @@ func TestPeriodicTicks_DoNotTripTheDeliveryBudget(t *testing.T) {
 // the latch on deliveries instead would let the ticks step over the crossing
 // and leave the circuit breaker permanently disarmed for that watch.
 func TestConditionFireBudget_TicksDoNotDisarmTheBreaker(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	// The fake clock leaves the watch's background progress timer inert; the
 	// ticks below are driven synchronously, doing exactly that goroutine's work.
@@ -212,6 +217,7 @@ func TestConditionFireBudget_TicksDoNotDisarmTheBreaker(t *testing.T) {
 // An equality test would disarm the breaker forever in exactly that case; "at or
 // past the budget", latched once per config, reports the crossing exactly once.
 func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	cfg := &watchConfig{conditionFires: watchDeliveryBudget - 1}
 
@@ -274,6 +280,7 @@ func TestNoteConditionFireLocked_LatchesOnceAtTheBudget(t *testing.T) {
 // be re-armed: left set, no later condition fire reports a crossing and the
 // watch delivers past its budget forever.
 func TestConditionFireBudget_FailedTeardownRearmsTheBreaker(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	// The failing append is installed before the watched job exists, so the
 	// job's own output pump never races the test over jm.appendEvents.
@@ -376,6 +383,7 @@ func TestConditionFireBudget_RollbackRearmsTheLatchInOneCriticalSection(t *testi
 // interval delivers past the budget forever without ever tripping it, so keying
 // the window on deliveries would excuse it permanently once it had fired.
 func TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	const jobID = "job_unfired_excuse"
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: jobID}
@@ -412,6 +420,7 @@ func TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires(t *testing.
 // jm.emit, which reaches the session and the hub; stderr reaches neither. The
 // fire itself is still delivered — the teardown failure does not swallow it.
 func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
+	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
 	var mu sync.Mutex
 	var warnings []events.WarningData
@@ -464,6 +473,7 @@ func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 // would leave a live watch nothing can ever end. The retry is an end, not a
 // second fire — the model hears about the timer exactly once.
 func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
+	t.Parallel()
 	jm, clk, got := newTimerTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60})
 	if err != nil {

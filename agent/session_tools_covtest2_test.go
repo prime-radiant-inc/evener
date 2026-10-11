@@ -9,6 +9,7 @@ import (
 // progressive field-dropping branches (lines 209-226) by using a maxChars
 // small enough to force each truncation step.
 func TestMarshalStableDelegateCreateResult_ProgressiveTruncation(t *testing.T) {
+	t.Parallel()
 	out := stableDelegateCreateResult{
 		DelegateID:     "dlg_123",
 		ChildSessionID: "sess_123",
@@ -140,6 +141,7 @@ func TestMarshalStableDelegateCreateResult_ProgressiveTruncation(t *testing.T) {
 
 // TestResultToolName covers the resultToolName helper.
 func TestResultToolName(t *testing.T) {
+	t.Parallel()
 	t.Run("default", func(t *testing.T) {
 		s := &Session{}
 		if got := s.resultToolName(); got != "communicate" {

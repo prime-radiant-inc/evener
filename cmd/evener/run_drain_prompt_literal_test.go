@@ -47,8 +47,8 @@ func writeSystemPromptAppend(t *testing.T, text string) string {
 	return path
 }
 
-// wireLiteralSection is prompt prose naming a frame the way a real section
-// under agent/prompts/sections/ would.
+// wireLiteralSection is prompt prose naming a frame the way a passage of
+// agent/prompts/system.md.tmpl would.
 func wireLiteralSection(literal string) string {
 	return "When the work finishes, its result reaches you as an ordinary terminal\n" +
 		"`" + literal + "` frame carrying the result packet.\n"

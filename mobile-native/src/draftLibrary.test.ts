@@ -39,9 +39,7 @@ describe("drafts across navigation", () => {
 			draft: "composed after returning",
 			unconfirmed: null,
 		});
-		expect(
-			library.open({ ...destination, hubId: "two" }).getSnapshot().record.draft,
-		).toBe("");
+		expect(library.open({ ...destination, hubId: "two" }).getSnapshot().record.draft).toBe("");
 	});
 
 	it("does not let a late completion or stale screen recreate a removed hub's drafts", async () => {
@@ -61,5 +59,12 @@ describe("drafts across navigation", () => {
 		});
 		expect(library.open(destination)).not.toBe(document);
 		expect(library.open(destination).getSnapshot().record.draft).toBe("");
+	});
+
+	it("names a hub's sessions with drafts from its repository", () => {
+		const { library } = setup();
+		library.open({ hubId: "one", sessionRef: "typed" }).edit("half a thought");
+		library.open({ hubId: "two", sessionRef: "other" }).edit("other hub");
+		expect([...library.refsWithDrafts("one")]).toEqual(["typed"]);
 	});
 });

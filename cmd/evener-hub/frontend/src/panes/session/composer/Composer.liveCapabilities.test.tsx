@@ -32,10 +32,10 @@
 
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
@@ -43,6 +43,9 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../testing/editorGeometry";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
+import { createTestComposerSource } from "../testing/composerSource";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 
@@ -57,29 +60,11 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
 }
 
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 
-// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const REF = "ref_a";
@@ -146,14 +131,27 @@ function thread(status: string, capabilities: ThreadCapabilities): Thread {
 async function mountComposer(status: string, capabilities: ThreadCapabilities): Promise<FakeClient> {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
-  fake.on("thread/read", () => ({ thread: thread(status, capabilities) }) as ThreadReadResponse);
+  fake.on(
+    "thread/read",
+    () =>
+      ({
+        thread: thread(status, capabilities),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 0 },
+      }) as ThreadReadResponse,
+  );
   await threadsStore.getState().ensureThread(REF);
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={REF} focused={false} />
+      <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
     </ClientProvider>,
   );
+  await settleActivityDiscovery(REF);
+  // The mount starts its own pending-turns refresh; settle it here so its
+  // state update lands inside act rather than during a later bare await.
+  await flushPendingTurnsProjectionForTests();
   return fake;
 }
 
@@ -164,26 +162,36 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
 // sequence from a source that state-gates nothing.
 function turnStartedFrame(turnId: string): AnyNotification {
   return {
-    method: "turn/started",
+    method: "history/updated",
     params: {
       threadId: `thr_${REF}`,
       ref: REF,
-      turn: { id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 }],
     },
   };
 }
 
 function turnCompletedFrame(turnId: string): AnyNotification {
   return {
-    method: "turn/completed",
-    params: { threadId: `thr_${REF}`, ref: REF, turn: { id: turnId, status: "completed", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${REF}`,
+      ref: REF,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "completed", itemsView: "" }],
+    },
   };
 }
 
-function statusActiveFrame(capabilities?: ThreadCapabilities): AnyNotification {
+function statusActiveFrame(capabilities?: ThreadCapabilities, activeTurnId?: string): AnyNotification {
   return {
     method: "thread/status/changed",
-    params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities },
+    params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities, activeTurnId },
   };
 }
 
@@ -191,15 +199,22 @@ function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCa
   act(() => {
     fake.emitNotification(turnStartedFrame(turnId));
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turnId,
-        item: { type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
+            turnId: "",
+          },
+        ],
       },
     });
-    fake.emitNotification(statusActiveFrame(capabilities));
+    fake.emitNotification(statusActiveFrame(capabilities, turnId));
   });
 }
 
@@ -222,24 +237,6 @@ beforeEach(() => {
   resetToastStoreForTests();
 });
 
-afterEach(() => {
-  cleanup();
-  // Every test here calls ensureThread(ref) directly for setup - Composer
-  // takes its ref as a prop and never calls ensureThread/releaseThread
-  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
-  // test. Under isolate:false that is what a later file's own
-  // connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
-});
-
 // Kata 06t8's report, end to end: a cold exited session opened from the rail,
 // a follow-up sent into it, and the daemon the hub relaunches to answer it.
 // Every control was gone until a reload — and the model knew the whole time
@@ -248,12 +245,12 @@ test("a resumed cold session's controls follow the turn it is running", async ()
   const fake = await mountComposer("notLoaded", COLD_CAPABILITIES);
 
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
-  await type("another thought");
+  await type("hi");
 
   const model = threadsStore.getState().threads.get(REF);
-  expect({ status: model?.status.type, activeTurnId: model?.activeTurnId }).toEqual({
+  expect({ status: model?.status.type, runningTurnId: model?.runningTurnId }).toEqual({
     status: "active",
-    activeTurnId: "turn_5",
+    runningTurnId: "turn_5",
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
@@ -270,7 +267,7 @@ test("a live idle session's controls follow the turn its own send starts", async
   // harness reads true (#1375) and the composer is still a plain send: the
   // status, not the bit, decides which control that is.
   expect(threadsStore.getState().threads.get(REF)?.capabilities.queue).toBe(true);
-  await type("another thought");
+  await type("hi");
   expect(submitButton().disabled).toBe(false);
 
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
@@ -308,9 +305,9 @@ test("a working session offers Stop and Steer before its turn has announced a na
   });
 
   const model = threadsStore.getState().threads.get(REF);
-  expect({ status: model?.status.type, activeTurnId: model?.activeTurnId }).toEqual({
+  expect({ status: model?.status.type, runningTurnId: model?.runningTurnId }).toEqual({
     status: "active",
-    activeTurnId: undefined,
+    runningTurnId: undefined,
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
@@ -337,7 +334,7 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
       .then(() => {
         render(
           <ClientProvider client={fake}>
-            <Composer ref={REF} focused={false} />
+            <Composer ref={REF} source={createTestComposerSource(REF)} focused={false} />
           </ClientProvider>,
         );
         act(() => {
@@ -380,6 +377,7 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
           capabilitySource: "statusFrame",
           capabilities: { interrupt: false, steer: true },
         });
+        return settleActivityDiscovery(REF);
       });
   } finally {
     warn.mockRestore();
@@ -397,11 +395,14 @@ test("the turn ending puts the controls back to a plain send", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "completed", itemsView: "" }],
       },
     });
     fake.emitNotification({
@@ -414,7 +415,7 @@ test("the turn ending puts the controls back to a plain send", async () => {
       },
     });
   });
-  await type("another thought");
+  await type("hi");
 
   expect(threadsStore.getState().threads.get(REF)?.capabilities).toEqual(daemonCapabilities(false));
   expect(screen.queryByTestId("composer-steer")).toBeNull();
@@ -429,7 +430,7 @@ test("a status change with no capabilities leaves the advertised set alone", asy
   const fake = await mountComposer("idle", daemonCapabilities(true));
 
   emitTurnStart(fake, "turn_5", undefined);
-  await type("another thought");
+  await type("hi");
 
   expect(threadsStore.getState().threads.get(REF)?.capabilities).toEqual(daemonCapabilities(true));
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
@@ -455,11 +456,14 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "interrupted", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "interrupted", itemsView: "" }],
       },
     });
     fake.emitNotification({
@@ -468,11 +472,41 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
     });
   });
 
+  await settleActivityDiscovery(REF);
   const model = threadsStore.getState().threads.get(REF);
   expect({ status: model?.status.type, send: model?.capabilities.send }).toEqual({ status: "closed", send: true });
   expect(screen.queryByTestId("composer-input-card")).not.toBeNull();
   expect(screen.queryByRole("textbox", { name: /^message$/i })).not.toBeNull();
 });
+
+test.each(["closed", "ended", "notLoaded"])(
+  "an empty focused editor keeps its controls when a live session becomes %s",
+  async (status) => {
+    const user = userEvent.setup();
+    const fake = await mountComposer("active", daemonCapabilities(true));
+    const editor = screen.getByRole("textbox", { name: /^message$/i });
+    await user.click(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.textContent).toBe("");
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: `thr_${REF}`, ref: REF, status: { type: status }, capabilities: COLD_CAPABILITIES },
+      });
+    });
+    await settleActivityDiscovery(REF);
+
+    expect(screen.getByRole("textbox", { name: /^message$/i })).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.style.minHeight).toBe("3lh");
+    expect(screen.queryByTestId("session-chrome-inline")).not.toBeNull();
+    expect(screen.queryByTestId("model-switch-trigger")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeNull();
+    expect(submitButton().disabled).toBe(true);
+    expect(editor.textContent).toBe("");
+  },
+);
 
 // The follow-up a resumable ended session can actually be sent: the card is
 // only half the affordance if its Send stays grey. Steer and Stop stay gone —
@@ -506,7 +540,7 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
   const frames: Array<[string, AnyNotification]> = [
     ["turn/completed of the previous turn", turnCompletedFrame(endedTurnId)],
     ["turn/started of the next turn", turnStartedFrame(nextTurnId)],
-    ["the status frame", statusActiveFrame(daemonCapabilities(true))],
+    ["the status frame", statusActiveFrame(daemonCapabilities(true), nextTurnId)],
   ];
   for (const [step, frame] of frames) {
     act(() => {
@@ -518,9 +552,11 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
 }
 
 // The click follows the same rule as the button. Between the two turn frames
-// the model has no activeTurnId, and the handler used to refuse there with a
-// "no active turn" toast (issue #1341); the daemon is mid-input and its v3
-// turn/steer names no turn, so the steer is sent.
+// the completed turn's history status is the only thing that changed (no
+// thread/status/changed has landed yet, so runningTurnId is still stale at
+// turn_5); the handler used to refuse there with a "no active turn" toast
+// (issue #1341); the daemon is mid-input and its v3 turn/steer names no turn,
+// so the steer is sent regardless of what runningTurnId names.
 test("a Steer clicked between turn/completed and turn/started sends turn/steer, with no toast", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   fake.on("turn/steer", (params) => ({
@@ -537,10 +573,10 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
   act(() => {
     fake.emitNotification(turnCompletedFrame("turn_5"));
   });
-  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBeUndefined();
 
   await userEvent.click(screen.getByTestId("composer-steer"));
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
   expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({
     ref: REF,
     input: [{ type: "text", text: "go left" }],
@@ -556,17 +592,20 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
 test("a failed turn takes Stop and Steer off and gives Send back", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
-  await type("another thought");
+  await type("hi");
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } }],
       },
     });
   });
@@ -590,11 +629,11 @@ test("a failed turn takes Stop and Steer off and gives Send back", async () => {
 test("Steer and Stop stay on screen across an inline turn boundary delivered one frame at a time", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
-  await type("another thought");
+  await type("hi");
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
 
   emitInlineTurnBoundary(fake, "turn_5", "turn_6");
 
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
-  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBe("turn_6");
+  expect(threadsStore.getState().threads.get(REF)?.runningTurnId).toBe("turn_6");
 });

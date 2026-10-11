@@ -106,6 +106,50 @@ func fuzzScenarioDeriveAttention_CarriesAskPending(t *testing.T) {
 	}
 }
 
+// fuzzScenarioDeriveAttention_CarriesNeedsResponse: a session that rests
+// awaiting without a pending question ended its turn with needs_response, and
+// the entry says so, so a client can treat a needs-your-reply like a question.
+// A plain reply rests idle, so it never carries the flag.
+func fuzzScenarioDeriveAttention_CarriesNeedsResponse(t *testing.T) {
+	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	for _, tc := range []struct {
+		name string
+		live LiveEntry
+		want bool
+	}{
+		{"needs_response rest", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusAwaiting}, true},
+		{"pending question", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true}, false},
+		{"plain reply", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusIdle}, false},
+		{"pending approval", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true}, false},
+		{"approval over a needs_response rest", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusAwaiting, PendingEscalation: true}, true},
+		{"failure", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusSystemError}, false},
+		{"warning", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusWarning}, false},
+		{"restart required", LiveEntry{SessionID: "01A", Status: appwire.ThreadStatusRestartRequired}, false},
+	} {
+		entries, _ := DeriveAttention(metas, []LiveEntry{tc.live}, nil)
+		if got := entries["01A"].NeedsResponse; got != tc.want {
+			t.Fatalf("%s: NeedsResponse = %v, want %v (entry %+v)", tc.name, got, tc.want, entries["01A"])
+		}
+	}
+}
+
+// fuzzScenarioDeriveAttention_CarriesApprovalPending: the attention entry says
+// why an escalation-promoted session needs you, beside the promotion, so a
+// client can show an approval.
+func fuzzScenarioDeriveAttention_CarriesApprovalPending(t *testing.T) {
+	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true}}
+	entries, _ := DeriveAttention(metas, live, nil)
+	if got := entries["01A"]; !got.ApprovalPending || got.Level != "needs_you" {
+		t.Fatalf("entry = %+v, want ApprovalPending at level needs_you", got)
+	}
+	live = []LiveEntry{{SessionID: "01A", Status: appwire.ThreadStatusActive}}
+	entries, _ = DeriveAttention(metas, live, nil)
+	if entries["01A"].ApprovalPending {
+		t.Fatalf("entry without an escalation carries ApprovalPending: %+v", entries["01A"])
+	}
+}
+
 func fuzzScenarioDeriveAttention_PendingEscalationPromotesToNeedsYou(t *testing.T) {
 	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	// A sandbox escalation blocks MID-TURN, so the daemon status is still "active"
@@ -150,5 +194,40 @@ func fuzzScenarioAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
 	}
 	if !got[0].Changed[0].AskPending {
 		t.Fatalf("changed entry must carry the new AskPending=true, got %+v", got[0].Changed[0])
+	}
+}
+
+// fuzzScenarioAttentionWatcher_TicksOnApprovalOnlyFlip: level and ask can hold
+// still while the approval moves; a client keyed on the approval must hear it,
+// and a session that goes away clears it.
+func fuzzScenarioAttentionWatcher_TicksOnApprovalOnlyFlip(t *testing.T) {
+	var got []appwire.AttentionChangedPayload
+	w := NewAttentionWatcher(func(p appwire.AttentionChangedPayload) { got = append(got, p) })
+	w.Tick(map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: true}}, appwire.AttentionSummary{})
+	w.Tick(map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: true, ApprovalPending: true}}, appwire.AttentionSummary{})
+	if len(got) != 1 || !got[0].Changed[0].ApprovalPending {
+		t.Fatalf("payloads = %+v, want one change carrying ApprovalPending", got)
+	}
+	w.Tick(map[string]appwire.AttentionEntry{}, appwire.AttentionSummary{})
+	if len(got) != 2 || got[1].Changed[0].ApprovalPending {
+		t.Fatalf("payloads = %+v, want the gone entry with ApprovalPending cleared", got)
+	}
+}
+
+// fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip: level and ask can
+// hold still while needs_response moves (a warning settling into the rest), so
+// the hub reports the flip like an ask or approval flip, and a session that
+// goes away clears it; the web fires when the flip makes the row loud.
+func fuzzScenarioAttentionWatcher_TicksOnNeedsResponseOnlyFlip(t *testing.T) {
+	var got []appwire.AttentionChangedPayload
+	w := NewAttentionWatcher(func(p appwire.AttentionChangedPayload) { got = append(got, p) })
+	w.Tick(map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you"}}, appwire.AttentionSummary{})
+	w.Tick(map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you", NeedsResponse: true}}, appwire.AttentionSummary{})
+	if len(got) != 1 || !got[0].Changed[0].NeedsResponse {
+		t.Fatalf("payloads = %+v, want one change carrying NeedsResponse", got)
+	}
+	w.Tick(map[string]appwire.AttentionEntry{}, appwire.AttentionSummary{})
+	if len(got) != 2 || got[1].Changed[0].NeedsResponse {
+		t.Fatalf("payloads = %+v, want the gone entry with NeedsResponse cleared", got)
 	}
 }

@@ -4,16 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -268,6 +273,51 @@ func TestSummarizeToolResult_Glob(t *testing.T) {
 	output := "a.go\nb.go\nc.go\n"
 	got := summarizeToolResult("glob", output, json.RawMessage(`{"pattern":"*.go"}`))
 	want := `[glob: "*.go" → 3 files]`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestSummarizeToolResult_SearchNotes summarizes real grep and glob results
+// (agent/testdata/toolwire): a note the tool puts after a blank line is not a
+// match, and the summary keeps it, so a compacted search still says it was cut
+// short or left paths out (#4186).
+func TestSummarizeToolResult_SearchNotes(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/toolwire/calls.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Items []appwire.ThreadItem `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	args, outputs := map[string]string{}, map[string]string{}
+	for _, item := range fixture.Items {
+		if item.ArgumentsJSON != "" {
+			args[item.CallID] = item.ArgumentsJSON
+		}
+		if item.Output != "" {
+			outputs[item.CallID] = item.Output
+		}
+	}
+	for _, tc := range []struct{ call, tool, want string }{
+		{"call_grep_capped", "grep", `[grep: "package|func" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`},
+		{"call_glob_excluded", "glob", `[glob: "**/plan.md" → 0 files; 0 matches after excluding 1 dotfile/gitignored path(s); set include_ignored to include them]`},
+	} {
+		if got := summarizeToolResult(tc.tool, outputs[tc.call], json.RawMessage(args[tc.call])); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.call, got, tc.want)
+		}
+	}
+}
+
+// memory_search writes grep's output, so it summarizes like grep: entries
+// counted, notes kept.
+func TestSummarizeToolResult_MemorySearch(t *testing.T) {
+	output := "notes.md:1:x\n\n[results truncated at 1; narrow the path or glob_filter, or raise max_results]"
+	got := summarizeToolResult("memory_search", output, json.RawMessage(`{"pattern":"x"}`))
+	want := `[memory_search: "x" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -644,6 +694,141 @@ func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 	}
 }
 
+// A write is only a completed-work fact when its paired result confirmed
+// success. This asserts the extracted status before rendering.
+func TestCheckpoint_WriteStatus_PairsCallsWithResults(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "edit_file", `{"file_path":"failed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "edit_file", "permission denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: pending.go\n*** End Patch"}`)},
+		// No result for w3: the attempt stays unconfirmed, never completed.
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	data := collectCheckpointData(history, len(history), "communicate")
+
+	wants := map[string]checkpointWriteStatus{
+		"confirmed.go": writeConfirmed,
+		"failed.go":    writeFailed,
+		"pending.go":   writeUnconfirmed,
+	}
+	for path, want := range wants {
+		got, ok := data.fileWrites[path]
+		if !ok || got != want {
+			t.Fatalf("fileWrites[%q] = %v (present=%v), want %v", path, got, ok, want)
+		}
+	}
+}
+
+// A confirmed write is sticky: a later failed or unconfirmed attempt on the
+// same path must not downgrade it out of "Files modified:", while a path whose
+// first attempt failed is confirmed once a later attempt succeeds.
+func TestCheckpoint_ConfirmedWriteNotDowngradedByLaterAttempt(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		// confirmed.go succeeds, then a later edit of the same path fails.
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "edit_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "edit_file", "denied", true)},
+		// retried.go fails, then a later attempt succeeds.
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "write_file", `{"file_path":"retried.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w3", "write_file", "denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w4", "write_file", `{"file_path":"retried.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w4", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1, nil, "communicate")
+	line := checkpointModifiedFilesLine(result[0].Message.Text())
+	for _, path := range []string{"confirmed.go", "retried.go"} {
+		if !strings.Contains(line, path) {
+			t.Fatalf("confirmed write %q missing from Files modified: %q", path, line)
+		}
+	}
+}
+
+// A rejected or unanswered terminal communicate is not a completed agent
+// reply; only an accepted result belongs in the extracted conversation.
+func TestCheckpoint_CommunicateOnlyRecordsAcceptedReplies(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "communicate", `{"message":"rejected reply","end_turn":true}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", "dispatch failed", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "communicate", `{"message":"accepted reply","end_turn":true}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "communicate", "delivered", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "communicate", `{"message":"unanswered reply","end_turn":true}`)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("still working")},
+	}
+
+	data := collectCheckpointData(history, len(history), "communicate")
+
+	var agents []string
+	for _, e := range data.conversation {
+		if e.Role == "agent" {
+			agents = append(agents, e.Text)
+		}
+	}
+	if len(agents) != 1 || agents[0] != "accepted reply" {
+		t.Fatalf("agent conversation = %v, want only the accepted reply", agents)
+	}
+}
+
+// A failed or result-missing write must never render on the "Files modified:"
+// line, and re-compacting a checkpoint must not upgrade it to completed work.
+// This pins the rendered completion contract the audit finding faulted.
+func TestCheckpoint_AttemptedWritesNeverUpgradeAcrossCompactions(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"good.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "write_file", `{"file_path":"failed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "write_file", "denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "write_file", `{"file_path":"pending.go"}`)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	attempted := []string{"failed.go", "pending.go"}
+
+	first := checkpoint(history, 1, nil, "communicate")
+	firstLine := checkpointModifiedFilesLine(first[0].Message.Text())
+	if !strings.Contains(firstLine, "good.go") {
+		t.Fatalf("first checkpoint should report the confirmed write: %q", firstLine)
+	}
+	for _, path := range attempted {
+		if strings.Contains(firstLine, path) {
+			t.Fatalf("attempted write %q reported as modified in first checkpoint: %q", path, firstLine)
+		}
+	}
+
+	// Re-compacting the checkpoint must not upgrade an attempted write either.
+	second := checkpoint(first, 0, nil, "communicate")
+	secondLine := checkpointModifiedFilesLine(second[0].Message.Text())
+	for _, path := range attempted {
+		if strings.Contains(secondLine, path) {
+			t.Fatalf("attempted write %q upgraded to modified after re-compaction: %q", path, secondLine)
+		}
+	}
+}
+
+// checkpointModifiedFilesLine returns the rendered "Files modified:" line, or
+// "" when the checkpoint reports no confirmed writes.
+func checkpointModifiedFilesLine(text string) string {
+	for line := range strings.SplitSeq(text, "\n") {
+		if rest, ok := strings.CutPrefix(line, "Files modified:"); ok {
+			return rest
+		}
+	}
+	return ""
+}
+
 func TestCheckpoint_SummarizesActions(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
@@ -726,7 +911,7 @@ func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
 				if !found {
 					t.Error("expected compaction/handoff prompt")
 				}
-				return llm.Response{Message: llm.Assistant("Summary: fixed auth bug")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: fixed auth bug")}
 			},
 		},
 	}
@@ -755,7 +940,9 @@ func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
 }
 
 func TestSummarizeWithLLM_UsesConfiguredCompactionModel(t *testing.T) {
-	adapter := &fakeAdapter{name: "openai"}
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("## Progress\nsummary")} },
+	}}
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -827,7 +1014,7 @@ func (a *fallbackSummaryAdapter) Complete(ctx context.Context, req llm.Request) 
 		if req.Model != "gpt-5.2" {
 			a.t.Fatalf("fallback summary model = %q, want gpt-5.2", req.Model)
 		}
-		return llm.Response{Message: llm.Assistant("fallback summary")}, nil
+		return llm.Response{Message: llm.Assistant("## Progress\nfallback summary")}, nil
 	default:
 		a.t.Fatalf("unexpected request %d", len(a.requests))
 		return llm.Response{}, errors.New("unexpected request")
@@ -887,7 +1074,7 @@ func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Summary of work done")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary of work done")}
 			},
 		},
 	}
@@ -925,7 +1112,7 @@ func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -1216,7 +1403,7 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -1310,7 +1497,7 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 				for _, m := range req.Messages {
 					receivedPromptLen += len(m.Text())
 				}
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -1348,7 +1535,7 @@ func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) 
 					promptSb1365.WriteString(m.Text())
 				}
 				prompt += promptSb1365.String()
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -2252,7 +2439,7 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("Summary: tests were run and passed")}
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: tests were run and passed")}
 			},
 		},
 	}
@@ -2400,7 +2587,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY] forced")}
+				return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced")}
 			},
 		},
 	}
@@ -2481,7 +2668,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY] forced summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\n[CONTEXT SUMMARY] forced summary")}
 			},
 		},
 	}
@@ -2581,7 +2768,7 @@ func TestForceCompact_ReportsGeneratedSummary(t *testing.T) {
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("summary")}
+				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 			},
 		},
 	}
@@ -2783,28 +2970,217 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 	}
 }
 
-// --- buildSummaryPrompt ---
-
-func TestBuildSummaryPrompt_NoInstructions(t *testing.T) {
-	p := buildSummaryPrompt("User: hi\n", "")
-	if !strings.Contains(p, "Your summary MUST include ALL of the following sections") {
-		t.Fatal("default prompt should mandate the standard sections")
+func TestCheckpoint_ShedOrder_PreservesOriginalTask(t *testing.T) {
+	// The first conversation entry is the session's original task statement.
+	// Budget shedding must keep it and drop the oldest entry after it, so a
+	// handoff under pressure never loses what the user asked for.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 400)
+	middle := "middle chatter " + strings.Repeat("m", 400)
+	recent := "recent " + strings.Repeat("r", 400)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: original},
+			{Role: "agent", Text: middle},
+			{Role: "agent", Text: recent},
+		},
 	}
-	if strings.Contains(p, "CALLER INSTRUCTIONS") {
-		t.Fatal("no caller-instruction block expected when instructions empty")
+
+	// maxChars 100 floors the variable budget to 1000: enough for the original
+	// task plus the newest entry once the middle entry is shed.
+	cp := formatCheckpoint(data, nil, 100)
+
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the original task (conversation[0]) must survive shedding:\n%s", cp)
+	}
+	if strings.Contains(cp, middle) {
+		t.Fatalf("the oldest entry after the original task should be shed first:\n%s", cp)
+	}
+	if !strings.Contains(cp, recent) {
+		t.Fatalf("the newest conversation entry should survive:\n%s", cp)
 	}
 }
 
-func TestBuildSummaryPrompt_WithInstructions(t *testing.T) {
-	p := buildSummaryPrompt("User: hi\n", "Drop the vendored build logs; keep the migration plan verbatim.")
-	if !strings.Contains(p, "Drop the vendored build logs") {
-		t.Fatal("caller instructions must appear in the prompt")
+func TestCheckpoint_ShedOrder_PinsEarliestUserEntry(t *testing.T) {
+	// The pin targets the earliest user entry, not index 0: an agent-led prefix
+	// must not redirect the pin onto chatter and shed the original task.
+	lead := "leading agent chatter " + strings.Repeat("l", 400)
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 400)
+	recent := "recent " + strings.Repeat("r", 400)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "agent", Text: lead},
+			{Role: "user", Text: original},
+			{Role: "agent", Text: recent},
+		},
 	}
-	if strings.Contains(p, "Your summary MUST include ALL of the following sections") {
-		t.Fatal("the mandatory-7-sections block must be replaced, not retained, when instructions are present")
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the earliest user entry (the original task) must survive shedding:\n%s", cp)
 	}
-	if !strings.Contains(p, "CALLER INSTRUCTIONS (these take precedence)") {
-		t.Fatal("expected the instruction-led header")
+	if strings.Contains(cp, lead) {
+		t.Fatalf("the agent entry before the original task should be shed first:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_NoUserEntryShedsOldestFirst(t *testing.T) {
+	// With no user entry there is no original task to pin; shedding must keep its
+	// pre-existing oldest-first order rather than protecting an arbitrary entry.
+	old := "OLD AGENT " + strings.Repeat("a", 800)
+	newest := "NEW AGENT " + strings.Repeat("b", 800)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "agent", Text: old},
+			{Role: "agent", Text: newest},
+		},
+	}
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if strings.Contains(cp, old) {
+		t.Fatalf("with no user entry the oldest agent entry should be shed:\n%s", cp)
+	}
+	if !strings.Contains(cp, newest) {
+		t.Fatalf("with no user entry the newest agent entry should survive:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
+	// A pinned original task too large to ever fit must be trimmed, not left to
+	// defeat the checkpoint's size cap and not dropped entirely.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: original},
+			{Role: "agent", Text: "small follow-up"},
+		},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, "ORIGINAL TASK: "+strings.Repeat("t", 900)) {
+		t.Fatalf("the head of the original task should survive trimming:\n%s", cp)
+	}
+	if !strings.Contains(cp, "...") {
+		t.Fatalf("the trimmed original task should carry an ellipsis:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_ShedsNotesToFitBudget(t *testing.T) {
+	// Working notes carry the lowest priority: when the conversation and notes
+	// together exceed the budget, notes are shed before the original task, which
+	// survives intact.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 300)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{{Role: "user", Text: original}},
+		workingNotes: []string{
+			"NOTE-A " + strings.Repeat("a", 500),
+			"NOTE-B " + strings.Repeat("b", 500),
+			"NOTE-C " + strings.Repeat("c", 500),
+		},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the original task should survive intact:\n%s", cp)
+	}
+	if !strings.Contains(cp, "NOTE-C") {
+		t.Fatalf("the newest working note should survive:\n%s", cp)
+	}
+	if strings.Contains(cp, "NOTE-A") {
+		t.Fatalf("the oldest working note should be shed first:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_SkipsWhitespaceUserEntry(t *testing.T) {
+	// A whitespace-only user turn must not become the pinned original task and
+	// redirect shedding onto the real one.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 400)
+	chatter := "chatter " + strings.Repeat("c", 400)
+	recent := "recent " + strings.Repeat("r", 400)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: "   "},
+			{Role: "user", Text: original},
+			{Role: "agent", Text: chatter},
+			{Role: "agent", Text: recent},
+		},
+	}
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the real original task must survive a leading whitespace entry:\n%s", cp)
+	}
+	if strings.Contains(cp, chatter) {
+		t.Fatalf("the oldest entry after the original task should be shed:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_DropsOversizedWorkingNote(t *testing.T) {
+	// A lone working note larger than the budget is shed like any other note
+	// rather than allowed to blow the size cap: notes have the lowest priority.
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{{Role: "user", Text: "task"}},
+		workingNotes: []string{"NOTE " + strings.Repeat("n", 3000)},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, "task") {
+		t.Fatalf("the conversation should survive:\n%s", cp)
+	}
+	if strings.Contains(cp, "NOTE ") {
+		t.Fatalf("the oversized lone note should be shed:\n%s", cp)
+	}
+}
+
+// --- buildSummaryPrompt ---
+
+var updateSummaryPromptGoldens = flag.Bool("update-prompt", false,
+	"rewrite agent/internal/contextmgr/testdata/summaryprompt from the current summary prompts")
+
+// The summary prompt is pinned whole, per shape, in testdata/summaryprompt:
+// the default mandatory-sections prompt and the caller-instruction prompt that
+// replaces those sections. Opaque sentinels stand in for the history and the
+// caller's instructions. This is the repository's pattern for prompt text
+// (agent/testdata/memoryprompt is the same): the golden pins the whole prompt
+// as reviewed output, so a wording change shows up as a reviewed diff instead
+// of a sentence-level assertion; behavior that depends on the prompt's
+// structure is pinned separately (TestSummaryPromptSectionsComeFromThePrompt).
+// Regenerate after an intended wording change with
+//
+//	go test ./agent/internal/contextmgr -run 'TestSummaryPromptGolden$' -count=1 -update-prompt
+//
+// and read the diff.
+func TestSummaryPromptGolden(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, instructions string
+	}{
+		{"default", ""},
+		{"caller-instructions", "CALLER_INSTRUCTIONS_SENTINEL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prompt := buildSummaryPrompt("HISTORY_SENTINEL\n", tc.instructions)
+			agenttest.CheckGolden(t, filepath.Join("testdata", "summaryprompt", tc.name+".md"), []byte(prompt), *updateSummaryPromptGoldens,
+				"Regenerate with `go test ./agent/internal/contextmgr -run 'TestSummaryPromptGolden$' -count=1 -update-prompt` and read the diff.")
+		})
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -89,6 +88,10 @@ type retirementResumeOptions struct {
 	mutationGate  bool   // peer blocks inside the mutation handler until released
 	deletionStore *hubcore.DeletionStore
 	providerGate  bool // replacement adapter blocks the provider call until released
+	// threadAlias gives the retiring daemon a distinct ownership ThreadID beside
+	// its SessionID, so forceStopAliases yields a multi-alias ownership group —
+	// the grouped shape a force stop persists and confirms across.
+	threadAlias string
 }
 
 type retirementStartResult struct {
@@ -125,6 +128,10 @@ func newRetirementResumeFixture(t *testing.T, opts retirementResumeOptions) *ret
 	peerSessionID := opts.peerSessionID
 	if peerSessionID == "" {
 		peerSessionID = f.sessionID
+	}
+	threadAlias := f.sessionID
+	if opts.threadAlias != "" {
+		threadAlias = opts.threadAlias
 	}
 
 	if opts.mutationGate {
@@ -198,7 +205,7 @@ func newRetirementResumeFixture(t *testing.T, opts retirementResumeOptions) *ret
 		Protocol:     appwire.ProtocolVersion,
 		Endpoint:     "ws" + strings.TrimPrefix(f.peer.URL, "http"),
 		SourceID:     "local",
-		ThreadID:     f.sessionID,
+		ThreadID:     threadAlias,
 		SessionID:    f.sessionID,
 		WorkspaceRef: f.ref,
 		StateDir:     f.stateDir,
@@ -1079,27 +1086,30 @@ func TestResumeAfterConfirmedRetirementRecordsResolvedSession(t *testing.T) {
 	}
 }
 
-// captureHubStderr redirects the hub's lifecycle log destination (os.Stderr)
-// into a pipe for the duration of fn and returns what was written. Both pipe
-// ends are closed and os.Stderr restored through t.Cleanup, so an early
-// t.Fatalf or panic cannot leak a descriptor or leave stderr redirected.
+// captureHubStderr redirects the hub's log destination (os.Stderr) into a temp
+// file for the duration of fn and returns what was written. The file is closed
+// and os.Stderr restored through t.Cleanup, so an early t.Fatalf or panic
+// cannot leak a descriptor or leave stderr redirected. It captures to a file,
+// not a pipe: a pipe's writer blocks when its buffer fills, and on a busy Mac
+// that buffer is 512 bytes (#2495).
 func captureHubStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
+	stderr, err := os.CreateTemp(t.TempDir(), "hub-stderr-")
 	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
+		t.Fatalf("os.CreateTemp: %v", err)
 	}
 	t.Cleanup(func() {
 		os.Stderr = original
-		_ = writeEnd.Close()
-		_ = readEnd.Close()
+		_ = stderr.Close()
 	})
-	os.Stderr = writeEnd
+	os.Stderr = stderr
 	fn()
-	_ = writeEnd.Close()
 	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
+	data, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatalf("os.ReadFile: %v", err)
+	}
 	return string(data)
 }
 
@@ -1523,6 +1533,29 @@ func TestAwaitRetiredOwnerFallsBackToThreadID(t *testing.T) {
 	}
 }
 
+// TestAwaitRetiredOwnerOpensTheOwnerAsRetiring pins the flake behind
+// TestE2E_SendPromptToARetiredSession: a committed-retiring daemon releases its
+// session API log before the process exits, and the force-stop verifier treats
+// a process without that log as unverified. Opened as an ordinary target, the
+// owner in that window was refused and awaitRetiredOwner returned
+// LifecycleUnavailable("retiring") at once, so a prompt sent during retirement
+// failed instead of resuming. The owner must be opened as a Retiring target,
+// whose handle confirms exit without requiring the log.
+func TestAwaitRetiredOwnerOpensTheOwnerAsRetiring(t *testing.T) {
+	entry := rendezvous.Entry{PID: 4332, SessionID: "retiring-session", StateDir: t.TempDir(), StartedAt: time.Now()}
+	var opened daemonprocess.Target
+	controller := forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+		opened = target
+		return nil, daemonprocess.ErrExited
+	})
+	if err := awaitRetiredOwner(t.Context(), hubcore.WebConfig{DaemonProcesses: controller}, entry); err != nil {
+		t.Fatalf("awaitRetiredOwner: %v", err)
+	}
+	if !opened.Retiring {
+		t.Fatalf("opened the retiring owner as %+v; want Retiring so its released API log does not refuse the exit wait", opened)
+	}
+}
+
 // TestResumeAfterConfirmedRetirementFreshReplacementIsNotAwaited is the round-7
 // regression for the replacement-daemon hang. A concurrent resume can replace
 // the retiring daemon before this retry samples the entry-time owner at
@@ -1628,5 +1661,130 @@ func TestResumeAfterConfirmedRetirementFreshReplacementIsNotAwaited(t *testing.T
 				t.Fatalf("recovery did not return promptly: %v", ctx.Err())
 			}
 		})
+	}
+}
+
+// TestRetirementAdmissionAdmitsResumeOnlySend is RoboRev's round-13 Medium at
+// its source: retirementAdmissionRecoveryError re-checks an already-admitted
+// turn/start's fences, so it must apply the SAME resume-only carve-out the
+// send-side admission applies (sessionAdmitsResumeRequired), not refuse on
+// state.ResumeRequired alone. The request context and its identity carry the
+// marker; a request without it and a Stop drain keep their fence.
+func TestRetirementAdmissionAdmitsResumeOnlySend(t *testing.T) {
+	cfg := resumeOnlyRecoveryConfig(t)
+	const id = "retirement-resume-only-admission"
+	stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+	ref := "local:" + id
+	epoch := sessionRecoveryState(cfg, ref, "").Epoch
+
+	turnCtx := admitSessionConnection(admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(
+		appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref, ClientMutationID: "send"})), cfg)
+	if err := retirementAdmissionRecoveryError(turnCtx, cfg, ref, "", epoch); err != nil {
+		t.Fatalf("retirement admission refused an admitted resume-only send: %v", err)
+	}
+
+	// A request that is not the admitted turn/start carries no marker: the
+	// resume-only fence still refuses it.
+	bare := admitSessionConnection(t.Context(), cfg)
+	if err := retirementAdmissionRecoveryError(bare, cfg, ref, "", epoch); !isSessionRecoveryAdmissionError(err) {
+		t.Fatalf("retirement admission = %v, want the resume-required refusal without the turn/start marker", err)
+	}
+
+	// A Stop begun after admission keeps the refusal, marker or not.
+	finish := cfg.ResumeLocks.BeginForceStop([]string{id})
+	t.Cleanup(func() { finish.Finish(false) })
+	if err := retirementAdmissionRecoveryError(turnCtx, cfg, ref, "", epoch); !isSessionRecoveryAdmissionError(err) {
+		t.Fatalf("retirement admission = %v, want the resume-required refusal during a Stop drain", err)
+	}
+}
+
+// TestRetirementResumeAdmitsResumeOnlyFoldableSend drives the whole retirement
+// retry for a send the hub admitted under the resume-only carve-out: the
+// session sits under ResumeRequired with a confirmed force-stop exit while the
+// daemon that owns it is still live and now returns the typed retiring error.
+// Before the fix retirementAdmissionRecoveryError refused this send with the
+// resume-required fence, so mutationResumeFailureError parked it as a blocked
+// mutation instead of delivering it. With the carve-out applied on the
+// retirement path too, the send resumes the session and reaches the
+// replacement daemon.
+func TestRetirementResumeAdmitsResumeOnlyFoldableSend(t *testing.T) {
+	f := newRetirementResumeFixture(t, retirementResumeOptions{})
+	stageResumeOnlyFenceConfirmedExit(t, f.locks, f.sessionID)
+	client := f.dial(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	done := f.startAsync(ctx, client, "resume-only-retirement", "resume and deliver")
+	f.awaitWaitBehindOwner(ctx, t, done)
+	f.confirmExit(t)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("admitting the send under the resume-only fence: %v", result.err)
+	}
+	if result.resp.Turn.ID == "" {
+		t.Fatalf("turn/start under the resume-only fence returned no turn: %+v", result.resp)
+	}
+	if got := f.launches.Load(); got != 1 {
+		t.Fatalf("replacement launches = %d, want 1", got)
+	}
+	if got := f.accepted.Load(); got != 1 {
+		t.Fatalf("accepted turns = %d, want 1 (the prompt must reach the replacement)", got)
+	}
+}
+
+// TestRetirementResumeAdmitsResumeOnlyFoldableGroupedSend is the round-14
+// regression for RoboRev's Medium on fa0f567: the resume-only carve-out matched
+// the request's admission against the ONE id the request named, but
+// resumeAfterConfirmedRetirement re-checks that SAME admission for every alias
+// in the resolved ownership group. A force stop persists ResumeRequired and
+// confirms ExitConfirmed for the whole group (hubcore.PersistForceStopWithOwner /
+// ConfirmForceStop), and forceStopAliases yields more than one id for a grouped
+// daemon, so the alias the request did not name was refused on ResumeRequired
+// alone. The send must resume the grouped session and reach the replacement,
+// not park as a blocked mutation.
+func TestRetirementResumeAdmitsResumeOnlyFoldableGroupedSend(t *testing.T) {
+	// A distinct ownership ThreadID beside the SessionID is forceStopAliases'
+	// SessionID + ThreadID shape: the live daemon reports both.
+	f := newRetirementResumeFixture(t, retirementResumeOptions{threadAlias: hubtest.SessionID(t)})
+	aliases := forceStopAliases(f.oldEntry)
+	if len(aliases) < 2 {
+		t.Fatalf("fixture did not stage a grouped ownership alias set: %v", aliases)
+	}
+	// The confirmed-exit resume-only fence spread over the WHOLE ownership group,
+	// exactly the obligation a force stop leaves: every alias carries
+	// ResumeRequired with a proven exit.
+	finish := f.locks.BeginForceStop(aliases)
+	if err := f.locks.PersistForceStop(aliases, f.sessionID); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	finish.Finish(true)
+	if err := f.locks.ConfirmForceStop(f.sessionID); err != nil {
+		t.Fatalf("ConfirmForceStop: %v", err)
+	}
+	for _, id := range aliases {
+		if state := f.locks.RecoveryState(id); !state.ResumeRequired || state.Stopping != 0 || !state.ExitConfirmed {
+			t.Fatalf("grouped fence not staged on %q: %+v", id, state)
+		}
+	}
+
+	client := f.dial(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	done := f.startAsync(ctx, client, "grouped-resume-only-retirement", "resume and deliver")
+	f.awaitWaitBehindOwner(ctx, t, done)
+	f.confirmExit(t)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("admitting the grouped send under the resume-only fence: %v", result.err)
+	}
+	if result.resp.Turn.ID == "" {
+		t.Fatalf("grouped turn/start under the resume-only fence returned no turn: %+v", result.resp)
+	}
+	if got := f.launches.Load(); got != 1 {
+		t.Fatalf("replacement launches = %d, want 1", got)
+	}
+	if got := f.accepted.Load(); got != 1 {
+		t.Fatalf("accepted turns = %d, want 1 (the prompt must reach the replacement)", got)
 	}
 }

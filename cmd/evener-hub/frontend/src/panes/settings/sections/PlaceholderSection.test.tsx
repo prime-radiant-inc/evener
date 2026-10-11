@@ -1,8 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { PlaceholderSection } from "./PlaceholderSection";
-
-afterEach(cleanup);
 
 test("shows the resolved section label as its title", () => {
   render(<PlaceholderSection sectionId="theme" />);

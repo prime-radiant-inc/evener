@@ -7,11 +7,7 @@ import {
 } from "./navigationActionRepository";
 
 function backend(initial: unknown = null) {
-	const values = new Map<string, unknown>(
-		initial === null
-			? []
-			: [["evener.native.navigation-action.hub-a", initial]],
-	);
+	const values = new Map<string, unknown>(initial === null ? [] : [["evener.native.navigation-action.hub-a", initial]]);
 	let next = 0;
 	const store: NavigationActionBackend = {
 		createId: () => `id-${++next}`,
@@ -20,8 +16,7 @@ function backend(initial: unknown = null) {
 			values.set(key, value);
 		},
 		deleteIf: (key, expected) => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected))
-				return false;
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
 			values.delete(key);
 			return true;
 		},
@@ -61,9 +56,7 @@ it("fences duplicate begin, stale acknowledgement, and stale finish", () => {
 			params: { kind: "project", id: "x", favorited: true },
 		}),
 	).toThrow();
-	expect(() =>
-		actions.acknowledge({ ...checkpoint, id: "old" }, receipt),
-	).toThrow();
+	expect(() => actions.acknowledge({ ...checkpoint, id: "old" }, receipt)).toThrow();
 	expect(actions.finish({ ...checkpoint, id: "old" })).toBe(false);
 });
 
@@ -79,18 +72,14 @@ it("isolates hubs and preserves a pending write when storage reads or writes fai
 			throw new Error("read");
 		},
 	};
-	expect(() => nativeNavigationActions("hub-a", failing).load()).toThrow(
-		"read",
-	);
+	expect(() => nativeNavigationActions("hub-a", failing).load()).toThrow("read");
 	const failingWrite: NavigationActionBackend = {
 		...b.store,
 		set: () => {
 			throw new Error("write");
 		},
 	};
-	expect(() =>
-		nativeNavigationActions("hub-b", failingWrite).begin(operation),
-	).toThrow("write");
+	expect(() => nativeNavigationActions("hub-b", failingWrite).begin(operation)).toThrow("write");
 	expect(a.load()).toEqual(checkpoint);
 });
 

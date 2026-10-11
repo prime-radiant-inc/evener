@@ -1460,7 +1460,7 @@ func TestHandleModelError_ContentFilterRetry_PreservesConcurrentAppendDuringSlow
 		Responder: func(req llm.Request) llm.Response {
 			close(entered)
 			<-proceed
-			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), blockingProvider+"/model")
@@ -1612,7 +1612,6 @@ func testManageContextShrinksBaselineWithStrategy(t *testing.T, withGoalSteering
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		ContextStrategy:  "memory-crystals",
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
@@ -1740,7 +1739,6 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline(t *tes
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		ContextStrategy:  "memory-crystals",
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
@@ -2424,7 +2422,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := readTranscriptFull(tpath)
+	data, rerr := readTranscriptFull(tpath, "")
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
@@ -2436,6 +2434,7 @@ func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 }
 
 func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	comm := communicateCall("c1", "ok")
@@ -2468,7 +2467,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if tpath == "" {
 		t.Fatal("TranscriptPath is empty")
 	}
-	data, err := readTranscriptFull(tpath)
+	data, err := readTranscriptFull(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -2512,6 +2511,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 }
 
 func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		endpoint string
@@ -2556,7 +2556,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 			transcriptPath := sess.TranscriptPath()
 			sess.Close()
 
-			data, err := readTranscriptFull(transcriptPath)
+			data, err := readTranscriptFull(transcriptPath, "")
 			if err != nil {
 				t.Fatalf("readTranscriptFull: %v", err)
 			}
@@ -2574,6 +2574,7 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 }
 
 func TestSingleAttemptRequestMetadataCreatesSemanticGroup(t *testing.T) {
+	t.Parallel()
 	req, attempt := singleAttemptRequestMetadata(llm.Request{
 		Model:       "gpt-5.2",
 		Provider:    "openai",
@@ -2699,7 +2700,7 @@ func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := readTranscriptFull(tpath)
+	data, rerr := readTranscriptFull(tpath, "")
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}

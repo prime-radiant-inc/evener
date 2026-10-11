@@ -194,11 +194,10 @@ export function selectPinSections(state: NavigationStoreState): LoadedPinSection
     sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === section.id),
   }));
 }
-/** No caller outside `selectExpanded` today, but kept exported: the core's
- * private `selectSummaries` in `store.ts` duplicates this scan for the boot
- * fan-out, unsorted where this sorts by catalog order then offset. Folding
- * the two would change which projects hydrate first under the boot pool, so
- * this stays a public, sorted counterpart until that's resolved (#1596). */
+/** The catalog's projects in catalog order then offset. The core's boot
+ * fan-out reads this to decide which expanded projects hydrate first, so the
+ * order is deterministic and independent of the resource map's insertion
+ * order. */
 export function selectProjectSummaries(state: NavigationStoreState): NavigationProjectSummary[] {
   const catalogOrder = { projects: 0, archived_projects: 1, test_runs: 2 } as const;
   return [...state.resources.values()]
@@ -246,21 +245,12 @@ export function selectSessionSummary(ref: string, state: NavigationStoreState): 
 }
 export const findSessionNode = selectSessionSummary;
 
-/** The exact number of live-watch rows the hub omitted from `ref`'s summary
- * (over the per-session cap, unrepresentable, or shed by the byte fitter). Zero
- * when the session is not materialized or carries no count. The Activity panel
- * header reads this so it never silently undercounts. */
-export function selectSessionOmittedWatches(ref: string, state: NavigationStoreState): number {
-  const summary = selectSessionSummary(ref, state);
-  return summary?.omitted_watches ?? 0;
-}
-
-/** The armed subset of the rows `selectSessionOmittedWatches` counts. A session
- * whose armed watches exceed the hub's per-session cap retains only the first
- * of them, so the retained list alone cannot state the true armed total; the
- * rail and the Activity panel add this to the armed rows they can see. Zero
- * when the session is not materialized or carries no count. */
-export function selectSessionOmittedArmedWatches(ref: string, state: NavigationStoreState): number {
-  const summary = selectSessionSummary(ref, state);
-  return summary?.omitted_armed_watches ?? 0;
+/** The subagent counts a row's tally chip shows, or null when there is
+ * nothing to show. Only a live root carries a tally (past and archived roots
+ * show none), and done subagents are history, so a tally with nothing running
+ * or failed shows nothing. */
+export function subagentTallyToShow(session: NavigationSessionSummary): { running: number; failed: number } | null {
+  const tally = session.subagents;
+  if (!session.live || !tally || (tally.running === 0 && tally.failed === 0)) return null;
+  return { running: tally.running, failed: tally.failed };
 }

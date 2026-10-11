@@ -5,6 +5,7 @@ import styles from "./currentwork.module.css";
 export interface CurrentWorkProps {
   task?: string;
   goal?: string;
+  goalStatus?: string;
   onOpenTasks(): void;
   onEditGoal(): void;
 }
@@ -17,18 +18,39 @@ const CLASS = {
   flag: requireClass(styles.flag, "currentwork.module.css", "flag"),
   label: requireClass(styles.label, "currentwork.module.css", "label"),
   value: requireClass(styles.value, "currentwork.module.css", "value"),
+  status: requireClass(styles.status, "currentwork.module.css", "status"),
+  statusBlocked: requireClass(styles.statusBlocked, "currentwork.module.css", "statusBlocked"),
   link: requireClass(styles.link, "currentwork.module.css", "link"),
   divider: requireClass(styles.divider, "currentwork.module.css", "divider"),
   visuallyHidden: requireClass(styles.visuallyHidden, "currentwork.module.css", "visuallyHidden"),
 };
 
-export function CurrentWork({ task, goal, onOpenTasks, onEditGoal }: CurrentWorkProps) {
+// The wire status is a free string (agent/internal/goal's enum does not
+// survive the wire), so the display vocabulary lives at this seam: known
+// statuses map to their display word, anything else renders as written.
+// Own-property lookups only, so a prototype-named string ("constructor",
+// "__proto__") falls through like any other unknown instead of resolving
+// an inherited Object.prototype value.
+const GOAL_STATUS_DISPLAY: Record<string, string> = {
+  active: "Active",
+  complete: "Complete",
+  blocked: "Blocked",
+};
+
+export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }: CurrentWorkProps) {
   const currentTask = task?.trim() ?? "";
   const currentGoal = goal?.trim() ?? "";
+  const currentGoalStatus = goalStatus?.trim() ?? "";
+  const statusKey = currentGoalStatus.toLowerCase();
+  const statusDisplay = Object.hasOwn(GOAL_STATUS_DISPLAY, statusKey)
+    ? GOAL_STATUS_DISPLAY[statusKey]
+    : currentGoalStatus;
+  const statusSuffix = statusDisplay ? ` (${statusDisplay})` : "";
 
   const announcement = [
     ...(currentTask ? [`Task: ${currentTask}`] : []),
-    ...(currentGoal ? [`Goal: ${currentGoal}`] : []),
+    // Announced here too, not only on the row: a visual-only status change is silent to screen readers.
+    ...(currentGoal ? [`Goal: ${currentGoal}${statusSuffix}`] : []),
   ].join(". ");
 
   return (
@@ -71,6 +93,14 @@ export function CurrentWork({ task, goal, onOpenTasks, onEditGoal }: CurrentWork
               >
                 {currentGoal}
               </button>
+              {currentGoalStatus && (
+                <span
+                  className={statusKey === "blocked" ? `${CLASS.status} ${CLASS.statusBlocked}` : CLASS.status}
+                  data-testid="current-work-goal-status"
+                >
+                  {statusDisplay}
+                </span>
+              )}
             </div>
           )}
         </div>

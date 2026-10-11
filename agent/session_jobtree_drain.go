@@ -33,7 +33,7 @@ type drainGraceChild struct {
 // a stalled tree owes no live work, so waiting two minutes before giving up
 // costs nothing but guarantees an otherwise-forever hang cannot survive it.
 // A package var (not a const) so tests override and restore it without wall
-// time, matching LaneClosePassBudget in jobs.go. It is EXPORTED because the
+// time, matching the close-cascade budget in jobs.go. It is EXPORTED because the
 // drain's only end-to-end shape is a whole one-shot `evener run`, which lives
 // in another module (cmd/evener) and so cannot reach an unexported var — the
 // same reason SessionConfig.LLMRetryPolicy is exported. Nothing in production
@@ -287,7 +287,9 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	if s.hasPendingDelegateDeliveries() {
 		return true, nil
 	}
-	if s.hasPendingRootDelegateAttention() {
+	// A Stop's park defers pending attention to re-engagement, so it must
+	// not hold a drain open either.
+	if s.pendingRootDelegateAttention() {
 		return true, nil
 	}
 	if s.hasPendingDelegateAttentionArmRetry() {
@@ -297,10 +299,7 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
-		sub.mu.Lock()
-		active := sub.running || sub.finalizing || sub.driving
-		child := sub.sess
-		sub.mu.Unlock()
+		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
 			// A deliberately stopped or fatally failed child is never driven —
 			// driveChildrenWithUndeliveredAttention skips all three gates — so its
@@ -539,6 +538,22 @@ func (s *Session) drainSubtreeIsStalled() (bool, error) {
 	return !live, nil
 }
 
+// subagentActive reports whether sub's child is still at work, and returns
+// the child. A child is at work while it runs, is driven or finalizes, and
+// until its finalize tail releases the delegate: the child stops finalizing
+// locally before the tail announces the finished generation, so the result
+// may not have reached this session yet.
+func (s *Session) subagentActive(sub *subagent) (bool, *Session) {
+	sub.mu.Lock()
+	active := sub.running || sub.finalizing || sub.driving
+	child := sub.sess
+	sub.mu.Unlock()
+	if !active && child != nil && child.owningDelegateID != "" {
+		active = s.delegateController.stillFinalizing(child.owningDelegateID)
+	}
+	return active, child
+}
+
 // subtreeHasLiveComponent reports whether any live or deliverable drain
 // component (see drainSubtreeIsStalled) exists in this session or any live,
 // non-gated descendant.
@@ -554,7 +569,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	if s.hasPendingDelegateDeliveries() {
 		return true, nil
 	}
-	if s.hasPendingRootDelegateAttention() {
+	// A Stop's park defers pending attention to re-engagement, so it must
+	// not hold a drain open either.
+	if s.pendingRootDelegateAttention() {
 		return true, nil
 	}
 	if s.hasPendingDelegateAttentionArmRetry() {
@@ -564,10 +581,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
-		sub.mu.Lock()
-		active := sub.running || sub.finalizing || sub.driving
-		child := sub.sess
-		sub.mu.Unlock()
+		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id)) {
 			continue
 		}
@@ -1066,7 +1080,26 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				return lastResult, err
 			}
 		}
-		if s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention() {
+		// A steer admitted while this delegate's run is parked here must not
+		// wait for the drain to end on its own (#2796): an owned background job
+		// can hold the drain open indefinitely, and when nothing else is queued
+		// no notification turn will carry the admission, so the caller's
+		// "steered" would be a silent no-op. Stop draining and let the run take
+		// its steering continuation, whose model request binds and drains the
+		// admission. The steer is consumed before the run re-enters this drain,
+		// so the early return does not spin.
+		//
+		// A queued notification (or root attention) already runs a turn whose
+		// model request binds the steering with the lease context, so the gate
+		// below consumes it and the long-standing notification/steering merge is
+		// preserved; only the no-other-driver case returns early.
+		if s.hasPendingStableSteering() && s.peekNotifications() == 0 && !s.pendingRootDelegateAttention() {
+			return lastResult, nil
+		}
+		// Parked attention does not drive the rung: a Stop's park defers it,
+		// and the notification turn would only stand down at the admission
+		// gate and spin the drain loop at full rate.
+		if s.peekNotifications() > 0 || s.pendingRootDelegateAttention() {
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has

@@ -5,11 +5,12 @@ import type {
   NavigationReadResponse,
   NavigationSessionSummary,
 } from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 import { navigationRootContainerKey, type ResourceKey } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetWorkspaceStoreForTests } from "../shell/workspace";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
@@ -20,7 +21,7 @@ const navigationCapability = capability;
 const navigationManifest = (generationId = "generation_test") => manifest({ generation_id: generationId });
 const navigationInitialize = (generationId = "generation_test"): InitializeResponse => ({
   serverInfo: { name: "fake", version: "1" },
-  protocolVersion: "evener-appwire-v5",
+  protocolVersion: APPWIRE_PROTOCOL_VERSION,
   sourceId: "fake",
   features: {
     threadList: false,
@@ -61,7 +62,7 @@ const navigationReadResponse = (generationId = "generation_test"): NavigationRea
 
 function scriptNavigationManifest(client: FakeClient, generationId: string | (() => string) = "generation_test"): void {
   client.on("evener/navigation/read", (params: NavigationReadParams) => {
-    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
+    expect(params).toEqual({ resource: "manifest", representationVersion: 3 });
     return navigationReadResponse(typeof generationId === "function" ? generationId() : generationId);
   });
 }
@@ -70,26 +71,8 @@ const flushMicrotasks = async (): Promise<void> => {
   for (let i = 0; i < 12; i++) await Promise.resolve();
 };
 
-// localStorage shim (Node shadows jsdom's; see prefs.test.ts's identical note)
-// so the prefs setters this file drives actually round-trip.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function node(ref: string, state: string, askPending = false): NavigationSessionSummary {
@@ -121,6 +104,10 @@ function attentionFromNodes(nodes: NavigationSessionSummary[]) {
       project: n.project ?? "",
       level: n.state === "errored" ? "error" : "needs_you",
       askPending: n.ask_pending === true,
+      approvalPending: n.approval_pending === true,
+      // The hub's rule: awaiting with no question is the needs_response rest.
+      // Absent when false, as the hub's omitempty encodes it.
+      ...(n.state === "awaiting" && n.ask_pending !== true ? { needsResponse: true } : {}),
       prevLevel: "idle",
     })),
     summary: { needsYou, error, working: 0 },
@@ -169,12 +156,6 @@ beforeEach(() => {
   resetNotificationsForTests();
   resetNavigationStoreForTests();
   resetLeaderForTests();
-  // baseTitle() (notifications/title.ts) reads workspaceStore's focused pane
-  // - workspaceStore is a module singleton shared with every other file in
-  // the worker, so this file's own "no focused pane -> 'evener hub'" title
-  // assertions need a pristine workspace regardless of what an earlier file
-  // left focused.
-  resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
   resetPrefsStoreForTests();
@@ -227,7 +208,7 @@ async function boot(baseline: {
     client = new FakeClient("ready");
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -257,7 +238,7 @@ describe("initNotifications lifecycle", () => {
     scriptNavigationManifest(client);
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -266,9 +247,9 @@ describe("initNotifications lifecycle", () => {
     initNotifications();
     await flushMicrotasks();
 
-    expect(navigationStore.getState().mode).toBe("v2");
+    expect(navigationStore.getState().mode).toBe("v3");
     expect(client.calls).toEqual([
-      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 3 } },
     ]);
   });
 
@@ -287,7 +268,7 @@ describe("initNotifications lifecycle", () => {
     const client = new FakeClient("ready");
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability("generation_test", 2),
@@ -320,7 +301,7 @@ describe("initNotifications lifecycle", () => {
 
     expect(client.calls).toContainEqual({
       method: "evener/navigation/read",
-      params: { resource: "manifest", representationVersion: 2 },
+      params: { resource: "manifest", representationVersion: 3 },
     });
     expect(navigationStore.getState().manifest?.data).not.toBeNull();
   });
@@ -460,7 +441,7 @@ describe("edge-fire", () => {
     setFocused(false);
     setLeaderForTests(true);
     navigationStore.setState({
-      mode: "v2",
+      mode: "v3",
       attention: attentionFromNodes([node("local:baseline", "awaiting")]),
     });
     expect(fires()).toEqual({ os: 0, sound: 0 });
@@ -499,21 +480,34 @@ describe("edge-fire", () => {
 });
 
 describe("loudScope", () => {
-  test("asks: a plain your-move needs_you is silent; an ask fires", async () => {
+  // A plain reply rests idle and never enters attention; a needs_response
+  // rest asks for a reply and is as loud as a question.
+  test("asks: a warning is silent; a needs_response rest fires", async () => {
     armPrefs("asks");
     await boot(attentionFromNodes([]));
-    navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("local:w", "warning")]) });
     expect(fires()).toEqual({ os: 0, sound: 0 });
     navigationStore.setState({
-      attention: attentionFromNodes([node("local:a", "awaiting", false), node("local:b", "awaiting", true)]),
+      attention: attentionFromNodes([node("local:w", "warning"), node("local:a", "awaiting", false)]),
     });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 
-  test("all: a plain your-move needs_you fires", async () => {
+  test("all: a warning fires", async () => {
     armPrefs("all");
     await boot(attentionFromNodes([]));
-    navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("local:w", "warning")]) });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
+  // The hub promotes a session blocked on an approval to needs_you while it
+  // still reports "active"; approvalPending is what makes it loud.
+  test("asks: an approval fires like a question", async () => {
+    armPrefs("asks");
+    await boot(attentionFromNodes([]));
+    navigationStore.setState({
+      attention: attentionFromNodes([{ ...node("local:a", "active"), approval_pending: true }]),
+    });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 });
@@ -562,7 +556,7 @@ describe("reconnect re-baselines silently", () => {
     await flushMicrotasks();
     expect(client.calls).toHaveLength(2); // one reset reload, not reset plus another read
     expect(client.calls.slice(1)).toEqual([
-      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 3 } },
     ]);
     expect(navigationStore.getState().clientGenerationID).toBe("generation_next");
     expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
@@ -576,7 +570,7 @@ describe("reconnect re-baselines silently", () => {
         releaseOld = resolve;
       }).then((cap) => ({
         serverInfo: { name: "old", version: "1" },
-        protocolVersion: "evener-appwire-v5",
+        protocolVersion: APPWIRE_PROTOCOL_VERSION,
         sourceId: "old",
         features: {} as never,
         navigation: cap,
@@ -606,7 +600,7 @@ describe("reconnect re-baselines silently", () => {
     const fake = new FakeClient("ready");
     fake.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -649,7 +643,7 @@ describe("reconnect re-baselines silently", () => {
     const fake = new FakeClient("ready");
     fake.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -738,7 +732,7 @@ describe("reconnect re-baselines silently", () => {
     scriptNavigationManifest(client);
     client.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),
@@ -758,7 +752,7 @@ describe("reconnect re-baselines silently", () => {
     const fake = new FakeClient("ready");
     fake.scriptConnect(() => ({
       serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: APPWIRE_PROTOCOL_VERSION,
       sourceId: "fake",
       features: {} as never,
       navigation: navigationCapability(),

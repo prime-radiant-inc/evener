@@ -403,24 +403,24 @@ func TestAuditSignatureFormatMore(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// truncate: edge cases
+// Truncate: edge cases
 // ---------------------------------------------------------------------------
 
 func TestTruncateShortStringMore(t *testing.T) {
-	if truncate("hello", 10) != "hello" {
+	if Truncate("hello", 10) != "hello" {
 		t.Fatalf("expected 'hello' for short string")
 	}
 }
 
 func TestTruncateExactLengthMore(t *testing.T) {
-	if truncate("hello", 5) != "hello" {
+	if Truncate("hello", 5) != "hello" {
 		t.Fatalf("expected 'hello' for exact length")
 	}
 }
 
 func TestTruncateLongStringMore(t *testing.T) {
-	result := truncate("hello world this is long", 10)
-	// truncate may add "..." so result can be slightly longer
+	result := Truncate("hello world this is long", 10)
+	// Truncate may add "..." so result can be slightly longer
 	if len(result) > 13 {
 		t.Fatalf("expected max ~13 chars (10 + ellipsis), got %d", len(result))
 	}

@@ -258,7 +258,7 @@ func HandleAuth(token string) http.HandlerFunc {
 		}
 		setAuthCookie(w, token)
 		next := r.URL.Query().Get("next")
-		if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		if !isLocalNextPath(next) {
 			next = "/"
 		}
 		// This redirect processes a capability URL. Never let a shared or
@@ -267,6 +267,35 @@ func HandleAuth(token string) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		http.Redirect(w, r, next, http.StatusFound)
 	}
+}
+
+// isLocalNextPath reports whether next is safe to hand to http.Redirect as an
+// origin-relative local path. A browser parses the Location value with WHATWG
+// URL semantics, which normalize two shapes the plain "begins with / but not
+// //" guard misses: a backslash is folded to "/" for the special http(s)
+// scheme, so "/\evil" becomes the network-path reference "//evil" and escapes
+// the origin; and ASCII tab, newline, and carriage return are stripped before
+// parsing, so "/\t/evil" collapses to "//evil" likewise. Reject any literal
+// backslash or control character, then confirm the parsed target is
+// origin-relative with no scheme or host. A percent-encoded backslash stays
+// encoded in a browser path and is therefore a legitimate local path.
+func isLocalNextPath(next string) bool {
+	if next == "" || next[0] != '/' || strings.HasPrefix(next, "//") {
+		return false
+	}
+	if strings.Contains(next, `\`) {
+		return false
+	}
+	for i := 0; i < len(next); i++ {
+		if next[i] < 0x20 || next[i] == 0x7f {
+			return false
+		}
+	}
+	u, err := url.Parse(next)
+	if err != nil || u.Scheme != "" || u.Host != "" {
+		return false
+	}
+	return strings.HasPrefix(u.Path, "/")
 }
 
 // AuthURLFor constructs the visible auth URL for a given external base

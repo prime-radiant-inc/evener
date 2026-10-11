@@ -16,6 +16,7 @@ import (
 // the repeated-call breaker must not refuse the re-dispatch even though the
 // signature has already failed twice.
 func TestRerunToolWithGrant_HumanApprovedRetryIsNotParked(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
 	calls := 0
 	s.RegisterTool("denied_probe", "always fails identically", map[string]any{"type": "object"},
@@ -69,6 +70,7 @@ func approveNextEscalation(t *testing.T, s *Session) {
 // gone, and escalateOnSandboxDenial can never raise the card that would let the
 // human approve it a third time.
 func TestRerunToolWithGrant_RepeatedApprovalsKeepTheCallDispatchable(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
 	s.SetSubscriberCountFunc(func() int { return 1 })
 

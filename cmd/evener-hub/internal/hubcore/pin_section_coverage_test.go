@@ -21,10 +21,10 @@ func TestPinSectionStoreNilGuardsReturnZeroValues(t *testing.T) {
 	if sections, err := s.Sections(); err != nil || len(sections) != 0 {
 		t.Fatalf("nil Sections = %+v, %v", sections, err)
 	}
-	if sec, changed, err := s.Assign("x", "y", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
+	if sec, changed, err := s.Assign("x", "", "y", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
 		t.Fatalf("nil Assign = %+v, %v, %v", sec, changed, err)
 	}
-	if sec, changed, err := s.CreateOrReuseAndAssign("n", "y", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
+	if sec, changed, err := s.CreateOrReuseAndAssign("n", "", "y", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
 		t.Fatalf("nil CreateOrReuseAndAssign = %+v, %v, %v", sec, changed, err)
 	}
 	if sec, changed, err := s.Rename("x", "n", time.Unix(1, 0)); err != nil || changed || sec.ID != "" {
@@ -33,10 +33,10 @@ func TestPinSectionStoreNilGuardsReturnZeroValues(t *testing.T) {
 	if count, changed, err := s.DeleteSection("x"); err != nil || changed || count != 0 {
 		t.Fatalf("nil DeleteSection = %d, %v, %v", count, changed, err)
 	}
-	if ok, err := s.DeleteSession("y"); err != nil || ok {
+	if ok, err := s.DeleteSession("", "y"); err != nil || ok {
 		t.Fatalf("nil DeleteSession = %v, %v", ok, err)
 	}
-	if ok, err := s.Unpin("y"); err != nil || ok {
+	if ok, err := s.Unpin("", "y"); err != nil || ok {
 		t.Fatalf("nil Unpin = %v, %v", ok, err)
 	}
 	if pins, err := s.Assignments(); err != nil || len(pins) != 0 {
@@ -50,10 +50,10 @@ func TestPinSectionStoreEmptyPathGuardsReturnZeroValues(t *testing.T) {
 	if _, err := s.Sections(); err != nil {
 		t.Fatalf("empty Sections err = %v", err)
 	}
-	if _, _, err := s.Assign("x", "y", time.Unix(1, 0)); err != nil {
+	if _, _, err := s.Assign("x", "", "y", time.Unix(1, 0)); err != nil {
 		t.Fatalf("empty Assign err = %v", err)
 	}
-	if _, _, err := s.CreateOrReuseAndAssign("n", "y", time.Unix(1, 0)); err != nil {
+	if _, _, err := s.CreateOrReuseAndAssign("n", "", "y", time.Unix(1, 0)); err != nil {
 		t.Fatalf("empty CreateOrReuseAndAssign err = %v", err)
 	}
 	if _, _, err := s.Rename("x", "n", time.Unix(1, 0)); err != nil {
@@ -62,7 +62,7 @@ func TestPinSectionStoreEmptyPathGuardsReturnZeroValues(t *testing.T) {
 	if _, _, err := s.DeleteSection("x"); err != nil {
 		t.Fatalf("empty DeleteSection err = %v", err)
 	}
-	if _, err := s.DeleteSession("y"); err != nil {
+	if _, err := s.DeleteSession("", "y"); err != nil {
 		t.Fatalf("empty DeleteSession err = %v", err)
 	}
 	if _, err := s.Assignments(); err != nil {
@@ -80,10 +80,10 @@ func TestPinSectionStoreOpenDBFailureReturnsError(t *testing.T) {
 	if _, err := store.Sections(); err == nil || !strings.Contains(err.Error(), "driver not registered") {
 		t.Fatalf("Sections openDB error = %v", err)
 	}
-	if _, _, err := store.Assign("x", "y", time.Unix(1, 0)); err == nil {
+	if _, _, err := store.Assign("x", "", "y", time.Unix(1, 0)); err == nil {
 		t.Fatalf("Assign openDB should fail")
 	}
-	if _, _, err := store.CreateOrReuseAndAssign("n", "y", time.Unix(1, 0)); err == nil {
+	if _, _, err := store.CreateOrReuseAndAssign("n", "", "y", time.Unix(1, 0)); err == nil {
 		t.Fatalf("CreateOrReuseAndAssign openDB should fail")
 	}
 	if _, _, err := store.Rename("x", "n", time.Unix(1, 0)); err == nil {
@@ -92,7 +92,7 @@ func TestPinSectionStoreOpenDBFailureReturnsError(t *testing.T) {
 	if _, _, err := store.DeleteSection("x"); err == nil {
 		t.Fatalf("DeleteSection openDB should fail")
 	}
-	if _, err := store.DeleteSession("y"); err == nil {
+	if _, err := store.DeleteSession("", "y"); err == nil {
 		t.Fatalf("DeleteSession openDB should fail")
 	}
 	if _, err := store.Assignments(); err == nil {
@@ -147,12 +147,12 @@ func TestPinSectionStoreNonRetryableTxErrors(t *testing.T) {
 	}
 
 	// Assign: BeginTx fails on closed DB.
-	if _, _, err := mkClosedStore().Assign("missing", "s", time.Unix(1, 0)); err == nil {
+	if _, _, err := mkClosedStore().Assign("missing", "", "s", time.Unix(1, 0)); err == nil {
 		t.Fatalf("Assign should fail on closed DB")
 	}
 
 	// CreateOrReuseAndAssign: BeginTx fails on closed DB.
-	if _, _, err := mkClosedStore().CreateOrReuseAndAssign("n", "s", time.Unix(1, 0)); err == nil {
+	if _, _, err := mkClosedStore().CreateOrReuseAndAssign("n", "", "s", time.Unix(1, 0)); err == nil {
 		t.Fatalf("CreateOrReuseAndAssign should fail on closed DB")
 	}
 
@@ -167,7 +167,7 @@ func TestPinSectionStoreNonRetryableTxErrors(t *testing.T) {
 	}
 
 	// DeleteSession: BeginTx fails on closed DB.
-	if _, err := mkClosedStore().DeleteSession("s"); err == nil {
+	if _, err := mkClosedStore().DeleteSession("", "s"); err == nil {
 		t.Fatalf("DeleteSession should fail on closed DB")
 	}
 }
@@ -175,7 +175,7 @@ func TestPinSectionStoreNonRetryableTxErrors(t *testing.T) {
 // TestPinSectionStoreAssignNotFound covers the section-not-found path in Assign.
 func TestPinSectionStoreAssignNotFoundReturnsError(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	if _, _, err := store.Assign("nonexistent-id", "session-a", time.Unix(1, 0)); !errorsIsPinSectionNotFound(err) {
+	if _, _, err := store.Assign("nonexistent-id", "", "session-a", time.Unix(1, 0)); !errorsIsPinSectionNotFound(err) {
 		t.Fatalf("Assign missing section err = %v", err)
 	}
 }
@@ -193,7 +193,7 @@ func TestPinSectionStoreRenameNotFoundReturnsError(t *testing.T) {
 // failure path in Rename.
 func TestPinSectionStoreRenameInvalidNameReturnsError(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, _, err := store.CreateOrReuseAndAssign("Research", "s", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "s", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestPinSectionStoreRenameInvalidNameReturnsError(t *testing.T) {
 // NormalizePinSectionName failure path in CreateOrReuseAndAssign.
 func TestPinSectionStoreCreateOrReuseAssignInvalidNameReturnsError(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	if _, _, err := store.CreateOrReuseAndAssign("", "s", time.Unix(1, 0)); err == nil || !errors.Is(err, ErrPinSectionName) {
+	if _, _, err := store.CreateOrReuseAndAssign("", "", "s", time.Unix(1, 0)); err == nil || !errors.Is(err, ErrPinSectionName) {
 		t.Fatalf("CreateOrReuseAndAssign blank name err = %v", err)
 	}
 }
@@ -260,7 +260,7 @@ func TestPinSectionStoreAssignmentsScanError(t *testing.T) {
 // DeleteSession deletes zero rows.
 func TestPinSectionStoreDeleteSessionNotFoundReturnsFalse(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	ok, err := store.DeleteSession("no-such-session")
+	ok, err := store.DeleteSession("", "no-such-session")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestPinSectionStoreDeleteSessionNotFoundReturnsFalse(t *testing.T) {
 // checks the rename with a different case that folds to the same key).
 func TestPinSectionStoreRenameToSameKeyReturnsUnchanged(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, _, err := store.CreateOrReuseAndAssign("Research", "s", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "s", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,11 +291,11 @@ func TestPinSectionStoreRenameToSameKeyReturnsUnchanged(t *testing.T) {
 // cascade by verifying the assignments are gone.
 func TestPinSectionStoreDeleteSectionCascadesAssignments(t *testing.T) {
 	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
-	section, _, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1, 0))
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Assign(section.ID, "session-b", time.Unix(2, 0)); err != nil {
+	if _, _, err := store.Assign(section.ID, "", "session-b", time.Unix(2, 0)); err != nil {
 		t.Fatal(err)
 	}
 	count, changed, err := store.DeleteSection(section.ID)
