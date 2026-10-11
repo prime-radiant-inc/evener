@@ -1,5 +1,23 @@
 # Delegate Messaging Implementation Plan
 
+Status: Implemented. Approved by Jesse 2026-10-10. Merged PRs:
+
+- #4244 journal records updates
+- #4246 frames name their kind
+- #4248 a delegate doesn't wake again for attention it saw (#3725)
+- #4274 and #4284 attention stop/clear follow-ups
+- #4252 delegate guidance
+- #4268 `communicate(end_turn=false)` delivers updates (closes #4172)
+- #4294 drain recovery
+- #4295 compaction keeps pending attention turns
+- #4299 `delegate_send` reaches only your own delegates
+- #4305 steering provenance removed
+- #4307 parent steers labelled from the parent
+
+The live micro-test PR (PR 8) was skipped.
+
+This plan is the historical record. Later rulings live in the merged PRs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A delegate reaches its parent only through `communicate` (`end_turn=false` is an update the parent receives and may be woken by, `end_turn=true` the report), `delegate_send` reaches only your own delegates, and a parent's steer into a running child is labelled as from the parent.

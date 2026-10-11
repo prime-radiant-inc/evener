@@ -1,6 +1,20 @@
 # Delegate messaging: one channel up, one channel down
 
-Status: approved (Jesse, 2026-10-10). Approach A of three considered; the alternatives are recorded at the end.
+Status: Implemented. Approved by Jesse 2026-10-10 (approach A of three considered; the alternatives are recorded at the end). Merged PRs:
+
+- #4244 journal records updates
+- #4246 frames name their kind
+- #4248 a delegate doesn't wake again for attention it saw (#3725)
+- #4274 and #4284 attention stop/clear follow-ups
+- #4252 delegate guidance
+- #4268 `communicate(end_turn=false)` delivers updates (closes #4172)
+- #4294 drain recovery
+- #4295 compaction keeps pending attention turns
+- #4299 `delegate_send` reaches only your own delegates
+- #4305 steering provenance removed
+- #4307 parent steers labelled from the parent
+
+The live micro-test PR (PR 8) was skipped.
 
 ## Why
 
