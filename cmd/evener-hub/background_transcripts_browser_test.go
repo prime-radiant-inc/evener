@@ -1,12 +1,12 @@
 //go:build browserguard
 
-// TestBackgroundTranscriptsBrowser is the whole-journey proof for background
-// Live transcripts: the REAL hub web app (real AppWire, real stores, native
-// IndexedDB) driven in real Chrome in Vite development mode through a REAL hub
-// (httptest around web.Handler() with the real roster prober and past index)
-// against TWO REAL `evener serve` daemons (cmd/evener's compiled browserguard
-// helper binary), with the only scripted piece at the external LLM provider
-// adapter.
+// TestBackgroundTranscriptsEntrySliceBrowser is the whole-journey proof for
+// background Live transcripts on the production entry route: the REAL hub web
+// app (real AppWire, real stores, native IndexedDB) driven in real Chrome in
+// Vite development mode through a REAL hub (httptest around web.Handler() with
+// the real roster prober and past index) against TWO REAL `evener serve` daemons
+// (cmd/evener's compiled browserguard helper binary), with the only scripted
+// piece at the external LLM provider adapter.
 //
 // It reuses the skill guard's fixture (skillGuardSetup / skillGuardStartHelper /
 // skillGuardStopHelper) and its private temporary directory; the Node driver
@@ -23,6 +23,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -53,6 +54,9 @@ const (
 	backgroundAfterEviction  = "BACKGROUND_AFTER_EVICTION"
 	backgroundToolOutput     = "BACKGROUND_TOOL_OUTPUT"
 	backgroundToolDone       = "BACKGROUND_TOOL_DONE"
+	// backgroundGapTurn is the turn produced on the target's own daemon while the
+	// browser socket is down; the reconnect's authoritative window must carry it.
+	backgroundGapTurn = "BACKGROUND_GAP_TURN"
 )
 
 const (
@@ -315,7 +319,13 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	if err != nil {
 		t.Fatalf("read production-entry milestones: %v", err)
 	}
-	for _, name := range []string{"entry-baseline", "entry-opened", "entry-completed", "done"} {
+	for _, name := range []string{
+		"entry-baseline", "entry-opened", "entry-completed",
+		"history-paging", "reopen-without-read", "further-paging",
+		"ws-broken", "gap-turn-completed", "reconnected-latest-window", "paged-back-sentinel",
+		"narrow-viewport", "two-tab-delete-fence", "two-tab-delete-refusal", "two-tab-clear-fence",
+		"done",
+	} {
 		if !backgroundMilestonePresent(milestones, name) {
 			t.Errorf("production-entry browser report is missing %q", name)
 		}
@@ -608,7 +618,442 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 			t.Errorf("raw browser audit contains an incomplete coverage boundary: %+v", coverage)
 		}
 	}
+	assertBackgroundEntryPagingAndReconnect(t, fixture, opened.Ref, milestones)
+	assertBackgroundEntryNarrowViewport(t, milestones)
+	assertBackgroundEntryTwoTabFencing(t, milestones)
 	t.Logf("production-entry artifacts: %s (milestones, appwire-trace.jsonl, driver.log, screenshots and dumps)", fixture.artifact)
+}
+
+// assertBackgroundEntryTwoTabFencing reads the two-real-tab Clear/delete fence
+// milestones: one tab's delete fences its own deletedRefs, its real sibling
+// observes suppression over the native BroadcastChannel without joining those
+// deletedRefs, and the durable row is gone from the shared IndexedDB; a fresh
+// sibling acquisition does not resurrect it; a sibling Clear suppresses a held
+// lease without rebinding its epoch.
+func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMilestone) {
+	t.Helper()
+	var delFence struct {
+		ADeletedRefs       bool `json:"aDeletedRefs"`
+		BSuppressed        bool `json:"bSuppressed"`
+		BJoinedDeletedRefs bool `json:"bJoinedDeletedRefs"`
+		DurableBefore      int  `json:"durableBefore"`
+		DurableRemoved     bool `json:"durableRemoved"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-fence", &delFence) {
+		if !delFence.ADeletedRefs {
+			t.Error("two-tab-delete-fence: the deleting tab did not fence deletedRefs")
+		}
+		if !delFence.BSuppressed {
+			t.Error("two-tab-delete-fence: the sibling tab did not observe suppression over the real BroadcastChannel")
+		}
+		if delFence.BJoinedDeletedRefs {
+			t.Error("two-tab-delete-fence: the sibling tab joined the deleting tab's deletedRefs")
+		}
+		if delFence.DurableBefore == 0 || !delFence.DurableRemoved {
+			t.Errorf("two-tab-delete-fence: the shared IndexedDB record was not removed: %+v", delFence)
+		}
+	}
+	var delRefusal struct {
+		RoutePresent  bool `json:"routePresent"`
+		RowsAfterOpen int  `json:"rowsAfterOpen"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-refusal", &delRefusal) {
+		if delRefusal.RoutePresent {
+			t.Error("two-tab-delete-refusal: the sibling's fresh acquisition opened an entry route for a deleted ref")
+		}
+		if delRefusal.RowsAfterOpen != 0 {
+			t.Errorf("two-tab-delete-refusal: a fresh sibling acquisition resurrected %d durable rows", delRefusal.RowsAfterOpen)
+		}
+	}
+	var clearFence struct {
+		EpochBefore *int `json:"epochBefore"`
+		EpochAfter  *int `json:"epochAfter"`
+		Suppressed  bool `json:"suppressed"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-clear-fence", &clearFence) {
+		if !clearFence.Suppressed {
+			t.Error("two-tab-clear-fence: the holding tab did not observe the sibling clear over the real BroadcastChannel")
+		}
+		if clearFence.EpochBefore == nil || clearFence.EpochAfter == nil || *clearFence.EpochBefore != *clearFence.EpochAfter {
+			t.Errorf("two-tab-clear-fence: the sibling clear rebound the held lease epoch: %+v", clearFence)
+		}
+	}
+}
+
+// assertBackgroundEntryPagingAndReconnect reads the browser journey's paging,
+// reopen-without-read, further-paging, real-socket-gap/reconnect and
+// paged-back-to-sentinel milestones, and RE-DERIVES each transport claim from
+// the raw appwire-trace.jsonl at the milestone's own byte window, the same way
+// assertBackgroundEntrySlice re-derives entry-opened. The gap turn is
+// correlated to the daemon's own durable target-producer-transcript.jsonl, not
+// to the driver's constant, and the reconnect read is correlated to the gap
+// turn inside the raw trace.
+func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFixture, ref string, milestones []skillGuardMilestone) {
+	t.Helper()
+	trace, err := os.ReadFile(filepath.Join(fixture.artifact, "appwire-trace.jsonl"))
+	if err != nil {
+		t.Fatalf("read real AppWire trace for paging/reconnect: %v", err)
+	}
+	var paging struct {
+		TraceBefore        int64  `json:"traceBefore"`
+		TraceAfter         int64  `json:"traceAfter"`
+		InitialOlderCursor string `json:"initialOlderCursor"`
+		Pages              int    `json:"pages"`
+		RemainingCursor    string `json:"remainingCursor"`
+		PagesComplete      bool   `json:"pagesComplete"`
+		LaterSentinel      string `json:"laterSentinel"`
+		LaterRendered      bool   `json:"laterRendered"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "history-paging", &paging) {
+		window := traceWindowBytes(t, trace, paging.TraceBefore, paging.TraceAfter)
+		pages, err := countTargetPageRequestsInWindow(string(window), ref)
+		if err != nil {
+			t.Fatalf("count paging page frames: %v", err)
+		}
+		if pages < 2 {
+			t.Errorf("history-paging: the real trace shows %d target older page frame(s), want at least two", pages)
+		}
+		if paging.InitialOlderCursor == "" {
+			t.Error("history-paging: the initial read was not a truncated window with an older cursor")
+		}
+		if !paging.LaterRendered {
+			t.Errorf("history-paging: the later-page sentinel %q did not render", paging.LaterSentinel)
+		}
+		if paging.RemainingCursor == "" && !paging.PagesComplete {
+			t.Error("history-paging: two older pages exhausted the cursor yet the history is not complete")
+		}
+	}
+	var reopen struct {
+		TraceBefore              int64    `json:"traceBefore"`
+		TraceAfter               int64    `json:"traceAfter"`
+		Cursor                   string   `json:"cursor"`
+		RestoredCursor           string   `json:"restoredCursor"`
+		CursorRetentionExercised bool     `json:"cursorRetentionExercised"`
+		Reads                    int      `json:"reads"`
+		Pages                    int      `json:"pages"`
+		PageRequestCursors       []string `json:"pageRequestCursors"`
+		OlderDemand              bool     `json:"olderDemand"`
+		RetainedItemsPresent     bool     `json:"retainedItemsPresent"`
+		RestoredHasSentinel      bool     `json:"restoredHasSentinel"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "reopen-without-read", &reopen) {
+		window := traceWindowBytes(t, trace, reopen.TraceBefore, reopen.TraceAfter)
+		reads, err := countTargetThreadReads(string(window), ref)
+		if err != nil {
+			t.Fatalf("count reopen thread/read frames: %v", err)
+		}
+		pages, err := countTargetPageRequestsInWindow(string(window), ref)
+		if err != nil {
+			t.Fatalf("count reopen page frames: %v", err)
+		}
+		cursors, err := targetPageRequestCursorsInWindow(window, ref)
+		if err != nil {
+			t.Fatalf("decode reopen page request cursors: %v", err)
+		}
+		if reads != 0 {
+			t.Errorf("reopen-without-read: the real trace shows %d target thread/read(s); the local restore needed the wire", reads)
+		}
+		if len(cursors) != pages {
+			t.Errorf("reopen-without-read: real page frames %d differ from decoded request cursors %d", pages, len(cursors))
+		}
+		// A reopened pane may issue one older page for genuinely uncached
+		// content; that request must carry the retained cursor (content below
+		// the loaded window), never re-fetch the window the durable rows held.
+		for _, cursor := range cursors {
+			if cursor != reopen.Cursor {
+				t.Errorf("reopen-without-read: real page request cursor %q is not the retained cursor %q (re-fetched held content)", cursor, reopen.Cursor)
+			}
+		}
+		if !reopen.OlderDemand {
+			t.Error("reopen-without-read: the milestone reports a page request that re-fetched held content")
+		}
+		if !reopen.RetainedItemsPresent || !reopen.RestoredHasSentinel {
+			t.Errorf("reopen-without-read: restored model lost the retained window or the later-page sentinel: %+v", reopen)
+		}
+		// The cursor clause is only meaningful when a cursor existed. Assert it
+		// then; otherwise state plainly that it was not exercised.
+		if reopen.CursorRetentionExercised {
+			if reopen.Cursor != reopen.RestoredCursor {
+				t.Errorf("reopen-without-read: cursor changed on local restore: %q -> %q", reopen.Cursor, reopen.RestoredCursor)
+			}
+		} else {
+			t.Logf("reopen-without-read: cursor retention not exercised (the loaded window had no remaining cursor); this proves the local restore issued no thread/read and re-fetched no held content")
+		}
+	}
+	var further struct {
+		TraceBefore     int64 `json:"traceBefore"`
+		TraceAfter      int64 `json:"traceAfter"`
+		Pages           int   `json:"pages"`
+		AlreadyComplete bool  `json:"alreadyComplete"`
+		NoDuplicates    bool  `json:"noDuplicates"`
+		HistoryOrdered  bool  `json:"historyOrdered"`
+		HistoryCount    int   `json:"historyCount"`
+		ExpectedCount   int   `json:"expectedCount"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "further-paging", &further) {
+		window := traceWindowBytes(t, trace, further.TraceBefore, further.TraceAfter)
+		pages, err := countTargetPageRequestsInWindow(string(window), ref)
+		if err != nil {
+			t.Fatalf("count further-paging page frames: %v", err)
+		}
+		if pages < 1 {
+			t.Error("further-paging: the real trace shows no target older page frame; the behaviour did not paginate")
+		}
+		if further.AlreadyComplete {
+			t.Error("further-paging: the history was already complete before the further-paging phase; the geometry left nothing to page")
+		}
+		if !further.NoDuplicates {
+			t.Error("further-paging: page load introduced duplicate items")
+		}
+		if !further.HistoryOrdered || further.HistoryCount != further.ExpectedCount {
+			t.Errorf("further-paging: history is not the produced sequence in order: %+v", further)
+		}
+	}
+	var broken struct {
+		Disconnected  bool `json:"disconnected"`
+		ClosedSockets int  `json:"closedSockets"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "ws-broken", &broken) {
+		if !broken.Disconnected {
+			t.Errorf("ws-broken: the app never observed the real socket gap (closedSockets=%d)", broken.ClosedSockets)
+		}
+	}
+	var gap struct {
+		Sentinel string `json:"sentinel"`
+		TurnID   string `json:"turnId"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "gap-turn-completed", &gap) {
+		producerData, err := os.ReadFile(filepath.Join(fixture.artifact, "target-producer-transcript.jsonl"))
+		if err != nil {
+			t.Fatalf("read durable producer transcript for the gap turn: %v", err)
+		}
+		durableID, err := backgroundGapTurnID(string(producerData))
+		if err != nil {
+			t.Errorf("gap-turn-completed: %v", err)
+		}
+		// The driver's turn id must be the daemon's own durable gap-turn id, not
+		// a value compared to the driver's constant.
+		if gap.TurnID == "" || durableID != gap.TurnID {
+			t.Errorf("gap-turn-completed: driver turn id %q does not match the durable transcript's gap turn %q", gap.TurnID, durableID)
+		}
+	}
+	var reconnect struct {
+		TraceBefore int64  `json:"traceBefore"`
+		TraceAfter  int64  `json:"traceAfter"`
+		NewReads    int    `json:"newReads"`
+		CursorAfter string `json:"cursorAfter"`
+		HasGap      bool   `json:"hasGap"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "reconnected-latest-window", &reconnect) {
+		window := traceWindowBytes(t, trace, reconnect.TraceBefore, reconnect.TraceAfter)
+		reads, err := countTargetThreadReads(string(window), ref)
+		if err != nil {
+			t.Fatalf("count reconnect thread/read frames: %v", err)
+		}
+		if reads < 1 {
+			t.Error("reconnected-latest-window: the real trace shows no target thread/read during the gap/reconnect window")
+		}
+		// The reconnect's authoritative read must carry the gap turn: correlate
+		// it in the raw trace, independently of the driver's hasGap flag.
+		gapInRead, err := readWindowContainsText(window, backgroundGapTurn)
+		if err != nil {
+			t.Fatalf("decode reconnect read window: %v", err)
+		}
+		if !gapInRead {
+			t.Error("reconnected-latest-window: no real target read in the reconnect window carries the gap turn")
+		}
+		if reconnect.NewReads < 1 {
+			t.Error("reconnected-latest-window: reconnect produced no new authoritative read")
+		}
+		if !reconnect.HasGap {
+			t.Error("reconnected-latest-window: the reconnected window does not contain the gap turn")
+		}
+	}
+	var backed struct {
+		Pages           int  `json:"pages"`
+		NoDuplicates    bool `json:"noDuplicates"`
+		SentinelPresent bool `json:"sentinelPresent"`
+		HistoryOrdered  bool `json:"historyOrdered"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "paged-back-sentinel", &backed) {
+		if backed.Pages < 1 {
+			t.Error("paged-back-sentinel: paging back after reconnect issued no older page")
+		}
+		if !backed.NoDuplicates {
+			t.Error("paged-back-sentinel: paging back introduced duplicate items")
+		}
+		if !backed.SentinelPresent || !backed.HistoryOrdered {
+			t.Errorf("paged-back-sentinel: the range did not restore to the sentinel in order: %+v", backed)
+		}
+	}
+}
+
+// assertBackgroundEntryNarrowViewport reads the 420px repeat-activation
+// milestone: the transcript was re-activated through the mobile shell, and the
+// driver compared the real model content before and after that re-activation.
+// The Go owner cannot read the DOM, so it asserts the driver's comparison of
+// the two real item sets (counts and the preserved flag computed from the
+// model), not a constant the driver wrote after its wait.
+func assertBackgroundEntryNarrowViewport(t *testing.T, milestones []skillGuardMilestone) {
+	t.Helper()
+	var narrow struct {
+		Width            int  `json:"width"`
+		BeforeItems      int  `json:"beforeItems"`
+		AfterItems       int  `json:"afterItems"`
+		ContentPreserved bool `json:"contentPreserved"`
+		SentinelAfter    bool `json:"sentinelAfter"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "narrow-viewport", &narrow) {
+		if narrow.Width != 420 {
+			t.Errorf("narrow-viewport: activated at %dpx, want 420px", narrow.Width)
+		}
+		if narrow.BeforeItems == 0 || narrow.AfterItems == 0 || narrow.BeforeItems != narrow.AfterItems {
+			t.Errorf("narrow-viewport: repeat activation changed the loaded item set (%d -> %d)", narrow.BeforeItems, narrow.AfterItems)
+		}
+		if !narrow.ContentPreserved {
+			t.Error("narrow-viewport: repeat activation did not preserve the transcript content")
+		}
+		if !narrow.SentinelAfter {
+			t.Error("narrow-viewport: the produced content was absent after the mobile-shell re-activation")
+		}
+	}
+}
+
+// traceWindowBytes returns the trace slice [before, after) with any record that
+// straddles a boundary completed (or trimmed), so a request at the window's end
+// is not lost and a partial record is never parsed. It mirrors the byte
+// arithmetic the entry-opened assertion relies on.
+func traceWindowBytes(t *testing.T, trace []byte, before, after int64) []byte {
+	t.Helper()
+	if before < 0 || after <= before || after > int64(len(trace)) {
+		t.Fatalf("invalid trace window %d..%d (trace bytes %d)", before, after, len(trace))
+	}
+	end := after
+	if trace[after-1] != '\n' {
+		idx := bytes.IndexByte(trace[after:], '\n')
+		if idx < 0 {
+			t.Fatalf("trace window ends in an incomplete record at %d", after)
+		}
+		end = after + int64(idx) + 1
+	}
+	start := before
+	if start > 0 && trace[start-1] != '\n' {
+		idx := bytes.IndexByte(trace[start:end], '\n')
+		if idx < 0 {
+			t.Fatalf("trace window starts in an incomplete record at %d", before)
+		}
+		start = start + int64(idx) + 1
+	}
+	return trace[start:end]
+}
+
+// targetPageRequestCursorsInWindow decodes a raw trace window and returns the
+// cursor of every TARGET thread/turns/list request frame, so the Go owner can
+// see which content a reopened pane asked for.
+func targetPageRequestCursorsInWindow(data []byte, ref string) ([]string, error) {
+	frames, err := decodeTraceFrames(data)
+	if err != nil {
+		return nil, err
+	}
+	threadID := strings.TrimPrefix(ref, "local:")
+	var cursors []string
+	for _, f := range frames {
+		if f.Method != "thread/turns/list" || len(f.Params) == 0 {
+			continue
+		}
+		var params struct {
+			Ref      string `json:"ref"`
+			ThreadID string `json:"threadId"`
+			Cursor   string `json:"cursor"`
+		}
+		if err := json.Unmarshal(f.Params, &params); err != nil {
+			return nil, fmt.Errorf("malformed thread/turns/list params: %w", err)
+		}
+		if params.Ref == ref || params.ThreadID == threadID {
+			cursors = append(cursors, params.Cursor)
+		}
+	}
+	return cursors, nil
+}
+
+// readWindowContainsText reports whether any thread/read RESULT in the raw trace
+// window carries an item whose text contains value. It decodes the frames; it
+// never scans escaped raw text.
+func readWindowContainsText(data []byte, value string) (bool, error) {
+	frames, err := decodeTraceFrames(data)
+	if err != nil {
+		return false, err
+	}
+	for _, f := range frames {
+		if len(f.Result) == 0 {
+			continue
+		}
+		var result struct {
+			Thread struct {
+				Turns []struct {
+					Items []struct {
+						Text string `json:"text"`
+					} `json:"items"`
+				} `json:"turns"`
+			} `json:"thread"`
+		}
+		if err := json.Unmarshal(f.Result, &result); err != nil {
+			continue
+		}
+		for _, turn := range result.Thread.Turns {
+			for _, item := range turn.Items {
+				if strings.Contains(item.Text, value) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+// backgroundGapTurnID returns the turn id of the daemon's own durable turn that
+// carries backgroundGapTurn, read from the retained producer transcript.
+func backgroundGapTurnID(transcript string) (string, error) {
+	type content struct {
+		Kind string `json:"kind"`
+		Text string `json:"text"`
+	}
+	type record struct {
+		Kind   string `json:"kind"`
+		TurnID string `json:"turn_id"`
+		Turn   struct {
+			TurnID  string `json:"turn_id"`
+			Message struct {
+				Content []content `json:"content"`
+			} `json:"message"`
+		} `json:"turn"`
+	}
+	for _, line := range strings.Split(transcript, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row record
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return "", fmt.Errorf("malformed durable transcript line %q: %w", line, err)
+		}
+		if row.Kind != "entry" {
+			continue
+		}
+		for _, c := range row.Turn.Message.Content {
+			if !strings.Contains(c.Text, backgroundGapTurn) {
+				continue
+			}
+			id := row.TurnID
+			if id == "" {
+				id = row.Turn.TurnID
+			}
+			if id != "" {
+				return id, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("the durable transcript carries no turn with %s", backgroundGapTurn)
 }
 
 type backgroundEntryProducer struct {

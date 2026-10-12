@@ -69,6 +69,29 @@ try {
       },
     }),
   });
+  // Dev-only two-tab fencing surface. It exercises the REAL cache clear/delete
+  // paths (threads.clearCachedSessions / markCacheSessionsDeleted), the real
+  // BroadcastChannel propagation and the real IndexedDB across two real tabs.
+  // It is a guard entry, never a product route: no ref selects a fixture and no
+  // separate store is created.
+  Object.defineProperty(window, "backgroundTranscriptGuard", {
+    value: Object.freeze({
+      fenceState: (ref: string) => {
+        const state = threads.threadsStore.getState();
+        return {
+          deletedRefs: [...state.deletedRefs].sort(),
+          lifetime: state.cacheLifetimes.get(ref) ?? null,
+          clearInFlight: state.clearInFlight ?? null,
+        };
+      },
+      open: (ref: string) => threads.threadsStore.getState().ensureThread(ref),
+      settle: (ref: string) => threads.settleEntryTranscriptForTests(ref),
+      clear: () => threads.clearCachedSessions(),
+      delete: (ref: string) => {
+        threads.markCacheSessionsDeleted([ref]);
+      },
+    }),
+  });
 } catch (error) {
   (window as Window & { __backgroundGuardBootError?: string }).__backgroundGuardBootError = String(
     (error as { stack?: string })?.stack ?? error,
