@@ -590,7 +590,7 @@ func TestSeatbeltLiveGitRunsInRestrictedMode(t *testing.T) {
 	}
 	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", realConfigGit+"--version")
 	if exit != 0 {
-		t.Fatalf("restricted mode must be able to run git (exit=%d)\nstdout:\n%s\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile naming a file that EXISTS under $HOME (readable config, unreadable target -> a warning on stderr). Compare with GIT_CONFIG_GLOBAL=/dev/null to tell the two apart.", exit, stdout, stderr)
+		t.Fatalf("restricted mode must be able to run git (exit=%d)\nstdout:\n%s\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile value the 2026-10-12 grant cannot cover (a `~user/...` path, a relative path, a directory, or a file the spawned uid cannot read either way). Also note GIT_CONFIG_GLOBAL: the grant follows git-config(1)'s FILES, not that variable, so a session exporting it can still see an unreadable config; GIT_CONFIG_GLOBAL=/dev/null tells that apart from a sandbox fault.", exit, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "git version") {
 		t.Errorf("git --version stdout = %q, want a version line", stdout)
@@ -617,7 +617,7 @@ func TestSeatbeltLiveGitCommitInRestrictedMode(t *testing.T) {
 		realConfigGit + "log -1 --format=%s"
 	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", script)
 	if exit != 0 {
-		t.Fatalf("restricted mode must allow a full git commit (exit=%d)\nstdout:\n%s\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile naming a file that EXISTS under $HOME (readable config, unreadable target -> a warning on stderr). Compare with GIT_CONFIG_GLOBAL=/dev/null to tell the two apart.", exit, stdout, stderr)
+		t.Fatalf("restricted mode must allow a full git commit (exit=%d)\nstdout:\n%s\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile value the 2026-10-12 grant cannot cover (a `~user/...` path, a relative path, a directory, or a file the spawned uid cannot read either way). Also note GIT_CONFIG_GLOBAL: the grant follows git-config(1)'s FILES, not that variable, so a session exporting it can still see an unreadable config; GIT_CONFIG_GLOBAL=/dev/null tells that apart from a sandbox fault.", exit, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "evener-restricted-commit") {
 		t.Errorf("the commit did not land; git log said %q", stdout)
@@ -654,7 +654,7 @@ func TestSeatbeltLiveGlobalGitConfigReadableInRestrictedMode(t *testing.T) {
 
 	stdout, stderr, exit := runUnderSeatbeltSplit(t, rp, cwd, "/bin/sh", "-c", realConfigGit+"config --global --list")
 	if exit != 0 {
-		t.Fatalf("restricted mode must be able to read the global git config (exit=%d)\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile naming a file that EXISTS under $HOME (readable config, unreadable target -> a warning on stderr). Compare with GIT_CONFIG_GLOBAL=/dev/null to tell the two apart.", exit, stderr)
+		t.Fatalf("restricted mode must be able to read the global git config (exit=%d)\nstderr:\n%s\n\nThis test runs git against YOUR REAL global config (that is the point of the 2026-08-07 ruling), so a failure here may be your gitconfig rather than a broken sandbox. Settings known to break it: commit.gpgsign=true (gpg is not reachable in the sandbox), a core.hooksPath under $HOME, and a core.excludesfile/core.attributesfile value the 2026-10-12 grant cannot cover (a `~user/...` path, a relative path, a directory, or a file the spawned uid cannot read either way). Also note GIT_CONFIG_GLOBAL: the grant follows git-config(1)'s FILES, not that variable, so a session exporting it can still see an unreadable config; GIT_CONFIG_GLOBAL=/dev/null tells that apart from a sandbox fault.", exit, stderr)
 	}
 	if strings.TrimSpace(stdout) == "" {
 		t.Error("git config --global --list produced nothing, so the grant proved nothing")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,6 +114,30 @@ type HostFacts struct {
 	// masked. A path that does not exist contributes nothing and never fails
 	// session start.
 	GitGlobalConfigPaths []string
+
+	// GitGlobalReferencedPaths are the files OUTSIDE the global git config files
+	// that those files tell git to read alongside them: the file named by
+	// core.excludesFile and the one named by core.attributesFile. git reads them on
+	// ordinary commands — status, add, commit — so a file it cannot open is one
+	// whose settings silently do not apply. macOS/Seatbelt reports the failure
+	// loudly instead ("warning: unable to access '<path>': Operation not
+	// permitted" on every such command), which is what #4234 reported; on Linux,
+	// bwrap hides an ungranted path entirely, so the same missing grant makes the
+	// developer's global excludes/attributes file quietly stop working.
+	//
+	// READ-ONLY and FILE-EXACT, admitted by the same rules as
+	// GitGlobalConfigPaths: each entry is an existing non-directory FILE (the stat
+	// follows a symlink), so the grant cannot widen into a directory read. A value
+	// is resolved the way git resolves a pathname setting — `~/x` against the
+	// session home, an absolute path as written — and everything else is refused: a
+	// relative path is one git resolves against its own working directory (not a
+	// stable file to grant), and `~user` names another user's home, which host facts
+	// cannot resolve. Only the LAST assignment of each key survives, matching git's
+	// last-wins rule for a single-valued variable, so at most one grant per key is
+	// ever emitted. It changes no write surface, reaches the spawned layer only, and
+	// loses to the credential denylist. A file that does not exist contributes
+	// nothing (git ignores a missing one silently) and never fails session start.
+	GitGlobalReferencedPaths []string
 
 	// EvenerContentRoots are the installed plugin files in Evener's plugin store
 	// and the user's skills directory at their configured locations.
@@ -292,6 +317,7 @@ func probeHost(system probeSystem) HostFacts {
 		facts.Home = home
 	}
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
+	facts.GitGlobalReferencedPaths = probeGitGlobalReferencedPaths(system)
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
@@ -358,6 +384,104 @@ func probeGitGlobalConfigPaths(system probeSystem) []string {
 		}
 	}
 	return out
+}
+
+// gitCoreReferencedKeys are the core.* config keys that name a FILE git reads
+// alongside the config file itself, in the order the probe reports them.
+var gitCoreReferencedKeys = []string{"excludesFile", "attributesFile"}
+
+// probeGitGlobalReferencedPaths returns the existing files the user's global git
+// configs name for git to read: the core.excludesFile and core.attributesFile
+// targets. It reuses probeGitGlobalConfigPaths for the config files themselves, so
+// git's own FILES rules ($XDG_CONFIG_HOME/git/config then ~/.gitconfig) and the
+// existing-file test are shared rather than re-derived, and it reads only files
+// that are really there.
+//
+// Within one config the last assignment of a key wins, and across the two files the
+// later file wins — git's own rule for a single-valued variable and its own FILES
+// order — so the values are accumulated in that order. A config the probe cannot
+// read (unreadable, a device, or larger than the bounded read admits) contributes
+// nothing rather than failing session start.
+func probeGitGlobalReferencedPaths(system probeSystem) []string {
+	home, err := system.userHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	values := map[string]string{}
+	for _, config := range probeGitGlobalConfigPaths(system) {
+		data, err := system.readFile(config)
+		if err != nil {
+			continue // an unreadable config names nothing we can follow
+		}
+		maps.Copy(values, parseGitCoreReferencedValues(string(data)))
+	}
+	var out []string
+	for _, key := range gitCoreReferencedKeys {
+		path := gitConfigReferencedPath(values[key], home)
+		if path == "" || !system.nonDirectoryFile(path) || slices.Contains(out, path) {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
+// parseGitCoreReferencedValues returns the LAST value assigned to each of
+// gitCoreReferencedKeys in a git config text's BARE [core] section. The
+// bare-section restriction matches git: `[core "x"]` and the legacy
+// `[core.excludesfile]` header name different keys (core.x.excludesFile,
+// core.excludesfile.*), so a value read out of one of them would follow a file no
+// git command opens.
+func parseGitCoreReferencedValues(text string) map[string]string {
+	values := map[string]string{}
+	inCore := false
+	for raw := range strings.SplitSeq(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			end := strings.Index(line, "]")
+			if end < 0 {
+				inCore = false
+				continue
+			}
+			inCore = strings.EqualFold(bareSectionName(line[:end+1]), "core")
+			if rest := strings.TrimSpace(line[end+1:]); inCore && rest != "" {
+				recordGitCoreValue(rest, values)
+			}
+			continue
+		}
+		if inCore {
+			recordGitCoreValue(line, values)
+		}
+	}
+	return values
+}
+
+// recordGitCoreValue records any gitCoreReferencedKeys assignment on one config
+// line, a later assignment overwriting an earlier one.
+func recordGitCoreValue(line string, values map[string]string) {
+	for _, key := range gitCoreReferencedKeys {
+		if value := configValueLine(line, key); value != "" {
+			values[key] = value
+		}
+	}
+}
+
+// gitConfigReferencedPath returns the absolute path a global-config pathname value
+// names, or "" when the value names no single file a grant could cover: a bare `~`
+// (the home directory itself) or `~user` (another user's home, which the host facts
+// cannot resolve), and a relative value, which git resolves against the working
+// directory of the git command rather than to any stable file.
+func gitConfigReferencedPath(value, home string) string {
+	if strings.HasPrefix(value, "~/") {
+		return filepath.Clean(filepath.Join(home, value[2:]))
+	}
+	if !filepath.IsAbs(value) {
+		return ""
+	}
+	return filepath.Clean(value)
 }
 
 // evenerContentRoots returns the plugin store's installed plugin files and the

@@ -487,31 +487,56 @@ func parseIncludePaths(text string) []string {
 	return out
 }
 
-// isIncludeSectionHeader reports whether a "[section ...]" header names the
-// include or includeIf section (case-insensitive, matching git).
-func isIncludeSectionHeader(header string) bool {
+// sectionName returns the leading section name of a "[section ...]" header: the
+// text between the brackets up to the first space, tab or quote, so
+// "[includeIf \"gitdir:x\"]" yields "includeIf". Case folding is the caller's.
+func sectionName(header string) string {
 	h := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
 	h = strings.TrimSpace(h)
 	if i := strings.IndexAny(h, " \t\""); i >= 0 {
 		h = h[:i]
 	}
+	return h
+}
+
+// bareSectionName returns the section name of a header that names a section with
+// NO subsection and no trailing text, else "". git reads `core.excludesFile` only
+// from a bare `[core]`: `[core "x"]` and the legacy `[core.excludesfile]` form name
+// different keys (core.x.excludesFile, core.excludesfile.*), so reading a value out
+// of one of those would follow a file a git command never opens.
+func bareSectionName(header string) string {
+	inner := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(header), "["), "]")
+	if strings.ContainsAny(inner, " \t\"") {
+		return "" // a subsection, or whitespace git does not accept inside the brackets
+	}
+	return inner
+}
+
+// isIncludeSectionHeader reports whether a "[section ...]" header names the
+// include or includeIf section (case-insensitive, matching git).
+func isIncludeSectionHeader(header string) bool {
+	h := sectionName(header)
 	return strings.EqualFold(h, "include") || strings.EqualFold(h, "includeIf")
 }
 
 // includePathValue returns the path value of a "path = <value>" config line
-// (empty if the line is not a path key). It strips surrounding double quotes and,
-// for an unquoted value, an inline # or ; comment.
-func includePathValue(line string) string {
+// (empty if the line is not a path key).
+func includePathValue(line string) string { return configValueLine(line, "path") }
+
+// configValueLine returns the value of a "<key> = <value>" git-config line when
+// its key matches name (case-insensitively, matching git), else "". It strips
+// surrounding double quotes and, for an unquoted value, an inline # or ; comment.
+func configValueLine(line, name string) string {
 	key, value, found := strings.Cut(line, "=")
 	if !found {
 		return ""
 	}
-	if !strings.EqualFold(strings.TrimSpace(key), "path") {
+	if !strings.EqualFold(strings.TrimSpace(key), name) {
 		return ""
 	}
 	val := strings.TrimSpace(value)
 	if len(val) >= 2 && val[0] == '"' {
-		if parsed, ok := quotedIncludePathValue(val); ok {
+		if parsed, ok := quotedConfigValue(val); ok {
 			return parsed
 		}
 		return ""
@@ -522,11 +547,12 @@ func includePathValue(line string) string {
 	return val
 }
 
-// quotedIncludePathValue returns the first complete double-quoted git-config
-// value. Git permits escaped quotes and backslashes in a quoted value; scanning
-// the closing quote rather than using strings.Index prevents an escaped quote in
-// an include path from truncating the path and bypassing include protection.
-func quotedIncludePathValue(value string) (string, bool) {
+// quotedConfigValue returns the first complete double-quoted git-config value.
+// Git permits escaped quotes and backslashes in a quoted value; scanning the
+// closing quote rather than using strings.Index prevents an escaped quote in a
+// value from truncating it — for a config include path that truncation would
+// bypass include protection.
+func quotedConfigValue(value string) (string, bool) {
 	var out strings.Builder
 	for i := 1; i < len(value); i++ {
 		switch value[i] {

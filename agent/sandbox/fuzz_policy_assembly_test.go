@@ -388,9 +388,9 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 		{value: `"bad\q"`, ok: false},
 		{value: `"trailing\`, ok: false},
 	} {
-		got, ok := quotedIncludePathValue(tc.value)
+		got, ok := quotedConfigValue(tc.value)
 		if got != tc.want || ok != tc.ok {
-			t.Fatalf("quotedIncludePathValue(%q) = (%q, %v), want (%q, %v)", tc.value, got, ok, tc.want, tc.ok)
+			t.Fatalf("quotedConfigValue(%q) = (%q, %v), want (%q, %v)", tc.value, got, ok, tc.want, tc.ok)
 		}
 	}
 

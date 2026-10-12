@@ -559,3 +559,171 @@ func TestBwrapShellReadsEvenerContentThroughTheCredentialMask(t *testing.T) {
 		}
 	}
 }
+
+// fixtureGitEnv is os.Environ() prepared for a sandboxed git whose global config
+// is the fixture's: the runner's own GIT_CONFIG_* overrides are dropped (they
+// would point git at some other global config, which is exactly the confound this
+// test must not have), the system config is off so the host's /etc/gitconfig
+// cannot supply core.excludesFile, and HOME names the fixture home the sandbox's
+// global-config facts were probed from.
+func fixtureGitEnv(home string) []string {
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if name, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, "GIT_CONFIG_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "HOME="+home, "GIT_CONFIG_NOSYSTEM=1")
+}
+
+// TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames is issue #4234's
+// acceptance bar on a host whose sandbox can run: a restricted session's git reads
+// the files its global config names — here core.excludesFile and
+// core.attributesFile, both spelled with `~/` — so the developer's configuration
+// takes effect inside the sandbox and git stays silent.
+//
+// On macOS/Seatbelt the failure this fixes is a WARNING on every command
+// (`unable to access '<home>/global-ignore': Operation not permitted`), because
+// Seatbelt judges a denied path the process NAMES and the path still exists. bwrap
+// instead hides an ungranted path with its mount namespace, so there the same
+// missing grant produces no warning at all: git silently ignores an excludes file
+// it cannot open, and the developer's global configuration quietly stops working.
+// The observable asserted here is therefore git's BEHAVIOUR, not stderr: the
+// fixture's excludes file keeps ignored.txt out of `git status`, and its attributes
+// file sets an attribute `git check-attr` reports. Both were absent before the
+// grant — the reproduction of the issue on this host.
+//
+// The same fixture pins the two properties that keep the grant narrow: it is
+// file-exact (a sibling of the named file stays unreadable), and it loses to the
+// credential denylist even when the named path is a symlink into a masked secret.
+func TestBwrapRestrictedGitReadsTheFileTheGlobalConfigNames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-bwrap integration test skipped under -short")
+	}
+	// Outside /tmp: the private /tmp tmpfs would otherwise shadow the fixture, and
+	// this test is about the global-config grant, not the /tmp re-bind.
+	base, err := os.MkdirTemp("/var/tmp", "evener-4234-")
+	if err != nil {
+		t.Skipf("create non-/tmp sandbox fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	home := filepath.Join(base, "home")
+	repo := filepath.Join(base, "repo")
+	secretDir := filepath.Join(home, ".ssh")
+	for _, dir := range []string{home, repo, secretDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ignore := filepath.Join(home, "global-ignore")
+	attrs := filepath.Join(home, "global-attributes")
+	secret := filepath.Join(secretDir, "id_rsa")
+	secretLink := filepath.Join(home, "ignore-link")
+	sibling := filepath.Join(home, "sibling-not-granted")
+	const secretText = "SECRET-SHOULD-NOT-ESCAPE"
+	for path, content := range map[string]string{
+		ignore:  "ignored.txt\n",
+		attrs:   "tracked.txt custom-evener-4234\n",
+		secret:  secretText + "\n",
+		sibling: "sibling\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A named path that is a SYMLINK into a masked secret must not become a way to
+	// read it: the denylist is authoritative over the grant.
+	if err := os.Symlink(secret, secretLink); err != nil {
+		t.Fatal(err)
+	}
+
+	gitHarness(t, repo, "init", "-q")
+	for _, file := range []string{"tracked.txt", "ignored.txt"} {
+		if err := os.WriteFile(filepath.Join(repo, file), []byte(file+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitHarness(t, repo, "add", "tracked.txt")
+
+	// runUnderFixtureHome writes config as the fixture's global git config, resolves
+	// a fresh restricted policy from it and runs script inside the real sandbox.
+	runUnderFixtureHome := func(config, script string, args ...string) (string, string, ResolvedPolicy, HostFacts) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		facts := probeHost(fixtureHomeProbeSystem{home: home})
+		if facts.OS != "linux" || !facts.BwrapCapable || facts.BwrapPath == "" {
+			t.Skip("bwrap not capable on this host")
+		}
+		rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, repo)
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		sessionTmp := t.TempDir()
+		w, err := NewWrapper(rp, facts.BwrapPath, sessionTmp)
+		if err != nil {
+			t.Fatalf("NewWrapper: %v", err)
+		}
+		argv := w.Wrap(append([]string{"/bin/sh", "-c", script, "global-config-referenced"}, args...), repo)
+		cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
+		cmd.Dir = repo
+		cmd.Env = ApplyEnvFloor(fixtureGitEnv(home), rp, sessionTmp)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("restricted sandbox command failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		}
+		return stdout.String(), stderr.String(), rp, facts
+	}
+
+	t.Run("the config's files take effect and the grant stays file-exact", func(t *testing.T) {
+		config := "[core]\n\texcludesFile = ~/global-ignore\n\tattributesFile = ~/global-attributes\n"
+		script := `set -eu
+git status --porcelain
+git check-attr --all -- tracked.txt
+printf 'SIBLING=%s\n' "$(cat "$1" 2>/dev/null || echo denied)"`
+		stdout, stderr, rp, _ := runUnderFixtureHome(config, script, sibling)
+		if got := strings.TrimSpace(stderr); got != "" {
+			t.Errorf("git under restricted mode must stay silent; stderr:\n%s\nstdout:\n%s", got, stdout)
+		}
+		if !strings.Contains(stdout, "A  tracked.txt") {
+			t.Errorf("git status did not report the staged file; stdout:\n%s", stdout)
+		}
+		if strings.Contains(stdout, "?? ignored.txt") {
+			t.Errorf("the global config's core.excludesFile must take effect under restricted mode, but git status listed ignored.txt (before the grant it silently did not); stdout:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, "custom-evener-4234: set") {
+			t.Errorf("the global config's core.attributesFile must take effect under restricted mode, but git check-attr reported nothing (before the grant it silently did not); stdout:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, "SIBLING=denied") {
+			t.Errorf("the grant is file-exact: a sibling of the named file must stay unreadable; stdout:\n%s", stdout)
+		}
+		for _, granted := range []string{ignore, attrs} {
+			if !slices.Contains(rp.Spawned.ReadRoots, granted) {
+				t.Errorf("the restricted policy must grant the file the global config names, %q; read roots: %v", granted, rp.Spawned.ReadRoots)
+			}
+		}
+	})
+
+	t.Run("a named path that resolves into a masked secret is never granted", func(t *testing.T) {
+		// The value names a SYMLINK whose target exists, so the probe admits it —
+		// and the resolver must still refuse the grant, because bwrap's read-only
+		// bind of a symlink follows it and materializes the TARGET's content at the
+		// literal name (verified on the live kernel), which would expose the masked
+		// key at the granted path.
+		config := "[core]\n\texcludesFile = ~/ignore-link\n"
+		stdout, _, rp, facts := runUnderFixtureHome(config, `cat "$1" 2>/dev/null || echo denied`, secretLink)
+		if !slices.Contains(facts.GitGlobalReferencedPaths, secretLink) {
+			t.Fatalf("the probe must admit a config-named symlink whose target exists, %q; got %v", secretLink, facts.GitGlobalReferencedPaths)
+		}
+		if slices.Contains(rp.Spawned.ReadRoots, secretLink) {
+			t.Errorf("a config-named path whose resolved target is masked must never become a read root; read roots: %v", rp.Spawned.ReadRoots)
+		}
+		if strings.Contains(stdout, secretText) {
+			t.Errorf("a grant for a config-named symlink must not expose its masked target; stdout:\n%s", stdout)
+		}
+	})
+}

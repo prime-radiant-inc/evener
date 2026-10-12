@@ -192,7 +192,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files and the files they name (`core.excludesFile`, `core.attributesFile`) + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -245,9 +245,11 @@ unsandboxed root's `TMPDIR` is not in the tree.
   The grant is deliberately narrow, and what it does **not** change matters as
   much as what it does:
 
-  - It is **file-exact**, and it adds no other read under the home directory. The
-    two config FILES are granted, never `$HOME` and never the `~/.config` or
-    `~/.config/git` directories. A file that does not exist contributes nothing and
+  - It is **file-exact**, and this grant adds no other read under the home
+    directory. The two config FILES are granted, never `$HOME` and never the
+    `~/.config` or `~/.config/git` directories. (The separate grant below, for the
+    files those configs *name*, can also name a path under your home — it is
+    itemized there.) A file that does not exist contributes nothing and
     never fails session start; a path that names a directory is refused outright.
     File-exactness is enforced where the candidates are *probed* — a candidate is
     admitted only if it exists and is not a directory — and not by the shared-tree
@@ -271,6 +273,72 @@ unsandboxed root's `TMPDIR` is not in the tree.
     temp root is refused rather than granted.
   - It reaches the **spawned layer only**. The model's file tools stay confined to
     the worktree and cannot browse the config.
+
+  **The files those configs name are readable in `restricted` too, read-only**
+  (ruled 2026-10-12, #4234).
+  A global config's `core.excludesFile` and `core.attributesFile` name files git
+  opens on ordinary commands — `status`, `add`, `commit` — and neither sits under a
+  root `restricted` grants. The failure was loudest on macOS, where the kernel judges
+  the path the process names and reports
+
+      warning: unable to access '<home>/.gitignore_global': Operation not permitted
+
+  on every command, but it is not cosmetic: on Linux an ungranted path is simply
+  absent inside the sandbox, so `git` silently ran *without* the developer's global
+  excludes and attributes files instead of complaining about them.
+
+  The grant is bounded exactly as narrowly as the config-file grant above, and by
+  the same machinery (probe, shared-tree guard, denylist, spawned layer only):
+
+  - **File-exact.** Each entry is an existing non-directory file. Never a directory,
+    never `$HOME`, never a parent of the file. At most one entry per key, because
+    only the LAST assignment of a key survives — git's own last-wins rule for a
+    single-valued variable — and the later of the two config files wins, which is
+    git's own order.
+  - **git's own path rules.** `~/x` is expanded against your home the way git
+    expands it, and an absolute path is granted as written. A value the sandbox
+    cannot resolve to one file is refused rather than guessed: a relative path
+    (git resolves it against the working directory of the git command, not to a
+    stable file), `~user/...` (another user's home), a bare `~` (the home directory),
+    a directory, and a path that does not exist (git ignores a missing file
+    silently, so there is nothing to grant).
+  - **Only the bare `[core]` section is read**, matching git: a `[core "x"]`
+    subsection or the legacy `[core.excludesfile]` header names a different key, and
+    a file named there is never opened by git.
+  - **The denylist still wins, including through a symlink.** A referenced path
+    whose *resolved target* is masked is never granted. That check is load-bearing:
+    bubblewrap's read-only bind of a symlink follows the link and materializes the
+    target's content at the literal name, so a config naming `~/link` →
+    `~/.ssh/id_rsa` would otherwise expose the key at `~/link` (verified against the
+    live kernel).
+  - **Read-only, spawned-layer only**, and it changes no write surface — the same
+    anti-hook-planting argument as the config-file grant.
+
+  What it deliberately does **not** cover, with the reason:
+
+  - `core.hooksPath` and `commit.template` are not followed. A hooks path is a
+    directory that must also be executable (a strictly larger grant, and the live
+    tests document a home `core.hooksPath` as knowingly-breaking); a commit template
+    is read only by an editor-driven commit.
+  - A `.git/config` (repository-local) or `/etc/gitconfig` value is not followed.
+    The repository's own config is model-adjacent content, so letting it name host
+    files for a read grant would let a cloned repository choose what the sandbox
+    opens. `/etc` is a read root anyway.
+  - A global config's `include.path` target is not granted either. Following
+    includes is an unbounded, recursive widening (a config can include any file),
+    which is a policy decision of its own; an unreadable home-anchored include makes
+    git *fatal* rather than warn, which is the sharper edge of the same issue and is
+    tracked separately.
+  - `GIT_CONFIG_GLOBAL` in the environment is not consulted: the probe reads the two
+    files `git-config(1)` names under FILES. A session that exports it therefore
+    keeps today's behaviour for that file — tracked separately, `GIT_CONFIG_GLOBAL`
+    and `GIT_CONFIG_SYSTEM` pass through the environment floor unchanged. This is
+    the one to suspect if a `restricted` session still reports an unreadable git
+    config; `GIT_CONFIG_GLOBAL=/dev/null` tells it apart from a sandbox fault.
+  - A global config the probe cannot read — unreadable, a device, or larger than the
+    probe's bounded 64 KiB read — contributes no referenced-file grant. The config
+    file itself stays readable in `restricted`, so only values named by a config that
+    large are missed.
 
   Because the config becomes readable, settings in it now take effect inside the
   sandbox — `rerere.enabled=true`, for instance, makes `git commit` create

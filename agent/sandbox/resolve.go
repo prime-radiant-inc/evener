@@ -858,9 +858,13 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// developer directory — ruled 2026-08-06), the user's global git config
 		// FILES (git fatals on a present-but-unreadable ~/.gitconfig, so without
 		// them git was unusable in this mode on any host with a global config —
-		// read-only and file-exact, ruled 2026-08-07), the session's hook/MCP-server
-		// paths (session infrastructure, which must run in every mode — ruled
-		// 2026-08-06), and write the git metadata subset. Those extra grants stay OUT
+		// read-only and file-exact, ruled 2026-08-07) plus the files those configs
+		// name for git to read (core.excludesFile, core.attributesFile — a file git
+		// cannot open is one whose settings silently do not apply, and macOS/Seatbelt
+		// warns "unable to access ...: Operation not permitted" on every command that
+		// reads it, ruled 2026-10-12 for #4234), the session's hook/MCP-server paths
+		// (session infrastructure, which must run in every mode — ruled 2026-08-06),
+		// and write the git metadata subset. Those extra grants stay OUT
 		// of readFile: a hook living in the plugin cache must be executable and the
 		// git shim must reach its toolchain, but the model must not gain a file-tool
 		// browse grant over either along with it.
@@ -869,7 +873,7 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
 		// is not masked — and a masked one must stay masked in every mode.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
-		gitConfig := guardedHostRoots(host.GitGlobalConfigPaths, host.Home, worktree)
+		gitConfig := guardedHostRoots(slices.Concat(host.GitGlobalConfigPaths, host.GitGlobalReferencedPaths), host.Home, worktree)
 		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
@@ -942,15 +946,27 @@ func withResolvedMasks(masked []string) []string {
 
 // filterMasked drops any root the policy masks (ResolvedPolicy.Masks), upholding
 // the invariant that a resolved policy never grants a denylisted/pseudo-fs path.
+//
+// A root reached through a SYMLINK is judged at the path it really exposes as well
+// as at its literal name. bwrap's `--ro-bind <link> <link>` follows the link and
+// materializes the TARGET's content at the literal path (verified against the live
+// kernel: a granted `~/link` → `~/.ssh/id_rsa` made the key readable at `~/link`
+// even with `~/.ssh` masked), so a root whose literal path is unmasked but whose
+// target is masked would expose the masked file. Resolving costs one EvalSymlinks
+// per root, and a symlink whose target is unmasked — the ordinary dotfile-managed
+// case — is unaffected. Seatbelt additionally grants the canonical spelling, and
+// its trailing denials already covered the target; this closes the same shape for
+// the mount-based backend.
 func filterMasked(roots []string, rp ResolvedPolicy) []string {
 	if len(roots) == 0 {
 		return roots
 	}
 	out := roots[:0:0]
 	for _, r := range roots {
-		if !rp.masks(r, false) {
-			out = append(out, r)
+		if rp.masks(r, false) || rp.masks(resolveExistingPrefix(r), false) {
+			continue
 		}
+		out = append(out, r)
 	}
 	if len(out) == 0 {
 		return nil
