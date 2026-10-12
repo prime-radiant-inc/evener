@@ -4830,8 +4830,8 @@ test("visible retained transcript resolves qualified job and stable delegate row
     expect.arrayContaining([expect.objectContaining({ params: { ref: "job:provided-ref", parentRef: ref } })]),
   );
   fireEvent.click(screen.getByRole("button", { name: "Open delegate transcript" }));
-  expect(workspaceStore.getState().panes.filter((p) => p.type === "transcript")).toEqual(
-    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child", parentRef: ref } })]),
+  expect(workspaceStore.getState().panes.filter((p) => p.type === "session")).toEqual(
+    expect.arrayContaining([expect.objectContaining({ params: { ref: "source:opaque-child" } })]),
   );
   expect(
     fake.calls.filter((c) => c.method === "evener/jobs/list" || c.method === "evener/thread/watches/list"),

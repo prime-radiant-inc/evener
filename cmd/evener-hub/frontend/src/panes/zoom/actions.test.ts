@@ -11,7 +11,6 @@ import {
   type OpenPaneRecord,
   recordTranscriptOpenOrigin,
   registerDockviewApi,
-  requestPaneFocus,
   resetWorkspaceStoreForTests,
   transcriptOpenOrigin,
   workspaceStore,
@@ -21,7 +20,7 @@ import { connectionStore } from "../../stores/connection";
 import { activityDelegate } from "../../stores/sessionActivityTestUtils";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
-import { enterAgentCascade, openCascadeConversation, popAgentCascade, returnFromAgentCascade } from "./actions";
+import { enterAgentCascade, popAgentCascade, returnFromAgentCascade } from "./actions";
 import { associatedCascade, cascadeOrigin } from "./inspectionOrigin";
 import { parseZoomParams, type SessionZoomParams } from "./intent";
 
@@ -136,8 +135,13 @@ test("Agents entry keeps the center and Return removes only its secondary inspec
   expect(inspectorId).not.toBe(source.id);
   expect(pane(source.id)).toBe(source);
   expect(pane(inspectorId)).toMatchObject({ type: "sessionZoom", slot: "secondary" });
-  expect(conversationPaneLifetime(pane(inspectorId))).not.toBe(lifetime);
-  expect(conversationPaneLifetime(pane(inspectorId)).composer).toBeNull();
+  const inspectorLifetime = conversationPaneLifetime(pane(inspectorId));
+  expect(inspectorLifetime).not.toBe(lifetime);
+  // The cascade column embeds the live conversation, so the inspector lifetime
+  // reads its origin source as a session: it carries its own composer state
+  // for that ref and never adopts the center pane's.
+  expect(inspectorLifetime.composer?.ref).toBe("root");
+  expect(inspectorLifetime.composer).not.toBe(composer);
   expect(conversationPaneLifetime(source).composer).toBe(composer);
   expect(view.alive).toBe(true);
   expect(retainedTranscriptReadView(lifetime, "root", "session")).toBe(view);
@@ -193,7 +197,7 @@ test("independent same-ref sources receive different secondary inspection contex
   expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
 });
 
-test("inspection of a secondary transcript preserves its exact Back origin and read-only lifetime", () => {
+test("entering from a legacy secondary transcript opens the generic cascade and Return leaves its record untouched", () => {
   const root = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
   const source = pane(workspaceStore.getState().openPane("transcript", { ref: "child", parentRef: "root" }));
   recordTranscriptOpenOrigin(source, root);
@@ -205,13 +209,18 @@ test("inspection of a secondary transcript preserves its exact Back origin and r
   );
   expect(inspectorId).not.toBe(source.id);
   expect(pane(source.id)).toBe(source);
+  // A legacy transcript record is not an entry source: the cascade opens
+  // generic and unbound, sourcing the owner conversation as a session.
   expect(pane(inspectorId).params).toMatchObject({
-    source: { type: "transcript", params: { ref: "child", parentRef: "root" } },
-    inspection: { origin: { paneId: source.id, type: "transcript", ref: "child" } },
+    ref: "grandchild",
+    source: { type: "session", params: { ref: "child" } },
+    inspection: { origin: null },
   });
+  expect(cascadeOrigin(pane(inspectorId))).toBeNull();
   returnFromAgentCascade(inspectorId);
   expect(workspaceStore.getState().panes).toEqual([root, source]);
-  expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
+  expect(workspaceStore.getState().focusedPaneId).toBeNull();
+  expect(consumePaneFocus(source.id)).toBe(false);
   expect(conversationPaneLifetime(source)).toBe(lifetime);
   expect(lifetime.composer).toBeNull();
   expect(view.alive).toBe(true);
@@ -249,19 +258,6 @@ test("a replacement origin gets a fresh inspector instead of claiming the retire
   expect(workspaceStore.getState().panes).toHaveLength(3);
 });
 
-test("Open original conversation closes inspection and requests focus only for the exact full source", () => {
-  const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
-  const composer = conversationPaneLifetime(source).composer;
-  const inspectorId = enterAgentCascade(rootChild(), source.id);
-  requestPaneFocus(inspectorId);
-  openCascadeConversation(inspectorId, "root");
-  expect(workspaceStore.getState().panes).toEqual([source]);
-  expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
-  expect(consumePaneFocus(inspectorId)).toBe(false);
-  expect(consumePaneFocus(source.id)).toBe(true);
-  expect(conversationPaneLifetime(source).composer).toBe(composer);
-});
-
 test("older secondary fallback intent still retypes its exact saved pane on Return", () => {
   const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
   const legacy = pane(
@@ -280,7 +276,9 @@ test("older secondary fallback intent still retypes its exact saved pane on Retu
   expect(pane(source.id)).toBe(source);
   expect(pane(legacy.id)).toMatchObject({ type: "transcript", slot: "secondary", params: { ref: "root" } });
   expect(conversationPaneLifetime(pane(legacy.id))).toBe(lifetime);
-  expect(lifetime.composer).toBeNull();
+  // The saved source reads as the session it always was, so the shared
+  // lifetime carries the conversation's composer for that ref.
+  expect(lifetime.composer?.ref).toBe("root");
 });
 
 test("legacy cascade Return preserves the same pane position, source work and unrelated records", () => {
@@ -394,7 +392,7 @@ test.each(["doc", "job"] as const)(
     expect(pane(cascadeId)).toMatchObject({
       type: "sessionZoom",
       slot: "secondary",
-      params: { ref: "child", source: { type: "transcript", params: { ref: "root" } } },
+      params: { ref: "child", source: { type: "session", params: { ref: "root" } } },
     });
     expect(workspaceStore.getState().panes).toHaveLength(2);
     returnFromAgentCascade(cascadeId);
@@ -402,45 +400,6 @@ test.each(["doc", "job"] as const)(
     expect(consumePaneFocus(source.id)).toBe(false);
   },
 );
-
-test("legacy Open conversation restores the original full session in place before focusing it", () => {
-  const store = workspaceStore.getState();
-  const source = pane(store.openPane("session", { ref: "root" }));
-  const other = pane(store.openPane("session", { ref: "independent" }));
-  const lifetime = conversationPaneLifetime(source);
-  const composer = lifetime.composer;
-  store.retypePane(source, "sessionZoom", {
-    ref: "child",
-    source: { type: "session", params: source.params },
-    edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
-  });
-  openCascadeConversation(source.id, "root");
-  expect(pane(source.id)).toEqual(source);
-  expect(conversationPaneLifetime(pane(source.id)).composer).toBe(composer);
-  expect(pane(other.id)).toBe(other);
-  expect(workspaceStore.getState().focusedPaneId).toBe(source.id);
-});
-
-test("Open conversation focuses an existing child session or opens secondary without clearing the workspace", () => {
-  const store = workspaceStore.getState();
-  const source = pane(store.openPane("session", { ref: "root" }));
-  const childSession = pane(store.openPane("session", { ref: "child" }));
-  const doc = pane(store.openPane("doc", { session: "root", path: "notes.md", kind: "file" }));
-  const inspectorId = enterAgentCascade(rootChild(), source.id);
-  openCascadeConversation(inspectorId, "child");
-  expect(workspaceStore.getState().focusedPaneId).toBe(childSession.id);
-  expect(workspaceStore.getState().panes).toHaveLength(4);
-  openCascadeConversation(inspectorId, "grandchild");
-  const created = workspaceStore
-    .getState()
-    .panes.find((item) => item.type === "session" && (item.params as { ref: string }).ref === "grandchild");
-  expect(created).toMatchObject({ slot: "secondary", params: { ref: "grandchild" } });
-  expect(pane(source.id)).toBe(source);
-  expect(pane(inspectorId).type).toBe("sessionZoom");
-  expect(conversationPaneLifetime(pane(inspectorId)).composer).toBeNull();
-  expect(pane(doc.id)).toBe(doc);
-  expect(pane(childSession.id)).toBe(childSession);
-});
 
 test("a restored cascade restores a composer bound to its requested source, never its child", () => {
   const restored: OpenPaneRecord = {

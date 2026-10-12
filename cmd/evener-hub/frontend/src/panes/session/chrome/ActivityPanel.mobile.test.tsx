@@ -221,7 +221,7 @@ test("a folded failed job opens actual output through its authoritative owner, n
   }
 });
 
-test("mobile child transcript Back restores Activity and disclosures until explicitly closed", async () => {
+test("mobile child conversation Back restores Activity and disclosures until explicitly closed", async () => {
   const client = connectActivity();
   const restoreSessionPane = registerPaneForTests<{ ref: string }>({
     id: "session",
@@ -249,16 +249,18 @@ test("mobile child transcript Back restores Activity and disclosures until expli
     fireEvent.click(screen.getByRole("button", { name: "Show details for Observer" }));
     await act(async () => {
       fireEvent.click(
-        within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open transcript" }),
+        within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open conversation" }),
       );
       await vi.dynamicImportSettled();
     });
-    await screen.findByText("No turns yet");
+    // The opened child pane is its live conversation pane, rendered here by
+    // the fake session component: its own Activity trigger is the mount
+    // landmark the read-only pane's "No turns yet" empty state used to be.
+    await screen.findByRole("button", { name: /^Activity/ });
     const childPane = workspaceStore.getState().focusedPaneId;
-    if (childPane === null) throw new Error("expected the child transcript to own focus");
+    if (childPane === null) throw new Error("expected the child conversation to own focus");
     expect(workspaceStore.getState().panes.find((pane) => pane.id === childPane)?.params).toEqual({
       ref: "remote:child",
-      parentRef: ref,
     });
     expect(screen.queryByRole("dialog", { name: "Activity" })).toBeNull();
     await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
@@ -270,7 +272,7 @@ test("mobile child transcript Back restores Activity and disclosures until expli
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Activity" })).toBeNull());
     act(() => workspaceStore.getState().focusPane(childPane));
-    await screen.findByText("No turns yet");
+    await screen.findByRole("button", { name: /^Activity/ });
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("button", { name: /^Activity/ });
     expect(screen.queryByRole("dialog", { name: "Activity" })).toBeNull();
@@ -353,11 +355,13 @@ test("mobile child Back restores the loaded job extent and expanded older failur
 
     await act(async () => {
       fireEvent.click(
-        within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open transcript" }),
+        within(screen.getByRole("treeitem", { name: "Observer" })).getByRole("button", { name: "Open conversation" }),
       );
       await vi.dynamicImportSettled();
     });
-    await screen.findByText("No turns yet");
+    // The opened child pane is its live conversation pane, rendered here by
+    // the fake session component; its Activity trigger is the mount landmark.
+    await screen.findByRole("button", { name: /^Activity/ });
     await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")).toBeNull());
     const jobReadsBeforeBack = client.calls.filter(
       (call) => call.method === "evener/thread/jobs/list" && (call.params as { scope?: string }).scope === "subtree",

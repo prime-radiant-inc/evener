@@ -414,7 +414,7 @@ authority. Loaded descendants whose parents have not arrived remain visible
 with incomplete relationship evidence. Rendering keys qualify resource IDs with
 their authoritative refs. Actions keep the raw logical ID: job output uses the
 returned job owner ref, delegate stopping addresses its controller root, and a
-child transcript opens the returned child ref. A rendering key never becomes an
+child conversation opens the returned child ref. A rendering key never becomes an
 action argument. The [delegate stop handler](../../server/appwire_runtime.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
 Job output panes keep the logical job ID as their title when descriptive
@@ -810,7 +810,7 @@ are not part of that number. The sidebar's Agents, Jobs, Watches and Tasks tabs 
 reads on both viewports; About uses the shared session model. The Agents count
 is the exception: the footer chip, the sidebar's Agents tab label, each
 cascade scope's Agents chip, the Overview and Activity action counts and the
-transcript's liveness line all count subagents at every depth, from the subtree
+conversation's liveness line all count subagents at every depth, from the subtree
 summary
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
 while the Agents tab lists the session's own. The count and an open Activity
@@ -846,7 +846,7 @@ and native retain their separate history groups and own-session error priority.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
 retains sheet visibility, disclosure choices and each collection's last loaded
 row identity by session ref for the lifetime of its retained workspace panes.
-Opening a child transcript releases the hidden subtree read demand. Back acquires
+Opening a child conversation releases the hidden subtree read demand. Back acquires
 fresh demand through the shared binding and restores the inspected extent using
 the existing page boundary, yielding 100 ms between pages. Delegates, jobs and
 watches restore independently until their saved identity arrives or an
@@ -859,7 +859,9 @@ and disclosure choices. Closing the last retaining pane evicts this view state.
 
 Activity delegate rows use the shared opener, which requests the child's
 conversation pane — reusing an already open one for that session — and keeps
-the child's parent context so an unchanged root URL does not steal focus.
+the child's parent context so an unchanged root URL does not steal focus; a
+fresh phone host's Back returns along that recorded context to the retained
+parent pane before falling to welcome.
 Ancestor buttons reuse an already open conversation pane for the scope. The
 opener names the view it opens: the conversation for a session ref, the
 transcript for a job log. Saved layouts restore a legacy session-ref

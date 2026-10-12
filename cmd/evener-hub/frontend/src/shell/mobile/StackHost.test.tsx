@@ -247,7 +247,7 @@ test("renders the new activity sidebar over the mobile stack with the selected t
 });
 
 test.each(["Close", "Escape"])(
-  "%s returns phone Overview focus to its parent link after child drilling",
+  "%s returns phone Overview focus to the revealed conversation after child drilling",
   async (dismiss) => {
     const restoreViewport = installMobileViewport();
     const parent = "remote:focus-parent";
@@ -290,23 +290,20 @@ test.each(["Close", "Escape"])(
       await user.click(within(sidebar).getByRole("radio", { name: "About" }));
       await within(sidebar).findByText("~$1.00");
       await screen.findByRole("heading", { name: "Child work" });
-      const parentLink = await waitFor(() => {
-        const link = screen.getAllByRole("button", { name: "Parent work" }).find((button) => !sidebar.contains(button));
-        if (!link) throw new Error("Child transcript has no parent link");
-        return link;
-      });
       const before = workspaceStore.getState();
       expect(before.focusedPaneId).not.toBe(parentPane);
-      expect(screen.queryByRole("button", { name: "Session actions" })).toBeNull();
       if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Close Overview" }));
       else await user.keyboard("{Escape}");
-      await waitFor(() => expect(document.activeElement).toBe(parentLink));
+      // The read-only transcript's ancestor link is gone: the revealed
+      // conversation owns the return focus through its own actions control.
+      const childActions = await screen.findByRole("button", { name: "Session actions" });
+      await waitFor(() => expect(document.activeElement).toBe(childActions));
       await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
       expect(workspaceStore.getState().panes).toEqual(before.panes);
       expect(workspaceStore.getState().focusedPaneId).toBe(before.focusedPaneId);
-      await user.keyboard("{Enter}");
-      await screen.findByRole("button", { name: "Session actions" });
-      expect(workspaceStore.getState().focusedPaneId).toBe(parentPane);
+      // The path back to the parent is the retained Back walk.
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parentPane));
     } finally {
       cleanup();
       restoreViewport();
@@ -314,7 +311,7 @@ test.each(["Close", "Escape"])(
   },
 );
 
-test("at the mobile boundary an ordinary Agents row retains the existing transcript route", async () => {
+test("at the mobile boundary an ordinary Agents row retains the existing conversation route", async () => {
   const restoreViewport = installMobileViewport();
   const client = activityClient();
   connectionStore.getState().connect(client);
@@ -331,7 +328,13 @@ test("at the mobile boundary an ordinary Agents row retains the existing transcr
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /inspect/ }));
     const state = workspaceStore.getState();
-    expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("transcript");
+    // The ordinary row keeps opening the thread it always opened - the
+    // conversation pane for a session ref, never the cascade - at the
+    // mobile boundary where the desktop row would enter a cascade instead.
+    expect(state.panes.find((pane) => pane.id === state.focusedPaneId)).toMatchObject({
+      type: "session",
+      params: { ref: "remote:child" },
+    });
     expect(state.panes.some((pane) => pane.type === "sessionZoom")).toBe(false);
   } finally {
     cleanup();
@@ -366,7 +369,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
   const client = cascadeClient(context);
   const params: SessionZoomParams = {
     ref: "grandchild",
-    source: { type: "transcript", params: { ref: "root" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [
       { ownerRef: "root", childRef: "child", delegateId: "edge-child" },
       { ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" },
@@ -394,7 +397,9 @@ test("a restored cascade renders only its selected reader on mobile and restores
       "grandchild",
     ]);
     expect(screen.queryByTestId("cascade-spine")).toBeNull();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    // The selected column embeds the live conversation, composer included -
+    // the read-only reader surface with no composer is gone.
+    expect(screen.queryByRole("textbox")).not.toBeNull();
     expect(workspaceStore.getState().panes[0]?.params).toBe(params);
     phoneReturn.focus();
     act(() => activitySidebarStore.getState().openWith("about"));
@@ -427,7 +432,7 @@ test("a restored cascade renders only its selected reader on mobile and restores
     await userEvent.setup().click(screen.getByRole("button", { name: "Return to previous view" }));
     expect(workspaceStore.getState().panes[0]).toMatchObject({
       id: "restored-cascade",
-      type: "transcript",
+      type: "session",
       params: { ref: "root" },
     });
     expect(await screen.findByText("root real content")).toBeTruthy();

@@ -48,6 +48,7 @@ import { navigate, paneToURL, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
 import {
+  conversationOpenParentRef,
   documentPaneState,
   type OpenPaneRecord,
   transcriptOpenOrigin,
@@ -378,6 +379,28 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
                 ))
               : undefined);
         }
+      }
+    }
+    if (!target && focusedPane?.type === "session") {
+      const parentRef = conversationOpenParentRef(focusedPane);
+      if (parentRef !== undefined) {
+        // A host swap discards local history, not the retained parent pane.
+        // Focus that exact pane: reopening a session could promote a nested
+        // parent into main and discard the real owner and remaining context.
+        const ancestor =
+          panes.find(
+            (pane) =>
+              pane.id !== focusedPaneId &&
+              pane.type === "session" &&
+              (pane.params as { ref?: unknown }).ref === parentRef,
+          ) ??
+          panes.find(
+            (pane) =>
+              pane.id !== focusedPaneId &&
+              pane.type === "transcript" &&
+              (pane.params as { ref?: unknown }).ref === parentRef,
+          );
+        target = ancestor?.id;
       }
     }
     wentBackRef.current = true;

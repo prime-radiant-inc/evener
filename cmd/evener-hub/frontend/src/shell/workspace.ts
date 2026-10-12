@@ -43,6 +43,13 @@ export interface OpenPaneRecord {
 // bind each edge to these pane lifetimes, not IDs a restore/reset can reuse.
 const transcriptOpenOrigins = new Map<OpenPaneRecord, OpenPaneRecord>();
 
+// A conversation pane's identity is its ref alone, so the parent context it
+// was opened with lives here instead of in its params. Object keys bind each
+// edge to pane lifetimes, not IDs a restore/reset can reuse, while the ref
+// value survives the parent pane closing - the same retention a transcript
+// pane's parentRef param has.
+const conversationOpenParentRefs = new Map<OpenPaneRecord, string>();
+
 export interface DocumentPaneState {
   readonly reference: FileReference;
   readonly origin: OpenPaneRecord | undefined;
@@ -86,6 +93,24 @@ export function recordTranscriptOpenOrigin(pane: OpenPaneRecord, origin: OpenPan
 
 export function transcriptOpenOrigin(pane: OpenPaneRecord): OpenPaneRecord | undefined {
   return transcriptOpenOrigins.get(pane);
+}
+
+export function recordConversationOpenParent(pane: OpenPaneRecord, parentRef: string | undefined): void {
+  conversationOpenParentRefs.delete(pane);
+  const params = pane.params as { ref?: unknown };
+  if (
+    pane.type === "session" &&
+    typeof parentRef === "string" &&
+    parentRef !== "" &&
+    parentRef !== params.ref &&
+    workspaceStore.getState().panes.includes(pane)
+  ) {
+    conversationOpenParentRefs.set(pane, parentRef);
+  }
+}
+
+export function conversationOpenParentRef(pane: OpenPaneRecord): string | undefined {
+  return conversationOpenParentRefs.get(pane);
 }
 
 const paneRetypeListeners = new Set<(previous: OpenPaneRecord, replacement: OpenPaneRecord) => void>();
@@ -516,6 +541,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     for (const [pane, origin] of origins) {
       transcriptOpenOrigins.set(pane === expected ? replacement : pane, origin === expected ? replacement : origin);
     }
+    const parents = [...conversationOpenParentRefs];
+    conversationOpenParentRefs.clear();
+    for (const [pane, parentRef] of parents) {
+      conversationOpenParentRefs.set(pane === expected ? replacement : pane, parentRef);
+    }
     set({ panes: state.panes.map((pane) => (pane === expected ? replacement : pane)) });
     return true;
   },
@@ -615,6 +645,9 @@ workspaceStore.subscribe((state, previous) => {
   if (state.panes === previous.panes) return;
   for (const [pane, origin] of transcriptOpenOrigins) {
     if (!state.panes.includes(pane) || !state.panes.includes(origin)) transcriptOpenOrigins.delete(pane);
+  }
+  for (const pane of conversationOpenParentRefs.keys()) {
+    if (!state.panes.includes(pane)) conversationOpenParentRefs.delete(pane);
   }
   for (const pane of documentPaneStates.keys()) {
     if (!state.panes.includes(pane)) documentPaneStates.delete(pane);

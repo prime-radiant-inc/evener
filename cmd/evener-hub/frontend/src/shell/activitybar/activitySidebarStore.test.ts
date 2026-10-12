@@ -151,7 +151,7 @@ test.each(["removed", "hidden ancestor", "invisible ancestor", "disabled"])(
 test("return focus prefers the originating pane's chip before another pane's action for the same ref", () => {
   const root = document.body.appendChild(document.createElement("div"));
   try {
-    sessionActions(root, "remote:other", "origin");
+    const focusedAction = sessionActions(root, "remote:other", "origin");
     const otherAction = sessionActions(root, "remote:owner", "other-pane");
     const chip = root.appendChild(document.createElement("button"));
     chip.dataset.activityTab = "jobs";
@@ -166,7 +166,9 @@ test("return focus prefers the originating pane's chip before another pane's act
     chip.hidden = true;
     expect(activitySidebarReturnFocusTarget("jobs")).toBe(otherAction);
     otherAction.disabled = true;
-    expect(activitySidebarReturnFocusTarget("jobs")).toBeNull();
+    // The revealed pane owns the last resort: the read-only crumb the old
+    // chain ended on is gone, so the focused pane's own action takes focus.
+    expect(activitySidebarReturnFocusTarget("jobs")).toBe(focusedAction);
   } finally {
     root.remove();
   }

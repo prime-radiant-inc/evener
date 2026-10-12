@@ -254,6 +254,16 @@ export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement 
         !control.closest('[data-testid="activity-sidebar"]') &&
         visible(control),
     ) ??
+    // Drilling moved focus to a pane the opener scoping cannot see, and the
+    // read-only pane that used to render the opener's navigation link is
+    // gone: the revealed conversation owns the return focus through its own
+    // actions control.
+    Array.from(document.querySelectorAll<HTMLElement>("[data-session-actions-ref]"))
+      .find((marker) => {
+        const button = marker.closest<HTMLButtonElement>("button");
+        return visible(button) && marker.dataset.paneId === workspaceStore.getState().focusedPaneId;
+      })
+      ?.closest<HTMLButtonElement>("button") ??
     null
   );
 }

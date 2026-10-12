@@ -20,9 +20,9 @@ export interface TranscriptParams {
   parentRef?: string;
 }
 
-export default function Transcript({ params, paneId }: PaneProps<TranscriptParams>) {
+export default function Transcript({ params, paneId, focused }: PaneProps<TranscriptParams>) {
   if (params.ref.startsWith("job:")) {
     return <JobLog jobRef={params.ref} parentRef={params.parentRef} paneId={paneId} />;
   }
-  return <Session params={{ ref: params.ref }} paneId={paneId} />;
+  return <Session focused={focused} params={{ ref: params.ref }} paneId={paneId} />;
 }

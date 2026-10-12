@@ -1,7 +1,12 @@
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import * as paneActions from "../../../shell/paneActions";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
-import { recordTranscriptOpenOrigin, workspaceStore } from "../../../shell/workspace";
+import {
+  conversationOpenParentRef,
+  recordConversationOpenParent,
+  recordTranscriptOpenOrigin,
+  workspaceStore,
+} from "../../../shell/workspace";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { navigationStore } from "../../../stores/navigation/store";
 import { OpenButton } from "../../../widgets";
@@ -32,6 +37,31 @@ function transcriptContextRefs(ref: string): string[] {
 
 export function transcriptContextIncludes(ref: string, ancestorRef: string): boolean {
   return transcriptContextRefs(ref).includes(ancestorRef);
+}
+
+// Follow retained conversation parent context, then any retained read-only
+// parent context that chain carries. A conversation pane keeps its parent
+// beside the pane lifetime instead of in params, so the walk alternates the
+// two records. Like the transcript walk this works before a child's
+// navigation location has been fetched.
+function conversationContextRefs(ref: string): string[] {
+  const panes = workspaceStore.getState().panes;
+  const visited = new Set<string>();
+  let current: string | undefined = ref;
+  while (current !== undefined && !visited.has(current)) {
+    visited.add(current);
+    const holder = panes.find(
+      (pane) => (pane.type === "session" || pane.type === "transcript") && transcriptRefOf(pane.params) === current,
+    );
+    if (holder === undefined) break;
+    const parentParam = (holder.params as { parentRef?: unknown }).parentRef;
+    current = conversationOpenParentRef(holder) ?? (typeof parentParam === "string" ? parentParam : undefined);
+  }
+  return [...visited];
+}
+
+export function conversationContextIncludes(ref: string, ancestorRef: string): boolean {
+  return conversationContextRefs(ref).includes(ancestorRef);
 }
 
 // Workspace deduplication deliberately compares the entire params bag. That
@@ -133,6 +163,7 @@ export function openTranscript(ref: string, parentRef?: string): void {
     .getState()
     .panes.find((pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref);
   if (existing) {
+    recordConversationOpenParent(existing, parentRef);
     workspaceStore.getState().focusPane(existing.id);
     return;
   }
@@ -140,6 +171,10 @@ export function openTranscript(ref: string, parentRef?: string): void {
     type: "session",
     params: { ref },
   });
+  const opened = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && transcriptRefOf(pane.params) === ref);
+  if (opened) recordConversationOpenParent(opened, parentRef);
 }
 
 // The row control names the view it opens: the conversation for a session,

@@ -51,16 +51,17 @@ The guard checks:
   so a pending composer-height reflow does not become the oracle. After Return,
   its readiness barrier observes that reading position, since editor focus and
   saved workspace removal can precede transcript restoration.
-- Width-only reflow in ordinary, read-only cascade and phone-width browser
+- Width-only reflow in ordinary, cascade-column and phone-width browser
   readers preserves the same useful entry without opening or closing inspection.
-- A height-only round trip in the ordinary and read-only cascade readers keeps
+- A height-only round trip in the ordinary and cascade-column readers keeps
   the reading line exactly where it was (#3899).
 - Trusted native Shift-Space, wheel and current-state pill input during genuine held target
   measurements, followed by release that retains the newer reading point or
   live result. The keyboard checkpoint focuses the unchanged source scrollport
   before trusted input, without injecting a tab index or replacing a handler.
-- Original panel identity, draft, a catalog skill and exact processed PNG bytes,
-  with no composer or file picker inside the read-only inspector.
+- Original panel identity, draft, a catalog skill and exact processed PNG
+  bytes, with every readable column embedding its own scope's live
+  conversation composer and nothing else in the pane mounting one.
 - Native canvas completion held across inspection, both successful settlement
   and explicit failure, while preserving a newer source draft.
 - Same-spelling project command, skill and inert prose with exact UTF-16 atom
@@ -74,19 +75,23 @@ The guard checks:
   retain the original recipient and mutation IDs; the provider and public
   transcript independently verify each submitted input arrives once.
 - Close-only Return, exact original editor focus and persisted inspector removal.
-- A real page reload restoring separate ordinary source and read-only
+- A real page reload restoring separate ordinary source and cascade
   inspector, exact selected ref, six saved edges and origin locator rendered
   above the removed origin, while an independent pane keeps its identity,
   grid, tab order and draft. Opening the already-open child conversation
-  focuses its own pane without closing inspection; the original root
-  conversation no longer renders in the pane, so the old root-column Open
-  shortcut that closed inspection is unreachable.
+  from the root transcript's delegate row focuses its own pane without
+  closing inspection; the original root conversation never renders in the
+  pane, so the old root-column Open shortcut that closed inspection is gone
+  with the column's link.
 - Actual leaf ancestry and source location replies held at native WebSocket
   delivery, then released unchanged, with exact inspector focus retained and no
   column style mutations.
 - A desktop layout reload followed by a phone-width host switch, showing only
-  the selected read-only cascade transcript with no path nav or pane title and
-  a usable close-only Return, plus ordinary phone Agents transcript entry.
+  the selected cascade column's embedded conversation - runtime state and its
+  composer in the column's bottom bar, the home-indicator band reserved below
+  the activity controls - with no path nav or pane title and a usable
+  close-only Return, plus the ordinary phone Agents row opening the child's
+  live conversation.
 
 The center legitimately retains shared root demand. Closed-peek release is
 checked on an ancestor with no independent holder, rather than treating every

@@ -12,7 +12,7 @@ import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
-import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
+import { conversationContextIncludes, transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
 import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
@@ -48,7 +48,13 @@ import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacem
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
-import { documentPaneState, type OpenPaneRecord, sourcePaneSessionRef, workspaceStore } from "./workspace";
+import {
+  conversationOpenParentRef,
+  documentPaneState,
+  type OpenPaneRecord,
+  sourcePaneSessionRef,
+  workspaceStore,
+} from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
@@ -225,6 +231,14 @@ function routePlacementIsApplied(
       (ancestorRef !== ref && params.ref === ref && params.parentRef === ancestorRef)
     );
   };
+  // A conversation pane carries no parent params: the opened-from context is
+  // recorded beside its lifetime. A focused child of that context is a
+  // companion of the routed conversation, not a violation of its placement.
+  const conversationMatchesRoute = (pane: OpenPaneRecord | undefined): boolean => {
+    if (pane?.type !== "session") return false;
+    const parentRef = conversationOpenParentRef(pane);
+    return parentRef !== undefined && conversationContextIncludes(parentRef, ref);
+  };
   const rawFocused = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
   const focusedIntent = rawFocused?.type === "sessionZoom" ? parseZoomParams(rawFocused.params) : null;
   const focusedSeparatedInspection =
@@ -270,6 +284,7 @@ function routePlacementIsApplied(
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionDetails" ||
     transcriptMatchesRoute(focusedPane) ||
+    conversationMatchesRoute(focusedPane) ||
     focusedCascadeConversation;
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion) || focusedSeparatedInspection;

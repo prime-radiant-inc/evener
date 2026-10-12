@@ -82,7 +82,11 @@ test("closed sidebar owns no read and an open tab observes only its own collecti
   installFocusedScope(ref);
   mount();
   expect(screen.queryByTestId("activity-sidebar")).toBeNull();
-  expect(client.calls).toHaveLength(0);
+  // The shell eagerly warms the controller palette's catalog on every ready
+  // connection (stores/commandCatalog), and the transcript pane's
+  // conversation fallback now pulls that module into this graph; the
+  // sidebar's contract is that IT owns no read while closed.
+  expect(client.calls.filter((c) => c.method !== "evener/command/list")).toHaveLength(0);
   act(() => activitySidebarStore.getState().openWith("agents"));
   await screen.findByRole("button", { name: /inspect/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);

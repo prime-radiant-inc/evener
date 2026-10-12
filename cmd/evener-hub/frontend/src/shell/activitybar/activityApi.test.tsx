@@ -70,7 +70,7 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
   expect(cascade?.slot).toBe("secondary");
   expect(cascade?.params).toEqual({
     ref: "other:opaque/child",
-    source: { type: "transcript", params: { ref: "remote:owner" } },
+    source: { type: "session", params: { ref: "remote:owner" } },
     edges: [{ ownerRef: "remote:owner", childRef: "other:opaque/child", delegateId: "raw-id" }],
     inspection: { origin: { paneId: root, type: "session", ref: "remote:owner" } },
   });
