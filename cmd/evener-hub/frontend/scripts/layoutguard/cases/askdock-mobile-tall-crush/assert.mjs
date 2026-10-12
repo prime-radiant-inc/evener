@@ -26,11 +26,22 @@
 //      at all.)
 //   F. The transcript box stays inside the host pane and the footer below
 //      it, and the outer document never scrolls.
+//   G. Harness fidelity: the batch's Card tone="attention" envelope keeps
+//      its edge on all four sides, as in production. The module CSS loads
+//      de-scoped here, so a class name shared with another loaded module
+//      would restyle the envelope and the case would measure geometry
+//      production never renders.
 export default function assert(m) {
   const failures = [];
 
   if (m.host.height >= m.viewport.h) {
     failures.push(`fixture host is ${m.host.height}px, not shorter than the ${m.viewport.h}px viewport`);
+  }
+
+  if (m.envelopeEdges.some((width) => width < 1)) {
+    failures.push(
+      `the attention envelope lost its edge (border widths ${m.envelopeEdges.join("/")}px) - another module's class is restyling it`,
+    );
   }
 
   for (const opt of m.options) {
