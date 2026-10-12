@@ -71,6 +71,12 @@ function answeredCount(): { answered: string | undefined; total: string | undefi
   return { answered: count.dataset.answered, total: count.dataset.total };
 }
 
+// The answered-of-total count the live region last announced.
+function announcedCount(): { answered: string | undefined; total: string | undefined } {
+  const region = screen.getByTestId("ask-dock-announcements");
+  return { answered: region.dataset.answered, total: region.dataset.total };
+}
+
 // The live region announces a "prompt" when a pending set activates and
 // "progress" when the answered count moves.
 function expectAnnouncement(kind: "prompt" | "progress"): void {
@@ -1027,14 +1033,29 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
     expectAnnouncement("prompt");
     const prompt = screen.getByTestId("ask-dock-announcements").textContent;
 
-    const firstKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
-    if (firstKey === undefined) throw new Error("batch did not reconcile");
+    const [firstKey, secondKey] =
+      askDockStore
+        .getState()
+        .byRef.get("ref_a")
+        ?.batches[0]?.questions.map((question) => question.key) ?? [];
+    if (firstKey === undefined || secondKey === undefined) throw new Error("batch did not reconcile");
     act(() => {
       askDockStore.setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
     });
 
     await waitFor(() => expectAnnouncement("progress"));
-    expect(screen.getByTestId("ask-dock-announcements").textContent).not.toBe(prompt);
+    expect(announcedCount()).toEqual({ answered: "1", total: "2" });
+    const firstProgress = screen.getByTestId("ask-dock-announcements").textContent;
+    expect(firstProgress).not.toBe(prompt);
+
+    // A second answer moves the count again while the kind stays progress.
+    act(() => {
+      askDockStore.setAnswer("ref_a", secondKey, { kind: "option", labels: ["c"] });
+    });
+
+    await waitFor(() => expect(announcedCount()).toEqual({ answered: "2", total: "2" }));
+    expectAnnouncement("progress");
+    expect(screen.getByTestId("ask-dock-announcements").textContent).not.toBe(firstProgress);
   });
 
   test("a dock row remount never re-announces: the announcements component owns the only live region", async () => {

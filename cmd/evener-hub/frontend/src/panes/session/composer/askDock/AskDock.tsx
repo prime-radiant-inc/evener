@@ -396,14 +396,19 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
 // with, or the answered count moving.
 type AnnouncementKind = "prompt" | "progress";
 
+interface Announcement {
+  text: string;
+  kind?: AnnouncementKind;
+  // The answered-of-total count a "progress" announcement carries.
+  progress?: { answered: number; total: number };
+  key: number;
+}
+
 export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
   const epoch = useAskDockStore((s) => s.byRef.get(sessionRef)?.activationEpoch ?? 0);
-  const [announcement, setAnnouncement] = useState<{ text: string; kind?: AnnouncementKind; key: number }>({
-    text: "",
-    key: 0,
-  });
+  const [announcement, setAnnouncement] = useState<Announcement>({ text: "", key: 0 });
   const prevRef = useRef<{ ref: string; pending: boolean; count: string; epoch: number }>({
     ref: sessionRef,
     pending: false,
@@ -420,7 +425,8 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   const count = pending ? `${answered} of ${total} ${total === 1 ? "question" : "questions"} answered` : "";
 
   const announce = useCallback(
-    (text: string, kind?: AnnouncementKind) => setAnnouncement((a) => ({ text, kind, key: a.key + 1 })),
+    (text: string, kind?: AnnouncementKind, progress?: Announcement["progress"]) =>
+      setAnnouncement((a) => ({ text, kind, progress, key: a.key + 1 })),
     [],
   );
 
@@ -446,14 +452,21 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
       return;
     }
     if (pending && count !== prev.count) {
-      announce(count, "progress");
+      announce(count, "progress", { answered, total });
     } else if (!pending && prev.pending) {
       announce("");
     }
-  }, [sessionRef, pending, count, epoch, announce]);
+  }, [sessionRef, pending, count, answered, total, epoch, announce]);
 
   return (
-    <div role="status" aria-live="polite" data-testid="ask-dock-announcements" data-kind={announcement.kind}>
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="ask-dock-announcements"
+      data-kind={announcement.kind}
+      data-answered={announcement.progress?.answered}
+      data-total={announcement.progress?.total}
+    >
       <VisuallyHidden key={announcement.key}>{announcement.text}</VisuallyHidden>
     </div>
   );
