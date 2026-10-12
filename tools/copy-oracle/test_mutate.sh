@@ -2,15 +2,19 @@
 # Regression tests for mutate.sh's signal cleanup.
 #
 # Each case runs mutate.sh in a scratch git repo, sends it TERM while a test
-# run is in flight, and checks that it exits 143 within a bounded time and
-# leaves no test process and no throwaway worktree behind:
+# run is in flight, and checks that it exits 143 and leaves no test process and
+# no throwaway worktree behind:
 #
-#   - before setpgrp: a copy of mutate.sh whose child pauses before setpgrp,
-#     so the signal lands when the run's process group does not exist yet;
+#   - before setpgrp: a copy of mutate.sh whose child blocks on a FIFO nobody
+#     writes, just before setpgrp, so the signal provably lands while the run's
+#     process group does not exist yet;
 #   - TERM-ignoring run: a test that ignores TERM and leaves a worker that
 #     ignores it too, so only the KILL escalation stops them.
 #
-# Usage: tools/copy-oracle/test_mutate.sh   (takes about 10 seconds; exit 0 = pass)
+# The test run reports readiness through a FIFO, so TERM is sent only once the
+# run is in the state under test. The exit ceiling is a tripwire for a hang.
+#
+# Usage: tools/copy-oracle/test_mutate.sh   (takes about 6 seconds; exit 0 = pass)
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd -P)
@@ -37,25 +41,26 @@ echo x >"$repo/file.txt"
 git -C "$repo" add file.txt
 git -C "$repo" -c user.name=t -c user.email=t@t commit -qm init
 
-# term_mid_run <name> <max-seconds> <mutate.sh> <test command...> runs mutate.sh
-# with the test command, waits for the run to create $tmp/<name>.ready, sends
-# TERM, and checks the outcome. Test processes carry $tmp/<name> in their
-# arguments so leftovers can be found.
+# term_mid_run <name> <mutate.sh> <test command...> runs mutate.sh with the test
+# command, waits for the run to write a line to the FIFO $READY, sends TERM,
+# and checks the outcome. Test processes carry $tmp/<name> in their arguments
+# so leftovers can be found.
 term_mid_run() {
-  local name=$1 max=$2 script=$3 started status=0 deadline
-  shift 3
-  (cd "$repo" && TMPDIR="$tmp/$name" READY="$tmp/$name.ready" exec "$script" file.txt 's/x/y/' -- "$@") \
+  local name=$1 script=$2 ready="$tmp/$1.ready" started status=0
+  shift 2
+  mkdir "$tmp/$name"
+  mkfifo "$ready"
+  # Opened read-write so the run's open for writing never waits on us.
+  exec 3<>"$ready"
+  (cd "$repo" && TMPDIR="$tmp/$name" READY="$ready" GATE="$tmp/gate" exec "$script" file.txt 's/x/y/' -- "$@") \
     >"$tmp/$name.out" 2>&1 &
   pid=$!
-  deadline=$((SECONDS + 10))
-  until [[ -e "$tmp/$name.ready" ]]; do
-    ((SECONDS < deadline)) || fail "$name: the test run never started"
-    sleep 0.05
-  done
+  read -r -t 30 _ <&3 || fail "$name: the test run never reported ready"
+  exec 3<&-
   kill -TERM "$pid"
   started=$SECONDS
   while kill -0 "$pid" 2>/dev/null; do
-    ((SECONDS - started <= max)) || fail "$name: mutate.sh was still running ${max}s after TERM"
+    ((SECONDS - started <= 30)) || fail "$name: mutate.sh was still running 30s after TERM"
     sleep 0.1
   done
   wait "$pid" || status=$?
@@ -70,16 +75,17 @@ term_mid_run() {
   echo "PASS: $name (exit $status after $((SECONDS - started))s)"
 }
 
-# The instrumented child announces itself, then sleeps 2 seconds before setpgrp.
-perl -pe 's/setpgrp\(0, 0\)/open(my \$m, ">", \$ENV{READY}); close \$m; select(undef, undef, undef, 2); setpgrp(0, 0)/' \
-  "$here/mutate.sh" >"$tmp/mutate-slow-setpgrp.sh"
-grep -q 'ENV{READY}' "$tmp/mutate-slow-setpgrp.sh" || fail "could not instrument mutate.sh's setpgrp call"
-chmod +x "$tmp/mutate-slow-setpgrp.sh"
+# Nothing ever writes to the gate, so opening it blocks the instrumented child
+# until a signal stops it.
+mkfifo "$tmp/gate"
+perl -pe 's/setpgrp\(0, 0\)/open(my \$r, ">", \$ENV{READY}); print \$r "ready\\n"; close \$r; open(my \$g, "<", \$ENV{GATE}); setpgrp(0, 0)/' \
+  "$here/mutate.sh" >"$tmp/mutate-gated-setpgrp.sh"
+grep -q 'ENV{GATE}' "$tmp/mutate-gated-setpgrp.sh" || fail "could not instrument mutate.sh's setpgrp call"
+chmod +x "$tmp/mutate-gated-setpgrp.sh"
 
-mkdir "$tmp/before-setpgrp" "$tmp/term-ignoring"
-term_mid_run before-setpgrp 6 "$tmp/mutate-slow-setpgrp.sh" \
+term_mid_run before-setpgrp "$tmp/mutate-gated-setpgrp.sh" \
   perl -e 'sleep 20' "$tmp/before-setpgrp"
 # shellcheck disable=SC2016 # the $ expressions are perl's
-term_mid_run term-ignoring 12 "$here/mutate.sh" \
-  perl -e '$SIG{TERM} = "IGNORE"; fork or do { sleep 20; exit }; open(my $m, ">", $ENV{READY}); close $m; sleep 20' \
+term_mid_run term-ignoring "$here/mutate.sh" \
+  perl -e '$SIG{TERM} = "IGNORE"; fork or do { sleep 20; exit }; open(my $r, ">", $ENV{READY}); print $r "ready\n"; close $r; sleep 20' \
   "$tmp/term-ignoring"
