@@ -51,7 +51,7 @@ func TestDispatchRejectsMissingSubcommand(t *testing.T) {
 func TestDispatchRejectsUnknownSubcommand(t *testing.T) {
 	code, stdout, stderr := runEvenerDev(t, "launder-money")
 	if code != 2 || stdout != "" {
-		t.Errorf("unknown subcommand exits %d, want 2", code)
+		t.Errorf("unknown subcommand = exit %d, stdout %q; want 2 with nothing on stdout", code, stdout)
 	}
 	if !strings.Contains(stderr, "launder-money") {
 		t.Errorf("unknown subcommand not named in stderr: %q", stderr)

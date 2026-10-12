@@ -20,41 +20,6 @@ func baseOpts(home, cwd string) options {
 	}
 }
 
-// assertRunRefusesWithoutMigrating runs the command with args against a
-// sandboxed home that holds a legacy providers.toml, and checks that the
-// invocation was refused before any work: exit status 2, a diagnostic on
-// stderr, no report on stdout, and the legacy file left where it was.
-func assertRunRefusesWithoutMigrating(t *testing.T, args []string) {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv(envvars.XDGConfigHome.Name, "")
-	t.Setenv(envvars.XDGStateHome.Name, "")
-	t.Chdir(t.TempDir())
-	legacy := filepath.Join(home, ".serf", "providers.toml")
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacy, []byte("data"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	code := run(args, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("code = %d, want 2; stderr = %q", code, stderr.String())
-	}
-	if stderr.Len() == 0 {
-		t.Fatal("refusal wrote nothing to stderr")
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("refusal printed a report: %q", stdout.String())
-	}
-	if _, err := os.Stat(legacy); err != nil {
-		t.Fatalf("refused run must not move %s: %v", legacy, err)
-	}
-}
-
 // reportCounts parses the key=count fields of the closing report line and
 // fails unless that line carries every required field, so a run that printed
 // no report cannot pass as one that reported zeros.
@@ -432,8 +397,8 @@ func TestExecuteDryRunMakesNoChanges(t *testing.T) {
 	if !strings.Contains(stdout.String(), dst) {
 		t.Fatalf("stdout = %q, want the planned destination %s reported", stdout.String(), dst)
 	}
-	if !strings.Contains(stdout.String(), "would_move=1") {
-		t.Fatalf("stdout = %q, want would_move=1", stdout.String())
+	if got := reportCounts(t, stdout.String(), "would_move"); got["would_move"] != 1 {
+		t.Fatalf("report = %v, want would_move=1", got)
 	}
 }
 
@@ -794,6 +759,36 @@ func TestRunRespectsXDGEnvVars(t *testing.T) {
 	}
 }
 
+// TestRunRejectsPositionalArgs runs against a sandboxed home that holds a
+// legacy providers.toml and checks the invocation was refused before any work:
+// exit status 2, a diagnostic on stderr, no report on stdout, and the legacy
+// file left where it was.
 func TestRunRejectsPositionalArgs(t *testing.T) {
-	assertRunRefusesWithoutMigrating(t, []string{"unexpected"})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(envvars.XDGConfigHome.Name, "")
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	t.Chdir(t.TempDir())
+	legacy := filepath.Join(home, ".serf", "providers.toml")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"unexpected"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2; stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("refusal wrote nothing to stderr")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("refusal printed a report: %q", stdout.String())
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("refused run must not move %s: %v", legacy, err)
+	}
 }

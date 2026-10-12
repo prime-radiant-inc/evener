@@ -10,11 +10,6 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-// TestRunPositionalArgs covers the positional-args rejection path.
-func TestRunMigratePositionalArgs(t *testing.T) {
-	assertRunRefusesWithoutMigrating(t, []string{"extra"})
-}
-
 // TestRunXDGDefaults covers the XDG default path computation (lines 127-128,
 // 132-133) when XDG env vars are unset.
 func TestRunXDGDefaults(t *testing.T) {
