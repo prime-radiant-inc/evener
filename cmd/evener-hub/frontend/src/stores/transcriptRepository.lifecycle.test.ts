@@ -1079,6 +1079,35 @@ test("a local opening restores the durable bodies through an interior gap in the
   repo.dispose();
 });
 
+test("a local opening restores the durable bodies when the durable-authority lookup cannot be established", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache, { lifetime: 1 });
+  repo.acceptRead(readOf([135, 138, 139, 140, 143, 144, 145, 146, 147, 148], { length: 300 }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "b1",
+  });
+  await repo.settled();
+  // Background-idle pruning leaves the identities with their bodies omitted.
+  expect(displayedPositions(repo.getSnapshot())).toEqual([]);
+  // The durable Clear-epoch lookup cannot be established within its deadline
+  // (a slow or unreadable storage read), so its result is unverified.
+  const clearEpoch = vi.spyOn(fixture.cache, "getClearEpoch").mockImplementation(() => new Promise(() => {}));
+  try {
+    const reader = repo.attachReader();
+    const opened = await reader.openLocal(200);
+    // The bodies are still on disk and must be restored; only the status may
+    // not claim currentness.
+    expect(displayedPositions(opened.model)).toEqual([135, 138, 139, 140, 143, 144, 145, 146, 147, 148]);
+    expect(opened.status).toBe("recovery-needed");
+    reader.dispose();
+  } finally {
+    clearEpoch.mockRestore();
+    repo.dispose();
+  }
+});
+
 test("a delete with queued work cancels the queued ticket and no queued row reaches the cache", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

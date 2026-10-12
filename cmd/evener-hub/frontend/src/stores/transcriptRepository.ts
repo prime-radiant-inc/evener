@@ -1074,8 +1074,12 @@ export class TranscriptRepository {
           }
           // A committed Clear during the reads retires the snapshot's authority
           // even when client and source identity are unchanged: never publish a
-          // locally opened window the cleared epoch no longer owns.
-          if (!(await this.#durableAuthoritiesUnchanged())) {
+          // locally opened window the cleared epoch no longer owns. An
+          // UNESTABLISHED lookup (a slow or unreadable storage read) is not a
+          // change: restore the durable bodies but never claim currentness, so a
+          // transient lookup delay cannot publish a body-less transcript.
+          const durableAuthorities = await this.#durableAuthoritiesState();
+          if (durableAuthorities === "changed") {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           const current = cut.model ?? this.#model;
@@ -1118,6 +1122,7 @@ export class TranscriptRepository {
             seedCovered &&
             pendingCutCovered &&
             cut.authorityValid &&
+            durableAuthorities === "unchanged" &&
             !this.#cacheContinuityLost &&
             !this.#recoveryNeeded
               ? "current"
@@ -1473,6 +1478,18 @@ export class TranscriptRepository {
    * so an unverified result never publishes as current.
    */
   async #durableAuthoritiesUnchanged(): Promise<boolean> {
+    return (await this.#durableAuthoritiesState()) === "unchanged";
+  }
+
+  /**
+   * The durable Clear epoch/history-generation relation, three ways, so a local
+   * opening can tell a CONFIRMED change (a committed Clear or deletion: do not
+   * publish) apart from an UNESTABLISHED lookup (a slow or unreadable storage
+   * read: fail closed for `current` but still restore the bodies the disk holds).
+   * Treating a slow read as a change discarded the whole restore and left the
+   * oldest recorded rows body-less — a user-visible blank transcript.
+   */
+  async #durableAuthoritiesState(): Promise<"unchanged" | "changed" | "unestablished"> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const authorities = await Promise.race([
@@ -1481,13 +1498,12 @@ export class TranscriptRepository {
           timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
         }),
       ]);
-      return (
-        authorities !== undefined &&
-        authorities[0] === this.#binding.clearEpoch &&
-        authorities[1] === (this.#binding.historyGeneration ?? 0)
-      );
+      if (authorities === undefined) return "unestablished";
+      return authorities[0] === this.#binding.clearEpoch && authorities[1] === (this.#binding.historyGeneration ?? 0)
+        ? "unchanged"
+        : "changed";
     } catch {
-      return false;
+      return "unestablished";
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
