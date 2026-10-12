@@ -20,6 +20,14 @@ import { flattenSubagents, type SubagentRow } from "./subagentModel";
 import { useCoordinatorState } from "./useCoordinatorState";
 import { useSubagentTree } from "./useSubagentTree";
 
+/** When a stop request reaches the coordinator: once the connection is back,
+ * not while the coordinator takes no message, else at its next step. */
+const DELIVERY_WORDS = {
+	offline: "Send when you're back online.",
+	unavailable: "The coordinator can't take a message right now.",
+	"next-step": "Arrives at the coordinator's next step",
+} as const;
+
 function prefill(row: SubagentRow): string {
 	return `Stop subagent “${row.title}”: ${row.state === "failed" ? "it has failed" : "it's no longer needed"}.`;
 }
@@ -102,6 +110,11 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	};
 
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale };
+	const delivery = !online
+		? "offline"
+		: coordinatorRead === "unreadable" || (coordinatorState && kind === null)
+			? "unavailable"
+			: "next-step";
 	return (
 		<Sheet title="Stop subagent" onCancel={sheet.close}>
 			<ScrollView
@@ -127,12 +140,12 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 					/>
 					<SendButton label="Send stop request" disabled={!canSend} onPress={() => void submit()} />
 				</View>
-				<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.inkMid }}>
-					{!online
-						? "Send when you're back online."
-						: coordinatorRead === "unreadable" || (coordinatorState && kind === null)
-							? "The coordinator can't take a message right now."
-							: "Arrives at the coordinator's next step"}
+				<Text
+					testID={`stop-delivery:${delivery}`}
+					allowFontScaling={allowFontScaling}
+					style={{ ...small, color: palette.inkMid }}
+				>
+					{DELIVERY_WORDS[delivery]}
 				</Text>
 				{failure !== null ? (
 					<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.dangerInk }}>

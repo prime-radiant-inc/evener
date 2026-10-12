@@ -11,7 +11,15 @@ import {
 } from "@evener/appwire-client/testing/subagentWireFixtures";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { pressable, render, renderedText, screenConnection, unmountMountedTrees } from "../renderNative.testkit";
+import { markers, withTestID } from "../markerTestUtils";
+import {
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	textOf,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { type ActivityListItem, activityListKey } from "./activityList";
 import { forgetStopRequestsForHub } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
@@ -164,7 +172,7 @@ it("renders the recorded reported, failed and stopped generations as truthful qu
 	]);
 	expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
 	expect(renderedText(screen)).toContain("provider returned 500");
-	expect(renderedText(screen)).toContain("Stopped");
+	expect(markers(screen, "subagent-why")).toContain("stopped");
 	expect(screen.root.find((node) => node.props.row?.id === "dlg_reported").props.row.delegate.reportPreview).toBe(
 		"Fixed the race: settle now waits for the drain.\n\nThe new test covers both orders.",
 	);
@@ -679,7 +687,8 @@ it("keeps healthy rows and unknown counts until a missing owner recovers", async
 	const screen = await mount(client);
 	press(screen, "Completed · 4");
 	expect(renderedText(screen)).toContain("History task 0");
-	expect(renderedText(screen)).toContain("Some activity under “failed-delegate” isn't listed.");
+	const missing = withTestID(screen, "activity-missing").map(textOf);
+	expect(missing.filter((line) => line.includes("failed-delegate"))).toHaveLength(1);
 	expect(pressable(screen, "All, …")).toBeDefined();
 	options.missing = false;
 	await act(async () => {
@@ -688,6 +697,6 @@ it("keeps healthy rows and unknown counts until a missing owner recovers", async
 	await loadThirdPage();
 	expect(laterRow(screen).props.row.title).toBe("History task 11");
 	expect(pressable(screen, "All, 15")).toBeDefined();
-	expect(renderedText(screen)).not.toContain("isn't listed");
+	expect(withTestID(screen, "activity-missing")).toEqual([]);
 	expect(pressable(screen, "Completed · 12")?.props.accessibilityState).toEqual({ expanded: true });
 });

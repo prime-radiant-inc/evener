@@ -92,6 +92,7 @@ function ConnectButton({
 	const scale = useTextScale();
 	return (
 		<Pressable
+			testID={connecting ? "host-connect:connecting" : "host-connect:idle"}
 			accessibilityRole="button"
 			accessibilityLabel={`Connect ${host}`}
 			accessibilityState={{ disabled }}

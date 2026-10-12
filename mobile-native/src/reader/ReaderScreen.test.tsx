@@ -14,15 +14,18 @@ import { FlatList } from "react-native";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { markers, withTestID } from "../markerTestUtils";
 import {
 	alertRequests,
 	flatListCalls,
+	offersButton,
 	pressable,
 	render,
 	render as renderElement,
 	renderedText,
 	settle,
 	settleMicrotasks,
+	textOf,
 	unmountMountedTrees,
 	untilRendered,
 } from "../renderNative.testkit";
@@ -30,6 +33,7 @@ import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
 import { DocumentMemory } from "./documentMemory";
+import { documentKind } from "./documentSource";
 import { ReaderScreen } from "./ReaderScreen";
 import { readerHosts } from "./readerHosts";
 
@@ -261,6 +265,28 @@ function documentList(tree: ReactTestRenderer): ReactTestInstance {
 	return tree.root.findAllByType(FlatList as never)[0] as ReactTestInstance;
 }
 
+/** The caption over the document, part by part: its kind, its age when the
+ * session wrote it, then what changed since you read it. */
+function captionParts(tree: ReactTestRenderer): string[] {
+	const [caption] = withTestID(tree, "reader-caption");
+	return caption ? textOf(caption).split(" · ") : [];
+}
+
+/** The change note in the caption; null when there is none. */
+function changeNote(tree: ReactTestRenderer): string | null {
+	const [note] = withTestID(tree, "reader-change-note");
+	return note ? textOf(note) : null;
+}
+
+/** The count a caption part holds, such as an age's minutes. */
+const countIn = (text: string | undefined) => Number(text?.match(/\d+/)?.[0] ?? Number.NaN);
+
+/** Why the Reader shows a notice over the document: the read's kind, or failed. */
+const notices = (tree: ReactTestRenderer) => markers(tree, "reader-notice");
+
+/** Where the change stepper stands: `all/2`, or `1/2` on the first of two. */
+const stepShown = (tree: ReactTestRenderer) => markers(tree, "change-step");
+
 function ruled(tree: ReactTestRenderer): ReactTestInstance[] {
 	return tree.root.findAll(
 		(node) =>
@@ -344,7 +370,7 @@ it("Reload in the actual Document actions recovers missing remote text from usef
 			await reads[0]?.body;
 		});
 		const { tree, navigation } = mounted;
-		expect(renderedText(tree)).toContain("isn't in this session's folder");
+		expect(notices(tree)).toEqual(["missing"]);
 		await writeFile(file, "# Recovered bytes\n\nUseful file body.");
 		await act(async () => {
 			menuAction(navigation, "Reload").onPress?.();
@@ -376,8 +402,10 @@ it("offers a real Reload action even after a missing document", async () => {
 it("renders a plan's blocks under its caption", async () => {
 	const updatedAt = new Date(Date.now() - 3 * MINUTE).toISOString();
 	const { tree } = await mount(PATH, { updatedAt });
-	const text = renderedText(tree);
-	expect(text).toContain("Plan · updated 3m ago");
+	const [kind, age, ...rest] = captionParts(tree);
+	expect(kind).toBe(documentKind(PATH));
+	expect(countIn(age)).toBe(3);
+	expect(rest).toEqual([]);
 	const blocks = tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText");
 	expect(blocks.map((block) => block.props.markdown)).toEqual([
 		"# Settle the race",
@@ -399,7 +427,12 @@ it.each([
 	["ahead of the phone's clock", 5_000],
 ])("says updated just now for a document written %s", async (_name, offset) => {
 	const { tree } = await mount(PATH, { updatedAt: new Date(Date.now() + offset).toISOString() });
-	expect(renderedText(tree)).toContain("Plan · updated just now");
+	const [kind, age, ...rest] = captionParts(tree);
+	expect(kind).toBe(documentKind(PATH));
+	// No count of minutes or seconds: the age reads as a moment.
+	expect(age).toMatch(/\S/);
+	expect(age).not.toMatch(/\d/);
+	expect(rest).toEqual([]);
 });
 
 it("keeps its update time current while it's open", async () => {
@@ -407,11 +440,11 @@ it("keeps its update time current while it's open", async () => {
 	try {
 		const updatedAt = new Date(Date.now() - 3 * MINUTE).toISOString();
 		const { tree } = await mount(PATH, { updatedAt });
-		expect(renderedText(tree)).toContain("updated 3m ago");
+		expect(countIn(captionParts(tree)[1])).toBe(3);
 		act(() => {
 			vi.advanceTimersByTime(2 * MINUTE);
 		});
-		expect(renderedText(tree)).toContain("updated 5m ago");
+		expect(countIn(captionParts(tree)[1])).toBe(5);
 	} finally {
 		vi.useRealTimers();
 	}
@@ -457,13 +490,13 @@ it("puts the title in the nav bar once the first heading scrolls out", async () 
 	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 1 }, { index: 2 }], changed: [] }));
 	expect(title()).toBe("");
 	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 2 }, { index: 3 }], changed: [] }));
-	expect(title()).toBe("Settle the race Plan · updated 3m ago");
+	// The nav bar carries the heading over the same caption the page shows.
+	expect(title()).toBe(`Settle the race ${captionParts(tree).join(" · ")}`);
 });
 
 it("leaves out an update time that doesn't parse", async () => {
 	const { tree } = await mount(PATH, { updatedAt: "not a time" });
-	expect(renderedText(tree)).toContain("Plan");
-	expect(renderedText(tree)).not.toContain("updated");
+	expect(captionParts(tree)).toEqual([documentKind(PATH)]);
 });
 
 it("marks what changed since your last read, and steps through the changes", async () => {
@@ -476,19 +509,19 @@ it("marks what changed since your last read, and steps through the changes", asy
 	});
 	clockOffset = 0;
 	const { tree } = await mount();
-	expect(renderedText(tree)).toContain("2 changes since you read it yesterday");
+	expect(countIn(changeNote(tree) ?? undefined)).toBe(2);
 	expect(ruled(tree)).toHaveLength(2);
-	expect(renderedText(tree)).toContain("2 changes");
+	expect(stepShown(tree)).toEqual(["all/2"]);
 	flatListCalls.length = 0;
 	act(() => pressable(tree, "Next change")?.props.onPress());
-	expect(renderedText(tree)).toContain("Change 1 of 2");
+	expect(stepShown(tree)).toEqual(["1/2"]);
 	expect(flatListCalls).toContainEqual({ method: "scrollToIndex", args: { index: 1, animated: true } });
 	act(() => pressable(tree, "Next change")?.props.onPress());
-	expect(renderedText(tree)).toContain("Change 2 of 2");
+	expect(stepShown(tree)).toEqual(["2/2"]);
 	act(() => pressable(tree, "Next change")?.props.onPress());
-	expect(renderedText(tree)).toContain("Change 1 of 2");
+	expect(stepShown(tree)).toEqual(["1/2"]);
 	act(() => pressable(tree, "Previous change")?.props.onPress());
-	expect(renderedText(tree)).toContain("Change 2 of 2");
+	expect(stepShown(tree)).toEqual(["2/2"]);
 	expect(flatListCalls.at(-1)).toEqual({ method: "scrollToIndex", args: { index: 4, animated: true } });
 });
 
@@ -537,14 +570,13 @@ it("starts the steps over when a re-read changes what changed", async () => {
 	});
 	const { tree } = await mount();
 	act(() => pressable(tree, "Previous change")?.props.onPress());
-	expect(renderedText(tree)).toContain("Change 2 of 2");
+	expect(stepShown(tree)).toEqual(["2/2"]);
 	served[PATH] = { body: OLDER.replace("Patch it.", "Fix it.") };
 	act(() => {
 		for (const listener of harness.appState) listener("active");
 	});
 	await settle();
-	expect(renderedText(tree)).not.toContain("Change 2 of 1");
-	expect(renderedText(tree)).toContain("1 change");
+	expect(stepShown(tree)).toEqual(["all/1"]);
 });
 
 it("keeps your step when a re-read finds the same changes", async () => {
@@ -557,20 +589,20 @@ it("keeps your step when a re-read finds the same changes", async () => {
 	const { tree } = await mount();
 	act(() => pressable(tree, "Next change")?.props.onPress());
 	act(() => pressable(tree, "Next change")?.props.onPress());
-	expect(renderedText(tree)).toContain("Change 2 of 2");
+	expect(stepShown(tree)).toEqual(["2/2"]);
 	act(() => {
 		for (const listener of harness.appState) listener("active");
 	});
 	await settle();
 	expect(fetchSpy).toHaveBeenCalledTimes(2);
-	expect(renderedText(tree)).toContain("Change 2 of 2");
+	expect(stepShown(tree)).toEqual(["2/2"]);
 });
 
 it("shows no changes and no bar on a first read", async () => {
 	const { tree } = await mount();
 	expect(ruled(tree)).toHaveLength(0);
 	expect(pressable(tree, "Next change")).toBeUndefined();
-	expect(renderedText(tree)).not.toContain("since you read it");
+	expect(changeNote(tree)).toBeNull();
 });
 
 it("reopens at the remembered block", async () => {
@@ -687,15 +719,17 @@ it("remembers where you were in a code file, and reopens there", async () => {
 it("says a document was cut short", async () => {
 	served[PATH] = { body: PLAN, headers: { "X-Doc-Truncated": "true", "X-Doc-Total-Size": String(3 * 1024 * 1024) } };
 	const { tree } = await mount();
-	expect(renderedText(tree)).toContain(`Showing the first ${PLAN.length} bytes of 3 MB`);
+	const [note] = withTestID(tree, "reader-truncation");
+	expect(note && textOf(note)).toContain(`${PLAN.length} bytes`);
+	expect(note && textOf(note)).toContain("3 MB");
 });
 
 it("says why it can't show a binary, a missing file, or an unsupported host's document", async () => {
 	served["out/data.bin"] = { body: "\u0000\u0001", headers: { "Content-Type": "application/octet-stream" } };
 	const binary = await mount("out/data.bin");
-	expect(renderedText(binary.tree)).toContain("data.bin isn't text, so it can't be shown here (2 bytes).");
+	expect(notices(binary.tree)).toEqual(["binary"]);
 	const missing = await mount("docs/gone.md");
-	expect(renderedText(missing.tree)).toContain("gone.md isn't in this session's folder any more.");
+	expect(notices(missing.tree)).toEqual(["missing"]);
 	fetchSpy.mockClear();
 	served[PATH] = { status: 501, body: "unsupported host" };
 	const navigation = navigationDouble();
@@ -719,15 +753,15 @@ it("says why it can't show a binary, a missing file, or an unsupported host's do
 	);
 	trees.push(tree);
 	await settle();
-	expect(renderedText(tree)).toContain("does not support document reads");
+	expect(notices(tree)).toEqual(["host-unsupported"]);
 	expect(fetchSpy).toHaveBeenCalledOnce();
 });
 
 it("numbers a code file's lines", async () => {
 	served["src/race.go"] = { body: "package race\n\nfunc Settle() {}\n" };
 	const { tree } = await mount("src/race.go");
+	expect(captionParts(tree)[0]).toBe(documentKind("src/race.go"));
 	const text = renderedText(tree);
-	expect(text).toContain("Code");
 	for (const line of ["1", "package race", "2", "3", "func Settle() {}"]) expect(text).toContain(line);
 });
 
@@ -863,9 +897,8 @@ it("records the read when a screen covers it, and not when its own sheet does", 
 it("never offers Retry, Refresh, Reconnect or a Next capsule", async () => {
 	served[PATH] = { status: 500, body: "boom" };
 	const { tree } = await mount();
-	const text = renderedText(tree);
-	for (const word of ["Retry", "Refresh", "Reconnect", "Next"]) expect(text).not.toContain(word);
-	expect(text).toContain("settle.md couldn't be loaded right now.");
+	expect(offersButton(tree, /\b(Retry|Refresh|Reconnect|Next)\b/)).toBe(false);
+	expect(notices(tree)).toEqual(["failed"]);
 });
 
 it.each(["relative", "absolute"] as const)(
@@ -935,7 +968,7 @@ it.each(["relative", "absolute"] as const)(
 			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
 			retired?.writeHead(200, { "Content-Type": "text/plain" });
 			retired?.end("# Retired completion\n\nObsolete bytes.");
-			await untilRendered(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			await untilRendered(() => expect(notices(tree)).toEqual(["failed"]));
 			expect(harness.markdowns).not.toContain("Obsolete bytes.");
 			expect(requests).toEqual(["/work/a/docs/cwd.md", "/work/a/docs/cwd.md", expected.readTarget]);
 			act(() => menuAction(navigation, "Reload").onPress());
@@ -943,7 +976,7 @@ it.each(["relative", "absolute"] as const)(
 			expect(requests.at(-1)).toBe(expected.readTarget);
 			refreshFails = true;
 			act(() => menuAction(navigation, "Reload").onPress());
-			await untilRendered(() => expect(renderedText(tree)).toContain("couldn't be loaded right now"));
+			await untilRendered(() => expect(notices(tree)).toEqual(["failed"]));
 			expect(
 				tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText").map((node) => node.props.markdown),
 			).toContain("Useful B.");
@@ -971,7 +1004,7 @@ it("settles actual native Image attempts, retries untyped errors, retains health
 	await untilRendered(() => expect(tree.root.findAllByType("Image" as never)).toHaveLength(1));
 	const first = tree.root.findByType("Image" as never).props;
 	act(() => first.onError({ nativeEvent: { error: "untyped native failure" } }));
-	await untilRendered(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	await untilRendered(() => expect(notices(tree)).toEqual(["failed"]));
 	expect(vi.getTimerCount()).toBe(1);
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(999);
@@ -987,9 +1020,9 @@ it("settles actual native Image attempts, retries untyped errors, retains health
 	expect(vi.getTimerCount()).toBe(0);
 	act(() => second.onLoad({ nativeEvent: { source: { width: 640, height: 320 } } }));
 	await untilRendered(() => expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2));
-	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	expect(notices(tree)).toEqual([]);
 	act(() => second.onError({ nativeEvent: { error: "duplicate after success" } }));
-	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	expect(notices(tree)).toEqual([]);
 	act(() => {
 		menuAction(navigation, "Reload").onPress();
 		menuAction(navigation, "Reload").onPress();
@@ -1001,7 +1034,7 @@ it("settles actual native Image attempts, retries untyped errors, retains health
 	const pending = images[1]?.props;
 	expect(pending.style.opacity).toBe(0);
 	act(() => pending.onError({ nativeEvent: { error: "refresh failed" } }));
-	await untilRendered(() => expect(renderedText(tree)).toContain("This image couldn't be loaded right now."));
+	await untilRendered(() => expect(notices(tree)).toEqual(["failed"]));
 	expect(tree.root.findAllByType("Image" as never)[0]?.props.source.uri).toBe(second.source.uri);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
@@ -1045,7 +1078,7 @@ it.each([
 	const retired = tree.root.findByType("Image" as never).props;
 	expect(retired.style.aspectRatio).toBe(4 / 3);
 	expect(retired.onLoad).toBeTypeOf("function");
-	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	expect(notices(tree)).toEqual([]);
 	expect(vi.getTimerCount()).toBe(0);
 	if (reason === "hidden") {
 		stack.state.index = 2;
@@ -1067,7 +1100,7 @@ it.each([
 	expect(tree.root.findByType("Image" as never).props.style.aspectRatio).toBe(2);
 	expect(tree.root.findByType("Image" as never).props.source.uri).toBe(fresh.source.uri);
 	act(() => fresh.onError({ nativeEvent: { error: "duplicate after success" } }));
-	expect(renderedText(tree)).not.toContain("couldn't be loaded");
+	expect(notices(tree)).toEqual([]);
 	if (reason === "hidden") {
 		stack.state.index = 1;
 		await rerender();
