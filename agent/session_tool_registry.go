@@ -69,13 +69,13 @@ type toolDeps struct {
 	// Nil for surfaces that keep canonical names.
 	toolNameMap map[string]string
 
-	// nativeWebSearch reports that this session will carry the provider's own
-	// web_search tool (Session.providerWebSearchEnabled: the profile's
-	// capability, narrowed by a network-off sandbox policy). The protocol layer
-	// injects that server-side tool on the request, and the anthropic protocol
-	// strips any function tool of the same name first
-	// (llm/providers/anthropic/request.go), so the name cannot hold the result
-	// tool.
+	// nativeWebSearch reports that this session's request will carry the
+	// provider's own web_search tool: the profile capability, narrowed by a
+	// network-off sandbox policy (Session.providerWebSearchEnabled) and by the
+	// wire protocol actually injecting it (protocolInjectsNativeWebSearch). The
+	// anthropic protocol strips any function tool of that name before injecting
+	// its server-side tool (llm/providers/anthropic/request.go), so the name
+	// cannot hold the result tool there.
 	nativeWebSearch bool
 
 	// cmdTimeouts is a live getter for the default and max shell command
@@ -382,7 +382,7 @@ func newToolDeps(s *Session) *toolDeps {
 		offersEndReason:        s.hasHumanPartnerToAsk(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
 		toolNameMap:            s.profile.ToolNameMap(),
-		nativeWebSearch:        s.providerWebSearchEnabled(s.profile),
+		nativeWebSearch:        s.providerWebSearchEnabled(s.profile) && protocolInjectsNativeWebSearch(s.profile.Protocol()),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok

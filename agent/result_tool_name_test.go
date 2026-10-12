@@ -189,6 +189,20 @@ func TestNewSessionRejectsResultToolNameOfProviderNativeWebSearch(t *testing.T) 
 	}
 }
 
+// TestNewSessionAllowsProviderNativeWebSearchNameOnChatCompletions is the
+// precision control for the protocol half of the native reservation: chat
+// completions injects no server-side web_search, so the name is free even when
+// the row reports the capability.
+func TestNewSessionAllowsProviderNativeWebSearchNameOnChatCompletions(t *testing.T) {
+	profile := withWebSearch(newOpenAICompatProfile("openrouter", "openai/gpt-test", 0), true)
+	sess, err := newResultToolSession(t, profile, SessionConfig{ResultToolName: "web_search"})
+	if err != nil {
+		t.Fatalf("NewSession refused a name on a protocol that injects no native tool: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	requireResultToolShape(t, sess, "web_search")
+}
+
 // TestNewSessionAllowsResultToolNameNoToolHolds is the precision control: the
 // check is derived from what this session actually uses, so a name whose
 // reservation is conditional on this session's configuration stays usable, and
