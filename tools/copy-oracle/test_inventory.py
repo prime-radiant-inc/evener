@@ -271,5 +271,26 @@ test("shows the hint", () => {
         self.assertEqual([n for _, n in inventory.copy_only_tests(src, {5}, "ts")], ["shows the hint"])
 
 
+class FastFollow(unittest.TestCase):
+    def test_an_apostrophe_in_jsx_text_does_not_merge_neighbouring_tests(self):
+        src = """test("renders the advice", () => render(<span>Don't retry</span>));
+
+test("shows the hint", () => {
+  expect(screen.getByText("Try again")).toBeTruthy();
+});
+"""
+        blocks = inventory.test_blocks(src, "ts")
+        self.assertEqual([name for _, name, _ in blocks], ["renders the advice", "shows the hint"])
+
+    def test_text_supplied_in_an_if_initializer_is_fixture(self):
+        src = """func TestRenderShowsTheLabel(t *testing.T) {
+	if got := render("Try again"); got != "Try again" {
+		t.Fatalf("got %q", got)
+	}
+}
+"""
+        self.assertEqual(inventory.copy_only_tests(src, {2}, "go"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

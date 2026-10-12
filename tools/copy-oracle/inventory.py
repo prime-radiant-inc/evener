@@ -272,7 +272,9 @@ def sanitize(line, lang):
         if c == "/" and i + 1 < n and line[i + 1] == "/":
             blank(i, n)
             break
-        if c in "\"'`":
+        # In TS, a quote straight after a letter or digit is JSX text
+        # ("Don't retry"), not the start of a string literal.
+        if c in "\"'`" and not (lang == "ts" and c != "`" and prev.isalnum()):
             j = i + 1
             while j < n and line[j] != c:
                 j += 2 if line[j] == "\\" else 1
@@ -305,6 +307,17 @@ def go_copy_term(term):
     checks state, not wording)."""
     literals = [go_unquote(m.group(1), m.group(2)).strip() for m in re.finditer(GO_STR, term)]
     return bool(GO_COPY_OPERATOR.search(term)) and any(not contract_shaped(lit) for lit in literals)
+
+
+def go_if_initializer(line):
+    """The `init` statement of `if init; cond {`, or "" when there is none."""
+    code = sanitize(line, "go")
+    m = re.search(r"\bif\b", code)
+    if not m:
+        return ""
+    hi = code.rfind("{")
+    semi = code.rfind(";", m.end(), hi if hi > m.end() else len(code))
+    return line[m.end():semi] if semi >= 0 else ""
 
 
 def go_condition_terms(line):
@@ -398,8 +411,9 @@ def copy_only_tests(text, hit_lines, lang, purpose="copy"):
                 return False
             if lang == "go" and not all(go_copy_term(t) for t in go_condition_terms(line)):
                 return False
+            supplied = inputs + "\n" + go_if_initializer(line) if lang == "go" else inputs
             literals = [first(m.groups()) for m in QUOTED.finditer(line)]
-            return not any(lit and lit in inputs for lit in literals)
+            return not any(lit and lit in supplied for lit in literals)
 
         if not checks or not all(copy_claim(n, line) for n, line in checks):
             continue
