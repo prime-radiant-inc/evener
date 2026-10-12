@@ -712,7 +712,9 @@ func TestMemoryRefreshIndexDeltaFollowsTheWhenLine(t *testing.T) {
 			return finalResponse("observed")
 		}
 	}
-	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(deltaTurn(1), deltaTurn(2), deltaTurn(2)))
+	// The third turn adds no memory context: the index did not change.
+	unchangedTurn := deltaTurn(2)
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(deltaTurn(1), deltaTurn(2), unchangedTurn))
 	turn := func() {
 		t.Helper()
 		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {

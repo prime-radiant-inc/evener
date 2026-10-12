@@ -4,7 +4,7 @@
 
 **Goal:** Memory pages carry an optional `when` frontmatter field saying when a future session needs them, and the generated index shows it after the description.
 
-**Architecture:** `parseMemoryPage` reads `when` into `memoryPage.When`; `memoryIndexLine` renders ` (when: …)` after the description; the write path quotes a broken `when` line and notes a missing one; the `## Memory` prompt asks for it. No wire, client or tool-schema change.
+**Architecture:** `parseMemoryPage` reads `when` into `memoryPage.When`; `memoryIndexLine` renders `when` in place of the description; the write path quotes a broken `when` line and notes a missing one; the `## Memory` prompt asks for it. No wire, client or tool-schema change.
 
 **Tech Stack:** Go (agent module), YAML frontmatter via `agent/internal/frontmatter`.
 
@@ -17,14 +17,14 @@
 - Default tests are deterministic: scripted provider, no network or credentials.
 - Gofmt with `$(go env GOROOT)/bin/gofmt`; `golangci-lint run --allow-serial-runners ./...` in `agent`; `go vet ./...` and `go vet -tags evenerfuzz ./...` in `agent`.
 - No backward-compatibility shims; a page without `when` simply renders as today.
-- Index line form for a page with `when` (decided after the eval; the spec's Eval results explain why): `- [Title](path) — <when> [tags] (updated YYYY-MM-DD)`. The `(when: …)` form in Task 1 below was the first cut and was replaced by showing `when` instead of the description.
+- Index line form for a page with `when` (decided after the eval; see the spec's Eval results): `- [Title](path) — <when> [tags] (updated YYYY-MM-DD)`; a page without one shows its description.
 
 ## Review Focus
 
 1. A `when` value containing `: ` written unquoted: the write must still produce readable frontmatter (Task 2 test).
 2. A non-string `when` (number, list, map) or an empty one: treated as missing, line renders as today (Task 1 test).
 3. A multi-line `when` (YAML block scalar): collapses to one line so the index stays one line per page (Task 1 test).
-4. A page with `when` but unreadable frontmatter: renders as today's unreadable line, no `(when: …)` (Task 1 test, falls out of parsing).
+4. A page with `when` but unreadable frontmatter: renders as today's unreadable line, shows no `when` (Task 1 test, falls out of parsing).
 5. A changed `when` on an existing page: the index delta reports the new line (Task 1 test).
 
 ---
@@ -82,24 +82,25 @@ In `parseMemoryPage`, after the description block:
 - [ ] **Step 4: Add the failing render case.** In `TestRenderMemoryIndex`, give the `cents.md` page `When: "Formatting or storing a price"` and change its expected line to:
 
 ```go
-"- [Integer cents](cents.md) — Money is integer cents, never floats (when: Formatting or storing a price) [money, formatting] (updated 2026-10-08)\n" +
+"- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)\n" +
 ```
 
-Run `go test ./agent -run 'TestRenderMemoryIndex$' -count=1`. Expected: FAIL, line lacks `(when: …)`.
+Run `go test ./agent -run 'TestRenderMemoryIndex$' -count=1`. Expected: FAIL, line still shows the description.
 
-- [ ] **Step 5: Implement rendering.** In `memoryIndexLine`, right after the `Fprintf` of title/path/description and before the unreadable marker:
+- [ ] **Step 5: Implement rendering.** In `memoryIndexLine`, choose the text after the link: the description, or `p.When` when present:
 
 ```go
+	summary := p.Description
 	if p.When != "" {
-		b.WriteString(" (when: " + p.When + ")")
+		summary = p.When
 	}
 ```
 
 Run Step 4's command: PASS. Then `go test ./agent -run 'Memory' -count=1` to catch other expectations; fix any that legitimately change.
 
-- [ ] **Step 6: Index delta case.** Next to the existing test proving a changed description reaches the index delta, add the same test changing only `when` on an existing page; assert the delta carries `added "…(when: <new>)…"` for that page. Watch it pass (it should, since the line changed); if the delta machinery compares something other than the line, fix that.
+- [ ] **Step 6: Index delta case.** Next to the existing test proving a changed description reaches the index delta, add the same test changing only `when` on an existing page; assert the delta carries `added "…<new>…"` for that page. Watch it pass (it should, since the line changed); if the delta machinery compares something other than the line, fix that.
 
-- [ ] **Step 7: Docs.** In `docs/product/memory.md` **Page format**: add `when: Formatting or storing a price` to the example page, and a sentence after the `description` paragraph: "`when` is one line saying when a future session needs the page, written like a skill's trigger; it is rendered after the description as `(when: …)`. A non-string or empty value counts as missing and renders nothing." Update **The rendered index** example's cents line to match Step 4.
+- [ ] **Step 7: Docs.** In `docs/product/memory.md` **Page format**: add `when: Formatting or storing a price` to the example page, and a sentence after the `description` paragraph: "`when` is one line saying when a future session needs the page, written like a skill's trigger; the index line shows it instead of the description. A non-string or empty value counts as missing and renders nothing." Update **The rendered index** example's cents line to match Step 4.
 
 - [ ] **Step 8: Regenerate goldens** whose index lines changed: `go test ./agent -run 'MemoryContextWireFixtures$' -count=1 -update-wire` (only if their fixtures gained `when`; otherwise they stay as is), read the diff.
 

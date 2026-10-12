@@ -280,8 +280,7 @@ there is no primary tag, reserved tag or type field. `evidence` is free-form and
 never rendered in the index; it is for whoever reads the page. Unknown keys are
 kept untouched and ignored.
 
-**Fallback description.** When `when` is present the line shows it and the
-description is not needed. Otherwise, when `description` is missing or empty, the line
+**Fallback description.** When `description` is missing or empty, the line
 uses the page's first Markdown heading, else its first non-blank body line, cut
 to 120 characters and followed by `(no description)`. Whitespace runs in the
 heading or line collapse to one space. A page whose frontmatter
@@ -292,7 +291,7 @@ does not parse is still a page; it renders as
 
 ```text
 Tags: formatting (3), money (2), vitest (6)
-- [Integer cents](cents.md) — Money is integer cents, Formatting or storing a price [money, formatting] (updated 2026-10-08)
+- [Integer cents](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)
 - [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 
