@@ -551,7 +551,7 @@ async function runOutputPagingJourney(fixture) {
   await assertAnchor(baseline);
   await captureOutput('paging-refresh');
   let after = frames.length;
-  const socketAfter = sockets.length;
+  let socketAfter = sockets.length;
   await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
   assert.equal(await read(`(() => { const live=window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN && new URL(s.url).pathname==='/rpc'); for(const s of live) s.close(4000,'paging transport boundary'); return live.length; })()`),1);
   await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'real output socket closes');
@@ -579,23 +579,10 @@ async function runOutputPagingJourney(fixture) {
   assert.ok(page(preterminal));
   await control('finish');
   await waitFrames(()=>sent().some(request=>request.method==='evener/jobs/get' && request.params.jobId===fixture.outputJobId && response(request)?.result?.data?.terminal),'terminal metadata observed while earlier output remains held');
-  after=frames.length;
+  after=frames.length; socketAfter=sockets.length;
   await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
-  // The held reply names the connection that carried the pending preterminal
-  // read; the drain must happen on a fresh one. Await that socket's own close
-  // event. Waiting for any CDP close after closing only OPEN sockets could
-  // never succeed once that socket had already left OPEN: nothing was closed.
-  try {
-    await read(`new Promise(resolve => {
-      const held = window.__pagingWire.replies[0].socket;
-      window.__pagingWire.replies.length = 0;
-      if (held.readyState === WebSocket.CLOSED) resolve();
-      else held.addEventListener('close', () => resolve(), { once: true });
-      for (const s of window.__backgroundJobsSockets.filter(s => s.readyState === WebSocket.OPEN)) s.close(4000, 'fresh terminal drain boundary');
-    })`);
-  } catch (error) {
-    throw new Error(`terminal drain connection closes: ${error.message}`, { cause: error });
-  }
+  await read(`(() => { for(const s of window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN)) s.close(4000,'fresh terminal drain boundary'); window.__pagingWire.replies.length=0; })()`);
+  await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'terminal drain connection closes');
   await driver.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
   await latest('FINAL_AFTER_PENDING_READ_é_😀',after);
   const finalPage = outputCalls(after).find(request=>page(request) && bytes(page(request)).includes(Buffer.from('FINAL_AFTER_PENDING_READ_é_😀')));
