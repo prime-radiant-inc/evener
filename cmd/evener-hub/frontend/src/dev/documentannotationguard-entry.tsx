@@ -53,8 +53,6 @@ declare global {
         ownerScrollTop: number;
         ownerScrollLeft: number;
       } | null;
-      scrollState(id: string): { scrollTop: number; scrollHeight: number; clientHeight: number } | null;
-      samplePixels(base64: string, width: number, height: number, points: GuardPoint[]): Promise<GuardPixel[]>;
       analyzePaint(
         base64: string,
         width: number,
@@ -78,12 +76,6 @@ interface GuardRect {
 interface GuardPoint {
   x: number;
   y: number;
-}
-interface GuardPixel extends GuardPoint {
-  r: number;
-  g: number;
-  b: number;
-  a: number;
 }
 interface GuardFragmentAnalysis {
   left: number;
@@ -505,38 +497,7 @@ const helpers = {
       ownerScrollLeft: owner.scrollLeft,
     };
   },
-  scrollState(id: string) {
-    const owner = ownerElement(id);
-    if (!owner) return null;
-    return { scrollTop: owner.scrollTop, scrollHeight: owner.scrollHeight, clientHeight: owner.clientHeight };
-  },
-  async samplePixels(base64: string, width: number, height: number, points: GuardPoint[]) {
-    const image = new Image();
-    image.src = `data:image/png;base64,${base64}`;
-    await image.decode();
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("guard: no 2d context for pixel sampling");
-    context.drawImage(image, 0, 0);
-    return points.map((point) => {
-      const x = Math.max(0, Math.min(width - 1, Math.round(point.x)));
-      const y = Math.max(0, Math.min(height - 1, Math.round(point.y)));
-      const data = context.getImageData(x, y, 1, 1).data;
-      return { x: point.x, y: point.y, r: data[0] ?? 0, g: data[1] ?? 0, b: data[2] ?? 0, a: data[3] ?? 0 };
-    });
-  },
-  analyzePaint(
-    base64: string,
-    width: number,
-    height: number,
-    fragments: GuardRect[],
-    control: GuardRect,
-    tolerance: number,
-  ) {
-    return analyzePaintPixels(base64, width, height, fragments, control, tolerance);
-  },
+  analyzePaint: analyzePaintPixels,
   visibleNotePoint,
 };
 window.__annotationGuard = helpers;

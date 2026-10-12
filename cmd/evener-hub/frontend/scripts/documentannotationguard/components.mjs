@@ -39,12 +39,15 @@ import {
   clearViewportOverride,
   connectPage,
   createStartupDeadline,
+  cdpDrag,
   evaluate,
+  nextPaint,
   navigateTo,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
+import { rectInside } from "./assertions.mjs";
 import {
   COMMENT_NOTE,
   COMMENT_PASSAGE,
@@ -139,20 +142,15 @@ function saveEvidence(name, value) {
   mkdirSync(EVIDENCE, { recursive: true });
   const target = path.join(EVIDENCE, name);
   if (typeof value === "string") writeFileSync(target, value);
+  else if (value instanceof Uint8Array) writeFileSync(target, value);
   else writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`);
   return path.relative(REPO, target);
 }
 function saveScreenshot(name, base64) {
-  mkdirSync(EVIDENCE, { recursive: true });
-  const target = path.join(EVIDENCE, name);
-  writeFileSync(target, Buffer.from(base64, "base64"));
-  return path.relative(REPO, target);
+  return saveEvidence(name, Buffer.from(base64, "base64"));
 }
 
 // --- CDP helpers ------------------------------------------------------------
-
-const nextFrame = (send) =>
-  evaluate(send, "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))");
 
 // Bounded observable-condition wait: returns the last observed value and
 // whether the condition ever held. It never widens a timeout and never throws
@@ -164,7 +162,7 @@ async function settle(send, expression, { label, timeoutMs = 3000 } = {}) {
     value = await evaluate(send, expression);
     if (value) return { settled: true, value };
     if (Date.now() > deadline) return { settled: false, value };
-    await nextFrame(send);
+    await nextPaint(send);
   }
 }
 
@@ -190,23 +188,17 @@ async function mouseClick(send, x, y, modifiers = 0) {
     clickCount: 1,
     modifiers,
   });
-  await nextFrame(send);
+  await nextPaint(send);
 }
 async function drag(send, from, to) {
-  await mouseMove(send, from.x, from.y);
-  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", buttons: 1, clickCount: 1 });
-  const steps = 10;
-  for (let step = 1; step <= steps; step += 1) {
-    const x = from.x + ((to.x - from.x) * step) / steps;
-    const y = from.y + ((to.y - from.y) * step) / steps;
-    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1 });
-  }
-  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", buttons: 1, clickCount: 1 });
-  await nextFrame(send);
+  // The component cases end every input gesture on a settled paint, so the
+  // shared drag runs bare and the frame wait stays with the caller.
+  await cdpDrag(send, from, to);
+  await nextPaint(send);
 }
 async function wheel(send, x, y, deltaY) {
   await send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY, buttons: 0 });
-  await nextFrame(send);
+  await nextPaint(send);
 }
 async function key(send, type, k, code, vk, modifiers = 0) {
   await send("Input.dispatchKeyEvent", {
@@ -227,7 +219,7 @@ async function emulatedTouchTap(send, point) {
   try {
     await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
     await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    await nextFrame(send);
+    await nextPaint(send);
   } finally {
     await send("Emulation.setTouchEmulationEnabled", { enabled: false });
   }
@@ -385,7 +377,7 @@ async function casePaneResize(send, record) {
   // with NO browser viewport resize, so the product's window-resize listener
   // never fires.
   await evaluate(send, `(() => { const el = document.querySelector('[data-case="${id}"]'); el.style.width = '230px'; return el.getBoundingClientRect().width; })()`);
-  await nextFrame(send);
+  await nextPaint(send);
 
   const narrow = await captureCase(send, ...args);
   check(narrow.analysis, "pane-resize: the narrow paint analysis ran", "no analysis");
@@ -1010,8 +1002,9 @@ async function commentControlsCase(send, record) {
   );
   record.evidence.push(saveEvidence("comment-controls.json", state));
 
-  const contains = (outer, inner, slack = 1) =>
-    !!outer && !!inner && inner.left >= outer.left - slack && inner.right <= outer.right + slack && inner.top >= outer.top - slack && inner.bottom <= outer.bottom + slack;
+  // The guard's own node-tested containment oracle; the local null-guard keeps
+  // a state row that legitimately measured nothing from throwing.
+  const contains = (outer, inner, slack = 1) => !!outer && !!inner && rectInside(outer, inner, slack);
   require_(findings, !!state.footer, "footer", "the comment footer is present", "missing footer");
   require_(findings, contains(state.footer, state.editor), "editor-in-footer", "the note editor is inside the actual footer clip", `editor ${q(state.editor)} footer ${q(state.footer)}`);
   require_(findings, contains(state.footer, state.send), "send-in-footer", "Send is inside the actual footer clip", `send ${q(state.send)} footer ${q(state.footer)}`);
