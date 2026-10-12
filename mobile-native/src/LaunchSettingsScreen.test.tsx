@@ -9,7 +9,8 @@ import type { LaunchOption } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { LaunchSettingsScreen } from "./LaunchSettingsScreen";
-import { alertRequests, render, renderedText } from "./renderNative.testkit";
+import { markers } from "./markerTestUtils";
+import { alertRequests, offersButton, render, renderedText } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: null as unknown,
@@ -106,6 +107,11 @@ async function editModel(tree: ReturnType<typeof render>, value: string) {
 	});
 }
 
+/** What the page reports went wrong, by problem. */
+function problems(tree: ReturnType<typeof render>): string[] {
+	return markers(tree, "launch-problem");
+}
+
 beforeEach(() => {
 	alertRequests.length = 0;
 	harness.focus = null;
@@ -120,9 +126,8 @@ it("offers no Reload, loaded or not", async () => {
 	const launch = launchHub();
 	launch.failNext();
 	const tree = await mount(launch.hub);
-	expect(renderedText(tree)).toContain("Could not load launch settings.");
-	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Reload")).toHaveLength(0);
-	expect(renderedText(tree)).not.toMatch(/\bReload\b/);
+	expect(problems(tree)).toEqual(["settings"]);
+	expect(offersButton(tree, /\bReload\b/)).toBe(false);
 });
 
 it("reads a failed load again when the page comes back into view, with nothing to press", async () => {
@@ -134,7 +139,7 @@ it("reads a failed load again when the page comes back into view, with nothing t
 		harness.focus?.();
 	});
 	expect(launch.reads()).toBe(2);
-	expect(renderedText(tree)).not.toContain("Could not load launch settings.");
+	expect(problems(tree)).toEqual([]);
 });
 
 it("says a change made elsewhere while editing, and lets you discard your edit to see it", async () => {
@@ -155,14 +160,14 @@ it("says a change made elsewhere while editing, and lets you discard your edit t
 		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Done" }).props.onPress();
 	});
 	await act(async () => launch.changeElsewhere("gpt-5.7"));
-	expect(renderedText(tree)).toContain("Launch settings changed elsewhere. Discard your changes to see them.");
+	expect(problems(tree)).toEqual(["changed-elsewhere"]);
 	await act(async () => {
 		discardAction()[0]?.props.onPress();
 	});
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(alertRequests).toHaveLength(1);
 	const discard = alertRequests.at(-1)?.buttons?.find((button) => button.text === "Discard");
 	await act(async () => discard?.onPress?.());
-	expect(renderedText(tree)).not.toContain("changed elsewhere");
+	expect(problems(tree)).toEqual([]);
 	expect(renderedText(tree)).toContain("gpt-5.7");
 });
 
@@ -170,11 +175,11 @@ it("re-reads effective values that failed to load when the page comes back into 
 	const launch = launchHub();
 	launch.failNextResolve();
 	const tree = await mount(launch.hub);
-	expect(renderedText(tree)).toContain("Effective launch values could not be loaded.");
+	expect(problems(tree)).toEqual(["resolve"]);
 	await act(async () => {
 		harness.focus?.();
 	});
-	expect(renderedText(tree)).not.toContain("Effective launch values could not be loaded.");
+	expect(problems(tree)).toEqual([]);
 });
 
 it("keeps an unsaved edit when the page comes back into view after a failed read", async () => {
@@ -204,12 +209,11 @@ it("offers Discard changes only while an edit sits over a change made elsewhere,
 	// A read that fails meanwhile says so too, never hidden behind the change.
 	launch.failNext();
 	await act(async () => launch.changeElsewhere("gpt-5.7"));
-	expect(renderedText(tree)).toContain("Could not load launch settings.");
-	expect(renderedText(tree)).toContain("Launch settings changed elsewhere. Discard your changes to see them.");
+	expect(problems(tree)).toEqual(["settings", "changed-elsewhere"]);
 	// Editing back to what the hub has leaves nothing to discard.
 	await editModel(tree, "gpt-5.7");
 	expect(discard()).toHaveLength(0);
-	expect(renderedText(tree)).not.toContain("changed elsewhere");
+	expect(problems(tree)).not.toContain("changed-elsewhere");
 });
 
 // The LaunchSettings route no longer carries a project cwd (the only way in
