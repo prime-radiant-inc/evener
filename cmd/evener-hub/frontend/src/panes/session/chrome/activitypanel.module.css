@@ -126,9 +126,9 @@
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
-/* The kind glyph carries the row's status hue (it replaced the status dot):
- * alive for working, attention for needs-you, danger for failed. Idle/ended
- * rows keep denseKind's default low ink. */
+/* The shell row's kind glyph carries its status hue: alive for working,
+ * attention for needs-you, danger for failed. Idle/ended rows keep
+ * denseKind's default low ink. */
 .kindAlive {
   color: var(--alive);
 }
