@@ -33,6 +33,57 @@ file=$1 subst=$2
 shift 3
 root=$(git rev-parse --show-toplevel)
 cd "$root"
+# One mutation at a time per worktree: a second run would mutate files under
+# the first run's tests, or restore them mid-run. The lock records its owner's
+# pid, so a lock left by a run that was killed outright (SIGKILL) is recovered
+# instead of blocking every later run.
+lock="$(git rev-parse --absolute-git-dir)/copy-oracle-mutate.lock"
+take_lock() { mkdir "$lock" 2>/dev/null && echo $$ >"$lock/pid"; }
+if ! take_lock; then
+  owner=$(cat "$lock/pid" 2>/dev/null || true)
+  if [[ -n "$owner" ]] && kill -0 "$owner" 2>/dev/null; then
+    echo "refusing: another mutate.sh (pid $owner) is running in this worktree" >&2
+    exit 2
+  fi
+  echo "recovering stale lock from pid ${owner:-unknown}" >&2
+  # mutate.sh never starts on a dirty file, so any edit to the dead run's
+  # target is its unrestored mutation.
+  stale_target=$(cat "$lock/target" 2>/dev/null || true)
+  if [[ -n "$stale_target" ]]; then
+    git restore -- "$stale_target"
+    echo "restored $stale_target, left mutated by that run" >&2
+  fi
+  rm -f "$lock/pid" "$lock/target"
+  rmdir "$lock" 2>/dev/null || true
+  if ! take_lock; then
+    echo "refusing: could not take $lock" >&2
+    exit 2
+  fi
+fi
+
+# Every exit path, including HUP/INT/TERM, stops the test process tree before
+# restoring the file, so a stale run never reads the restored source.
+mutated=0 child=""
+kill_tree() {
+  local kid
+  for kid in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$kid"; done
+  kill -TERM "$1" 2>/dev/null || true
+}
+cleanup() {
+  if [[ -n "$child" ]]; then
+    kill_tree "$child"
+    wait "$child" 2>/dev/null || true
+  fi
+  if ((mutated)); then git restore -- "$file"; fi
+  rm -f "$lock/pid" "$lock/target"
+  rmdir "$lock" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# Checked after taking the lock, so a dead run's leftover mutation has
+# already been restored.
 if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
   echo "refusing: $file is not tracked by git, so it cannot be restored" >&2
   exit 2
@@ -41,29 +92,33 @@ if ! git diff --quiet -- "$file"; then
   echo "refusing: $file has uncommitted edits; mutate.sh restores it with git restore" >&2
   exit 2
 fi
-# One mutation at a time per worktree: a second run would mutate files under
-# the first run's tests, or restore them mid-run.
-lock="$(git rev-parse --absolute-git-dir)/copy-oracle-mutate.lock"
-if ! mkdir "$lock" 2>/dev/null; then
-  echo "refusing: another mutate.sh is running in this worktree ($lock)" >&2
-  exit 2
-fi
-trap 'rmdir "$lock"' EXIT
+
+# Run the tests as a tracked child so a signal can stop them.
+run_tests() {
+  local status=0
+  "$@" >"$log" 2>&1 &
+  child=$!
+  wait "$child" || status=$?
+  child=""
+  return "$status"
+}
+
 # One log per run: parallel checks in other worktrees must not mix output.
 log=$(mktemp "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
 # The tests must pass unmutated, or a failure afterwards proves nothing: the
 # runner may be missing, or the test may already be broken.
-if ! "$@" >"$log" 2>&1; then
+if ! run_tests "$@"; then
   echo "BASELINE-FAIL the test command fails without the mutation (log: $log)" >&2
   exit 2
 fi
-trap 'git restore -- "$file"; rmdir "$lock"' EXIT
+mutated=1
+echo "$file" >"$lock/target"
 perl -0pi -e "$subst" "$file"
 if git diff --quiet -- "$file"; then
   echo "NO-OP   $file: $subst"
   exit 1
 fi
-if "$@" >"$log" 2>&1; then
+if run_tests "$@"; then
   echo "SURVIVED $file: $subst (log: $log)"
   exit 1
 fi
