@@ -298,6 +298,16 @@ var Methods = []MethodSpec{
 	{MethodEvenerSessionDocument, SessionDocumentParams{}, SessionDocumentResponse{}, ScopeHub, "Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route."},
 }
 
+// MissingMutationFieldError reports a retry-safe mutation whose params lack a
+// required field, or carry it empty.
+type MissingMutationFieldError struct {
+	Field string
+}
+
+func (e MissingMutationFieldError) Error() string {
+	return e.Field + " is required"
+}
+
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
 // fields before a mutation reaches either Hub or daemon handlers.
 func ValidateMutationParams(method string, raw json.RawMessage) error {
@@ -327,7 +337,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 	for _, name := range required {
 		value, ok := fields[name]
 		if !ok {
-			return fmt.Errorf("%s is required", name)
+			return MissingMutationFieldError{Field: name}
 		}
 		if name == "expectedQueueRevision" {
 			var revision uint64
@@ -338,7 +348,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 		}
 		var text string
 		if err := json.Unmarshal(value, &text); err != nil || strings.TrimSpace(text) == "" {
-			return fmt.Errorf("%s is required", name)
+			return MissingMutationFieldError{Field: name}
 		}
 	}
 	return nil

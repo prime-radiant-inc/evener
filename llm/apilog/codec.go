@@ -12,6 +12,13 @@ import (
 
 var ErrPartialTail = errors.New("partial API-log tail")
 
+// ErrCredentialAdmission reports that MarshalRecord refused a record whose
+// provider-derived fields still carry forbidden credential material.
+var ErrCredentialAdmission = errors.New("API-log record credential admission failed")
+
+// errMultipleJSONValues reports a record line holding more than one JSON value.
+var errMultipleJSONValues = errors.New("multiple JSON values")
+
 // DecodeMode selects how much of a record's body content a decode
 // validates. DecodeStrict (the default) decodes and revalidates every body's
 // bytes; DecodeMetadataOnly leaves EncodedBody fields in their encoded form
@@ -277,7 +284,7 @@ func MarshalRecord(record APILogRecord) ([]byte, error) {
 	switch typed := record.(type) {
 	case APIAttemptRecord:
 		if err := typed.validateProviderEvidence(); err != nil {
-			return nil, fmt.Errorf("API-log record credential admission failed: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrCredentialAdmission, err)
 		}
 	case APIAttemptGroupSettlement:
 	default:
@@ -301,7 +308,7 @@ func decodeStrict(data []byte, dst any) error {
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return errors.New("multiple JSON values")
+			return errMultipleJSONValues
 		}
 		return err
 	}

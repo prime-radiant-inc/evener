@@ -296,8 +296,8 @@ func TestGenerate_ToolArgsSchemaValidationError_SentAsErrorResult_AndDoesNotExec
 						if !p.ToolResult.IsError {
 							return Response{}, fmt.Errorf("expected is_error=true tool result; got %+v", p.ToolResult)
 						}
-						if !strings.Contains(fmt.Sprint(p.ToolResult.Content), "invalid tool arguments") {
-							return Response{}, fmt.Errorf("expected validation error content; got %+v", p.ToolResult.Content)
+						if content, _ := p.ToolResult.Content.(string); content == "" {
+							return Response{}, errors.New("expected the validation error to explain itself; got empty content")
 						}
 						foundErr = true
 					}

@@ -61,7 +61,11 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 				value={choices.appearance}
 				onChange={(appearance) => choose({ appearance }, "appearance")}
 			/>
-			{unsaved === "appearance" ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
+			{unsaved === "appearance" ? (
+				<GroupFooter tone="danger" testID={`display-not-saved-${unsaved}`}>
+					{NOT_SAVED}
+				</GroupFooter>
+			) : null}
 			<GroupLabel>Reading font</GroupLabel>
 			<Segmented
 				label="Reading font"
@@ -70,7 +74,11 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 				onChange={(readingFont) => choose({ readingFont }, "readingFont")}
 			/>
 			<GroupFooter>For what agents write: messages, plans and documents.</GroupFooter>
-			{unsaved === "readingFont" ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
+			{unsaved === "readingFont" ? (
+				<GroupFooter tone="danger" testID={`display-not-saved-${unsaved}`}>
+					{NOT_SAVED}
+				</GroupFooter>
+			) : null}
 			{/* A hub that keeps no default level shows nothing here (spec 14). */}
 			{transcript?.support !== "unsupported" && (
 				<>
@@ -93,7 +101,11 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 					onChange={(showModel) => choose({ showModel }, "showModel")}
 				/>
 			</Group>
-			{unsaved === "showModel" ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
+			{unsaved === "showModel" ? (
+				<GroupFooter tone="danger" testID={`display-not-saved-${unsaved}`}>
+					{NOT_SAVED}
+				</GroupFooter>
+			) : null}
 		</GroupedPage>
 	);
 }

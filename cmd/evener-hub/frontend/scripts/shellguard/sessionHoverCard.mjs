@@ -191,9 +191,9 @@ async function desktopJourney(driver, viewport) {
   await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 900, y: 20 });
   await evaluate(
     driver.send,
-    `(() => {
+    `(async () => {
     const state = window.__sessionHoverGuard;
-    state.title.scrollIntoView({ block: 'center' });
+    await state.scrollSettled(() => state.title.scrollIntoView({ block: 'center' }));
     state.before = state.box(state.row);
   })()`,
   );
@@ -244,13 +244,15 @@ async function desktopJourney(driver, viewport) {
 
   await evaluate(
     driver.send,
-    `(() => {
+    `(async () => {
     const state = window.__sessionHoverGuard;
     state.title = Array.from(state.rail.querySelectorAll('[data-testid="rail-row-title"]')).at(-2);
     state.row = state.title.closest('[role="treeitem"]');
-    state.row.scrollIntoView({ block: 'end' });
-    // Keep scroll headroom for the fractional row box on a whole-pixel scroller.
-    state.scroller.scrollTop += 1;
+    await state.scrollSettled(() => {
+      state.row.scrollIntoView({ block: 'end' });
+      // Keep scroll headroom for the fractional row box on a whole-pixel scroller.
+      state.scroller.scrollTop += 1;
+    });
   })()`,
   );
   await driver.waitPage(`window.__sessionHoverGuard.row.getBoundingClientRect().bottom <= innerHeight`, {
@@ -353,15 +355,27 @@ async function onPage(cdpEndpoint, vitePort, viewport) {
       driver.send,
       `(async () => {
       const title = document.querySelector(${JSON.stringify(TITLE)});
-      title.scrollIntoView({ block: 'center' });
       const row = title.closest('[role="treeitem"]');
       const rail = title.closest('[data-testid="rail"]');
       const box = element => element.getBoundingClientRect().toJSON();
       let scroller = row.parentElement;
       while (scroller && !['auto', 'scroll'].includes(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
       if (!scroller) throw new Error('session scroll owner is absent');
-      window.__sessionHoverGuard = { title, row, rail, box, scroller, before: box(row), initialFocus: document.activeElement,
-        card() { return document.getElementById(this.title.getAttribute('aria-describedby')); } };
+      window.__sessionHoverGuard = { title, row, rail, box, scroller, initialFocus: document.activeElement,
+        card() { return document.getElementById(this.title.getAttribute('aria-describedby')); },
+        // A programmatic scroll's event is dispatched on the next rendering
+        // update, not synchronously. Any scroll dismisses a pending card, so a
+        // hover sent before that event lands can arm the card only for the
+        // stale event to cancel it, with the pointer left resting on the title
+        // and no new mouseenter coming. A frame runs its scroll steps before
+        // its animation frame callbacks, so the next callback means every
+        // scroll event this move queued, on any ancestor, has been delivered.
+        async scrollSettled(move) {
+          move();
+          await new Promise(requestAnimationFrame);
+        } };
+      await window.__sessionHoverGuard.scrollSettled(() => title.scrollIntoView({ block: 'center' }));
+      window.__sessionHoverGuard.before = box(row);
     })()`,
     );
     return viewport.touch ? await touchJourney(driver) : await desktopJourney(driver, viewport);

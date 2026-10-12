@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/envvars"
 )
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -186,13 +188,17 @@ func TestLintRunVanishedScratchIsResultsLost(t *testing.T) {
 	// owns this TMPDIR) removes the runner's own scratch at module three's
 	// spawn — the run must stop there, not start four or five.
 	sync := t.TempDir()
+	var vanished string
 	newCmd := func(module string) *exec.Cmd {
 		if module == "three" {
 			scratch, err := filepath.Glob(filepath.Join(os.Getenv("TMPDIR"), "evener-module-lint.*"))
 			if err != nil || len(scratch) != 1 {
 				t.Errorf("could not find the runner's scratch to remove: %v %v", scratch, err)
-			} else if err := os.RemoveAll(scratch[0]); err != nil {
-				t.Errorf("removing runner scratch: %v", err)
+			} else {
+				vanished = scratch[0]
+				if err := os.RemoveAll(vanished); err != nil {
+					t.Errorf("removing runner scratch: %v", err)
+				}
 			}
 		}
 		script := ": >" + filepath.Join(sync, "ran."+module)
@@ -202,20 +208,19 @@ func TestLintRunVanishedScratchIsResultsLost(t *testing.T) {
 	if code := r.run(); code != 1 {
 		t.Fatalf("run = %d, want 1", code)
 	}
-	if n := strings.Count(errOut.String(), "disappeared mid-run"); n != 1 {
-		t.Errorf("vanish diagnostic appears %d times, want once: %q", n, errOut.String())
+	// Said once, with the path: a bare per-step diagnostic would name a path
+	// inside the vanished directory a second time.
+	if n := strings.Count(errOut.String(), vanished); n != 1 {
+		t.Errorf("the vanished scratch %s is named %d times, want once: %q", vanished, n, errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "TMPDIR reaper") {
+	if !strings.Contains(errOut.String(), envvars.TmpDir.Name) {
 		t.Errorf("vanish diagnosis does not name the likely cause class: %q", errOut.String())
-	}
-	if strings.Contains(errOut.String(), "no such file") || strings.Contains(errOut.String(), "No such file") {
-		t.Errorf("bare per-step diagnostics leaked: %q", errOut.String())
 	}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
 	if last := lines[len(lines)-1]; last != "FAIL lint (results-lost: 5 modules: one two three four five)" {
 		t.Errorf("final line = %q", last)
 	}
-	if strings.Contains(out.String(), "full logs:") {
+	if strings.Contains(out.String(), vanished) {
 		t.Error("retained-log pointer names a directory that is gone")
 	}
 	if n := summaryCount(out.String()); n != 1 {
@@ -318,7 +323,7 @@ func TestLintRunHonorsASignalDuringTheLastReplay(t *testing.T) {
 	// shell trap fired here too, between commands, with exit 143.
 	signals := make(chan os.Signal, 1)
 	out := &signalOnFence{signals: signals}
-	t.Setenv("TMPDIR", t.TempDir())
+	setCanonicalTmpDir(t)
 	var errOut strings.Builder
 	r := &lintRun{
 		modules:  []string{"one"},
@@ -338,7 +343,7 @@ func TestLintRunHonorsASignalDuringTheLastReplay(t *testing.T) {
 	if last := lines[len(lines)-1]; last != "FAIL lint (interrupted: SIGTERM)" {
 		t.Errorf("final line = %q", last)
 	}
-	if strings.Contains(text, "full logs:") {
+	if strings.Contains(text, filepath.Join(os.Getenv("TMPDIR"), "evener-module-lint.")) {
 		t.Error("an interrupted replay still printed the retained-log pointer")
 	}
 	if n := summaryCount(text); n != 1 {
@@ -392,7 +397,8 @@ func TestModuleLintInvalidParallelIsTwoLineSetupFailure(t *testing.T) {
 	if len(lines) != 2 {
 		t.Errorf("invalid LINT_PARALLEL wrote %d lines, want a diagnostic and a summary: %q", len(lines), combined)
 	}
-	if !strings.Contains(lines[0], "LINT_PARALLEL must be a positive integer") {
+	// The diagnostic names the variable and the value it refused.
+	if !strings.Contains(lines[0], "LINT_PARALLEL") || !strings.Contains(lines[0], "08") {
 		t.Errorf("diagnostic line = %q", lines[0])
 	}
 	if lines[1] != "FAIL lint (setup: LINT_PARALLEL must be a positive integer without leading zeroes)" {

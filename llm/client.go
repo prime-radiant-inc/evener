@@ -550,7 +550,7 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 		// §8.1) -- and only an instance's own transport may speak for it.
 		lister, ok := override.(LiveModelLister)
 		if !ok {
-			return nil, false, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance)}
+			return nil, false, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance), Cause: ErrModelListingUnsupported}
 		}
 		// Overrides have no protocol layer to apply their request deadline.
 		// Built-in protocols own it themselves, preserving the original caller

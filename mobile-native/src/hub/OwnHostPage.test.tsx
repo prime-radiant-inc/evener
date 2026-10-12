@@ -5,7 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { HostsController } from "../hosts/hostsController";
 import { liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
+import { render, settle, testIDSuffixes, unmountMountedTrees } from "../renderNative.testkit";
+import { Row } from "../sheet/Grouped";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 import { OwnHostPage } from "./OwnHostPage";
 
@@ -93,18 +94,19 @@ beforeEach(() => {
 
 it("shows the hub's own machine: its state, its version and its live sessions (audit M1)", async () => {
 	const page = await mount(scriptedFleet([], [liveSession("local:a", "local"), liveSession("local:b", "local")]));
-	expect(page.labelled("Status")).toBe("Status, Connected");
+	expect(testIDSuffixes(page.tree, "hub-connection-")).toEqual(["connected"]);
 	expect(page.labelled("Version")).toBe("Version, 0.9.412");
 	expect(page.labelled("Sessions")).toBe("Sessions, 2 live");
-	// The wire carries no system or project roots for the hub's own machine.
-	expect(renderedText(page.tree)).not.toContain("System");
-	expect(renderedText(page.tree)).not.toContain("Project roots");
+	// The wire carries no system or project roots for the hub's own machine:
+	// status, version and sessions are its only rows.
+	expect(page.tree.root.findAll((node) => node.type === Row)).toHaveLength(3);
 });
 
 it("says the hub's own machine is reconnecting in the Hub header's words, its sessions out of reach", async () => {
 	const page = await mount(scriptedFleet([], [liveSession("local:a", "local")]));
 	status.line = "Reconnecting…";
 	await page.setReady(false);
+	expect(testIDSuffixes(page.tree, "hub-connection-")).toEqual(["line"]);
 	expect(page.labelled("Status")).toBe("Status, Reconnecting…");
 	expect(page.labelled("Sessions")).toBe("Sessions, 1 live, out of reach");
 });

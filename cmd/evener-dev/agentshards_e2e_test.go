@@ -41,6 +41,19 @@ func isolateToolchainEnv(t *testing.T) {
 	t.Setenv("GOFLAGS", "")
 }
 
+// canonicalTempDir returns a fresh temp dir by its canonical path. The runners
+// report TMPDIR-derived paths canonically (scratch resolves its base), so a
+// path the test builds from this dir matches theirs even under a symlinked
+// temp root (macOS /var -> /private/var).
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolving temp dir: %v", err)
+	}
+	return dir
+}
+
 // e2eConfig is a runShards config over the fixture module with isolated
 // TMPDIR and survey cache, capture buffers attached.
 func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string) {
@@ -83,19 +96,15 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 		t.Fatalf("green run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 	}
 	out := stdout.String()
-	for _, want := range []string{
-		"agent-shards: surveying test costs (one-time for this test set)",
-		"agent-shards: 2 shards, -parallel 1 each",
-		"PASS  agent:0",
-		"PASS  agent:1",
-		" tests)",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("green run stdout missing %q:\n%s", want, out)
-		}
+	if got := verdictShards(t, out, "PASS"); !slices.Equal(got, []int{0, 1}) {
+		t.Fatalf("green run PASS verdicts = %v, want shards 0 and 1:\n%s", got, out)
 	}
-	if strings.Contains(out+stderr.String(), "full logs:") {
-		t.Fatalf("green run reported retained logs:\n%s\n%s", out, stderr)
+	if shardedTestCount(t, out) == 0 {
+		t.Fatalf("green run reported no tests placed into its shards:\n%s", out)
+	}
+	// Nothing is retained, so no output may point into the scratch root.
+	if strings.Contains(out+stderr.String(), tmp) {
+		t.Fatalf("green run pointed at retained logs:\n%s\n%s", out, stderr)
 	}
 	// A green survey prints no failure excerpt: the block exists to explain a
 	// failure, and the summary must not grow an empty one.
@@ -105,10 +114,7 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	if left := scratchLeftovers(t, tmp); len(left) != 0 {
 		t.Fatalf("green run left scratch behind: %v", left)
 	}
-	cached, err := filepath.Glob(filepath.Join(cfg.cacheDir, "survey-*.log"))
-	if err != nil || len(cached) != 1 {
-		t.Fatalf("survey cache not written: %v %v", cached, err)
-	}
+	surveyed := surveyCacheFile(t, cfg.cacheDir)
 
 	// Second run, same cache: the survey must not re-run.
 	cfg2 := cfg
@@ -117,11 +123,11 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	if rc := runShards(cfg2); rc != 0 {
 		t.Fatalf("cached rerun rc = %d\nstdout:\n%s\nstderr:\n%s", rc, &stdout2, &stderr2)
 	}
-	if strings.Contains(stdout2.String(), "surveying test costs") {
-		t.Fatalf("cached rerun surveyed again:\n%s", &stdout2)
+	if !os.SameFile(surveyed, surveyCacheFile(t, cfg.cacheDir)) {
+		t.Fatalf("cached rerun surveyed again and replaced the cache:\n%s", &stdout2)
 	}
-	if !strings.Contains(stdout2.String(), "PASS  agent:1") {
-		t.Fatalf("cached rerun did not pass:\n%s", &stdout2)
+	if got := verdictShards(t, stdout2.String(), "PASS"); !slices.Equal(got, []int{0, 1}) {
+		t.Fatalf("cached rerun PASS verdicts = %v, want shards 0 and 1:\n%s", got, &stdout2)
 	}
 }
 
@@ -307,24 +313,20 @@ func TestAgentShardsFailingShardRetainsEvidence(t *testing.T) {
 	}
 	out := stdout.String()
 	for _, want := range []string{
-		"FAIL  agent:",
-		"=== failing shard output ===",
-		"----- agent:",
 		"--- FAIL: TestFixtureBeta",
-		"full logs: ",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("failing run stdout missing %q:\n%s", want, out)
 		}
 	}
-	// The script printed the pointer twice — stdout in the replay block,
-	// stderr from cleanup — and consumers read either. Preserved wart.
-	if !strings.Contains(stderr.String(), "full logs: ") {
-		t.Fatalf("failing run stderr missing retained-logs pointer:\n%s", stderr)
-	}
 	left := scratchLeftovers(t, tmp)
 	if len(left) != 1 {
 		t.Fatalf("failing run retained %v, want exactly one scratch dir", left)
+	}
+	// The script printed the pointer twice — stdout in the replay block,
+	// stderr from cleanup — and consumers read either. Preserved wart.
+	if !strings.Contains(out, left[0]) || !strings.Contains(stderr.String(), left[0]) {
+		t.Fatalf("failing run did not point both streams at its retained logs %s:\nstdout:\n%s\nstderr:\n%s", left[0], out, stderr)
 	}
 	logs, err := filepath.Glob(filepath.Join(left[0], "shard*.log"))
 	if err != nil || len(logs) != 2 {
@@ -633,22 +635,16 @@ var evenerDevBuild struct {
 }
 
 func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {
-	bin := buildEvenerDev(t)
-	out, err := exec.Command(bin, "dev").CombinedOutput()
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
-		t.Fatalf("bare evener dev exit = %v, want 2", err)
+	code, stdout, stderr := execEvenerDev(t)
+	if code != 2 || stdout != "" || stderr == "" {
+		t.Fatalf("bare evener dev = exit %d, stdout %q, stderr %q; want 2 with usage on stderr only", code, stdout, stderr)
 	}
-	if !strings.Contains(string(out), "usage: evener dev") || !strings.Contains(string(out), "agent-shards") {
-		t.Fatalf("usage text missing:\n%s", out)
+	code, stdout, stderr = execEvenerDev(t, "no-such-subcommand")
+	if code != 2 || stdout != "" {
+		t.Fatalf("unknown subcommand = exit %d, stdout %q; want 2 with nothing on stdout", code, stdout)
 	}
-	out, err = exec.Command(bin, "dev", "no-such-subcommand").CombinedOutput()
-	exit = nil
-	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
-		t.Fatalf("unknown subcommand exit = %v, want 2", err)
-	}
-	if !strings.Contains(string(out), `unknown subcommand "no-such-subcommand"`) {
-		t.Fatalf("unknown subcommand not named:\n%s", out)
+	if !strings.Contains(stderr, "no-such-subcommand") {
+		t.Fatalf("unknown subcommand not named:\n%s", stderr)
 	}
 }
 

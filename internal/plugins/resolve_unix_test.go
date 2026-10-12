@@ -187,7 +187,7 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 		t.Errorf("Candidates = %+v, want the preview it built before cleanup failed", res.Candidates)
 	}
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
-		!strings.Contains(res.Diagnostics[0].Message, "staged bundled preview") {
+		filepath.Dir(res.Diagnostics[0].Path) != store || !strings.HasPrefix(filepath.Base(res.Diagnostics[0].Path), stagingPrefix) {
 		t.Fatalf("Diagnostics = %+v, want one naming the staging it could not remove", res.Diagnostics)
 	}
 	entries := bundledStoreEntries(t, store)
@@ -281,16 +281,17 @@ func TestBundledStore_ReportsASetAsideThatIsFollowedByAFailure(t *testing.T) {
 		t.Errorf("selected a bundled plugin the store could not stage: %+v", res.Candidates)
 	}
 	aside := dest + conflictSuffix
-	var setAside, failure, restored bool
+	var bundledDiagnostics int
+	setAside := false
 	for _, diagnostic := range res.Diagnostics {
 		if diagnostic.Source != LaunchPluginSourceBundled {
 			continue
 		}
+		bundledDiagnostics++
 		setAside = setAside || strings.Contains(diagnostic.Message, aside)
-		failure = failure || strings.Contains(diagnostic.Message, "stage bundled plugin")
-		restored = restored || strings.Contains(diagnostic.Message, "put back")
 	}
-	if !setAside || !failure || !restored {
+	// One each for the set-aside, the staging failure and the restore.
+	if !setAside || bundledDiagnostics != 3 {
 		t.Fatalf("Diagnostics = %+v, want the set-aside naming %s, the staging failure, and the restore", res.Diagnostics, aside)
 	}
 	if content, err := os.ReadFile(filepath.Join(dest, "theirs.md")); err != nil || string(content) != "someone else's data" {
