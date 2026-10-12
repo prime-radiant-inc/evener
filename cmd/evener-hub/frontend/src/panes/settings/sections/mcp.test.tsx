@@ -446,3 +446,47 @@ test("the inline-server editor waits for the launch layer's first load", async (
   act(() => connectionStore.getState().connect(fake));
   expect(await screen.findByRole("textbox", { name: "Inline MCP servers" })).toBeTruthy();
 });
+
+// A save re-reads the layer first, so it never replays a stale snapshot over
+// edits made to the file elsewhere since this section last loaded it.
+test("adding a server keeps edits made to the layer since it was loaded", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let onDisk: Record<string, unknown> = { mcpConfigs: [], mcps: [], skillsDirs: ["/skills/a"] };
+  fake.on("evener/launch/getLayer", () => onDisk);
+  fake.on("evener/path/validate", () => ({ path: "/usr/bin/fs-mcp", valid: true }));
+  const setLayerSpy = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByRole("textbox", { name: "Inline MCP servers" });
+
+  onDisk = { ...onDisk, skillsDirs: ["/skills/a", "/skills/b"] };
+  await addInlineServer(user, "fs /usr/bin/fs-mcp");
+
+  await waitFor(() => expect(setLayerSpy).toHaveBeenCalledTimes(1));
+  const [params] = setLayerSpy.mock.calls[0] as unknown as [{ config: Record<string, unknown> }];
+  expect(params.config.skillsDirs).toEqual(["/skills/a", "/skills/b"]);
+  expect(params.config.mcps).toEqual([{ name: "fs", command: "/usr/bin/fs-mcp", args: [] }]);
+});
+
+test("a save whose fresh read fails is refused and keeps the typed entry", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let failReads = false;
+  fake.on("evener/launch/getLayer", () => {
+    if (failReads) throw new WireError("read failed", -1);
+    return { mcpConfigs: [], mcps: [] };
+  });
+  fake.on("evener/path/validate", () => ({ path: "/usr/bin/fs-mcp", valid: true }));
+  const setLayerSpy = vi.fn();
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  const field = await screen.findByRole("textbox", { name: "Inline MCP servers" });
+
+  failReads = true;
+  await addInlineServer(user, "fs /usr/bin/fs-mcp");
+
+  expect(await screen.findAllByRole("alert")).not.toHaveLength(0);
+  expect(setLayerSpy).not.toHaveBeenCalled();
+  expect(field).toHaveProperty("value", "fs /usr/bin/fs-mcp");
+});

@@ -109,10 +109,25 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   // leaving this one's on screen (or its own failure standing).
   useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
+  // Every save re-reads the layer and writes from that fresh copy, so it never
+  // replays a stale snapshot (such as the one left on screen after a failed
+  // refresh) over edits made to the file elsewhere. null when the read fails;
+  // the store's launchLayerError then says why.
+  async function freshLayer() {
+    await store.getState().fetchLaunchLayer();
+    const { launchLayer, launchLayerError } = store.getState();
+    return launchLayerError === null ? (launchLayer ?? {}) : null;
+  }
+
+  function readFailure(): string {
+    return store.getState().launchLayerError ?? "Couldn't read the launch settings.";
+  }
+
   async function handleAddConfig(path: string): Promise<CollectionAddResult> {
     const validated = await store.getState().validatePath(path, "file");
     if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
-    const current = store.getState().launchLayer ?? {};
+    const current = await freshLayer();
+    if (current === null) return { ok: false, error: readFailure() };
     const canonical = validated.path || path;
     const nextList = [...(current.mcpConfigs ?? []), canonical];
     try {
@@ -124,7 +139,11 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   }
 
   async function handleRemoveConfig(path: string): Promise<void> {
-    const current = store.getState().launchLayer ?? {};
+    const current = await freshLayer();
+    if (current === null) {
+      toasts.push("error", `Remove failed: ${readFailure()}`);
+      return;
+    }
     const nextList = (current.mcpConfigs ?? []).filter((p) => p !== path);
     try {
       await store.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
@@ -139,7 +158,8 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
     try {
       const validated = await store.getState().validatePath(entry.command, "command");
       if (!validated.valid) return { ok: false, error: validated.error || "command not found" };
-      const current = store.getState().launchLayer ?? {};
+      const current = await freshLayer();
+      if (current === null) return { ok: false, error: readFailure() };
       const nextList = [...(current.mcps ?? []), entry];
       await store.getState().setLaunchLayer({ ...current, mcps: nextList });
       return { ok: true };
@@ -151,10 +171,16 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   async function handleConfirmRemoveServer() {
     const index = pendingRemoveServerIndex;
     if (index === null) return;
+    const target = mcps[index];
     setRemoveServerBusy(true);
-    const current = store.getState().launchLayer ?? {};
-    const nextList = (current.mcps ?? []).filter((_, i) => i !== index);
     try {
+      const current = await freshLayer();
+      if (current === null) throw new Error(readFailure());
+      // The fresh list may have shifted, so remove the confirmed entry where it
+      // is now, not where it was on screen.
+      const freshIndex =
+        target === undefined ? -1 : (current.mcps ?? []).findIndex((s) => mcpServerKey(s) === mcpServerKey(target));
+      const nextList = (current.mcps ?? []).filter((_, i) => i !== freshIndex);
       await store.getState().setLaunchLayer({ ...current, mcps: nextList });
     } catch (err) {
       toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
