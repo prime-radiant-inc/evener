@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { accessibleName } from "../../../../accessibleNameTestUtils";
 import { Chevron, type ChevronDirection } from "../../../../widgets";
 import { NewContentPill } from "./NewContentPill";
 
@@ -139,7 +140,7 @@ test("each pill form announces a distinct, non-empty name", () => {
   ];
   const names = forms.map((form) => {
     const { unmount } = render(<NewContentPill visible count={0} {...form} onClick={() => {}} />);
-    const name = screen.getByRole("button").textContent?.trim() ?? "";
+    const name = accessibleName(screen.getByTestId("new-content-pill"), "button").trim();
     unmount();
     return name;
   });

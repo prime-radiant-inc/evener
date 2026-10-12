@@ -11,6 +11,7 @@ import {
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo, type ReactNode } from "react";
 import { afterEach, expect, test } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
@@ -474,10 +475,8 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   render(withConfig(config, <TurnBlock turn={turn([failedAction], { status: "completed" }, config)} />));
 
   expect(screen.getByTestId("intent-group")).toBeTruthy();
-  const glyph = screen.getByTestId("failure-glyph");
-  expect(screen.getAllByRole("img")).toContain(glyph);
   // Announced by name: the glyph's meaning must not live in its color alone.
-  expect(glyph.getAttribute("aria-label")?.trim()).toBeTruthy();
+  expect(accessibleName(screen.getByTestId("failure-glyph"), "img").trim()).not.toBe("");
   // ToolCallItem renders eagerly inside the intent group. A failed row no
   // longer force-expands: it settles collapsed, and the body opens on the
   // reader's own toggle. "Action summary unavailable" is still never shown,

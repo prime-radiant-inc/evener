@@ -17,6 +17,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { activitySummary } from "../../../stores/sessionActivityTestUtils";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
@@ -164,17 +165,18 @@ const FOLD_ID = "session:ref_root:inactive-fold";
 // The existing fold includes every settled entry, regardless of outcome.
 const FOLD_NAME = "2 inactive";
 
-// metaText reads a row's right-hand cluster alone, so an assertion pins the
-// meta grammar instead of the whole row (name, glyph, and open button text).
 // The row's kind glyph as a screen reader meets it: an exposed image with a
-// non-empty name. Returns the name so a test can compare outcomes without
-// pinning their wording.
+// non-empty computed name. Returns the name so a test can compare outcomes
+// without pinning their wording.
 function glyphName(row: HTMLElement, glyph: HTMLElement): string {
-  expect(within(row).getAllByRole("img")).toContain(glyph);
-  const name = glyph.getAttribute("aria-label")?.trim() ?? "";
+  expect(row.contains(glyph)).toBe(true);
+  const name = accessibleName(glyph, "img").trim();
   expect(name).not.toBe("");
   return name;
 }
+
+// metaText reads a row's right-hand cluster alone, so an assertion pins the
+// meta grammar instead of the whole row (name, glyph, and open button text).
 
 function metaText(row: HTMLElement): string {
   const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");

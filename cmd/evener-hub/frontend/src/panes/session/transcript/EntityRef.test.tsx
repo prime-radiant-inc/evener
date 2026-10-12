@@ -8,6 +8,7 @@ import {
 } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { contentName } from "../../../accessibleNameTestUtils";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
@@ -221,7 +222,9 @@ test("each entity card reads its kind aloud, distinctly", () => {
   ];
   const labels = views.map(({ view, id }) => {
     const { unmount } = render(<EntityRef view={view} id={id} />);
-    const label = focusCard().querySelector("[data-entity-kind] strong")?.textContent?.trim() ?? "";
+    const kind = focusCard().querySelector<HTMLElement>("[data-entity-kind] strong");
+    if (!kind) throw new Error("card has no kind label");
+    const label = contentName(kind).trim();
     unmount();
     return label;
   });
