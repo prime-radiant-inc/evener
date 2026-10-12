@@ -45,3 +45,11 @@
   list-style: none;
 }
 
+/* A discovered server's name wraps in full inside ListRow's one-line label:
+ * the row is read-only with no detail view, and a hover title is unreadable
+ * on touch. anywhere, so a name typed as one long token still breaks. */
+.serverName {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+

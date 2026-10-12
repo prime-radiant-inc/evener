@@ -48,6 +48,7 @@ const CLASS = {
   sectionTitle: requireClass(styles.sectionTitle, "mcp.module.css", "sectionTitle"),
   sectionHelp: requireClass(styles.sectionHelp, "mcp.module.css", "sectionHelp"),
   list: requireClass(styles.list, "mcp.module.css", "list"),
+  serverName: requireClass(styles.serverName, "mcp.module.css", "serverName"),
 };
 
 /**
@@ -217,11 +218,10 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
               ) : (
                 (discovered?.servers ?? []).map((s) => (
                   <li key={s.name}>
-                    {/* The name is the label alone, so a long one truncates on
-                        its own (in full on hover); the transport is the meta. */}
+                    {/* The name is the label alone and wraps in full; the
+                        transport is the meta. */}
                     <ListRow
-                      label={s.name}
-                      title={s.name}
+                      label={<span className={CLASS.serverName}>{s.name}</span>}
                       chips={<Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>}
                       meta={s.transport}
                     />

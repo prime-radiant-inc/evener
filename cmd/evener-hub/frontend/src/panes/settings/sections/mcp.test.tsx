@@ -569,10 +569,10 @@ test("a discovered server's probe error is shown in full beneath its row", async
   await act(() => fetch.value);
 });
 
-// The row's label is one truncating line, so a long server name must not share
-// it with the transport (which would be the part cut off), and the full name
-// stays reachable from the row.
-test("a discovered server's transport sits apart from a long name, and the full name stays reachable", async () => {
+// A long server name keeps the label to itself, apart from the transport, and
+// renders in full: the layoutguard case mcp-discovered-long-name proves it
+// wraps inside the row instead of truncating, which jsdom cannot measure.
+test("a discovered server's transport sits apart from a long name, and the full name is rendered", async () => {
   connectFakeClient();
   const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
   const longName = `team-shared-${"knowledge-".repeat(8)}server`;
@@ -586,7 +586,7 @@ test("a discovered server's transport sits apart from a long name, and the full 
   const list = screen.getByRole("list", { name: "Discovered MCP servers" });
   const name = within(list).getByText(longName);
   expect(within(list).getByText("streamable-http")).not.toBe(name);
-  expect(name.closest("[title]")?.getAttribute("title")).toBe(longName);
+  expect(name.textContent).toBe(longName);
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
