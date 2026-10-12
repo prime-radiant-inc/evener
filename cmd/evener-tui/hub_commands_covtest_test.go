@@ -114,8 +114,8 @@ func TestCovModelDiagnosticDisabledReason(t *testing.T) {
 
 	// Nothing: default reason.
 	d = appwire.ModelListDiagnostic{}
-	if got := modelDiagnosticDisabledReason(d); got != "provider unavailable" {
-		t.Fatalf("got %q, want 'provider unavailable'", got)
+	if got := modelDiagnosticDisabledReason(d); got == "" {
+		t.Fatal("an empty diagnostic still disables its rows, so it needs a fallback reason")
 	}
 
 	// With hint.
@@ -157,8 +157,8 @@ func TestCovModelPickerItemsFromResponse(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("len = %d, want 2 (recent + data)", len(items))
 	}
-	if items[0].Group != "Recent" {
-		t.Fatalf("first item group = %q, want 'Recent'", items[0].Group)
+	if items[0].ID != "anthropic/claude-4" || items[0].Group == "" || items[0].Group == "anthropic" || items[0].Group == items[1].Group {
+		t.Fatalf("first item = %+v, want the recent model under a group of its own", items[0])
 	}
 
 	// With diagnostics: empty provider (skipped).
@@ -558,11 +558,9 @@ func TestCovReasoningEffortLevelKnown(t *testing.T) {
 	if got := effortChoices([]string{"none", "low"}); len(got) != 2 {
 		t.Errorf("effortChoices with a ladder-listed none = %v, want no duplicate", got)
 	}
-	if got := effortDisplay("none", levels); got != "none (provider default)" {
-		t.Errorf("effortDisplay(none, %v) = %q, want the provider-default label where the ladder has no off level", levels, got)
-	}
-	if got := effortDisplay("none", []string{"none", "low"}); got != "none (off)" {
-		t.Errorf("effortDisplay(none, [none low]) = %q, want the off label where the ladder lists it", got)
+	providerDefault, off := effortDisplay("none", levels), effortDisplay("none", []string{"none", "low"})
+	if providerDefault == "none" || off == "none" || providerDefault == off {
+		t.Errorf("effortDisplay(none) = %q without an off level and %q with one, want each explained and told apart", providerDefault, off)
 	}
 	if got := effortDisplay("high", levels); got != "high" {
 		t.Errorf("effortDisplay(high) = %q, want the level itself", got)

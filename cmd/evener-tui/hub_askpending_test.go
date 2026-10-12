@@ -21,7 +21,9 @@ func TestHubModelStatusFrameClearsTheWaitingQuestion(t *testing.T) {
 		State:      appwire.ThreadStatusAwaiting,
 		AskPending: true,
 	}
-	if lines := strings.Join(m.sessionHeaderLines(), "\n"); !strings.Contains(strings.ToLower(lines), "question waiting") {
+	unasked := m
+	unasked.detail.AskPending = false
+	if lines := strings.Join(m.sessionHeaderLines(), "\n"); lines == strings.Join(unasked.sessionHeaderLines(), "\n") {
 		t.Fatalf("precondition: the header does not show the waiting question:\n%s", lines)
 	}
 

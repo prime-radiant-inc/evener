@@ -334,9 +334,9 @@ describe("a run's one line", () => {
 			steps: 12,
 			durationMs: 480_000,
 			parts: [
-				{ key: "read", family: "read", text: "read 6 files", failed: 0 },
-				{ key: "shell", family: "shell", text: "ran go test", failed: 2 },
-				{ key: "edit", family: "edit", text: "edited 3 files", failed: 0 },
+				{ key: "read", family: "read", text: "read 6 files", count: 6, failed: 0 },
+				{ key: "shell", family: "shell", text: "ran go test", count: 3, name: "go test", failed: 2 },
+				{ key: "edit", family: "edit", text: "edited 3 files", count: 3, failed: 0 },
 			],
 			failed: 2,
 		});
@@ -346,13 +346,13 @@ describe("a run's one line", () => {
 	it("says one step, and names commands only when it knows them all", () => {
 		expect(runSummaryText(runSummary([step("a", "read_file")]))).toBe("1 step · read 1 file");
 		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([
-			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", count: 2, failed: 0 },
 		]);
 		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([
-			{ key: "shell", family: "shell", text: "ran 2 commands", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran 2 commands", count: 2, failed: 0 },
 		]);
 		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([
-			{ key: "shell", family: "shell", text: "ran ls", failed: 0 },
+			{ key: "shell", family: "shell", text: "ran ls", count: 1, name: "ls", failed: 0 },
 		]);
 	});
 
@@ -360,7 +360,9 @@ describe("a run's one line", () => {
 		const cd = shell("a", "go test ./...", {
 			detail: { arguments: JSON.stringify({ command: "cd /repo && go test ./..." }) },
 		});
-		expect(runSummary([cd]).parts).toEqual([{ key: "shell", family: "shell", text: "ran go test", failed: 0 }]);
+		expect(runSummary([cd]).parts).toEqual([
+			{ key: "shell", family: "shell", text: "ran go test", count: 1, name: "go test", failed: 0 },
+		]);
 	});
 
 	// A step whose times the hub didn't send, or that don't parse, carries no

@@ -836,7 +836,7 @@ func TestSessionDeletePreservesDaemonOwnedDelegates(t *testing.T) {
 				if err == nil && len(response.Skipped) != 1 {
 					t.Errorf("missing ownership refusal: %+v", response)
 				}
-				if status != "unconfirmed" && (err != nil || len(response.Skipped) != 1 || response.Skipped[0].Reason != "resumed live") {
+				if status != "unconfirmed" && (err != nil || len(response.Skipped) != 1 || response.Skipped[0].Reason != (projectDeletionOwnershipError{Live: true}).Error()) {
 					t.Errorf("verified owner not classified live: response=%+v error=%v", response, err)
 				}
 				for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl"} {

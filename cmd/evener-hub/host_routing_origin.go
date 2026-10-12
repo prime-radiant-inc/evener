@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -103,11 +104,14 @@ func guardAttachedProbeSession(ctx context.Context) error {
 	case hostRoutingOriginBridge:
 		return nil
 	case "":
-		return appwire.Unavailable("evener/host/running: unauthenticated probe: this method is served only over an attached controller session, never to a browser or local request")
+		return wireRefusal(appwire.Unavailable, fmt.Errorf("%w: this method is served only over an attached controller session, never to a browser or local request", errProbeUnauthenticated))
 	default:
-		return appwire.Unavailable(fmt.Sprintf("evener/host/running: unauthenticated probe: a request with origin %q is not the attached controller session this method serves", origin))
+		return wireRefusal(appwire.Unavailable, fmt.Errorf("%w: a request with origin %q is not the attached controller session this method serves", errProbeUnauthenticated, origin))
 	}
 }
+
+// errProbeUnauthenticated is guardAttachedProbeSession's refusal.
+var errProbeUnauthenticated = errors.New("evener/host/running: unauthenticated probe")
 
 // guardRemoteSpawnSource refuses a remote-originated thread/start that would
 // resolve to any source but local, with the same typed InvalidParams the other

@@ -134,6 +134,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 				</Text>
 				{waiting > 0 ? (
 					<Text
+						testID="approval-more-waiting"
 						allowFontScaling={allowFontScaling}
 						style={{
 							fontSize: 13 * scale,

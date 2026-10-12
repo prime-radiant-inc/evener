@@ -282,6 +282,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 	if (failed) {
 		return (
 			<View
+				testID="mermaid-fallback"
 				accessible={true}
 				accessibilityLabel="Diagram source"
 				accessibilityActions={accessibilityActions}

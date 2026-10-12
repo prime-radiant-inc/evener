@@ -12,9 +12,11 @@ import (
 
 // TestProjectDeletionOwnershipErrorLive covers the Live=true path in Error().
 func TestProjectDeletionOwnershipErrorLive(t *testing.T) {
-	e := projectDeletionOwnershipError{ThreadID: "s1", Live: true}
-	if got := e.Error(); got != "resumed live" {
-		t.Fatalf("expected 'resumed live', got %q", got)
+	// A live owner reads the same whatever ownership error rode along, and
+	// never as that error.
+	e := projectDeletionOwnershipError{ThreadID: "s1", Live: true, Err: errors.New("ownership probe failed")}
+	if got, bare := e.Error(), (projectDeletionOwnershipError{Live: true}).Error(); got == "" || got != bare || got == e.Err.Error() {
+		t.Fatalf("Live error = %q, want the live report %q regardless of its cause", got, bare)
 	}
 }
 
@@ -48,8 +50,8 @@ func TestProjectDeletionOwnershipErrorUnwrapNilGaps(t *testing.T) {
 // TestAppendProjectDeleteLiveSkipGaps covers the helper function.
 func TestAppendProjectDeleteLiveSkipGaps(t *testing.T) {
 	skipped := appendProjectDeleteLiveSkip(nil, "session-1")
-	if len(skipped) != 1 || skipped[0].ID != "session-1" || skipped[0].Reason != "resumed live" {
-		t.Fatalf("expected [{session-1, resumed live}], got %v", skipped)
+	if len(skipped) != 1 || skipped[0].ID != "session-1" || skipped[0].Reason != (projectDeletionOwnershipError{Live: true}).Error() {
+		t.Fatalf("expected one live skip for session-1, got %v", skipped)
 	}
 	// Append to existing
 	skipped = appendProjectDeleteLiveSkip(skipped, "session-2")

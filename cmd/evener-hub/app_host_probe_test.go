@@ -254,7 +254,7 @@ func TestProbeHostRunningTimesOut(t *testing.T) {
 	if err == nil {
 		t.Fatal("the probe succeeded against a hung remote")
 	}
-	if !strings.Contains(err.Error(), "timed out") {
+	if !errors.Is(err, errProbeTimedOut) {
 		t.Fatalf("probe error %q does not name the timeout", err)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
@@ -293,10 +293,10 @@ func TestProbeHostRunningReportsACanceledCallerNotATimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("the probe succeeded with a canceled caller context")
 	}
-	if strings.Contains(err.Error(), "timed out") {
+	if errors.Is(err, errProbeTimedOut) {
 		t.Fatalf("a canceled caller was reported as a timeout: %v", err)
 	}
-	if !strings.Contains(err.Error(), "canceled") {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("probe error %q does not name the cancellation", err)
 	}
 }

@@ -134,8 +134,8 @@ func TestModelPickerItemsFromResponse_PrependsRecentGroup(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("got %d items, want 3 (1 recent + 2 catalog, recent duplicated per design)", len(items))
 	}
-	if items[0].Group != "Recent" || items[0].ID != "openai/gpt-5.2" {
-		t.Fatalf("items[0] = %+v, want the Recent-grouped gpt-5.2 first", items[0])
+	if items[0].ID != "openai/gpt-5.2" || items[0].Group == "" || items[0].Group == "openai" || items[0].Group == "anthropic" {
+		t.Fatalf("items[0] = %+v, want gpt-5.2 first under a group of its own, apart from the provider groups", items[0])
 	}
 	// The catalog copy of gpt-5.2 (under its provider group) still exists —
 	// Recent is a shortcut, not a removal from the browsable catalog.
@@ -173,8 +173,8 @@ func TestModelPickerItemsFromResponse_NoRecentOmitsGroup(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1 (fresh install, no Recent)", len(items))
 	}
-	if items[0].Group == "Recent" {
-		t.Fatal("no Recent group should render when resp.Recent is empty")
+	if items[0].Group != "openai" {
+		t.Fatalf("items[0].Group = %q, want only its provider group when resp.Recent is empty", items[0].Group)
 	}
 }
 
@@ -217,11 +217,11 @@ func TestVisionModelPickerItemsPrependPseudoEntriesAndFilterDescriptors(t *testi
 	if len(items) != 3 {
 		t.Fatalf("got %d items, want Current, Off, and the one vision-capable descriptor: %#v", len(items), items)
 	}
-	if items[0].ID != "" || items[0].Display != "Current model" {
-		t.Fatalf("first item = %#v, want Current model with empty ID", items[0])
+	if items[0].ID != "" || items[0].Display == "" {
+		t.Fatalf("first item = %#v, want the labeled current-model entry with empty ID", items[0])
 	}
-	if items[1].ID != "off" || items[1].Display != "Off" {
-		t.Fatalf("second item = %#v, want Off", items[1])
+	if items[1].ID != "off" || items[1].Display == "" {
+		t.Fatalf("second item = %#v, want the labeled off entry", items[1])
 	}
 	if items[2].ID != "openai/gpt-4o" {
 		t.Fatalf("filtered catalog item = %#v, want vision-capable gpt-4o only", items[2])

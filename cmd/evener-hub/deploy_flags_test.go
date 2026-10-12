@@ -80,7 +80,7 @@ func TestValidateDeployBinaryRejectsNonEvenerGoBinary(t *testing.T) {
 			if !strings.Contains(err.Error(), deployBinaryFlag) {
 				t.Fatalf("refusal does not name the flag: %v", err)
 			}
-			if !strings.Contains(err.Error(), "not evener") {
+			if !errors.Is(err, errArtifactNotEvener) {
 				t.Fatalf("refusal does not say the artifact is not evener: %v", err)
 			}
 		})
@@ -136,15 +136,17 @@ func TestDeployBinarySeamRefusesNonEvenerArtifact(t *testing.T) {
 // startup naming the flag rather than surfacing as a first-attach build error.
 func TestParseHubOptionsRejectsNonEvenerBuildSource(t *testing.T) {
 	var stderr bytes.Buffer
-	_, err := parseHubOptions([]string{"-build-source", t.TempDir()}, &stderr)
+	source := t.TempDir()
+	_, err := parseHubOptions([]string{"-build-source", source}, &stderr)
 	if err == nil {
 		t.Fatal("parseHubOptions accepted a -build-source that is not an evener checkout")
 	}
 	if !strings.Contains(err.Error(), "-build-source") {
 		t.Fatalf("startup error does not name the flag: %v", err)
 	}
-	// sshconn's own refusal is preserved in the wrapped message.
-	if !strings.Contains(err.Error(), "not the evener checkout") {
+	// sshconn's own refusal, which names the checkout it refused, is preserved
+	// in the wrapped message.
+	if !strings.Contains(err.Error(), source) {
 		t.Fatalf("startup error dropped sshconn's refusal: %v", err)
 	}
 }
@@ -873,7 +875,7 @@ func TestOwnExecutableSeamRefusalNamesTheDefaultNotAFlag(t *testing.T) {
 		t.Fatalf("the defaulted seam accepted a %s/%s artifact for %s/%s", runtime.GOOS, runtime.GOARCH, goos, goarch)
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "this hub's own executable") || !strings.Contains(msg, "default deploy source") {
+	if !strings.Contains(msg, exe) {
 		t.Fatalf("refusal does not name the defaulted source: %v", err)
 	}
 	if strings.Contains(msg, deployBinaryFlag+" \"") {

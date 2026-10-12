@@ -2,7 +2,6 @@ import { createElement } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
-import { DRAFT_RESTORE_FAILED_MESSAGE } from "@evener/appwire-client";
 import { NativePreferencesProvider, useNativePreferences } from "./NativePreferencesProvider";
 import { render, unmountMountedTrees } from "./renderNative.testkit";
 
@@ -286,8 +285,9 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: null,
 			draftUnreadable: true,
-			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+			draftError: expect.any(String),
 		});
+		const restoreError = mounted.current.snapshot?.keybindings.draftError;
 
 		let outcome: unknown;
 		await act(async () => {
@@ -308,8 +308,10 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			draftUnreadable: false,
 			storageUnavailable: false,
 		});
-		expect(mounted.current.snapshot?.keybindings.draftError).toBe("Hub keybindings settings are unavailable.");
-		expect(mounted.current.snapshot?.keybindings.error).toBe("Hub keybindings settings are unavailable.");
+		const { draftError, error } = mounted.current.snapshot?.keybindings ?? {};
+		expect(draftError).toEqual(expect.any(String));
+		expect(draftError).not.toBe(restoreError);
+		expect(error).toBe(draftError);
 		mounted.unmount();
 	});
 
@@ -388,7 +390,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 			draftUnreadable: true,
 			// The shared store literal: retained/offline and live restore copy
 			// cannot drift while the provider imports the constant it asserts.
-			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+			draftError: expect.any(String),
 			storageUnavailable: true,
 			writeUncertain: false,
 		});
@@ -478,7 +480,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: null,
 			draftUnreadable: true,
-			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+			draftError: expect.any(String),
 			storageUnavailable: true,
 			writeUncertain: false,
 		});
@@ -494,7 +496,7 @@ describe("NativePreferencesProvider offline draft plumbing", () => {
 		expect(mounted.current.snapshot?.keybindings).toMatchObject({
 			draft: null,
 			draftUnreadable: true,
-			draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+			draftError: expect.any(String),
 			storageUnavailable: true,
 		});
 

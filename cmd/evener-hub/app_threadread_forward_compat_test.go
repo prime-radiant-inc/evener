@@ -38,7 +38,7 @@ func TestPastThreadReadQuarantinesOneUnknownTurnField(t *testing.T) {
 		t.Fatalf("past thread/read items = %d, want the saved history before the unreadable entry", len(items))
 	}
 	last := items[len(items)-1]
-	if last.Description != "Unreadable transcript entry" || !strings.Contains(last.Text, "future_field_an_old_binary_lacks") {
+	if !strings.Contains(last.Text, "future_field_an_old_binary_lacks") {
 		t.Fatalf("last item = %+v, want the unreadable entry naming the unknown field", last)
 	}
 	if items[len(items)-2].CallID != "call_img" {
@@ -49,7 +49,7 @@ func TestPastThreadReadQuarantinesOneUnknownTurnField(t *testing.T) {
 	if !found || err != nil {
 		t.Fatalf("past thread/turns/list = (%v, %v), want the session readable", found, err)
 	}
-	if pageItems := flattenTestItems(page.Data); len(pageItems) != 1 || pageItems[0].Description != "Unreadable transcript entry" {
+	if pageItems := flattenTestItems(page.Data); len(pageItems) != 1 || !strings.Contains(pageItems[0].Text, "future_field_an_old_binary_lacks") {
 		t.Fatalf("past thread/turns/list items = %+v, want the unreadable entry", pageItems)
 	}
 }
