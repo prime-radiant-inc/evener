@@ -33,57 +33,83 @@ file=$1 subst=$2
 shift 3
 root=$(git rev-parse --show-toplevel)
 cd "$root"
+# shellcheck source=scripts/lib/gate-bounded.sh
+. "$root/scripts/lib/gate-bounded.sh"
+
 # One mutation at a time per worktree: a second run would mutate files under
-# the first run's tests, or restore them mid-run. The lock records its owner's
-# pid, so a lock left by a run that was killed outright (SIGKILL) is recovered
-# instead of blocking every later run.
-lock="$(git rev-parse --absolute-git-dir)/copy-oracle-mutate.lock"
-take_lock() { mkdir "$lock" 2>/dev/null && echo $$ >"$lock/pid"; }
-if ! take_lock; then
-  owner=$(cat "$lock/pid" 2>/dev/null || true)
+# the first run's tests, or restore them mid-run. The lock is a symlink whose
+# target is the owner's pid, so taking it and naming the owner is one atomic
+# step. The record names the file being mutated and the hash of its mutated
+# contents, so a later run can tell a dead run's leftover mutation from real
+# edits.
+gitdir=$(git rev-parse --absolute-git-dir)
+lock="$gitdir/copy-oracle-mutate.lock"
+record="$gitdir/copy-oracle-mutate.record"
+
+# Restore a dead run's target only while it still holds exactly that run's
+# mutation; anything else is someone's edit and is left alone.
+recover_dead_run() {
+  local target hash
+  [[ -f "$record" ]] || return 0
+  { read -r target && read -r hash; } <"$record" || return 0
+  if [[ -n "$target" ]] && ! git diff --quiet -- "$target"; then
+    if [[ "$(git hash-object -- "$target")" == "$hash" ]]; then
+      git restore -- "$target"
+      echo "restored $target, left mutated by a run that died" >&2
+    else
+      echo "refusing: $target was left mutated by a run that died and has been edited since;" >&2
+      echo "  review it with git diff, then delete $record" >&2
+      exit 2
+    fi
+  fi
+  rm -f "$record"
+}
+
+if ! ln -s "$$" "$lock" 2>/dev/null; then
+  owner=$(readlink "$lock" 2>/dev/null || true)
   if [[ -n "$owner" ]] && kill -0 "$owner" 2>/dev/null; then
     echo "refusing: another mutate.sh (pid $owner) is running in this worktree" >&2
     exit 2
   fi
-  echo "recovering stale lock from pid ${owner:-unknown}" >&2
-  # mutate.sh never starts on a dirty file, so any edit to the dead run's
-  # target is its unrestored mutation.
-  stale_target=$(cat "$lock/target" 2>/dev/null || true)
-  if [[ -n "$stale_target" ]]; then
-    git restore -- "$stale_target"
-    echo "restored $stale_target, left mutated by that run" >&2
+  # Claim the stale lock with an atomic rename, so of two runs recovering at
+  # once only one wins; the other sees the lock gone or retaken and refuses.
+  if ! mv "$lock" "$lock.stale.$$" 2>/dev/null; then
+    echo "refusing: another mutate.sh is recovering the lock in this worktree" >&2
+    exit 2
   fi
-  rm -f "$lock/pid" "$lock/target"
-  rmdir "$lock" 2>/dev/null || true
-  if ! take_lock; then
-    echo "refusing: could not take $lock" >&2
+  rm -f "$lock.stale.$$"
+  echo "recovering the lock of a run that died (pid ${owner:-unknown})" >&2
+  if ! ln -s "$$" "$lock" 2>/dev/null; then
+    echo "refusing: another mutate.sh took the lock first" >&2
     exit 2
   fi
 fi
 
-# Every exit path, including HUP/INT/TERM, stops the test process tree before
-# restoring the file, so a stale run never reads the restored source.
+# Every exit path, including HUP/INT/TERM, stops the test process group
+# (TERM, a bounded grace, then KILL) before restoring the file, so no test
+# process outlives the run and reads the restored source.
 mutated=0 child=""
-kill_tree() {
-  local kid
-  for kid in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$kid"; done
-  kill -TERM "$1" 2>/dev/null || true
-}
 cleanup() {
   if [[ -n "$child" ]]; then
-    kill_tree "$child"
+    stop_command "$child"
     wait "$child" 2>/dev/null || true
   fi
-  if ((mutated)); then git restore -- "$file"; fi
-  rm -f "$lock/pid" "$lock/target"
-  rmdir "$lock" 2>/dev/null || true
+  # The record is ours only once we mutate; a refusal leaves a dead run's
+  # record for the person reviewing its leftover edit.
+  if ((mutated)); then
+    git restore -- "$file"
+    rm -f "$record"
+  fi
+  if [[ "$(readlink "$lock" 2>/dev/null)" == "$$" ]]; then rm -f "$lock"; fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
 # Checked after taking the lock, so a dead run's leftover mutation has
 # already been restored.
+recover_dead_run
 if ! git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
   echo "refusing: $file is not tracked by git, so it cannot be restored" >&2
   exit 2
@@ -93,11 +119,14 @@ if ! git diff --quiet -- "$file"; then
   exit 2
 fi
 
-# Run the tests as a tracked child so a signal can stop them.
+# Run the tests in their own process group (job control) so cleanup can stop
+# everything they forked with one signal.
 run_tests() {
   local status=0
+  set -m
   "$@" >"$log" 2>&1 &
   child=$!
+  set +m
   wait "$child" || status=$?
   child=""
   return "$status"
@@ -111,8 +140,11 @@ if ! run_tests "$@"; then
   echo "BASELINE-FAIL the test command fails without the mutation (log: $log)" >&2
   exit 2
 fi
+# Record the mutated contents before writing them, so a run killed at any
+# point after this leaves a record that matches what is on disk.
+printf '%s\n%s\n' "$file" "$(perl -0pe "$subst" "$file" | git hash-object --stdin)" >"$record.tmp.$$"
+mv -f "$record.tmp.$$" "$record"
 mutated=1
-echo "$file" >"$lock/target"
 perl -0pi -e "$subst" "$file"
 if git diff --quiet -- "$file"; then
   echo "NO-OP   $file: $subst"
