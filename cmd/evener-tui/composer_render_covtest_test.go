@@ -336,9 +336,9 @@ func TestCovComposerRetryChip_RateLimited(t *testing.T) {
 		Attempt:     2,
 		MaxAttempts: 4,
 	}
-	got := composerRetryChip(retry, "model", false)
-	if !strings.Contains(got, "rate limited") {
-		t.Fatalf("rate limited retry = %q, want contains 'rate limited'", got)
+	got, ok := retryChipFor(retry, "model", false)
+	if !ok || !got.rateLimited {
+		t.Fatalf("rate limited retry = %+v (ok %v), want it named a rate limit", got, ok)
 	}
 }
 
@@ -349,9 +349,9 @@ func TestCovComposerRetryChip_GenericError(t *testing.T) {
 		Attempt:     2,
 		MaxAttempts: 4,
 	}
-	got := composerRetryChip(retry, "model", false)
-	if !strings.Contains(got, "provider error") {
-		t.Fatalf("generic error retry = %q, want contains 'provider error'", got)
+	got, ok := retryChipFor(retry, "model", false)
+	if !ok || got.rateLimited {
+		t.Fatalf("generic error retry = %+v (ok %v), want a generic provider error", got, ok)
 	}
 }
 
@@ -362,9 +362,12 @@ func TestCovComposerRetryChip_InProgress(t *testing.T) {
 		Attempt:     2,
 		MaxAttempts: 4,
 	}
-	got := composerRetryChip(retry, "model", true)
-	if !strings.Contains(got, "in progress") {
-		t.Fatalf("in progress retry = %q, want contains 'in progress'", got)
+	got, ok := retryChipFor(retry, "model", true)
+	if !ok || !got.inProgress {
+		t.Fatalf("in progress retry = %+v (ok %v), want it in progress", got, ok)
+	}
+	if waiting := composerRetryChip(retry, "model", false); composerRetryChip(retry, "model", true) == waiting {
+		t.Fatalf("in-progress chip reads the same as the waiting chip %q", waiting)
 	}
 }
 

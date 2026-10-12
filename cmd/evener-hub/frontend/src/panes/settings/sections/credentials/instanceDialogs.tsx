@@ -37,6 +37,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import type { FormError } from "./formError";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -71,6 +72,25 @@ const ENDPOINT_CHANGED_ERROR =
 // resolves to next, unverified, which is the save the guard above refuses.
 const ENDPOINT_VANISHED_ERROR =
   "This connection changed and is no longer in the provider list, so the value was not saved. Reopen this editor from the current list to continue.";
+
+/** Why the add form refused or failed a create, as its alert's data-reason. */
+type AddInstanceErrorReason =
+  | "base-required"
+  | "name-required"
+  | "literal-header"
+  | "unconfirmed"
+  | "connection-replaced"
+  | "create-failed";
+
+/** Why a credential value was not saved, as the dialog's alert's data-reason:
+ * the row's endpoint changed, it has a destination the hub cannot fingerprint,
+ * it left the listing, the connection was replaced, or the hub failed it. */
+type CredentialValueErrorReason =
+  | "endpoint-changed"
+  | "fingerprint-unavailable"
+  | "endpoint-vanished"
+  | "connection-replaced"
+  | "save-failed";
 
 // nonEmptyVars trims and drops blank entries before they reach the wire -
 // InstanceCreateParams.Vars only carries variables the user actually set
@@ -122,7 +142,7 @@ export function AddInstanceDialog({
   const [vars, setVars] = useState<Record<string, string>>({});
   const [apiKeyEnv, setApiKeyEnv] = useState("");
   const [credentialHeader, setCredentialHeader] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FormError<AddInstanceErrorReason> | null>(null);
   const [busy, setBusy] = useState(false);
   // Set when the create succeeded but the listing could not be confirmed to
   // contain it: the dialog stays open and offers a re-confirm rather than
@@ -159,17 +179,20 @@ export function AddInstanceDialog({
       return;
     }
     if (!base) {
-      setError("Base provider is required.");
+      setError({ reason: "base-required", message: "Base provider is required." });
       return;
     }
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setError("Name is required.");
+      setError({ reason: "name-required", message: "Name is required." });
       return;
     }
     const trimmedCredentialHeader = credentialHeader.trim();
     if (trimmedCredentialHeader && !trimmedCredentialHeader.includes("$")) {
-      setError("Credential header must reference a $VARIABLE or run a $(command), never a literal secret.");
+      setError({
+        reason: "literal-header",
+        message: "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
+      });
       return;
     }
     setError(null);
@@ -212,9 +235,10 @@ export function AddInstanceDialog({
           return;
         }
         setUnconfirmedName(trimmedName);
-        setError(
-          `The connection was saved on the host, but the provider list could not confirm ${trimmedName}. Check again.`,
-        );
+        setError({
+          reason: "unconfirmed",
+          message: `The connection was saved on the host, but the provider list could not confirm ${trimmedName}. Check again.`,
+        });
         return;
       }
       if (!active.current) return;
@@ -230,13 +254,13 @@ export function AddInstanceDialog({
       // the retry land. Reported as a create failure it would tell the user
       // their instance could not be created when no create ever went out.
       if (isStaleListingRefusal(err)) {
-        setError(CONNECTION_REPLACED_ERROR);
+        setError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
         toast.push("warning", CONNECTION_REPLACED_ERROR);
         void refreshListingAfterMutation();
         return;
       }
       const message = errorText(err);
-      setError(message);
+      setError({ reason: "create-failed", message });
       toast.push("error", `Create failed: ${message}`);
     } finally {
       if (active.current) setBusy(false);
@@ -261,7 +285,7 @@ export function AddInstanceDialog({
       // (a dropped connection) says nothing about what the listing holds. The
       // connection banner owns that story, and the unconfirmed name is kept so
       // Check again still works once the host is back.
-      setError(`The provider list could not confirm ${instanceName}. Check again.`);
+      setError({ reason: "unconfirmed", message: `The provider list could not confirm ${instanceName}. Check again.` });
       return;
     }
     setError(null);
@@ -351,7 +375,11 @@ export function AddInstanceDialog({
             disabled={busy}
           />
         </FormRow>
-        {error && <InlineNotice tone="danger">{error}</InlineNotice>}
+        {error && (
+          <InlineNotice tone="danger" data-reason={error.reason}>
+            {error.message}
+          </InlineNotice>
+        )}
         <div className={CLASS.actions}>
           {unconfirmedName ? (
             <Button type="button" disabled={busy} onClick={() => void handleCheckAgain()}>
@@ -432,7 +460,7 @@ function CredentialValueDialog({
   submit,
 }: CredentialValueDialogProps) {
   const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FormError<CredentialValueErrorReason> | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
@@ -477,7 +505,7 @@ function CredentialValueDialog({
     if (instance.endpointFingerprint !== expectedFingerprint) {
       expected.current = instance.endpointFingerprint;
       setValue("");
-      setError(ENDPOINT_CHANGED_ERROR);
+      setError({ reason: "endpoint-changed", message: ENDPOINT_CHANGED_ERROR });
       return;
     }
     // The hub serves a fingerprint only while it can key one, so a row that
@@ -494,7 +522,7 @@ function CredentialValueDialog({
     // hidden or destinationless row, so an empty baseUrl means there is nothing
     // for the hub to check and the save may proceed with no assertion.
     if ((instance.baseUrl ?? "") !== "" && (instance.endpointFingerprint ?? "") === "") {
-      setError(FINGERPRINT_UNAVAILABLE_ERROR);
+      setError({ reason: "fingerprint-unavailable", message: FINGERPRINT_UNAVAILABLE_ERROR });
       return;
     }
     setError(null);
@@ -521,11 +549,15 @@ function CredentialValueDialog({
       // refused assertion the same way.
       const replaced = isStaleListingRefusal(err);
       if (isEndpointConflict(err) || replaced) {
-        await recoverChangedEndpoint(replaced ? CONNECTION_REPLACED_ERROR : ENDPOINT_CHANGED_ERROR);
+        await recoverChangedEndpoint(
+          replaced
+            ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
+            : { reason: "endpoint-changed", message: ENDPOINT_CHANGED_ERROR },
+        );
         return;
       }
       const message = errorText(err);
-      setError(message);
+      setError({ reason: "save-failed", message });
       toast.push("error", `Save failed: ${message}`);
     } finally {
       if (active.current) setBusy(false);
@@ -543,11 +575,11 @@ function CredentialValueDialog({
   // cleared so proceeding takes a deliberate retype, and the hub re-checks the
   // assertion under its credential lock at write time, so a second change is
   // refused again instead of landing anywhere new.
-  // changedMessage names the change that was refused - the hub's endpoint
+  // changed names the change that was refused - the hub's endpoint
   // conflict, or the store's replacement of the connection - because the two
   // differ in what the user has to check, and the caller is the one that knows
   // which refused it.
-  async function recoverChangedEndpoint(changedMessage: string): Promise<void> {
+  async function recoverChangedEndpoint(changed: FormError<CredentialValueErrorReason>): Promise<void> {
     await refreshListingAfterMutation();
     if (!active.current) return;
     setValue("");
@@ -557,11 +589,11 @@ function CredentialValueDialog({
       // no destination on screen to assert and nothing this dialog can retry
       // against. Report the change and the dropped value rather than keep a
       // stale assertion or dress the refusal up as a failed save.
-      setError(ENDPOINT_VANISHED_ERROR);
+      setError({ reason: "endpoint-vanished", message: ENDPOINT_VANISHED_ERROR });
       return;
     }
     expected.current = row.endpointFingerprint;
-    setError(changedMessage);
+    setError(changed);
   }
 
   return (
@@ -590,7 +622,11 @@ function CredentialValueDialog({
             />
           )}
         </FormRow>
-        {error && <InlineNotice tone="danger">{error}</InlineNotice>}
+        {error && (
+          <InlineNotice tone="danger" data-reason={error.reason}>
+            {error.message}
+          </InlineNotice>
+        )}
         <div className={CLASS.actions}>
           <Button type="submit" disabled={busy}>
             Save

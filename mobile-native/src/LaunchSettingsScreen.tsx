@@ -130,9 +130,12 @@ function LaunchDefaults({
 				</View>
 				{state.loading && <Spinner label="Loading launch defaults" />}
 				{state.saving && <Spinner label="Saving launch defaults" />}
-				<ErrorMessage message={state.error} />
-				<ErrorMessage message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null} />
-				<ErrorMessage message={state.resolveError} />
+				<ErrorMessage message={state.error} testID="launch-problem:settings" />
+				<ErrorMessage
+					message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null}
+					testID="launch-problem:changed-elsewhere"
+				/>
+				<ErrorMessage message={state.resolveError} testID="launch-problem:resolve" />
 				{notice && <Copy>{notice}</Copy>}
 				{state.resolved?.diagnostics?.map((d) => (
 					<Copy muted key={JSON.stringify(d)}>

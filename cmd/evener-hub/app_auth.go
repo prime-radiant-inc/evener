@@ -401,7 +401,7 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 	// refused here, before a flow is recorded (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
 	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthLoginStartResponse{}, appwire.EndpointConflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+		return appwire.AuthLoginStartResponse{}, endpointConflict("%s cannot be checked against its endpoint: %w, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again", provider, errEndpointUnkeyable)
 	}
 	c.mu.Lock()
 	if c.flows == nil {
@@ -444,7 +444,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	flow, ok := c.flows[flowID]
 	c.mu.Unlock()
 	if !ok {
-		return appwire.AuthLoginCompleteResponse{}, appwire.InvalidParams("auth login flow not found")
+		return appwire.AuthLoginCompleteResponse{}, invalidParamsFor(errLoginFlowNotFound)
 	}
 	if flow.Provider != provider {
 		return appwire.AuthLoginCompleteResponse{}, appwire.InvalidParams("auth login provider does not match flow")
@@ -456,7 +456,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		c.mu.Lock()
 		delete(c.flows, flowID)
 		c.mu.Unlock()
-		return appwire.AuthLoginCompleteResponse{}, appwire.Conflict("the sign-in flow expired; start the sign-in again")
+		return appwire.AuthLoginCompleteResponse{}, wireRefusal(appwire.Conflict, errLoginFlowExpired)
 	}
 
 	code, returnedState, err := authopenai.ParseRedirectURL(params.RedirectURL)
@@ -767,10 +767,20 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 // message about expressions.
 func storedCommandExpressionError(value string) error {
 	if scan, _ := valueexpr.Scan(value); len(scan.Commands) > 0 {
-		return appwire.InvalidParams("a stored key is a literal secret and is never expanded: put a $(command) expression on the instance's credential header instead, as in Authorization=Bearer $(get-gateway-token)")
+		return invalidParamsFor(errStoredCommandExpression)
 	}
 	return nil
 }
+
+// errStoredCommandExpression is storedCommandExpressionError's refusal.
+var errStoredCommandExpression = errors.New("a stored key is a literal secret and is never expanded: put a $(command) expression on the instance's credential header instead, as in Authorization=Bearer $(get-gateway-token)")
+
+// The schemes ApiKeySet refuses a key for, because nothing they send reads one.
+var (
+	errAPIKeyForOAuthInstance   = errors.New("authenticates with an OAuth record, not an API key")
+	errAPIKeyForGCPADCInstance  = errors.New("authenticates with Google application-default credentials or a stored credential JSON, not an API key")
+	errAPIKeyForKeylessInstance = errors.New("authenticates without a credential")
+)
 
 func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
@@ -798,13 +808,13 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		// authenticates with its OAuth record (spec §5.1), so storing it and
 		// reporting success would describe a credential the launch cannot use.
 		if c.instanceIsCodex(name) {
-			return appwire.InvalidParams(fmt.Sprintf("%s authenticates with an OAuth record, not an API key: run `evener openai login --instance %s`", name, name))
+			return invalidParamsFor(fmt.Errorf("%s %w: run `evener openai login --instance %s`", name, errAPIKeyForOAuthInstance, name))
 		}
 		// A bare key under a gcp-adc instance is one the authenticator would
 		// reject as JSON at first request; point at the flow that stores what
 		// this scheme actually reads.
 		if c.instanceUsesGCPADC(name) {
-			return appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
+			return invalidParamsFor(fmt.Errorf("%s %w: use evener/auth/credentialJson/set", name, errAPIKeyForGCPADCInstance))
 		}
 		// An instance that authenticates nothing reads no key either: the
 		// transport sends no credential at all (llm/authenticators.go), so a
@@ -812,7 +822,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		// credential save, and left under a name a later edit can point at a
 		// scheme that does read it.
 		if auth, ok := c.instanceAuthScheme(name); ok && auth == registry.AuthNone {
-			return appwire.InvalidParams(name + " authenticates without a credential: it reads no API key, so a stored one would be a credential nothing sends")
+			return invalidParamsFor(fmt.Errorf("%s %w: it reads no API key, so a stored one would be a credential nothing sends", name, errAPIKeyForKeylessInstance))
 		}
 		// A name that is neither keeps the key where nothing reads it: the pane
 		// only offers this write for a row its listing had, so a name that no
@@ -1081,7 +1091,7 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	// have nothing to compare (verifyFlowEndpoint).
 	endpoint := c.endpointFingerprintFor(provider)
 	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
-		return appwire.AuthDeviceStartResponse{}, appwire.EndpointConflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+		return appwire.AuthDeviceStartResponse{}, endpointConflict("%s cannot be checked against its endpoint: %w, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again", provider, errEndpointUnkeyable)
 	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
@@ -1393,7 +1403,7 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
 	if asserted == "" {
 		if keyErr != nil {
-			return appwire.EndpointConflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
+			return endpointConflict("%s cannot be checked against the endpoint this form was opened on: %w; this destination cannot be verified, so review its destination and enter the credential again", name, errEndpointUnkeyable)
 		}
 		return nil
 	}
@@ -1406,10 +1416,10 @@ func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted stri
 	// is nothing to check only while the hub can key a fingerprint or has no
 	// state root at all.
 	if current == "" {
-		return appwire.EndpointConflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
+		return endpointConflict("%s cannot be checked against the endpoint this form was opened on: %w, so review its destination and enter the credential again", name, errEndpointUnresolvable)
 	}
 	if current != asserted {
-		return appwire.EndpointConflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+		return endpointConflict("%s %w this form was opened on: review its destination and enter the credential again", name, errEndpointMoved)
 	}
 	return nil
 }
@@ -1478,7 +1488,7 @@ func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
 func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key []byte) error {
 	if started == "" {
 		if c.endpointHasDestination(name) && c.hasEndpointStateRoot() {
-			return appwire.EndpointConflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
+			return endpointConflict("%s cannot be checked against the endpoint this sign-in was started on: %w, so review its destination and start the sign-in again", name, errEndpointUnkeyable)
 		}
 		return nil
 	}
@@ -1487,10 +1497,10 @@ func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key 
 	// can no longer describe is one whose record nobody can place, so it is
 	// refused rather than filed somewhere the user never signed in for.
 	if current == "" {
-		return appwire.EndpointConflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot resolve it now, so review its destination and start the sign-in again")
+		return endpointConflict("%s cannot be checked against the endpoint this sign-in was started on: %w, so review its destination and start the sign-in again", name, errEndpointUnresolvable)
 	}
 	if current != started {
-		return appwire.EndpointConflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
+		return endpointConflict("%s %w this sign-in was started on: review its destination and start the sign-in again", name, errEndpointMoved)
 	}
 	return nil
 }
@@ -1524,7 +1534,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		return appwire.AuthStatusResponse{}, err
 	}
 	if err := tokenauth.ValidateCredentialJSON([]byte(value)); err != nil {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("not a Google credential JSON: %v", err))
+		return appwire.AuthStatusResponse{}, invalidParamsFor(fmt.Errorf("not a Google credential JSON: %w", err))
 	}
 	// The fingerprint key is resolved once, before the credential lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
@@ -1560,8 +1570,11 @@ func (c *hubAuthController) requiresGCPADC(name string) error {
 	if c.instanceUsesGCPADC(name) {
 		return nil
 	}
-	return appwire.InvalidParams(name + " does not authenticate with Google application-default credentials; key-based instances use evener/auth/apiKey/set and Codex instances use evener/auth/login/start")
+	return invalidParamsFor(fmt.Errorf("%s %w; key-based instances use evener/auth/apiKey/set and Codex instances use evener/auth/login/start", name, errNotGCPADCInstance))
 }
+
+// errNotGCPADCInstance is requiresGCPADC's refusal.
+var errNotGCPADCInstance = errors.New("does not authenticate with Google application-default credentials")
 
 // requiresCodex returns an InvalidParams error when the named instance does
 // not authenticate through the Codex OAuth flow, which is the only OAuth the
@@ -1570,8 +1583,33 @@ func (c *hubAuthController) requiresCodex(name string) error {
 	if c.instanceIsCodex(name) {
 		return nil
 	}
-	return appwire.InvalidParams(fmt.Sprintf("OAuth is not supported for instance %q", name))
+	return invalidParamsFor(fmt.Errorf("%w %q", errOAuthUnsupported, name))
 }
+
+// errOAuthUnsupported is requiresCodex's refusal.
+var errOAuthUnsupported = errors.New("OAuth is not supported for instance")
+
+// The reasons a credential write or sign-in is refused for its destination:
+// the hub cannot key the endpoint fingerprint it would check, cannot resolve
+// the name's endpoint now, or the name resolves to another endpoint than the
+// one the client was shown.
+var (
+	errEndpointUnkeyable    = errors.New("the hub cannot key its endpoint fingerprints right now")
+	errEndpointUnresolvable = errors.New("the hub cannot resolve it now")
+	errEndpointMoved        = errors.New("no longer resolves to the endpoint")
+)
+
+// endpointConflict is appwire.EndpointConflict with the formatted message,
+// keeping the reason it wraps in the error chain.
+func endpointConflict(format string, args ...any) error {
+	return wireRefusal(appwire.EndpointConflict, fmt.Errorf(format, args...))
+}
+
+// The sign-in flow refusals LoginComplete gives before it exchanges a code.
+var (
+	errLoginFlowNotFound = errors.New("auth login flow not found")
+	errLoginFlowExpired  = errors.New("the sign-in flow expired; start the sign-in again")
+)
 
 // instanceStatus is the credential status of one instance or curated
 // implicit provider: the registry's credential source, the store's file

@@ -382,7 +382,11 @@ export function CredentialsSection({
           // Close the confirm dialog with the failure: the row is gone on the
           // host, so re-issuing the remove can only fail on a missing instance.
           setPendingConfirm(null);
-          toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
+          toast.push(
+            "error",
+            `Removed on the host, but the provider list could not be confirmed for ${name}`,
+            "removal-unconfirmed",
+          );
           // A superseded verdict is not a failure: the removal's RPC resolved
           // and only its response was discarded, so the entry left the host,
           // and the listing that still shows it is one this client read before
@@ -413,6 +417,7 @@ export function CredentialsSection({
           stillSupplied
             ? `Removed instance ${name}; environment access for it is still active`
             : `Removed instance ${name}`,
+          stillSupplied ? "removed-environment-remains" : "removed",
         );
         onInstanceRemoved?.(name);
       }
@@ -558,8 +563,14 @@ export function CredentialsSection({
           same reason). A failed read keeps the listing it already had
           (readListing), so those rows stay too, with the banner above them. */}
       {loading && instances.length === 0 && <Skeleton />}
-      {error && <InlineNotice tone="danger">Failed to load: {friendlyErrorMessage(error)}</InlineNotice>}
-      {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
+      {error && (
+        <InlineNotice tone="danger" data-testid="load-error">
+          Failed to load: {friendlyErrorMessage(error)}
+        </InlineNotice>
+      )}
+      {!loading && !error && instances.length === 0 && (
+        <EmptyState reason="no-instances" title="No provider instances configured." />
+      )}
       {/* The provider-grouped listing is shared with the host-scoped view of a
           remote host's own listing (ProviderInstanceGroups); this surface's
           rows are the interactive variant. */}

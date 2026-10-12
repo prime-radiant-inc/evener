@@ -4,6 +4,15 @@ import { updating } from "./navigationPages";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Button } from "./sheet/Grouped";
 
+/** What the catalog says about the list it shows, as its `pin-status:<reason>`
+ * line. */
+const CATALOG_STATUS = {
+	offline: "You can see pinned sections once the hub is back.",
+	"previous-change": "Check the previous pin change.",
+	unread: "Check the pinned sections again.",
+	updating: "Updating…",
+};
+
 export function PinCatalogList({
 	sections,
 	hubName,
@@ -37,6 +46,15 @@ export function PinCatalogList({
 }) {
 	const colors = useColors();
 	const isUpdating = updating({ loading, error, stale, remaining });
+	const status: keyof typeof CATALOG_STATUS | null = !connected
+		? "offline"
+		: uncertain
+			? previousChange
+				? "previous-change"
+				: "unread"
+			: isUpdating
+				? "updating"
+				: null;
 	const showEmpty = connected && loaded && !loading && !pending && !uncertain && !error && sections.length === 0;
 	return (
 		<FlatList
@@ -47,12 +65,10 @@ export function PinCatalogList({
 				<View style={{ gap: 8, paddingBottom: 8 }}>
 					<Copy>{hubName}</Copy>
 					{loading || pending ? <ActivityIndicator accessibilityLabel="Checking pinned sections" /> : null}
-					{!connected ? (
-						<Copy muted>You can see pinned sections once the hub is back.</Copy>
-					) : uncertain ? (
-						<Copy muted>{previousChange ? "Check the previous pin change." : "Check the pinned sections again."}</Copy>
-					) : isUpdating ? (
-						<Copy muted>Updating…</Copy>
+					{status ? (
+						<View testID={`pin-status:${status}`}>
+							<Copy muted>{CATALOG_STATUS[status]}</Copy>
+						</View>
 					) : null}
 					<ErrorMessage message={error} />
 					{connected && (uncertain || error) ? (

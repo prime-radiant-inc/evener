@@ -146,11 +146,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 			if err := ctx.Err(); err != nil {
 				return appwire.ProjectDeleteResponse{}, err
 			}
-			skipped := []projectDeleteSkip{{ID: ownerErr.ThreadID, Reason: ownerErr.Error()}}
-			if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
-				skipped = appendProjectDeleteLiveSkip(nil, ownerErr.ThreadID)
-			}
-			return s.projectDeleteResult(ctx, []string{}, skipped, false, project.ID)
+			return s.projectDeleteResult(ctx, []string{}, []projectDeleteSkip{ownershipSkip(ownerErr.ThreadID, ownerErr)}, false, project.ID)
 		}
 		defer func() {
 			if releaseOwnership != nil {
@@ -391,11 +387,7 @@ func (s *WebServer) acquireProjectDeletionCandidates(
 			releases = append(releases, releaseTarget)
 			continue
 		}
-		if errors.Is(err.Err, llm.ErrAPILogTargetLocked) || err.Live {
-			skipped = appendProjectDeleteLiveSkip(skipped, target.ThreadID)
-		} else {
-			skipped = append(skipped, projectDeleteSkip{ID: target.ThreadID, Reason: err.Error()})
-		}
+		skipped = append(skipped, ownershipSkip(target.ThreadID, err))
 	}
 	return owned, skipped, release
 }
@@ -807,6 +799,12 @@ func removeFlatProjectSessionArtifacts(sessionsDir, sessionID string) error {
 	return nil
 }
 
-func appendProjectDeleteLiveSkip(skipped []projectDeleteSkip, id string) []projectDeleteSkip {
-	return append(skipped, projectDeleteSkip{ID: id, Reason: "resumed live"})
+// ownershipSkip reports the session id whose deletion err refused. A live
+// owner, or another process holding the session's API log, is a live skip;
+// any other ownership failure is skipped with that failure as its reason.
+func ownershipSkip(id string, err *projectDeletionOwnershipError) projectDeleteSkip {
+	if errors.Is(err.Err, llm.ErrAPILogTargetLocked) || err.Live {
+		return projectDeleteSkip{ID: id, Reason: "resumed live", Kind: appwire.SkipKindLive}
+	}
+	return projectDeleteSkip{ID: id, Reason: err.Error()}
 }

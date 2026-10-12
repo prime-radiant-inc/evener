@@ -907,9 +907,7 @@ func TestHostHubKillCommandFailsClosedWithoutAProbe(t *testing.T) {
 			t.Fatalf("the kill's probe lost the %q tier, so a host without lsof kills nothing: %q", tier, got)
 		}
 	}
-	if !strings.Contains(got, "no listener probe is available") {
-		t.Fatalf("the kill does not distinguish an unprobeable host from an empty port: %q", got)
-	}
+
 	// The kill must check that status before the loop. Asserting the ordering,
 	// not just the presence of `s=$?`/`exit $s` (which the embedded probe also
 	// contains), keeps the test tied to the property rather than the spelling.

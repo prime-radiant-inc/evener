@@ -16,9 +16,9 @@ import { expect, it, vi } from "vitest";
 import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { INCOMPATIBLE_VERSIONS } from "./connectionRecovery";
 import { HubSettingsScreen } from "./HubSettingsScreen";
-import { dropped, render, renderedText, screenConnection as connection } from "./renderNative.testkit";
+import { hasTestID } from "./markerTestUtils";
+import { dropped, offersButton, render, renderedText, screenConnection as connection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -63,6 +63,7 @@ it("re-reads the overview once a flap the screen survived is ready again", async
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
 	expect(reads).toBe(1);
+	expect(hasTestID(tree, "sheet-status")).toBe(false);
 
 	harness.connection = dropped(connection(hub, "ready"));
 	await act(async () => {
@@ -71,7 +72,7 @@ it("re-reads the overview once a flap the screen survived is ready again", async
 	// Stale-but-shown: the banner sits over the last successful load, not a
 	// wall; the hub may have moved on while this client was away.
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
-	expect(renderedText(tree)).toContain("Reconnecting…");
+	expect(hasTestID(tree, "sheet-status")).toBe(true);
 
 	harness.connection = connection(hub, "ready");
 	await act(async () => {
@@ -361,17 +362,16 @@ it("says it is connecting, with no wall and nothing to press, before the first l
 	harness.connection = { ...connection(null, "connecting"), client: null };
 	const tree = render(<HubSettingsScreen {...props} />);
 	await act(async () => {});
-	const text = renderedText(tree);
-	expect(text).toContain("Connecting to Work hub…");
-	expect(text).not.toMatch(/\bReconnect\b|Connect to Work hub/);
+	expect(hasTestID(tree, "first-load-connecting")).toBe(true);
+	expect(offersButton(tree, /\bReconnect\b|Connect to/)).toBe(false);
 });
 
 it("says why when the hub's version doesn't match before anything loaded", async () => {
 	harness.connection = { ...connection(null, "closed"), client: null, fatal: true };
 	const tree = render(<HubSettingsScreen {...props} />);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(INCOMPATIBLE_VERSIONS);
-	expect(renderedText(tree)).not.toContain("Connecting to Work hub");
+	expect(hasTestID(tree, "first-load-fatal")).toBe(true);
+	expect(hasTestID(tree, "first-load-connecting")).toBe(false);
 });
 
 it("keeps the last hub information under the status line when the versions stop matching", async () => {
@@ -384,9 +384,8 @@ it("keeps the last hub information under the status line when the versions stop 
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...props} />);
 	});
-	const text = renderedText(tree);
-	expect(text).toContain("Evener 1.2.3");
-	expect(text).toContain("Update needed");
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
+	expect(hasTestID(tree, "sheet-status")).toBe(true);
 });
 
 it("offers no pull to refresh: the screen keeps itself current", async () => {
@@ -411,12 +410,12 @@ it("says plainly when the hub's information didn't load, and loads it on Retry",
 	harness.connection = connection(hub, "ready");
 	const tree = render(<HubSettingsScreen {...props} />);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Could not load hub information.");
-	expect(renderedText(tree)).not.toMatch(/Try again when connected/);
+	expect(hasTestID(tree, "hub-overview-failed")).toBe(true);
 
 	fail = false;
 	const retry = tree.root.findAll((node) => node.props.accessibilityRole === "button" && node.props.onPress)[0];
 	await act(async () => retry?.props.onPress());
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
+	expect(hasTestID(tree, "hub-overview-failed")).toBe(false);
 });

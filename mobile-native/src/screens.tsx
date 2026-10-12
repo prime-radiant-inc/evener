@@ -57,6 +57,7 @@ import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { openProviders } from "./board/BoardNotices";
+import { stopToast } from "./board/boardStops";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -171,7 +172,7 @@ import { type CommandsHost, commandHosts, insertInvocation } from "./session/Com
 import { FindBar } from "./session/FindBar";
 import { historyForSession } from "./session/historyMemory";
 import { useOlderHistory } from "./session/useOlderHistory";
-import { type FindState, newFind, findMatches, matchLabel, stepMatch } from "./session/findInSession";
+import { type FindState, newFind, findMatches, matchLabel, matchPosition, stepMatch } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
 import { outboxFlush } from "./outbox/nativeOutboxFlush";
@@ -221,13 +222,13 @@ import { haptic } from "./haptics";
 import { Button } from "./sheet/Grouped";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
-const STEER_FAILED = { text: "Couldn't steer with this message now." };
+const STEER_FAILED = { text: "Couldn't steer with this message now.", kind: "steer:failed" };
 /** The most of its room the Session's bottom bar may take (spec 8.1). */
 const BAR_MAX_SHARE = 0.8;
 // How long an opening session's transcript stays hidden while it travels to
 // where it opens, at most.
 const OPENING_REVEAL_CAP_MS = 1000;
-const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
+const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now.", kind: "steer:all-failed" };
 const STOP_NOT_TRIED = "Couldn't stop the turn just now. Try again.";
 const STEERING_WITH_QUEUE =
 	"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
@@ -540,7 +541,13 @@ export function ConversationScreen({
 		reconcile();
 		return store.subscribe(reconcile);
 	}, [store, questionBatches]);
-	const [actionError, setActionError] = useState<string | null>(null);
+	// What the last composer action couldn't do, and why: a command refused
+	// before it left the phone, one whose outcome the screen couldn't confirm,
+	// or a message the draft couldn't take back.
+	const [actionError, setActionError] = useState<{
+		reason: "not-sent" | "refused" | "unconfirmed" | "not-restored";
+		message: string;
+	} | null>(null);
 	const [commandPending, setCommandPending] = useState(false);
 	const commandBusy = useRef(false);
 	const projectLookup = useRef<AbortController | null>(null);
@@ -1113,7 +1120,7 @@ export function ConversationScreen({
 					if (screenInFront(navigation, route.key)) openAside(aside.ref, aside.title);
 					return null;
 				} catch {
-					return { text: "Couldn't start an aside." };
+					return { text: "Couldn't start an aside.", kind: "aside:failed" };
 				}
 			case "fork": {
 				const point = latestForkPoint(store.getState().conversation?.items ?? []);
@@ -1123,9 +1130,10 @@ export function ConversationScreen({
 			case "compact":
 				// The hub can go away while the sheet asks; say so rather than
 				// do nothing.
-				if (!controls) return { text: "Couldn't compact the context: the hub isn't connected." };
+				if (!controls)
+					return { text: "Couldn't compact the context: the hub isn't connected.", kind: "compact:offline" };
 				// A refusal shows as the controls' error line in the sheet.
-				return (await controls.compact()) ? { text: "Compacting context" } : null;
+				return (await controls.compact()) ? { text: "Compacting context", kind: "compact:started" } : null;
 			case "pin":
 			case "delete":
 				openSessionDestination(action);
@@ -1134,23 +1142,29 @@ export function ConversationScreen({
 				try {
 					await archive(true);
 				} catch {
-					return { text: "Couldn't archive this session." };
+					return { text: "Couldn't archive this session.", kind: "archive:failed" };
 				}
 				return {
 					text: "Session archived",
+					kind: "archive:archived",
 					action: {
 						label: "Undo",
-						run: () => void archive(false).catch(() => toaster.show({ text: "Couldn't undo the archive." })),
+						run: () =>
+							void archive(false).catch(() =>
+								toaster.show({ text: "Couldn't undo the archive.", kind: "archive:undo-failed" }),
+							),
 					},
 				};
 			case "shutDown": {
 				if (!controls)
 					return {
 						text: "Couldn't shut down this session: the hub isn't connected.",
+						kind: "shut-down:offline",
 					};
 				const stopped = await controls.shutdown();
 				return {
 					text: stopped ? "Session shut down" : "Couldn't shut down this session.",
+					kind: stopped ? "shut-down:stopped" : "shut-down:failed",
 				};
 			}
 		}
@@ -1163,7 +1177,7 @@ export function ConversationScreen({
 			case "level":
 				haptic("selection");
 				levels.set(route.params.ref, action.level);
-				toaster.show({ text: levelToast(action.level) });
+				toaster.show({ text: levelToast(action.level), kind: `level:${action.level}` });
 				return;
 			case "find":
 				setFind(newFind(""));
@@ -1970,8 +1984,11 @@ export function ConversationScreen({
 			if (!currentBinding()) return;
 			setActionError(
 				error instanceof CommandArgumentError
-					? error.message
-					: "Could not confirm the command. Check the session before trying again.",
+					? { reason: error instanceof CommandNotSentError ? "not-sent" : "refused", message: error.message }
+					: {
+							reason: "unconfirmed",
+							message: "Could not confirm the command. Check the session before trying again.",
+						},
 			);
 		} finally {
 			commandBusy.current = false;
@@ -2059,6 +2076,7 @@ export function ConversationScreen({
 				haptic("success");
 				toaster.show({
 					text: batch.questions.length > 1 ? "Answers sent" : "Answer sent",
+					kind: "answer:sent",
 				});
 			}
 			if (
@@ -2155,6 +2173,7 @@ export function ConversationScreen({
 			if (outcome.saved)
 				toaster.show({
 					text: outcome.woke ? "Note saved. The agent is reading it." : "Note saved",
+					kind: outcome.woke ? "note:saved-reading" : "note:saved",
 				});
 		},
 		[toaster.show],
@@ -2300,7 +2319,7 @@ export function ConversationScreen({
 			await store.getState().interrupt(service);
 			const accepted = store.getState().lastAcceptedMutation;
 			if (!accepted || accepted === previous || accepted.kind !== "interrupt") return "notKept";
-			toaster.show({ text: "Stopped" });
+			toaster.show(stopToast("stopped", route.params.title ?? ""));
 			return "stopped";
 		} catch {
 			// Stop only acts while a turn runs; a turn that ended first has
@@ -2627,7 +2646,7 @@ export function ConversationScreen({
 			else if (action === "edit") {
 				setActionError(null);
 				if (!document.restoreRecoveredDraft(row.text))
-					setActionError("This message could not be restored to the draft.");
+					setActionError({ reason: "not-restored", message: "This message could not be restored to the draft." });
 			}
 		}
 		return null;
@@ -2700,7 +2719,10 @@ export function ConversationScreen({
 			});
 			return promoted ? null : STEER_FAILED;
 		}
-		if (action === "cancel") return (await cancel()) ? null : { text: "Couldn't take this message out of the queue." };
+		if (action === "cancel")
+			return (await cancel())
+				? null
+				: { text: "Couldn't take this message out of the queue.", kind: "queue:cancel-failed" };
 		if (action === "edit") {
 			const text = live.queue?.texts?.[target.index];
 			if (!text?.trim() || !document.getSnapshot().loaded) return null;
@@ -2710,7 +2732,7 @@ export function ConversationScreen({
 			document.edit(merged);
 			const cancelled = await cancel();
 			focusComposerAt(merged.length);
-			return cancelled ? null : { text: "Moved to your message, but it's still queued." };
+			return cancelled ? null : { text: "Moved to your message, but it's still queued.", kind: "queue:still-queued" };
 		}
 		return null;
 	}
@@ -2791,7 +2813,10 @@ export function ConversationScreen({
 	// composer is hidden (the dock is open) it sits in the composer's place.
 	const composerErrors = (
 		<>
-			<ErrorMessage message={actionError} />
+			<ErrorMessage
+				message={actionError?.message ?? null}
+				testID={actionError ? `action-error:${actionError.reason}` : undefined}
+			/>
 			{draft.error ? (
 				<View style={{ alignItems: "flex-start" }}>
 					<ErrorMessage message={draft.error} />
@@ -3135,6 +3160,7 @@ export function ConversationScreen({
 									<View style={{ gap: 12, paddingBottom: 16 }}>
 										{readFailures >= 3 ? (
 											<Text
+												testID="session-read-retrying"
 												style={{
 													fontSize: 13,
 													lineHeight: 18,
@@ -3153,7 +3179,9 @@ export function ConversationScreen({
 										!permitted.send &&
 										!permitted.steer &&
 										!permitted.queue ? (
-											<Copy muted>Sending is unavailable for this session.</Copy>
+											<View testID="sending-unavailable">
+												<Copy muted>Sending is unavailable for this session.</Copy>
+											</View>
 										) : null}
 										{/* Until the conversation first loads, three quiet blocks stand
 										    in for it, above any ghost already waiting. A loaded
@@ -3187,6 +3215,8 @@ export function ConversationScreen({
 										}
 										error={find.seeking && olderHistory.permanent ? errorText(olderHistory.error) : undefined}
 										settled={!find.seeking}
+										exhausted={find.exhausted}
+										matches={find.query.trim() ? matchPosition(findHits, findCurrent) : null}
 										onQuery={(query) => setFind(newFind(query))}
 										onStep={stepFind}
 										onDone={() => {
@@ -3285,7 +3315,10 @@ export function ConversationScreen({
 									waiting={(conversation?.pendingEscalations.length ?? 1) - 1}
 									onDecided={(allowed) => {
 										if (allowed) haptic("success");
-										toaster.show({ text: allowed ? "Allowed once" : "Denied" });
+										toaster.show({
+											text: allowed ? "Allowed once" : "Denied",
+											kind: allowed ? "approval:allowed" : "approval:denied",
+										});
 									}}
 								/>
 							) : null}

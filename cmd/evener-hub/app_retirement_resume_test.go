@@ -783,7 +783,7 @@ func TestRetirementResumeFences(t *testing.T) {
 		defer cancel()
 
 		_, err := client.TurnStart(ctx, f.params("fenced-start", "must not run"))
-		if err == nil || !strings.Contains(err.Error(), "explicit thread/resume") {
+		if wire, _ := wireErrorData(t, err); wire.Code != appwire.CodeUnavailable {
 			t.Fatalf("err = %v, want the explicit-resume admission error", err)
 		}
 		if got := f.launches.Load(); got != 0 {
@@ -813,7 +813,7 @@ func TestRetirementResumeFences(t *testing.T) {
 		close(f.peerMutationGate)
 
 		result := <-done
-		if result.err == nil || !strings.Contains(result.err.Error(), "canceled this pending action") {
+		if wire, _ := wireErrorData(t, result.err); wire.Code != appwire.CodeUnavailable {
 			t.Fatalf("err = %v, want the stale-epoch admission error", result.err)
 		}
 		if got := f.launches.Load(); got != 0 {

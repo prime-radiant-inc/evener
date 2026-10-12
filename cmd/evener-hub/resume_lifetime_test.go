@@ -769,7 +769,7 @@ func TestResumeStopRetriesFailedChildKillUntilReaped(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("canceled launch did not return")
 		}
-		if launchErr == nil || !strings.Contains(launchErr.Error(), "resume child cleanup is unconfirmed") {
+		if _, unconfirmed := errors.AsType[*resumeCleanupError](launchErr); !unconfirmed {
 			t.Fatalf("canceled launch error = %v, want the unconfirmed cleanup failure", launchErr)
 		}
 		// The handler completes exactly as resumeThread's deferred Complete does.

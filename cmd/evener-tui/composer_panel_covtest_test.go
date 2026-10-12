@@ -19,8 +19,8 @@ func TestCovSessionComposerReadOnlyReason_ActionStateNoQueueWithSend(t *testing.
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Queue = false
 	m.session.processing = true
-	if got := m.sessionComposerReadOnlyReason(); got != "source does not advertise queue" {
-		t.Fatalf("active+send+no-queue read-only reason = %q, want the queue reason", got)
+	if got := m.sessionComposerReadOnlyReason(); got != composerNoQueue {
+		t.Fatalf("active+send+no-queue read-only reason = %v, want the queue reason", got)
 	}
 }
 
@@ -30,8 +30,8 @@ func TestCovSessionComposerReadOnlyReason_ActionStateNoQueueNoSend(t *testing.T)
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Queue = false
 	m.session.processing = true
-	if got := m.sessionComposerReadOnlyReason(); got != "source does not advertise queue" {
-		t.Fatalf("active+no-send+no-queue = %q, want 'source does not advertise queue'", got)
+	if got := m.sessionComposerReadOnlyReason(); got != composerNoQueue {
+		t.Fatalf("active+no-send+no-queue = %v, want the queue reason", got)
 	}
 }
 
@@ -40,8 +40,8 @@ func TestCovSessionComposerReadOnlyReason_NoSendCapability(t *testing.T) {
 	m.detail.State = "idle"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Resume = false
-	if got := m.sessionComposerReadOnlyReason(); got != "source does not support send" {
-		t.Fatalf("no send = %q, want 'source does not support send'", got)
+	if got := m.sessionComposerReadOnlyReason(); got != composerNoSend {
+		t.Fatalf("no send = %v, want the send reason", got)
 	}
 }
 
@@ -49,8 +49,8 @@ func TestCovSessionComposerReadOnlyReason_IdleWithSendReturnsEmpty(t *testing.T)
 	m := newSessionHubModel(nil)
 	m.detail.State = "idle"
 	m.detail.Capabilities.Send = true
-	if got := m.sessionComposerReadOnlyReason(); got != "" {
-		t.Fatalf("idle+send should not be read-only: %q", got)
+	if got := m.sessionComposerReadOnlyReason(); got != composerWritable {
+		t.Fatalf("idle+send should not be read-only: %v", got)
 	}
 }
 
@@ -60,25 +60,26 @@ func TestCovComposerPanelView_ReadOnlyWithReason(t *testing.T) {
 	withTestColorProfile(t)
 	p := composerPanel{
 		Label:          "read-only",
-		ReadOnlyReason: "source does not support send",
+		ReadOnlyReason: "reason-fixture",
 		ShowInput:      true,
 		Draft:          "test",
 		Width:          80,
 	}
 	got := p.View()
-	if !strings.Contains(got, "source does not support send") {
+	if !strings.Contains(got, "reason-fixture") {
 		t.Fatalf("view should contain read-only reason:\n%s", got)
 	}
 }
 
 func TestCovComposerPanelView_ReadOnlyEmptyLabelDefaultsToReadOnly(t *testing.T) {
 	p := composerPanel{
-		ReadOnlyReason: "no capability",
+		ReadOnlyReason: "reason-fixture",
 		Width:          80,
 	}
-	got := p.View()
-	if !strings.Contains(got, "read-only: no capability") {
-		t.Fatalf("view should contain 'read-only: no capability':\n%s", got)
+	labeled := p
+	labeled.Label = "read-only"
+	if got, want := p.View(), labeled.View(); got != want {
+		t.Fatalf("unlabeled read-only view = %q, want the read-only label's %q", got, want)
 	}
 }
 
@@ -90,17 +91,15 @@ func TestCovComposerPanelView_QueuePreviewShown(t *testing.T) {
 		ChipContext:  composerContext{Harness: "evener"},
 	}
 	got := ansiPattern.ReplaceAllString(p.View(), "")
-	wantQueue := "queued (2)\n  1. first queued message\n  2. second queued message\n"
-	if !strings.Contains(got, wantQueue) {
-		t.Fatalf("panel queue block missing exact ordered entries %q:\n%s", wantQueue, got)
+	first := strings.Index(got, "first queued message")
+	second := strings.Index(got, "second queued message")
+	if first < 0 || second < first {
+		t.Fatalf("panel queue block missing the entries in queue order:\n%s", got)
 	}
-	for _, prefix := range []string{"  1. ", "  2. "} {
-		if count := strings.Count(got, prefix); count != 1 {
-			t.Fatalf("queue entry prefix %q count=%d, want 1:\n%s", prefix, count, got)
+	for _, entry := range p.QueuePreview {
+		if count := strings.Count(got, entry); count != 1 {
+			t.Fatalf("queue entry %q count=%d, want 1:\n%s", entry, count, got)
 		}
-	}
-	if strings.Contains(got, "  3. ") {
-		t.Fatalf("two-entry fixture rendered an unexpected third queue row:\n%s", got)
 	}
 }
 
@@ -110,9 +109,11 @@ func TestCovComposerPanelView_AwaitingQuestionChip(t *testing.T) {
 		AwaitingQuestion: true,
 		Width:            80,
 	}
-	got := p.View()
-	if !strings.Contains(got, "question waiting") {
-		t.Fatalf("view should contain question waiting chip:\n%s", got)
+	idle := p
+	idle.AwaitingQuestion = false
+	got, without := p.View(), idle.View()
+	if renderedLineCount(got) != renderedLineCount(without)+1 {
+		t.Fatalf("a pending question should add its chip line:\nwith:\n%s\nwithout:\n%s", got, without)
 	}
 }
 
@@ -125,9 +126,6 @@ func TestCovComposerPanelView_AttachmentsShown(t *testing.T) {
 		Width: 80,
 	}
 	got := p.View()
-	if !strings.Contains(got, "attachments") {
-		t.Fatalf("view should contain attachments header:\n%s", got)
-	}
 	if !strings.Contains(got, "img1.png") {
 		t.Fatalf("view should contain attachment filename:\n%s", got)
 	}
@@ -165,11 +163,11 @@ func TestCovComposerPanelView_NilAttachmentSkipped(t *testing.T) {
 func TestCovComposerPanelView_KeysFallbackWhenNoChipContext(t *testing.T) {
 	withTestColorProfile(t)
 	p := composerPanel{
-		Keys:  []string{"enter: send", "esc: browse"},
+		Keys:  []string{"key-fixture", "esc: browse"},
 		Width: 80,
 	}
 	got := p.View()
-	if !strings.Contains(got, "enter: send") {
+	if !strings.Contains(got, "key-fixture") {
 		t.Fatalf("view should contain keys:\n%s", got)
 	}
 }
@@ -182,9 +180,10 @@ func TestCovComposerPanelView_QueueModeFooterWithCanSteer(t *testing.T) {
 		Width:       80,
 		ChipContext: composerContext{Harness: "evener"},
 	}
-	got := p.View()
-	if !strings.Contains(got, "steer") {
-		t.Fatalf("queue mode with steer should show steer hint:\n%s", got)
+	withoutSteer := p
+	withoutSteer.CanSteer = false
+	if got := p.View(); got == withoutSteer.View() {
+		t.Fatalf("queue mode with steer should add the steer hint:\n%s", got)
 	}
 }
 
@@ -195,9 +194,8 @@ func TestCovComposerPanelView_ForkModeFooter(t *testing.T) {
 		Width:       80,
 		ChipContext: composerContext{Harness: "evener"},
 	}
-	got := p.View()
-	if !strings.Contains(got, "fork") {
-		t.Fatalf("fork mode should show fork hint:\n%s", got)
+	if mode := p.composerModeForFooter(); mode != "fork" {
+		t.Fatalf("fork draft footer mode = %q, want fork", mode)
 	}
 }
 

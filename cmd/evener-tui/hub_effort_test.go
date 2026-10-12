@@ -3,11 +3,14 @@ package tui
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
 )
@@ -25,8 +28,8 @@ func TestHubModelEffortCommandGatedOnChangeModel(t *testing.T) {
 	if got.sessionEffortPicker != nil {
 		t.Fatal("unavailable effort picker should stay closed")
 	}
-	if view := got.View(); !strings.Contains(view, "not available for this session") {
-		t.Fatalf("missing unavailable effort message:\n%s", view)
+	if _, ok := noticeByCategory(got, "action-unavailable"); !ok {
+		t.Fatalf("unavailable effort raised no action-unavailable notice: %+v", got.notices)
 	}
 }
 
@@ -46,12 +49,14 @@ func TestHubModelBareEffortOpensPickerFromSnapshot(t *testing.T) {
 	if got.sessionEffortPicker == nil {
 		t.Fatalf("expected session effort picker:\n%s", got.View())
 	}
-	view := got.View()
-	if !strings.Contains(view, "low") || !strings.Contains(view, "medium") || !strings.Contains(view, "high") {
-		t.Fatalf("effort picker view missing levels:\n%s", view)
+	ids := pickerItemIDs(*got.sessionEffortPicker)
+	for _, level := range []string{"low", "medium", "high"} {
+		if !slices.Contains(ids, level) {
+			t.Fatalf("effort picker items = %v, missing %q", ids, level)
+		}
 	}
-	if !strings.Contains(view, "(active)") {
-		t.Fatalf("effort picker should mark the active level:\n%s", view)
+	if active := got.sessionEffortPicker.Active(); active != "medium" {
+		t.Fatalf("effort picker active = %q, want the session's medium", active)
 	}
 }
 
@@ -70,8 +75,8 @@ func TestHubModelBareEffortWithoutReasoningSupportShowsMessage(t *testing.T) {
 	if got.sessionEffortPicker != nil {
 		t.Fatal("effort picker should not open when the model does not support reasoning")
 	}
-	if view := got.View(); !strings.Contains(view, "does not support reasoning effort") {
-		t.Fatalf("missing unsupported-reasoning message:\n%s", view)
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgSystem {
+		t.Fatalf("unsupported effort posted no explanation: %+v", got.session.messages)
 	}
 }
 
@@ -102,8 +107,8 @@ func TestHubModelEffortArgSendsReasoningEffortSet(t *testing.T) {
 	if gotEffort.Ref != "local:01SEND" || gotEffort.ReasoningEffort != "high" {
 		t.Fatalf("effort set params=%+v, want local:01SEND high", gotEffort)
 	}
-	if view := m.View(); !strings.Contains(view, "Reasoning effort updated.") {
-		t.Fatalf("missing effort updated message:\n%s", view)
+	if len(m.notices) != 0 || len(m.session.messages) != 1 || m.session.messages[0].Kind != transcript.MsgSystem {
+		t.Fatalf("effort update was not confirmed in the session: notices=%+v messages=%+v", m.notices, m.session.messages)
 	}
 }
 
@@ -119,8 +124,8 @@ func TestHubModelEffortArgRejectsUnknownLevel(t *testing.T) {
 		t.Fatal("unknown effort level should not send a request")
 	}
 	got := updated.(hubModel)
-	if view := got.View(); !strings.Contains(view, "extreme") {
-		t.Fatalf("missing rejection message for unknown level:\n%s", view)
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgSystem {
+		t.Fatalf("unknown level posted no rejection: %+v", got.session.messages)
 	}
 }
 
@@ -196,9 +201,19 @@ func TestHubModelEffortRejectionRendersNotice(t *testing.T) {
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
 
-	if view := m.View(); !strings.Contains(view, "turn is active") {
-		t.Fatalf("expected the server's rejection message rendered as a notice:\n%s", view)
+	notice, ok := noticeByCategory(m, "action")
+	if !ok || !strings.Contains(notice.Reason, "a turn is active on this session") {
+		t.Fatalf("server rejection notice = %+v (found %v), want the server's message as its reason", notice, ok)
 	}
+}
+
+// pickerItemIDs lists the IDs a picker offers, in order.
+func pickerItemIDs(p tuipick.ModelPicker) []string {
+	var ids []string
+	for _, item := range p.Items() {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }
 
 func mustParseRef(t *testing.T, s string) appwire.Ref {
@@ -231,10 +246,10 @@ func TestHubModelEffortOnARowWithNoLadderOffersTheCanonicalTiers(t *testing.T) {
 	if got.sessionEffortPicker == nil {
 		t.Fatalf("expected a picker for a reasoning model with no stated ladder:\n%s", got.View())
 	}
-	view := got.View()
+	ids := pickerItemIDs(*got.sessionEffortPicker)
 	for _, level := range append(llm.ReasoningEffortVocabulary(), "none") {
-		if !strings.Contains(view, level) {
-			t.Fatalf("effort picker is missing %q:\n%s", level, view)
+		if !slices.Contains(ids, level) {
+			t.Fatalf("effort picker items = %v, missing %q", ids, level)
 		}
 	}
 }
@@ -251,7 +266,7 @@ func TestHubModelEffortLevelSettableOnARowWithNoLadder(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("/effort high must reach the wire on a reasoning row with no stated ladder:\n%s", updated.(hubModel).View())
 	}
-	if view := updated.(hubModel).View(); strings.Contains(view, "Unknown reasoning effort") {
-		t.Fatalf("/effort high was rejected:\n%s", view)
+	if msgs := updated.(hubModel).session.messages; len(msgs) != 0 {
+		t.Fatalf("/effort high was rejected: %+v", msgs)
 	}
 }

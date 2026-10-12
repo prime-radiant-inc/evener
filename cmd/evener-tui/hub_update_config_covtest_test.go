@@ -226,7 +226,7 @@ func TestHandleInstanceRemoveReportsAStaleFingerprintRefusal(t *testing.T) {
 		t.Fatalf("remove result = %#v, want the hub's refusal carried", result)
 	}
 	updated, refresh := m.handleInstanceMutateResult(result)
-	if got := updated.(hubModel).err; got == nil || !strings.Contains(got.Error(), "no longer resolves to the endpoint") {
+	if got := updated.(hubModel).err; !instanceEndpointConflict(got) {
 		t.Fatalf("model err = %v, want the stale-endpoint refusal reported", got)
 	}
 	if refresh == nil {

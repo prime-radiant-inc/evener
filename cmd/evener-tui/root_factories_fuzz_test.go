@@ -352,7 +352,6 @@ func FuzzRootTUIFactories(f *testing.F) {
 		TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild,
 		TestHubModelBrowseForkRequiresUserMessageWithTranscriptEntryIndex,
 		TestHubForkDraftCopyNamesTheTranscriptPositionNotATurn,
-		TestForkFlowCopyNamesAUserMessageNotATurn,
 		TestHubModelBrowseForkRequiresSelectedUserMessage,
 		TestHubModelForkFailurePreservesDraftAndLabel,
 		TestHubModelDashboardShowsRecentWhenNothingLive,

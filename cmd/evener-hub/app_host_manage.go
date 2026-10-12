@@ -3711,7 +3711,7 @@ func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause e
 			// durability step failed — the file and the live set agree. Say
 			// that beside the cause rather than claiming a rollback failure
 			// that did not happen.
-			return fmt.Errorf("%w; hub.toml rollback landed but its directory step failed: %w", cause, err)
+			return fmt.Errorf("%w; %w: %w", cause, errHubTOMLRollbackUnsynced, err)
 		}
 		return fmt.Errorf("%w; %w: %w", cause, errHubTOMLRollbackFailed, err)
 	}
@@ -3724,6 +3724,11 @@ func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause e
 // compensation reads it to keep its store-local record and stash for a later
 // boot rather than clearing a compensation beside a diverged file.
 var errHubTOMLRollbackFailed = errors.New("hub.toml rollback failed")
+
+// errHubTOMLRollbackUnsynced marks the compensation return whose hub.toml
+// rollback rename landed while its directory step failed: the file holds the
+// previous hosts, and only the rollback's crash durability is uncertain.
+var errHubTOMLRollbackUnsynced = errors.New("hub.toml rollback landed but its directory step failed")
 
 // List returns every known host with truthful online state in name-sorted
 // order (the registry's own; every row's origin field reads `hub.toml`).

@@ -118,6 +118,18 @@ export function KeybindingPreferencesScreen({
 			setError(failure instanceof Error ? failure.message : "This shortcut cannot be used.");
 		}
 	};
+	// What the screen reports, and whose failure it is: this screen's own
+	// action, the live store's, or the phone's storage while offline.
+	const offlineStorageError = !preferences.connected
+		? offlineStorageErrorMessage(preferences.offlineStorageUnavailable)
+		: null;
+	const shownError = error
+		? { source: "action", message: error }
+		: domain?.error
+			? { source: "store", message: domain.error }
+			: offlineStorageError
+				? { source: "storage", message: offlineStorageError }
+				: null;
 	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
@@ -135,11 +147,8 @@ export function KeybindingPreferencesScreen({
 					{domain?.support === "unsupported" && <Copy>This hub does not support keyboard shortcut settings.</Copy>}
 					{(!domain || domain.loading) && <Spinner label="Loading keyboard shortcuts" />}
 					<ErrorMessage
-						message={
-							error ??
-							domain?.error ??
-							(!preferences.connected ? offlineStorageErrorMessage(preferences.offlineStorageUnavailable) : null)
-						}
+						message={shownError?.message ?? null}
+						testID={shownError ? `keybinding-error:${shownError.source}` : undefined}
 					/>
 					{domain?.writeUncertain && (
 						<Copy>

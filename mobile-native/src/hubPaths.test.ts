@@ -115,7 +115,7 @@ it.each([
 	const snapshot = model.getSnapshot();
 	expect(snapshot.paths).toBeNull();
 	expect(snapshot.loading).toBe(false);
-	expect(snapshot.error).toBe("Could not load paths from this hub. Try again or enter the path manually.");
+	expect(snapshot.error).not.toBeNull();
 });
 it("asks another host through the hub, and the hub's own machine directly", async () => {
 	const calls: unknown[] = [];

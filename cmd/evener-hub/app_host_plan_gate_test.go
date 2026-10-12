@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -271,8 +270,8 @@ func TestHostPlanRefusesAMoveBetweenRefreshAndGate(t *testing.T) {
 	if _, ok := store.OutstandingToken("m4"); ok {
 		t.Fatal("a plan whose entry moved under it minted a token")
 	}
-	if !strings.Contains(err.Error(), "registration moved") {
-		t.Fatalf("refusal %q does not name the moved registration", err)
+	if info, data, _ := deployWireInfo(t, err); info != appwire.ErrorStaleEntry || string(data["binding"]) != `"`+string(appwire.StaleEntryBindingGeneration)+`"` {
+		t.Fatalf("refusal %v is not the moved-registration stale entry", err)
 	}
 }
 

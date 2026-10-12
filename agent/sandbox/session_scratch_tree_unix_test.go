@@ -134,21 +134,42 @@ func TestRemoveSessionScratchTreeRemovesRootAndChildren(t *testing.T) {
 	}
 }
 
-// SessionScratchTreeRootIDs lists the roots whose trees exist, so a reconcile
-// visits only those instead of every session ever recorded.
+// isolateSessionScratchTreeBases pins both scratch bases — the process temp dir and
+// the user cache dir — at fresh temp dirs, so a test sees only the trees it mints
+// rather than the machine's live sessions. It swaps the package-wide seams, so the
+// calling test runs serially, and captures each base once.
+func isolateSessionScratchTreeBases(t *testing.T) (tempBase, cacheBase string) {
+	t.Helper()
+	tempBase, cacheBase = t.TempDir(), t.TempDir()
+	prevTemp, prevCache := sessionScratchTempDir, sessionScratchUserCacheDir
+	sessionScratchTempDir = func() string { return tempBase }
+	sessionScratchUserCacheDir = func() (string, error) { return cacheBase, nil }
+	t.Cleanup(func() {
+		sessionScratchTempDir, sessionScratchUserCacheDir = prevTemp, prevCache
+	})
+	return tempBase, cacheBase
+}
+
+// The listing covers both bases a session may have used. ROOTA is minted in the temp
+// base and ROOTB in the user cache base, each pinned to its base, so the listing
+// finding ROOTB proves the cache base was scanned rather than both roots arriving
+// through the temp base.
 func TestSessionScratchTreeRootIDsListsExistingTrees(t *testing.T) {
-	base := t.TempDir()
-	prev := sessionScratchTempDir
-	sessionScratchTempDir = func() string { return base }
-	t.Cleanup(func() { sessionScratchTempDir = prev })
-	for _, root := range []string{"ROOTA", "ROOTB"} {
-		s, err := OpenSessionScratch("", t.TempDir(), root, root)
+	tempBase, cacheBase := isolateSessionScratchTreeBases(t)
+	mint := func(base, root string) {
+		t.Helper()
+		s, err := OpenSessionScratch(base, t.TempDir(), root, root)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := os.Stat(filepath.Join(base, sessionScratchTreePrefix+root)); err != nil {
+			t.Fatalf("%s was not minted in base %s: %v", root, base, err)
+		}
 		_ = s.Retain()
 	}
-	if err := os.MkdirAll(filepath.Join(base, "evener-sandbox-123"), 0o700); err != nil {
+	mint(tempBase, "ROOTA")
+	mint(cacheBase, "ROOTB")
+	if err := os.MkdirAll(filepath.Join(tempBase, "evener-sandbox-123"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	got := SessionScratchTreeRootIDs()

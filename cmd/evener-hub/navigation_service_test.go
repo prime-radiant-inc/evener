@@ -1023,7 +1023,7 @@ func TestNavigationReadV3IrreducibleSnapshotOverflowIsInternalInvariant(t *testi
 		ETag: navigationETag(key, versioned.Generation, versioned.Revision),
 	}
 	_, _, err = fitNavigationV3Snapshot(versioned, object, response, 1)
-	if err == nil || !strings.Contains(err.Error(), "navigation v3 response invariant") {
+	if _, invariant := errors.AsType[navigationV3ResponseInvariantError](err); !invariant {
 		t.Fatalf("irreducible overflow error = %v, want internal invariant", err)
 	}
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})

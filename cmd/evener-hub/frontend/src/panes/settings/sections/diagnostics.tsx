@@ -12,7 +12,7 @@ const CLASS = {
 export function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
   if (diagnostics.length === 0) return null;
   return (
-    <InlineNotice title="Warnings">
+    <InlineNotice title="Warnings" data-testid="diagnostics">
       <ul className={CLASS.list}>
         {diagnostics.map((d, index) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: diagnostics are a flat, unordered warning list with no stable identity of their own (the same text can legitimately repeat)

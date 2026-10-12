@@ -126,6 +126,9 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 	return response, nil
 }
 
+// errProbeEpochMissing refuses a running probe that presented no fencing epoch.
+var errProbeEpochMissing = errors.New("evener/host/running: no epoch presented: a fencing epoch (bootId, opSeq) is required and this call carried none")
+
 // admitPresentedEpoch validates the epoch the caller presented and persists the
 // admitted one before the probe's write half runs (§10: a stale same-boot epoch
 // is refused without persisting or probing, and only an admitted epoch is
@@ -138,7 +141,7 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 // fails.
 func (m *hubHostManager) admitPresentedEpoch(epoch appwire.FencingEpoch) error {
 	if epoch.BootID == "" || epoch.OpSeq == 0 {
-		return appwire.Unavailable("evener/host/running: no epoch presented: a fencing epoch (bootId, opSeq) is required and this call carried none")
+		return wireRefusal(appwire.Unavailable, errProbeEpochMissing)
 	}
 	if m.cfg.ops == nil {
 		return appwire.Unavailable("evener/host/running: no operation store is configured, so the presented fencing epoch cannot be persisted; refusing rather than authorizing an unfenced write")
@@ -148,7 +151,7 @@ func (m *hubHostManager) admitPresentedEpoch(epoch appwire.FencingEpoch) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, hostops.ErrStaleGuardEpoch):
-		return appwire.Unavailable(fmt.Sprintf("evener/host/running: stale fencing epoch refused without probing: %v", err))
+		return wireRefusal(appwire.Unavailable, fmt.Errorf("evener/host/running: stale fencing epoch refused without probing: %w", err))
 	case hostops.RenameLanded(err):
 		// The rename landed and the store adopted the row, so the guard epoch is
 		// durable and memory agrees — only its directory sync failed. Same
