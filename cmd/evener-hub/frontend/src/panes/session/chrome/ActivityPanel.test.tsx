@@ -1,4 +1,4 @@
-import { hydrateThread, type SessionJobsResponse, WireError } from "@evener/appwire-client";
+import { hydrateThread, type SessionJobsResponse, WireError, watchMeta } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -17,6 +17,7 @@ import {
   activityThread,
   activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { NOW_TICK_MS } from "../liveness";
 import { ActivityPanel, ActivityPanelBody } from "./ActivityPanel";
 
@@ -119,7 +120,7 @@ test("empty bounded progress remains loading and advances to useful activity wit
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   await act(async () => await entered.promise);
   expect(screen.getByRole("status", { name: "Loading activity…" })).toBeTruthy();
-  expect(screen.queryByText("No retained activity yet")).toBeNull();
+  expect(emptyStateReasons(document.body)).toEqual([]);
   await act(async () =>
     finish.resolve({
       context: activityContext(),
@@ -149,7 +150,7 @@ test("visible rows and disclosure survive same-session invalidation failures", a
     throw new Error("temporary source");
   });
   act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
-  expect(await screen.findByText("Activity is updating…")).toBeTruthy();
+  expect(await screen.findByTestId("activity-updating")).toBeTruthy();
   expect(screen.getByText("retained completed")).toBeTruthy();
   expect(activityPanelStore.getState().entries.get(ref)?.expandedFoldIDs).toEqual([`session:${ref}:inactive-fold`]);
 });
@@ -260,7 +261,7 @@ test("permanent refusal keeps useful rows without claiming ongoing recovery", as
   act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["jobs"])));
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "subtree")?.jobs.permanent).toBe(true));
   expect(screen.getByText("useful retained work")).toBeTruthy();
-  expect(screen.queryByText("Activity is updating…")).toBeNull();
+  expect(screen.queryByTestId("activity-updating")).toBeNull();
 });
 
 test("loaded subtree job output uses the supplied owner ref and raw logical job ID", async () => {
@@ -360,31 +361,33 @@ test("recursive Activity body rebuilds typed rows on remount while retaining ref
 
 test("recursive Activity body preserves typed watch countdown through the tree clock", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  vi.setSystemTime(new Date("2026-08-05T15:00:12Z"));
+  const start = Date.parse("2026-08-05T15:00:12Z");
+  vi.setSystemTime(start);
   const fake = activityClient();
   connectionStore.getState().connect(fake);
+  const clock = (watchRef: string) =>
+    activityWatch(
+      {
+        id: "watch_open",
+        note: "clock",
+        cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
+      },
+      watchRef,
+    );
   fake.on("evener/thread/watches/list", ({ ref, scope }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
-    watches: [
-      activityWatch(
-        {
-          id: "watch_open",
-          note: "clock",
-          cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
-        },
-        ref,
-      ),
-    ],
+    watches: [clock(ref)],
     page: { complete: true, issues: [] },
   }));
   await act(async () => {
     render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   });
   const row = await screen.findByRole("treeitem", { name: "Watch: clock" });
-  expect(row.textContent).toContain("next ~4m");
+  const meta = () => row.querySelector("[class*='denseMeta']")?.textContent;
+  expect(meta()).toBe(watchMeta(clock(ref), start));
   await act(async () => vi.advanceTimersByTimeAsync(60000));
-  expect(row.textContent).toContain("next ~3m");
+  expect(meta()).toBe(watchMeta(clock(ref), start + 60000));
 });
 
 test("recursive Activity body uses its row ticker without installing the Details clock", async () => {

@@ -556,6 +556,7 @@ export {
   isParentSteer,
   isSuppressedSteeringKind,
   type LabelledSteeringKind,
+  labelledSteeringKind,
   STEERING_KIND_LABELS,
   steeringLabel,
 } from "./steeringLabels";

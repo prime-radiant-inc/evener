@@ -785,7 +785,7 @@ describe("TranscriptBody", () => {
     );
     const settledLifecycle = screen.getByTestId("subagent-stats");
     expect(settledLifecycle.getAttribute("data-attention")).toBeNull();
-    expect(settledLifecycle.textContent).not.toContain("Needs attention");
+    const settledText = settledLifecycle.textContent;
 
     // Every field the memoized delegate row renders but the old fingerprint
     // omitted: exhaustion evidence, failure reason, usage, run timing, and
@@ -830,8 +830,7 @@ describe("TranscriptBody", () => {
     await waitFor(() => {
       const statsLine = screen.getByTestId("subagent-stats");
       expect(statsLine.getAttribute("data-attention")).toBeNull();
-      expect(statsLine.textContent).toContain("Idle · reported");
-      expect(statsLine.textContent).not.toContain("Needs attention");
+      expect(statsLine.textContent).toBe(settledText);
     });
   });
 

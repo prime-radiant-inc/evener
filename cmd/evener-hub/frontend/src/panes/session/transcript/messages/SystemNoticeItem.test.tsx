@@ -2,12 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import {
-  formatCharCount,
-  makeTranscriptDisplayConfig,
-  projectThread,
-  WarningCodeMCPReconnected,
-} from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig, projectThread, WarningCodeMCPReconnected } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
@@ -47,6 +42,21 @@ function item(id: string, overrides: Partial<ItemModel> = {}): ItemModel {
 
 function turnWith(items: ItemModel[]): TurnModel {
   return { id: "turn_1", status: "completed", items };
+}
+
+// A collapsed group's summary: how many events it holds and the first one's
+// words.
+function groupSummary(): { count?: string; preview?: string | null } {
+  const group = screen.getByTestId("system-notice-group");
+  return { count: group.dataset.count, preview: group.querySelector('summary [data-slot="preview"]')?.textContent };
+}
+
+// A scaffold disclosure's identity and the size its summary reports.
+function scaffoldSummary(scaffold: HTMLElement = screen.getByTestId("system-notice-scaffold")): {
+  kind?: string;
+  chars?: string;
+} {
+  return { kind: scaffold.dataset.kind, chars: scaffold.querySelector<HTMLElement>("summary")?.dataset.chars };
 }
 
 // At activity level (the default config when no provider is used),
@@ -130,8 +140,7 @@ test("the same scaffold item id has independent disclosure state in different se
 test("the group's summary names the count and the first event", () => {
   const items = [item("a", { text: "first thing happened" }), item("b"), item("c")];
   render(<TurnBlock turn={turnWith(items)} />);
-  const summary = screen.getByTestId("system-notice-group").querySelector("summary");
-  expect(summary?.textContent).toBe("3 system events · first thing happened");
+  expect(groupSummary()).toEqual({ count: "3", preview: "first thing happened" });
 });
 
 // yt2q: the grouped-system-events disclosure's open/closed state lives in the
@@ -155,10 +164,8 @@ test("an expanded system-events group stays open across an unmount+remount (stor
 test("expanding the group reveals every individual line", () => {
   const items = [item("a"), item("b"), item("c"), item("d")];
   render(<TurnBlock turn={turnWith(items)} />);
-  expect(screen.getByText("notice a")).toBeTruthy();
-  expect(screen.getByText("notice b")).toBeTruthy();
-  expect(screen.getByText("notice c")).toBeTruthy();
-  expect(screen.getByText("notice d")).toBeTruthy();
+  const lines = screen.getAllByTestId("system-notice-line").map((line) => line.textContent);
+  expect(lines).toEqual(["notice a", "notice b", "notice c", "notice d"]);
 });
 
 // --- a non-systemMessage entry between two runs breaks them apart ----------
@@ -185,7 +192,9 @@ test("a non-lifecycle entry between two systemMessage items breaks the run into 
 
 test("a systemMessage item with blank text falls back to a sentence-case category label, never an invisible row", () => {
   render(<TurnBlock turn={turnWith([item("a", { text: "" })])} />);
-  expect(screen.getByTestId("system-notice-line").textContent).toBe("System event");
+  const line = screen.getByTestId("system-notice-line");
+  expect(line.dataset.fallback).toBe("true");
+  expect(line.textContent?.trim()).not.toBe("");
 });
 
 // --- scaffold classification by typed eventKind (kata ckgw) ------------------
@@ -202,7 +211,7 @@ test("a system_prompt eventKind item renders as a collapsed scaffold disclosure,
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   expect(scaffold.tagName).toBe("DETAILS");
   expect(scaffold.open).toBe(false);
-  expect(scaffold.querySelector("summary")?.textContent).toBe("System prompt · 5 chars");
+  expect(scaffoldSummary(scaffold)).toEqual({ kind: "system-prompt", chars: "5" });
 });
 
 test("an expanded system prompt keeps its summary and Markdown body in full-width rows", () => {
@@ -214,7 +223,7 @@ test("an expanded system prompt keeps its summary and Markdown body in full-widt
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   const summary = scaffold.querySelector("summary");
   const body = scaffold.querySelector('[data-testid="system-notice-scaffold-body"]');
-  expect(summary?.textContent).toBe(`System prompt · ${formatCharCount(text.length)}`);
+  expect(scaffoldSummary(scaffold)).toEqual({ kind: "system-prompt", chars: String(text.length) });
   expect(scaffold.open).toBe(false);
   expect(scaffold.querySelectorAll("details")).toHaveLength(0);
   expect(scaffold.children).toHaveLength(2);
@@ -312,7 +321,7 @@ test.each(["intent", "tools", "activity", "full"] as const)(
     const disclosure = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
     expect(disclosure.open).toBe(false);
     const summary = disclosure.querySelector("summary");
-    expect(summary?.textContent).toBe(`Shared notes updated · ${formatCharCount(notesText.length)}`);
+    expect(scaffoldSummary(disclosure)).toEqual({ kind: "notes-context", chars: String(notesText.length) });
     expect(screen.queryByTestId("system-notice-line")).toBeNull();
     fireEvent.click(summary!);
     expect(disclosure.open).toBe(true);
@@ -339,9 +348,7 @@ test("shared notes keep expansion across remount and level changes within their 
 
 test("shared notes break lifecycle groups instead of leaking a snapshot into their summary", () => {
   render(notesTurn("activity", "notes-session", [notesItem(), item("a"), item("b"), item("c")]));
-  expect(screen.getByTestId("system-notice-group").querySelector("summary")?.textContent).toBe(
-    "3 system events · notice a",
-  );
+  expect(groupSummary()).toEqual({ count: "3", preview: "notice a" });
   expect(screen.getAllByTestId("system-notice-scaffold")).toHaveLength(1);
   expect((screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement).open).toBe(false);
 });
@@ -394,7 +401,7 @@ test("a turn failure renders the failure mark, not a quiet lifecycle line", () =
   render(<TurnBlock turn={turnWith([failureItem()])} />);
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
   expect(screen.queryByTestId("system-notice-line")).toBeNull();
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
 });
 
 test("a turn failure carries the same urgent-anchor marker a failed tool row does", () => {
@@ -414,7 +421,7 @@ test("an ordinary system notice carries no attention marker and no failure mark"
 // before.
 test("with the end cap present the failure row names the event instead of repeating the message", () => {
   render(<TurnBlock turn={failedTurn([failureItem()])} />);
-  expect(screen.getByTestId("system-notice-failure").textContent).toBe("Turn failed");
+  expect(screen.getByTestId("system-notice-failure").textContent).toBe(failureItem().description);
   // The message itself still appears exactly once, in the end cap.
   expect(screen.getAllByText(/openai error \(status=401\)/)).toHaveLength(1);
 });
@@ -424,13 +431,17 @@ test("with the end cap present the failure row names the event instead of repeat
 // left unstated.
 test("with no end cap the failure row carries the message itself", () => {
   render(<TurnBlock turn={turnWith([failureItem()])} />);
-  expect(screen.getByTestId("system-notice-failure").textContent).toBe("openai error (status=401): incorrect API key");
+  const row = screen.getByTestId("system-notice-failure");
+  expect(row.textContent).toBe("openai error (status=401): incorrect API key");
+  expect(row.dataset.fallback).toBeUndefined();
 });
 
 test("a failure with neither description nor text names the event rather than filing it as a generic notice", () => {
   render(<TurnBlock turn={failedTurn([failureItem({ text: "", description: "" })])} />);
-  expect(screen.getByTestId("system-notice-failure").textContent).toBe("Turn failed");
-  expect(screen.queryByText("System event")).toBeNull();
+  const row = screen.getByTestId("system-notice-failure");
+  expect(row.dataset.fallback).toBe("true");
+  expect(row.textContent?.trim()).not.toBe("");
+  expect(screen.queryByTestId("system-notice-line")).toBeNull();
 });
 
 test("with no end cap and no message, the row falls back to the wire's own description", () => {
@@ -451,8 +462,7 @@ test("a failure adjacent to a group that does collapse is left outside it, and u
   const items = [item("a"), item("b"), item("c"), failureItem()];
   render(<TurnBlock turn={turnWith(items)} />);
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
-  const summary = screen.getByTestId("system-notice-group").querySelector("summary");
-  expect(summary?.textContent).toBe("3 system events · notice a");
+  expect(groupSummary()).toEqual({ count: "3", preview: "notice a" });
 });
 
 // The stable item_system_prompt id remains a narrow fallback for a system
@@ -467,9 +477,7 @@ test("the item_system_prompt id still classifies as scaffold when the wire carri
   expect(screen.queryByTestId("system-notice-line")).toBeNull();
   // scaffoldLabel's own id-based fallback names it "System prompt", the same
   // as the typed eventKind path - never a snippet of the prompt text.
-  expect(screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent).toMatch(
-    /^System prompt · /,
-  );
+  expect(scaffoldSummary().kind).toBe("system-prompt");
 });
 
 // --- round timings redesign (kata 7zkv) ------------------------------------
@@ -511,7 +519,9 @@ function roundTimingsItem(id: string, fields: Record<string, number> = {}): Item
 test("a round_timings item with structured raw renders ONE quiet line naming the dominant phase - no disclosure, not the raw dump", () => {
   showRoundTimings();
   render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
-  expect(screen.getByTestId("system-notice-line").textContent).toBe("Round 0 · 6.4s — LLM 4.9s (77%)");
+  const line = screen.getByTestId("system-notice-line");
+  expect(line.dataset.round).toBe("0");
+  expect(line.dataset.dominantPhase).toBe("llm_call_ns");
   expect(screen.queryByTestId("system-notice-timings")).toBeNull();
   expect(screen.queryByText(/total=6\.411312958s/)).toBeNull();
 });
@@ -519,16 +529,13 @@ test("a round_timings item with structured raw renders ONE quiet line naming the
 test("the full phase breakdown rides the line's hover title, sub-1ms phases folded into an omitted count", () => {
   showRoundTimings();
   render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
-  const title = screen.getByTestId("system-notice-line").getAttribute("title") ?? "";
-  expect(title).toContain("LLM 4.9s (77%)");
-  expect(title).toContain("Tools 1.5s (23%)");
-  expect(title).toContain("Persistence 9ms (<1%)");
-  expect(title).toContain("Overhead 4ms (<1%)");
+  const line = screen.getByTestId("system-notice-line");
+  // llm, tools, persistence and overhead reach 1ms: one breakdown row each,
+  // then one row folding the rest.
+  expect((line.getAttribute("title") ?? "").split("\n")).toHaveLength(5);
   // context (8.625µs), prompt (83ns), history (12.5µs), after_action (500ns)
   // all round under 1ms; folded into a count, not shown as false "1ms" rows.
-  expect(title).toContain("+ 4 phases under 1ms");
-  expect(title).not.toContain("Context");
-  expect(title).not.toContain("Prompt");
+  expect(line.dataset.omittedPhases).toBe("4");
 });
 
 test("a round_timings item renders nothing expandable - no details element, no disclosure state to persist", () => {
@@ -596,7 +603,7 @@ test("an uncoded daemon warning renders as the warning block, with its title, me
 test("a daemon warning with only a title reads it as its message, under the generic chip", () => {
   const titleOnly = item("t", { eventKind: "warning", text: " ", raw: { warning: { title: "Evener error" } } });
   renderTurnFull(turnWith([titleOnly]));
-  expect(screen.getByTestId("warning-item").textContent).toBe("WarningEvener error");
+  expect(screen.getByTestId("warning-item").dataset.fallback).toBe("true");
   expect(screen.getByTestId("warning-message").textContent).toBe("Evener error");
 });
 

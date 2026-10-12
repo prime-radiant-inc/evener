@@ -32,7 +32,19 @@ export type EmptyStateReason =
   | "not-built"
   | "needs-configuration"
   | "unverifiable"
-  | "no-instances";
+  | "no-instances"
+  /** A list that loaded and has nothing in it. */
+  | "empty"
+  /** The source cannot answer this read at all. */
+  | "unsupported"
+  /** The session's daemon has exited and nothing will load again. */
+  | "ended"
+  /** The read failed; the surface offers a way to try again. */
+  | "failed"
+  /** The first turn is running and nothing has come back yet. */
+  | "awaiting-reply"
+  /** The session runs a different Evener version than this app. */
+  | "version-mismatch";
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),

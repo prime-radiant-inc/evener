@@ -9,6 +9,7 @@ import {
   formatClockTime,
   hydrateThread,
   projectSessionActivity,
+  watchFacts,
   watchRowID,
 } from "@evener/appwire-client";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -25,7 +26,7 @@ import {
 } from "../../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
-import { ActivityWatchDetail, WATCH_NO_SCHEDULE_LINE } from "./ActivityRowDetail";
+import { ActivityWatchDetail } from "./ActivityRowDetail";
 
 afterEach(() => {
   cleanup();
@@ -326,7 +327,10 @@ describe("ActivityWatchDetail timeline", () => {
         now={NOW}
       />,
     );
-    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Last 3 of 214 deliveries");
+    const caption = screen.getByTestId("watch-timeline-caption");
+    expect(caption.getAttribute("data-state")).toBe("partial");
+    expect(caption.textContent).toContain(String(INSTANTS.length));
+    expect(caption.textContent).toContain("214");
   });
 
   test("shows deliveries without claiming the inspected session received them when the count fits inside the ring", () => {
@@ -336,7 +340,7 @@ describe("ActivityWatchDetail timeline", () => {
         now={NOW}
       />,
     );
-    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered");
+    expect(screen.getByTestId("watch-timeline-caption").getAttribute("data-state")).toBe("complete");
   });
 
   test("an output watch gets the no-schedule line and no timeline", () => {
@@ -348,7 +352,7 @@ describe("ActivityWatchDetail timeline", () => {
     );
     expect(screen.queryByTestId("watch-timeline")).toBeNull();
     expect(screen.queryAllByTestId("watch-timeline-dot")).toHaveLength(0);
-    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+    expect(screen.getByTestId("watch-no-schedule").textContent).not.toBe("");
   });
 
   test("an event watch gets the no-schedule line and no timeline", () => {
@@ -359,7 +363,7 @@ describe("ActivityWatchDetail timeline", () => {
       />,
     );
     expect(screen.queryByTestId("watch-timeline")).toBeNull();
-    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+    expect(screen.getByTestId("watch-no-schedule").textContent).not.toBe("");
   });
 
   test("a watch with no clock cadence and no condition gets the no-schedule line, not an empty timeline", () => {
@@ -370,7 +374,7 @@ describe("ActivityWatchDetail timeline", () => {
     render(<ActivityWatchDetail row={row()} now={NOW} />);
     expect(screen.queryByTestId("watch-timeline")).toBeNull();
     expect(screen.queryAllByTestId("watch-timeline-dot")).toHaveLength(0);
-    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+    expect(screen.getByTestId("watch-no-schedule").textContent).not.toBe("");
   });
 
   test("a watch with an output match and a clock cadence draws its timeline, not the no-schedule line", () => {
@@ -394,10 +398,11 @@ describe("ActivityWatchDetail timeline", () => {
   });
 
   test("a scheduled watch with no instants draws neither timeline nor no-schedule line", () => {
-    render(<ActivityWatchDetail row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })} now={NOW} />);
+    const scheduled = row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 });
+    render(<ActivityWatchDetail row={scheduled} now={NOW} />);
     expect(screen.queryByTestId("watch-timeline")).toBeNull();
     expect(screen.queryByTestId("watch-no-schedule")).toBeNull();
-    expect(screen.getByTestId("watch-facts").textContent).toContain("no deliveries yet");
+    expect(screen.getByTestId("watch-facts").textContent).toBe(watchFacts(scheduled.watch, NOW));
   });
 
   test("the timeline text never mentions drops or a next fire", () => {

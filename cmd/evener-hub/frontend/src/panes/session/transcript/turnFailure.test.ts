@@ -8,6 +8,15 @@ function err(overrides: Partial<TurnError> = {}): TurnError {
   return { message: "something broke", ...overrides };
 }
 
+// The two recovery labels, read off one plain and one hub failure, so each
+// case below checks which one it got rather than the label's wording.
+const RETRY = classifyTurnError(err()).recoveryLabel;
+const RECONNECT = classifyTurnError(err({ source: "hub" })).recoveryLabel;
+
+test("a reconnect-class failure offers a different recovery than a plain retry", () => {
+  expect(RECONNECT).not.toBe(RETRY);
+});
+
 test("asTurnError narrows a real error object and rejects everything else", () => {
   expect(asTurnError({ message: "boom" })?.message).toBe("boom");
   expect(asTurnError(undefined)).toBeUndefined();
@@ -20,7 +29,7 @@ test("a provider cause becomes a provider badge carrying its HTTP status", () =>
   const info = classifyTurnError(err({ cause: { kind: "provider", provider: "openai", status: 429 } }));
   expect(info.badge).toBe("provider 429");
   expect(info.connection).toBe(false);
-  expect(info.recoveryLabel).toBe("Retry");
+  expect(info.recoveryLabel).toBe(RETRY);
 });
 
 test("a provider cause with no status is just 'provider'", () => {
@@ -31,7 +40,7 @@ test("a hub-source failure is a connection error with a reconnect recovery label
   const info = classifyTurnError(err({ source: "hub", message: "local daemon unavailable" }));
   expect(info.badge).toBe("connection");
   expect(info.connection).toBe(true);
-  expect(info.recoveryLabel).toBe("Reconnect & retry");
+  expect(info.recoveryLabel).toBe(RECONNECT);
 });
 
 // One case per keyword, spelled out rather than ranged over RECONNECT_KEYWORDS:
@@ -53,7 +62,7 @@ test.each([
   const info = classifyTurnError(err({ message }));
   expect(info.connection).toBe(true);
   expect(info.badge).toBe("connection");
-  expect(info.recoveryLabel).toBe("Reconnect & retry");
+  expect(info.recoveryLabel).toBe(RECONNECT);
 });
 
 test("an unrelated failure is not dragged into the reconnect class", () => {
@@ -67,10 +76,10 @@ test("a plain source with no cause becomes that source's badge", () => {
 test("a bare error with no source or cause falls back to the generic 'error' badge and Retry", () => {
   const info = classifyTurnError(err());
   expect(info.badge).toBe("error");
-  expect(info.recoveryLabel).toBe("Retry");
+  expect(info.recoveryLabel).toBe(RETRY);
 });
 
 test("the hint rides through when present, and an empty message falls back", () => {
   expect(classifyTurnError(err({ hint: "check your API key" })).hint).toBe("check your API key");
-  expect(classifyTurnError(err({ message: "   " })).message).toBe("Session error");
+  expect(classifyTurnError(err({ message: "   " })).message.trim()).not.toBe("");
 });

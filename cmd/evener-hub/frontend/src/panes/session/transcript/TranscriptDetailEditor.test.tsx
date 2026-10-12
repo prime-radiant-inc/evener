@@ -36,8 +36,10 @@ function latestContent(changes: TranscriptDisplayConfigV1[]): TranscriptDisplayC
   return latest.content;
 }
 
-function clickAdvanced() {
-  return screen.getByText(/^Customize & advanced/);
+function clickAdvanced(): HTMLElement {
+  const summary = screen.getByRole("region", { name: "Transcript detail editor" }).querySelector("summary");
+  if (!summary) throw new Error("Missing advanced disclosure");
+  return summary;
 }
 
 test("renders six explicit choices and gives Full its full accessible name", () => {
@@ -55,7 +57,10 @@ test("renders six explicit choices and gives Full its full accessible name", () 
   expect(screen.getByRole("radio", { name: "Activity" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Full detail" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Custom" })).toBeTruthy();
-  expect(screen.getByText("Full")).toBeTruthy();
+  // The visible label is shorter than the accessible name it carries.
+  const full = screen.getByRole("radio", { name: "Full detail" }).textContent;
+  expect(full).not.toBe("");
+  expect(full).not.toBe("Full detail");
   expect(screen.getByRole("radio", { name: "Tools" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.queryByText(/Current detail|Critical rows remain visible/)).toBeNull();
 });

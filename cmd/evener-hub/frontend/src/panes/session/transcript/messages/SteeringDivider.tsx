@@ -43,6 +43,8 @@ export interface SteeringDividerProps {
   testId?: string;
   /** The label span's data-testid, when a caller needs to pin the exact label. */
   labelTestId?: string;
+  /** What the label names (a steer's labelled kind, "parent"), as data-kind. */
+  kind?: string;
 }
 
 export function SteeringDivider({
@@ -55,12 +57,13 @@ export function SteeringDivider({
   ignoreBaseline = false,
   testId = "steering-item",
   labelTestId,
+  kind,
 }: SteeringDividerProps) {
   const disclosureKey = useMemo(() => itemScopeKey(sessionRef, id), [sessionRef, id]);
   const options = useMemo(() => (ignoreBaseline ? { ignoreBaseline: true } : undefined), [ignoreBaseline]);
   const open = isDisclosureOpen(disclosureKey, false, options);
   return (
-    <details className={CLASS.details} data-testid={testId} open={open}>
+    <details className={CLASS.details} data-testid={testId} data-kind={kind} open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
       <summary
         className={CLASS.summary}

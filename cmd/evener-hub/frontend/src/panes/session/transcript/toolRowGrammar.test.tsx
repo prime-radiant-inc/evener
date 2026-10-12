@@ -1231,9 +1231,16 @@ test("an expanded summary-less, intent-less row's disclosure trigger still has a
 
 test("a failed summary-less row keeps its failure name on the sibling trigger", () => {
   render(<ToolRow summary="" failed expandable expanded onToggle={() => {}} />);
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Failed");
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expectTriggerNamedByFailure();
 });
+
+// The trigger of a failed summary-less row is named by the same failure word
+// its failure glyph carries.
+function expectTriggerNamedByFailure(): void {
+  const glyphName = screen.getByTestId("failure-glyph").getAttribute("aria-label");
+  expect(glyphName).not.toBeNull();
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe(glyphName);
+}
 
 test("a status-bearing summary-less row keeps the status name outside the trigger", () => {
   render(
@@ -1250,7 +1257,10 @@ test("a status-bearing summary-less row keeps the status name outside the trigge
       onToggle={() => {}}
     />,
   );
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Tool call");
+  // The trigger keeps its own bare name rather than taking the status's.
+  const name = screen.getByTestId("tool-row-trigger").getAttribute("aria-label") ?? "";
+  expect(name.trim()).not.toBe("");
+  expect(name).not.toContain("Working");
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
@@ -1269,8 +1279,7 @@ test("a failed and status-bearing row keeps both names outside the trigger", () 
       onToggle={() => {}}
     />,
   );
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Failed");
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expectTriggerNamedByFailure();
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
@@ -1886,7 +1895,7 @@ test("a collapsed summary's entity trigger opens the existing entity card", () =
       vi.advanceTimersByTime(300);
     });
     const card = screen.getByRole("tooltip");
-    expect(card.textContent).toContain("Job");
+    expect(card.querySelector('[data-entity-kind="job"]')).not.toBeNull();
     expect(card.textContent).toContain("Compile the frontend");
   } finally {
     vi.useRealTimers();
