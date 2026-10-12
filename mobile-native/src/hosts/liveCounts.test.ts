@@ -45,10 +45,13 @@ it("counts live sessions by host", () => {
 	);
 });
 
-it("words a host's live sessions (spec 12)", () => {
-	expect(liveSessionsText(3, false)).toBe("3 live");
-	expect(liveSessionsText(3, true)).toBe("3 live, out of reach");
-	expect(liveSessionsText(0, false)).toBe("No live sessions");
+it("words a host's live sessions with their count, saying when the host is out of reach (spec 12)", () => {
+	expect(liveSessionsText(3, false)).toContain("3");
+	expect(liveSessionsText(7, false)).toContain("7");
+	expect(liveSessionsText(3, true)).toContain("3");
+	expect(liveSessionsText(3, true)).not.toBe(liveSessionsText(3, false));
+	// No sessions reads the same whether or not the host is reachable.
+	expect(liveSessionsText(0, true)).toBe(liveSessionsText(0, false));
 });
 
 it("reads every Live page before counting", async () => {

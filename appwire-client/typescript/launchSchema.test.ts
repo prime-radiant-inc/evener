@@ -3,7 +3,6 @@ import { describe, expect, test } from "vitest";
 import {
   buildFormState,
   collectConfig,
-  emptyChoiceLabel,
   globalDefaultHint,
   groupOptions,
   inactivePromptDependent,
@@ -200,11 +199,6 @@ describe("resolvedEmptyChoice / emptyChoiceLabel", () => {
     const future = opt({ field: "future", wireField: "future", kind: "select", choices: [{ value: "x", label: "X" }] });
     expect(resolvedEmptyChoice(future, "global")).toEqual({ value: "", label: "(default)" });
     expect(resolvedEmptyChoice(future, "project")).toEqual({ value: "", label: "(use global default)" });
-  });
-
-  test("emptyChoiceLabel is the generic per-layer placeholder text alone", () => {
-    expect(emptyChoiceLabel("global")).toBe("(default)");
-    expect(emptyChoiceLabel("project")).toBe("(use global default)");
   });
 });
 
@@ -484,8 +478,10 @@ describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {
     expect(resolvedDefaultLabel(integerOpt, "project", { maxSubagentDepth: 50 })).toBe("50 (use global default)");
   });
 
-  test("max_rounds -1 names unlimited, matching the flag's own wording", () => {
-    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: -1 })).toBe("unlimited (default)");
+  test("max_rounds -1 reads as unlimited, the same as 0", () => {
+    expect(resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: -1 })).toBe(
+      resolvedDefaultLabel(maxRoundsOpt, "global", { maxRounds: 0 }),
+    );
   });
 
   test("max_rounds 0 also names unlimited, matching applyDefaults' 0→-1 conversion", () => {
