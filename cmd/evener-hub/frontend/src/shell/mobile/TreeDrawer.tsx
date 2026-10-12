@@ -21,7 +21,7 @@ export function TreeDrawer({ onToggle }: TreeDrawerProps) {
 
   return (
     <IconButton
-      label="Sessions"
+      label={needsYou > 0 ? `Sessions (${needsYou} need attention)` : "Sessions"}
       icon={<SessionsIcon />}
       variant="quiet"
       onClick={onToggle}
