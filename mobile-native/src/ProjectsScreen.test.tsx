@@ -8,11 +8,12 @@
 // screen hands the list, the way ConversationScreen.send.test.tsx does.
 import type { ComponentProps } from "react";
 import { AccessibilityInfo } from "react-native";
-import { act } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { completeSession, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { archivedListStoreFor } from "./archivedLists";
+import { hasTestID } from "./markerTestUtils";
 import { NavigationPages } from "./navigationPages";
 import { ProjectScreen, ProjectsScreen, unconfirmedReason, SessionLocationScreen } from "./ProjectsScreen";
 import {
@@ -24,6 +25,12 @@ import {
 	screenConnection,
 	settleMicrotasks,
 } from "./renderNative.testkit";
+
+/** The errors the screen raises, as VoiceOver hears them: none means it shows
+ * no refusal. */
+function alerts(tree: ReactTestRenderer) {
+	return tree.root.findAllByProps({ accessibilityRole: "alert" });
+}
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
 vi.mock("react-native", async () => ({
@@ -239,7 +246,7 @@ it("reveals a located archived session from the project's archived list", async 
 		args: { index: 1, animated: false, viewPosition: 0.3 },
 	});
 	expect(pressable(tree, "Open Beta")?.props.accessibilityState).toEqual({ selected: true });
-	expect(renderedText(tree)).not.toContain("not in the returned list");
+	expect(alerts(tree)).toEqual([]);
 });
 
 // A location names the catalog whose project holds the session, and the
@@ -270,9 +277,9 @@ it("reveals a located archived fork original through the row that carries it", a
 	harness.connection = screenConnection(hub, "ready");
 	const tree = render(<SessionLocationScreen {...locationProps("local:cont", "archived", "local:orig")} />);
 	await settleMicrotasks();
-	expect(renderedText(tree)).toContain("Showing the row that owns this session");
+	expect(hasTestID(tree, "location-owner-row")).toBe(true);
 	expect(pressable(tree, "Open Cont")?.props.accessibilityState).toEqual({ selected: true });
-	expect(renderedText(tree)).not.toContain("not in the returned list");
+	expect(alerts(tree)).toEqual([]);
 });
 
 // Locating a session reveals its row on the flat list: the list scrolls to
@@ -327,7 +334,7 @@ it("reads no archived list while the connection is not ready", async () => {
 	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
 	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Alpha");
-	expect(renderedText(tree)).not.toContain("cannot call");
+	expect(alerts(tree)).toEqual([]);
 	expect(hub.calls.filter((call) => call.method === "evener/archived/list")).toHaveLength(1);
 });
 
@@ -342,7 +349,7 @@ it("reads no unloaded archived list until the connection is ready", async () => 
 	const tree = render(<ProjectScreen {...projectProps({ tier: "archived", archived: true })} />);
 	await settleMicrotasks();
 	expect(request.mock.calls.filter(([method]) => method === "evener/archived/list")).toEqual([]);
-	expect(renderedText(tree)).not.toContain("cannot call");
+	expect(alerts(tree)).toEqual([]);
 });
 
 // A recovered connection drops every archived list (archivedLists.ts), and
@@ -425,7 +432,7 @@ it.each([
 	]);
 	expect(archivedReads).toBe(reads);
 	expect(renderedText(tree)).not.toContain("Alpha");
-	expect(renderedText(tree)).not.toContain("could not be confirmed");
+	expect(alerts(tree)).toEqual([]);
 	act(() => tree.unmount());
 	harness.kv.clear();
 });
@@ -457,19 +464,19 @@ describe("confirming an organize change against the page", () => {
 		);
 		await pages.refresh();
 		expect(unconfirmedReason(pages, { generationId: "g1" })).toBeNull();
-		expect(unconfirmedReason(pages, { generationId: "g2" })).toBe("The hub restarted during the check.");
+		expect(unconfirmedReason(pages, { generationId: "g2" })).toBe("restarted");
 	});
 
 	it("checks a navigation page's generation", () => {
 		expect(unconfirmedReason(source(true, "g1"), { generationId: "g1" })).toBeNull();
-		expect(unconfirmedReason(source(true, "g2"), { generationId: "g1" })).toBe("The hub restarted during the check.");
-		expect(unconfirmedReason(source(true, null), { generationId: "g1" })).toBe("The hub restarted during the check.");
+		expect(unconfirmedReason(source(true, "g2"), { generationId: "g1" })).toBe("restarted");
+		expect(unconfirmedReason(source(true, null), { generationId: "g1" })).toBe("restarted");
 	});
 
 	it("checks only the read for a source navigation doesn't version", () => {
 		expect(unconfirmedReason(source(false, null), { generationId: "g1" })).toBeNull();
 		expect(unconfirmedReason(source(false, null, { ...loaded, error: "offline" }), { generationId: "g1" })).toBe(
-			"The current navigation could not be confirmed.",
+			"unread",
 		);
 	});
 });

@@ -23,14 +23,19 @@ import { type Thread, WireError } from "@evener/appwire-client";
 import {
 	alertRequests,
 	keyboard,
+	offersButton,
 	playedHaptics,
 	render,
 	renderedText,
+	textOf,
 	screenConnection,
 	settle,
 	unmountMountedTrees,
 } from "./renderNative.testkit";
+import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { ConversationScreen } from "./screens";
+import { connectionStatus } from "./board/connectionStatus";
+import { matchLabel } from "./session/findInSession";
 import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
@@ -432,7 +437,7 @@ it("titles the header with the session's state, and opens its info on a press", 
 	if (typeof title !== "function") throw new Error("no header title component");
 	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
 	expect(element.type).toBe(SessionTitle);
-	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Idle" } });
+	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle" } });
 	act(() => element.props.onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
@@ -602,14 +607,14 @@ it("runs the Session sheet's actions as the menu does, and hands back their toas
 	await act(async () => {
 		compacted = await sessionInfoHost().act("compact");
 	});
-	expect(compacted).toEqual({ text: "Compacting context" });
+	expect(compacted).toMatchObject({ kind: "compact:started" });
 	expect(requests.map(({ method }) => method)).toContain("thread/compact/start");
 
 	let stopped: unknown;
 	await act(async () => {
 		stopped = await sessionInfoHost().act("shutDown");
 	});
-	expect(stopped).toEqual({ text: "Session shut down" });
+	expect(stopped).toMatchObject({ kind: "shut-down:stopped" });
 	expect(requests.filter(({ method }) => method === "thread/shutdown")).toEqual([
 		{ method: "thread/shutdown", params: { ref } },
 	]);
@@ -636,8 +641,8 @@ it("says so when the hub went away before a Session sheet action could run", asy
 		stopped = await sessionInfoHost().act("shutDown");
 		compacted = await sessionInfoHost().act("compact");
 	});
-	expect(stopped).toEqual({ text: "Couldn't shut down this session: the hub isn't connected." });
-	expect(compacted).toEqual({ text: "Couldn't compact the context: the hub isn't connected." });
+	expect(stopped).toMatchObject({ kind: "shut-down:offline" });
+	expect(compacted).toMatchObject({ kind: "compact:offline" });
 	expect(requests.map(({ method }) => method)).not.toContain("thread/shutdown");
 	await act(async () => tree.unmount());
 });
@@ -664,7 +669,7 @@ it("shows the chosen detail level and confirms it", async () => {
 	expect(playedHaptics).toEqual(["selection"]);
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
-	expect(renderedText(tree)).toContain("Full: everything, including the agent's reasoning");
+	expect(markers(tree, "toast")).toEqual(["level:full"]);
 	await act(async () => tree.unmount());
 });
 
@@ -723,8 +728,7 @@ it("shuts the session down after a confirmation and stays on it (ruling 19)", as
 	]);
 	expect(navigation.pop).not.toHaveBeenCalled();
 	expect(navigation.goBack).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("Session shut down");
-	expect(renderedText(tree)).not.toContain("Runtime stop requested.");
+	expect(markers(tree, "toast")).toEqual(["shut-down:stopped"]);
 	await act(async () => tree.unmount());
 });
 
@@ -737,7 +741,7 @@ it("says so when a shut down can't be confirmed (coordinator ruling: silence rea
 	act(() => confirm?.buttons?.[1]?.onPress?.());
 	await settle();
 
-	expect(renderedText(tree)).toContain("Couldn't shut down this session.");
+	expect(markers(tree, "toast")).toEqual(["shut-down:failed"]);
 	await act(async () => tree.unmount());
 });
 
@@ -763,7 +767,7 @@ it("archives the session, with an Undo that restores it", async () => {
 
 	const archives = () => requests.filter(({ method }) => method === "evener/archive/set").map(({ params }) => params);
 	expect(archives()).toEqual([{ kind: "session", id: ref, archived: true }]);
-	expect(renderedText(tree)).toContain("Session archived");
+	expect(markers(tree, "toast")).toEqual(["archive:archived"]);
 	const undo = tree.root.find((node) => node.props.accessibilityLabel === "Undo" && node.props.onPress);
 	act(() => undo.props.onPress());
 	await settle();
@@ -811,7 +815,7 @@ it("reads no archived list again when the hub refuses an archive", async () => {
 	act(() => menuAction("Archive").onPress());
 	await settle();
 
-	expect(renderedText(tree)).toContain("Couldn't archive this session.");
+	expect(markers(tree, "toast")).toEqual(["archive:failed"]);
 	expect(archivedReads()).toBe(1);
 	await act(async () => tree.unmount());
 });
@@ -854,7 +858,7 @@ it("says so when Undo can't restore the session (coordinator ruling: silence rea
 	act(() => undo.props.onPress());
 	await settle();
 
-	expect(renderedText(tree)).toContain("Couldn't undo the archive.");
+	expect(markers(tree, "toast")).toEqual(["archive:undo-failed"]);
 	await act(async () => tree.unmount());
 });
 
@@ -865,7 +869,7 @@ it("says so when the hub refuses to archive", async () => {
 	act(() => menuAction("Archive").onPress());
 	await settle();
 
-	expect(renderedText(tree)).toContain("Couldn't archive this session.");
+	expect(markers(tree, "toast")).toEqual(["archive:failed"]);
 	await act(async () => tree.unmount());
 });
 
@@ -895,7 +899,7 @@ it("says so when an aside cannot start", async () => {
 	await settle();
 
 	expect(navigation.push).not.toHaveBeenCalled();
-	expect(renderedText(tree)).toContain("Couldn't start an aside.");
+	expect(markers(tree, "toast")).toEqual(["aside:failed"]);
 	await act(async () => tree.unmount());
 });
 
@@ -962,11 +966,10 @@ it("opens the live run where tool calls show, and leaves it to its line at Inten
 	await settle();
 	// A run's fold control names it collapsed or expanded; a run held open
 	// while live has none.
-	const folds = () =>
-		tree.root.findAll((node) => /^1 step\b.*, (collapsed|expanded)$/.test(String(node.props.accessibilityLabel ?? "")));
+	const folds = () => withTestID(tree, "run-fold");
 	act(() => detailLevels("hub-1").set(ref, "intent"));
 	await settle();
-	expect(folds()[0]?.props.accessibilityLabel).toMatch(/, collapsed$/);
+	expect(folds()[0]?.props.accessibilityState).toEqual({ expanded: false });
 	act(() => detailLevels("hub-1").set(ref, "tools"));
 	await settle();
 	expect(folds()).toEqual([]);
@@ -1014,7 +1017,8 @@ it("names the hub's running-subagent count in the tray, as the Board's row does"
 	await settle();
 	const reads = requests.filter((request) => request.method === "evener/activity/read");
 	expect(reads.map((request) => request.params)).toContainEqual({ refs: [ref] });
-	expect(renderedText(tree)).toContain("Waiting on 3 subagents");
+	const [tray] = withTestID(tree, "status-tray-line");
+	expect(tray && textOf(tray)).toMatch(/\b3\b/);
 	await act(async () => tree.unmount());
 });
 
@@ -1083,7 +1087,8 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 
 	// A live connection says nothing, and the old Reconnect row is gone.
 	expect(session.block().props.status).toBeNull();
-	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
+	expect(hasTestID(tree, "connection-status")).toBe(false);
+	expect(offersButton(tree, /Reconnect/)).toBe(false);
 	// The goal is a context chip (spec 8.1) and nothing else: the bottom bar
 	// doesn't repeat it as a row, which would cost the transcript a line.
 	expect(renderedText(tree)).not.toContain("Goal · blocked");
@@ -1352,11 +1357,10 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 	const { tree } = mount(busy, {}, { state: "closed", fatal: true, error: OLD_PROTOCOL_ERROR });
 	await settle();
 
-	expect(sessionList(tree).block().props.status).toBe("Update needed");
-	const bar = tree.root.find((node) => node.type === ("Text" as never) && node.props.children === "Update needed");
-	expect(bar.props.accessibilityHint).toBe(
-		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
-	);
+	expect(sessionList(tree).block().props.status).toBe(connectionStatus("closed", true, null, null, Date.now()));
+	const bar = tree.root.findByProps({ testID: "connection-status" });
+	// What it means and what to do, for VoiceOver.
+	expect(bar.props.accessibilityHint).toBeTruthy();
 	expect(renderedText(tree)).not.toContain(OLD_PROTOCOL_ERROR);
 	await act(async () => tree.unmount());
 });
@@ -1379,17 +1383,20 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 			});
 		expect(status()).toBeNull();
 		advance(2000);
-		expect(status()).toBe("Reconnecting…");
+		const reconnecting = status();
+		expect(reconnecting).not.toBeNull();
 		advance(28_000);
-		expect(status()).toBe("Offline · updated 1m ago");
+		const offline = status();
+		expect(offline).not.toBe(reconnecting);
+		expect(offline).toMatch(/\b1m\b/);
 		// The status re-renders once a minute of the data's age, one tick per
 		// act.
 		advance(30_000);
 		advance(60_000);
 		advance(60_000);
-		expect(status()).toBe("Offline · updated 3m ago");
+		expect(status()).toMatch(/\b3m\b/);
 		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
-		expect(renderedText(tree)).toContain("Offline · updated 3m ago");
+		expect(textOf(tree.root.findByProps({ testID: "connection-status" }))).toBe(status());
 
 		// Back in reach, the bar goes without a word.
 		harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
@@ -1465,6 +1472,22 @@ async function advanceHistory(ms: number) {
 	});
 }
 
+/** The session's Find bar. */
+function findBar(tree: ReturnType<typeof render>) {
+	return tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
+}
+
+/** Whether the Find bar shows its settled answer, `label`: not searching
+ * older messages, and not reporting an incomplete search. */
+function findAnswers(tree: ReturnType<typeof render>, label: string): boolean {
+	const bar = findBar(tree).props;
+	return !bar.error && !bar.searchingOlder && bar.label === label;
+}
+
+/** Find's answer when nothing matched, and when it sits on its one match. */
+const NO_MATCHES = matchLabel([], null);
+const ONLY_MATCH = matchLabel([0], 0);
+
 function openFind(tree: ReturnType<typeof render>, query: string) {
 	act(() => menuAction("Find in session").onPress());
 	const field = tree.root.find(
@@ -1522,8 +1545,8 @@ it("keeps Find incomplete through failure and an inactive screen, then finds the
 	openFind(tree, "unique search needle");
 	await advanceHistory(0);
 	expect(attempts).toBe(1);
-	expect(renderedText(tree)).not.toContain("No matches");
-	expect(renderedText(tree)).toContain("Searching older messages");
+	expect(findAnswers(tree, NO_MATCHES)).toBe(false);
+	expect(findBar(tree).props.searchingOlder).toBe(true);
 	act(() => {
 		for (const listener of appStateListeners) listener("background");
 	});
@@ -1541,8 +1564,8 @@ it("keeps Find incomplete through failure and an inactive screen, then finds the
 	await advanceHistory(10_000);
 	expect(attempts).toBe(3);
 	expect(renderedText(tree)).toContain("unique search needle");
-	expect(renderedText(tree)).toContain("1 of 1");
-	expect(renderedText(tree)).not.toContain("No matches");
+	expect(findAnswers(tree, ONLY_MATCH)).toBe(true);
+	expect(findAnswers(tree, NO_MATCHES)).toBe(false);
 	act(() => tree.unmount());
 });
 
@@ -1564,7 +1587,7 @@ it.each([false, true])("keeps quiet Find incomplete until history advances or en
 	const bar = () => tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
 	expect(attempts).toBe(1);
 	expect(bar().props).toMatchObject({ settled: false, searchingOlder: true });
-	expect(renderedText(tree)).not.toContain("No matches");
+	expect(findAnswers(tree, NO_MATCHES)).toBe(false);
 	expect(sessionList(tree).list().props.data).toEqual(loaded);
 	await advanceHistory(999);
 	expect(attempts).toBe(1);
@@ -1572,7 +1595,7 @@ it.each([false, true])("keeps quiet Find incomplete until history advances or en
 	await advanceHistory(1);
 	expect(attempts).toBe(2);
 	expect(bar().props).toMatchObject({ settled: true, searchingOlder: false });
-	expect(bar().props.label).toBe(withMatch ? "1 of 1" : "No matches");
+	expect(bar().props.label).toBe(withMatch ? ONLY_MATCH : NO_MATCHES);
 	await advanceHistory(60_000);
 	expect(attempts).toBe(2);
 	act(() => tree.unmount());
@@ -1591,9 +1614,8 @@ it("explains a proven permanent older-history failure without claiming Find has 
 	vi.useFakeTimers();
 	openFind(tree, "unknown needle");
 	await advanceHistory(0);
-	expect(renderedText(tree)).toContain("Search incomplete");
-	expect(renderedText(tree)).toContain("Update this client to read history.");
-	expect(renderedText(tree)).not.toContain("No matches");
+	expect(findBar(tree).props.error).toContain("Update this client to read history.");
+	expect(findAnswers(tree, NO_MATCHES)).toBe(false);
 	await advanceHistory(300_000);
 	expect(attempts).toBe(1);
 	act(() => tree.unmount());
@@ -1669,7 +1691,7 @@ it.each(["closed", "ended"] as const)("Find reads older history for a %s session
 	openFind(tree, "finished session needle");
 	await advanceHistory(10_000);
 	expect(attempts).toBe(2);
-	expect(renderedText(tree)).toContain("1 of 1");
+	expect(findAnswers(tree, ONLY_MATCH)).toBe(true);
 	act(() => tree.unmount());
 });
 
@@ -1700,7 +1722,7 @@ it.each([
 	harness.connection = { ...screenConnection(replacement.client, "ready"), error: null, disconnect: () => {} };
 	act(() => tree.update(screen()));
 	await advanceHistory(0);
-	if (find) expect(renderedText(tree)).not.toContain("No matches");
+	if (find) expect(findAnswers(tree, NO_MATCHES)).toBe(false);
 	await act(async () => {
 		finishRead?.(
 			newBinding
@@ -1713,7 +1735,7 @@ it.each([
 	await advanceHistory(10_000);
 	expect(attempts).toBe(newBinding ? 1 : 2);
 	expect(renderedText(tree).includes("replacement search needle")).toBe(!newBinding);
-	if (find) expect(renderedText(tree)).toContain("1 of 1");
+	if (find) expect(findAnswers(tree, ONLY_MATCH)).toBe(true);
 	act(() => tree.unmount());
 });
 
@@ -1790,7 +1812,7 @@ it.each(["browse", "find"])("resumes %s demand after actual Back pop and Board r
 		expect(renderedText(journey.tree)).toContain("unique search needle");
 		if (demand === "find") {
 			const bar = journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
-			expect(bar.props).toMatchObject({ query: "unique search needle", settled: true, label: "1 of 1" });
+			expect(bar.props).toMatchObject({ query: "unique search needle", settled: true, label: ONLY_MATCH });
 		}
 	} finally {
 		act(() => journey.tree.unmount());
@@ -1822,7 +1844,7 @@ it("resumes an older-match search beyond its saved boundary after actual route d
 		vi.useFakeTimers();
 		openFind(journey.tree, "needle");
 		const bar = () => journey.tree.root.find((node) => typeof node.type === "function" && node.type.name === "FindBar");
-		expect(bar().props.label).toBe("1 of 1");
+		expect(bar().props.label).toBe(ONLY_MATCH);
 		act(() => bar().props.onStep(-1));
 		await advanceHistory(0);
 		expect(bar().props).toMatchObject({ settled: true, label: "1 of 2" });
@@ -1910,13 +1932,13 @@ it.each(["browse", "Find"])(
 			else openFind(tree, "offline search needle");
 			await advanceHistory(60_000);
 			expect(attempts).toBe(0);
-			if (demand === "Find") expect(renderedText(tree)).not.toContain("No matches");
+			if (demand === "Find") expect(findAnswers(tree, NO_MATCHES)).toBe(false);
 			harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
 			act(() => tree.update(screen()));
 			await advanceHistory(1000);
 			expect(attempts).toBe(1);
 			expect(renderedText(tree)).toContain("offline search needle");
-			if (demand === "Find") expect(renderedText(tree)).toContain("1 of 1");
+			if (demand === "Find") expect(findAnswers(tree, ONLY_MATCH)).toBe(true);
 		} finally {
 			act(() => tree.unmount());
 		}

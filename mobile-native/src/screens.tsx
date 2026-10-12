@@ -1113,7 +1113,7 @@ export function ConversationScreen({
 					if (screenInFront(navigation, route.key)) openAside(aside.ref, aside.title);
 					return null;
 				} catch {
-					return { text: "Couldn't start an aside." };
+					return { text: "Couldn't start an aside.", kind: "aside:failed" };
 				}
 			case "fork": {
 				const point = latestForkPoint(store.getState().conversation?.items ?? []);
@@ -1123,9 +1123,10 @@ export function ConversationScreen({
 			case "compact":
 				// The hub can go away while the sheet asks; say so rather than
 				// do nothing.
-				if (!controls) return { text: "Couldn't compact the context: the hub isn't connected." };
+				if (!controls)
+					return { text: "Couldn't compact the context: the hub isn't connected.", kind: "compact:offline" };
 				// A refusal shows as the controls' error line in the sheet.
-				return (await controls.compact()) ? { text: "Compacting context" } : null;
+				return (await controls.compact()) ? { text: "Compacting context", kind: "compact:started" } : null;
 			case "pin":
 			case "delete":
 				openSessionDestination(action);
@@ -1134,23 +1135,29 @@ export function ConversationScreen({
 				try {
 					await archive(true);
 				} catch {
-					return { text: "Couldn't archive this session." };
+					return { text: "Couldn't archive this session.", kind: "archive:failed" };
 				}
 				return {
 					text: "Session archived",
+					kind: "archive:archived",
 					action: {
 						label: "Undo",
-						run: () => void archive(false).catch(() => toaster.show({ text: "Couldn't undo the archive." })),
+						run: () =>
+							void archive(false).catch(() =>
+								toaster.show({ text: "Couldn't undo the archive.", kind: "archive:undo-failed" }),
+							),
 					},
 				};
 			case "shutDown": {
 				if (!controls)
 					return {
 						text: "Couldn't shut down this session: the hub isn't connected.",
+						kind: "shut-down:offline",
 					};
 				const stopped = await controls.shutdown();
 				return {
 					text: stopped ? "Session shut down" : "Couldn't shut down this session.",
+					kind: stopped ? "shut-down:stopped" : "shut-down:failed",
 				};
 			}
 		}
@@ -1163,7 +1170,7 @@ export function ConversationScreen({
 			case "level":
 				haptic("selection");
 				levels.set(route.params.ref, action.level);
-				toaster.show({ text: levelToast(action.level) });
+				toaster.show({ text: levelToast(action.level), kind: `level:${action.level}` });
 				return;
 			case "find":
 				setFind(newFind(""));
