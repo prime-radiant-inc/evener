@@ -623,6 +623,10 @@ function installTestCacheChannel(): { peer: { post(message: unknown): void }; po
 
 // installNoCacheChannel is the webview: the factory answers null, exactly as
 // the typeof BroadcastChannel guard does where the API is missing.
+function installNoCacheChannel(): void {
+  setCacheChannelFactoryForTests(() => null);
+}
+
 describe("deletion", () => {
   // Ruling 33 disposition 14: mapped. Original: a deleteSession success removes the record, cancels the pending timer, and arms deletedRefs
   // The actual deleteSession success fences deletedRefs, deletes every requested-ref entry history and durably rejects a pre-delete write, no debounce remains to cancel.
@@ -727,6 +731,27 @@ describe("deletion", () => {
       await settleProjectionWorkForTests();
       expect(await cacheRecord("local:heal")).toBeUndefined(); // the heal deleted the resurrection in the same step
       sibling.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Runs on the entry route: the channel factory answers null, so
+  // usesEntryTranscripts stays true (no adapter override). The deletion must
+  // still clear the ref's legacy record locally (sessionEntryCache.ts clears
+  // LEGACY_RECORDS_STORE) and arm deletedRefs, with nothing thrown.
+  it("BroadcastChannel absent: deletion still works locally and nothing throws (Review Focus 2)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      installNoCacheChannel(); // the factory answers null, as the typeof guard does in a webview
+      const fake = connectFakeClient();
+      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
+      await threadsStore.getState().ensureThread("local:quiet");
+      await resolveEverything(fake);
+      await vi.advanceTimersByTimeAsync(1_000);
+      markCacheSessionsDeleted(["local:quiet"]);
+      expect(await cacheRecord("local:quiet")).toBeUndefined(); // local deletion intact, no channel needed
+      expect(threadsStore.getState().deletedRefs.has("local:quiet")).toBe(true);
     } finally {
       vi.useRealTimers();
     }

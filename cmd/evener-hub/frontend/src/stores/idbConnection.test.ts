@@ -2,7 +2,7 @@
 
 import { type IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import { IDBConnection, transactionCompletion } from "./idbConnection";
+import { IDBConnection, requestResult, transactionCompletion } from "./idbConnection";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
@@ -162,10 +162,42 @@ test("a timeout during the initial prepare rejects with the timeout diagnostic a
     await expect(opened).rejects.toThrow("session cache open timed out");
     expect(diagnostics[0]).toEqual({ path: "open-timeout", versionchangeTransaction: false });
     expect(connection.isOpen()).toBe(false);
+    release();
+    const recovered = await connection.open(); // the failed attempt is not remembered
+    expect(connection.isOpen()).toBe(true);
+    recovered.close();
   } finally {
     release();
     vi.useRealTimers();
     connection.close();
+  }
+});
+
+// Legacy case: sessionCacheIndexedDB.test.ts:313 "preserves the committed clear epoch across a database version upgrade".
+// Re-harnessed on IDBConnection: a keyed row committed before a version bump is
+// still readable after the higher-version open runs its upgrade.
+test("a committed keyed row survives a database version upgrade", async () => {
+  const indexedDB = new IDBFactory();
+  const first = makeConnection(indexedDB, {
+    databaseVersion: 1,
+    upgrade: (database) => database.createObjectStore("meta", { keyPath: "ref" }),
+  });
+  const databaseV1 = await first.open();
+  const write = databaseV1.transaction("meta", "readwrite");
+  write.objectStore("meta").put({ ref: "__clearEpoch", epoch: 1 });
+  await transactionCompletion(write);
+  first.close();
+
+  const second = makeConnection(indexedDB, { databaseVersion: 2, upgrade: () => {} });
+  try {
+    const databaseV2 = await second.open();
+    const stored = await requestResult(
+      databaseV2.transaction("meta", "readonly").objectStore("meta").get("__clearEpoch"),
+    );
+    expect(stored).toEqual({ ref: "__clearEpoch", epoch: 1 });
+    databaseV2.close();
+  } finally {
+    second.close();
   }
 });
 
