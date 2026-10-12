@@ -39,6 +39,9 @@ export interface SteeringDividerProps {
   testId?: string;
   /** The label span's data-testid, when a caller needs to pin the exact label. */
   labelTestId?: string;
+  /** What the label names (a steer's labelled kind, "parent"), as the label
+   * span's data-kind. */
+  kind?: string;
 }
 
 export function SteeringDivider({
@@ -51,6 +54,7 @@ export function SteeringDivider({
   ignoreBaseline = false,
   testId = "steering-item",
   labelTestId,
+  kind,
 }: SteeringDividerProps) {
   const disclosureKey = useMemo(() => itemScopeKey(sessionRef, id), [sessionRef, id]);
   return (
@@ -64,7 +68,7 @@ export function SteeringDivider({
           <span className={CLASS.railIcon} data-testid="steering-rail-icon" aria-hidden="true">
             <SteeringGlyph />
           </span>
-          <span className={CLASS.label} data-testid={labelTestId}>
+          <span className={CLASS.label} data-testid={labelTestId} data-kind={kind}>
             {label}
           </span>
           {qualifiers}

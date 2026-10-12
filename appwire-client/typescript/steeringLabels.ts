@@ -53,9 +53,14 @@ const SUPPRESSED: ReadonlySet<string> = new Set<SuppressedSteeringKind>(["curren
  * as a labelled steer. The wire's kind is a plain string, so the lookup
  * tolerates a miss rather than inventing a label from a raw slug. */
 function steeringKindLabel(kind: string | undefined): string | undefined {
-  return kind !== undefined && Object.hasOwn(STEERING_KIND_LABELS, kind)
-    ? STEERING_KIND_LABELS[kind as LabelledSteeringKind]
-    : undefined;
+  const labelled = labelledSteeringKind(kind);
+  return labelled === undefined ? undefined : STEERING_KIND_LABELS[labelled];
+}
+
+/** A steer's kind when this build has a label for it, else undefined: the
+ * kind its label names, for a client that needs to know which. */
+export function labelledSteeringKind(kind: string | undefined): LabelledSteeringKind | undefined {
+  return kind !== undefined && Object.hasOwn(STEERING_KIND_LABELS, kind) ? (kind as LabelledSteeringKind) : undefined;
 }
 
 // Every daemon steer says it is the system's before it says what it did

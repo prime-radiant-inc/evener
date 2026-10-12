@@ -16,6 +16,8 @@
 const NS_PER_MS = 1_000_000;
 
 export interface RoundTimingsPhase {
+  // The phase's wire field on raw.roundTimings ("llm_call_ns"): its identity.
+  key: string;
   label: string;
   ms: number;
   // 0-100, rounded to a whole percent of the round's total.
@@ -80,7 +82,7 @@ export function roundTimingsSummary(raw: unknown): RoundTimingsSummary | undefin
       continue;
     }
     const pct = totalNs > 0 ? Math.round((ns / totalNs) * 100) : 0;
-    phases.push({ label, ms, pct });
+    phases.push({ key, label, ms, pct });
   }
   phases.sort((a, b) => b.ms - a.ms);
 

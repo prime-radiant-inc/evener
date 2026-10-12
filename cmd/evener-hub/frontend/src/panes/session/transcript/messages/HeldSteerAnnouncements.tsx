@@ -23,13 +23,31 @@ import {
 } from "../../composer/queue/pendingTurnsStore";
 import { heldSteerEntries } from "./HeldSteerStack";
 
+// What became of a held steer: it arrived held, or how it left.
+type HeldSteerOutcome = "held" | "delivered" | "rejected" | "canceled" | "uncertain" | "failed";
+
+const ANNOUNCEMENTS: Record<HeldSteerOutcome, string> = {
+  held: "Steering message held.",
+  delivered: "Steering message delivered.",
+  rejected: "Steering message was rejected. It's kept with the queue.",
+  canceled: "Steering message was canceled by Stop. It's kept with the queue.",
+  uncertain: "Steering message delivery is uncertain. It's kept with the queue.",
+  // Post-settle failed delivery: nothing holds the id anywhere. No QueueStrip
+  // row exists for this departure (spec §5) - the announcement is the
+  // message's only trace; the failed turn's error surface is the explanation.
+  failed: "Steering message failed to deliver.",
+};
+
 export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JSX.Element {
   const held = heldSteerEntries(usePendingTurnEntries(sessionRef));
   const recovery = useRecoveryEntries(sessionRef);
   const blocked = useBlockedMutationEntries(sessionRef);
   const canceled = useCanceledMutationEntries(sessionRef);
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
-  const [announcement, setAnnouncement] = useState({ text: "", key: 0 });
+  const [announcement, setAnnouncement] = useState<{ outcomes: HeldSteerOutcome[]; key: number }>({
+    outcomes: [],
+    key: 0,
+  });
   const prevRef = useRef<{ ref: string; ids: ReadonlySet<string> } | null>(null);
 
   useEffect(() => {
@@ -40,7 +58,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     // observation never announces (the reader who just opened the pane
     // scrolled to the bottom and sees the ghost).
     if (prev?.ref !== sessionRef) return;
-    const announce = (text: string) => setAnnouncement((a) => ({ text, key: a.key + 1 }));
+    const announce = (outcomes: HeldSteerOutcome[]) => setAnnouncement((a) => ({ outcomes, key: a.key + 1 }));
     const appeared = held.some((entry: PendingTurnEntry) => !prev.ids.has(entry.id));
     const disappeared = [...prev.ids].filter((id) => !ids.has(id));
     // Departure priority in a same-batch collision (review ruling): a
@@ -52,30 +70,29 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     // heldEpoch edge.
     if (disappeared.length > 0) {
       const reflected = reflectedMutationIds(model);
-      const why = (id: string): string => {
-        if (reflected.has(id)) return "Steering message delivered.";
-        if (recovery.some((record) => record.clientMutationId === id))
-          return "Steering message was rejected. It's kept with the queue.";
-        if (canceled.some((record) => record.clientMutationId === id))
-          return "Steering message was canceled by Stop. It's kept with the queue.";
-        if (blocked.some((record) => record.clientMutationId === id))
-          return "Steering message delivery is uncertain. It's kept with the queue.";
-        // Post-settle failed delivery: nothing holds the id anywhere. No
-        // QueueStrip row exists for this departure (spec §5) - the
-        // announcement is the message's only trace; the failed turn's
-        // error surface is the explanation.
-        return "Steering message failed to deliver.";
+      const why = (id: string): HeldSteerOutcome => {
+        if (reflected.has(id)) return "delivered";
+        if (recovery.some((record) => record.clientMutationId === id)) return "rejected";
+        if (canceled.some((record) => record.clientMutationId === id)) return "canceled";
+        if (blocked.some((record) => record.clientMutationId === id)) return "uncertain";
+        return "failed";
       };
-      const outcomes = [...new Set(disappeared.map(why))];
-      announce(outcomes.join(" "));
+      announce([...new Set(disappeared.map(why))]);
     } else if (appeared) {
-      announce("Steering message held.");
+      announce(["held"]);
     }
   }, [sessionRef, held, recovery, blocked, canceled, model]);
 
   return (
-    <div role="status" aria-live="polite" data-testid="held-steer-announcements">
-      <VisuallyHidden key={announcement.key}>{announcement.text}</VisuallyHidden>
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="held-steer-announcements"
+      data-outcomes={announcement.outcomes.join(" ") || undefined}
+    >
+      <VisuallyHidden key={announcement.key}>
+        {announcement.outcomes.map((outcome) => ANNOUNCEMENTS[outcome]).join(" ")}
+      </VisuallyHidden>
     </div>
   );
 }

@@ -66,7 +66,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   const meta =
     agentLabel || hasTime ? (
       <span className={CLASS.meta}>
-        {agentLabel}
+        {agentLabel && <span data-slot="label">{agentLabel}</span>}
         {agentLabel && hasTime ? " · " : null}
         {timestamp}
       </span>

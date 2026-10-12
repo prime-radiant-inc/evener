@@ -271,7 +271,11 @@ function boundedValue(text: string): string {
 
 function structuredRowValue(value: unknown): ReactNode {
   if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) {
-    return <span className={CLASS.resultNone}>(none)</span>;
+    return (
+      <span className={CLASS.resultNone} data-empty="true">
+        (none)
+      </span>
+    );
   }
   if (Array.isArray(value)) {
     if (value.every((entry) => typeof entry !== "object")) return boundedValue(value.map(String).join(", "));
@@ -291,7 +295,11 @@ function structuredRowValue(value: unknown): ReactNode {
 function StructuredResult({ notification }: { notification: ParsedNotification }) {
   if (notification.structuredResultValid === false) {
     return (
-      <div className={CLASS.structuredNote} data-testid="notification-structured-note">
+      <div
+        className={CLASS.structuredNote}
+        data-testid="notification-structured-note"
+        data-reason={notification.structuredResultReason}
+      >
         {STRUCTURED_RESULT_NOTES[notification.structuredResultReason ?? ""] ?? "Structured result not shown."}
       </div>
     );
@@ -312,7 +320,7 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
     <table className={CLASS.resultTable} data-testid="notification-structured-result">
       <tbody>
         {shown.map(([key, value]) => (
-          <tr key={key}>
+          <tr key={key} data-key={key}>
             <th scope="row" className={CLASS.resultKey}>
               {boundedValue(structuredRowLabel(key))}
             </th>
@@ -485,12 +493,25 @@ export function NotificationCard({
       {seat.glyph}
     </span>
   );
+  // The head's identity for a reader of the DOM: the notification's type,
+  // tone and settled outcome, and whether it is a running update.
+  const headData = {
+    "data-testid": "notification-card",
+    "data-tone": notification.tone,
+    "data-type": notification.type,
+    "data-outcome": notification.outcome,
+    "data-update": notification.update ? "true" : undefined,
+  };
   if (!delegateHasReport) {
     const delegateName = delegateTrigger(false);
     return (
-      <div className={CLASS.staticHead} data-testid="notification-card" data-tone={notification.tone}>
+      <div className={CLASS.staticHead} {...headData}>
         {statusIcon(false)}
-        {showWarningChip && <Chip tone="attention">warning</Chip>}
+        {showWarningChip && (
+          <Chip tone="attention" kind="warning">
+            warning
+          </Chip>
+        )}
         <span className={CLASS.headingText}>
           <span className={CLASS.title}>{notification.title}</span>
           {/* An unlabeled delegate keeps its ending and Open control: the
@@ -520,7 +541,7 @@ export function NotificationCard({
       notification.secondary || undefined
     );
   return (
-    <div className={CLASS.collapsible} data-testid="notification-card" data-tone={notification.tone}>
+    <div className={CLASS.collapsible} {...headData}>
       <div className={CLASS.disclosure}>
         <Disclosure
           variant="quiet"
@@ -529,7 +550,11 @@ export function NotificationCard({
           summary={
             <>
               {statusIcon(true)}
-              {showWarningChip && <Chip tone="attention">warning</Chip>}
+              {showWarningChip && (
+                <Chip tone="attention" kind="warning">
+                  warning
+                </Chip>
+              )}
               <span className={CLASS.headingText}>
                 <span className={CLASS.title}>{notification.title}</span>
                 {secondary !== undefined && <span className={CLASS.secondary}>{secondary}</span>}

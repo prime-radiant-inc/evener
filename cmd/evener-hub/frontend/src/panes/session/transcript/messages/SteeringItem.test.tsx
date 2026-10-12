@@ -36,6 +36,12 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "steering", text: "", ...overrides };
 }
 
+// The kind the divider's label names (its label span's data-kind), undefined
+// when the label claims none.
+function steeringKind(divider: HTMLElement = screen.getByTestId("steering-item")): string | undefined {
+  return divider.querySelector<HTMLElement>(":scope > summary [data-kind]")?.dataset.kind;
+}
+
 test('self-registers under the wire\'s steering item type ("steering")', () => {
   expect(itemRendererFor("steering")).toBe(SteeringItem);
 });
@@ -52,8 +58,7 @@ test("is memoized ignoring turn identity - a fresh turn object on every streamin
 
 test('source "user" renders as a normal user message bubble (the "You" tag), not the divider', () => {
   render(<SteeringItem item={item({ text: "focus on the tests", source: "user" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("user-message-item")).toBeTruthy();
-  expect(screen.getByText("You")).toBeTruthy();
+  expect(screen.getByTestId("user-message-item").dataset.speaker).toBe("user");
   expect(screen.getByText("focus on the tests")).toBeTruthy();
   expect(screen.queryByTestId("steering-item")).toBeNull();
 });
@@ -88,7 +93,7 @@ test("a user-sourced human-note steer renders the labeled divider, not a user bu
   );
   expect(screen.getByTestId("steering-item")).toBeTruthy();
   expect(screen.queryByTestId("user-message-item")).toBeNull();
-  expect(screen.getByTestId("steering-item").textContent).toMatch(/Human note/);
+  expect(steeringKind()).toBe("human-note");
 });
 
 // --- daemon-sourced (no source, or any non-"user" source) -> quiet divider --
@@ -182,7 +187,7 @@ test("labels a steer from its wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByText("System steered: Tasks complete")).toBeTruthy();
+  expect(steeringKind()).toBe("tasks-done");
   expect(screen.getByTestId("steering-glyph")).toBeTruthy();
 });
 
@@ -194,7 +199,7 @@ test("labels provider-failure steering from the wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByText("System steered: Provider failed")).toBeTruthy();
+  expect(steeringKind()).toBe("provider-failure");
 });
 
 test("labels an interrupted salvage draft from the wire kind", () => {
@@ -208,14 +213,13 @@ test("labels an interrupted salvage draft from the wire kind", () => {
       live={false}
     />,
   );
-  expect(screen.getByText("System steered: Interrupted draft")).toBeTruthy();
+  expect(steeringKind()).toBe("interrupted-salvage");
 });
 
 // No kind means the daemon did not say. A colon promises a value.
 test("claims nothing when the wire carries no kind", () => {
   render(<SteeringItem item={item({ text: "unclassifiable" })} turn={turn} live={false} />);
-  expect(screen.getByText("System steered")).toBeTruthy();
-  expect(screen.queryByText(/System steered:/)).toBeNull();
+  expect(steeringKind()).toBeUndefined();
 });
 
 // The OTHER half of "no colon": a kind the wire DID send, but this UI has no
@@ -225,8 +229,9 @@ test("claims nothing when the wire carries no kind", () => {
 // both render bare; only one of the two was pinned before this test.
 test("claims nothing when the wire kind is unmapped, not just when it's absent", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "some-future-kind" })} turn={turn} live={false} />);
-  expect(screen.getByText("System steered")).toBeTruthy();
-  expect(screen.queryByText(/System steered:/)).toBeNull();
+  const divider = screen.getByTestId("steering-item");
+  expect(steeringKind(divider)).toBeUndefined();
+  expect(divider.querySelector("summary")?.textContent).not.toContain("some-future-kind");
 });
 
 // The prose that used to drive classification must no longer do so.
@@ -234,8 +239,7 @@ test("does not infer a kind from the text", () => {
   render(
     <SteeringItem item={item({ text: "You have completed all tasks on your task list." })} turn={turn} live={false} />,
   );
-  expect(screen.getByText("System steered")).toBeTruthy();
-  expect(screen.queryByText(/Tasks complete/)).toBeNull();
+  expect(steeringKind()).toBeUndefined();
 });
 
 // current-task/task-list: the tasks panel + task-update card already own
@@ -252,7 +256,7 @@ test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel ow
 // reminders render with their label.
 test("a task-inactive kind renders labeled, not suppressed", () => {
   render(<SteeringItem item={item({ text: "x", steeringKind: "task-inactive" })} turn={turn} live={false} />);
-  expect(screen.getByText("System steered: Task list idle")).toBeTruthy();
+  expect(steeringKind()).toBe("task-inactive");
 });
 
 // Ordering pin: the source==="user" check must run BEFORE the SUPPRESSED
@@ -303,10 +307,10 @@ Job job_shell completed.
 
   render(<SteeringItem item={item({ text, steeringKind: "notification" })} turn={turn} live={false} />);
   const cards = screen.getAllByTestId("notification-card");
-  expect(cards).toHaveLength(2);
-  expect(cards[0]?.textContent).toContain("Delegate completed");
-  expect(cards[0]?.textContent).not.toContain("Job completed");
-  expect(cards[1]?.textContent).toContain("Job completed");
+  expect(cards.map((card) => [card.dataset.type, card.dataset.outcome])).toEqual([
+    ["delegate", "completed"],
+    ["job", "completed"],
+  ]);
 });
 
 // The daemon's own frames (agent/testdata/notificationwire): a subagent's
@@ -317,7 +321,7 @@ test("a subagent's recorded report renders its name and message, never the raw p
     <SteeringItem item={item({ text: notificationWireItem("delegate-reported").text })} turn={turn} live={false} />,
   );
   const card = screen.getByTestId("notification-card");
-  expect(card.textContent).toContain("Delegate completed");
+  expect([card.dataset.type, card.dataset.outcome, card.dataset.update]).toEqual(["delegate", "completed", undefined]);
   expect(card.textContent).toContain("Fix race in tree settle");
   // The report renders as the message bubble, and the packet's JSON never
   // reaches the card.
@@ -330,11 +334,9 @@ test("a subagent's recorded report renders its name and message, never the raw p
 test("a subagent's recorded update renders as an update with its message, never as a report", () => {
   render(<SteeringItem item={item({ text: notificationWireItem("delegate-update").text })} turn={turn} live={false} />);
   const card = screen.getByTestId("notification-card");
-  expect(card.textContent).toContain("Delegate update");
+  expect([card.dataset.type, card.dataset.outcome, card.dataset.update]).toEqual(["delegate", undefined, "true"]);
   expect(card.textContent).toContain("Fix race in tree settle");
   expect(screen.getByTestId("notification-message").textContent).toContain("Which table holds the drain cursor");
-  expect(card.textContent).not.toContain("Delegate reported");
-  expect(card.textContent).not.toContain("Delegate completed");
 });
 
 // A failure whose whole error is one line IS its head's ending, so the row
@@ -348,7 +350,7 @@ test("a subagent's recorded one-line failure says its cause on the head and rend
     />,
   );
   const card = screen.getByTestId("notification-card");
-  expect(card.textContent).toContain("Delegate failed");
+  expect([card.dataset.type, card.dataset.outcome]).toEqual(["delegate", "failed"]);
   expect(card.textContent).toContain("go test exited 1 three times");
   expect(card.closest("details")).toBeNull();
   expect(screen.queryByTestId("notification-message")).toBeNull();
@@ -358,14 +360,14 @@ test("a job-notification steer renders a notification card (not a steering divid
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
   expect(screen.getByTestId("notification-card")).toBeTruthy();
   expect(screen.queryByTestId("steering-item")).toBeNull();
-  expect(screen.getByText("Job completed")).toBeTruthy();
+  expect(screen.getByTestId("notification-card").dataset.type).toBe("job");
 });
 
 test("a job-notification steer expands the notification before asserting card body content", () => {
   render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
   // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-card-root")).toBeTruthy();
-  expect(screen.getByText("Job completed")).toBeTruthy();
+  expect(screen.getByTestId("notification-card").dataset.type).toBe("job");
 });
 
 test("a completed shell job renders its ANSI excerpt as styled text instead of escape fragments", () => {
@@ -541,6 +543,7 @@ test("a mixed notification steer keeps its wire-kind label on the leftover divid
     />,
   );
   expect(screen.getByTestId("notification-card")).toBeTruthy();
+  expect(steeringKind()).toBe("tasks-done");
   const kindLabel = screen.getByTestId("steering-item").querySelector("summary")?.textContent;
   fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   expect(screen.getByText("trailing steering prose")).toBeTruthy();
@@ -554,6 +557,7 @@ test("a mixed notification steer keeps its wire-kind label on the leftover divid
       live={false}
     />,
   );
+  expect(steeringKind()).toBeUndefined();
   expect(screen.getByTestId("steering-item").querySelector("summary")?.textContent).not.toBe(kindLabel);
 });
 
@@ -645,7 +649,7 @@ test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {
       live={false}
     />,
   );
-  fireEvent.click(screen.getByText("System steered: Hook context"));
+  fireEvent.click(screen.getByTestId("steering-item").querySelector("summary")!);
   expect(screen.getByText("the note")).toBeTruthy();
 });
 

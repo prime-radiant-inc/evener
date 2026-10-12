@@ -141,9 +141,9 @@ function compactContextParts(item: Pick<ItemModel, "argumentsJSON" | "descriptio
 // One labeled block per request field: the label idiom (meta-table style:
 // sentence-case caption-size sans) is shared, so the blocks cannot drift
 // apart in structure.
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, section, children }: { label: string; section: string; children: ReactNode }) {
   return (
-    <div className={CLASS.field}>
+    <div className={CLASS.field} data-section={section}>
       <div className={CLASS.label}>{label}</div>
       {children}
     </div>
@@ -160,22 +160,24 @@ function CompactContextBody({ item, live }: ToolRenderProps) {
         </section>
       )}
       {noteText !== undefined && (
-        <Field label="Note to self">
+        <Field label="Note to self" section="note">
           <Markdown source={clip(noteText, COMPACT_TEXT_MAX_CHARS)} />
         </Field>
       )}
       {instructionsText !== undefined && (
-        <Field label="Compaction instructions">
+        <Field label="Compaction instructions" section="instructions">
           <Markdown source={clip(instructionsText, COMPACT_TEXT_MAX_CHARS)} />
         </Field>
       )}
       {skills !== undefined && (
-        <Field label="Skills to reload">
-          <div className={CLASS.skills}>{skills.length > 0 ? skills.join(", ") : "None."}</div>
+        <Field label="Skills to reload" section="skills">
+          <div className={CLASS.skills} data-empty={skills.length > 0 ? undefined : "true"}>
+            {skills.length > 0 ? skills.join(", ") : "None."}
+          </div>
         </Field>
       )}
       {intentText !== undefined && (
-        <Field label="Intent">
+        <Field label="Intent" section="intent">
           <Markdown source={clip(intentText, COMPACT_TEXT_MAX_CHARS)} />
         </Field>
       )}
