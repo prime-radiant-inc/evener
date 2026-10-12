@@ -77,18 +77,17 @@ const (
 type sessionControls struct {
 	stop, steer, drain, queue, send bool
 	// drainReason says why drain is false: the harness, the status, or the
-	// queue revision still syncing after a partial drain. drainAllowed when
-	// true.
+	// queue revision still syncing after a partial drain. Zero when true.
 	drainReason drainRefusal
 }
 
-// drainRefusal says why Ctrl+S may not drain the queue as steering.
+// drainRefusal says why Ctrl+S may not drain the queue as steering; the zero
+// value refuses nothing.
 type drainRefusal int
 
 const (
-	drainAllowed drainRefusal = iota
 	// drainNoSteer: the harness does not advertise steer.
-	drainNoSteer
+	drainNoSteer drainRefusal = iota + 1
 	// drainNoActiveTurn: no turn is running and no parked queue waits.
 	drainNoActiveTurn
 	// drainQueueSyncing: the queue revision is still syncing after a
