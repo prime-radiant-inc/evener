@@ -540,9 +540,18 @@ export function NotificationCard({
       {seat.glyph}
     </span>
   );
+  // The head's identity for a reader of the DOM: the notification's type,
+  // tone and settled outcome, and whether it is a running update.
+  const headData = {
+    "data-testid": "notification-card",
+    "data-tone": notification.tone,
+    "data-type": notification.type,
+    "data-outcome": notification.outcome,
+    "data-update": notification.update ? "true" : undefined,
+  };
   if (!delegateHasReport) {
     return (
-      <div className={CLASS.staticHead} data-testid="notification-card" data-tone={notification.tone}>
+      <div className={CLASS.staticHead} {...headData}>
         {statusIcon}
         {showWarningChip && <Chip tone="attention">warning</Chip>}
         <span className={CLASS.headingText}>
@@ -569,8 +578,7 @@ export function NotificationCard({
       {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: summary's implicit role is button, which supports aria-expanded (same ruling as ToolRow.tsx) - and it can never disagree with the native details state, which the same `open` drives */}
       <summary
         className={CLASS.head}
-        data-testid="notification-card"
-        data-tone={notification.tone}
+        {...headData}
         aria-expanded={open}
         onClick={(e) => {
           e.preventDefault();
