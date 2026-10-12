@@ -47,6 +47,7 @@ import {
 	until,
 	untilRendered,
 } from "../renderNative.testkit";
+import { markedNodes, markerOf, markers } from "../markerTestUtils";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
@@ -629,6 +630,14 @@ const isRowTitled = (title: string) => (node: ReactTestInstance) =>
 function rowTitled(tree: ReactTestRenderer, title: string) {
 	return tree.root.find(isRowTitled(title));
 }
+/** What a row's why line says past its state word: the reason the row's
+ * label has to speak too. */
+function whyReason(row: ReactTestInstance): string {
+	const line = row.find((node) => node.type === ("Text" as never) && node.props.testID === "why-line");
+	const reason = line.children.at(-1);
+	if (typeof reason !== "string" || !reason) throw new Error("the why line gives no reason");
+	return reason;
+}
 /** Whether a Board row carries the blue dot. */
 const dotted = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).findAllByType(FreshDot).length > 0;
 function hasRow(tree: ReactTestRenderer, title: string) {
@@ -699,9 +708,11 @@ it("keeps own errors and live attention while settled delegate chips stay quiet"
 	expect(renderedText(tree)).toContain("2 running");
 	for (const title of ["Own error", "Question", "Approval", "Mixed work", "Stale question"])
 		expect(rowTitled(tree, title).props.accessibilityLabel).not.toContain("3 failed");
-	expect(rowTitled(tree, "Own error").props.accessibilityLabel).toContain("Failed");
-	expect(rowTitled(tree, "Question").props.accessibilityLabel).toContain("waiting for your answer");
-	expect(rowTitled(tree, "Approval").props.accessibilityLabel).toContain("waiting for your permission");
+	// Each label speaks the reason its row shows, its own attention's.
+	for (const title of ["Own error", "Question", "Approval"]) {
+		const row = rowTitled(tree, title);
+		expect(row.props.accessibilityLabel).toContain(whyReason(row));
+	}
 	expect(hasRow(tree, "Offline error")).toBe(false);
 	act(() => rowTitled(tree, "Mixed work").props.onPress());
 	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: id, ref: "local:mixed", title: "Mixed work" });
@@ -1225,6 +1236,8 @@ const resultTitles = (tree: ReactTestRenderer) =>
 	tree.root
 		.findAll((node) => node.props.testID === "search-result")
 		.map((node) => node.props.accessibilityLabel.split(", ")[0]);
+const buttonCount = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityRole === "button").length;
 const hasCancel = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Cancel search")
 		.length > 0;
@@ -1345,7 +1358,7 @@ it("narrows results to live sessions in the Live scope", async () => {
 	expect(resultTitles(tree)).toEqual(["Old report"]);
 	pressLabel(tree, "Live");
 	expect(resultTitles(tree)).toEqual([]);
-	expect(texts(tree)).toContain("No sessions match.");
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
 	pressLabel(tree, "All");
 	expect(resultTitles(tree)).toEqual(["Old report"]);
 	act(() => tree.unmount());
@@ -1376,7 +1389,7 @@ it("holds a scope picked before you type", async () => {
 	pressLabel(tree, "Live");
 	await bar.type("report");
 	expect(resultTitles(tree)).toEqual([]);
-	expect(texts(tree)).toContain("No sessions match.");
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
 	act(() => tree.unmount());
 });
 
@@ -1412,9 +1425,11 @@ it("says a failed search failed, and never asks you to retry", async () => {
 	const tree = await mount(nav);
 	const bar = searchField(tree);
 	bar.focus();
+	const controls = buttonCount(tree);
 	await bar.type("fix");
-	expect(texts(tree)).toContain("Couldn't search this hub's sessions.");
-	expect(renderedText(tree)).not.toMatch(/retry|try again|refresh/i);
+	expect(markers(tree, "search-note")).toEqual(["failed"]);
+	// The failure offers nothing to press.
+	expect(buttonCount(tree)).toBe(controls);
 	// A new query tries again.
 	await bar.type("fixes");
 	expect(fake.searches).toEqual(["fix", "fixes"]);
@@ -1432,7 +1447,7 @@ it("searches nothing while connecting, and asks for the typed query once the con
 	bar.focus();
 	await bar.type("ship");
 	expect(fake.searches).toEqual([]);
-	expect(texts(tree)).toContain("Search works when the hub is connected.");
+	expect(markers(tree, "search-note")).toEqual(["disconnected"]);
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await settleMicrotasks();
@@ -1639,8 +1654,7 @@ const hubFleet: Fleet = {
 	live: [[failing, working, hubUnseen, hubSeen, shipIt]],
 	pinned: { ...fleet.pinned, "pins-1": [pinnedUnseen, keptNote] },
 };
-const stateOf = (tree: ReactTestRenderer, title: string) =>
-	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
+const stateOf = (tree: ReactTestRenderer, title: string) => markerOf(rowTitled(tree, title), "board-row");
 
 // A live session that moved after the person last looked carries the blue
 // dot, resting in Idle included, and folded, Idle's header carries it for the
@@ -1727,7 +1741,7 @@ it("takes the blue dot from the hub for a row that carries its turn end, whateve
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	// Every session whose turn ended rests Idle; the dot says what's new.
-	for (const title of ["Hub unseen", "Hub seen", "Ship it", "Pinned unseen"]) expect(stateOf(tree, title)).toBe("Idle");
+	for (const title of ["Hub unseen", "Hub seen", "Ship it", "Pinned unseen"]) expect(stateOf(tree, title)).toBe("idle");
 	expect(dotted(tree, "Hub unseen")).toBe(true);
 	expect(dotted(tree, "Hub seen")).toBe(false);
 	// A row without a turn end still follows the device: updated since its epoch.
@@ -2262,7 +2276,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	};
 	const assertWorking = () => {
 		const row = rowTitled(tree, parent.title);
-		expect(stateOf(tree, parent.title)).toBe("Working");
+		expect(stateOf(tree, parent.title)).toBe("working");
 		expect(row.findAllByType(PulseMeter)).toHaveLength(1);
 		expect(row.props.accessibilityLabel).toContain("Waiting on 1 subagent");
 		expect(textsIn(row)).toContain("1 running");
@@ -2287,10 +2301,10 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	shape.live = [[working], [question]];
 	shape.needsYou = [question];
 	await refresh(1);
-	expect(stateOf(tree, parent.title)).toBe("Question");
+	expect(stateOf(tree, parent.title)).toBe("question");
 	expect(bandHeaders(tree)).toContain("NEEDS YOU · 1");
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
-	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain("waiting for your answer");
+	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain(whyReason(rowTitled(tree, parent.title)));
 	expect(textsIn(rowTitled(tree, parent.title))).toContain("1 running");
 	assertQuietFailure();
 	shape.live = [[working], [parent]];
@@ -2303,7 +2317,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	const beforeReconnect = fake.requests.length;
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
-	expect(stateOf(tree, parent.title)).toBe("Working");
+	expect(stateOf(tree, parent.title)).toBe("working");
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await settleMicrotasks();
@@ -2317,7 +2331,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	).toEqual([0, 1]);
 	shape.live = [[working], [{ ...parent, subagents: { running: 0, failed: 1, done: 1 } }]];
 	await refresh(4);
-	expect(stateOf(tree, parent.title)).toBe("Idle");
+	expect(stateOf(tree, parent.title)).toBe("idle");
 	expect(dotted(tree, parent.title)).toBe(true);
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
 	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
@@ -2331,7 +2345,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	act(() => rowTitled(tree, parent.title).props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: parent.ref, title: parent.title });
 	await settleMicrotasks();
-	expect(stateOf(tree, parent.title)).toBe("Idle");
+	expect(stateOf(tree, parent.title)).toBe("idle");
 	expect(dotted(tree, parent.title)).toBe(false);
 	expect(rowTitled(tree, parent.title).findAll((node) => node.props.testID === "subagent-chip")).toHaveLength(0);
 	assertQuietFailure();
@@ -3265,8 +3279,8 @@ it("dots a project's session rows by the hub's seen marker too (S4)", async () =
 	const tree = await mount(navigation());
 	pressLabel(tree, "evener");
 	await settleMicrotasks();
-	expect(stateOf(tree, "Project hub seen")).toBe("Idle");
-	expect(stateOf(tree, "Project hub unseen")).toBe("Idle");
+	expect(stateOf(tree, "Project hub seen")).toBe("idle");
+	expect(stateOf(tree, "Project hub unseen")).toBe("idle");
 	expect(dotted(tree, "Project hub seen")).toBe(false);
 	expect(dotted(tree, "Project hub unseen")).toBe(true);
 	act(() => tree.unmount());
@@ -3295,7 +3309,7 @@ it("drops a project row's pending mark once the project's page shows it landed (
 	act(() => rowTitled(tree, "Project hub unseen").props.onPress());
 	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:project-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
-	expect(stateOf(tree, "Project hub unseen")).toBe("Idle");
+	expect(stateOf(tree, "Project hub unseen")).toBe("idle");
 	// The project's page catches up, and the pending mark goes: a later
 	// unseen for the same turn would show again. This fake hub answers every
 	// read at revision 1, so the change names none.

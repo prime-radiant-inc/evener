@@ -3,12 +3,13 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import type { NavigationActions } from "../navigationActions";
 import type { SyncStringStorage } from "../syncStringStorage";
+import type { ToastMessage } from "../Toast";
 import { BoardHold, type HeldAction, turnSeen } from "./boardHold";
 import { BoardReplay } from "./boardReplay";
-import { type StopOutcome, stopToast } from "./boardStops";
+import type { StopOutcome } from "./boardStops";
 import type { BoardOrganization } from "./useBoardOrganization";
 
-// boardStops (stopToast) reaches the mutation runtime's native modules.
+// boardStops, which boardReplay imports, reaches the mutation runtime's native modules.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
 
@@ -31,14 +32,14 @@ function setup(running: Partial<EvenerThread> = { activeTurnId: "turn-2", lastTu
 	const client = new FakeClient("ready");
 	client.on("thread/read", () => thread(running) as never);
 	const stops: string[] = [];
-	const toasts: string[] = [];
+	const toasts: ToastMessage[] = [];
 	let live = true;
 	const replay = new BoardReplay(hold, {
 		stop: async (_client, ref, guard): Promise<StopOutcome> => {
 			stops.push(ref);
 			return guard && !guard(running as EvenerThread) ? "dropped" : "stopped";
 		},
-		toast: (text) => toasts.push(text),
+		toast: (message) => toasts.push(message),
 	});
 	return {
 		hold,
@@ -52,6 +53,7 @@ function setup(running: Partial<EvenerThread> = { activeTurnId: "turn-2", lastTu
 		},
 	};
 }
+const kinds = (toasts: readonly ToastMessage[]) => toasts.map((toast) => toast.kind);
 const methods = (client: FakeClient) => client.calls.map((call) => call.method).filter((m) => m !== "thread/read");
 const stopOf = (ref: string, turnEndedAt: string | null = ended): HeldAction => ({
 	kind: "stop",
@@ -79,7 +81,7 @@ it("drops a held Stop whose turn ended, and says so", async () => {
 	const { hold, client, toasts, replay, isLive } = setup({ activeTurnId: "turn-3", lastTurnEndedAt: stamp + 60_000 });
 	hold.hold(stopOf("b"), 1);
 	await replay.sendImmediate(client, isLive);
-	expect(toasts).toEqual(["The turn you stopped ended before you were back online"]);
+	expect(kinds(toasts)).toEqual(["stop:dropped"]);
 	expect(hold.getSnapshot()).toEqual([]);
 });
 
@@ -89,7 +91,7 @@ it("shuts down only when no newer turn runs than the one seen", async () => {
 	newer.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: true } }, 1);
 	await newer.replay.sendImmediate(newer.client, newer.isLive);
 	expect(methods(newer.client)).toEqual([]);
-	expect(newer.toasts).toEqual(["A newer turn started, so the session wasn't shut down"]);
+	expect(kinds(newer.toasts)).toEqual(["shutDown:dropped"]);
 	expect(newer.hold.getSnapshot()).toEqual([]);
 
 	// Seen at rest, and a turn began since: that turn is work nobody saw.
@@ -98,7 +100,7 @@ it("shuts down only when no newer turn runs than the one seen", async () => {
 	began.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: false } }, 1);
 	await began.replay.sendImmediate(began.client, began.isLive);
 	expect(methods(began.client)).toEqual([]);
-	expect(began.toasts).toEqual(["A newer turn started, so the session wasn't shut down"]);
+	expect(kinds(began.toasts)).toEqual(["shutDown:dropped"]);
 
 	// Pressed on a session awaiting you at rest, and a turn began since.
 	const rested = setup({ activeTurnId: "turn-3", lastTurnEndedAt: stamp });
@@ -116,7 +118,7 @@ it("shuts down only when no newer turn runs than the one seen", async () => {
 	resting.hold.hold({ kind: "shutDown", ref: "c", title: "C", seen: { turnEndedAt: ended, running: true } }, 1);
 	await resting.replay.sendImmediate(resting.client, resting.isLive);
 	expect(methods(resting.client)).toEqual(["thread/shutdown"]);
-	expect(resting.toasts).toEqual(["Session shut down"]);
+	expect(kinds(resting.toasts)).toEqual(["shutDown:done"]);
 });
 
 it("settles a request the hub refused, with the online action's toast, and keeps one the connection lost", async () => {
@@ -126,7 +128,9 @@ it("settles a request the hub refused, with the online action's toast, and keeps
 	});
 	refused.hold.hold({ kind: "rename", ref: "a", title: "A", name: "B" }, 1);
 	await refused.replay.sendImmediate(refused.client, refused.isLive);
-	expect(refused.toasts).toEqual(["Couldn't rename “A”: not allowed"]);
+	expect(kinds(refused.toasts)).toEqual(["rename:failed"]);
+	// The hub's answer reaches the toast.
+	expect(refused.toasts[0]?.text).toContain("not allowed");
 	expect(refused.hold.getSnapshot()).toEqual([]);
 
 	const lost = setup();
@@ -184,11 +188,11 @@ it("says a held Stop that failed couldn't stop, not that it couldn't shut down",
 		stop: async () => {
 			throw new Error("boom");
 		},
-		toast: (text) => toasts.push(text),
+		toast: (message) => toasts.push(message),
 	});
 	hold.hold(stopOf("b"), 1);
 	await failing.sendImmediate(client, isLive);
-	expect(toasts).toEqual([stopToast("unavailable", "b")]);
+	expect(kinds(toasts)).toEqual(["stop:unavailable"]);
 	expect(hold.getSnapshot()).toEqual([]);
 });
 
@@ -385,7 +389,7 @@ it("keeps a held Stop its guard dropped over a connection that dropped", async (
 			client.emitStateChange("ready");
 			return "dropped";
 		},
-		toast: (text) => toasts.push(text),
+		toast: (message) => toasts.push(message),
 	});
 	hold.hold(stopOf("b"), 1);
 	await replay.sendImmediate(client, () => client.state === "ready");
