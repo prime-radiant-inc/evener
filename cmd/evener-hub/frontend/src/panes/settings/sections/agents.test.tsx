@@ -1,6 +1,6 @@
-import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests, type SettingsOverviewStoreState } from "../../../stores/settingsOverview";
@@ -42,11 +42,20 @@ describe("AgentsSection", () => {
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   });
 
-  test("raises an alert on failure, without leaking the raw error string", () => {
-    render(<AgentsSection sectionId="agents" useOverview={fixture({ error: "network down" })} />);
-    const alert = screen.getByRole("alert");
-    // error is converted via friendlyErrorMessage: the raw wire string never reaches the reader
-    expect(alert.textContent).not.toContain("network down");
+  // The overview store translates a failure while it still has its type, so
+  // the section renders the stored text as-is: a hub-reported explanation or a
+  // client-side diagnosis survives instead of collapsing to the generic one.
+  test.each([
+    ["a hub-reported WireError", new WireError("overview index is rebuilding", -32000)],
+    ["a client-side failure", new Error("AppwireClient closed")],
+  ])("%s keeps its own friendly explanation", async (_name, err) => {
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("evener/settings/overview", () => {
+      throw err;
+    });
+    render(<AgentsSection sectionId="agents" />);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(err)));
     expect(screen.queryByRole("list")).toBeNull();
   });
 
