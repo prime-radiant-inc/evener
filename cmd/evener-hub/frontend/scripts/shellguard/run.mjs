@@ -678,6 +678,66 @@ async function measureOverview(send) {
   })()`);
 }
 
+// The Tasks tab over a list taller than the viewport (the harness's
+// evener/tasks/list fixture answers with 40 rows): the same page-height
+// contract the rail scenario asserts, extended to the Overview's own tab
+// bodies. The tab's scroll container must own the tall list, and the
+// document must not grow: a tall task list scrolling the whole page frame
+// is the bug this step exists to catch.
+async function measureOverviewTasks(send) {
+  await evaluate(send, `(() => {
+    document.querySelector('[data-overview-guard-tasks]')?.removeAttribute('data-overview-guard-tasks');
+    const item = Array.from(document.querySelectorAll(${JSON.stringify(OVERVIEW)} + ' [role="radio"]'))
+      .find(e => e.textContent.includes('Tasks'));
+    if (!item) throw new Error('Overview has no Tasks tab');
+    item.dataset.overviewGuardTasks = '';
+  })()`);
+  await clickControl(send, '[data-overview-guard-tasks]');
+  await waitForDom(
+    send,
+    `document.querySelectorAll('[data-testid="task-row"]').length >= 30`,
+    "the Overview's tall task list rendered",
+  );
+  await settleOverview(send);
+  return evaluate(send, `(() => {
+    const de = document.documentElement;
+    const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+    // The tab viewport: the first scroll container under the aside, in
+    // document order - ActivityViewport's own body div.
+    const scroller = Array.from(aside.querySelectorAll('div'))
+      .find(el => ['auto', 'scroll'].includes(getComputedStyle(el).overflowY));
+    const rows = document.querySelectorAll('[data-testid="task-row"]').length;
+    return {
+      rows,
+      scroller: scroller && {
+        clientHeight: scroller.clientHeight,
+        scrollHeight: scroller.scrollHeight,
+        scrollTop: scroller.scrollTop,
+      },
+      document: { height: de.scrollHeight, width: de.scrollWidth },
+    };
+  })()`);
+}
+
+function assertOverviewTasks(result, viewport) {
+  const failures = [];
+  // Fixture sanity: the tall list really rendered, so "no page overflow" is
+  // a measurement of the loaded tab, not of an empty one that never fetched.
+  if (result.rows < 30) failures.push(`expected a tall task list in the Overview, found ${result.rows} rows`);
+  // The list must actually overflow the tab, so the document check below is
+  // a real measurement: a list shorter than the viewport would make it vacuous.
+  if (!result.scroller || result.scroller.scrollHeight <= result.scroller.clientHeight + 1) {
+    failures.push(`the Overview tab body is not scrolling its task list: ${JSON.stringify(result.scroller)}`);
+  }
+  if (result.document.height > viewport.height + 1) {
+    failures.push(
+      `the task list set the page's height: document ${result.document.height}px in a ${viewport.height}px viewport - ` +
+        "the Overview's tab scroller, not the page frame, must own the tall list",
+    );
+  }
+  return failures;
+}
+
 function assertOverview(result, viewport, theme) {
   const failures = [];
   const labels = ["Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100", "About"];
@@ -940,6 +1000,8 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
       await writeFile(path.join(process.env.EVENER_SCRATCH_DIR, `overview-${viewport.width}-${theme}.png`), Buffer.from(screenshot.result.data, "base64"));
     }
     const failures = assertOverview(result, viewport, theme);
+    result.tasksTab = await measureOverviewTasks(send);
+    failures.push(...assertOverviewTasks(result.tasksTab, viewport));
     const padding = await measureActivityRowPadding(send, viewport);
     result.rowPadding = padding.result;
     failures.push(...padding.failures);
