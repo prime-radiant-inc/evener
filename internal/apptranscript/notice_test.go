@@ -37,9 +37,13 @@ func TestRepairChangePhraseNamesTheFieldWithoutLeakingTheEncoding(t *testing.T) 
 					t.Errorf("repairChangePhrase(%q) = %q, want it to name %q", tc.raw, got, name)
 				}
 			}
-			kind, _, _ := strings.Cut(tc.raw, ":")
+			kind, rest, _ := strings.Cut(tc.raw, ":")
 			if strings.Contains(got, kind) || strings.ContainsAny(got, ":→") {
 				t.Errorf("repairChangePhrase(%q) = %q leaks the repair encoding", tc.raw, got)
+			}
+			field, _, _ := strings.Cut(rest, ":")
+			if fallback := repairChangePhrase("unknown_kind:" + field); kind != "unknown_kind" && got == fallback {
+				t.Errorf("repairChangePhrase(%q) = %q, the phrase for a kind this build does not know", tc.raw, got)
 			}
 			if other, dup := seen[got]; dup {
 				t.Errorf("repairChangePhrase(%q) and (%q) both read %q", tc.raw, other, got)
