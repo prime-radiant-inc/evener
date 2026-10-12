@@ -23,7 +23,6 @@ import (
 //
 //	Project memory index lines changed since you last saw it:
 //	added "<Go-quoted line>"
-//	removed "<Go-quoted line>"
 //
 //	Project memory pages you read that another session changed:
 //	"<Go-quoted path>" changed
@@ -40,12 +39,10 @@ const (
 	// projector decodes it as the truncated flag.
 	memoryIndexPartialHead = " memory index, partial (its last line counts the pages not shown): "
 	memoryChangesHead      = " memory index lines changed since you last saw it:"
-	memoryChangeCounts     = "%d added and %d removed: too many to list."
+	memoryChangeCounts     = "%d added: too many to list."
 	memoryChangeAdded      = "added "
-	memoryChangeRemoved    = "removed "
 	memoryPagesHead        = " memory pages you read that another session changed:"
 	memoryPageChanged      = " changed"
-	memoryPageRemoved      = " removed"
 )
 
 // memoryStateLines are the one-line sections of an index that is not current.
@@ -85,43 +82,30 @@ func MemoryIndexSection(scope, state string, truncated bool, content string) str
 	return label + head + strconv.Quote(content)
 }
 
-// MemoryIndexChangesSection lists the index lines another session added and
-// removed.
-func MemoryIndexChangesSection(scope string, added, removed []string) string {
+// MemoryIndexChangesSection lists the index lines another session added.
+// Removed lines are never reported.
+func MemoryIndexChangesSection(scope string, added []string) string {
 	var b strings.Builder
 	b.WriteString(memoryScopeLabels[scope] + memoryChangesHead)
 	for _, line := range added {
 		b.WriteString("\n" + memoryChangeAdded + strconv.Quote(line))
 	}
-	for _, line := range removed {
-		b.WriteString("\n" + memoryChangeRemoved + strconv.Quote(line))
-	}
 	return b.String()
 }
 
 // MemoryIndexChangeCountsSection reports an index change too large to list.
-func MemoryIndexChangeCountsSection(scope string, added, removed int) string {
-	return memoryScopeLabels[scope] + memoryChangesHead + "\n" + fmt.Sprintf(memoryChangeCounts, added, removed)
-}
-
-// MemoryPageChange is one page the session read that another session changed
-// or removed.
-type MemoryPageChange struct {
-	Path    string
-	Removed bool
+func MemoryIndexChangeCountsSection(scope string, added int) string {
+	return memoryScopeLabels[scope] + memoryChangesHead + "\n" + fmt.Sprintf(memoryChangeCounts, added)
 }
 
 // MemoryPageChangesSection names the pages the session read that another
-// session changed or removed. It never carries page contents.
-func MemoryPageChangesSection(scope string, pages []MemoryPageChange) string {
+// session changed. It never carries page contents, and a page another session
+// removed is not reported.
+func MemoryPageChangesSection(scope string, paths []string) string {
 	var b strings.Builder
 	b.WriteString(memoryScopeLabels[scope] + memoryPagesHead)
-	for _, page := range pages {
-		state := memoryPageChanged
-		if page.Removed {
-			state = memoryPageRemoved
-		}
-		b.WriteString("\n" + strconv.Quote(page.Path) + state)
+	for _, path := range paths {
+		b.WriteString("\n" + strconv.Quote(path) + memoryPageChanged)
 	}
 	return b.String()
 }
@@ -203,17 +187,14 @@ func parseMemoryContextSection(chunk string) (MemoryContextSection, bool) {
 }
 
 // validMemoryChangeLines reports whether lines are a change section's body:
-// added and removed quoted lines, or the counts of a change too large to list.
+// added quoted lines, or the count of a change too large to list.
 func validMemoryChangeLines(lines string) bool {
-	var added, removed int
-	if _, err := fmt.Sscanf(lines, memoryChangeCounts, &added, &removed); err == nil && lines == fmt.Sprintf(memoryChangeCounts, added, removed) {
+	var added int
+	if _, err := fmt.Sscanf(lines, memoryChangeCounts, &added); err == nil && lines == fmt.Sprintf(memoryChangeCounts, added) {
 		return true
 	}
 	for line := range strings.SplitSeq(lines, "\n") {
 		quoted, ok := strings.CutPrefix(line, memoryChangeAdded)
-		if !ok {
-			quoted, ok = strings.CutPrefix(line, memoryChangeRemoved)
-		}
 		if _, tail, valid := unquotePrefix(quoted); !ok || !valid || tail != "" {
 			return false
 		}
@@ -222,10 +203,10 @@ func validMemoryChangeLines(lines string) bool {
 }
 
 // validMemoryPageLines reports whether lines are a page section's body: a
-// quoted path, then whether it changed or was removed, per line.
+// quoted path, then " changed", per line.
 func validMemoryPageLines(lines string) bool {
 	for line := range strings.SplitSeq(lines, "\n") {
-		if _, tail, ok := unquotePrefix(line); !ok || (tail != memoryPageChanged && tail != memoryPageRemoved) {
+		if _, tail, ok := unquotePrefix(line); !ok || tail != memoryPageChanged {
 			return false
 		}
 	}

@@ -116,12 +116,16 @@ func renderDeliveredSystemItems(t *testing.T, items ...appwire.ThreadItem) []str
 	return rendered
 }
 
-// An index change section reads as the changed lines it carries, not as a full
-// index: the unchanged line it leaves out stays out.
+// An index change section reads as the added lines it carries, not as a full
+// index: the unchanged line it leaves out stays out, and a line another
+// session removed is not reported.
 func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
 	rendered := renderDeliveredSystemItem(t, recordedWireItem(t, "memorycontextwire/events.json", "index-change-project"))
-	if !strings.Contains(rendered, "opaque-change-added") || !strings.Contains(rendered, "opaque-change-removed") {
-		t.Fatalf("index change lost its changed lines: %s", rendered)
+	if !strings.Contains(rendered, "opaque-change-added") {
+		t.Fatalf("index change lost its added line: %s", rendered)
+	}
+	if strings.Contains(rendered, "opaque-change-removed") {
+		t.Fatalf("index change reported a removed line: %s", rendered)
 	}
 	if strings.Contains(rendered, "opaque-change-kept") {
 		t.Fatalf("index change rendered the unchanged line, as a full index would: %s", rendered)
@@ -167,11 +171,15 @@ func TestMemoryContextPartialIndexRendersNotShownLine(t *testing.T) {
 	}
 }
 
-// A read-page notice reads as the pages it names.
+// A read-page notice reads as the changed pages it names; a page another
+// session removed is not named.
 func TestMemoryContextPageNoticeRendersPageNames(t *testing.T) {
 	rendered := renderDeliveredSystemItem(t, recordedWireItem(t, "memorycontextwire/events.json", "page-notice-project"))
-	if !strings.Contains(rendered, "opaque-notice-changed.md") || !strings.Contains(rendered, "opaque-notice-removed.md") {
+	if !strings.Contains(rendered, "opaque-notice-changed.md") {
 		t.Fatalf("page notice lost a page name: %s", rendered)
+	}
+	if strings.Contains(rendered, "opaque-notice-removed.md") {
+		t.Fatalf("page notice named a removed page: %s", rendered)
 	}
 }
 
