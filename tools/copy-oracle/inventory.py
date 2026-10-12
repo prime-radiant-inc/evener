@@ -256,6 +256,21 @@ GO_SETUP_GUARD = re.compile(r"^\s*if\s+err\s*!=\s*nil\s*\{")
 TS_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%~^")
 
 
+TS_EXPRESSION_KEYWORDS = {"return", "case", "typeof", "in", "of", "await", "yield", "else", "throw",
+                          "void", "delete", "new", "instanceof", "do"}
+
+
+def word_before(line, i):
+    """The identifier-like word ending just before position i, skipping spaces."""
+    j = i
+    while j > 0 and line[j - 1].isspace():
+        j -= 1
+    k = j
+    while k > 0 and (line[k - 1].isalnum() or line[k - 1] in "_$"):
+        k -= 1
+    return line[k:j]
+
+
 def sanitize(line, lang):
     """The line with the contents of strings, TS regex literals and comments
     replaced by spaces. Its length is unchanged, so offsets found in it apply
@@ -272,9 +287,10 @@ def sanitize(line, lang):
         if c == "/" and i + 1 < n and line[i + 1] == "/":
             blank(i, n)
             break
-        # In TS, a quote straight after a letter or digit is JSX text
-        # ("Don't retry"), not the start of a string literal.
-        if c in "\"'`" and not (lang == "ts" and c != "`" and prev.isalnum()):
+        # In TS, a quote straight after a word is JSX text ("Don't retry"),
+        # unless that word is a keyword that takes an expression (`return "x"`).
+        if c in "\"'`" and not (lang == "ts" and c != "`" and prev.isalnum()
+                                 and word_before(line, i) not in TS_EXPRESSION_KEYWORDS):
             j = i + 1
             while j < n and line[j] != c:
                 j += 2 if line[j] == "\\" else 1
@@ -411,8 +427,15 @@ def copy_only_tests(text, hit_lines, lang, purpose="copy"):
                 return False
             if lang == "go" and not all(go_copy_term(t) for t in go_condition_terms(line)):
                 return False
-            supplied = inputs + "\n" + go_if_initializer(line) if lang == "go" else inputs
-            literals = [first(m.groups()) for m in QUOTED.finditer(line)]
+            if lang == "go":
+                # Compare the condition's literals with what the test supplied,
+                # the `if` initializer included; the initializer's own literals
+                # are inputs, not assertions.
+                supplied = inputs + "\n" + go_if_initializer(line)
+                asserted = " ".join(go_condition_terms(line))
+            else:
+                supplied, asserted = inputs, line
+            literals = [first(m.groups()) for m in QUOTED.finditer(asserted)]
             return not any(lit and lit in supplied for lit in literals)
 
         if not checks or not all(copy_claim(n, line) for n, line in checks):
