@@ -1,6 +1,7 @@
 package cmdutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,6 +61,10 @@ var homeRootFiles = []string{
 // Per-project .serf directories are not checked: that migration is opt-in,
 // run by the user from a project root when ready, not something a binary
 // launch should block on.
+// ErrLegacySerfData identifies a launch stopped by a Serf config or state
+// directory that has not been migrated to Evener's.
+var ErrLegacySerfData = errors.New("legacy Serf data")
+
 func checkLegacyDataDirs() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -97,8 +102,8 @@ func checkLegacyDataDirs() error {
 			continue // already migrated (or the user created it deliberately)
 		}
 		return fmt.Errorf(
-			"found legacy Serf data at %s, not yet migrated to %s: run evener-migrate before continuing, or create %s yourself to start fresh without migrating",
-			p.legacy, p.target, p.target)
+			"found %w at %s, not yet migrated to %s: run evener-migrate before continuing, or create %s yourself to start fresh without migrating",
+			ErrLegacySerfData, p.legacy, p.target, p.target)
 	}
 
 	for _, root := range []string{
