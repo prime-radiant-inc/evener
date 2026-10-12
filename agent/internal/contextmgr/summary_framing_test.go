@@ -21,6 +21,9 @@ func TestStripSummaryFraming(t *testing.T) {
 		"framing both ends":   {summaryMarkerStart + " ## Progress: " + summaryMarkerEnd, "## Progress:"},
 		"framing no colon":    {summaryMarkerStart + " ## Progress " + summaryMarkerEnd, "## Progress"},
 		"framing repeated":    {summaryMarkerStart + summaryMarkerStart + " ## Progress", "## Progress"},
+		"framing alternating": {summaryMarkerEnd + summaryMarkerStart + " ## Progress", "## Progress"},
+		"repeated suffix":     {summaryMarkerStart + " ## Progress " + summaryMarkerEnd + summaryMarkerEnd, "## Progress"},
+
 		"indented delimiter":  {"## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~", "## Progress\n~~~\n    ~~~\n" + summaryMarkerEnd + "\n~~~"},
 		"marker in a line":    {"See the framing " + summaryMarkerEnd + " for the format.", "See the framing " + summaryMarkerEnd + " for the format."},
 		"named in prose":      {"## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing.", "## Progress\nAdded constants " + summaryMarkerStart + " and " + summaryMarkerEnd + " for the framing."},
@@ -120,8 +123,10 @@ func TestSummarizeWithLLM_RejectsAMarkerBesideAHeadingWithNoContent(t *testing.T
 // content under it counts.
 func TestSummarizeWithLLM_ReadsAHeadingBehindMarkersAtBothEnds(t *testing.T) {
 	for name, reply := range map[string]string{
-		"both ends":       summaryMarkerStart + " ## Progress " + summaryMarkerEnd + "\nFixed the auth bug.",
-		"repeated marker": summaryMarkerStart + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
+		"both ends":        summaryMarkerStart + " ## Progress " + summaryMarkerEnd + "\nFixed the auth bug.",
+		"repeated marker":  summaryMarkerStart + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
+		"repeated suffix":  summaryMarkerStart + " ## Progress " + summaryMarkerEnd + summaryMarkerEnd + "\nFixed the auth bug.",
+		"alternating ends": summaryMarkerEnd + summaryMarkerStart + " ## Progress\nFixed the auth bug.",
 	} {
 		t.Run(name, func(t *testing.T) {
 			result, err := summarizeReplying(t, reply, "")

@@ -164,22 +164,37 @@ func indentedCode(line string) bool {
 // framingBesideHeading takes the framing markers off a line's edges, in however
 // many copies sit there, and reports whether what is left is a section heading:
 // the heading a model wrote beside an echoed marker is the summary's own. A
-// marker at the start of a line cannot be part of a heading's text, so those
-// come off once the rest of the line is a heading, inline prose included. A
-// marker at the end could be the tail of that prose, so it comes off only when
-// the heading it leaves holds nothing but its name. A line the markers do not
-// leave as a heading is that text's own word and is left whole.
+// marker at the start of a line cannot be part of a heading's text, so the whole
+// run there comes off once the rest of the line is a heading, inline prose
+// included. A marker at the end could be the tail of that prose, so the run
+// there comes off only when the heading it leaves holds nothing but its name. A
+// line the markers do not leave as a heading is that text's own word and is left
+// whole.
 func framingBesideHeading(line string) (rest string, cut bool) {
 	bare := line
-	for _, marker := range []string{summaryMarkerStart, summaryMarkerEnd} {
-		for strings.HasPrefix(bare, marker) {
-			bare, cut = strings.TrimSpace(strings.TrimPrefix(bare, marker)), true
+	for {
+		without, found := strings.CutPrefix(bare, summaryMarkerStart)
+		if !found {
+			without, found = strings.CutPrefix(bare, summaryMarkerEnd)
 		}
+		if !found {
+			break
+		}
+		bare, cut = strings.TrimSpace(without), true
 	}
-	if without, found := strings.CutSuffix(bare, summaryMarkerEnd); found {
-		if _, inline, ok := summarySectionHeading(strings.TrimSpace(without)); ok && inline == "" {
-			bare, cut = strings.TrimSpace(without), true
+	trailing, run := strings.TrimSpace(bare), 0
+	for {
+		without, found := strings.CutSuffix(trailing, summaryMarkerEnd)
+		if !found {
+			without, found = strings.CutSuffix(trailing, summaryMarkerStart)
 		}
+		if !found {
+			break
+		}
+		trailing, run = strings.TrimSpace(without), run+1
+	}
+	if _, inline, ok := summarySectionHeading(trailing); run > 0 && ok && inline == "" {
+		bare, cut = trailing, true
 	}
 	if !cut {
 		return line, false
