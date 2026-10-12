@@ -617,9 +617,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
     const initial = await evaluate(
       send,
       `(async () => {
-        const trigger = [...document.querySelectorAll('button')].find((button) =>
-          button.textContent?.includes('Session actions'),
-        );
+        const trigger = document.querySelector('[data-session-actions-ref]')?.closest('button');
         if (!trigger) throw new Error('short-height Session actions trigger is missing');
         trigger.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -651,9 +649,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
     const focused = await evaluate(
       send,
       `(() => {
-        const trigger = [...document.querySelectorAll('button')].find((button) =>
-          button.textContent?.includes('Session actions'),
-        );
+        const trigger = document.querySelector('[data-session-actions-ref]')?.closest('button');
         const menu = [...document.querySelectorAll('[role="menu"]')].find(
           (candidate) => candidate.getAttribute('aria-labelledby') === trigger?.id,
         );

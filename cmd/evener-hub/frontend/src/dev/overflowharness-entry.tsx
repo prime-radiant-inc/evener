@@ -1401,13 +1401,11 @@ function twoPaintedFrames(): Promise<void> {
   return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
 
-// The session menu's trigger, located by the lead words of its accessible
-// name; one finder because three probes read it, so a rename edits one
-// literal. Defaults to the whole document; the verb probe scopes to its pane.
+// The session menu's trigger, located by the data-session-actions-ref marker
+// SessionMenu puts inside its icon; one finder because three probes read it.
+// Defaults to the whole document; the verb probe scopes to its pane.
 function findSessionMenuTrigger(root: ParentNode = document): HTMLButtonElement | undefined {
-  return Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.includes("Session actions"),
-  );
+  return root.querySelector("[data-session-actions-ref]")?.closest("button") ?? undefined;
 }
 
 async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
@@ -1426,13 +1424,22 @@ async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
     const toolsRowFocused = document.activeElement === toolTrigger;
 
     transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }));
+    // Open, the intent entry carries its own anchor inside the group; closed,
+    // the group's wrapper is the one anchor and lists the entry as a member.
     const rationale = await waitFor(
-      () => pane.querySelector<HTMLElement>('[data-view-anchor-id="intent:i3b"]'),
+      () =>
+        pane.querySelector<HTMLElement>('[data-view-anchor-id="intent:i3b"]') ??
+        Array.from(pane.querySelectorAll<HTMLElement>("[data-view-anchor-members]")).find((anchor) =>
+          anchor.dataset.viewAnchorMembers?.split(",").includes("intent:i3b"),
+        ) ??
+        null,
       "Chat focus",
       "Chat intent rationale",
     );
     await twoPaintedFrames();
-    const group = rationale.closest<HTMLDetailsElement>('details[data-testid="intent-group"]');
+    const group =
+      rationale.closest<HTMLDetailsElement>('details[data-testid="intent-group"]') ??
+      rationale.querySelector<HTMLDetailsElement>(':scope > details[data-testid="intent-group"]');
     const summary = group?.querySelector<HTMLElement>(":scope > summary");
     const active = document.activeElement;
     return {
