@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,7 +47,7 @@ func TestUpgradeRefusesOversizedArchive(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	_, err := Upgrade(t.Context(), upgradeForChecksumTest(t.TempDir(), server.URL))
-	if err == nil || !strings.Contains(err.Error(), "larger than") {
+	if !errors.Is(err, errArchiveTooLarge) {
 		t.Fatalf("err = %v, want an oversize-archive error", err)
 	}
 }
@@ -141,8 +142,7 @@ func TestExtractRefusesDecompressionBomb(t *testing.T) {
 	if err := os.WriteFile(archivePath, tarGz(t, map[string][]byte{"evener_linux_amd64/evener": big}, nil), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := extractReleaseArchive(t.Context(), archivePath, "evener_linux_amd64", t.TempDir()); err == nil ||
-		!strings.Contains(err.Error(), "expands past") {
+	if err := extractReleaseArchive(t.Context(), archivePath, "evener_linux_amd64", t.TempDir()); !errors.Is(err, errDecompressionBomb) {
 		t.Fatalf("err = %v, want a decompression-bomb refusal", err)
 	}
 }
@@ -162,8 +162,7 @@ func TestExtractCountsIgnoredEntries(t *testing.T) {
 	if err := os.WriteFile(archivePath, tarGz(t, entries, nil), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := extractReleaseArchive(t.Context(), archivePath, "evener_linux_amd64", t.TempDir()); err == nil ||
-		!strings.Contains(err.Error(), "expands past") {
+	if err := extractReleaseArchive(t.Context(), archivePath, "evener_linux_amd64", t.TempDir()); !errors.Is(err, errDecompressionBomb) {
 		t.Fatalf("err = %v, want a decompression-bomb refusal covering ignored entries", err)
 	}
 }

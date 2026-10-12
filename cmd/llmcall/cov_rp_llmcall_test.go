@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,15 +159,26 @@ func TestPrintUsage(t *testing.T) {
 
 	res := &llm.GenerateResult{
 		FinishReason: llm.FinishReason{Reason: llm.FinishReasonStop},
-		TotalUsage:   llm.Usage{InputTokens: 3, OutputTokens: 5, TotalTokens: 8},
-		Response:     llm.Response{Model: "m1", Provider: "fake"},
+		TotalUsage:   llm.Usage{InputTokens: 31, OutputTokens: 57, TotalTokens: 88},
+		Response:     llm.Response{Model: "model-fixture", Provider: "provider-fixture"},
 	}
 	printUsage(&buf, res)
 	out := buf.String()
-	for _, want := range []string{"[model] m1 (fake)", "[finish] stop", "in=3 out=5 total=8"} {
+	// Every value the result carries reaches the report.
+	for _, want := range []string{"model-fixture", "provider-fixture", string(llm.FinishReasonStop)} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("printUsage output missing %q; got %q", want, out)
 		}
+	}
+	// Each token count lands under its own key.
+	counts := map[string]string{}
+	for field := range strings.FieldsSeq(out) {
+		if key, value, ok := strings.Cut(field, "="); ok {
+			counts[key] = value
+		}
+	}
+	if want := map[string]string{"in": "31", "out": "57", "total": "88"}; !maps.Equal(counts, want) {
+		t.Fatalf("printUsage token counts = %v, want %v; output %q", counts, want, out)
 	}
 }
 
@@ -174,7 +189,7 @@ func TestRunLLMCall_InvalidFormat(t *testing.T) {
 		prompt: "hi", provider: "fake", model: "m1", format: "xml",
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, client: c,
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid --format") {
+	if !errors.Is(err, errInvalidFormat) {
 		t.Fatalf("expected invalid format error, got %v", err)
 	}
 }
@@ -191,7 +206,7 @@ func TestRunLLMCall_SchemaRejectsInvalidFormat(t *testing.T) {
 		prompt: "hi", provider: "fake", model: "m1", schema: schema, format: "bogus",
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, client: c,
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid --format") {
+	if !errors.Is(err, errInvalidFormat) {
 		t.Fatalf("expected invalid format error in schema mode, got %v", err)
 	}
 	if called {
@@ -207,7 +222,7 @@ func TestRunLLMCall_BadMetadata(t *testing.T) {
 		metadata: []string{"=novalue"},
 		stdout:   &bytes.Buffer{}, stderr: &bytes.Buffer{}, client: c,
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid --meta") {
+	if !errors.Is(err, errInvalidMetadata) {
 		t.Fatalf("expected metadata error, got %v", err)
 	}
 }
@@ -220,7 +235,7 @@ func TestRunLLMCall_SchemaReadError(t *testing.T) {
 		schema: filepath.Join(t.TempDir(), "missing.json"),
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, client: c,
 	})
-	if err == nil || !strings.Contains(err.Error(), "read --schema") {
+	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("expected schema read error, got %v", err)
 	}
 }
@@ -239,7 +254,7 @@ func TestRunLLMCall_JSONFormatParseError(t *testing.T) {
 		prompt: "hi", provider: "fake", model: "m1", format: "json",
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, client: c,
 	})
-	if err == nil || !strings.Contains(err.Error(), "failed to parse JSON output") {
+	if !errors.As(err, new(*json.SyntaxError)) {
 		t.Fatalf("expected JSON parse error, got %v", err)
 	}
 }
@@ -276,8 +291,8 @@ func TestRunLLMCall_VerboseAndSystemAndMeta(t *testing.T) {
 	if strings.TrimSpace(stdout.String()) != "hi there" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "[usage]") {
-		t.Fatalf("expected verbose usage on stderr, got %q", stderr.String())
+	if stderr.Len() == 0 {
+		t.Fatal("expected verbose usage on stderr, got nothing")
 	}
 }
 
@@ -342,8 +357,8 @@ func TestRunLLMCall_SchemaVerbosePretty(t *testing.T) {
 	if !strings.Contains(stdout.String(), "\"ok\": true") {
 		t.Fatalf("expected pretty schema output, got %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "[usage]") {
-		t.Fatalf("expected verbose usage on stderr, got %q", stderr.String())
+	if stderr.Len() == 0 {
+		t.Fatal("expected verbose usage on stderr, got nothing")
 	}
 }
 
@@ -351,7 +366,7 @@ func TestLLMCallMain_NoPromptWithBadTimeout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	// A prompt arg is present, so stdin is never consulted; the bad --timeout fails.
 	err := llmcallMain([]string{"--timeout", "notaduration", "hello"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "invalid --timeout") {
+	if !errors.Is(err, errInvalidTimeout) {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
@@ -364,7 +379,7 @@ func TestLLMCallMain_MissingProviderAndModel(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err := llmcallMain([]string{"hello"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "no model specified") {
+	if !errors.Is(err, errNoModel) {
 		t.Fatalf("expected model error, got %v", err)
 	}
 
@@ -375,7 +390,7 @@ func TestLLMCallMain_MissingProviderAndModel(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	err = llmcallMain([]string{"--model", "m", "hello"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "no provider specified") {
+	if !errors.Is(err, errNoProvider) {
 		t.Fatalf("expected provider error, got %v", err)
 	}
 

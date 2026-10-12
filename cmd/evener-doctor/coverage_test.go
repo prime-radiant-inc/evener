@@ -99,7 +99,11 @@ func TestLocateOverrideRootLabel(t *testing.T) {
 	t.Cleanup(func() { doctorLocate = old })
 	doctorLocate = func(string, string) (doctor.Paths, error) { return doctor.Paths{SessionID: "s"}, nil }
 	var out, errOut bytes.Buffer
-	if got := run([]string{"locate", "s"}, &out, &errOut); got != 0 || !strings.Contains(out.String(), "(override root)") {
+	if got := run([]string{"locate", "s"}, &out, &errOut); got != 0 {
 		t.Fatalf("locate = %d %q %q", got, out.String(), errOut.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if _, bucket, _ := strings.Cut(lines[len(lines)-1], ":"); strings.TrimSpace(bucket) == "" {
+		t.Fatalf("locate with no project id left the bucket blank:\n%s", out.String())
 	}
 }

@@ -83,7 +83,7 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 		tag = "snapshot"
 		latestCommit = strings.TrimSpace(body)
 		if latestCommit == "" {
-			return CheckResult{}, fmt.Errorf("%s names no commit", snapshotVersionAsset)
+			return CheckResult{}, fmt.Errorf("%s %w", snapshotVersionAsset, errSnapshotNamesNoCommit)
 		}
 	case "release":
 		var latest struct {

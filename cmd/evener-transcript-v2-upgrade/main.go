@@ -22,6 +22,19 @@ import (
 
 const legacyFormatVersion = 1
 
+// Sentinels for the ways a transcript can fail inspection or conversion, so
+// callers can tell them apart without reading the message.
+var (
+	errEmptyTranscript          = errors.New("empty transcript")
+	errIncompleteHeader         = errors.New("incomplete transcript header")
+	errIncompleteFinalRecord    = errors.New("incomplete final record")
+	errNotTranscriptHeader      = errors.New("not a transcript header")
+	errNotLegacyHeader          = errors.New("require transcript header with format_version")
+	errUnsupportedFormatVersion = errors.New("unsupported transcript format_version")
+	errUnsupportedRecordKind    = errors.New("unsupported record kind")
+	errBackupExists             = errors.New("backup already exists")
+)
+
 type options struct {
 	root   string
 	cutoff time.Time
@@ -124,7 +137,7 @@ func upgradeRoot(opts options) (summary, []error, error) {
 		}
 		if version != legacyFormatVersion {
 			result.errors++
-			failures = append(failures, fmt.Errorf("%s: unsupported transcript format_version %d", path, version))
+			failures = append(failures, fmt.Errorf("%s: %w %d", path, errUnsupportedFormatVersion, version))
 			continue
 		}
 		if info.ModTime().Before(opts.cutoff) {
@@ -199,9 +212,9 @@ func inspectTranscriptHeader(path string) (int, os.FileInfo, error) {
 	}
 	if !complete {
 		if bytesRead == 0 {
-			return 0, nil, errors.New("empty transcript")
+			return 0, nil, errEmptyTranscript
 		}
-		return 0, nil, errors.New("record 1: incomplete transcript header")
+		return 0, nil, fmt.Errorf("record 1: %w", errIncompleteHeader)
 	}
 	var boundary struct {
 		Kind          string `json:"kind"`
@@ -211,7 +224,7 @@ func inspectTranscriptHeader(path string) (int, os.FileInfo, error) {
 		return 0, nil, fmt.Errorf("record 1: decode transcript header boundary: %w", err)
 	}
 	if boundary.Kind != "header" {
-		return 0, nil, fmt.Errorf("record 1: kind %q is not a transcript header", boundary.Kind)
+		return 0, nil, fmt.Errorf("record 1: kind %q is %w", boundary.Kind, errNotTranscriptHeader)
 	}
 	if boundary.FormatVersion == transcript.FormatVersion {
 		if _, err := transcript.DecodeHeader(line); err != nil {
@@ -239,9 +252,9 @@ func prepareTranscript(path string) (preparedTranscript, error) {
 	}
 	if !complete {
 		if bytesRead == 0 {
-			return preparedTranscript{}, fmt.Errorf("%s: empty transcript", path)
+			return preparedTranscript{}, fmt.Errorf("%s: %w", path, errEmptyTranscript)
 		}
-		return preparedTranscript{}, fmt.Errorf("%s: record 1: incomplete transcript header", path)
+		return preparedTranscript{}, fmt.Errorf("%s: record 1: %w", path, errIncompleteHeader)
 	}
 	convertedHeader, err := convertHeader(headerLine)
 	if err != nil {
@@ -262,7 +275,7 @@ func prepareTranscript(path string) (preparedTranscript, error) {
 			if bytesRead == 0 {
 				break
 			}
-			return preparedTranscript{}, fmt.Errorf("%s: record %d: incomplete final record", path, recordNumber)
+			return preparedTranscript{}, fmt.Errorf("%s: record %d: %w", path, recordNumber, errIncompleteFinalRecord)
 		}
 
 		var boundary struct {
@@ -291,7 +304,7 @@ func prepareTranscript(path string) (preparedTranscript, error) {
 		case "api_call":
 			removedAPICalls++
 		default:
-			return preparedTranscript{}, fmt.Errorf("%s: record %d: unsupported record kind %q", path, recordNumber, boundary.Kind)
+			return preparedTranscript{}, fmt.Errorf("%s: record %d: %w %q", path, recordNumber, errUnsupportedRecordKind, boundary.Kind)
 		}
 	}
 
@@ -312,7 +325,7 @@ func convertHeader(line []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode transcript header boundary: %w", err)
 	}
 	if boundary.Kind != "header" || boundary.FormatVersion != legacyFormatVersion {
-		return nil, fmt.Errorf("require transcript header with format_version %d", legacyFormatVersion)
+		return nil, fmt.Errorf("%w %d", errNotLegacyHeader, legacyFormatVersion)
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(line, &fields); err != nil {
@@ -386,7 +399,7 @@ func requireUnusedBackup(path string) error {
 	_, err := os.Lstat(backupPath)
 	switch {
 	case err == nil:
-		return fmt.Errorf("%s: backup already exists", backupPath)
+		return fmt.Errorf("%s: %w", backupPath, errBackupExists)
 	case errors.Is(err, os.ErrNotExist):
 		return nil
 	default:

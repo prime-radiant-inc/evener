@@ -716,10 +716,9 @@ func visibleFailClosedDiagnostics(evs []events.SessionEvent) int {
 }
 
 // isFailClosedRefusal reports whether err is the refusal a session that
-// failed closed gives every later input. agent.errTranscriptFailedClosed is
-// unexported, so this matches its stable message instead of errors.Is.
+// failed closed gives every later input.
 func isFailClosedRefusal(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "cannot record what it shows")
+	return errors.Is(err, agent.ErrTranscriptFailedClosed)
 }
 
 // TestUnrecordedAppendFailsClosed drives a real served session (a scripted

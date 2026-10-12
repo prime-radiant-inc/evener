@@ -108,7 +108,7 @@ func TestAServedSessionWithNoTranscriptFailsClosed(t *testing.T) {
 	})
 	served := serveFailClosedSession(s)
 	for range 2 {
-		if _, err := s.ProcessInput(context.Background(), "hello", nil); !errors.Is(err, errTranscriptFailedClosed) {
+		if _, err := s.ProcessInput(context.Background(), "hello", nil); !errors.Is(err, ErrTranscriptFailedClosed) {
 			t.Fatalf("input on a failed-closed session = %v, want the fail-closed refusal", err)
 		}
 	}
@@ -194,7 +194,7 @@ func TestAPoisonedWriterFailsAServedSessionClosed(t *testing.T) {
 	if !w.Poisoned() {
 		t.Fatal("setup: the torn write did not poison the writer")
 	}
-	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("input after the poisoning = %v, want the fail-closed refusal", err)
 	}
 	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
@@ -241,7 +241,7 @@ func TestAFailedClosedSessionAnnouncesAtAClientClaim(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ProcessClientMutationStart(context.Background(), nil); !errors.Is(err, errTranscriptFailedClosed) {
+	if _, _, err := s.ProcessClientMutationStart(context.Background(), nil); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("claim on a failed-closed session = %v, want the fail-closed refusal", err)
 	}
 	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
@@ -261,7 +261,7 @@ func TestAnUnrecordedCommunicateFailsAServedSessionClosed(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err == nil {
 		t.Fatal("the input completed after its communicate was not recorded")
 	}
-	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("input after failing closed = %v, want the fail-closed refusal", err)
 	}
 	evs := served.settle(s)
@@ -339,7 +339,7 @@ func TestDeliverCommunicateFailsClosedWithNoTranscript(t *testing.T) {
 	if s.attachedTranscript() != nil {
 		t.Fatal("setup: expected no writer")
 	}
-	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-no-writer", EndTurn: true, Message: "lost"}); !errors.Is(err, errTranscriptFailedClosed) {
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-no-writer", EndTurn: true, Message: "lost"}); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("deliverCommunicate with no writer = %v, want the fail-closed refusal", err)
 	}
 	evs := served.settle(s)
@@ -359,7 +359,7 @@ func TestDeliverCommunicateAfterAlreadyFailedClosedDoesNotReannounce(t *testing.
 	s, _ := newFailClosedSession(t, nil)
 	served := serveFailClosedSession(s)
 	s.failClosed(errors.New("earlier cause"))
-	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-late", EndTurn: true, Message: "too late"}); !errors.Is(err, errTranscriptFailedClosed) {
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-late", EndTurn: true, Message: "too late"}); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("deliverCommunicate on an already failed-closed session = %v, want the fail-closed refusal", err)
 	}
 	evs := served.settle(s)
@@ -420,7 +420,7 @@ func TestAnUnrecordedCompletionFailsAServedSessionClosed(t *testing.T) {
 		return communicateResponse(true, "done"), nil
 	})
 	_, _ = s.ProcessInput(context.Background(), "finish", nil)
-	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("input after an unrecorded completion = %v, want the fail-closed refusal", err)
 	}
 	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
@@ -439,7 +439,7 @@ func TestACleanRollbackOfAnOrdinaryEntryKeepsTheSessionRunning(t *testing.T) {
 	refuseEntries(t, s, schema.TurnUserInput)
 	for _, input := range []string{"first", "second"} {
 		_, err := s.ProcessInput(context.Background(), input, nil)
-		if err == nil || errors.Is(err, errTranscriptFailedClosed) {
+		if err == nil || errors.Is(err, ErrTranscriptFailedClosed) {
 			t.Fatalf("input %q with its USER_INPUT rolled back = %v, want the append's own error", input, err)
 		}
 	}
@@ -701,7 +701,7 @@ func TestRetainedCompletionFailsAServedSessionClosedAfterExhaustingRetries(t *te
 	}
 	driveDurabilityRetries(clk, baseline, durabilityRetryAttempts)
 	s.sendersWG.Wait() // the retry goroutine fails closed (or not) before this returns
-	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("input after exhausted retries = %v, want the fail-closed refusal", err)
 	}
 	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
