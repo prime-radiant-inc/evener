@@ -810,7 +810,7 @@ func TestBackgroundTranscriptBrowserGuardLaunchContract(t *testing.T) {
 		t.Fatalf("gate result = %+v", r)
 	}
 	spec := launcher.specs[backgroundTranscriptGuard]
-	wantArgv := []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsBrowser$", "-count=1"}
+	wantArgv := []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsEntrySliceBrowser$", "-count=1"}
 	if !slices.Equal(spec.argv, wantArgv) {
 		t.Errorf("argv = %q, want %q", spec.argv, wantArgv)
 	}

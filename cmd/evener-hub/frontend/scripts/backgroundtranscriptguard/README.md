@@ -1,20 +1,14 @@
 # backgroundtranscriptguard
 
-The whole-journey proof for background Live transcripts. It drives the **real**
-hub web app in Vite development mode in real Chrome through a **real** hub
-against **two real `evener serve` daemons**, with the only scripted piece at the
-external LLM provider adapter. It replaces no Evener internal with a mock.
+The whole-journey proof for background Live transcripts on the production entry
+route. It drives the **real** hub web app in Vite development mode in real Chrome
+through a **real** hub against **two real `evener serve` daemons**, with the only
+scripted piece at the external LLM provider adapter. It replaces no Evener
+internal with a mock.
 
 The guard is registered in `cmd/evener-dev/webbrowser.go` and runs through the
 browser gate (`make test-web-browser`) as `web-backgroundtranscriptguard`. The
 Gate's launch contract is:
-
-```
-go test -tags browserguard ./cmd/evener-hub -run '^TestBackgroundTranscriptsBrowser$' -count=1
-```
-
-The narrow selected-session entry-storage proof is an additional command, not a
-replacement for the full qualification:
 
 ```
 go test -tags browserguard ./cmd/evener-hub -run '^TestBackgroundTranscriptsEntrySliceBrowser$' -count=1
@@ -22,57 +16,45 @@ go test -tags browserguard ./cmd/evener-hub -run '^TestBackgroundTranscriptsEntr
 
 ## What it proves
 
-`TestBackgroundTranscriptsBrowser` (`cmd/evener-hub/background_transcripts_browser_test.go`)
-starts the fixture hub (real roster prober + past index + `newWebServer` +
-`appserver.NewWebSocketTrace`) and two compiled `evener serve` helper daemons,
-then runs `run.mjs`. The driver owns the browser gestures and records
+`TestBackgroundTranscriptsEntrySliceBrowser`
+(`cmd/evener-hub/background_transcripts_browser_test.go`) starts the fixture hub
+(real roster prober + past index + `newWebServer` + `appserver.NewWebSocketTrace`)
+and two compiled `evener serve` helper daemons, then runs `run.mjs` with
+`--entry-production true`. The driver owns the browser gestures and records
 milestones; the Go test owns the daemons, hub and every assertion against what
 the daemons actually received (provider request logs, phase acknowledgments,
 durable transcripts) and what the real hub AppWire trace recorded.
 
 The journey, in order:
 
-1. The dev entry installs Task 5's tiny budgets (`residentBytes: 64 KiB`,
-   `pendingBytes: 32 KiB`) **before** the real app imports; the target session
-   produces the before-eviction text as a background subscription, and its
-   checkpoint is committed to real IndexedDB.
-2. The `after-eviction` phase is released only after that observation;
-   `BACKGROUND_AFTER_EVICTION` and the real `shell` tool output are produced
-   while the target is unopened, and the target is evicted from the resident map.
-3. The target is opened through the rail: literal before/after text and tool
-   output render, the trace position is recorded for zero-activation-read
-   checking, the turn finishes and each produced item appears exactly once.
-4. History paging, disk handoff, reopen-without-read and further paging.
-5. A real WebSocket interruption via Chrome network controls, a completed turn
-   in the gap, reconnect with an authoritative latest window, and paging back.
-6. Narrow-viewport preservation and a bounded sustained two-session workload
-   with deterministic batching phases.
+1. The dev entry installs the entry harness budgets (`residentBytes: 64 KiB`,
+   `pendingBytes: 101 KiB`) **before** the real app imports; the selected target
+   session's durable entry rows are committed to real IndexedDB, and the Go
+   owner asserts the selected ref carries no legacy cache record.
+2. The target produces its before-eviction background output while it is never
+   opened, and the pane then opens through the rail rendering from local entry
+   history. The trace byte window around that activation must contain no target
+   `thread/read` or `thread/turns/list` request, and a live streaming sentinel
+   must be absent from entry rows until its turn completes.
+3. The turn finishes; `BACKGROUND_AFTER_EVICTION` and the real `shell` tool
+   output are recorded in native entry storage. Each produced item renders
+   exactly once in its real tool output region, the renderer's recorded items
+   match the native IndexedDB item/turn/coverage rows one-to-one by keyed
+   identity and position, and the durable producer turn/call identity matches
+   independently.
+4. The raw renderer items, rendered rows, output region, native items, turns and
+   coverage boundaries are retained in `entry-audit.json`, and the Go owner
+   re-reads the daemon's own durable `target-producer-transcript.jsonl` for the
+   producer assertions.
 
-Note on step 4: this base has **no dedicated transcript Find surface** (no Find
-component, testid or keybinding), so the open reader is exercised as a
-`history-holder` — its loaded pages, scroll anchor and resident model are kept
-under pressure. A Find-specific holder is not tested because no such surface
-exists.
+### Retired legacy journey
 
-## Narrow entry-slice journey
-
-`TestBackgroundTranscriptsEntrySliceBrowser` uses the same two real daemons,
-hub, Vite/Chrome driver, and AppWire trace. Its opt-in `--entry-slice true` mode
-selects only session B for the isolated version-3 entry database; the full test
-keeps its existing workload and assertions. The browser captures a trace byte
-offset after the background baseline, opens the selected pane through the rail,
-and proves that the activation interval contains no target `thread/read` or
-`thread/turns/list` request. It retains raw renderer items and native IndexedDB
-item, turn, and coverage rows in `entry-audit.json`, then checks their keyed
-identities and producer-item positions against the recorded coverage boundaries.
-It reads output from the rendered shell output `<pre>`, not the command label.
-The Go owner independently reads and retains the daemon's
-`target-producer-transcript.jsonl`, compares the provider turn and tool-call
-identity/content with those rows, and checks the expanded shell output region
-contains the exact tool output once. The journey also verifies a live
-streaming sentinel is absent from entry rows until completion, and that the
-selected ref has no legacy record. The Go owner independently parses the real
-hub trace window and rejects a missing initial subscribed read.
+The legacy client-side session-cache route and its stores were removed (6d-2b).
+The journey that drove that route (`TestBackgroundTranscriptsBrowser` and the
+legacy branch of `run.mjs`) was retired with it; the entry route is the only
+journey. The page-back, reopen, reconnect, narrow-viewport and sustained
+two-session batching assertions that the legacy journey carried are no longer
+covered by this browser guard.
 
 ## Auth and proxy prerequisites
 

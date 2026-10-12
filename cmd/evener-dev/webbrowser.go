@@ -30,9 +30,9 @@ const (
 	cascadeGuard    = "cascadeguard"
 	retirementGuard = "retirementguard"
 	// backgroundTranscriptGuard is the whole-journey guard: cmd/evener-hub's
-	// TestBackgroundTranscriptsBrowser (browserguard build tag) drives the real
-	// background-to-disk-to-pane journey in real Chrome through a real hub and
-	// two real `evener serve` daemons.
+	// TestBackgroundTranscriptsEntrySliceBrowser (browserguard build tag) drives
+	// the real background-to-disk-to-pane journey in real Chrome through a real
+	// hub and two real `evener serve` daemons, on the production entry route.
 	backgroundTranscriptGuard = "backgroundtranscriptguard"
 )
 
@@ -89,14 +89,14 @@ func browserGuardSpec(guard, root string) guardSpec {
 		}
 	case backgroundTranscriptGuard:
 		// backgroundtranscriptguard's contract is cmd/evener-hub's
-		// TestBackgroundTranscriptsBrowser (browserguard build tag): the real
-		// background-to-disk-to-pane journey in real Chrome through a real hub
-		// and two real `evener serve` daemons. Like the skill guard it is a go
-		// test, so its driver, Chrome and helper daemons are cleaned up by the
-		// test binary's own t.Cleanup.
+		// TestBackgroundTranscriptsEntrySliceBrowser (browserguard build tag):
+		// the real background-to-disk-to-pane journey on the production entry
+		// route in real Chrome through a real hub and two real `evener serve`
+		// daemons. Like the skill guard it is a go test, so its driver, Chrome
+		// and helper daemons are cleaned up by the test binary's own t.Cleanup.
 		return guardSpec{
 			name: guard,
-			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsBrowser$", "-count=1"},
+			argv: []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsEntrySliceBrowser$", "-count=1"},
 			dir:  ".",
 			env:  []string{vite},
 		}
