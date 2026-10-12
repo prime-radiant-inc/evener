@@ -603,6 +603,16 @@ describe("ActivityTree", () => {
     expect(kindGlyph.getAttribute("aria-label")).toBe("Working");
   });
 
+  test("a live delegate row keeps its intent beside token usage", () => {
+    const tree = intentDelegateTree(
+      { usage: { inputTokens: 41200, outputTokens: 6100 } },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    expect(metaText(row)).toBe("Reading the board. · ↑41.2K ↓6.1K");
+  });
+
   test("a terminal delegate row keeps its status word over a stale intent", () => {
     const tree = intentDelegateTree(
       {

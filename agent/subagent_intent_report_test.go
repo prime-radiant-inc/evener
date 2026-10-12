@@ -304,6 +304,39 @@ func TestChildNoIntentCallLeavesThePreviousLineStanding(t *testing.T) {
 	waitSubagentRun(t, child)
 }
 
+// TestChildBlankIntentCallLeavesThePreviousLineStanding pins the meter's
+// precedent on a whitespace-only intent: such a line's excerpt is empty, and
+// an empty report is the execution-start clear's word, so a call stating only
+// whitespace reports nothing and the previous line keeps standing.
+func TestChildBlankIntentCallLeavesThePreviousLineStanding(t *testing.T) {
+	firstEntered := make(chan struct{})
+	firstRelease := make(chan struct{})
+	secondEntered := make(chan struct{})
+	secondRelease := make(chan struct{})
+	f := newIntentReportFixture(t,
+		func(llm.Request) llm.Response {
+			return toolCallResponse(readFileCall("r1", "Reading the board's row tests."))
+		},
+		blockStep(firstEntered, firstRelease, func() llm.Response {
+			return toolCallResponse(readFileCall("r2", "  "))
+		}),
+		blockStep(secondEntered, secondRelease, func() llm.Response { return finalResponse("done") }),
+	)
+	delegateID, child := f.spawn(t)
+
+	<-firstEntered
+	close(firstRelease)
+	<-secondEntered
+	// The blank call has started and finished inside this round; its excerpt
+	// is the empty clear word, which no tool call states — the line from the
+	// first call must still be standing.
+	if got := durableIntentState(t, f.parent.delegateController, delegateID).LatestIntent; got != "Reading the board's row tests." {
+		t.Fatalf("a call stating only whitespace changed the standing line to %q", got)
+	}
+	close(secondRelease)
+	waitSubagentRun(t, child)
+}
+
 // TestNewestStartedCallWinsWithinOneBatch pins the batch rule: within one
 // batch, the newest started call's intent is the line the row keeps. The two
 // calls are apply_patch calls, which the ordered-group algorithm serializes in
