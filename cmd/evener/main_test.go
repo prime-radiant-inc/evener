@@ -53,9 +53,7 @@ func TestMainRejectsEnabledPluginsWithResumeBeforeRun(t *testing.T) {
 	if runCalled {
 		t.Fatal("run called after an enabled-plugin/resume conflict")
 	}
-	if stderr.Len() == 0 || stdout.Len() != 0 {
-		t.Fatalf("stdout = %q, stderr = %q; want the refusal on stderr only", stdout.String(), stderr.String())
-	}
+	requireOnlyStderr(t, &stdout, &stderr)
 }
 
 // liveRegistryClient builds the client the live CLI tests dispatch through:
@@ -726,9 +724,7 @@ func TestRunOpenAI_HelpAndUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runOpenAI(help) error = %v", err)
 		}
-		if stderr.Len() == 0 || stdout.Len() != 0 {
-			t.Fatalf("stdout = %q, stderr = %q; want usage on stderr only", stdout.String(), stderr.String())
-		}
+		requireOnlyStderr(t, &stdout, &stderr)
 	})
 
 	t.Run("unknown command", func(t *testing.T) {
@@ -740,9 +736,7 @@ func TestRunOpenAI_HelpAndUnknown(t *testing.T) {
 		if unknown, ok := errors.AsType[*unknownSubcommandError](err); !ok || unknown.name != "frobnicate" {
 			t.Fatalf("error = %v, want an unknownSubcommandError naming frobnicate", err)
 		}
-		if stderr.Len() == 0 || stdout.Len() != 0 {
-			t.Fatalf("stdout = %q, stderr = %q; want usage on stderr only", stdout.String(), stderr.String())
-		}
+		requireOnlyStderr(t, &stdout, &stderr)
 	})
 }
 
@@ -900,4 +894,13 @@ func TestRunOpenAILogin_Errors(t *testing.T) {
 			t.Fatalf("stdout = %q, stderr = %q; want the flag error and usage on stderr only", stdout.String(), stderr.String())
 		}
 	})
+}
+
+// requireOnlyStderr fails the test unless a command wrote its usage or
+// refusal to stderr and left stdout, the script-facing stream, empty.
+func requireOnlyStderr(t *testing.T, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if stderr.Len() == 0 || stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, stderr = %q; want output on stderr only", stdout.String(), stderr.String())
+	}
 }

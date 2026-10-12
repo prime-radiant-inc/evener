@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -118,7 +117,7 @@ func TestModelsList(t *testing.T) {
 	if err := runModels([]string{"list", "--provider", "cohere", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(listedRefs(stdout.String()), "cohere/") {
+	if listedRow(stdout.String(), "cohere/") == "" {
 		t.Fatalf("--all must list the hidden provider as a bare row:\n%s", stdout.String())
 	}
 }
@@ -134,7 +133,7 @@ func TestModelsListAllCoversCuratedProviders(t *testing.T) {
 	if !strings.Contains(out, "huggingface/") {
 		t.Fatal("--all must list a curated provider that is not an instance")
 	}
-	if !slices.Contains(listedRefs(out), "cohere/") {
+	if listedRow(out, "cohere/") == "" {
 		t.Fatalf("--all must list a hidden provider as a bare row:\n%s", out)
 	}
 	stdout.Reset()
@@ -282,28 +281,18 @@ func TestModelsRefreshUsesInjectedFetcher(t *testing.T) {
 
 func TestModelsUsageAndUnknown(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if err := runModels(nil, strings.NewReader(""), &stdout, &stderr); err != nil || stderr.Len() == 0 || stdout.Len() != 0 {
-		t.Fatalf("usage: %v stdout=%q stderr=%q, want usage on stderr only", err, stdout.String(), stderr.String())
+	if err := runModels(nil, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("usage: %v", err)
 	}
+	requireOnlyStderr(t, &stdout, &stderr)
 	err := runModels([]string{"bogus"}, strings.NewReader(""), &stdout, &stderr)
 	if unknown, ok := errors.AsType[*unknownSubcommandError](err); !ok || unknown.name != "bogus" {
 		t.Fatalf("unknown subcommand error = %v, want an unknownSubcommandError naming bogus", err)
 	}
 }
 
-// listedRefs returns the REF column of `evener models list` output, the
-// header excluded.
-func listedRefs(out string) []string {
-	var refs []string
-	for line := range strings.SplitSeq(out, "\n") {
-		if fields := strings.Fields(line); len(fields) > 0 && fields[0] != "REF" {
-			refs = append(refs, fields[0])
-		}
-	}
-	return refs
-}
-
-// listedRow returns the `evener models list` row whose REF is ref.
+// listedRow returns the `evener models list` row whose REF is ref, or "" when
+// none is listed.
 func listedRow(out, ref string) string {
 	for line := range strings.SplitSeq(out, "\n") {
 		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == ref {

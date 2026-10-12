@@ -305,9 +305,7 @@ func TestPluginHelp(t *testing.T) {
 	if err := runPlugin([]string{"help"}, nil, &out, &errb); err != nil {
 		t.Fatalf("runPlugin help: %v", err)
 	}
-	if errb.Len() == 0 || out.Len() != 0 {
-		t.Fatalf("stdout = %q, stderr = %q; want usage on stderr only", out.String(), errb.String())
-	}
+	requireOnlyStderr(t, &out, &errb)
 }
 
 // TestPluginList_JSONEmpty pins the exact `[]` encoding for an empty store,

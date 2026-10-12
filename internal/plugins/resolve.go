@@ -1111,10 +1111,6 @@ func countHooks(hooks map[agentplugin.HookEvent][]agentplugin.RegisteredHook) in
 	return count
 }
 
-// ErrSelectionUnavailable identifies an --enabled-plugins selection naming a
-// plugin that cannot be loaded.
-var ErrSelectionUnavailable = errors.New("enabled plugin selection is unavailable")
-
 // ValidateSelection returns one deterministic error for all invalid requested
 // names. Candidate diagnostics are intentionally not validation failures.
 func (r LaunchPluginResolution) ValidateSelection() error {
