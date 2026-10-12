@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // backgroundtranscriptguard — the whole-journey proof for background Live
 // transcripts. It drives the REAL hub web app in Vite development mode in real
-// Chrome through a REAL hub (started by TestBackgroundTranscriptsBrowser in
-// cmd/evener-hub/background_transcripts_browser_test.go) against two REAL
+// Chrome through a REAL hub (started by TestBackgroundTranscriptsEntrySliceBrowser
+// in cmd/evener-hub/background_transcripts_browser_test.go) against two REAL
 // `evener serve` daemons. The only scripted piece is the external LLM provider
 // adapter (cmd/evener/skill_browser_helper_test.go); the driver never invents a
 // product endpoint.
@@ -29,11 +29,13 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   applyViewport,
+  closePage,
   connectPage,
   createStartupDeadline,
   devtoolsHttpURL,
   evaluate,
   navigateTo,
+  openPage,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
@@ -42,20 +44,32 @@ import { Driver } from "../skillguard/run.mjs";
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROFILE_PREFIX = "backgroundtranscriptguard-chrome-";
 const VIEWPORT = { width: 1440, height: 1000 };
+// At or below 899px the desktop RailHost is not mounted and the shell uses its
+// mobile Sessions sheet; 420px exercises that repeat-activation shell.
+const NARROW_VIEWPORT = { width: 420, height: 900 };
 
 const BEFORE = "BACKGROUND_BEFORE_EVICTION";
 const AFTER = "BACKGROUND_AFTER_EVICTION";
 const TOOL_OUTPUT = "BACKGROUND_TOOL_OUTPUT";
 const HISTORY_ASSISTANT = "BACKGROUND_HISTORY_REPLY";
+// The turn produced on the target's own daemon while the browser socket is
+// down; it must arrive with the reconnect's authoritative latest window.
+const GAP_SENTINEL = "BACKGROUND_GAP_TURN";
 
 // At least two older pages of history, and which turn is the visible
 // later-page sentinel kept across the close/reopen.
 // Forty real history turns are produced through the helper BEFORE the browser
 // opens its app page, so the target's initial thread/read is a truncated real
-// history window with a nonempty olderCursor. Forty short turns (~3 items each)
-// span more than three 40-ITEM pages, leaving a nonempty cursor after two older
-// pages are loaded.
+// history window with a nonempty olderCursor. The window and each older page
+// hold a bounded item count; two older pages load the later-page sentinel and
+// may complete the produced history, in which case no cursor remains. A larger
+// seed that leaves a cursor also makes the reopened pane issue one ordinary
+// older-page request (see the coverage report), so this journey keeps the
+// geometry under which the local reopen is provably fetch-free.
 const HISTORY_TURNS = 40;
+// Which seeded history turn is the visible later-page row kept across the
+// close/reopen and looked for again after reconnect paging.
+const LATER_PAGE = 7;
 
 // The dev entry installs 64 KiB resident / 32 KiB pending; the guard proves the
 // configured limits are the ones in effect.
@@ -130,7 +144,7 @@ function loadConfig(argv) {
   if (missing.length > 0) {
     console.error(`backgroundtranscriptguard: missing required arguments: ${missing.map((n) => `--${n}`).join(", ")}`);
     console.error(
-      "This guard must be invoked by TestBackgroundTranscriptsBrowser in cmd/evener-hub/background_transcripts_browser_test.go",
+      "This guard must be invoked by TestBackgroundTranscriptsEntrySliceBrowser in cmd/evener-hub/background_transcripts_browser_test.go",
     );
     process.exit(1);
   }
@@ -814,7 +828,9 @@ async function main() {
       // the Vite origin (same hostname, cookies are port-agnostic), then load the
       // guard's own nested HTML through Vite.
       await navigateTo(page, AUTH_URL, { retryDelayMs: 250 });
-      const harnessUrl = `http://127.0.0.1:${vitePort}/scripts/backgroundtranscriptguard/index.html${ENTRY_PRODUCTION ? "?entry-production=true" : ""}`;
+      // The entry route is the only route, so the harness budget query is always
+      // present; runJourney rejects a run without it.
+      const harnessUrl = `http://127.0.0.1:${vitePort}/scripts/backgroundtranscriptguard/index.html?entry-production=true`;
       try {
         await navigateTo(page, harnessUrl, BOOT);
       } catch (error) {
@@ -837,6 +853,7 @@ async function main() {
         );
       }
       await runJourney(driver, ENTRY_PRODUCTION);
+      await runTwoTabFencing(driver, cdpEndpoint, harnessUrl);
     } finally {
       try {
         await driver.dumpState?.("final");
@@ -1090,6 +1107,237 @@ async function runEntryProductionJourney(driver) {
   if (activation.reads !== 0 || activation.pages !== 0) {
     throw new Error(`selected pane opening issued network history requests: ${JSON.stringify(activation)}`);
   }
+
+  // ---- paging: real older pages, a visible later-page row, remaining cursor ----
+  // The forty seeded turns predate the app's first read, so the target's initial
+  // read is a truncated real history window with a nonempty cursor.
+  const seeded = targetPagingEvidence(SESSION_B);
+  if (seeded.readResponses === 0 || !seeded.initialOlderCursor) {
+    throw new Error(
+      `the selected session's initial read is not a truncated real history window: readResponses=${seeded.readResponses}, initialOlderCursor=${JSON.stringify(seeded.initialOlderCursor)}`,
+    );
+  }
+  await waitForPaneText(driver, SESSION_B, historySentinel(HISTORY_TURNS), 60000, "the newest seeded history turn");
+  // Load at least two REAL older pages through the real scroll port. Each scroll
+  // must issue a thread/turns/list request; a synthetic event or an ancestor
+  // element would issue none.
+  let paging = await scrollToTopAndWaitPage(driver, SESSION_B, seeded.pages);
+  paging = await scrollToTopAndWaitPage(driver, SESSION_B, paging.pages);
+  const laterPageSentinel = historySentinel(LATER_PAGE);
+  const renderedLater = await scrollSentinelIntoView(driver, SESSION_B, laterPageSentinel);
+  const pagesComplete = furtherHistoryValidator(
+    await readTargetDomain(driver, SESSION_B),
+    expectedHistorySequence(),
+  ).ordered;
+  driver.milestone("history-paging", {
+    turns: HISTORY_TURNS,
+    initialOlderCursor: seeded.initialOlderCursor,
+    pages: paging.pages,
+    remainingCursor: paging.lastCursor,
+    pagesComplete,
+    laterSentinel: laterPageSentinel,
+    laterRendered: renderedLater,
+  });
+  if (paging.pages < 2) throw new Error(`the pane issued ${paging.pages} older pages, want at least two`);
+  if (!renderedLater) {
+    throw new Error(`the later-page sentinel ${laterPageSentinel} did not render after two older pages`);
+  }
+  if (!paging.lastCursor && !pagesComplete) {
+    throw new Error("two older pages exhausted the cursor; none remains for the further-paging phase");
+  }
+
+  // ---- close/reopen without a read: local durable restore ----
+  const retainedDomain = await readTargetDomain(driver, SESSION_B);
+  const retainedCursor = retainedDomain?.cursor ?? "";
+  await driver.openSession(SESSION_A);
+  await driver.waitPage(
+    `(() => document.querySelector("[data-pane-scaffold='session:${SESSION_B}']") === null ? true : null)()`,
+    { timeoutMs: 30000, label: "the selected pane closes when another session opens" },
+  );
+  const reopenBefore = traceBytes();
+  await driver.openSession(SESSION_B);
+  const restoredDomain = await waitForRestoredDomain(driver, SESSION_B, laterPageSentinel);
+  const reopenAfter = traceBytes();
+  const reopenWindow = countTargetRequestsInWindow(SESSION_B, reopenBefore, reopenAfter);
+  const restoreCheck = retainedHistoryValidator(
+    { domain: retainedDomain, cursor: retainedCursor, sentinel: laterPageSentinel },
+    restoredDomain,
+  );
+  driver.milestone("reopen-without-read", {
+    ref: SESSION_B,
+    traceBefore: reopenBefore,
+    traceAfter: reopenAfter,
+    sentinel: laterPageSentinel,
+    cursor: retainedCursor,
+    restoredCursor: restoreCheck.restoredCursor,
+    keptItems: restoreCheck.keptItems,
+    restoredHasSentinel: restoreCheck.restoredHasSentinel,
+    reads: reopenWindow.reads,
+    pages: reopenWindow.pages,
+  });
+  if (reopenWindow.reads !== 0 || reopenWindow.pages !== 0) {
+    throw new Error(
+      `reopen performed a fetch (reads=${reopenWindow.reads}, pages=${reopenWindow.pages}) instead of local restoration`,
+    );
+  }
+  if (!restoreCheck.cursorEqual) {
+    throw new Error(
+      `reopen changed the cursor: retained ${JSON.stringify(restoreCheck.retainedCursor)} vs restored ${JSON.stringify(restoreCheck.restoredCursor)}`,
+    );
+  }
+  if (!restoreCheck.contentOrdered) throw new Error("reopen lost retained loaded history content or order");
+  if (!restoreCheck.restoredHasSentinel) {
+    throw new Error(`the retained later-page sentinel ${laterPageSentinel} is missing from the restored model`);
+  }
+
+  // ---- further paging: complete the produced history in order, no duplicates ----
+  const beforeFurther = targetPagingEvidence(SESSION_B).pages;
+  let pagedDomain = await readTargetDomain(driver, SESSION_B);
+  const alreadyComplete = furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered;
+  let scrolled = { pages: beforeFurther, lastCursor: targetPagingEvidence(SESSION_B).lastCursor };
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (furtherHistoryValidator(pagedDomain, expectedHistorySequence()).ordered) break;
+    scrolled = await scrollToTopAndWaitPage(driver, SESSION_B, scrolled.pages);
+    pagedDomain = await readTargetDomain(driver, SESSION_B);
+  }
+  const pagedIds = (pagedDomain?.items ?? []).map((i) => i.id);
+  const noDuplicates = new Set(pagedIds).size === pagedIds.length;
+  const furtherCheck = furtherHistoryValidator(pagedDomain, expectedHistorySequence());
+  driver.milestone("further-paging", {
+    pages: scrolled.pages - beforeFurther,
+    alreadyComplete,
+    requiredPage: !alreadyComplete,
+    cursor: scrolled.lastCursor,
+    noDuplicates,
+    historyOrdered: furtherCheck.ordered,
+    historyCount: furtherCheck.count,
+    expectedCount: furtherCheck.expectedCount,
+  });
+  if (!alreadyComplete && scrolled.pages <= beforeFurther) {
+    throw new Error("further paging after reopen issued no older target page");
+  }
+  if (!noDuplicates) throw new Error("further paging introduced duplicate items");
+  if (!furtherCheck.ordered) {
+    throw new Error(`further paging did not restore the produced history in order: ${JSON.stringify(furtherCheck)}`);
+  }
+
+  // ---- a real WebSocket gap, a turn completing during it, reconnect ----
+  await driver.send("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: 0,
+    uploadThroughput: 0,
+  });
+  // CDP offline does not close the live socket, so close the app's real hub
+  // /rpc WebSocket(s) at the transport level; the offline emulation then keeps
+  // the app from reconnecting until the network is restored below.
+  const closedSockets = await evaluate(
+    driver.send,
+    `(() => {
+       const open = (window.__backgroundTranscriptSockets ?? []).filter(
+         (socket) => socket.readyState === WebSocket.OPEN && new URL(socket.url).pathname === "/rpc",
+       );
+       for (const socket of open) socket.close(4000, "background transcript guard transport boundary");
+       return open.length;
+     })()`,
+  ).catch(() => -1);
+  const disconnected = await waitForDisconnected(driver);
+  const offlineSample = await observedConnection(driver);
+  driver.milestone("ws-broken", {
+    disconnected,
+    closedSockets,
+    appState: offlineSample.appState,
+    online: offlineSample.online,
+  });
+  if (!disconnected) throw new Error("the browser never observed the network disruption");
+  const preGap = targetPagingEvidence(SESSION_B);
+  const preGapReads = preGap.readResponses;
+  const preGapConnections = preGap.readConnections ?? [];
+  // The gap turn must complete while the browser is disconnected, so use the
+  // self-completing neutral history role; no unreleased phase gates it.
+  driver.setRole("target", "history");
+  driver.setAuto("target");
+  driver.startTurn("target", GAP_SENTINEL);
+  const gapAck = await waitForTurnComplete("target", GAP_SENTINEL, 60000);
+  driver.milestone("gap-turn-completed", { sentinel: GAP_SENTINEL, turnId: gapAck.turnId, status: gapAck.status });
+  await driver.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+  await waitForPaneText(driver, SESSION_B, GAP_SENTINEL, 60000, "the gap turn arrived after reconnect");
+  // Correlate the NEW connection's target authoritative read and its applied
+  // replacement window/cursor: the entry route publishes the repository's
+  // accepted model through its subscription, so poll for the applied window.
+  const reconnect = await waitForNewTargetRead(driver, SESSION_B, preGapReads, 30000);
+  const reconnectBefore = { readResponses: preGapReads, connections: preGapConnections };
+  const appliedDeadline = Date.now() + 20000;
+  let reconnectDomain = await readTargetDomain(driver, SESSION_B);
+  let reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
+    cursor: reconnectDomain?.cursor ?? "",
+    domain: reconnectDomain,
+  });
+  while (!reconnectCheck.appliedMatches && Date.now() < appliedDeadline) {
+    await delay(150);
+    reconnectDomain = await readTargetDomain(driver, SESSION_B);
+    reconnectCheck = reconnectValidator(reconnectBefore, reconnect, {
+      cursor: reconnectDomain?.cursor ?? "",
+      domain: reconnectDomain,
+    });
+  }
+  const reconnectedHasGap = domainContent(reconnectDomain).includes(GAP_SENTINEL);
+  driver.milestone("reconnected-latest-window", {
+    sentinel: GAP_SENTINEL,
+    newReads: reconnectCheck.newReads,
+    cursorAfter: reconnect.lastReadOlderCursor,
+    hasGap: reconnectedHasGap,
+  });
+  if (!reconnectCheck.reconnected) {
+    throw new Error("reconnect produced no new target authoritative read on a new connection");
+  }
+  if (!reconnectCheck.appliedMatches) {
+    throw new Error(
+      `the reconnect's applied window does not match the new connection's read: ${JSON.stringify(reconnectCheck)}`,
+    );
+  }
+  if (!reconnectedHasGap) throw new Error("the reconnect replacement window does not contain the gap turn");
+  const back = await reconnectPagedRange(driver, SESSION_B, laterPageSentinel, expectedHistoryRange(), 6);
+  driver.milestone("paged-back-sentinel", {
+    sentinel: laterPageSentinel,
+    pages: back.pages,
+    noDuplicates: back.noDuplicates,
+    sentinelVisible: back.sentinelVisible,
+    complete: back.complete,
+    historyOrdered: back.rangeCheck.ordered,
+    historyCount: back.rangeCheck.loaded,
+    expectedCount: back.rangeCheck.expectedCount,
+  });
+  if (back.pages < 1) throw new Error("paging back after reconnect issued no older target page");
+  if (!back.noDuplicates) throw new Error("paging back introduced duplicate items");
+  if (!back.sentinelVisible) {
+    throw new Error(
+      `the formerly visible later-page sentinel ${laterPageSentinel} did not render after reconnect paging`,
+    );
+  }
+  if (!back.rangeCheck.ordered) {
+    throw new Error(`paging back did not restore the produced ordered range: ${JSON.stringify(back.rangeCheck)}`);
+  }
+
+  // ---- narrow-viewport repeat activation ----
+  await applyViewport(driver.send, NARROW_VIEWPORT);
+  await openSessionInCurrentShell(driver, SESSION_A);
+  await openSessionInCurrentShell(driver, SESSION_B);
+  await waitForPaneText(
+    driver,
+    SESSION_B,
+    GAP_SENTINEL,
+    30000,
+    "preserved content after repeat activation at a narrow viewport",
+  );
+  driver.milestone("narrow-viewport", { preserved: true, width: NARROW_VIEWPORT.width });
+  await applyViewport(driver.send, VIEWPORT);
+
   driver.milestone("done", { mode: "entry-production" });
 }
 
@@ -1143,6 +1391,79 @@ async function waitForNativeEntryEvidence(driver, predicate, label, ref = SESSIO
   throw new Error(`timed out waiting for ${label}`);
 }
 
+// waitForPaneText waits until the named pane's own text carries the marker.
+async function waitForPaneText(driver, ref, marker, timeoutMs, label) {
+  return driver.waitPage(paneContainsExpr(ref, [marker]), { timeoutMs, label });
+}
+
+// scrollSentinelIntoView scrolls the real port to the top until the wanted
+// history sentinel renders; the virtualizer may need the scroll first.
+async function scrollSentinelIntoView(driver, ref, wanted, rounds = 8) {
+  for (let round = 0; round < rounds; round += 1) {
+    if (await evaluate(driver.send, paneContainsExpr(ref, [wanted])).catch(() => null)) return true;
+    await scrollTranscriptToTop(driver, ref);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return Boolean(await evaluate(driver.send, paneContainsExpr(ref, [wanted])).catch(() => null));
+}
+
+// waitForRestoredDomain waits for a local reopen to republish the restored
+// model: the pane's model must carry the retained later-page sentinel. A
+// restore that needed the wire still shows up as a read/page in the caller's
+// trace window.
+async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await readTargetDomain(driver, ref).catch(() => null);
+    if (last && (last.items?.length ?? 0) > 0 && domainContent(last).includes(sentinel)) return last;
+    await delay(150);
+  }
+  return last;
+}
+
+// openSessionInCurrentShell activates a session through whichever shell the
+// current viewport hosts. At or below the mobile breakpoint
+// (useIsMobile.ts MOBILE_QUERY "(max-width: 899px)") the desktop RailHost is
+// not mounted and the same rail lives in the mobile Sessions sheet, reached
+// through the tree-drawer trigger. The guarantee - a real rail-row activation
+// that re-focuses the session - is identical.
+async function openSessionInCurrentShell(driver, ref) {
+  const rowSelector = `[data-session-ref='${ref}']`;
+  const rowVisible = async () =>
+    evaluate(
+      driver.send,
+      `(() => { const el = document.querySelector(${JSON.stringify(rowSelector)});
+         if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`,
+    ).catch(() => false);
+  if (!(await rowVisible())) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await driver.click('[aria-label="Sessions"]');
+      await delay(300);
+      if (await rowVisible()) break;
+    }
+  }
+  await driver.click(rowSelector);
+  await driver.waitPage(
+    `(() => document.querySelector(${JSON.stringify(driver.composerSelector(ref))}) !== null ? true : null)()`,
+    { label: `composer for ${ref}` },
+  );
+}
+
+// waitForNewTargetRead waits for the target's read count to advance past its
+// pre-gap value, returning refreshed evidence (the reconnect's authoritative
+// read on a new connection).
+async function waitForNewTargetRead(_driver, ref, beforeReads, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let ev = targetPagingEvidence(ref);
+  while (Date.now() < deadline) {
+    ev = targetPagingEvidence(ref);
+    if (ev.readResponses > beforeReads) return ev;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return ev;
+}
+
 async function runJourney(driver, entryProduction = false) {
   // The legacy session-cache journey was retired with the legacy stores (6d-2b),
   // so the production entry route is the only journey. The flag still selects
@@ -1153,6 +1474,164 @@ async function runJourney(driver, entryProduction = false) {
     );
   }
   return runEntryProductionJourney(driver);
+}
+
+// runTwoTabFencing drives the entry route's Clear and delete fences across two
+// REAL tabs sharing one native BroadcastChannel and one IndexedDB. The first tab
+// is the journey's own page; the second is a real second document on the same
+// guard harness. Only the fence entry points are invoked (threads.clearCachedSessions
+// and markCacheSessionsDeleted, the same effect set a real Clear/delete owes the
+// cache); the propagation and the durable removal are the browser's own.
+async function runTwoTabFencing(driver, endpoint, harnessUrl) {
+  const opened = await openPage(endpoint, "about:blank");
+  const tab = await connectPage(endpoint, opened.id);
+  try {
+    const tabErrors = [];
+    tab.ws.addEventListener("message", (message) => {
+      const event = JSON.parse(message.data);
+      if (event.method === "Runtime.exceptionThrown") {
+        const details = event.params?.exceptionDetails;
+        tabErrors.push(details?.exception?.description ?? details?.text ?? "exception");
+      } else if (event.method === "Runtime.consoleAPICalled" && event.params?.type === "error") {
+        tabErrors.push((event.params.args ?? []).map((arg) => arg.value ?? arg.description ?? "").join(" "));
+      }
+    });
+    // Boot on the synchronous marker the harness sets before it imports the app,
+    // the same check the first tab uses; the evidence globals arrive later.
+    await navigateTo(tab, harnessUrl, BOOT);
+    try {
+      await evaluate(
+        tab.send,
+        `(async () => {
+           const deadline = Date.now() + 30000;
+           while (Date.now() < deadline) {
+             if (typeof window.backgroundTranscriptEvidence !== "undefined" &&
+                 typeof window.backgroundTranscriptGuard !== "undefined") return true;
+             await new Promise((resolve) => setTimeout(resolve, 100));
+           }
+           return { booted: typeof window.backgroundTranscriptBooted, evidence: typeof window.backgroundTranscriptEvidence,
+             guard: typeof window.backgroundTranscriptGuard, bootError: window.__backgroundGuardBootError ?? null,
+             body: (document.body?.innerHTML ?? "").slice(0, 200) };
+         })()`,
+      ).then((ready) => {
+        if (ready !== true)
+          throw new Error(`second tab never exposed the entry evidence globals: ${JSON.stringify(ready)}`);
+      });
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\ntab errors:\n${tabErrors.join("\n") || "(none captured)"}`,
+      );
+    }
+    const call = (send, method, ...args) =>
+      evaluate(send, `window.backgroundTranscriptGuard.${method}(${args.map((arg) => JSON.stringify(arg)).join(",")})`);
+    const fence = (send, ref) => call(send, "fenceState", ref);
+    const durable = (send, ref) => evaluate(send, nativeEntryEvidenceExpression(ref));
+
+    // ---- delete fence: one tab deletes, the sibling observes over the channel ----
+    const ref = SESSION_B;
+    const seeded = await durable(tab.send, ref);
+    if (!seeded || seeded.rows.length === 0) {
+      throw new Error(`two-tab delete: the target has no durable entry rows to fence: ${JSON.stringify(seeded)}`);
+    }
+    const aBefore = await fence(driver.send, ref);
+    const bBefore = await fence(tab.send, ref);
+    if (aBefore.deletedRefs.includes(ref) || bBefore.deletedRefs.includes(ref)) {
+      throw new Error(`two-tab delete: the ref was already fenced: ${JSON.stringify({ aBefore, bBefore })}`);
+    }
+    await call(driver.send, "delete", ref);
+    const suppressDeadline = Date.now() + 15000;
+    let bAfter = await fence(tab.send, ref);
+    while (bAfter.lifetime?.suppressed !== true && Date.now() < suppressDeadline) {
+      await delay(100);
+      bAfter = await fence(tab.send, ref);
+    }
+    const aAfter = await fence(driver.send, ref);
+    // The durable heal is asynchronous (deleteCachedRefs), so poll for the rows
+    // to leave the shared IndexedDB rather than reading one instant.
+    const removeDeadline = Date.now() + 15000;
+    let removed = await durable(tab.send, ref);
+    while (removed && removed.rows.length > 0 && Date.now() < removeDeadline) {
+      await delay(100);
+      removed = await durable(tab.send, ref);
+    }
+    driver.milestone("two-tab-delete-fence", {
+      ref,
+      aDeletedRefs: aAfter.deletedRefs.includes(ref),
+      bSuppressed: bAfter.lifetime?.suppressed === true,
+      bJoinedDeletedRefs: bAfter.deletedRefs.includes(ref),
+      durableBefore: seeded.rows.length,
+      durableRemoved: removed === null || removed.rows.length === 0,
+    });
+    if (!aAfter.deletedRefs.includes(ref)) {
+      throw new Error("two-tab delete: the deleting tab did not fence deletedRefs");
+    }
+    if (bAfter.lifetime?.suppressed !== true) {
+      throw new Error("two-tab delete: the sibling tab never observed suppression over the real BroadcastChannel");
+    }
+    if (bAfter.deletedRefs.includes(ref)) {
+      throw new Error("two-tab delete: the sibling tab joined the deleting tab's deletedRefs");
+    }
+    if (!(removed === null || removed.rows.length === 0)) {
+      throw new Error("two-tab delete: the durable record still exists in the shared IndexedDB");
+    }
+    // The sibling's fresh acquisition must not resurrect the deleted session:
+    // the deletion fence refuses the hydration and no durable row returns.
+    await call(tab.send, "open", ref);
+    await delay(1000);
+    const resurrected = await durable(tab.send, ref);
+    const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
+    driver.milestone("two-tab-delete-refusal", { ref, rowsAfterOpen: resurrectedRows });
+    if (resurrectedRows !== 0) {
+      throw new Error(`two-tab delete: a fresh sibling acquisition resurrected ${resurrectedRows} durable rows`);
+    }
+
+    // ---- clear fence: a held old-epoch lease is suppressed, not rebound ----
+    await driver.openSession(SESSION_A);
+    const armDeadline = Date.now() + 15000;
+    let aClearBefore = await fence(driver.send, SESSION_A);
+    while (aClearBefore.lifetime?.leaseEpoch === undefined && Date.now() < armDeadline) {
+      await delay(100);
+      aClearBefore = await fence(driver.send, SESSION_A);
+    }
+    if (aClearBefore.lifetime?.leaseEpoch === undefined) {
+      throw new Error(`two-tab clear: the holding tab never captured a cache lease: ${JSON.stringify(aClearBefore)}`);
+    }
+    const cleared = await call(tab.send, "clear");
+    if (!cleared.committed) {
+      throw new Error(`two-tab clear: the sibling clear did not commit: ${JSON.stringify(cleared)}`);
+    }
+    const clearDeadline = Date.now() + 15000;
+    let aClearAfter = await fence(driver.send, SESSION_A);
+    while (aClearAfter.lifetime?.suppressed !== true && Date.now() < clearDeadline) {
+      await delay(100);
+      aClearAfter = await fence(driver.send, SESSION_A);
+    }
+    driver.milestone("two-tab-clear-fence", {
+      ref: SESSION_A,
+      epochBefore: aClearBefore.lifetime?.leaseEpoch ?? null,
+      epochAfter: aClearAfter.lifetime?.leaseEpoch ?? null,
+      suppressed: aClearAfter.lifetime?.suppressed === true,
+    });
+    if (aClearAfter.lifetime?.suppressed !== true) {
+      throw new Error("two-tab clear: the holding tab never observed the sibling clear over the real BroadcastChannel");
+    }
+    if (aClearAfter.lifetime?.leaseEpoch !== aClearBefore.lifetime?.leaseEpoch) {
+      throw new Error(
+        `two-tab clear: the sibling clear rebound the held lease epoch (${aClearBefore.lifetime?.leaseEpoch} -> ${aClearAfter.lifetime?.leaseEpoch})`,
+      );
+    }
+  } finally {
+    try {
+      tab.close();
+    } catch {
+      /* already closed */
+    }
+    try {
+      await closePage(endpoint, opened.id);
+    } catch {
+      /* target already gone */
+    }
+  }
 }
 
 async function waitForEvidenceGlobal(driver) {

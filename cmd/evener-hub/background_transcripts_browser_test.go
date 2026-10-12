@@ -1,12 +1,12 @@
 //go:build browserguard
 
-// TestBackgroundTranscriptsBrowser is the whole-journey proof for background
-// Live transcripts: the REAL hub web app (real AppWire, real stores, native
-// IndexedDB) driven in real Chrome in Vite development mode through a REAL hub
-// (httptest around web.Handler() with the real roster prober and past index)
-// against TWO REAL `evener serve` daemons (cmd/evener's compiled browserguard
-// helper binary), with the only scripted piece at the external LLM provider
-// adapter.
+// TestBackgroundTranscriptsEntrySliceBrowser is the whole-journey proof for
+// background Live transcripts on the production entry route: the REAL hub web
+// app (real AppWire, real stores, native IndexedDB) driven in real Chrome in
+// Vite development mode through a REAL hub (httptest around web.Handler() with
+// the real roster prober and past index) against TWO REAL `evener serve` daemons
+// (cmd/evener's compiled browserguard helper binary), with the only scripted
+// piece at the external LLM provider adapter.
 //
 // It reuses the skill guard's fixture (skillGuardSetup / skillGuardStartHelper /
 // skillGuardStopHelper) and its private temporary directory; the Node driver
@@ -53,6 +53,9 @@ const (
 	backgroundAfterEviction  = "BACKGROUND_AFTER_EVICTION"
 	backgroundToolOutput     = "BACKGROUND_TOOL_OUTPUT"
 	backgroundToolDone       = "BACKGROUND_TOOL_DONE"
+	// backgroundGapTurn is the turn produced on the target's own daemon while the
+	// browser socket is down; the reconnect's authoritative window must carry it.
+	backgroundGapTurn = "BACKGROUND_GAP_TURN"
 )
 
 const (
@@ -315,7 +318,13 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	if err != nil {
 		t.Fatalf("read production-entry milestones: %v", err)
 	}
-	for _, name := range []string{"entry-baseline", "entry-opened", "entry-completed", "done"} {
+	for _, name := range []string{
+		"entry-baseline", "entry-opened", "entry-completed",
+		"history-paging", "reopen-without-read", "further-paging",
+		"ws-broken", "gap-turn-completed", "reconnected-latest-window", "paged-back-sentinel",
+		"narrow-viewport", "two-tab-delete-fence", "two-tab-delete-refusal", "two-tab-clear-fence",
+		"done",
+	} {
 		if !backgroundMilestonePresent(milestones, name) {
 			t.Errorf("production-entry browser report is missing %q", name)
 		}
@@ -608,7 +617,198 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 			t.Errorf("raw browser audit contains an incomplete coverage boundary: %+v", coverage)
 		}
 	}
+	assertBackgroundEntryPagingAndReconnect(t, milestones)
+	assertBackgroundEntryNarrowViewport(t, milestones)
+	assertBackgroundEntryTwoTabFencing(t, milestones)
 	t.Logf("production-entry artifacts: %s (milestones, appwire-trace.jsonl, driver.log, screenshots and dumps)", fixture.artifact)
+}
+
+// assertBackgroundEntryTwoTabFencing reads the two-real-tab Clear/delete fence
+// milestones: one tab's delete fences its own deletedRefs, its real sibling
+// observes suppression over the native BroadcastChannel without joining those
+// deletedRefs, and the durable row is gone from the shared IndexedDB; a fresh
+// sibling acquisition does not resurrect it; a sibling Clear suppresses a held
+// lease without rebinding its epoch.
+func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMilestone) {
+	t.Helper()
+	var delFence struct {
+		ADeletedRefs       bool `json:"aDeletedRefs"`
+		BSuppressed        bool `json:"bSuppressed"`
+		BJoinedDeletedRefs bool `json:"bJoinedDeletedRefs"`
+		DurableBefore      int  `json:"durableBefore"`
+		DurableRemoved     bool `json:"durableRemoved"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-fence", &delFence) {
+		if !delFence.ADeletedRefs {
+			t.Error("two-tab-delete-fence: the deleting tab did not fence deletedRefs")
+		}
+		if !delFence.BSuppressed {
+			t.Error("two-tab-delete-fence: the sibling tab did not observe suppression over the real BroadcastChannel")
+		}
+		if delFence.BJoinedDeletedRefs {
+			t.Error("two-tab-delete-fence: the sibling tab joined the deleting tab's deletedRefs")
+		}
+		if delFence.DurableBefore == 0 || !delFence.DurableRemoved {
+			t.Errorf("two-tab-delete-fence: the shared IndexedDB record was not removed: %+v", delFence)
+		}
+	}
+	var delRefusal struct {
+		RowsAfterOpen int `json:"rowsAfterOpen"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-refusal", &delRefusal) {
+		if delRefusal.RowsAfterOpen != 0 {
+			t.Errorf("two-tab-delete-refusal: a fresh sibling acquisition resurrected %d durable rows", delRefusal.RowsAfterOpen)
+		}
+	}
+	var clearFence struct {
+		EpochBefore *int `json:"epochBefore"`
+		EpochAfter  *int `json:"epochAfter"`
+		Suppressed  bool `json:"suppressed"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "two-tab-clear-fence", &clearFence) {
+		if !clearFence.Suppressed {
+			t.Error("two-tab-clear-fence: the holding tab did not observe the sibling clear over the real BroadcastChannel")
+		}
+		if clearFence.EpochBefore == nil || clearFence.EpochAfter == nil || *clearFence.EpochBefore != *clearFence.EpochAfter {
+			t.Errorf("two-tab-clear-fence: the sibling clear rebound the held lease epoch: %+v", clearFence)
+		}
+	}
+}
+
+// assertBackgroundEntryPagingAndReconnect reads the browser journey's paging,
+// reopen-without-read, further-paging, real-socket-gap/reconnect and
+// paged-back-to-sentinel milestones. Each is an independently written assertion
+// over what the real Chrome run recorded; a missing milestone is already
+// reported by the presence loop in assertBackgroundEntrySlice.
+func assertBackgroundEntryPagingAndReconnect(t *testing.T, milestones []skillGuardMilestone) {
+	t.Helper()
+	var paging struct {
+		InitialOlderCursor string `json:"initialOlderCursor"`
+		Pages              int    `json:"pages"`
+		RemainingCursor    string `json:"remainingCursor"`
+		PagesComplete      bool   `json:"pagesComplete"`
+		LaterSentinel      string `json:"laterSentinel"`
+		LaterRendered      bool   `json:"laterRendered"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "history-paging", &paging) {
+		if paging.InitialOlderCursor == "" {
+			t.Error("history-paging: the initial read was not a truncated window with an older cursor")
+		}
+		if paging.Pages < 2 {
+			t.Errorf("history-paging: loaded %d older pages, want at least two", paging.Pages)
+		}
+		if !paging.LaterRendered {
+			t.Errorf("history-paging: the later-page sentinel %q did not render", paging.LaterSentinel)
+		}
+		if paging.RemainingCursor == "" && !paging.PagesComplete {
+			t.Error("history-paging: two older pages exhausted the cursor yet the history is not complete")
+		}
+	}
+	var reopen struct {
+		Reads               int    `json:"reads"`
+		Pages               int    `json:"pages"`
+		Cursor              string `json:"cursor"`
+		RestoredCursor      string `json:"restoredCursor"`
+		KeptItems           bool   `json:"keptItems"`
+		RestoredHasSentinel bool   `json:"restoredHasSentinel"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "reopen-without-read", &reopen) {
+		if reopen.Reads != 0 || reopen.Pages != 0 {
+			t.Errorf("reopen-without-read: reopen fetched (reads=%d pages=%d)", reopen.Reads, reopen.Pages)
+		}
+		if reopen.Cursor != reopen.RestoredCursor {
+			t.Errorf("reopen-without-read: cursor changed on local restore: %q -> %q", reopen.Cursor, reopen.RestoredCursor)
+		}
+		if !reopen.KeptItems || !reopen.RestoredHasSentinel {
+			t.Errorf("reopen-without-read: restored model lost content or the later-page sentinel: %+v", reopen)
+		}
+	}
+	var further struct {
+		Pages           int  `json:"pages"`
+		AlreadyComplete bool `json:"alreadyComplete"`
+		NoDuplicates    bool `json:"noDuplicates"`
+		HistoryOrdered  bool `json:"historyOrdered"`
+		HistoryCount    int  `json:"historyCount"`
+		ExpectedCount   int  `json:"expectedCount"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "further-paging", &further) {
+		if !further.NoDuplicates {
+			t.Error("further-paging: page load introduced duplicate items")
+		}
+		if !further.HistoryOrdered || further.HistoryCount != further.ExpectedCount {
+			t.Errorf("further-paging: history is not the produced sequence in order: %+v", further)
+		}
+		if !further.AlreadyComplete && further.Pages < 1 {
+			t.Error("further-paging: the history was incomplete yet no older page was issued")
+		}
+	}
+	var broken struct {
+		Disconnected  bool `json:"disconnected"`
+		ClosedSockets int  `json:"closedSockets"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "ws-broken", &broken) {
+		if !broken.Disconnected {
+			t.Errorf("ws-broken: the app never observed the real socket gap (closedSockets=%d)", broken.ClosedSockets)
+		}
+	}
+	var gap struct {
+		Sentinel string `json:"sentinel"`
+		TurnID   string `json:"turnId"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "gap-turn-completed", &gap) {
+		if gap.Sentinel != backgroundGapTurn || gap.TurnID == "" {
+			t.Errorf("gap-turn-completed: the gap turn was not the expected correlated turn: %+v", gap)
+		}
+	}
+	var reconnect struct {
+		NewReads    int    `json:"newReads"`
+		CursorAfter string `json:"cursorAfter"`
+		HasGap      bool   `json:"hasGap"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "reconnected-latest-window", &reconnect) {
+		if reconnect.NewReads < 1 {
+			t.Error("reconnected-latest-window: reconnect produced no new authoritative read")
+		}
+		if !reconnect.HasGap {
+			t.Error("reconnected-latest-window: the reconnected window does not contain the gap turn")
+		}
+	}
+	var backed struct {
+		Pages           int  `json:"pages"`
+		NoDuplicates    bool `json:"noDuplicates"`
+		SentinelVisible bool `json:"sentinelVisible"`
+		HistoryOrdered  bool `json:"historyOrdered"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "paged-back-sentinel", &backed) {
+		if backed.Pages < 1 {
+			t.Error("paged-back-sentinel: paging back after reconnect issued no older page")
+		}
+		if !backed.NoDuplicates {
+			t.Error("paged-back-sentinel: paging back introduced duplicate items")
+		}
+		if !backed.SentinelVisible || !backed.HistoryOrdered {
+			t.Errorf("paged-back-sentinel: the range did not restore to the sentinel in order: %+v", backed)
+		}
+	}
+}
+
+// assertBackgroundEntryNarrowViewport reads the 420px repeat-activation
+// milestone: the transcript was re-activated through the narrow shell and kept
+// showing its preserved content.
+func assertBackgroundEntryNarrowViewport(t *testing.T, milestones []skillGuardMilestone) {
+	t.Helper()
+	var narrow struct {
+		Preserved bool `json:"preserved"`
+		Width     int  `json:"width"`
+	}
+	if skillGuardMilestoneDetail(t, milestones, "narrow-viewport", &narrow) {
+		if !narrow.Preserved {
+			t.Error("narrow-viewport: repeat activation lost the preserved transcript content")
+		}
+		if narrow.Width != 420 {
+			t.Errorf("narrow-viewport: activated at %dpx, want 420px", narrow.Width)
+		}
+	}
 }
 
 type backgroundEntryProducer struct {
