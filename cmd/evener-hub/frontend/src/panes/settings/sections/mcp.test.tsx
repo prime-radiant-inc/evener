@@ -568,3 +568,26 @@ test("a discovered server's probe error is shown in full beneath its row", async
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
 });
+
+// The row's label is one truncating line, so a long server name must not share
+// it with the transport (which would be the part cut off), and the full name
+// stays reachable from the row.
+test("a discovered server's transport sits apart from a long name, and the full name stays reachable", async () => {
+  connectFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
+  const longName = `team-shared-${"knowledge-".repeat(8)}server`;
+  render(
+    <McpSection
+      useOverviewStore={overviewHook({
+        data: { mcpDiscovered: { servers: [{ name: longName, transport: "streamable-http", status: "available" }] } },
+      })}
+    />,
+  );
+  const list = screen.getByRole("list", { name: "Discovered MCP servers" });
+  const name = within(list).getByText(longName);
+  expect(within(list).getByText("streamable-http")).not.toBe(name);
+  expect(name.closest("[title]")?.getAttribute("title")).toBe(longName);
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
+});

@@ -217,9 +217,13 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
               ) : (
                 (discovered?.servers ?? []).map((s) => (
                   <li key={s.name}>
+                    {/* The name is the label alone, so a long one truncates on
+                        its own (in full on hover); the transport is the meta. */}
                     <ListRow
-                      label={`${s.name} — ${s.transport}`}
+                      label={s.name}
+                      title={s.name}
                       chips={<Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>}
+                      meta={s.transport}
                     />
                     {/* A probe error wraps in full under its row: the row's meta
                         is one truncated line, and this read-only row has no
