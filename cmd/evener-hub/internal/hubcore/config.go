@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"net"
 	"os"
 	"time"
 
@@ -276,6 +277,10 @@ type WebConfig struct {
 	// cached loader so a model picker open does not re-run that live listing.
 	LaunchModels func(ctx context.Context, workingDir string) (appwire.ModelListResponse, error)
 	MkdirAll     func(path string, perm os.FileMode) error // nil → os.MkdirAll
+
+	// MobileInterfaceAddrs supplies the Hub interfaces for automatic pairing.
+	// nil uses net.InterfaceAddrs.
+	MobileInterfaceAddrs func() ([]net.Addr, error)
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.

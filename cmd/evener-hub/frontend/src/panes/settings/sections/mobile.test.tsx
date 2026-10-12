@@ -140,7 +140,7 @@ test("renders resolved QR svg output inside the labelled image wrapper", async (
   expect(svg.querySelector("path")).not.toBeNull();
 });
 
-test("shows configuration guidance instead of a QR when the Hub has no reachable origin", async () => {
+test("does not offer a direct credential QR when no destination is available", async () => {
   client.on("evener/mobile/pairing", () => {
     throw new WireError("mobile pairing requires a reachable non-loopback Hub origin", -32013, {
       evenerErrorInfo: "conflict",
@@ -150,7 +150,5 @@ test("shows configuration guidance instead of a QR when the Hub has no reachable
   renderMobileSection();
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["needs-configuration"]));
-  // The guidance names the hub.toml key that fixes it.
-  expect(screen.getByTestId("empty-state").textContent).toContain("mobile_base_url");
   expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
 });

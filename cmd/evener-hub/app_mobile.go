@@ -23,22 +23,16 @@ func registerMobilePairingHandler(server *appserver.Server, cfg hubcore.WebConfi
 }
 
 func mobilePairing(cfg hubcore.WebConfig, params appwire.MobilePairingParams) (appwire.MobilePairingResponse, error) {
-	origin := params.Origin
-	if cfg.MobileBaseURL != "" {
-		origin = cfg.MobileBaseURL
-	}
-	base, ok := safeMobileOrigin(origin)
+	base, ok := mobilePairingOrigin(cfg, params.Origin)
 	if !ok {
 		return appwire.MobilePairingResponse{}, appwire.Conflict("mobile pairing requires a reachable non-loopback Hub origin")
 	}
 	return appwire.MobilePairingResponse{AuthURL: hubedge.AuthURLFor(base, cfg.AuthToken)}, nil
 }
 
-// safeMobileOrigin applies the connection policy the mobile app enforces before
-// putting an origin in a QR code. HTTP may name only a private-network address
-// (or a .local name which the app resolves and validates); HTTPS may name a
-// public or private host. Neither may name loopback, which refers to the phone
-// after scanning rather than the Hub.
+// safeMobileOrigin accepts HTTP(S) destinations supported by the mobile app.
+// Loopback refers to the phone after scanning rather than the Hub, and an
+// unspecified listener address does not identify a destination.
 func safeMobileOrigin(raw string) (string, bool) {
 	if err := validateMobileBaseURL(raw); err != nil {
 		return "", false
@@ -67,10 +61,7 @@ func safeMobileOrigin(raw string) (string, bool) {
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
 		addr = addr.Unmap()
-		if addr.IsLoopback() {
-			return "", false
-		}
-		if u.Scheme == "http" && !isPrivateMobileHTTPAddr(addr) {
+		if addr.IsLoopback() || addr.IsUnspecified() {
 			return "", false
 		}
 	} else {
@@ -78,9 +69,6 @@ func safeMobileOrigin(raw string) (string, bool) {
 		// is malformed. Only canonical IPs accepted above can be shared with
 		// the browser; do not publish a numeric spelling as a DNS hostname.
 		if hasNumericHostSuffix(host) {
-			return "", false
-		}
-		if u.Scheme == "http" && !strings.HasSuffix(hostLower, ".local") {
 			return "", false
 		}
 	}
@@ -98,11 +86,4 @@ func hasNumericHostSuffix(host string) bool {
 		return true
 	}
 	return len(last) >= 2 && last[0] == '0' && (last[1] == 'x' || last[1] == 'X') && strings.Trim(last[2:], "0123456789abcdefABCDEF") == ""
-}
-
-func isPrivateMobileHTTPAddr(addr netip.Addr) bool {
-	if addr.IsPrivate() || addr.IsLinkLocalUnicast() {
-		return true
-	}
-	return addr.Is4() && netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
 }

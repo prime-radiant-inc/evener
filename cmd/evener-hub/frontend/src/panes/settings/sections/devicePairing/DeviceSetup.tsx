@@ -11,10 +11,10 @@ import styles from "./devicePairing.module.css";
 const rootClass = requireClass(styles.root, "devicePairing.module.css", "root");
 const controlsClass = requireClass(styles.controls, "devicePairing.module.css", "controls");
 
-export function DeviceSetup({ onClose }: { onClose(): void }) {
+export function DeviceSetup({ initialOrigin, onClose }: { initialOrigin: string; onClose(): void }) {
   const client = useClient(),
     id = useId();
-  const [origin, setOrigin] = useState(window.location.origin);
+  const [origin, setOrigin] = useState(initialOrigin);
   const [tailnet, setTailnet] = useState(window.location.protocol === "http:");
   const [invite, setInvite] = useState<DevicePairingInvitation | null>(null);
   const [status, setStatus] = useState<DevicePairingStatus | null>(null);

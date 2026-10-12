@@ -54,30 +54,9 @@ type PairingState =
  * here.
  */
 export function MobileSection() {
-  const [setup, setSetup] = useState(false);
-  return (
-    <>
-      {setup ? (
-        <QRChunkBoundary
-          fallback={<EmptyState title="Couldn't load device setup" hint="Reload this page to try again." />}
-        >
-          <Suspense fallback={<Skeleton lines={4} />}>
-            <DeviceSetup onClose={() => setSetup(false)} />
-          </Suspense>
-        </QRChunkBoundary>
-      ) : (
-        <Button size="sm" onClick={() => setSetup(true)}>
-          Pair a device
-        </Button>
-      )}
-      <DirectPairing />
-    </>
-  );
-}
-
-function DirectPairing() {
   const client = useClient();
   const [state, setState] = useState<PairingState>({ kind: "loading" });
+  const [setup, setSetup] = useState(false);
 
   useConnectedEffect(
     async (isCancelled) => {
@@ -89,12 +68,36 @@ function DirectPairing() {
 
   if (state.kind === "loading") return <Skeleton lines={4} />;
 
+  const origin = state.kind === "ready" ? new URL(state.authURL).origin : window.location.origin;
+  return (
+    <>
+      {setup ? (
+        <QRChunkBoundary
+          fallback={<EmptyState title="Couldn't load device setup" hint="Reload this page to try again." />}
+        >
+          <Suspense fallback={<Skeleton lines={4} />}>
+            <DeviceSetup initialOrigin={origin} onClose={() => setSetup(false)} />
+          </Suspense>
+        </QRChunkBoundary>
+      ) : (
+        <Button size="sm" onClick={() => setSetup(true)}>
+          Pair a device
+        </Button>
+      )}
+      {!setup && <DirectPairing state={state} />}
+    </>
+  );
+}
+
+function DirectPairing({ state }: { state: PairingState }) {
+  if (state.kind === "loading") return <Skeleton lines={4} />;
+
   if (state.kind === "unreachable") {
     return (
       <EmptyState
-        title="Mobile pairing needs a reachable Hub origin"
+        title="Choose an address your device can reach"
         reason="needs-configuration"
-        hint="Configure mobile_base_url in ~/.config/evener/hub.toml to an HTTP(S) origin your phone can reach, then reload this page."
+        hint="Open Pair a device to enter the Hub address. A Hub listening only on localhost needs a network listener or a reachable reverse proxy."
       />
     );
   }
@@ -128,7 +131,7 @@ function DirectPairing() {
       <p data-testid="mobile-reuse-warning">
         {isPlaintextHTTP && (
           <span data-testid="mobile-http-warning">
-            Private-network HTTP connection: anyone who can observe this network can observe the pairing capability.{" "}
+            HTTP connection: anyone who can observe this network can observe the pairing capability.{" "}
           </span>
         )}
         This link remains valid and can be reused until the Hub auth token is rotated.
