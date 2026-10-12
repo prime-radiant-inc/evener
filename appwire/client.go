@@ -72,6 +72,12 @@ type pendingResult struct {
 	cause error
 }
 
+// localFailure is the error frame the client synthesizes for request id when
+// its read loop ended with err.
+func localFailure(id ID, err error) pendingResult {
+	return pendingResult{msg: ErrorMessage(id, InternalError(err.Error())), local: true, cause: err}
+}
+
 func NewClient(transport Transport) *Client {
 	c := &Client{
 		transport:     transport,
@@ -380,11 +386,7 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		case res = <-ch:
 		default:
 			c.removePending(id)
-			res = pendingResult{
-				msg:   ErrorMessage(id, InternalError(c.closedError().Error())),
-				local: true,
-				cause: c.closedError(),
-			}
+			res = localFailure(id, c.closedError())
 		}
 	}
 
@@ -465,11 +467,7 @@ func (c *Client) failPending(err error) {
 	defer c.pendingMu.Unlock()
 	for id, pending := range c.pending {
 		delete(c.pending, id)
-		pending.ch <- pendingResult{
-			msg:   ErrorMessage(pending.id, InternalError(err.Error())),
-			local: true,
-			cause: err,
-		}
+		pending.ch <- localFailure(pending.id, err)
 	}
 }
 
