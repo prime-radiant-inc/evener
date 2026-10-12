@@ -85,6 +85,17 @@ func TestLaunchSettingsTrustKeyTrustsAwaitingRepoFile(t *testing.T) {
 	}
 }
 
+// TestLaunchSettingsTrustKeyIgnoresPastedT keeps trust a deliberate keypress:
+// a bracketed paste whose text is "T" is not the trust key.
+func TestLaunchSettingsTrustKeyIgnoresPastedT(t *testing.T) {
+	p := NewLaunchSettingsPanel(nil, "/repo")
+	p.tab = launchTabRepo
+	p.resolved.Repo = &appwire.RepoLaunchConfigStatus{Trust: "untrusted", Hash: "h"}
+	if _, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T"), Paste: true}); cmd != nil {
+		t.Fatal("pasted T issued a trust command")
+	}
+}
+
 // TestLaunchSettingsTrustKeyIgnoredOutsideAwaitingRepoFile keeps T inert where
 // there is nothing to trust: a trusted file, a missing file, or another tab.
 func TestLaunchSettingsTrustKeyIgnoredOutsideAwaitingRepoFile(t *testing.T) {

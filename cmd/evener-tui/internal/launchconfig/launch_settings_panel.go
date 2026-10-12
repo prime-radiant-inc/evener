@@ -154,8 +154,9 @@ func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			return p.editCurrent()
 		case tea.KeyRunes:
-			// T is the In-Repo tab's advertised trust key; Enter does the same.
-			if string(m.Runes) == "T" && p.tab == launchTabRepo {
+			// T is the In-Repo tab's advertised trust key; Enter does the same. A
+			// pasted "T" is not a deliberate approval.
+			if !m.Paste && string(m.Runes) == "T" && p.tab == launchTabRepo {
 				return p, p.trustRepoCmd()
 			}
 		}
