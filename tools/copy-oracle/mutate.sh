@@ -50,21 +50,33 @@ work="$scratch/worktree"
 log="$scratch.log"
 child=""
 
-# stop_group <pgid> stops every process in a test run's process group: TERM,
-# up to 5 seconds' grace, then KILL, then up to 5 more seconds for the kernel
-# to reap them. It keys on the group, so workers that outlive their runner are
-# stopped too, and it is bounded: a process that will not die is reported and
-# left behind in the throwaway tree.
+# stop <target> stops a pid, or a process group given as -pgid: TERM, up to 5
+# seconds' grace, then KILL, then up to 5 more seconds for the kernel to reap
+# it. It is bounded, and fails if something is still there.
+stop() {
+  local target=$1 deadline
+  kill -TERM -- "$target" 2>/dev/null || return 0
+  deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && kill -0 -- "$target" 2>/dev/null; do sleep 0.1; done
+  kill -KILL -- "$target" 2>/dev/null || return 0
+  deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && kill -0 -- "$target" 2>/dev/null; do sleep 0.1; done
+  ! kill -0 -- "$target" 2>/dev/null
+}
+
+# stop_group <pgid> stops every process in a test run's process group, so
+# workers that outlive their runner are stopped too. A process that will not
+# die is reported and left behind in the throwaway tree.
 stop_group() {
-  local pgid=$1 deadline
-  kill -0 -"$pgid" 2>/dev/null || return 0
-  kill -TERM -"$pgid" 2>/dev/null || true
-  deadline=$((SECONDS + 5))
-  while ((SECONDS < deadline)) && kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
-  kill -KILL -"$pgid" 2>/dev/null || true
-  deadline=$((SECONDS + 5))
-  while ((SECONDS < deadline)) && kill -0 -"$pgid" 2>/dev/null; do sleep 0.1; done
-  if kill -0 -"$pgid" 2>/dev/null; then
+  local pgid=$1
+  if ! kill -0 -"$pgid" 2>/dev/null; then
+    # No group yet: a signal landed between the fork and the child's setpgrp.
+    # Stop the child itself, then look again in case it formed the group in
+    # the meantime.
+    stop "$pgid" || true
+    kill -0 -"$pgid" 2>/dev/null || return 0
+  fi
+  if ! stop -"$pgid"; then
     echo "warning: test process group $pgid did not exit after KILL" >&2
   fi
 }
