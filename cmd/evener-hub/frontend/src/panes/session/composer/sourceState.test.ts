@@ -3548,3 +3548,32 @@ test("a same-ref source's identical committed edit survives the first source's p
     hold.release();
   }
 });
+
+// Issue #4366: Chrome exposes crypto.randomUUID only in secure contexts, and
+// the factory read it bare at creation time, so a plain-HTTP origin threw
+// during composer setup and unmounted the whole session view. This simulates
+// the capability being absent, as on http://<host>:<port>, and requires the
+// guarded id creation to keep initialization working. The module-load capture
+// in stores/secureUUID.ts predates the stub, so this asserts the call site no
+// longer reads the bare global; the getRandomValues fallback itself is covered
+// by the appwire package's own secureUUID tests.
+test("source state initializes where crypto.randomUUID is unavailable", async () => {
+  vi.stubGlobal("crypto", {
+    getRandomValues(array: Uint8Array) {
+      for (let index = 0; index < array.length; index += 1) array[index] = Math.floor(Math.random() * 256);
+      return array;
+    },
+  });
+  const first = createComposerSourceState("root");
+  const second = createComposerSourceState("root");
+  sourceCleanups.push(() => {
+    first.dispose();
+    second.dispose();
+  });
+  expect(typeof first.sourceId).toBe("string");
+  expect(first.sourceId).not.toBe("");
+  expect(second.sourceId).not.toBe(first.sourceId);
+  await Promise.all([first.ready(), second.ready()]);
+  expect(first.getSnapshot()).toMatchObject({ text: "" });
+  expect(second.getSnapshot()).toMatchObject({ text: "" });
+});
