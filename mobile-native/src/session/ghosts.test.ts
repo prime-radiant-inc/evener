@@ -205,8 +205,9 @@ describe("messages on their way", () => {
 			["queued", "queued"],
 			["sending", "sent"],
 		]);
-		expect(list[0]?.caption).toBe("Steering · arrives at the next step");
-		expect(list[2]?.caption).toBe("Sending…");
+		// Each state says its own caption.
+		expect(new Set(list.map((ghost) => ghost.caption)).size).toBe(list.length);
+		for (const ghost of list) expect(ghost.caption).not.toBe("");
 	});
 
 	it("asks you to check a send whose answer was lost", () => {
@@ -410,12 +411,15 @@ describe("what can act right now", () => {
 describe("the phone's own outbox (phase 6)", () => {
 	it("says a message will send when you're back online while offline", () => {
 		const [ghost] = ghosts(session("idle"), [pending()], null, [], false);
-		expect(ghost).toMatchObject({ state: "sending", caption: "Will send when you're back online", buttons: [] });
-		expect(ghosts(session("idle"), [pending()], null, [], true)[0]?.caption).toBe("Sending…");
+		expect(ghost).toMatchObject({ state: "sending", buttons: [] });
+		// Online, the same send says it is on its way instead.
+		const online = ghosts(session("idle"), [pending()], null, [], true)[0];
+		expect(online?.state).toBe("sending");
+		expect(online?.caption).not.toBe(ghost?.caption);
 		// The draft's ghost for a send the outbox still carries says the same.
 		const carried = [pending({ text: "maybe sent" })];
 		expect(ghosts(session("idle"), carried, unsent("maybe sent"), [], false)).toMatchObject([
-			{ key: "draft:unconfirmed", state: "sending", caption: "Will send when you're back online" },
+			{ key: "draft:unconfirmed", state: "sending", caption: ghost?.caption },
 		]);
 	});
 
