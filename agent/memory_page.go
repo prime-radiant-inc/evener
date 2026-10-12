@@ -23,8 +23,8 @@ type memoryPage struct {
 	Description    string // one line; the fallback when HasDescription is false
 	HasDescription bool
 	When           string // one line: when a future session needs the page; "" when there is none
-	Unreadable     bool // the page's frontmatter did not parse
-	Frontmatter    bool // the page opens with a complete frontmatter block, readable or not
+	Unreadable     bool   // the page's frontmatter did not parse
+	Frontmatter    bool   // the page opens with a complete frontmatter block, readable or not
 	Tags           []string
 	Updated        string    // the YYYY-MM-DD stamp, "" when there is none
 	By             string    // the by: stamp, who last wrote the page; "" when there is none

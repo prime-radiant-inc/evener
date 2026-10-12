@@ -355,11 +355,12 @@ keeping every other byte, except that a stamped page's line endings become
 unstamped. The stamps land in the tool's one write, never a second
 read-modify-write, so a stamp cannot undo another session's later write or
 delete of the page. A failed write writes nothing. Before stamping, a
-top-level `description` or `evidence` value YAML can't read as written, such
+top-level `description`, `when` or `evidence` value YAML can't read as written, such
 as an unquoted scalar holding `: ` or ending in `:`
 (``description: like `shop: add Count` ``), is written as a quoted
 YAML string, when that makes the frontmatter parse, so the model needs no
 second call to fix it. A written page with no description gets a note asking
+for one, a page with a readable description and no `when` gets a note asking
 for one, and a page whose frontmatter still does not parse is left as written
 and gets its own note asking to fix the YAML.
 
