@@ -627,7 +627,7 @@ export function TurnFailureEndCap({
           </Button>
         )}
         {showReattachNote && (
-          <span className={CLASS.hint}>
+          <span className={CLASS.hint} data-testid="turn-failure-reattach" data-count={unavailableCount}>
             {unavailableCount === 1
               ? "Attached image unavailable — re-attach the image to retry."
               : `Attached images unavailable — re-attach ${unavailableCount} images to retry.`}

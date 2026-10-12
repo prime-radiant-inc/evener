@@ -3,7 +3,7 @@
 
 import type { AppwireClient } from "@evener/appwire-client";
 import { connectJobOutputPeer, type JobOutputPeer } from "@evener/appwire-client/testing/jobOutputPeer";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
@@ -13,6 +13,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspa
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { installJobLogGeometry, jobLogCommandText, jobLogOutputText, jobOutputMetadata } from "./JobLogTestUtils";
 import { retainedJobLogReader } from "./jobLogReader";
@@ -125,7 +126,7 @@ describe("JobLog", () => {
     mountJob();
     await respond(EMPTY, jobOutputMetadata({ command: "make lint", hasOutput: false }));
     expect(jobLogCommandText(await screen.findByTestId("joblog-command"))).toBe("make lint");
-    expect(await screen.findByText("No output yet")).toBeTruthy();
+    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["empty"]));
   });
 
   test("renders the log with no command line when the job read is unavailable", async () => {

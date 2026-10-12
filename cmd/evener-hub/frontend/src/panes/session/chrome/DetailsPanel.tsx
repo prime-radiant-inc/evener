@@ -79,12 +79,20 @@ function isEndedStatus(type: string): boolean {
 
 // detailRow builds one PropertyList row whose value carries the row's own
 // testid, so a caller can find a fact without matching its label text.
-function detailRow(label: string, testId: string, value: ReactNode, mono = false): StackedPropertyListRow {
+// `scope` says what the row's figure counts, when that can vary (the token
+// total).
+function detailRow(
+  label: string,
+  testId: string,
+  value: ReactNode,
+  mono = false,
+  scope?: string,
+): StackedPropertyListRow {
   return {
     label,
     mono,
     value: (
-      <span className={CLASS.value} data-testid={testId}>
+      <span className={CLASS.value} data-testid={testId} data-scope={scope}>
         {value}
       </span>
     ),
@@ -171,6 +179,8 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
                 <span>↑{formatTokenCount(tokens.inputTokens)}</span>
                 <span>↓{formatTokenCount(tokens.outputTokens)}</span>
               </>,
+              false,
+              tokens.scope,
             ),
           !!model.cost && detailRow("cost", "session-details-cost", model.cost),
         ]}

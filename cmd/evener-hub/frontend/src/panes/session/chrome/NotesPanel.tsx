@@ -203,7 +203,9 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
               {model.agentNote}
             </p>
           ) : (
-            <EmptyState size="compact" title="No agent note yet" />
+            <div data-testid="shared-notes-agent-empty">
+              <EmptyState size="compact" title="No agent note yet" />
+            </div>
           )}
         </Section>
       )}
@@ -259,7 +261,9 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
               ))}
             </ul>
           ) : (
-            <EmptyState size="compact" title="No links yet" />
+            <div data-testid="shared-notes-urls-empty">
+              <EmptyState size="compact" title="No links yet" />
+            </div>
           )}
         </Section>
       )}

@@ -9,7 +9,7 @@ import type {
   SessionActivityCounts,
   SessionWatch,
 } from "@evener/appwire-client";
-import { formatClockTime } from "@evener/appwire-client";
+import { formatClockTime, watchMeta } from "@evener/appwire-client";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -18,8 +18,6 @@ import { ActivityTree } from "./ActivityTree";
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
 const CREATED = "2026-08-05T12:48:00Z";
-const NO_SCHEDULE =
-  "There is no schedule to draw here — this one fires when the job or event it watches says so, not when a clock says so.";
 
 function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
   const info: EvenerWatchInfo = {
@@ -37,6 +35,12 @@ function watch(overrides: Partial<EvenerWatchInfo> = {}): SessionWatch {
     state: info.active ? "armed" : "ended",
     watch: info,
   };
+}
+
+function metaText(row: HTMLElement): string {
+  const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");
+  if (!meta) throw new Error("row has no meta cluster");
+  return meta.textContent ?? "";
 }
 
 function armedLabel(): string {
@@ -89,13 +93,14 @@ afterEach(() => {
 
 describe("ActivityTree watch rows", () => {
   test("a scheduled watch renders a named row with its cadence and delivery count, under a Watches group", () => {
+    const polled = watch({
+      id: "watch_poll",
+      note: "Poll the queue depth",
+      cadence: [{ kind: "every", seconds: 600 }],
+      deliveries: 3,
+    });
     renderTree([
-      watch({
-        id: "watch_poll",
-        note: "Poll the queue depth",
-        cadence: [{ kind: "every", seconds: 600 }],
-        deliveries: 3,
-      }),
+      polled,
       watch({
         id: "watch_idle",
         note: "Deploy rollback check",
@@ -105,14 +110,12 @@ describe("ActivityTree watch rows", () => {
     ]);
 
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
-    expect(row.textContent).toContain("every 10m");
-    expect(row.textContent).toContain("3 deliveries");
+    expect(metaText(row)).toBe(watchMeta(polled, NOW));
+    expect(metaText(row)).toContain("3");
     expect(within(row).getByText("Watch:")).toBeTruthy();
     expect(row.querySelector('[data-testid="watch-glyph"]')).not.toBeNull();
 
-    expect(screen.getByTestId("watch-group")).toBeTruthy();
-    expect(screen.getByText("Watches")).toBeTruthy();
-    expect(screen.getByText("2 armed")).toBeTruthy();
+    expect(screen.getByTestId("watch-group").getAttribute("data-armed")).toBe("2");
   });
 
   test("the Watches header uses authoritative totals independently of loaded rows", () => {
@@ -123,7 +126,7 @@ describe("ActivityTree watch rows", () => {
       failed: 0,
       completed: 0,
     });
-    expect(screen.getByText("40 armed")).toBeTruthy();
+    expect(screen.getByTestId("watch-group").getAttribute("data-armed")).toBe("40");
   });
   test("unknown Watches counts never become an inferred loaded-row total", () => {
     renderTree([watch({ note: "one loaded" })], EMPTY_TREE, {
@@ -133,20 +136,19 @@ describe("ActivityTree watch rows", () => {
       failed: 0,
       completed: 0,
     });
-    expect(screen.getByText("Armed count unknown")).toBeTruthy();
-    expect(screen.queryByText("1 armed")).toBeNull();
+    expect(screen.getByTestId("watch-group").getAttribute("data-armed")).toBe("unknown");
   });
 
-  test("a clock watch row renders its next fire with a tilde and never the word about", () => {
-    renderTree([
-      watch({
-        note: "Poll the queue depth",
-        cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
-      }),
-    ]);
+  test("an open clock watch row renders its next fire against the tree clock", () => {
+    const clock = watch({
+      note: "Poll the queue depth",
+      cadence: [{ kind: "every", seconds: 600, derivedNextFireAt: "2026-08-05T15:04:12Z" }],
+    });
+    renderTree([clock]);
     const row = screen.getByRole("treeitem", { name: "Watch: Poll the queue depth" });
-    expect(row.textContent).toContain("next ~4m");
-    expect(row.textContent).not.toMatch(/about/i);
+    expect(metaText(row)).toBe(watchMeta(clock, NOW));
+    // The collapsed (clockless) meta has no next fire; the open row does.
+    expect(metaText(row)).not.toBe(watchMeta(clock, undefined));
   });
 
   test("an output watch row renders no next fire even when the field is present", () => {
@@ -231,7 +233,7 @@ describe("ActivityTree watch rows", () => {
     expect(screen.getByTestId("watch-facts").textContent).toBe(
       `Waiting on job_ab12cd, matching /DONE/ · armed ${armedLabel()} ago · no deliveries yet`,
     );
-    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(NO_SCHEDULE);
+    expect(screen.getByTestId("watch-no-schedule").textContent).not.toBe("");
     expect(screen.queryByTestId("watch-timeline")).toBeNull();
   });
 
@@ -248,7 +250,7 @@ describe("ActivityTree watch rows", () => {
     expect(screen.getByTestId("watch-facts").textContent).toBe(
       `Waiting on job.completed, job.failed · armed ${armedLabel()} ago · 2 deliveries`,
     );
-    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(NO_SCHEDULE);
+    expect(screen.getByTestId("watch-no-schedule").textContent).not.toBe("");
   });
 
   test("a wildcard event watch reads as session events", () => {
@@ -293,7 +295,7 @@ describe("ActivityTree watch rows", () => {
     ]);
     expect(screen.getByTestId("watch-timeline")).toBeTruthy();
     expect(screen.getAllByTestId("watch-timeline-dot")).toHaveLength(3);
-    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered");
+    expect(screen.getByTestId("watch-timeline-caption").getAttribute("data-state")).toBe("complete");
     expect(screen.queryByTestId("watch-no-schedule")).toBeNull();
   });
 

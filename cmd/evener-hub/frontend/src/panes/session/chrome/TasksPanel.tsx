@@ -437,7 +437,11 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
       // No Try again here: the source cannot answer this call at all, so
       // asking again would only fail again.
       return (
-        <EmptyState title="Task list isn't available" hint="This session's source doesn't support the task list." />
+        <EmptyState
+          title="Task list isn't available"
+          hint="This session's source doesn't support the task list."
+          reason="unsupported"
+        />
       );
     }
     if (daemonGone && (rows === null || rows.length === 0)) {
@@ -451,13 +455,14 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
         <EmptyState
           title="This session has ended"
           hint="Its daemon has exited, and there's no record of its task list to fall back on."
+          reason="ended"
         />
       );
     }
     if (rows === null) {
       if (error)
         return (
-          <InlineNotice tone="danger" title={error.headline} action={retry}>
+          <InlineNotice tone="danger" title={error.headline} action={retry} data-reason="failed">
             {error.detail}
           </InlineNotice>
         );
@@ -487,7 +492,7 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
           </div>
         )}
         {rows.length === 0 ? (
-          <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." />
+          <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." reason="empty" />
         ) : (
           <TaskListGroups rows={rows} sessionRef={sessionRef} />
         )}

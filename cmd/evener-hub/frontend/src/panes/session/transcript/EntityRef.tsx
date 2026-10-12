@@ -45,11 +45,18 @@ const CLASS = {
 };
 
 // CardRows lists a card's facts, dropping each one the entity does not
-// carry. Values wrap in full: a hover card is read, not scanned.
-function CardRows({ rows }: { rows: { label: string; value: ReactNode; mono?: boolean }[] }) {
+// carry. Values wrap in full: a hover card is read, not scanned. Each value
+// carries `data-field`, naming the fact it states independent of its label's
+// wording.
+function CardRows({ rows }: { rows: { field: string; label: string; value: ReactNode; mono?: boolean }[] }) {
   const present: PropertyListRow[] = rows
     .filter((row) => row.value !== undefined && row.value !== null && row.value !== "")
-    .map((row) => ({ ...row, wrap: true }));
+    .map(({ field, label, value, mono }) => ({
+      label,
+      mono,
+      wrap: true,
+      value: <span data-field={field}>{value}</span>,
+    }));
   return <PropertyList rows={present} />;
 }
 
@@ -100,11 +107,15 @@ function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; l
       {detail ? <div className={CLASS.summary}>{detail}</div> : null}
       <CardRows
         rows={[
-          { label: "Type", value: job.type },
-          { label: "Command", value: command, mono: true },
-          { label: duration ? "Duration" : "Started", value: duration ?? started },
-          { label: "Exit", value: job.exitCode === undefined ? undefined : `exit ${job.exitCode}` },
-          { label: "Output", value: formatByteCount(job.outputBytes) },
+          { field: "type", label: "Type", value: job.type },
+          { field: "command", label: "Command", value: command, mono: true },
+          {
+            field: duration ? "duration" : "started",
+            label: duration ? "Duration" : "Started",
+            value: duration ?? started,
+          },
+          { field: "exit", label: "Exit", value: job.exitCode === undefined ? undefined : `exit ${job.exitCode}` },
+          { field: "output", label: "Output", value: formatByteCount(job.outputBytes) },
         ]}
       />
     </div>
@@ -159,11 +170,15 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
       {mandate ? <div className={CLASS.summary}>{mandate}</div> : null}
       <CardRows
         rows={[
-          { label: "Agent", value: agent },
-          { label: "Model", value: model, mono: true },
-          { label: duration ? "Duration" : "Running", value: duration ?? running },
-          { label: "Quiet", value: quiet },
-          { label: "Usage", value: usageText(view.row?.delegate.usage ?? view.stable?.usage) },
+          { field: "agent", label: "Agent", value: agent },
+          { field: "model", label: "Model", value: model, mono: true },
+          {
+            field: duration ? "duration" : "running",
+            label: duration ? "Duration" : "Running",
+            value: duration ?? running,
+          },
+          { field: "quiet", label: "Quiet", value: quiet },
+          { field: "usage", label: "Usage", value: usageText(view.row?.delegate.usage ?? view.stable?.usage) },
         ]}
       />
     </div>
@@ -206,16 +221,17 @@ function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
       {condition.summary ? <div className={CLASS.summary}>{condition.summary}</div> : null}
       <CardRows
         rows={[
-          { label: "Note", value: condition.note },
+          { field: "note", label: "Note", value: condition.note },
           {
+            field: "deliveries",
             label: "Deliveries",
             value:
               watch.deliveries === undefined
                 ? undefined
                 : `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`,
           },
-          { label: "Source", value: source, mono: true },
-          { label: "Ended", value: watch.endReason },
+          { field: "source", label: "Source", value: source, mono: true },
+          { field: "ended", label: "Ended", value: watch.endReason },
         ]}
       />
     </div>
