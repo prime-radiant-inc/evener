@@ -533,7 +533,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 							<View style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
 								<Chevron name="chevron.left" label="Previous change" onPress={() => stepBy(-1)} />
 								<Text
-									// The step on show of how many: `all/2` before stepping, `1/2` on the first.
+									// Which change is on show, of how many: `all/2` before stepping, `1/2` on the first.
 									testID={`change-step:${step === null ? "all" : step + 1}/${changed.length}`}
 									allowFontScaling={allowFontScaling}
 									style={{

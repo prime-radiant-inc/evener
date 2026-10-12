@@ -32,6 +32,10 @@ describe("changes since you last read (spec 10.2, ruling 13)", () => {
 		// Any time today is today, even one ahead of the phone's clock.
 		expect(readOn(26, 11)).toBe(today);
 		const yesterday = readOn(25, 23, 50);
+		// Yesterday reads the same whatever day it was.
+		expect(whenYouRead(new Date(2026, 8, 22, 23, 50).getTime(), new Date(2026, 8, 23, 9, 30).getTime())).toBe(
+			yesterday,
+		);
 		const thisWeek = readOn(23, 12);
 		const earlier = readOn(18, 12);
 		expect(new Set([today, yesterday, thisWeek, earlier]).size).toBe(4);

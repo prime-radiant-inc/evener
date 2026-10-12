@@ -21,7 +21,7 @@ import { useCoordinatorState } from "./useCoordinatorState";
 import { useSubagentTree } from "./useSubagentTree";
 
 /** When a stop request reaches the coordinator: once the connection is back,
- * never while it takes no message, or at its next step. */
+ * not while the coordinator takes no message, else at its next step. */
 const DELIVERY_WORDS = {
 	offline: "Send when you're back online.",
 	unavailable: "The coordinator can't take a message right now.",

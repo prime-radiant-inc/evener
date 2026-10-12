@@ -218,7 +218,7 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 			</Group>
 			{imageState.error ? <GroupFooter tone="danger">{imageState.error}</GroupFooter> : null}
 			{block?.message ? (
-				<GroupFooter tone="danger" testID={`start-block:${block.field ?? "start"}`}>
+				<GroupFooter tone="danger" testID={`start-block:${block.field}`}>
 					{block.message}
 				</GroupFooter>
 			) : null}
