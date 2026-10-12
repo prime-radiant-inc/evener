@@ -17,9 +17,8 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useEntityOwnerRef, useEntityViews } from "../../../transcriptDisplay/entityViews";
-import { HoverCard } from "../../../widgets/hovercard";
+import { HoverCard, OpenButton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { OpenButton } from "../../../widgets/openbutton";
 import { formatQuietAge, formatUsagePair, jobStatusDisplay } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";

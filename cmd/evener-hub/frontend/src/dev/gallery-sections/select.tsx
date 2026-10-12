@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Select } from "../../widgets/select";
+import { Select, type SelectOption } from "../../widgets/select";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
@@ -9,9 +9,15 @@ const OPTIONS = [
   { value: "eu-central", label: "EU Central" },
 ];
 
-function LiveSelect() {
-  const [value, setValue] = useState("us-east");
-  return <Select value={value} options={OPTIONS} onChange={(e) => setValue(e.target.value)} />;
+const HOST_OPTIONS = [
+  { value: "local", label: "This hub" },
+  { value: "build-box", label: "build-box" },
+  { value: "gpu-box", label: "gpu-box (offline)", disabled: true },
+];
+
+function LiveSelect({ options = OPTIONS }: { options?: SelectOption[] }) {
+  const [value, setValue] = useState(options[0]?.value ?? "");
+  return <Select value={value} options={options} onChange={(e) => setValue(e.target.value)} />;
 }
 
 export default function SelectGallerySection() {
@@ -22,6 +28,10 @@ export default function SelectGallerySection() {
         <div className={styles.row}>
           <p className={styles.rowLabel}>enabled</p>
           <LiveSelect />
+        </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>a disabled option</p>
+          <LiveSelect options={HOST_OPTIONS} />
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>disabled</p>

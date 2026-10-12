@@ -1,0 +1,148 @@
+/* A two-track grid so the leading glyph sits on the label's line and the meta
+ * line starts under the label, not under the glyph; the trailing chevron or
+ * action centers on the row. The label and meta take the
+ * second-to-last column and the trailing slot the last one, which holds with
+ * or without a leading column. */
+.row {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  align-content: center;
+  column-gap: var(--space-2);
+  width: 100%;
+  margin: 0;
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-ui);
+  text-align: start;
+}
+
+.withLeading {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+/* --- variants ------------------------------------------------------- */
+
+/* design-system.md §10's collection row. */
+.collection {
+  row-gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--edge);
+  background: var(--surface-1);
+}
+
+.plain {
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  background: transparent;
+}
+
+/* --- interaction ---------------------------------------------------- */
+
+.interactive {
+  cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.interactive:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--hover-1);
+}
+
+/* Inset: rows sit flush in scrolling lists that would clip an outside ring. */
+.interactive:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* aria-disabled refuses activation (index.tsx) and must look refused too. */
+.interactive:disabled,
+.interactive[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* --- slots ---------------------------------------------------------- */
+
+/* One label line tall, so a glyph centers on the label rather than on the
+ * whole row. */
+.leading {
+  display: inline-flex;
+  grid-row: 1;
+  grid-column: 1;
+  align-items: center;
+  justify-content: center;
+  height: calc(var(--line-height-ui) * 1em);
+}
+
+.heading {
+  display: flex;
+  grid-row: 1;
+  grid-column: -3 / -2;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chips {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.meta {
+  grid-row: 2;
+  grid-column: -3 / -2;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collection .meta {
+  font-family: var(--font-mono);
+}
+
+.plain .meta {
+  color: var(--ink-low);
+}
+
+.trailing {
+  display: inline-flex;
+  grid-row: 1;
+  grid-column: -2 / -1;
+  align-items: center;
+}
+
+/* Spanning a second line only when there is one: an unconditional span would
+ * open an empty second track (and its row gap) under a meta-less row. */
+.meta ~ .trailing {
+  grid-row: 1 / span 2;
+}
+
+.chevron {
+  color: var(--ink-low);
+}
+
+/* Tap floor (--tap-min, phones and coarse pointers). A read-only
+ * collection row takes it too, so it stays the same row as its tappable
+ * twin. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .collection,
+  .interactive {
+    min-height: var(--tap-min);
+  }
+}

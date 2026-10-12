@@ -16,9 +16,8 @@
 
 import { isInformationalWarning, warningWords } from "@evener/appwire-client";
 import { memo } from "react";
-import { Chip } from "../../../../widgets";
+import { Chip, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./warningitem.module.css";
 

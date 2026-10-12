@@ -54,19 +54,24 @@ import {
   Badge,
   Button,
   Chevron,
+  ConfirmDialog,
   Dialog,
   EmptyState,
+  FormRow,
   IconButton,
   Input,
+  Menu,
   Popover,
   RadioGroup,
   Skeleton,
   Tooltip,
+  Tree,
+  type TreeProps,
+  type TreeRowInfo,
   useToasts,
+  VisuallyHidden,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Menu } from "../../widgets/menu";
-import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
@@ -90,7 +95,6 @@ import {
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
-import dialogStyles from "./railDialog.module.css";
 import { loadExpansion, saveExpansion } from "./railExpansion";
 import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
@@ -138,10 +142,6 @@ const CLASS = {
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
   organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
   organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
-  dialogField: requireClass(dialogStyles.dialogField, "railDialog.module.css", "dialogField"),
-  dialogActions: requireClass(dialogStyles.dialogActions, "railDialog.module.css", "dialogActions"),
-  pickerError: requireClass(dialogStyles.pickerError, "railDialog.module.css", "pickerError"),
-  srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 
 // Section-fold keys. Archived is the only one that starts collapsed; every
@@ -420,7 +420,7 @@ function PinnedRailSection({
             trigger={
               <>
                 <span aria-hidden="true">⋯</span>
-                <span className={CLASS.srOnly}>{`Actions for ${section.name}`}</span>
+                <VisuallyHidden>{`Actions for ${section.name}`}</VisuallyHidden>
               </>
             }
             items={[
@@ -1088,7 +1088,6 @@ function NavigationRail({
   const [sectionRenameError, setSectionRenameError] = useState("");
   const [sectionRenameSubmitting, setSectionRenameSubmitting] = useState(false);
   const sectionRenameInputID = useId();
-  const sectionRenameErrorID = useId();
   const sectionRenameSubmission = useRef<{ token: number; sectionID: string } | null>(null);
   const sectionRenameToken = useRef(0);
   const sectionDeleteRequestToken = useRef(0);
@@ -2114,18 +2113,17 @@ function NavigationRail({
           onClose={closeSectionRename}
           title="Rename pin section"
           footer={
-            <div className={CLASS.dialogActions}>
+            <>
               <Button variant="quiet" onClick={closeSectionRename} disabled={sectionRenameSubmitting}>
                 Cancel
               </Button>
               <Button onClick={() => void confirmSectionRename()} disabled={sectionRenameSubmitting}>
                 Rename section
               </Button>
-            </div>
+            </>
           }
         >
-          <label className={CLASS.dialogField} htmlFor={sectionRenameInputID}>
-            Section name
+          <FormRow label="Section name" htmlFor={sectionRenameInputID} error={sectionRenameError || undefined}>
             <Input
               id={sectionRenameInputID}
               value={sectionRenameValue}
@@ -2134,54 +2132,31 @@ function NavigationRail({
                 setSectionRenameError("");
               }}
               disabled={sectionRenameSubmitting}
-              aria-describedby={sectionRenameError ? sectionRenameErrorID : undefined}
+              aria-describedby={sectionRenameError ? `${sectionRenameInputID}-error` : undefined}
             />
-          </label>
-          {sectionRenameError && (
-            <p id={sectionRenameErrorID} className={CLASS.pickerError} role="alert">
-              {sectionRenameError}
-            </p>
-          )}
+          </FormRow>
         </Dialog>
       )}
-      {sectionDeleteTarget && (
-        <Dialog
-          open
-          onClose={() => setSectionDeleteTarget(null)}
-          title="Delete pin section?"
-          footer={
-            <div className={CLASS.dialogActions}>
-              <Button variant="quiet" onClick={() => setSectionDeleteTarget(null)}>
-                Cancel
-              </Button>
-              <Button variant="danger" onClick={() => void confirmSectionDelete()}>
-                Delete section
-              </Button>
-            </div>
-          }
-        >
-          <p>{`Delete “${sectionDeleteTarget.section.name}”? This will unpin ${sectionDeleteTarget.memberCount} session${sectionDeleteTarget.memberCount === 1 ? "" : "s"}.`}</p>
-        </Dialog>
-      )}
-      {deleteTarget && (
-        <Dialog
-          open
-          onClose={closeDeleteDialog}
-          title="Delete project?"
-          footer={
-            <div className={CLASS.dialogActions}>
-              <Button variant="quiet" onClick={closeDeleteDialog}>
-                Cancel
-              </Button>
-              <Button variant="danger" onClick={() => void confirmDelete()}>
-                Delete
-              </Button>
-            </div>
-          }
-        >
-          <p>{`Permanently delete every session in "${deleteTarget.name}", including their subagents? This removes their transcripts and cannot be undone.`}</p>
-        </Dialog>
-      )}
+      <ConfirmDialog
+        open={sectionDeleteTarget !== null}
+        title="Delete pin section?"
+        confirmLabel="Delete section"
+        onConfirm={() => void confirmSectionDelete()}
+        onCancel={() => setSectionDeleteTarget(null)}
+      >
+        {sectionDeleteTarget &&
+          `Delete “${sectionDeleteTarget.section.name}”? This will unpin ${sectionDeleteTarget.memberCount} session${sectionDeleteTarget.memberCount === 1 ? "" : "s"}.`}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete project?"
+        confirmLabel="Delete"
+        onConfirm={() => void confirmDelete()}
+        onCancel={closeDeleteDialog}
+      >
+        {deleteTarget &&
+          `Permanently delete every session in "${deleteTarget.name}", including their subagents? This removes their transcripts and cannot be undone.`}
+      </ConfirmDialog>
     </div>
   );
 }

@@ -46,25 +46,28 @@ import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
   Chevron,
+  CloseIcon,
   ConfirmDialog,
   chordLabel,
   Dialog,
+  DirectoryIcon,
+  DirectoryPicker,
+  Disclosure,
   Dropzone,
   FormRow,
   IconButton,
   Loader,
+  type ModelCatalog,
+  type ModelCatalogEntry,
   PaneScaffold,
   PromptCard,
   Select,
   SendIcon,
   Tooltip,
   useToasts,
+  VisuallyHidden,
 } from "../../widgets";
-import { CloseIcon } from "../../widgets/dialog/CloseIcon";
-import { DirectoryIcon, DirectoryPicker } from "../../widgets/directorypicker";
-import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
 import selectStyles from "../../widgets/select/select.module.css";
@@ -198,7 +201,7 @@ const CLASS = {
   effortValue: requireClass(styles.effortValue, "spawn.module.css", "effortValue"),
   effortChevron: requireClass(styles.effortChevron, "spawn.module.css", "effortChevron"),
   effortSelect: requireClass(styles.effortSelect, "spawn.module.css", "effortSelect"),
-  srOnly: requireClass(styles.srOnly, "spawn.module.css", "srOnly"),
+  effortLabel: requireClass(styles.effortLabel, "spawn.module.css", "effortLabel"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
@@ -208,6 +211,7 @@ const CLASS = {
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
+  pluginSummaryAction: requireClass(pluginSelectionStyles.summaryAction, "pluginSelection.module.css", "summaryAction"),
   // The host picker's native <select> reuses the Select widget's own stylesheet
   // class: the widget renders a native <select> too, but its SelectOption has no
   // per-option disabled flag, and an offline host must be RENDERED yet not
@@ -2657,8 +2661,8 @@ function SpawnForm({
                     <span className={CLASS.effortChevron} aria-hidden="true">
                       <Chevron direction="down" />
                     </span>
-                    <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
-                      Prompt reasoning effort
+                    <label className={CLASS.effortLabel} htmlFor="spawn-reasoning-effort">
+                      <VisuallyHidden>Prompt reasoning effort</VisuallyHidden>
                     </label>
                     <select
                       id="spawn-reasoning-effort"
@@ -2800,9 +2804,11 @@ function SpawnForm({
                     <span title={pluginPreview.state.message}>
                       Couldn't inspect plugins: {pluginPreview.state.message}
                     </span>
-                    <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
-                      Retry
-                    </Button>
+                    <div className={CLASS.pluginSummaryAction}>
+                      <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                        Retry
+                      </Button>
+                    </div>
                   </>
                 )}
               </div>

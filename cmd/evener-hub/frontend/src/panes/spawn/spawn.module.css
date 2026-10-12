@@ -100,7 +100,7 @@
  * phone needs the platform's 44px tap floor - min-height, not height, so the
  * desktop row's own sizing stays untouched and this only ever grows it. A
  * width breakpoint like iconbutton.module.css's own phone block, not
- * (pointer: coarse): the guard measures this floor in a headless browser
+ * (any-pointer: coarse): the guard measures this floor in a headless browser
  * with no coarse pointer to match on. */
 @media (max-width: 899px) {
   .effortTrigger {
@@ -194,21 +194,12 @@
   cursor: pointer;
 }
 
-/* Standard visually-hidden recipe (see statusrow.module.css's own copy of
- * this comment) - keeps a real, focus-order-preserving <label> in the
- * accessibility tree without taking up any visual footprint in this compact
- * row. The effort readout beside it is aria-hidden (the select already speaks
- * its own value), so this association is the control's only accessible name. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+/* The select's <label> holds only VisuallyHidden text, so it takes no box of
+ * its own: as a flex item it would add a gap to this compact row. The effort
+ * readout beside it is aria-hidden (the select already speaks its own value),
+ * so this association is the control's only accessible name. */
+.effortLabel {
+  display: contents;
 }
 
 .mobileConfig {
@@ -355,14 +346,6 @@
   .form {
     width: 100%;
     max-width: none;
-  }
-
-  /* The field's size comes from widgets/textarea (the 16px phone floor lives
-   * there); the min-height keeps the field a usable writing surface on a
-   * short viewport where the card's line-count floor would otherwise be all
-   * it gets. */
-  .form textarea {
-    min-height: 96px;
   }
 
   .cfgDir {

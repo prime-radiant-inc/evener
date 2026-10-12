@@ -19,9 +19,8 @@ import {
   styleInfoText,
   unconfiguredLabel,
 } from "@evener/appwire-client";
-import { Button, Chevron, Chip, StatusDot } from "../../../../widgets";
+import { Button, Chevron, Chip, StatusDot, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {

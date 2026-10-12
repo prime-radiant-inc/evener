@@ -15,7 +15,7 @@ import type { MutationRecoveryKind } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import visuallyHiddenStyles from "../../../../widgets/internal/visuallyHidden.module.css";
+import visuallyHiddenStyles from "../../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
@@ -364,13 +364,16 @@ test("the region stays silent on the timer's cadence", async () => {
 // The VisuallyHidden widget's sr-only class, through the project's canonical
 // requireClass (noUncheckedIndexedAccess makes a bare styles.root read
 // string | undefined; a missing class must fail loudly, not silently).
-const VISUALLY_HIDDEN_CLASS = requireClass(visuallyHiddenStyles.root, "visuallyHidden.module.css", "root");
+const VISUALLY_HIDDEN_CLASS = requireClass(
+  visuallyHiddenStyles.visuallyHidden,
+  "visuallyhidden.module.css",
+  "visuallyHidden",
+);
 
 // The region's text renders through the shared VisuallyHidden widget - the
 // same sr-only wrapping Session.tsx's own transcript-view-announcement region
-// uses, and the rule the AskDockAnnouncements pattern's visuallyHidden class
-// encodes - so an announcement is audible but never visible text below the
-// virtual list.
+// and AskDockAnnouncements use - so an announcement is audible but never
+// visible text below the virtual list.
 test("the announcement text is visually hidden", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
