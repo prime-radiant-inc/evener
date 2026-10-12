@@ -22,6 +22,7 @@ type memoryPage struct {
 	Title          string
 	Description    string // one line; the fallback when HasDescription is false
 	HasDescription bool
+	When           string // one line: when a future session needs the page; "" when there is none
 	Unreadable     bool // the page's frontmatter did not parse
 	Frontmatter    bool // the page opens with a complete frontmatter block, readable or not
 	Tags           []string
@@ -131,6 +132,9 @@ func parseMemoryPage(rel string, raw []byte, modTime time.Time) memoryPage {
 	}
 	if !p.HasDescription {
 		p.Description = memoryFallbackDescription(heading, body)
+	}
+	if when, ok := doc.Meta["when"].(string); ok {
+		p.When = collapseWhitespace(when)
 	}
 	p.Tags = normalizeMemoryTags(doc.Meta["tags"])
 	p.Updated = memoryStampDate(doc.Meta["updated"])

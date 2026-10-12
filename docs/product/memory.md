@@ -216,7 +216,7 @@ memory updates can join a Responses continuation delta after a valid active
 anchor. Compaction without a new valid anchor still requires full history;
 unsafe content and the other continuation eligibility checks remain unchanged.
 
-Pages carry frontmatter (`description`, optional `tags` and `evidence`; Evener
+Pages carry frontmatter (`description`, optional `when`, `tags` and `evidence`; Evener
 adds `updated` and `by`). A page without a description still appears, under its
 fallback description. Other content has no required schema, extension or link
 rule. An optional `log.md` is ordinary model-authored content, not a
@@ -256,6 +256,7 @@ saved with CRLF line endings keeps its frontmatter:
 ```markdown
 ---
 description: Money is integer cents, never floats
+when: Formatting or storing a price
 tags: [money, formatting]
 evidence: file:shop/price.go:Format
 updated: 2026-10-08
@@ -266,7 +267,10 @@ Prices are stored and computed as integer cents...
 ```
 
 `description` is one line; newlines collapse to spaces when it is rendered, and
-a value that is not a YAML string counts as missing. `tags` is a YAML list (a
+a value that is not a YAML string counts as missing. `when` is one line saying
+when a future session needs the page, written like a skill's trigger; it is
+rendered after the description as `(when: …)`. A non-string or empty value
+counts as missing and renders nothing. `tags` is a YAML list (a
 single string is one tag); each tag is trimmed and lowercased, runs of
 whitespace become `-`, and empty and duplicate tags are dropped. Tags are plain:
 there is no primary tag, reserved tag or type field. `evidence` is free-form and
@@ -284,7 +288,7 @@ does not parse is still a page; it renders as
 
 ```text
 Tags: formatting (3), money (2), vitest (6)
-- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)
+- [Integer cents](cents.md) — Money is integer cents, never floats (when: Formatting or storing a price) [money, formatting] (updated 2026-10-08)
 - [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 

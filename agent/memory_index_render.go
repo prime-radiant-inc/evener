@@ -97,6 +97,9 @@ func memoryIndexLine(p memoryPage) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "- [%s](%s) — %s", memoryTitleEscaper.Replace(p.Title), memoryLinkTarget(p.Path), p.Description)
+	if p.When != "" {
+		b.WriteString(" (when: " + p.When + ")")
+	}
 	if p.Unreadable {
 		b.WriteString(" " + memoryFrontmatterUnreadable)
 	}

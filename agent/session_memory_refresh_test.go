@@ -696,6 +696,36 @@ func TestMemoryRefreshIndexDeltaComparesTheFullIndex(t *testing.T) {
 	}
 }
 
+// A page whose only change is its when line delivers its new index line.
+func TestMemoryRefreshIndexDeltaReportsAChangedWhen(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	memorySeedPage(t, root, "memory", "a.md", "opaque-when-page", memorySeedWhen("opaque-when-1"))
+	var deltas []string
+	deltaTurn := func(want int) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			if got := memoryContextMessages(req); got != want {
+				t.Fatalf("turn carries %d memory contexts, want %d", got, want)
+			}
+			deltas = append(deltas, latestMemoryContext(req, "personal"))
+			return finalResponse("observed")
+		}
+	}
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}), withSteps(deltaTurn(1), deltaTurn(2)))
+	turn := func() {
+		t.Helper()
+		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	memorySeedPage(t, root, "memory", "a.md", "opaque-when-page", memorySeedWhen("opaque-when-2"))
+	turn()
+	if !strings.Contains(deltas[1], `added "- [a](a.md) — opaque-when-page (when: opaque-when-2)`) || strings.Contains(deltas[1], "opaque-when-1") {
+		t.Fatalf("a changed when should arrive as its new line: %q", deltas[1])
+	}
+}
+
 // A stalled read of a known index delivers no change section; the next
 // completed read delivers the other session's change once.
 func TestMemoryRefreshStalledReadDefersIndexDelta(t *testing.T) {
