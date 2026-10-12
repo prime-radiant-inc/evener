@@ -41,6 +41,9 @@ type promptData struct {
 	MemorySaves bool
 	// MemoryWhen asks pages for a when line (spike, EVENER_MEMORY_WHEN).
 	MemoryWhen bool
+	// MemoryWriteFields gives memory_write one parameter per frontmatter field
+	// (spike, EVENER_MEMORY_WRITE_FIELDS).
+	MemoryWriteFields bool
 	// ProjectMemory is true when memory is readable and a project id is set.
 	ProjectMemory bool
 

@@ -498,6 +498,8 @@ def run_session(args, binpath, arm, scen, stage, trial, session_ids):
         env["EVENER_MEMORY_WHEN"] = args.when
     if args.rank:
         env["EVENER_MEMORY_RANK"] = args.rank
+    if getattr(args, "write_fields", None):
+        env["EVENER_MEMORY_WRITE_FIELDS"] = args.write_fields
     if stage.get("seed_project_memory"):
         rc, out = run_bounded([PROJID, work], work, env, COMMAND_TIMEOUT)
         if rc != 0:
@@ -1224,6 +1226,8 @@ def main():
     r.add_argument("--jobs", type=positive_int, default=4)
     r.add_argument("--when", choices=["off", "both", "only"],
                    help="spike: set EVENER_MEMORY_WHEN for every session (both = description then when line; only = when line in place of the description)")
+    r.add_argument("--write-fields", choices=["off", "on"],
+                   help="spike: set EVENER_MEMORY_WRITE_FIELDS for every session (on = memory_write takes description, when, tags, evidence and body as separate fields)")
     r.add_argument("--rank", choices=["off", "on"],
                    help="spike: set EVENER_MEMORY_RANK for every session (on = BM25-ranked hidden pages listed at each human message)")
     r.add_argument("--arm", choices=["on", "off"],

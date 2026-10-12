@@ -47,6 +47,28 @@ func DefMemoryDelete() llm.ToolDefinition {
 	}, "memory_delete")
 }
 
+// DefMemoryWriteFields is memory_write with one parameter per frontmatter
+// field (spike, EVENER_MEMORY_WRITE_FIELDS); MemoryDefinition adds scope and
+// the file_path description.
+func DefMemoryWriteFields() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Description: "Write one memory page. Evener assembles the page's frontmatter from description, when, tags and evidence, followed by body, and replaces the whole page when it already exists.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"file_path":   map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string", "description": "One line saying what the page tells you, never its status."},
+				"when":        map[string]any{"type": "string", "description": "One line saying when a future session needs the page: the moments it would otherwise get this wrong, at the level that covers all of them (\"When a log line could include a customer's street address\"). If those moments call for different facts, the page holds several facts, so give each its own page, even facts your partner told you in one breath."},
+				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional topics for the page; reuse the index's tags."},
+				"evidence":    map[string]any{"type": "string", "description": "Optional: where the fact comes from."},
+				"body":        map[string]any{"type": "string", "description": "The page's Markdown, without frontmatter: one durable fact, led by the fact or rule, then a one-line **Why:** and a one-line **How to apply:** saying when it bears on work, with absolute dates."},
+			},
+			"required": []string{"file_path", "description", "when", "body"},
+		},
+	}
+}
+
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",

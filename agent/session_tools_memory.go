@@ -20,7 +20,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 	}
 	tools := []tool.RegisteredTool{
 		{Definition: tool.DefMemoryRead(), ReadOnly: true, Exec: s.execMemoryRead},
-		{Definition: tool.MemoryDefinition(tool.DefWriteFile(), "memory_write"), Exec: s.execMemoryWrite},
+		{Definition: memoryWriteDefinition(), Exec: s.execMemoryWrite},
 		{Definition: tool.MemoryDefinition(tool.DefEditFile(), "memory_edit"), Exec: s.execMemoryEdit},
 		{Definition: tool.MemoryDefinition(tool.DefGrep(), "memory_search"), ReadOnly: true, Exec: s.execMemorySearch},
 		{Definition: tool.DefMemoryDelete(), Exec: s.execMemoryDelete},
@@ -266,6 +266,17 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	if memoryWriteFieldsEnabled() {
+		page, err := memoryPageFromFields(args)
+		if err != nil {
+			return nil, err
+		}
+		args = maps.Clone(args)
+		for _, field := range []string{"description", "when", "tags", "evidence", "body"} {
+			delete(args, field)
+		}
+		args["content"] = page
+	}
 	return s.execOwnMemoryWrite(args, "write", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
 		forwarded["content"] = string(stamp([]byte(fmt.Sprint(forwarded["content"]))))
 		return execFileWrite(ctx, env, forwarded, s.fileReadGuard(env))

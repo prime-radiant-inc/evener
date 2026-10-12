@@ -3,6 +3,7 @@ package agent
 import (
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -148,9 +149,9 @@ func memoryPageShown(p memoryPage, lines []string) bool {
 func (s *Session) latestUserInputText() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.history) - 1; i >= 0; i-- {
-		if s.history[i].Kind == schema.TurnUserInput {
-			return s.history[i].Message.Text()
+	for _, turn := range slices.Backward(s.history) {
+		if turn.Kind == schema.TurnUserInput {
+			return turn.Message.Text()
 		}
 	}
 	return ""
