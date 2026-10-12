@@ -280,6 +280,15 @@ type spawnStartUnavailableError struct {
 
 func (e spawnStartUnavailableError) Error() string { return e.notice.Text() }
 
+func (m hubModel) spawnStartUnavailable(reason, nextAction string) spawnStartUnavailableError {
+	return spawnStartUnavailableError{notice: noticePanel{
+		Title:      "Start unavailable",
+		Source:     strings.TrimSpace(m.spawnHarness),
+		Reason:     reason,
+		NextAction: nextAction,
+	}}
+}
+
 func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	if m.client == nil || m.spawnSubmitting {
 		return m, nil
@@ -287,12 +296,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	prompt := strings.TrimSpace(m.session.input.Value())
 	if prompt == "" {
 		if reason := m.spawnEmptyTaskUnsupportedReason(); reason != "" {
-			m.err = spawnStartUnavailableError{notice: noticePanel{
-				Title:      "Start unavailable",
-				Source:     strings.TrimSpace(m.spawnHarness),
-				Reason:     reason,
-				NextAction: m.spawnEmptyTaskUnsupportedNextAction(),
-			}}
+			m.err = m.spawnStartUnavailable(reason, m.spawnEmptyTaskUnsupportedNextAction())
 			return m, nil
 		}
 	}
@@ -309,12 +313,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if reason := m.spawnModelDisabledReason(strings.TrimSpace(m.spawnModel)); reason != "" {
-		m.err = spawnStartUnavailableError{notice: noticePanel{
-			Title:      "Start unavailable",
-			Source:     strings.TrimSpace(m.spawnHarness),
-			Reason:     "selected model is not available: " + reason,
-			NextAction: "choose an enabled model or resolve the provider requirement",
-		}}
+		m.err = m.spawnStartUnavailable("selected model is not available: "+reason, "choose an enabled model or resolve the provider requirement")
 		return m, nil
 	}
 	req := hubSpawnRequest{
