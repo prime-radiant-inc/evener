@@ -4513,6 +4513,14 @@ func (fs *rootAttentionResolutionFailFS) injectedFailures() int {
 
 // installResolutionSyncFailuresWriter fails the sync of the session's first
 // failures attention resolution writes.
+//
+// The session may still be running: a delegate reads idle before its run's
+// tail has finished, and that tail checks its writer's health without
+// attentionMu. So the replacement opens on the file's shared tail while the
+// original is still open, the way reopenAttentionTranscriptDurably does, and
+// the original stays open until the test ends. Closing it first left a
+// window in which the running session found its writer closed and failed
+// its run.
 func installResolutionSyncFailuresWriter(t *testing.T, s *Session, failures int) *rootAttentionResolutionFailFS {
 	t.Helper()
 	fs := &rootAttentionResolutionFailFS{Fs: afero.NewOsFs(), failures: failures}
@@ -4525,9 +4533,11 @@ func installResolutionSyncFailuresWriter(t *testing.T, s *Session, failures int)
 	if old == nil {
 		t.Fatal("root attention session has no transcript writer")
 	}
-	if err := old.Close(); err != nil {
-		t.Fatalf("close original root attention writer: %v", err)
-	}
+	t.Cleanup(func() {
+		if err := old.Close(); err != nil {
+			t.Errorf("close original root attention writer: %v", err)
+		}
+	})
 	replacement, entries, err := transcript.OpenWriterForSessionWithFS(fs, path, s.id)
 	if err != nil {
 		t.Fatalf("open resolution-failing root attention writer: %v", err)
