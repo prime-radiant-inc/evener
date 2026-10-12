@@ -88,10 +88,29 @@ def first(groups):
     return next((g for g in groups if g is not None), None)
 
 
+REGEX_CLASS_ESCAPES = set("dDsSwWbB")
+REGEX_METACHARS = set("^$.*+?()[]{}|")
+
+
 def regex_core(rx):
-    """Longest run of literal text in a regex, so it can be looked up as copy."""
-    runs = re.split(r"\\[dDsSwWbB]|[\^$.*+?()\[\]{}|]", rx.replace("\\/", "/"))
-    runs = [re.sub(r"\\(.)", r"\1", r) for r in runs]
+    """Longest run of literal text in a regex, so it can be looked up as copy.
+    An escaped character (`\\.`, `\\?`) is literal text; a class escape
+    (`\\d`) or an unescaped metacharacter ends the run."""
+    runs, run, chars = [], [], iter(rx)
+    for ch in chars:
+        if ch == "\\":
+            nxt = next(chars, "")
+            if nxt in REGEX_CLASS_ESCAPES:
+                runs.append("".join(run))
+                run = []
+            else:
+                run.append(nxt)
+        elif ch in REGEX_METACHARS:
+            runs.append("".join(run))
+            run = []
+        else:
+            run.append(ch)
+    runs.append("".join(run))
     return max(runs, key=len)
 
 
