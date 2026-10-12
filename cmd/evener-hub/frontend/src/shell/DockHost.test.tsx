@@ -230,7 +230,7 @@ test("shows a loading placeholder instead of a blank pane while a newly-opened p
   render(<DockHost />);
 
   // Before the chunk resolves: a loading placeholder, not silence.
-  expect(await screen.findByTestId("empty-state")).toBeTruthy();
+  expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.queryByText(/doc pane: ref_slow/)).toBeNull();
 
   await act(async () => {
@@ -258,7 +258,7 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     const delayed = await act(
       async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_delayed" }).paneId,
     );
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     expect(screen.queryByText("delayed details body")).toBeNull();
 
     act(() => {
@@ -272,7 +272,7 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     act(() => {
       workspaceStore.getState().focusPane(delayed);
     });
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     await act(async () => {
       resolveChunk();
       await pendingChunk;
@@ -304,7 +304,7 @@ test("a host teardown preserves the still-focused pane's pending focus marker", 
     const delayed = await act(
       async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_swap" }).paneId,
     );
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(delayed);
 
     view.unmount();

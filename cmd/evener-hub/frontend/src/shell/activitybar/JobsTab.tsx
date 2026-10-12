@@ -4,7 +4,7 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 
 import { activityNodeID, type JobActivityJob } from "@evener/appwire-client";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Disclosure } from "../../widgets/disclosure";
+import { Disclosure, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { workspaceStore } from "../workspace";
@@ -27,8 +27,7 @@ export function JobsTab({ scope }: { scope: ActivityScope }) {
   );
   if (collection?.permanent && collection.rows.length === 0)
     return <span className={CLASS.emptyNote}>Jobs unavailable for this session.</span>;
-  if (!collection || (collection.rows.length === 0 && !collection.complete))
-    return <span className={CLASS.emptyNote}>Loading jobs…</span>;
+  if (!collection || (collection.rows.length === 0 && !collection.complete)) return <Skeleton lines={2} />;
   const running = collection.rows.filter((job) => !job.terminal);
   const completed = collection.rows.filter((job) => job.terminal);
   if (collection.rows.length === 0 && collection.complete)

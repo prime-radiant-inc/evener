@@ -205,7 +205,7 @@
  * rule. The fallback matters: --tap-min is declared inside tokens.css's
  * max-width: 899px block, so on a wider coarse-pointer viewport it is
  * undefined and the declaration would otherwise be dropped. */
-@media (pointer: coarse) {
+@media (any-pointer: coarse) {
   .sectionDisclosure {
     min-height: var(--tap-min, 44px);
   }
@@ -227,21 +227,4 @@
  * nesting, since Tree's role=group mechanism is the same for both. */
 .section [role="group"] {
   border-left: 1px solid var(--edge);
-}
-
-/* Visually hidden but still reachable by assistive tech - the standard
- * recipe, duplicated per stylesheet the same way statusrow.module.css keeps
- * its own copy (CSS Modules scoping makes sharing one class across modules
- * cost an import edge for a five-line recipe). Rail.tsx uses it for its
- * dialog labelling; RailRow.module.css carries the row content's copy. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
 }

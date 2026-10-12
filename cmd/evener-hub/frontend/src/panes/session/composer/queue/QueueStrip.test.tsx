@@ -21,6 +21,7 @@ import type {
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
+import { SHOW_DELAY_MS } from "../../../../widgets/hovercard/useFloatingLabel";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { PendingChips } from "../../pending/PendingChips";
@@ -85,9 +86,11 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
 // button's disabled state via the plain DOM property directly (e.g.
 // widgets/button/button.test.tsx, sandboxEscalation.test.tsx), not a
 // `toBeDisabled()` matcher; this helper matches that established
-// convention.
+// convention. A refusal that explains itself (a row action with a disabled
+// reason) is aria-disabled rather than natively disabled, so it keeps focus
+// and its reason stays reachable from the keyboard; both count as refused.
 function isDisabled(el: HTMLElement): boolean {
-  return (el as HTMLButtonElement).disabled;
+  return (el as HTMLButtonElement).disabled || el.getAttribute("aria-disabled") === "true";
 }
 
 function queueStrip(): HTMLElement | null {
@@ -1754,6 +1757,37 @@ describe("edit", () => {
     const row = (await screen.findAllByRole("listitem"))[0]!;
     expect(isDisabled(within(row).getByRole("button", { name: /edit/i }))).toBe(true);
     expect(isDisabled(within(row).getByRole("button", { name: /remove from queue/i }))).toBe(false);
+  });
+
+  test("a refused edit stays focusable and explains itself to a keyboard user", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: [""], preview: ["[image]"] },
+      },
+    });
+    const props = defaultProps();
+    renderStrip(props);
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    const edit = within(row).getByRole("button", { name: /edit/i });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      act(() => edit.focus());
+      act(() => {
+        vi.advanceTimersByTime(SHOW_DELAY_MS);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(document.activeElement).toBe(edit);
+    expect(screen.getByRole("tooltip").textContent).toContain("image-only message");
+    await user.keyboard("{Enter}");
+    expect(props.onRestoreToComposer).not.toHaveBeenCalled();
+    expect(fake.calls.filter((call) => call.method === "turn/cancelQueued")).toEqual([]);
   });
 
   test("edit is disabled entirely when the daemon reports no texts array at all", async () => {

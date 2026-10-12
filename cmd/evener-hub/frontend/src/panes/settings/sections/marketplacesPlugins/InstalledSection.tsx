@@ -7,9 +7,8 @@
 
 import type { PluginEntry } from "@evener/appwire-client";
 import { useId, useState } from "react";
-import { type CadenceState, Chevron, Input, StatusDot } from "../../../../widgets";
+import { type CadenceState, Chevron, Input, StatusDot, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 import { pluginStatusChips } from "./pluginStatusChips";

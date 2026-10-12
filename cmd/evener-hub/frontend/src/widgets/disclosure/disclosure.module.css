@@ -27,7 +27,7 @@
   opacity: 0.5;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .summary {
     min-height: var(--tap-min);
   }

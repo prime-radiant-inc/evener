@@ -27,7 +27,7 @@ import { workspaceStore } from "../../shell/workspace";
 import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
-import { EmptyState, PaneScaffold } from "../../widgets";
+import { Loader, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { TranscriptSourcePaneContext } from "../session/transcript/TranscriptBody";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
@@ -87,11 +87,7 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
         )}
         <div className={CLASS.list}>
           <TranscriptSourcePaneContext.Provider value={paneId}>
-            {view ? (
-              <ReadOnlyThreadContent ref={ref} view={view} />
-            ) : (
-              <EmptyState title="Loading transcript…" reason="loading" />
-            )}
+            {view ? <ReadOnlyThreadContent ref={ref} view={view} /> : <Loader label="Loading transcript" />}
           </TranscriptSourcePaneContext.Provider>
         </div>
       </div>

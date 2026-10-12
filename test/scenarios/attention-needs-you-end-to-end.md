@@ -17,8 +17,8 @@ used to say:
   does not render a "Needs you" section at all (`shell/rail/Rail.tsx:563-573`, kata `vbh8`)
   — attention surfaces inline on the session's own row. A row is
   `[data-session-ref="local:<SID>"]`; its compact status signal is
-  `[data-testid="rail-status-spinner"]` or `[data-testid="rail-status-dot"]`, with an
-  accessible `Running`, `Needs you`, or `Broken` label. So there is exactly one row per
+  `[data-testid="rail-row-signal"] [role="img"]`, with an
+  accessible `Working`, `Needs you`, or `Failed` label. So there is exactly one row per
   session now, not two, and no row-level `data-state` attribute to read.
 - **Title and favicon default OFF**, not on. `loadNotifications` lands all four
   notification prefs at `false` (`stores/prefs.ts:268-273`), which the engine's own header
@@ -104,7 +104,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
      port: location.port,
      path: location.pathname,
      steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
-     indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-status-spinner"], [data-session-ref="local:<SID>"] [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
+     indicator: document.querySelector('[data-session-ref="local:<SID>"] [data-testid="rail-row-signal"] [role="img"]')?.getAttribute("aria-label"),
      title: document.title,
    })
    ```
@@ -128,7 +128,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
      return {
        port: location.port,
        rowPresent: !!row,
-       indicator: row?.querySelector('[data-testid="rail-status-spinner"], [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
+       indicator: row?.querySelector('[data-testid="rail-row-signal"] [role="img"]')?.getAttribute("aria-label"),
        title: document.title,
        faviconAmber: /r='18'/.test(href) && /fill='#e0af68'/.test(href),
        steerRendered: !!document.querySelector('[data-testid="composer-steer"]'),
@@ -150,7 +150,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
      const link = document.querySelector("link[rel='icon']");
      const href = link ? decodeURIComponent(link.href) : "";
      return {
-       indicator: row?.querySelector('[data-testid="rail-status-spinner"], [data-testid="rail-status-dot"]')?.getAttribute("aria-label"),
+       indicator: row?.querySelector('[data-testid="rail-row-signal"] [role="img"]')?.getAttribute("aria-label"),
        title: document.title,
        faviconAmber: /r='18'/.test(href) && /fill='#e0af68'/.test(href),
      };
@@ -209,7 +209,7 @@ those pass instead of driving a live goal session here.
 
 ## Expected
 
-- **Step 2**: `steerRendered` is `true` and `indicator` reads `Running` while the turn runs.
+- **Step 2**: `steerRendered` is `true` and `indicator` reads `Working` while the turn runs.
   If `steerRendered` never
   appears while REST reports `active`, the AppWire socket did not hydrate — check
   `$run/hub.log` and the `location.port` assertion before suspecting attention.
@@ -226,7 +226,7 @@ those pass instead of driving a live goal session here.
   didn't) — a channel is wired to a stale source of truth. Or the prefix appears **without**
   the step-2 opt-in, which means a notification default was flipped back on.
 - **Step 4**: both the title prefix and the favicon dot clear, and `indicator` leaves
-  `Needs you` (normally reading `Running` while the reply runs). The tab's own reply emits
+  `Needs you` (normally reading `Working` while the reply runs). The tab's own reply emits
   `thread/started`, which is on the tree store's
   refresh-trigger list (`stores/navigation/store.ts:443-451`), so this should land within a second —
   well inside the 6 s ceiling. Falsify: clearing consistently needs the full ~6 s, meaning
@@ -265,7 +265,7 @@ concurrent agent's test hub.
   opposite.** All four notification prefs read `false` when unset, so a wiped profile
   fails the title assertion by design. Seed, then reload; a write into a running page does
   nothing (`stores/prefs.ts:344-378`).
-- **The rail signal is categorical.** It says `Running`, `Needs you`, or `Broken`; hover
+- **The rail signal is categorical.** It says `Working`, `Needs you`, or `Failed`; hover
   `[data-testid="rail-row-title"]` and read `[role="tooltip"]` when a scenario needs the
   detailed status (`Question waiting`, `Restart required`, and so on).
 - **`.value = "…"` does not reach a React-controlled composer.** Use the browser tool's

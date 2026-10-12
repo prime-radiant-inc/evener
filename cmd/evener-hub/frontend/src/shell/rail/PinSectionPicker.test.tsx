@@ -106,7 +106,8 @@ describe("PinSectionPicker", () => {
     );
 
     const first = render(<PinSectionPicker {...props()} />);
-    expect(screen.getByRole("status").textContent).toMatch(/loading sections/i);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Pin sections" })).toBeNull();
     expect(fn).toHaveBeenCalledTimes(1);
     // Re-seed with just [CLIENT] so the resolved catalog shows one section.
     seedPinCatalog([CLIENT]);

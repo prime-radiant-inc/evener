@@ -4,8 +4,11 @@
   "cssFiles": [
     "styles/tokens.css",
     "styles/global.css",
-    "panes/session/composer/composer.module.css"
+    "panes/session/composer/composer.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css"
   ],
+  "viewport": { "width": 1280, "height": 800 },
   "mutation": {
     "declaration": "composer.module.css: .imageThumbnail { height: 100% } (reverted to height: auto)",
     "verified": "2026-08-07",

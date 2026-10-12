@@ -16,8 +16,10 @@ export interface EmptyStateProps {
    */
   action?: ReactNode;
   /** "display" sets the title at --font-size-display: for the one pane
-   * whose empty state IS the page (Welcome). Default keeps pane-title. */
-  size?: "default" | "display";
+   * whose empty state IS the page (Welcome). Default keeps pane-title.
+   * "compact" is the empty message inside a list or section: left-aligned,
+   * UI type, the list row's padding. */
+  size?: "default" | "display" | "compact";
   /** Why the surface is empty, rendered as `data-reason` so callers and
    * tests can tell one empty state from another without reading its copy. */
   reason?: EmptyStateReason;
@@ -27,13 +29,15 @@ export type EmptyStateReason = "loading" | "deleted" | "unavailable" | "no-turns
 
 const BASE_CLASS = {
   emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),
+  compact: requireClass(styles.compact, "emptystate.module.css", "compact"),
   title: requireClass(styles.title, "emptystate.module.css", "title"),
   titleDisplay: requireClass(styles.titleDisplay, "emptystate.module.css", "titleDisplay"),
   hint: requireClass(styles.hint, "emptystate.module.css", "hint"),
   action: requireClass(styles.action, "emptystate.module.css", "action"),
 };
 
-/** Centered title/hint/action for a pane or list with nothing in it.
+/** Title/hint/action for a pane or list with nothing in it - centered for a
+ * pane, a left-aligned line for `size="compact"`.
  * Passive - no interaction, no focus ring of its own (an `action` button
  * carries its own).
  *
@@ -45,7 +49,11 @@ const BASE_CLASS = {
  * are free to change; the testid says what they actually mean. */
 export function EmptyState({ title, hint, action, size = "default", reason }: EmptyStateProps) {
   return (
-    <div className={BASE_CLASS.emptyState} data-testid="empty-state" data-reason={reason}>
+    <div
+      className={size === "compact" ? `${BASE_CLASS.emptyState} ${BASE_CLASS.compact}` : BASE_CLASS.emptyState}
+      data-testid="empty-state"
+      data-reason={reason}
+    >
       <p className={size === "display" ? `${BASE_CLASS.title} ${BASE_CLASS.titleDisplay}` : BASE_CLASS.title}>
         {title}
       </p>

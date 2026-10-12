@@ -147,14 +147,12 @@ test("a remote MCP write goes through the proxy, never this hub's setLaunchLayer
   setSettingsHost("beta");
   render(<McpSectionHostScope useOverviewStore={overviewHook()} />);
   const user = userEvent.setup();
-  await screen.findByPlaceholderText("name");
+  const serverField = await screen.findByRole("textbox", { name: "Inline MCP servers" });
 
-  await user.type(screen.getByPlaceholderText("name"), "beta-tool");
-  const commandField = screen.getByPlaceholderText("command");
-  await user.type(commandField, "beta-server");
+  await user.type(serverField, "beta-tool beta-server");
   // Two Add buttons render (the config-file list's and the inline-server
-  // form's), so scope the submit to the form that owns the command field.
-  const form = commandField.closest("form");
+  // form's), so scope the submit to the form that owns the server field.
+  const form = serverField.closest("form");
   if (form === null) throw new Error("the inline-server form did not render");
   await user.click(within(form).getByRole("button", { name: "Add" }));
 

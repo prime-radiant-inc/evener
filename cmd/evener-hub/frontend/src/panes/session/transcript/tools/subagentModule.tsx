@@ -19,7 +19,7 @@ import { Fragment, useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, IconButton, Timestamp } from "../../../../widgets";
+import { Chevron, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
@@ -50,7 +50,6 @@ const CLASS = {
   lifecycle: requireClass(styles.lifecycle, "subagentmodule.module.css", "lifecycle"),
   statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
   statusWord: requireClass(styles.statusWord, "subagentmodule.module.css", "statusWord"),
-  srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
   quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
   quoteText: requireClass(styles.quoteText, "subagentmodule.module.css", "quoteText"),
   stats: requireClass(styles.stats, "subagentmodule.module.css", "stats"),
@@ -261,8 +260,8 @@ function SubagentCard({
 
   return (
     <div className={CLASS.card} data-testid="subagent-row" data-kind={displayKind}>
-      <span className={CLASS.srOnly}>{`Delegate ${row.delegateId ?? row.rowKey.replace(/^[^:]+:/, "")}`}</span>
-      <span className={CLASS.srOnly}>{`Status: ${displayKind}`}</span>
+      <VisuallyHidden>{`Delegate ${row.delegateId ?? row.rowKey.replace(/^[^:]+:/, "")}`}</VisuallyHidden>
+      <VisuallyHidden>{`Status: ${displayKind}`}</VisuallyHidden>
       {/* The card's FIRST line is the status line: the lifecycle word leads,
           and the turn/call counts and run clock ride WITH it on one line. The
           child's latest words (the quote) follow below, secondary. */}
@@ -281,19 +280,20 @@ function SubagentCard({
         ))}
         <span className={CLASS.statsSpring} />
         {clockMs !== undefined && <span className={CLASS.clock}>{formatElapsed(clockMs)}</span>}
-        <IconButton
-          label={open ? "Hide recent activity" : "Show recent activity"}
-          title={open ? "Hide recent activity" : "Show recent activity"}
-          icon={<Chevron direction={open ? "down" : "right"} />}
-          variant="quiet"
-          size="xs"
-          aria-expanded={open}
-          aria-controls={disclosureId}
-          onClick={(event) => {
-            event.stopPropagation();
-            toggleDisclosure(disclosureId, false);
-          }}
-        />
+        <Tooltip label={open ? "Hide recent activity" : "Show recent activity"}>
+          <IconButton
+            label={open ? "Hide recent activity" : "Show recent activity"}
+            icon={<Chevron direction={open ? "down" : "right"} />}
+            variant="quiet"
+            size="xs"
+            aria-expanded={open}
+            aria-controls={disclosureId}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleDisclosure(disclosureId, false);
+            }}
+          />
+        </Tooltip>
       </div>
       {quoteText ? (
         <em className={CLASS.quote} data-testid="subagent-quote">

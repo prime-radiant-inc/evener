@@ -51,11 +51,6 @@
   font-size: var(--font-size-ui);
 }
 
-.rowKind {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
 .rowMeta {
   overflow: hidden;
   color: var(--ink-mid);
@@ -111,51 +106,6 @@
   gap: var(--space-1);
 }
 
-.treeToggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.treeToggle:hover {
-  background: var(--hover-1);
-}
-
-.treeToggle:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-/* Turns the shared widgets/chevron icon on expand/collapse - same
- * rotates-90°-when-open idiom as widgets/disclosure and toolcallitem's own
- * .chevron (see either for why a rotating chevron needs a square icon: the
- * text triangle this replaced had a non-square line box, and turning that 90°
- * overhung its own layout box). One line tall, pinned to the top, so a
- * marketplace name long enough to wrap keeps the chevron beside its FIRST
- * line instead of centred into the block. */
-.treeChevron {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  height: 1lh;
-  color: var(--ink-mid);
-  transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
-}
-
-.treeToggle[aria-expanded="true"] .treeChevron {
-  transform: rotate(90deg);
-}
-
 .treeCount {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
@@ -168,11 +118,6 @@
   margin: 0 0 0 var(--space-5);
   padding: 0;
   list-style: none;
-}
-
-.installedBadge {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 /* Tappable installed-plugin row (Segmented Workspace redesign): one full-
@@ -292,11 +237,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-}
-
-.sheetActions > button {
-  justify-content: flex-start;
-  width: 100%;
 }
 
 .sheetDivider {

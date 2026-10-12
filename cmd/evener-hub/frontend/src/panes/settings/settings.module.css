@@ -14,6 +14,7 @@
 }
 
 .filterRow {
+  display: block;
   margin-bottom: var(--space-2);
 }
 
@@ -77,23 +78,6 @@
    * that spanned 900px+ read as a spreadsheet (critique finding 8). */
   max-width: var(--session-measure);
   overflow-y: auto;
-}
-
-/* Standard clip-to-1px visually-hidden technique (same as
- * collectioneditor.module.css's own .visuallyHidden) - hides the filter
- * input's accessible-name text visually (the placeholder already conveys
- * it sighted) while keeping it in the accessibility tree.
- */
-.visuallyHidden {
-  position: absolute;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  white-space: nowrap;
-  border: 0;
 }
 
 /* The drill-in chevron each nav row carries on mobile (decorative - the

@@ -30,7 +30,7 @@
 // refuses any file whose type is not image/*, and recovery/recoveryDraft.ts
 // only lifts input items of type "image" out of a recovered mutation.
 import { useState } from "react";
-import { Dialog } from "../../../widgets";
+import { Dialog, IconButton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { PendingAttachment } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
@@ -46,7 +46,7 @@ const CLASS = {
   imageOpenButton: requireClass(styles.imageOpenButton, "composer.module.css", "imageOpenButton"),
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
   dimensionsOverlay: requireClass(styles.dimensionsOverlay, "composer.module.css", "dimensionsOverlay"),
-  removeImageButton: requireClass(styles.removeImageButton, "composer.module.css", "removeImageButton"),
+  removeSlot: requireClass(styles.removeSlot, "composer.module.css", "removeSlot"),
   lightboxImage: requireClass(styles.lightboxImage, "composer.module.css", "lightboxImage"),
 };
 
@@ -96,9 +96,15 @@ export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
         </div>
       )}
       {/* Last, always, in both states - see this file's header comment. */}
-      <button type="button" className={CLASS.removeImageButton} aria-label={`Remove ${item.name}`} onClick={onRemove}>
-        <RemoveIcon />
-      </button>
+      <span className={CLASS.removeSlot}>
+        <IconButton
+          label={`Remove ${item.name}`}
+          icon={<RemoveIcon />}
+          variant="secondary"
+          size="sm"
+          onClick={onRemove}
+        />
+      </span>
       {source !== undefined && lightboxOpen && (
         <Dialog open onClose={() => setLightboxOpen(false)} title={item.name} size="large">
           <img className={CLASS.lightboxImage} src={source} alt={item.name} />

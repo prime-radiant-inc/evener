@@ -17,12 +17,12 @@ import rawStyles from "./modelswitch.module.css";
 // Touch target (UX fix): the trigger is the only way to open the model
 // picker, so a coarse pointer (phone/tablet touch) needs the platform's
 // 44px tap floor - the same treatment askdock.module.css's own .tab rule
-// gets, via (pointer: coarse) rather than a width breakpoint since this
+// gets, via (any-pointer: coarse) rather than a width breakpoint since this
 // isn't a widgets/button consumer.
 test("the trigger reaches the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "modelswitch.module.css"), "utf8");
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "modelswitch.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "modelswitch.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.trigger\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .trigger").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");

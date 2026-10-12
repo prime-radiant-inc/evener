@@ -310,7 +310,7 @@ test("options render inside a group whose role reflects single vs multi select",
 // detail collapsed to ~21px - just the label's own line height, well under
 // the platform's 44px tap floor. padding gives every option row a
 // consistent comfortable size at desktop regardless of whether it has a
-// detail; the (pointer: coarse) block (same pattern as askdock.module.css's
+// detail; the (any-pointer: coarse) block (same pattern as askdock.module.css's
 // own .tab rule) grows short rows the rest of the way to --tap-min on touch.
 test("every option row gets comfortable padding, and reaches the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askquestioncard.module.css"), "utf8");
@@ -318,8 +318,8 @@ test("every option row gets comfortable padding, and reaches the tap floor on a 
   expect(desktopRule, "askquestioncard.module.css must declare a base .option rule").not.toBeNull();
   expect(desktopRule![1]).toMatch(/padding:/);
 
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "askquestioncard.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "askquestioncard.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.option\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .option").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");

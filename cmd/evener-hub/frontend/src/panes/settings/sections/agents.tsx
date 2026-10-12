@@ -6,7 +6,7 @@
 // stores/settingsOverview adapter.
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { EmptyState, OpenButton, Skeleton } from "../../../widgets";
+import { Chip, EmptyState, OpenButton, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
@@ -18,7 +18,7 @@ const CLASS = {
   list: requireClass(styles.list, "agents.module.css", "list"),
   row: requireClass(styles.row, "agents.module.css", "row"),
   name: requireClass(styles.name, "agents.module.css", "name"),
-  builtin: requireClass(styles.builtin, "agents.module.css", "builtin"),
+  trailing: requireClass(styles.trailing, "agents.module.css", "trailing"),
 };
 
 export interface AgentsSectionProps {
@@ -62,7 +62,9 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
                 {agent.editPath ? (
                   <OpenButton href={agent.editPath} word="open in editor" />
                 ) : (
-                  <span className={CLASS.builtin}>built-in</span>
+                  <span className={CLASS.trailing}>
+                    <Chip>built-in</Chip>
+                  </span>
                 )}
               </li>
             ))}
