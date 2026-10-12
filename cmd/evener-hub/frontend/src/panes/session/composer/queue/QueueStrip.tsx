@@ -545,7 +545,7 @@ export function QueueStrip({
                     !actionsAvailable
                       ? ACTIONS_UNAVAILABLE_REASON
                       : controls.drain
-                        ? undefined
+                        ? ""
                         : (controls.reason.drain ?? STEER_UNAVAILABLE)
                   }
                   onClick={() => {
@@ -567,7 +567,7 @@ export function QueueStrip({
                   icon={<span aria-hidden="true">✎</span>}
                   size="sm"
                   disabled={!editAvailable || busy}
-                  disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly })}
+                  disabledReason={editDisabledReason({ actionsAvailable, hasTexts, imageOnly }) ?? ""}
                   onClick={() => {
                     if (entryId !== undefined && fullText !== undefined) {
                       void handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames, entryMentions);
@@ -580,7 +580,7 @@ export function QueueStrip({
                   variant="danger"
                   size="sm"
                   disabled={!actionsAvailable || busy}
-                  disabledReason={actionsAvailable ? undefined : ACTIONS_UNAVAILABLE_REASON}
+                  disabledReason={actionsAvailable ? "" : ACTIONS_UNAVAILABLE_REASON}
                   onClick={() => {
                     if (entryId !== undefined) void handleCancel(index, entryId);
                   }}
@@ -701,7 +701,7 @@ export function QueueStrip({
                     size="sm"
                     disabled={rowBusy || onEditRecovery === undefined}
                     disabledReason={
-                      onEditRecovery === undefined ? "Open the session Composer to edit this message" : undefined
+                      onEditRecovery === undefined ? "Open the session Composer to edit this message" : ""
                     }
                     onClick={() => onEditRecovery?.(record)}
                   />

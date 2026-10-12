@@ -2153,6 +2153,43 @@ describe("drain-as-steer affordance", () => {
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
+  // Availability flips under a focused control when the turn ends or starts.
+  // The row's buttons must stay the same nodes so keyboard focus survives.
+  test("a focused Steer now keeps focus as steering availability flips both ways", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const steerNow = await screen.findByRole("button", { name: "Steer now" });
+    expect(isDisabled(steerNow)).toBe(false);
+    act(() => steerNow.focus());
+    expect(document.activeElement).toBe(steerNow);
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "awaiting" } },
+      });
+    });
+    expect(document.activeElement).toBe(steerNow);
+    expect(isDisabled(steerNow)).toBe(true);
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+      });
+    });
+    expect(document.activeElement).toBe(steerNow);
+    expect(isDisabled(steerNow)).toBe(false);
+  });
+
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
