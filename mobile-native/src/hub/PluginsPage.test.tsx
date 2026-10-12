@@ -35,6 +35,7 @@ import {
 	renderedText,
 	screenConnection,
 	testIDSuffixes,
+	offersButton,
 } from "../renderNative.testkit";
 import { Button, Group, GroupFooter, Row } from "../sheet/Grouped";
 import { SearchField } from "../sheet/SearchField";
@@ -50,13 +51,6 @@ function marketplaceWarning(tree: ReactTestRenderer): string {
 /** Why the marketplace views and the Plugins page lead with an error, by reason. */
 function problems(tree: ReactTestRenderer): string[] {
 	return [...testIDSuffixes(tree, "marketplace-problem-"), ...testIDSuffixes(tree, "plugins-problem-")];
-}
-
-/** Whether any control asks for something the page does on its own. */
-function asksTo(tree: ReactTestRenderer, words: RegExp): boolean {
-	return tree.root
-		.findAllByProps({ accessibilityRole: "button" })
-		.some((node) => words.test(String(node.props.accessibilityLabel)));
 }
 
 const harness = vi.hoisted(() => ({
@@ -3217,7 +3211,7 @@ it("reads the installed list again on coming back to the page after a read faile
 	const { tree } = await mountPage(hub);
 	await act(async () => {});
 	expect(reads).toBe(1);
-	expect(asksTo(tree, /\bRetry\b/)).toBe(false);
+	expect(offersButton(tree, /\bRetry\b/)).toBe(false);
 	await act(async () => {
 		refocus();
 	});
@@ -3455,7 +3449,7 @@ it("shows a failed list read as a line with nothing to press", async () => {
 	});
 	const { tree } = await mountPage(hub);
 	expect(problems(tree)).toEqual(["list-failed"]);
-	expect(asksTo(tree, /\bRetry\b/)).toBe(false);
+	expect(offersButton(tree, /\bRetry\b/)).toBe(false);
 });
 
 it("never asks to reconnect or offers pull-to-refresh, in any segment", async () => {
@@ -3472,12 +3466,12 @@ it("never asks to reconnect or offers pull-to-refresh, in any segment", async ()
 			});
 			await act(async () => {});
 		}
-		expect(asksTo(tree, /\bReconnect\b/)).toBe(false);
+		expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 		expect(tree.root.findAll((node) => node.props.onRefresh !== undefined)).toHaveLength(0);
 	}
 	await choose(tree, "Installed");
 	await openDetail(tree, "demo-plugin");
-	expect(asksTo(tree, /\bReconnect\b/)).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
 
 it("waits for the installed list in the same padded space every Hub page waits in", async () => {

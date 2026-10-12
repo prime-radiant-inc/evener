@@ -9,7 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
-import { render, renderedText, testIDSuffixes } from "../renderNative.testkit";
+import { render, renderedText, testIDSuffixes, offersButton } from "../renderNative.testkit";
 import { Group, GroupFooter } from "../sheet/Grouped";
 import { DetailLevelPage } from "./DetailLevelPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
@@ -132,14 +132,11 @@ function mount(state: NativePreferencesSnapshot["transcriptMobile"] | null, conn
 	return { tree, fake, button, press, update };
 }
 
+/** The page asks for nothing the app does on its own: no Reconnect or Refresh. */
+const RECONNECT = /\bReconnect\b|\bRefresh\b/i;
+
 /** What the page reports beneath its levels, by reason. */
 const reasons = (tree: ReturnType<typeof mount>["tree"]) => testIDSuffixes(tree, "detail-level-");
-
-/** The page asks for nothing the app does on its own: no Reconnect or Refresh. */
-const asksToReconnect = (tree: ReturnType<typeof mount>["tree"]) =>
-	tree.root
-		.findAllByProps({ accessibilityRole: "button" })
-		.some((node) => /\bReconnect\b|\bRefresh\b/i.test(String(node.props.accessibilityLabel)));
 
 /** The first-load line that says the app is connecting. */
 const saysConnecting = (tree: ReturnType<typeof mount>["tree"]) =>
@@ -299,7 +296,7 @@ it.each([
 	["uncertain", transcript({ writeUncertain: true })],
 	["unreadable", transcript({ draftUnreadable: true, storageUnavailable: true })],
 ])("never asks to reconnect or refresh when %s", (_name, state) => {
-	expect(asksToReconnect(mount(state).tree)).toBe(false);
+	expect(offersButton(mount(state).tree, RECONNECT)).toBe(false);
 });
 
 it("shows an unconfirmed write as a check, not a conflict to resolve", () => {
@@ -451,7 +448,7 @@ it.each([
 	],
 ])("says %s in its own words", (_name, over, expected) => {
 	const { tree } = mount(transcript(over));
-	expect(asksToReconnect(tree)).toBe(false);
+	expect(offersButton(tree, RECONNECT)).toBe(false);
 	// The store's own message names its plumbing; the page never shows it.
 	expect(renderedText(tree)).not.toContain(over.error);
 	expect(reasons(tree)).toContain(expected);

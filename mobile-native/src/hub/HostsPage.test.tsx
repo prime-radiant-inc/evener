@@ -6,7 +6,7 @@ import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText, testIDSuffixes, unmountMountedTrees } from "../renderNative.testkit";
+import { render, renderedText, testIDSuffixes, unmountMountedTrees, offersButton } from "../renderNative.testkit";
 import { Tag } from "../sheet/Grouped";
 import { HostsPage } from "./HostsPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
@@ -193,11 +193,7 @@ it("opens the host a notice named, once, and clears the request", async () => {
 
 it("never asks to reconnect", async () => {
 	const page = await mount(scriptedFleet([hostRow("paradise-park", { attached: false })]));
-	expect(
-		page.tree.root
-			.findAllByProps({ accessibilityRole: "button" })
-			.some((node) => /\bReconnect\b/.test(String(node.props.accessibilityLabel))),
-	).toBe(false);
+	expect(offersButton(page.tree, /\bReconnect\b/)).toBe(false);
 });
 
 it("says why the hub's hosts didn't load when its first answer is a refusal", async () => {

@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { DisplayProvider } from "../display/displayContext";
 import { DISPLAY_KEY, DisplayPreferences } from "../display/displayPreferences";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
-import { render, testIDSuffixes } from "../renderNative.testkit";
+import { render, testIDSuffixes, offersButton } from "../renderNative.testkit";
 import { Group, GroupFooter, GroupLabel } from "../sheet/Grouped";
 import { DisplayPage } from "./DisplayPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
@@ -200,11 +200,7 @@ it("says Show model on Board rows applies now but won't survive a restart when t
 
 it("never asks to reconnect or refresh", () => {
 	const { tree } = mount();
-	expect(
-		tree.root
-			.findAllByProps({ accessibilityRole: "button" })
-			.some((node) => /\bReconnect\b|\bRefresh\b/i.test(String(node.props.accessibilityLabel))),
-	).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b|\bRefresh\b/i)).toBe(false);
 });
 
 it("names the level the hub has saved, not a change still waiting to save", () => {

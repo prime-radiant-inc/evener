@@ -3,7 +3,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
 import { fonts } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { render, renderedText, offersButton } from "../renderNative.testkit";
 import { Row } from "../sheet/Grouped";
 import { HubsPage } from "./HubsPage";
 import type { HubRoutes } from "./hubSheetContext";
@@ -137,11 +137,7 @@ it("adds a hub by scanning, pasting or typing its address", () => {
 
 it("never asks to reconnect", () => {
 	const { tree } = mount();
-	expect(
-		tree.root
-			.findAllByProps({ accessibilityRole: "button" })
-			.some((node) => /\bReconnect\b/.test(String(node.props.accessibilityLabel))),
-	).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
 
 function rowOf(tree: ReactTestRenderer, name: string) {

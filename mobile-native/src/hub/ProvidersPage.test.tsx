@@ -35,6 +35,7 @@ import {
 	screenConnection,
 	scriptedClient,
 	testIDSuffixes,
+	offersButton,
 } from "../renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
@@ -181,13 +182,6 @@ function problems(tree: ReactTestRenderer): string[] {
 /** What the provider page warns about, by reason. */
 function warnings(tree: ReactTestRenderer): string[] {
 	return testIDSuffixes(tree, "provider-warning-");
-}
-
-/** Whether any control asks for something the page does on its own. */
-function asksTo(tree: ReactTestRenderer, words: RegExp): boolean {
-	return tree.root
-		.findAllByProps({ accessibilityRole: "button" })
-		.some((node) => words.test(String(node.props.accessibilityLabel)));
 }
 
 /** Whether a control labelled `name` is on screen. */
@@ -1157,7 +1151,7 @@ it("reads the listing again on coming back to the page after a read failed, with
 	await act(async () => {});
 	await act(async () => {});
 	expect(testIDSuffixes(tree, "providers-load-failed")).toHaveLength(1);
-	expect(asksTo(tree, /\bRetry\b|\bReconnect\b/)).toBe(false);
+	expect(offersButton(tree, /\bRetry\b|\bReconnect\b/)).toBe(false);
 	await act(async () => {
 		refocus();
 	});
@@ -1254,7 +1248,7 @@ it("offers no pull-to-refresh and never asks to reconnect", async () => {
 		),
 	);
 	expect(statusLines(tree)).toBeGreaterThan(0);
-	expect(asksTo(tree, /\bReconnect\b/)).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 	expect(tree.root.findAll((node) => "refreshing" in node.props || "onRefresh" in node.props)).toHaveLength(0);
 });
 

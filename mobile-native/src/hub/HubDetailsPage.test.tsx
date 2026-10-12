@@ -3,7 +3,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
 import { fonts, palettes } from "../design/tokens";
-import { alertRequests, render, renderedText, testIDSuffixes } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, testIDSuffixes, offersButton } from "../renderNative.testkit";
 import { HubDetailsPage } from "./HubDetailsPage";
 import type { HubRoutes } from "./hubSheetContext";
 
@@ -246,7 +246,7 @@ it("says why a hub couldn't be removed, and stays", async () => {
 	// GroupFooter's style is a list: its tone, then Menlo for machine text.
 	expect(Object.assign({}, ...[footer.props.style].flat()).color).toBe(palettes.light.dangerInk);
 	expect(navigation.goBack).not.toHaveBeenCalled();
-	expect(asksToReconnect(tree)).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
 
 it("says so when the hub was removed but its cleanup failed, rather than going blank", async () => {
@@ -282,12 +282,5 @@ it("renders nothing once the hub is gone", () => {
 
 it("never asks to reconnect", () => {
 	const { tree } = mount("hub-1");
-	expect(asksToReconnect(tree)).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
-
-/** Whether any control asks to reconnect: the app reconnects on its own. */
-function asksToReconnect(tree: ReactTestRenderer) {
-	return tree.root
-		.findAllByProps({ accessibilityRole: "button" })
-		.some((node) => /\bReconnect\b/.test(String(node.props.accessibilityLabel)));
-}

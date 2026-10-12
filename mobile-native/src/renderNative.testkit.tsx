@@ -778,6 +778,14 @@ export function testIDSuffixes(tree: ReactTestRenderer | ReactTestInstance, pref
 		.map((node) => (node.props.testID as string).slice(prefix.length));
 }
 
+/** Whether any mounted button's accessibility label matches `words`: a page
+ * that reconnects on its own offers no button naming /\bReconnect\b/. */
+export function offersButton(tree: ReactTestRenderer, words: RegExp): boolean {
+	return tree.root
+		.findAllByProps({ accessibilityRole: "button" })
+		.some((node) => words.test(String(node.props.accessibilityLabel)));
+}
+
 /** The first mounted Pressable VoiceOver names `label`: its accessibility
  * label, or, with none, the text inside it, which iOS reads in its place;
  * undefined when there is none. */

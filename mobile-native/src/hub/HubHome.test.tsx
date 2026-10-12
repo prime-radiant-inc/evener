@@ -4,7 +4,14 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { uiType } from "../design/tokens";
-import { alertRequests, render, renderedText, testIDSuffixes, unmountMountedTrees } from "../renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	renderedText,
+	testIDSuffixes,
+	unmountMountedTrees,
+	offersButton,
+} from "../renderNative.testkit";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { Tag } from "../sheet/Grouped";
@@ -231,12 +238,6 @@ const connectionState = (tree: ReactTestRenderer) => testIDSuffixes(tree, "hub-c
 /** The update's progress as the page's footers report it. */
 const updateReports = (tree: ReactTestRenderer) => testIDSuffixes(tree, "hub-update-");
 
-/** Whether any control asks for something the app does on its own. */
-const asksToRetry = (tree: ReactTestRenderer) =>
-	tree.root
-		.findAllByProps({ accessibilityRole: "button" })
-		.some((node) => /\bReconnect\b|\bRetry\b/.test(String(node.props.accessibilityLabel)));
-
 it("says the hub is connected and lists its pages", async () => {
 	const { tree, find } = await mount();
 	expect(connectionState(tree)).toEqual(["connected"]);
@@ -326,7 +327,7 @@ it("keeps every row, pressable, while the connection is down, and never asks to 
 	const { tree, sheet, find, press } = await mount();
 	expect(connectionState(tree)).toEqual(["line"]);
 	expect(renderedText(tree)).toContain("Reconnecting…");
-	expect(asksToRetry(tree)).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b|\bRetry\b/)).toBe(false);
 	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
 	// A row opening today's screen still works while the connection is down.
 	press("Hub settings");
@@ -385,7 +386,7 @@ it("holds the update while the hub isn't ready", async () => {
 it("shows a failed check as a line, with nothing to press", async () => {
 	const { tree } = await mount({ check: new Error("socket hung up") });
 	expect(renderedText(tree)).toMatch(/\S/);
-	expect(asksToRetry(tree)).toBe(false);
+	expect(offersButton(tree, /\bReconnect\b|\bRetry\b/)).toBe(false);
 	expect(updates.controller.getState().checkError).not.toBeNull();
 	expect(renderedText(tree)).toContain(updates.controller.getState().checkError ?? "");
 });
