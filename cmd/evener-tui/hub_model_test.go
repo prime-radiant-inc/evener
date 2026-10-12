@@ -1144,10 +1144,9 @@ func TestHubModelBrowseFooterStillShowsEnterSend(t *testing.T) {
 	if !m.session.scrollMode {
 		t.Fatal("precondition: the session should be browsing")
 	}
-	view := ansiPattern.ReplaceAllString(m.sessionView(), "")
-	composeHints := ansiPattern.ReplaceAllString(composerFooterHints("compose", m.width, false), "")
-	if !strings.Contains(view, composeHints) {
-		t.Fatalf("browse footer should keep the composer panel's compose hints %q on screen:\n%s", composeHints, view)
+	_, _, footer := m.sessionChromeText()
+	if panel := m.sessionComposerPanel().View(); !strings.HasSuffix(footer, panel) {
+		t.Fatalf("browse footer should keep the composer panel on screen:\n%s", footer)
 	}
 }
 

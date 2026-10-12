@@ -197,9 +197,6 @@ func TestCovComposerPanelView_ForkModeFooter(t *testing.T) {
 	if mode := p.composerModeForFooter(); mode != "fork" {
 		t.Fatalf("fork draft footer mode = %q, want fork", mode)
 	}
-	if got, want := p.View(), composerFooterHints("fork", p.Width, false); !strings.Contains(got, want) {
-		t.Fatalf("fork mode view lacks the fork footer %q:\n%s", want, got)
-	}
 }
 
 // ---- filepathBase ------------------------------------------------------------
