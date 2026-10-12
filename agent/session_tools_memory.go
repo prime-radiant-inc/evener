@@ -203,7 +203,7 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
 	case page.Unreadable:
 		notes = memoryUnreadableFrontmatterNote
-	case !page.HasDescription:
+	case !page.HasDescription && !memoryWriteFieldsEnabled():
 		notes = memoryMissingDescriptionNote
 	case page.When == "" && memoryWhenEnabled():
 		notes = memoryMissingWhenNote
@@ -272,7 +272,7 @@ func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnviro
 			return nil, err
 		}
 		args = maps.Clone(args)
-		for _, field := range []string{"description", "when", "tags", "evidence", "body"} {
+		for _, field := range []string{"when", "body"} {
 			delete(args, field)
 		}
 		args["content"] = page

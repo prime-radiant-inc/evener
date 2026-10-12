@@ -10,76 +10,66 @@ import (
 
 func TestMemoryPageFromFieldsAssemblesFrontmatter(t *testing.T) {
 	page, err := memoryPageFromFields(map[string]any{
-		"description": "Money is integer cents: never floats",
-		"when":        "When code stores, computes or prints a money amount",
-		"tags":        []any{"money", "types"},
-		"evidence":    "partner, 2026-10-12",
-		"body":        "Money is integer cents.\n\n**Why:** a rounding bug.\n",
+		"when": "When code stores, computes or prints a money amount: any of them",
+		"body": "# Money is integer cents\n\nMoney is integer cents.\n\n**Why:** a rounding bug.\n",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "---\ndescription: 'Money is integer cents: never floats'\nwhen: When code stores, computes or prints a money amount\ntags:\n    - money\n    - types\nevidence: partner, 2026-10-12\n---\n\nMoney is integer cents.\n\n**Why:** a rounding bug.\n"
+	want := "---\nwhen: 'When code stores, computes or prints a money amount: any of them'\n---\n\n# Money is integer cents\n\nMoney is integer cents.\n\n**Why:** a rounding bug.\n"
 	if page != want {
 		t.Fatalf("got %q\nwant %q", page, want)
 	}
 	p := parseMemoryPage("cents.md", []byte(page), time.Time{})
-	if p.Unreadable || p.Description != "Money is integer cents: never floats" || p.When != "When code stores, computes or prints a money amount" || strings.Join(p.Tags, ",") != "money,types" {
+	if p.Unreadable || p.When != "When code stores, computes or prints a money amount: any of them" || p.Title != "Money is integer cents" {
 		t.Fatalf("page reads back as %+v", p)
-	}
-	bare, err := memoryPageFromFields(map[string]any{"description": "d", "when": "w", "body": "b\n"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bare != "---\ndescription: d\nwhen: w\n---\n\nb\n" {
-		t.Fatalf("optional fields not omitted: %q", bare)
 	}
 }
 
-func TestMemoryPageFromFieldsRequiresDescriptionAndWhen(t *testing.T) {
-	for name, args := range map[string]map[string]any{
-		"no description":    {"when": "w", "body": "b"},
-		"blank description": {"description": "  ", "when": "w", "body": "b"},
-		"no when":           {"description": "d", "body": "b"},
-		"blank when":        {"description": "d", "when": "\n", "body": "b"},
-	} {
-		field := "description"
-		if strings.Contains(name, "when") {
-			field = "when"
+func TestMemoryPageFromFieldsRequiresWhen(t *testing.T) {
+	for _, when := range []any{nil, "", "  \n"} {
+		args := map[string]any{"body": "# T\nfact\n"}
+		if when != nil {
+			args["when"] = when
 		}
-		if _, err := memoryPageFromFields(args); err == nil || !strings.Contains(err.Error(), field) {
-			t.Fatalf("%s: err = %v, want one naming %s", name, err, field)
+		if _, err := memoryPageFromFields(args); err == nil || !strings.Contains(err.Error(), "when") {
+			t.Fatalf("when %q: err = %v, want one naming when", when, err)
 		}
 	}
 }
 
 func TestMemoryPageFromFieldsRefusesFrontmatterInBody(t *testing.T) {
 	for _, body := range []string{"---\ndescription: d\n---\nfact\n", "\n---\nwhen: w\n---\n"} {
-		_, err := memoryPageFromFields(map[string]any{"description": "d", "when": "w", "body": body})
-		if err == nil || !strings.Contains(err.Error(), "fields") {
-			t.Fatalf("body %q: err = %v, want one pointing at the fields", body, err)
+		_, err := memoryPageFromFields(map[string]any{"when": "w", "body": body})
+		if err == nil || !strings.Contains(err.Error(), "field") {
+			t.Fatalf("body %q: err = %v, want one pointing at the field", body, err)
 		}
 	}
-	if _, err := memoryPageFromFields(map[string]any{"description": "d", "when": "w", "body": "fact\n\n---\n\nmore\n"}); err != nil {
+	if _, err := memoryPageFromFields(map[string]any{"when": "w", "body": "# T\nfact\n\n---\n\nmore\n"}); err != nil {
 		t.Fatalf("a rule later in the body was refused: %v", err)
 	}
 }
 
-// With the fields switch on, memory_write takes the fields, writes the
-// assembled page stamped as today, and a refused call writes nothing.
+// With the fields switch on, memory_write takes when and body, writes the
+// assembled page stamped as today with no missing-description note, the page
+// indexes by its title and when line, and a refused call writes nothing.
 func TestMemoryWriteFieldsWritesStampedPage(t *testing.T) {
 	t.Setenv(memoryWriteFieldsEnv, "on")
+	t.Setenv(memoryWhenEnv, "only")
 	s, scope := memoryWritesSession(t)
-	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "cents.md", "description": "Money is integer cents", "when": "When code handles money", "body": "Money is integer cents.\n"})
-	if res.IsError {
-		t.Fatal(res.Output)
+	res := memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "cents.md", "when": "When code handles money", "body": "# Money is integer cents\n\nMoney is integer cents.\n"})
+	if res.IsError || strings.Contains(res.Output, "description") {
+		t.Fatalf("%+v", res)
 	}
 	raw, _ := os.ReadFile(filepath.Join(scope, "cents.md"))
-	want := "---\ndescription: Money is integer cents\nwhen: When code handles money\n" + memoryOwnStamps(s) + "---\n\nMoney is integer cents.\n"
+	want := "---\nwhen: When code handles money\n" + memoryOwnStamps(s) + "---\n\n# Money is integer cents\n\nMoney is integer cents.\n"
 	if string(raw) != want {
 		t.Fatalf("got %q\nwant %q", raw, want)
 	}
-	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "x.md", "description": "d", "when": "w", "body": "---\ndescription: d\n---\n"})
+	if got := memoryIndexLine(parseMemoryPage("cents.md", raw, time.Time{})); !strings.HasPrefix(got, "- [Money is integer cents](cents.md) — When code handles money (updated ") {
+		t.Fatalf("index line %q", got)
+	}
+	res = memoryExec(t, s, "memory_write", map[string]any{"scope": "personal", "file_path": "x.md", "when": "w", "body": "---\ndescription: d\n---\n"})
 	if !res.IsError {
 		t.Fatalf("frontmatter body accepted: %q", res.Output)
 	}
@@ -94,8 +84,9 @@ func TestMemoryWriteDefinitionFollowsFieldsSwitch(t *testing.T) {
 		props := memoryWriteDefinition().Parameters["properties"].(map[string]any)
 		_, hasWhen := props["when"]
 		_, hasContent := props["content"]
-		if hasWhen != on || hasContent == on {
-			t.Fatalf("switch %v: when=%v content=%v", on, hasWhen, hasContent)
+		_, hasDescription := props["description"]
+		if hasWhen != on || hasContent == on || hasDescription {
+			t.Fatalf("switch %v: when=%v content=%v description=%v", on, hasWhen, hasContent, hasDescription)
 		}
 	}
 }
