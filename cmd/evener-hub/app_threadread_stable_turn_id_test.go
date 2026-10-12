@@ -98,6 +98,7 @@ func seedPastThreadWithReservedTurnID(t *testing.T) (hubcore.WebConfig, string, 
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
+	indexPastTranscriptForTest(t, stateDir, sessionID)
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
