@@ -48,7 +48,10 @@ fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
 work="$scratch/worktree"
 log="$scratch.log"
+# child is a running test launcher bash has not waited for; group is a reaped
+# launcher's process group, still to be drained.
 child=""
+group=""
 
 # stop <target> stops a pid, or a process group given as -pgid: TERM, up to 5
 # seconds' grace, then KILL, then up to 5 more seconds for the kernel to reap
@@ -69,13 +72,7 @@ stop() {
 # die is reported and left behind in the throwaway tree.
 stop_group() {
   local pgid=$1
-  if ! kill -0 -"$pgid" 2>/dev/null; then
-    # No group yet: a signal landed between the fork and the child's setpgrp.
-    # Stop the child itself, then look again in case it formed the group in
-    # the meantime.
-    stop "$pgid" || true
-    kill -0 -"$pgid" 2>/dev/null || return 0
-  fi
+  kill -0 -"$pgid" 2>/dev/null || return 0
   if ! stop -"$pgid"; then
     echo "warning: test process group $pgid did not exit after KILL" >&2
   fi
@@ -83,8 +80,18 @@ stop_group() {
 
 cleanup() {
   if [[ -n "$child" ]]; then
+    # A signal can land between the fork and the child's setpgrp, when there
+    # is no group to signal yet: stop the child itself, but only while bash
+    # still lists it as running, since a reaped child's pid may name an
+    # unrelated process by now. Then drain any group it formed meanwhile.
+    if ! kill -0 -"$child" 2>/dev/null && [[ " $(jobs -rp | tr '\n' ' ') " == *" $child "* ]]; then
+      stop "$child" || true
+    fi
     stop_group "$child"
     wait "$child" 2>/dev/null || true
+  fi
+  if [[ -n "$group" ]]; then
+    stop_group "$group"
   fi
   git worktree remove --force "$work" 2>/dev/null || true
   rmdir "$scratch" 2>/dev/null || true
@@ -127,8 +134,10 @@ run_tests() {
   (cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
   child=$!
   wait "$child" || status=$?
-  stop_group "$child"
+  group=$child
   child=""
+  stop_group "$group"
+  group=""
   return "$status"
 }
 

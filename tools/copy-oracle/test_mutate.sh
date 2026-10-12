@@ -9,7 +9,9 @@
 #     writes, just before setpgrp, so the signal provably lands while the run's
 #     process group does not exist yet;
 #   - TERM-ignoring run: a test that ignores TERM and leaves a worker that
-#     ignores it too, so only the KILL escalation stops them.
+#     ignores it too, both blocked on that FIFO, so only KILL stops them;
+#   - post-wait drain: once a run is reaped, mutate.sh signals only its
+#     process group, never the bare pid, which may have been reused.
 #
 # The test run reports readiness through a FIFO, so TERM is sent only once the
 # run is in the state under test. The exit ceiling is a tripwire for a hang.
@@ -75,8 +77,8 @@ term_mid_run() {
   echo "PASS: $name (exit $status after $((SECONDS - started))s)"
 }
 
-# Nothing ever writes to the gate, so opening it blocks the instrumented child
-# until a signal stops it.
+# Nothing ever writes to the gate, so opening it blocks a process until a
+# signal stops it.
 mkfifo "$tmp/gate"
 perl -pe 's/setpgrp\(0, 0\)/open(my \$r, ">", \$ENV{READY}); print \$r "ready\\n"; close \$r; open(my \$g, "<", \$ENV{GATE}); setpgrp(0, 0)/' \
   "$here/mutate.sh" >"$tmp/mutate-gated-setpgrp.sh"
@@ -87,5 +89,21 @@ term_mid_run before-setpgrp "$tmp/mutate-gated-setpgrp.sh" \
   perl -e 'sleep 20' "$tmp/before-setpgrp"
 # shellcheck disable=SC2016 # the $ expressions are perl's
 term_mid_run term-ignoring "$here/mutate.sh" \
-  perl -e '$SIG{TERM} = "IGNORE"; fork or do { sleep 20; exit }; open(my $r, ">", $ENV{READY}); print $r "ready\n"; close $r; sleep 20' \
+  perl -e '$SIG{TERM} = "IGNORE"; fork or do { open(my $g, "<", $ENV{GATE}); exit }; open(my $r, ">", $ENV{READY}); print $r "ready\n"; close $r; open(my $g, "<", $ENV{GATE})' \
   "$tmp/term-ignoring"
+
+# After `wait` reaps a test run, its pid is free for reuse, so the drain that
+# follows must signal only the process group, never the bare pid. A copy of
+# mutate.sh records every target its stop helper is given.
+perl -0pe 's/^stop\(\) \{\n/stop() {\n  echo "\$1" >>"\$STOP_LOG"\n/m' \
+  "$here/mutate.sh" >"$tmp/mutate-recording-stop.sh"
+grep -q STOP_LOG "$tmp/mutate-recording-stop.sh" || fail "could not instrument mutate.sh's stop helper"
+chmod +x "$tmp/mutate-recording-stop.sh"
+status=0
+(cd "$repo" && TMPDIR="$tmp" STOP_LOG="$tmp/stops" "$tmp/mutate-recording-stop.sh" file.txt 's/x/y/' -- true) \
+  >"$tmp/post-wait.out" 2>&1 || status=$?
+((status == 1)) || fail "post-wait drain: mutate.sh exited $status, want 1 (SURVIVED); output: $(cat "$tmp/post-wait.out")"
+if [[ -e "$tmp/stops" ]] && grep -qv '^-' "$tmp/stops"; then
+  fail "post-wait drain: stop was given a bare pid after the run was reaped: $(tr '\n' ' ' <"$tmp/stops")"
+fi
+echo "PASS: post-wait drain signals only the process group"
