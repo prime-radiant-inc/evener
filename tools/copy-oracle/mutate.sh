@@ -130,25 +130,29 @@ done < <(git ls-files -- '*package.json' 'package.json')
 # execs the command in place, so the group id is the pid in $!; bash job
 # control (set -m) races the subshell's exec and can leave it in ours.
 #
-# The launcher reports on the launch pipe (fd 4 in the child) once setpgrp has
-# run, and only then is the run registered in child. A signal before that is
-# deferred until registration, so cleanup only ever signals a process group,
+# The launcher acknowledges on the launch pipe (fd 4 in the child) once setpgrp
+# has run, and only then is the run registered in child. A signal before that
+# is deferred until registration, so cleanup only ever signals a process group,
 # never a bare pid that may already belong to another process. Holding fd 4
 # open read-write until the launcher has it keeps opening the FIFO from
 # blocking; closing it afterwards turns a launcher that dies early into EOF.
+# The acknowledgement is one byte, so a read a signal interrupts has either
+# consumed it or not: there is no partial acknowledgement to lose on retry.
 run_tests() {
-  local status=0 pid line=""
+  local status=0 pid ack=""
   launching=1
   exec 4<>"$launch_pipe"
   exec 3<"$launch_pipe"
-  (exec 3<&- && cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; open(my $launch, ">&=", 4) or die "launch pipe: $!\n"; print $launch "launched\n"; close $launch; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
+  (exec 3<&- && cd "$work" && exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; open(my $launch, ">&=", 4) or die "launch pipe: $!\n"; print $launch "L"; close $launch; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' "$@") >"$log" 2>&1 &
   pid=$!
   exec 4>&-
   # If a deferred signal interrupts read (status above 128), read again.
-  until read -r line <&3; do (($? > 128)) || break; done
+  until read -r -n 1 ack <&3; do (($? > 128)) || break; done
   exec 3<&-
-  if [[ "$line" == launched ]]; then
+  if [[ "$ack" == L ]]; then
     child=$pid
+  else
+    echo "launch failed: the test launcher exited before forming its process group (log: $log)" >&2
   fi
   launching=""
   if [[ -n "$pending_signal" ]]; then

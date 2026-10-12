@@ -9,6 +9,10 @@
 #   - deferred launch: TERM lands while a test run is between fork and its
 #     setpgrp. mutate.sh must defer it, register the run once its process
 #     group exists, then exit 143 and stop the group;
+#   - interrupted acknowledgement: the same, with TERM landing while the
+#     parent is blocked reading the launcher's acknowledgement;
+#   - launch failure: the launcher dies before setpgrp, and mutate.sh reports
+#     a failed baseline with nothing left to stop;
 #   - TERM-ignoring run: TERM lands after registration, on a test that ignores
 #     TERM and leaves a worker that ignores it too, both blocked on a FIFO
 #     nobody writes, so only KILL stops them. It runs twice, once with the
@@ -49,12 +53,15 @@ git -C "$repo" add file.txt
 git -C "$repo" -c user.name=t -c user.email=t@t commit -qm init
 
 # Nothing ever writes to $tmp/never, so opening it blocks until a signal.
-mkfifo "$tmp/never" "$tmp/gate"
+mkfifo "$tmp/never" "$tmp/gate" "$tmp/ackgate"
 
 # Instrument a copy of mutate.sh. Each hook is idle unless its variable is set:
 #   KILL_LOG   every kill's arguments are appended to it;
+#   LAUNCH_DIE the launcher exits before setpgrp;
 #   GATE       the launcher announces "forked" on $HOOKS, then blocks opening
 #              this FIFO, before setpgrp;
+#   ACK_GATE   the launcher announces "acking" on $HOOKS, then blocks opening
+#              this FIFO, before it writes its acknowledgement;
 #   HOOKS      the parent announces "deferred" when it defers a signal, and
 #              "registered" once it has recorded the launched run;
 #   REGATE     the parent blocks opening this FIFO before it announces
@@ -62,7 +69,8 @@ mkfifo "$tmp/never" "$tmp/gate"
 instrumented="$tmp/mutate-instrumented.sh"
 perl -0pe '
   s/^(set -euo pipefail\n)/$1kill() { [[ -z "\${KILL_LOG:-}" ]] || echo "\$*" >>"\$KILL_LOG"; builtin kill "\$@"; }\n/m or die "no set line\n";
-  s/setpgrp\(0, 0\)/if (\$ENV{GATE}) { open(my \$h, ">", \$ENV{HOOKS}); print \$h "forked\\n"; close \$h; open(my \$g, "<", \$ENV{GATE}) } setpgrp(0, 0)/ or die "no setpgrp\n";
+  s/setpgrp\(0, 0\)/exit 3 if \$ENV{LAUNCH_DIE}; if (\$ENV{GATE}) { open(my \$h, ">", \$ENV{HOOKS}); print \$h "forked\\n"; close \$h; open(my \$g, "<", \$ENV{GATE}) } setpgrp(0, 0)/ or die "no setpgrp\n";
+  s/print \$launch/if (\$ENV{ACK_GATE}) { open(my \$h, ">", \$ENV{HOOKS}); print \$h "acking\\n"; close \$h; open(my \$g, "<", \$ENV{ACK_GATE}) } print \$launch/ or die "no acknowledgement\n";
   s/^(\s*)(pending_signal=\$1\n)/$1$2$1\[[ -z "\${HOOKS:-}" ]] || echo deferred >"\$HOOKS"\n/m or die "no deferral\n";
   s/^(\s*)(child=\$pid\n)/$1$2$1\[[ -z "\${REGATE:-}" ]] || : <"\$REGATE"\n$1\[[ -z "\${HOOKS:-}" ]] || echo registered >"\$HOOKS"\n/m or die "no registration\n";
 ' "$here/mutate.sh" >"$instrumented" || fail "could not instrument mutate.sh"
@@ -129,6 +137,22 @@ exec 5>"$tmp/gate" # releases the launcher into setpgrp and the test
 exec 5>&-
 expect_hooks deferred-launch registered
 finish_case deferred-launch 143
+
+# Interrupted acknowledgement: TERM arrives while the parent is blocked reading
+# the acknowledgement of a launcher that has already formed its group.
+ACK_GATE="$tmp/ackgate" start ack-interrupted perl -e 'open(my $g, "<", $ARGV[0])' "$tmp/never" "$tmp/ack-interrupted"
+expect_hooks ack-interrupted acking
+kill -TERM "$pid"
+expect_hooks ack-interrupted deferred
+exec 5>"$tmp/ackgate" # releases the launcher into its acknowledgement
+exec 5>&-
+expect_hooks ack-interrupted registered
+finish_case ack-interrupted 143
+
+# Launch failure: the launcher dies before setpgrp, so the baseline run fails
+# (BASELINE-FAIL, exit 2) with no group to stop.
+LAUNCH_DIE=1 start launch-failure true "$tmp/launch-failure"
+finish_case launch-failure 2
 
 # term_ignoring <name> runs a test whose processes ignore TERM, and sends TERM
 # once the run is registered and the test is ready. When REGATE is set, the
