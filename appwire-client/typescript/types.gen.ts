@@ -629,6 +629,13 @@ export interface EvenerDelegateInfo {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the row's display line, the same Excerpt-bounded value the read
+   * projects. Empty whenever no run is open, and absent from older daemons.
+   */
+  latestIntent?: string;
   runningForMs?: number;
   quietForMs?: number;
   durationMs?: number;
@@ -3370,6 +3377,14 @@ export interface SessionDelegate {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the controller's live value when non-empty, else the folded journal
+   * value — the same join the pushed frame applies, so the read and the
+   * frame agree for every row state. Absent from older daemons.
+   */
+  latestIntent?: string;
   usage?: EvenerUsage;
   worktree?: JobActivityWorktree;
 }

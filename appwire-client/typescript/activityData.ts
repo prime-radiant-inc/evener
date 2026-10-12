@@ -157,6 +157,7 @@ export interface ActivityDelegate {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  latestIntent?: string;
   runningForMs?: number | null;
   quietForMs?: number | null;
   durationMs?: number | null;
@@ -529,6 +530,7 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
     "runStartedAt",
     "runEndedAt",
     "latestActivityAt",
+    "latestIntent",
     "packetKind",
     "reportPreview",
     "structuredResultReason",

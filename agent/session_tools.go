@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -866,8 +867,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if !prep.RawArgumentsRejected && len(originalArgs) > 0 && json.Valid(originalArgs) {
 		_ = json.Unmarshal(originalArgs, &args)
 	}
+	// The parent-report line for this call, excerpted once below.
+	intentLine := ""
 	if d := toolStartDescription(args); d != "" {
 		startData.Description = d
+		// The excerpt decides what the row may state: a whitespace-only
+		// intent excerpts to the empty line, and an empty report is the
+		// execution-start clear's word, so a call stating nothing real
+		// reports nothing and the previous line stands.
+		intentLine = appwire.Excerpt(d, appwire.MaxIntentRunes)
 	}
 	s.execToolCheckpoint("before_side_effects")
 	toolEventOpen := false
@@ -881,6 +889,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.toolEventsWG.Add(1)
 		toolEventOpen = true
 		s.emit(events.EventToolCallStart, startData)
+		// The report rides the start's own serialized, cancellation-checked
+		// block: parallel read-only calls admit starts in lock order, so the
+		// newest admitted start's line is the one that stands, and a call
+		// cancelled before admission reports nothing at all.
+		if intentLine != "" {
+			s.noteParentJobIntent(intentLine)
+		}
 	}); err != nil {
 		return skippedToolResult(call, err)
 	}

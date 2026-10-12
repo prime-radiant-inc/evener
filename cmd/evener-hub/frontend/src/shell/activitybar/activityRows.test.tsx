@@ -67,3 +67,29 @@ test("delegate row prefers compact name while unnamed rows retain their prompt f
   );
   expect(screen.getByText("Inspect the complete cache ownership")).toBeTruthy();
 });
+
+test("a working agent row shows its latest intent in the meta line", () => {
+  render(
+    <AgentRow sub={activityDelegate({ status: "running", terminal: false, latestIntent: "Reading the board." })} />,
+  );
+  expect(screen.getByText("Reading the board.")).toBeTruthy();
+  expect(screen.queryByText("running")).toBeNull();
+});
+
+test("a terminal agent row keeps its status word over a stale intent", () => {
+  render(
+    <AgentRow
+      sub={activityDelegate({ terminal: true, outcome: "completed", status: "completed", latestIntent: "Stale line." })}
+    />,
+  );
+  expect(screen.getByText("completed")).toBeTruthy();
+  expect(screen.queryByText("Stale line.")).toBeNull();
+});
+
+test("an agent row carries its runtime status in the row's title", () => {
+  render(
+    <AgentRow sub={activityDelegate({ status: "running", terminal: false, latestIntent: "Reading the board." })} />,
+  );
+  // JobRow's pattern: the name span's title carries what the meta line replaced.
+  expect(screen.getByTitle("running")).toBeTruthy();
+});

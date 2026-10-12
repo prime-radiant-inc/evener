@@ -348,6 +348,29 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 		});
 	});
 
+	it("shows a running subagent's stated intent as its why line", () => {
+		expect(subagentWhy(rowOf(running("i", { latestIntent: "Reading the board." })), NOW)).toEqual({
+			kind: "intent",
+			text: "Reading the board.",
+		});
+		// The intent is the whole line: no quiet word rides beside it.
+		expect(
+			subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN), latestIntent: "Reading the board." })), NOW),
+		).toEqual({
+			kind: "intent",
+			text: "Reading the board.",
+		});
+	});
+
+	it("keeps a terminal row's line over a stale intent", () => {
+		expect(
+			subagentWhy(rowOf(done("d", { reportPreview: "## Report\nAll tests pass.", latestIntent: "Stale line." })), NOW),
+		).toEqual({ kind: "report", text: "All tests pass." });
+		expect(
+			subagentWhy(rowOf(failed("f", { reason: "go test exited 1 (3 times)", latestIntent: "Stale line." })), NOW),
+		).toEqual({ kind: "failed", word: "Failed", text: "go test exited 1 (3 times)" });
+	});
+
 	// The silence the list times to turn a row Quiet (useNowPastQuiet): only
 	// a line that would say Quiet, and only while the silence grows with the
 	// clock, or the list would wake again and again for nothing.

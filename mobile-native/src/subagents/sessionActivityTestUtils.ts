@@ -35,6 +35,7 @@ const DELEGATE_FIELDS = [
 	"runStartedAt",
 	"runEndedAt",
 	"latestActivityAt",
+	"latestIntent",
 	"usage",
 	"worktree",
 ] as const satisfies readonly (keyof ActivityDelegate & keyof SessionDelegate)[];

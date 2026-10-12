@@ -5,7 +5,14 @@
 // sidebar can never drift from the rail or the activity panel.
 
 import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
-import { activityDelegateState, activityNodeID, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import {
+  activityDelegateState,
+  activityNodeID,
+  delegateWorkText,
+  jobStatusDisplay,
+  watchMeta,
+  watchName,
+} from "@evener/appwire-client";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { Disclosure } from "../../widgets";
@@ -70,8 +77,12 @@ function AgentRowBody({ sub }: { sub: SessionDelegate }) {
         ⌘
       </span>
       <span className={CLASS.rowBody}>
-        <span className={CLASS.rowName}>{sub.name?.trim() || sub.description || sub.task || sub.delegateId}</span>
-        <span className={CLASS.rowMeta}>{agentStateText(sub)}</span>
+        <span className={CLASS.rowName} title={agentStateText(sub)}>
+          {sub.name?.trim() || sub.description || sub.task || sub.delegateId}
+        </span>
+        {/* The intent replaces the status word here; the title above keeps the
+         * word reachable, JobRow's pattern for a value the meta line hides. */}
+        <span className={CLASS.rowMeta}>{delegateWorkText(sub, agentStateText(sub))}</span>
       </span>
     </>
   );

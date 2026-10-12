@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "./errors";
+import { MAX_INTENT_CODE_POINTS } from "./sessionActivity";
 import { projectSessionActivity } from "./sessionActivityPresentation";
 import { type SessionActivitySnapshot, SessionActivityStore } from "./sessionActivityStore";
 import {
@@ -2706,6 +2707,102 @@ test("a resume clears the prior report", async () => {
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.runGeneration).toBe(2);
   expect(row?.reportPreview).toBeUndefined();
+});
+
+test("a frame sets a row's latest intent and a later frame clears it", async () => {
+  const { client, store } = await pushOwner();
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 2, latestIntent: "Reading the board." })));
+  expect(store.getSnapshot().delegates.rows[0]?.latestIntent).toBe("Reading the board.");
+  // A winning frame supplies the fields it omits as empty, so the run's
+  // settlement clears the line exactly as it clears a report preview.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 3, status: "failed" })));
+  expect(store.getSnapshot().delegates.rows[0]?.latestIntent).toBeUndefined();
+});
+
+test("a run's second intent frame wins by revision", async () => {
+  const { client, store } = await pushOwner();
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 2, latestIntent: "First words." })));
+  expect(store.getSnapshot().delegates.rows[0]?.latestIntent).toBe("First words.");
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 3, latestIntent: "Second words." })));
+  expect(store.getSnapshot().delegates.rows[0]?.latestIntent).toBe("Second words.");
+});
+
+test("an intent frame stays behind the reportPreview gate", async () => {
+  const client = activityClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: activityContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ latestIntent: "From the read." })],
+  }));
+  const { store } = await pushOwner(client);
+  expect(store.getSnapshot().delegates.rows[0]?.latestIntent).toBe("From the read.");
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 2, latestIntent: "From a frame." })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.latestIntent).toBe("From the read.");
+  expect(row?.status).toBe("completed");
+});
+
+test("an over-bound or invalid frame intent applies as absent without dropping the row", async () => {
+  const { client, store } = await pushOwner();
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 2, latestIntent: "x".repeat(MAX_INTENT_CODE_POINTS + 1) })),
+  );
+  let row = store.getSnapshot().delegates.rows[0];
+  expect(row?.latestIntent).toBeUndefined();
+  expect(row?.status).toBe("running");
+  // A value the wire type does not admit arrives only through a misbehaving
+  // source: it reads as omitted, and the row keeps the frame's other fields.
+  const invalid = { ...frameInfo({ projectionRevision: 3 }), latestIntent: 42 } as unknown as EvenerDelegateInfo;
+  client.emitNotification(pushedFrame(invalid));
+  row = store.getSnapshot().delegates.rows[0];
+  expect(row?.latestIntent).toBeUndefined();
+  expect(row?.status).toBe("running");
+});
+
+test("a read row's over-bound intent applies as absent without dropping the row", async () => {
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ latestIntent: "x".repeat(MAX_INTENT_CODE_POINTS + 1) })],
+  }));
+  const { store } = await pushOwner(client);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.delegateId).toBe("delegate-1");
+  expect(row?.latestIntent).toBeUndefined();
+});
+
+test("an older run's intent frame loses to a newer row's revision", async () => {
+  // The store fences by the wire's per-delegate revision monotonicity, not by
+  // generation: the daemon never publishes an old generation's frame with a
+  // revision newer than the row it belongs to, so the strictly-greater revision
+  // join keeps the older run's line off the newer run's row.
+  const client = pushClient();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        runGeneration: 2,
+        projectionRevision: 6,
+        status: "running",
+        phase: "running",
+        lifecycle: "running",
+        terminal: false,
+        latestIntent: "New run.",
+      }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+  client.emitNotification(
+    pushedFrame(frameInfo({ runGeneration: 1, projectionRevision: 5, latestIntent: "Old run." })),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.runGeneration).toBe(2);
+  expect(row?.latestIntent).toBe("New run.");
 });
 
 test("a session store ignores another owner's delegate per the logical owner", async () => {

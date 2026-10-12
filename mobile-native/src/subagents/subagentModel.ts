@@ -11,6 +11,7 @@ import {
 	delegateEndingText,
 	delegateHasActiveWork,
 	delegateModel,
+	delegateStatedIntent,
 	delegateTiming,
 	firstLine,
 	formatTokenCount,
@@ -321,8 +322,9 @@ export function stripSegments(
 
 export interface SubagentWhy {
 	/** What the line reports: a failure, a stop, a report or a bare finish; a
-	 * running command, the subagents it waits on, or its quiet clock. */
-	kind: "failed" | "stopped" | "report" | "finished" | "command" | "waiting" | "working" | "quiet";
+	 * working row's stated tool intent, a running command, the subagents it
+	 * waits on, or its quiet clock. */
+	kind: "failed" | "stopped" | "report" | "finished" | "intent" | "command" | "waiting" | "working" | "quiet";
 	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";
 	text: string;
@@ -347,6 +349,12 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
 		return report ? { kind: "report", text: report } : { kind: "finished", text: "Finished" };
 	}
+	// The shared display rule: a running row's non-empty stated intent stands
+	// in for the whole line. The predicate's empty answer is the point — this
+	// line has no word of its own to keep, so the rule alone decides, and
+	// today's chain stays the fallback.
+	const stated = delegateStatedIntent(delegate);
+	if (stated !== "") return { kind: "intent", text: stated };
 	const command = runningCommand(delegate.child);
 	if (command) return { kind: "command", text: `Running ${command}` };
 	const waiting = runningSubagentCount(

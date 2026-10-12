@@ -78,10 +78,8 @@ full suite as the source of truth. Reserve a local full run (`make test`,
 failure.
 
 Run the heavy local gates one at a time — `make test-web`, `make vet` and
-`make lint` — not as parallel background jobs: the web gate's flush-scope
-hygiene meta-test can time out under that contention with everything else
-green (#3966), so rerun the gate alone before diagnosing that lone timeout
-as a regression.
+`make lint` — not as parallel background jobs: they compete for the same CPU,
+and contention is how a gate's timing budget gets breached.
 
 Use this boundary:
 

@@ -512,6 +512,23 @@ it("turns a silent subagent's row Quiet on its own", async () => {
 	}
 });
 
+// The why line shows the subagent's stated intent, while the accessible label
+// keeps the state word and the intent together.
+it("shows a running subagent's stated intent as its row's why line", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			runningOne("intent", "Inspect the cache", { latestIntent: "Reading the board's row tests." }),
+		]),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	const shown = text(tree);
+	expect(shown).toContain("Reading the board's row tests.");
+	expect(shown).not.toContain("Working");
+	expect(pressable(tree, "Inspect the cache, Running, Reading the board's row tests., 4 minutes")).toBeDefined();
+});
+
 // A subagent's screen is its session (ruling 30), over this list.
 it("opens a subagent's own session over its coordinator", async () => {
 	const tree = await mount();
