@@ -28,7 +28,7 @@ func TestRunXDGDefaults(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, want 0; stderr=%s", code, stderr.String())
 	}
-	if got := reportCounts(t, stdout.String()); got["moved"] != 0 || got["failed"] != 0 {
+	if got := reportCounts(t, stdout.String(), "moved", "failed"); got["moved"] != 0 || got["failed"] != 0 {
 		t.Fatalf("report = %v, want a real-run report with nothing moved or failed", got)
 	}
 }

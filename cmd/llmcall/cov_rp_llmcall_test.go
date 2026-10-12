@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,10 +165,20 @@ func TestPrintUsage(t *testing.T) {
 	printUsage(&buf, res)
 	out := buf.String()
 	// Every value the result carries reaches the report.
-	for _, want := range []string{"model-fixture", "provider-fixture", string(llm.FinishReasonStop), "31", "57", "88"} {
+	for _, want := range []string{"model-fixture", "provider-fixture", string(llm.FinishReasonStop)} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("printUsage output missing %q; got %q", want, out)
 		}
+	}
+	// Each token count lands under its own key.
+	counts := map[string]string{}
+	for field := range strings.FieldsSeq(out) {
+		if key, value, ok := strings.Cut(field, "="); ok {
+			counts[key] = value
+		}
+	}
+	if want := map[string]string{"in": "31", "out": "57", "total": "88"}; !maps.Equal(counts, want) {
+		t.Fatalf("printUsage token counts = %v, want %v; output %q", counts, want, out)
 	}
 }
 

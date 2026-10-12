@@ -213,10 +213,7 @@ func TestExecuteDryRunReport(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("execute dry-run code = %d, want 0", code)
 	}
-	got := reportCounts(t, stdout.String())
-	if _, ok := got["would_move"]; !ok {
-		t.Fatalf("report = %v, want the dry-run would_move count", got)
-	}
+	got := reportCounts(t, stdout.String(), "would_move")
 	if _, ok := got["moved"]; ok {
 		t.Fatalf("report = %v, a dry run must not report moved", got)
 	}
@@ -236,10 +233,7 @@ func TestExecuteRealRunReport(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("execute code = %d, want 0", code)
 	}
-	got := reportCounts(t, stdout.String())
-	if _, ok := got["moved"]; !ok {
-		t.Fatalf("report = %v, want the real-run moved count", got)
-	}
+	got := reportCounts(t, stdout.String(), "moved")
 	if _, ok := got["would_move"]; ok {
 		t.Fatalf("report = %v, a real run must not report would_move", got)
 	}

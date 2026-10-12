@@ -55,8 +55,10 @@ func assertRunRefusesWithoutMigrating(t *testing.T, args []string) {
 	}
 }
 
-// reportCounts parses the key=count fields of the closing report line.
-func reportCounts(t *testing.T, stdout string) map[string]int {
+// reportCounts parses the key=count fields of the closing report line and
+// fails unless that line carries every required field, so a run that printed
+// no report cannot pass as one that reported zeros.
+func reportCounts(t *testing.T, stdout string, required ...string) map[string]int {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	counts := map[string]int{}
@@ -70,6 +72,14 @@ func reportCounts(t *testing.T, stdout string) map[string]int {
 			t.Fatalf("report field %q is not a count: %v", field, err)
 		}
 		counts[key] = n
+	}
+	if len(counts) == 0 {
+		t.Fatalf("no report line with counts in stdout: %q", stdout)
+	}
+	for _, key := range required {
+		if _, ok := counts[key]; !ok {
+			t.Fatalf("report %v lacks the %s count; stdout: %q", counts, key, stdout)
+		}
 	}
 	return counts
 }
@@ -331,7 +341,7 @@ func TestExecuteRefusesOverwriteDestExists(t *testing.T) {
 	if !strings.Contains(stdout.String(), src) {
 		t.Fatalf("stdout = %q, want the refused source %s reported", stdout.String(), src)
 	}
-	if got := reportCounts(t, stdout.String()); got["moved"] != 0 {
+	if got := reportCounts(t, stdout.String(), "moved"); got["moved"] != 0 {
 		t.Fatalf("report = %v, want moved=0", got)
 	}
 }
@@ -371,7 +381,7 @@ func TestExecuteRefusesOverwriteHomeRootFile(t *testing.T) {
 	if refused := filepath.Join(src, "providers.toml"); !strings.Contains(stdout.String(), refused) {
 		t.Fatalf("stdout = %q, want the refused source %s reported", stdout.String(), refused)
 	}
-	if got := reportCounts(t, stdout.String()); got["moved"] != 0 {
+	if got := reportCounts(t, stdout.String(), "moved"); got["moved"] != 0 {
 		t.Fatalf("report = %v, want moved=0", got)
 	}
 }
