@@ -11,8 +11,9 @@
 > (`cmd/evener-hub/frontend/src/stores/transcriptRepository.ts`), which is now the
 > ordinary browser's single owner of recorded-history ingestion and persistence
 > and the source of truth for a session's cached transcript; the server
-> transcript remains authoritative. The legacy `records`, `meta`, `current` and
-> `currentMeta` stores this design defines are removed in a cache schema bump, and
+> transcript remains authoritative. The legacy `records` and `meta` stores this
+> design defines, and the later `current` and `currentMeta` stores, are removed in
+> a cache schema bump, and
 > old cached transcripts are discarded on upgrade and rebuilt from the server
 > rather than migrated. Recovery, the bounded memory exception for active
 > unfinished output, the Clear lifetime and the affected browser surfaces are
