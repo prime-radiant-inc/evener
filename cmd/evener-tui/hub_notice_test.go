@@ -55,7 +55,7 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 		t.Fatal("dismissing a notice should be synchronous")
 	}
 	updatedModel := updated.(hubModel)
-	if _, ok := noticeWithCategory(updatedModel, "appwire"); ok {
+	if _, ok := noticeByCategory(updatedModel, "appwire"); ok {
 		t.Fatalf("notice remained after dismissal: %+v", updatedModel.notices)
 	}
 }
@@ -116,7 +116,7 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 		},
 	})
 	updatedModel := updated.(hubModel)
-	if notice, ok := noticeWithCategory(updatedModel, "action-unavailable"); ok {
+	if notice, ok := noticeByCategory(updatedModel, "action-unavailable"); ok {
 		t.Fatalf("session-scoped notice leaked after session change: %+v", notice)
 	}
 }
@@ -127,7 +127,7 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 
 	updated, _ := m.Update(hubAuthStatusMsg{err: appwire.Unavailable("auth endpoint unavailable")})
 	m = updated.(hubModel)
-	notice, ok := noticeWithCategory(m, "auth")
+	notice, ok := noticeByCategory(m, "auth")
 	if !ok {
 		t.Fatalf("auth error raised no auth notice: %+v", m.notices)
 	}
@@ -151,7 +151,7 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 		Email:        "j@example.com",
 	}}})
 	m = updated.(hubModel)
-	if notice, ok := noticeWithCategory(m, "auth"); ok {
+	if notice, ok := noticeByCategory(m, "auth"); ok {
 		t.Fatalf("successful login did not clear auth notice: %+v", notice)
 	}
 	if !m.authStatus.SignedIn || m.authStatus.Provider != "openai" || m.authStatus.Email != "j@example.com" {
@@ -160,16 +160,6 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	if len(m.session.messages) != messagesBefore+1 || m.session.messages[len(m.session.messages)-1].Kind != transcript.MsgSystem {
 		t.Fatalf("login success did not report itself in the session: %+v", m.session.messages)
 	}
-}
-
-// noticeWithCategory returns the first standing notice of category.
-func noticeWithCategory(m hubModel, category string) (noticePanel, bool) {
-	for _, notice := range m.notices {
-		if notice.Category == category {
-			return notice, true
-		}
-	}
-	return noticePanel{}, false
 }
 
 // TestNoticePanel_CauseProviderClassifiesProvider (kata 5q3p) verifies
@@ -236,7 +226,7 @@ func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 			m := newSessionHubModel(nil)
 			updated, _ := m.Update(tc.msg)
 			updatedModel := updated.(hubModel)
-			notice, ok := noticeWithCategory(updatedModel, tc.category)
+			notice, ok := noticeByCategory(updatedModel, tc.category)
 			if !ok {
 				t.Fatalf("no %s notice in %+v", tc.category, updatedModel.notices)
 			}
