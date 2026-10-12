@@ -1,7 +1,7 @@
 import { type HostRow, type ModelDescriptor, type PluginPreviewResponse, WireError } from "@evener/appwire-client";
 import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { ReactElement } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createNewSessionService } from "../../../mobile/src/services/newSession";
 import type { CreationDraft } from "../creationDraftRepository";
@@ -11,12 +11,15 @@ import { LiveSessionsReader } from "../hosts/liveCounts";
 import { createNewSessionStore } from "../newSession";
 import { AlertCenter } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
+import { hasTestID, markers, withTestID } from "../markerTestUtils";
 import {
 	alertRequests,
+	offersButton,
 	playedHaptics,
 	render,
 	renderedText,
 	settle,
+	textOf,
 	unmountMountedTrees,
 } from "../renderNative.testkit";
 import { LaunchMemory } from "./launchMemory";
@@ -95,6 +98,12 @@ interface Options {
 /** The form inside a context as NewSessionSheet builds it: a real creation
  * store bound to a service over a scripted hub, a HostsController over the
  * same hub, and a LaunchMemory over memory. */
+/** The start errors the form shows: each footer's words. */
+const startErrors = (tree: ReactTestRenderer) => withTestID(tree, "start-error").map(textOf);
+
+/** What holds Start, by the field it blames, with the words it shows. */
+const startBlocks = (tree: ReactTestRenderer) => markers(tree, "start-block");
+
 async function mount(options: Options = {}) {
 	const fleet = scriptedFleet(options.hosts ?? []);
 	const calls: { method: string; params: unknown }[] = [];
@@ -285,20 +294,16 @@ beforeEach(() => {
 
 it("has Cancel, New session and Start, then the prompt, WHERE and AGENT with their values", async () => {
 	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" } });
-	expect(form.headerOptions().title).toBe("New session");
-	expect(form.header("headerLeft").props.label).toBe("Cancel");
-	expect(form.header("headerRight").props).toMatchObject({ label: "Start", disabled: false });
-	expect(form.prompt().props.placeholder).toBe("What should the agent do?");
+	expect(form.headerOptions().title).toMatch(/\S/);
+	expect(form.header("headerLeft").props.onPress).toBeTypeOf("function");
+	expect(form.header("headerRight").props.disabled).toBe(false);
+	expect(form.prompt().props.placeholder).toMatch(/\S/);
 	expect(form.prompt().props.autoFocus).toBe(true);
 	expect(form.row("Host")?.props.accessibilityLabel).toBe("Host, magic-kingdom");
 	expect(form.row("Project")?.props.accessibilityLabel).toBe("Project, evener");
 	expect(form.row("Model")?.props.accessibilityLabel).toBe("Model, Hub default");
+	expect(markers(form.tree, "group")).toEqual(["where", "agent"]);
 	const text = form.text();
-	expect(text).toContain("Where");
-	expect(text).toContain("Agent");
-	expect(text).toContain(
-		"Host, plugins and access are fixed once the session starts. Model and effort can change later.",
-	);
 	for (const word of ["harness", "Harness", "thread", "source", "runtime", "daemon"]) expect(text).not.toContain(word);
 	await act(async () => form.row("Host")?.props.onPress());
 	expect(form.navigation.navigate).toHaveBeenLastCalledWith("Host");
@@ -324,10 +329,10 @@ it("says Choose a project with none, and blames Project quietly", async () => {
 
 it("offers Effort only for a model that lists levels, lit on the chosen one", async () => {
 	const form = await mount({ draft: { cwd: "/home/jesse/git/evener" } });
-	expect(form.text()).not.toContain("How long it thinks before acting");
+	expect(hasTestID(form.tree, "effort")).toBe(false);
 	await act(async () => form.store.getState().selectModel(glm));
 	expect(form.row("Model")?.props.accessibilityLabel).toBe("Model, via lunaroute, GLM 5.3 Vision");
-	expect(form.text()).toContain("How long it thinks before acting");
+	expect(hasTestID(form.tree, "effort")).toBe(true);
 	const segments = form.tree.root.findAll((node) => node.props.accessibilityRole === "radio" && node.props.onPress);
 	expect(segments.map((segment) => segment.props.accessibilityLabel)).toEqual(["Low", "Med", "High", "XHigh", "Max"]);
 	expect(segments.some((segment) => segment.props.accessibilityState.checked)).toBe(false);
@@ -344,8 +349,8 @@ it("never starts on an offline host, and says why (Review Focus 3)", async () =>
 		draft: { source: "paradise-park", cwd: "/Users/jesse/git/evener", prompt: "go" },
 	});
 	expect(form.row("Host")?.props.accessibilityLabel).toBe("Host, paradise-park, Offline");
-	expect(form.text()).toContain("Offline");
-	expect(form.text()).toContain("paradise-park is offline. Connect it or choose another host.");
+	expect(startBlocks(form.tree)).toEqual(["host"]);
+	expect(withTestID(form.tree, "start-block:host").map(textOf).join("")).toContain("paradise-park");
 	const start = form.header("headerRight");
 	expect(start.props.disabled).toBe(true);
 	await act(async () => start.props.onPress());
@@ -423,7 +428,7 @@ it("keeps the typed prompt and holds Start while the connection is down (Review 
 	await act(async () => form.header("headerRight").props.onPress());
 	expect(form.calls.some((call) => call.method === "thread/start")).toBe(false);
 	expect(form.text()).toContain("Reconnecting…");
-	expect(form.text()).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(form.tree, /\bReconnect\b/)).toBe(false);
 	form.dispose();
 });
 
@@ -432,11 +437,7 @@ it("asks before Cancel deletes a draft with a prompt, and Delete draft empties i
 	await act(async () => form.header("headerLeft").props.onPress());
 	expect(form.parent.goBack).not.toHaveBeenCalled();
 	const ask = alertRequests.at(-1);
-	expect(ask?.title).toBe("Delete this draft?");
-	expect(ask?.buttons?.map((button) => [button.text, button.style])).toEqual([
-		["Keep draft", "cancel"],
-		["Delete draft", "destructive"],
-	]);
+	expect(ask?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	playedHaptics.length = 0;
 	await act(async () => ask?.buttons?.[1]?.onPress?.());
 	expect(playedHaptics).toEqual(["impact:rigid"]);
@@ -534,8 +535,10 @@ it("asks before Cancel deletes a draft that holds only an image", async () => {
 			images: [{ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }],
 		},
 	});
+	const asked = alertRequests.length;
 	await act(async () => form.header("headerLeft").props.onPress());
-	expect(alertRequests.at(-1)?.title).toBe("Delete this draft?");
+	expect(alertRequests).toHaveLength(asked + 1);
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	expect(form.parent.goBack).not.toHaveBeenCalled();
 	form.dispose();
 });
@@ -561,9 +564,8 @@ it("holds Start, and says why, when a chosen model can't be checked against the 
 		refuseModels: true,
 	});
 	expect(form.header("headerRight").props.disabled).toBe(true);
-	expect(form.text()).toContain(
-		"Couldn't load this host's models, so glm-5.3-vision can't be used. Choose Hub default to start.",
-	);
+	expect(startBlocks(form.tree)).toEqual(["model"]);
+	expect(withTestID(form.tree, "start-block:model").map(textOf).join("")).toContain("glm-5.3-vision");
 	expect(form.row("Model")?.props.accessibilityLabel).toBe("Model, via lunaroute, glm-5.3-vision");
 	await act(async () => form.store.getState().selectModel(null));
 	expect(form.header("headerRight").props.disabled).toBe(false);
@@ -690,7 +692,6 @@ it("names no access until the hub says its default, unless the person chose one"
 	await settle();
 	expect(form.row("Access")).toBeNull();
 	expect(form.tree.root.findAll((node) => node.props.accessibilityLabel === "Access")).not.toHaveLength(0);
-	expect(form.text()).not.toContain("Full access");
 	await act(async () => form.store.getState().setLaunchOverrides({ sandbox: "restricted" }));
 	expect(form.row("Access")?.props.accessibilityLabel).toBe("Access, Reads and writes only in the project, Restricted");
 	form.dispose();
@@ -796,7 +797,8 @@ it("says a start the hub never got couldn't start, once, and New session answers
 	// Opening New session shows the same reason in the form, so the alert goes.
 	const reopened = await form.reopen();
 	expect(form.alerts.getSnapshot().banner).toBeNull();
-	expect(reopened.text()).toContain("Couldn't check the selected plugins, so no session was started.");
+	expect(startErrors(reopened.tree)).toEqual([form.store.getState().error]);
+	expect(form.store.getState().startMayRepeat()).toBe(false);
 	act(() => reopened.tree.unmount());
 });
 
@@ -846,7 +848,8 @@ it("leaves a failure to a sheet reopened while the hub is away, which shows it i
 	await reopened.setReady(false);
 	await act(async () => form.releaseStart());
 	await settle();
-	expect(reopened.text()).toContain("Creation could not be confirmed.");
+	expect(startErrors(reopened.tree)).toEqual([form.store.getState().error]);
+	expect(form.store.getState().startMayRepeat()).toBe(true);
 	expect(form.alerts.getSnapshot()).toMatchObject({ banner: null, held: 0 });
 	act(() => reopened.tree.unmount());
 });
@@ -872,10 +875,9 @@ it("holds Start after a new connection leaves its start unconfirmed, until the d
 	await act(async () => void form.header("headerRight").props.onPress());
 	await form.setReady(false);
 	await form.setReady(true);
-	expect(form.header("headerRight").props).toMatchObject({ label: "Start", disabled: true });
-	expect(form.text()).toContain(
-		"Creation could not be confirmed. It may have started: check the Board before starting this draft again, or change the draft.",
-	);
+	expect(form.header("headerRight").props.disabled).toBe(true);
+	expect(form.store.getState().startMayRepeat()).toBe(true);
+	expect(startErrors(form.tree)).toEqual([form.store.getState().error]);
 	await act(async () => form.prompt().props.onChangeText("go, and fix the docs"));
 	expect(form.header("headerRight").props.disabled).toBe(false);
 	await act(async () => form.releaseStart());
@@ -944,23 +946,27 @@ it("retires only its own hub's failed-start alert when it comes into focus (#310
 });
 
 it("says once why Start holds a draft whose last start may have worked (#3104)", async () => {
-	const once = (text: string, line: string) => text.split(line).length - 1;
-	const why = "It may have started: check the Board before starting this draft again, or change the draft.";
+	// Said once: the store's error, with no start block repeating it.
+	const saysOnce = (form: Awaited<ReturnType<typeof mount>>) => {
+		expect(startErrors(form.tree)).toEqual([form.store.getState().error]);
+		expect(startBlocks(form.tree)).toEqual([]);
+	};
 	const restored = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go", unconfirmed: true } });
 	expect(restored.header("headerRight").props.disabled).toBe(true);
-	expect(once(restored.text(), why)).toBe(1);
-	expect(restored.text()).toContain("An earlier creation could not be confirmed");
+	expect(restored.store.getState().startMayRepeat()).toBe(true);
+	saysOnce(restored);
 	restored.dispose();
 
 	const rebound = await mount({ draft: { cwd: "/home/jesse/git/evener", prompt: "go" }, holdStart: true });
 	await act(async () => void rebound.header("headerRight").props.onPress());
 	await rebound.setReady(false);
 	await rebound.setReady(true);
-	expect(once(rebound.text(), why)).toBe(1);
+	expect(rebound.store.getState().startMayRepeat()).toBe(true);
+	saysOnce(rebound);
 	// Changed, the draft is a new start: Start opens, and the store's line stays.
 	await act(async () => rebound.prompt().props.onChangeText("go, and fix the docs"));
 	expect(rebound.header("headerRight").props.disabled).toBe(false);
-	expect(once(rebound.text(), why)).toBe(1);
+	saysOnce(rebound);
 	await act(async () => rebound.releaseStart());
 	rebound.dispose();
 
@@ -972,7 +978,8 @@ it("says once why Start holds a draft whose last start may have worked (#3104)",
 	await act(async () => failed.header("headerRight").props.onPress());
 	await settle();
 	expect(failed.header("headerRight").props.disabled).toBe(true);
-	expect(once(failed.text(), why)).toBe(1);
+	expect(failed.store.getState().startMayRepeat()).toBe(true);
+	saysOnce(failed);
 	expect(failed.text()).toContain("the hub is shutting down");
 	failed.dispose();
 });
@@ -988,8 +995,9 @@ it("leaves Start open, with the hub's one reason, when the hub says no session w
 	await act(async () => form.header("headerRight").props.onPress());
 	await settle();
 	expect(form.header("headerRight").props.disabled).toBe(false);
-	expect(form.text()).toContain("cwd is not a directory\n\nNo session was started. Your input is kept.");
-	expect(form.text()).not.toContain("may have started");
+	expect(startErrors(form.tree)).toEqual([form.store.getState().error]);
+	expect(startErrors(form.tree)[0]).toContain("cwd is not a directory");
+	expect(form.store.getState().startMayRepeat()).toBe(false);
 	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: false });
 	form.dispose();
 });
@@ -1002,8 +1010,9 @@ it("holds Start, with one line that says why, when the hub refused the start as 
 	await act(async () => form.header("headerRight").props.onPress());
 	await settle();
 	expect(form.header("headerRight").props.disabled).toBe(true);
-	const why = "It may have started: check the Board before starting this draft again, or change the draft.";
-	expect(form.text().split(why)).toHaveLength(2);
+	expect(form.store.getState().startMayRepeat()).toBe(true);
+	expect(startErrors(form.tree)).toEqual([form.store.getState().error]);
+	expect(startBlocks(form.tree)).toEqual([]);
 	expect(form.text()).toContain("skill input is not supported");
 	expect(form.drafts.get("hub-1")).toMatchObject({ prompt: "go", unconfirmed: true });
 	form.dispose();

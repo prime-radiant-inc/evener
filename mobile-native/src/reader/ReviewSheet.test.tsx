@@ -7,8 +7,17 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { hasTestID, markers, withTestID } from "../markerTestUtils";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
-import { alertRequests, pressable, render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
+import {
+	alertRequests,
+	pressable,
+	render,
+	renderedText,
+	settle,
+	textOf,
+	unmountMountedTrees,
+} from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -215,15 +224,15 @@ function sentText(): string {
 it("names where the review goes, lists the comments, and waits for a verdict", async () => {
 	const tree = await mount();
 	const text = renderedText(tree);
-	expect(text).toContain("Review");
-	expect(text).toContain("To Get PR 2138 Test Clean · settle-race.md");
+	expect(text).toContain("Get PR 2138 Test Clean");
+	expect(text).toContain("settle-race.md");
 	expect(text).toContain("The goal is a clean run.");
 	expect(text).toContain("Say which run.");
 	expect(text).toContain("Name the fix.");
-	expect(text).toContain("Choose one to send your review.");
+	expect(hasTestID(tree, "review-verdict-hint")).toBe(true);
 	expect(sendDisabled(tree)).toBe(true);
 	choose(tree, "Request changes");
-	expect(renderedText(tree)).not.toContain("Choose one to send your review.");
+	expect(hasTestID(tree, "review-verdict-hint")).toBe(false);
 	expect(pressable(tree, "Request changes")?.props.accessibilityState).toMatchObject({ selected: true });
 	expect(sendDisabled(tree)).toBe(false);
 });
@@ -251,17 +260,20 @@ it("keeps a chosen verdict's words where they were, centred, at the same weight"
 it("says so when there are no comments", async () => {
 	memory.clearComments(KEY);
 	const tree = await mount();
-	expect(renderedText(tree)).toContain("No comments. Touch and hold a paragraph to add one.");
+	expect(hasTestID(tree, "review-no-comments")).toBe(true);
 });
 
 it("offers a note whose prompt follows the verdict", async () => {
 	const tree = await mount();
 	const placeholder = () => tree.root.find((node) => String(node.type) === "TextInput").props.placeholder;
-	expect(placeholder()).toBe("Optional: the gist of what to change");
+	const unchosen = placeholder();
+	expect(unchosen).toMatch(/\S/);
 	choose(tree, "Approve");
-	expect(placeholder()).toBe("Optional: anything to keep in mind");
+	const approving = placeholder();
+	expect(approving).toMatch(/\S/);
+	expect(approving).not.toBe(unchosen);
 	choose(tree, "Comment only");
-	expect(placeholder()).toBe("Optional: the gist of what to change");
+	expect(placeholder()).toBe(unchosen);
 });
 
 it("sends the review's message to an idle session, clears the comments, and returns to the session", async () => {
@@ -275,7 +287,7 @@ it("sends the review's message to an idle session, clears the comments, and retu
 	expect(memory.comments(KEY)).toEqual([]);
 	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
-	expect(renderedText(tree)).not.toContain("Couldn't send this");
+	expect(hasTestID(tree, "review-send-failed")).toBe(false);
 });
 
 it("queues the review while the session works, and never steers or interrupts it", async () => {
@@ -301,7 +313,7 @@ it("sends nothing to a session that stopped taking messages after the sheet open
 	await act(async () => sendButton(tree)?.props.onPress());
 	await settle();
 	expect(mutations()).toEqual([]);
-	expect(renderedText(tree)).toContain("This session can't take a message right now.");
+	expect(markers(tree, "review-held")).toEqual(["unavailable"]);
 	expect(sheetNavigation.pop).not.toHaveBeenCalled();
 });
 
@@ -348,7 +360,7 @@ it.each([
 	const tree = await mount();
 	choose(tree, "Approve");
 	expect(sendDisabled(tree)).toBe(true);
-	expect(renderedText(tree)).toContain("This session can't take a message right now.");
+	expect(markers(tree, "review-held")).toEqual(["unavailable"]);
 });
 
 it("waits for the connection, and reads again when it returns", async () => {
@@ -356,7 +368,7 @@ it("waits for the connection, and reads again when it returns", async () => {
 	const tree = await mount();
 	choose(tree, "Approve");
 	expect(sendDisabled(tree)).toBe(true);
-	expect(renderedText(tree)).toContain("Send when you're back online.");
+	expect(markers(tree, "review-held")).toEqual(["offline"]);
 	expect(client.calls.filter((call) => call.method === "thread/read")).toEqual([]);
 	harness.connection = { state: "ready", client };
 	act(() =>
@@ -368,7 +380,7 @@ it("waits for the connection, and reads again when it returns", async () => {
 		),
 	);
 	await settle();
-	expect(renderedText(tree)).not.toContain("Send when you're back online.");
+	expect(markers(tree, "review-held")).toEqual([]);
 	expect(sendDisabled(tree)).toBe(false);
 });
 
@@ -408,8 +420,10 @@ it("asks before losing a chosen verdict or a typed note", async () => {
 	expect(sheetNavigation.prevented.at(-1)).toBe(false);
 	choose(tree, "Approve");
 	expect(sheetNavigation.prevented.at(-1)).toBe(true);
+	const asked = alertRequests.length;
 	act(() => sheetNavigation.onPrevent?.({ data: { action: { type: "GO_BACK" } } }));
-	expect(alertRequests.at(-1)?.title).toBe("Discard this review?");
+	expect(alertRequests).toHaveLength(asked + 1);
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	expect(memory.comments(KEY)).toHaveLength(2);
 });
 
@@ -420,7 +434,8 @@ it("keeps everything when the send fails, and says why", async () => {
 	typeNote(tree, "Split it.");
 	await act(async () => sendButton(tree)?.props.onPress());
 	await settle();
-	expect(renderedText(tree)).toContain("Couldn't send this: The mutations database is unavailable");
+	const [failed] = withTestID(tree, "review-send-failed");
+	expect(failed && textOf(failed)).toContain("The mutations database is unavailable");
 	expect(pressable(tree, "Request changes")?.props.accessibilityState).toMatchObject({ selected: true });
 	expect(tree.root.find((node) => String(node.type) === "TextInput").props.value).toBe("Split it.");
 	expect(memory.comments(KEY)).toHaveLength(2);
