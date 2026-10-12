@@ -109,17 +109,22 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   // leaving this one's on screen (or its own failure standing).
   useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
-  // A failed refresh leaves the last good layer on screen, possibly stale.
-  // The editors stay mounted so typing survives, but nothing saves until a
-  // refresh succeeds: a write from that snapshot could overwrite edits made to
-  // the file elsewhere. Returns the layer to write from, or null to refuse.
+  // The layer on screen may be stale after a failed refresh, and stays stale
+  // until a recovery refresh actually lands (fetchLaunchLayer clears the error
+  // the moment it starts). The editors stay mounted so typing survives, but
+  // nothing saves unless a layer is loaded, the last read succeeded, and no
+  // read is in flight: a write from a stale snapshot could overwrite edits
+  // made to the file elsewhere. Returns the layer to write from, or null.
   function writableLayer() {
-    const { launchLayer, launchLayerError } = store.getState();
-    return launchLayerError === null ? (launchLayer ?? {}) : null;
+    const { launchLayer, launchLayerError, launchLayerLoading } = store.getState();
+    return launchLayer !== null && launchLayerError === null && !launchLayerLoading ? launchLayer : null;
   }
 
   function refusal(): string {
-    return `Can't save while the launch settings fail to load: ${store.getState().launchLayerError}`;
+    const { launchLayerError } = store.getState();
+    return launchLayerError !== null
+      ? `Can't save while the launch settings fail to load: ${launchLayerError}`
+      : "Can't save while the launch settings are loading. Try again in a moment.";
   }
 
   async function handleAddConfig(path: string): Promise<CollectionAddResult> {

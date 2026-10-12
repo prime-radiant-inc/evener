@@ -494,3 +494,45 @@ test("removing one of two identical servers removes the one confirmed", async ()
   const [params] = setLayerSpy.mock.calls[0] as unknown as [{ config: { mcps: unknown[] } }];
   expect(params.config.mcps).toEqual([a, b]);
 });
+
+test("saves stay refused while a recovery refresh is still in flight, and resume on its fresh layer", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let mode: "ok" | "fail" | "hold" = "ok";
+  let release: (layer: Record<string, unknown>) => void = () => {};
+  fake.on("evener/launch/getLayer", () => {
+    if (mode === "fail") throw new WireError("read failed", -1);
+    if (mode === "hold") return new Promise((resolve) => (release = resolve));
+    return { mcpConfigs: [], mcps: [] };
+  });
+  fake.on("evener/path/validate", () => ({ path: "/usr/bin/fs-mcp", valid: true }));
+  const setLayerSpy = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/launch/setLayer", setLayerSpy);
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByRole("textbox", { name: "Inline MCP servers" });
+
+  mode = "fail";
+  await act(() => extensionsStore.getState().fetchLaunchLayer());
+  mode = "hold";
+  let recovery: Promise<void> = Promise.resolve();
+  act(() => {
+    recovery = extensionsStore.getState().fetchLaunchLayer();
+  });
+  await addInlineServer(user, "fs /usr/bin/fs-mcp");
+  expect(await screen.findAllByRole("alert")).not.toHaveLength(0);
+  expect(setLayerSpy).not.toHaveBeenCalled();
+
+  await act(async () => {
+    release({ mcpConfigs: [], mcps: [], skillsDirs: ["/skills/changed-elsewhere"] });
+    await recovery;
+  });
+  await user.click(
+    within(screen.getByRole("textbox", { name: "Inline MCP servers" }).closest("form") as HTMLElement).getByRole(
+      "button",
+      { name: "Add" },
+    ),
+  );
+  await waitFor(() => expect(setLayerSpy).toHaveBeenCalledTimes(1));
+  const [params] = setLayerSpy.mock.calls[0] as unknown as [{ config: Record<string, unknown> }];
+  expect(params.config.skillsDirs).toEqual(["/skills/changed-elsewhere"]);
+});
