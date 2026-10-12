@@ -31,6 +31,11 @@ const CODEBLOCK_CLASS = {
 
 type State = { status: "loading" } | { status: "ok"; svg: string } | { status: "error" };
 
+export interface MermaidDiagramProps {
+  source: string;
+  renderTimeoutMs?: number;
+}
+
 /** Renders one mermaid diagram inline. The source is model-authored, so the
  * render pipeline is the two-layer sanitize in security.ts; the rendered SVG
  * is non-interactive (the container opens the fullscreen DiagramViewer on
@@ -39,7 +44,7 @@ type State = { status: "loading" } | { status: "ok"; svg: string } | { status: "
  * only a <button> once a diagram has rendered; while loading (or after a
  * failed render) it stays a plain, non-focusable <div>, since there is no
  * rendered diagram for the viewer to open. */
-export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: { source: string; renderTimeoutMs?: number }) {
+export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: MermaidDiagramProps) {
   const scheme = useResolvedScheme();
   const [state, setState] = useState<State>({ status: "loading" });
   // The SVG snapshot the viewer is showing, set on click. Holding the svg in

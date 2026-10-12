@@ -22,6 +22,10 @@ export default function TextareaGallerySection() {
           <LiveTextarea />
         </div>
         <div className={styles.row}>
+          <p className={styles.rowLabel}>monospace</p>
+          <Textarea value={'# AGENTS.md\n{"region": "us-east-1"}'} onChange={() => {}} monospace rows={3} />
+        </div>
+        <div className={styles.row}>
           <p className={styles.rowLabel}>disabled</p>
           <Textarea value="Read only." onChange={() => {}} disabled />
         </div>
