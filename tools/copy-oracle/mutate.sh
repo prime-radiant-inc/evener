@@ -87,12 +87,19 @@ git worktree add -q --detach "$work" HEAD
 if ! git diff --quiet HEAD; then
   git diff --binary HEAD | git -C "$work" apply --binary --whitespace=nowarn
 fi
-git ls-files -z --others --exclude-standard | tar -cf - --null -T - | tar -xf - -C "$work"
-# Link each JavaScript package's installed dependencies instead of copying them.
+# Dependency installs are linked below, never copied: an untracked
+# node_modules symlink with a relative target would dangle here.
+git ls-files -z --others --exclude-standard |
+  perl -0ne 'print unless m{(?:^|/)node_modules(?:/|\0|\z)}' |
+  tar -cf - --null -T - | tar -xf - -C "$work"
+# Link each JavaScript package's installed dependencies at their canonical
+# path. When the caller's node_modules is itself a link to a shared install,
+# the preflights then compare the scratch lockfile with that install's own
+# lockfile, not with the caller's identical copy.
 while IFS= read -r manifest; do
   pkg=$(dirname "$manifest")
-  if [[ -e "$pkg/node_modules" && ! -e "$work/$pkg/node_modules" ]]; then
-    ln -s "$root/$pkg/node_modules" "$work/$pkg/node_modules"
+  if [[ -d "$pkg/node_modules" ]]; then
+    ln -s "$(cd "$pkg/node_modules" && pwd -P)" "$work/$pkg/node_modules"
   fi
 done < <(git ls-files -- '*package.json' 'package.json')
 
