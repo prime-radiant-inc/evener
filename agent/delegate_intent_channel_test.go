@@ -325,6 +325,52 @@ func TestReportIntentLandsAtCallStartBesideTheBatchReport(t *testing.T) {
 	}
 }
 
+// TestNonResumableExhaustionTerminalFrameMatchesTheRead pins the closure
+// path's terminal frame against the read after release: the closure plan
+// captures its terminal rows before releaseGenerationLocked clears the live
+// line, so an ungated live overlay would resurrect the settled run's intent
+// in the terminal frame while the read after release shows it cleared.
+func TestNonResumableExhaustionTerminalFrameMatchesTheRead(t *testing.T) {
+	c, lease, _ := newIntentChannelHarness(t, 1)
+	var frames intentChannelFrames
+	frames.install(c)
+	if err := c.ReportIntent(lease, time.Unix(300, 0).UTC(), "Reading the config file."); err != nil {
+		t.Fatalf("ReportIntent: %v", err)
+	}
+	resumable := false
+	finish := delegateFinish{
+		outcome:             delegatestore.OutcomeExhausted,
+		reason:              "turn_budget_exhausted",
+		exhaustionBudget:    delegatestore.ExhaustionBudgetTurns,
+		exhaustionLimit:     3,
+		exhaustionResumable: &resumable,
+	}
+	plans, err := c.FinishGeneration(lease, finish)
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	var terminal *delegateSnapshot
+	for i := range plans.updates {
+		for j := range plans.updates[i].rows {
+			if plans.updates[i].rows[j].id == lease.delegateID {
+				terminal = &plans.updates[i].rows[j]
+			}
+		}
+	}
+	if terminal == nil {
+		t.Fatal("the finish plans carry no terminal row for the delegate")
+	}
+	if terminal.latestIntent != "" {
+		t.Fatalf("the terminal frame carried the settled run's intent %q, want the cleared line", terminal.latestIntent)
+	}
+	c.mu.Lock()
+	read := c.captureDelegateSnapshotLocked(lease.delegateID)
+	c.mu.Unlock()
+	if read.latestIntent != terminal.latestIntent {
+		t.Fatalf("the read showed %q while the terminal frame showed %q", read.latestIntent, terminal.latestIntent)
+	}
+}
+
 // TestReportIntentRejectedWhileSettling pins the settling-window fence: through
 // the documented settling window a report — statement or clear — is rejected
 // exactly the way an activity report is, and the row keeps the pre-report

@@ -260,6 +260,8 @@ func TestChildReportsStatedIntentToTheController(t *testing.T) {
 	// The recorder consumes the parent's buffered event channel
 	// asynchronously, so run completion only queues the settled frame: wait
 	// for the recorder to have taken in both frames the assertions read.
+	// TRIPWIRE: the recorder's dedicated consumer drains a queued frame in
+	// microseconds; 30s only fires on a genuine hang.
 	waitForCondition(t, 30*time.Second, "the recorder to take in the published and settled frames", func() bool {
 		published, settled = false, false
 		for _, frame := range recordedIntentFrames(f, delegateID) {

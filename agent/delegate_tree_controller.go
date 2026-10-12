@@ -1131,7 +1131,14 @@ func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delega
 		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
 			snapshot.latestProductiveActivityAt = live.productiveActivityAt
 		}
-		snapshot.latestIntent = delegateDisplayIntent(live.intent, snapshot.latestIntent)
+		// The live line overlays only an open run. A settled generation's
+		// live state is cleared at release, after the non-resumable closure
+		// plan has already captured its terminal rows — an ungated overlay
+		// would resurrect the settled run's intent in that terminal frame
+		// while the read after release shows it cleared.
+		if snapshot.currentRunOpen {
+			snapshot.latestIntent = delegateDisplayIntent(live.intent, snapshot.latestIntent)
+		}
 	}
 	return snapshot
 }

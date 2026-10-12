@@ -817,6 +817,13 @@ describe("ActivityTree", () => {
   test("dense rows never grow the name over the open control: meta owns the right edge", () => {
     expect(activityPanelCss).toMatch(/\.denseName\s*\{[^}]*flex:\s*0 1 auto/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*margin-left:\s*auto/);
+    // A long stated intent must not collapse the name to nothing: the meta
+    // shrinks and ellipsizes like the sidebar's rowMeta, so the name keeps
+    // first claim on its own space (the review's 200-rune intent scenario).
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*flex:\s*0 1 auto/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*min-width:\s*0/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*overflow:\s*hidden/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*text-overflow:\s*ellipsis/);
   });
 
   test("dense-row open targets keep hit width but never overhang the row, so neighbors' targets can't overlap", () => {
