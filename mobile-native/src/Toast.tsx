@@ -13,6 +13,10 @@ export interface ToastAction {
 
 export interface ToastMessage {
 	text: string;
+	/** What happened, as a stable token (`stop:stopped`, `rename:failed`):
+	 * the toast carries it as its `toast:<kind>` testID, so a test can tell
+	 * which toast showed without reading its words. */
+	kind?: string;
 	action?: ToastAction;
 }
 
@@ -57,6 +61,7 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 	const action = toast.action;
 	return (
 		<View
+			testID={toast.kind ? `toast:${toast.kind}` : undefined}
 			pointerEvents="box-none"
 			style={{
 				alignSelf: "center",

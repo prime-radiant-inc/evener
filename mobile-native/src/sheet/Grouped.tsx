@@ -91,9 +91,12 @@ export function Group({
 	children,
 	label,
 	machineLabel = false,
+	section,
 }: {
 	children: ReactNode;
 	label?: string;
+	/** Which group this is, as a stable token: its `group:<section>` testID. */
+	section?: string;
 	/** The label is a marketplace or similar machine name (see GroupLabel). */
 	machineLabel?: boolean;
 }) {
@@ -101,6 +104,7 @@ export function Group({
 	const rows = Children.toArray(children);
 	const group = (
 		<View
+			testID={section ? `group:${section}` : undefined}
 			style={{
 				marginHorizontal: space.margin,
 				marginTop: label ? 0 : space.groupGap,

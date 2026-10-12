@@ -103,6 +103,17 @@ func (e *RetainedUnsyncedError) Unwrap() error { return e.Cause }
 // errors.Is without depending on the concrete type.
 func (e *RetainedUnsyncedError) Is(target error) bool { return target == ErrRetainedUnsynced }
 
+// SessionIDMismatchError reports a transcript opened for one session whose
+// header names another.
+type SessionIDMismatchError struct {
+	HeaderSessionID    string
+	RequestedSessionID string
+}
+
+func (e *SessionIDMismatchError) Error() string {
+	return fmt.Sprintf("transcript header session ID %q does not match requested session ID %q", e.HeaderSessionID, e.RequestedSessionID)
+}
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
@@ -1158,7 +1169,7 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 				return Header{}, nil, 0, 0, fmt.Errorf("parse transcript header: %w", err)
 			}
 			if expectedSessionID != "" && header.SessionID != expectedSessionID {
-				return Header{}, nil, 0, 0, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
+				return Header{}, nil, 0, 0, &SessionIDMismatchError{HeaderSessionID: header.SessionID, RequestedSessionID: expectedSessionID}
 			}
 			headerRead = true
 			continue

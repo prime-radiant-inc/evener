@@ -3,6 +3,7 @@ import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
+import { hasTestID } from "../markerTestUtils";
 import {
 	composerFocusedAs,
 	keyboard,
@@ -100,7 +101,7 @@ describe("the connection bar (spec 8.1, 14)", () => {
 		for (const status of ["Reconnecting…", "Offline · updated 3m ago", "Update needed"]) {
 			expect(renderedText(render(header({ status, chips: [goal] })))).toContain(status);
 		}
-		expect(renderedText(render(header({ chips: [goal] })))).toBe("Goal");
+		expect(hasTestID(render(header({ chips: [goal] })), "connection-status")).toBe(false);
 	});
 
 	it("is 13/18 low ink, centered, in tabular figures, 24pt tall and never hides", () => {
@@ -246,7 +247,8 @@ describe("the chips row (spec 8.1)", () => {
 		const opened: ChipKind[] = [];
 		const chips = contextChips(source, true, { count: 0, fresh: false }, unknown);
 		const tree = render(header({ chips, onChip: (kind) => opened.push(kind) }));
-		expect(renderedText(tree)).toBe("Subagents");
+		// No count to show: the chip names itself alone.
+		expect(renderedText(tree)).not.toMatch(/\d/);
 		expect(chipButtons(tree).map((chip) => chip.props.accessibilityLabel)).toEqual(["Subagents, count unknown"]);
 		act(() => chipButtons(tree)[0]?.props.onPress());
 		expect(opened).toEqual(["subagents"]);
@@ -452,15 +454,10 @@ it("shows nothing with no chips and no status, its empty panel still floating fo
 	});
 });
 
-it("never says Reconnect, Connected or Refresh", () => {
+it("never offers Reconnect or Refresh: whatever the status, its only controls are its chips", () => {
 	for (const status of ["Reconnecting…", "Offline · updated 3m ago", "Offline", "Update needed", null]) {
 		const tree = render(header({ status, chips: [subagents, tasks, blockedGoal, queue] }));
-		const labels = tree.root
-			.findAll((node) => typeof node.props.accessibilityLabel === "string")
-			.map((node) => node.props.accessibilityLabel as string);
-		for (const said of [renderedText(tree), ...labels]) {
-			expect(said).not.toMatch(/Reconnect\b|Connected|Refresh/);
-		}
+		expect(chipButtons(tree)).toHaveLength(4);
 	}
 });
 

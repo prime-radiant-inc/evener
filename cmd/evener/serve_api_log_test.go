@@ -83,7 +83,7 @@ func TestServeAPILogRejectsInvalidValue(t *testing.T) {
 	deps.seedMarketplaces = func(context.Context) error { return nil }
 	stateDir := t.TempDir()
 	err := runServeWithDeps([]string{"--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(), "--api-log", "maybe"}, deps)
-	if err == nil || !strings.Contains(err.Error(), "invalid --api-log") {
-		t.Fatalf("serve error = %v, want invalid --api-log", err)
+	if !errors.Is(err, errInvalidAPILog) {
+		t.Fatalf("serve error = %v, want errInvalidAPILog", err)
 	}
 }

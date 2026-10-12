@@ -6,6 +6,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import type { NavigationActions } from "../navigationActions";
 import { localSessionId } from "../sessionDeletionResult";
+import type { ToastMessage } from "../Toast";
 import type { ClassifiedRow } from "./attention";
 import { journalOperation, organizationFree } from "./organizationCheck";
 import type { ProjectMenuAction } from "./projectMenu";
@@ -138,10 +139,16 @@ export function archivingSessionId(
 }
 
 /** What Shut down and Rename say afterwards, online or replayed. */
-export const SHUT_DOWN_DONE = "Session shut down";
-export const RENAMED = "Renamed";
-export const shutDownFailed = (title: string, error: unknown) => `Couldn't shut down “${title}”: ${errorText(error)}`;
-export const renameFailed = (title: string, error: unknown) => `Couldn't rename “${title}”: ${errorText(error)}`;
+export const SHUT_DOWN_DONE: ToastMessage = { kind: "shutDown:done", text: "Session shut down" };
+export const RENAMED: ToastMessage = { kind: "rename:done", text: "Renamed" };
+export const shutDownFailed = (title: string, error: unknown): ToastMessage => ({
+	kind: "shutDown:failed",
+	text: `Couldn't shut down “${title}”: ${errorText(error)}`,
+});
+export const renameFailed = (title: string, error: unknown): ToastMessage => ({
+	kind: "rename:failed",
+	text: `Couldn't rename “${title}”: ${errorText(error)}`,
+});
 
 /** Shut down: the Session's own request (conversation.ts:1128-1132). */
 export async function shutDownSession(client: ConversationClientLike, ref: string): Promise<void> {

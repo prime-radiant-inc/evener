@@ -5,7 +5,7 @@ import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/app
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
-import { BoardStops, stopToast } from "./boardStops";
+import { BoardStops, type StopOutcome, stopToast } from "./boardStops";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-crypto", () => ({
@@ -242,9 +242,11 @@ it("drops a held Stop whose guard fails: nothing sent, and nothing left register
 	await runtime.stop();
 });
 
-it("says in the toast what a Stop from the Board did", () => {
-	expect(stopToast("dropped", "Build docs")).toBe("The turn you stopped ended before you were back online");
-	expect(stopToast("stopped", "Build docs")).toBe("Stopped");
-	expect(stopToast("notWorking", "Build docs")).toBe("Nothing to stop: its turn had already ended.");
-	expect(stopToast("unavailable", "Build docs")).toBe("Couldn't stop “Build docs”. Open it to stop it there.");
+it("says in the toast what a Stop from the Board did, naming the session only when it couldn't stop", () => {
+	const outcomes: StopOutcome[] = ["stopped", "notWorking", "unavailable", "dropped"];
+	const toasts = outcomes.map((outcome) => stopToast(outcome, "Build docs"));
+	expect(toasts.map((toast) => toast.kind)).toEqual(outcomes.map((outcome) => `stop:${outcome}`));
+	// Each outcome reads as its own.
+	expect(new Set(toasts.map((toast) => toast.text)).size).toBe(outcomes.length);
+	expect(outcomes.filter((_, index) => toasts[index]?.text.includes("Build docs"))).toEqual(["unavailable"]);
 });
