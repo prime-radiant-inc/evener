@@ -81,9 +81,8 @@ func TestHubModelAsideCommandUnavailableWithoutFork(t *testing.T) {
 		t.Fatal("/aside must not issue an RPC when fork is unavailable")
 	}
 	um := updated.(hubModel)
-	got := um.sessionView()
-	if !strings.Contains(got, "Aside is not available for this session.") {
-		t.Fatalf("unavailable notice missing:\n%s", got)
+	if _, ok := noticeByCategory(um, "action-unavailable"); !ok {
+		t.Fatalf("unavailable notice missing: %+v", um.notices)
 	}
 }
 
