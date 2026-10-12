@@ -1,3 +1,5 @@
+import type { DelegateDotFields, DelegateDotState } from "@evener/appwire-client";
+import { delegateDotState } from "@evener/appwire-client";
 import type { CadenceState } from "../cadence";
 import { requireClass } from "../internal/requireClass";
 import styles from "./statusdot.module.css";
@@ -61,6 +63,53 @@ export function StatusDot({ state }: StatusDotProps) {
       data-state={state}
       data-shape={state === "failed" ? "diamond" : "dot"}
       className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}${working}`}
+    />
+  );
+}
+
+// A subagent row's dot: the main sessions' status-dot vocabulary - a working
+// row spins, a failure is a diamond - with one state the session vocabulary
+// doesn't have: a running row gone quiet dims instead of disappearing,
+// because a quiet run is still open work.
+const SUBAGENT_DOT: Record<
+  DelegateDotState,
+  { family: Family; label: string; shape: "dot" | "diamond"; working: boolean } | null
+> = {
+  fresh: { family: "alive", label: "Working", shape: "dot", working: true },
+  quiet: { family: "neutral", label: "Quiet", shape: "dot", working: false },
+  attention: { family: "attention", label: "Needs you", shape: "dot", working: false },
+  failed: { family: "danger", label: "Failed", shape: "diamond", working: false },
+  // A settled row shows no dot, exactly as the main sessions' idle and
+  // ended scopes show no glyph.
+  idle: null,
+};
+
+/** A subagent row's leading dot, from the shared quiet-encoding rule: the
+ * alive dot spins while the row is fresh, dims once its run goes quiet, reads
+ * amber for attention and a red diamond for failure, and disappears when the
+ * row settles. `labeled` makes the dot name its state where the row does not
+ * already carry the word somewhere a screen reader meets it. */
+export function SubagentDot({
+  delegate,
+  now,
+  labeled = false,
+}: {
+  delegate: DelegateDotFields;
+  now: number;
+  labeled?: boolean;
+}) {
+  const state = delegateDotState(delegate, now);
+  const dot = SUBAGENT_DOT[state];
+  if (!dot) return null;
+  const working = dot.working ? ` ${BASE_CLASS.working}` : "";
+  return (
+    <span
+      role="img"
+      aria-label={dot.label}
+      aria-hidden={labeled ? undefined : "true"}
+      data-state={state}
+      data-shape={dot.shape}
+      className={`${BASE_CLASS.dot} ${FAMILY_CLASS[dot.family]}${working}`}
     />
   );
 }

@@ -1,8 +1,56 @@
-import { render, screen } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { activityDelegate, activityJob } from "../../stores/sessionActivityTestUtils";
 import styles from "./activitybar.module.css";
 import { AgentRow, JobRow } from "./activityRows";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+test("a fresh running delegate shows the alive dot", () => {
+  render(<AgentRow sub={activityDelegate({ latestActivityAt: new Date(Date.now() - 5_000).toISOString() })} />);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+});
+
+test("a running delegate's dot dims at the quiet threshold", () => {
+  vi.useFakeTimers();
+  const now = Date.now();
+  render(
+    <AgentRow
+      sub={activityDelegate({
+        runStartedAt: new Date(now).toISOString(),
+        latestActivityAt: new Date(now).toISOString(),
+      })}
+    />,
+  );
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+  act(() => {
+    vi.advanceTimersByTime(20_001);
+  });
+  expect(screen.getByRole("img", { name: "Quiet" })).toBeTruthy();
+});
+
+test("a delegate awaiting input keeps the attention dot", () => {
+  render(
+    <AgentRow
+      sub={activityDelegate({ terminal: false, phase: "awaiting_input", latestActivityAt: new Date().toISOString() })}
+    />,
+  );
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+});
+
+test("a failed delegate shows the danger dot", () => {
+  render(
+    <AgentRow sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })} />,
+  );
+  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+});
+
+test("a settled delegate shows no dot at all", () => {
+  render(<AgentRow sub={activityDelegate({ terminal: true, outcome: "completed" })} />);
+  expect(screen.queryByRole("img")).toBeNull();
+});
 
 test("stable delegate row uses authoritative phase and lifecycle without fabricated rollup counts", () => {
   render(<AgentRow sub={activityDelegate({ lifecycle: "idle", phase: "waiting", status: "idle", terminal: false })} />);
@@ -10,11 +58,11 @@ test("stable delegate row uses authoritative phase and lifecycle without fabrica
   expect(screen.queryByText(/agents|jobs/)).toBeNull();
 });
 test("ended delegate preserves the supplied failed outcome", () => {
-  const view = render(
+  render(
     <AgentRow sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })} />,
   );
   expect(screen.getByText(/failed/)).toBeTruthy();
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphQuiet ?? "")).toBe(true);
+  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
 });
 
 test.each([
@@ -33,10 +81,8 @@ test.each([
 });
 
 test.each(["awaiting_input", "awaiting_approval"])("live $phase delegates keep attention", (phase) => {
-  const view = render(<AgentRow sub={activityDelegate({ terminal: false, phase })} />);
-  expect(view.container.querySelector('[aria-hidden="true"]')?.classList.contains(styles.glyphAttention ?? "")).toBe(
-    true,
-  );
+  render(<AgentRow sub={activityDelegate({ terminal: false, phase })} />);
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
 });
 
 test("live shell work keeps its alive glyph", () => {
