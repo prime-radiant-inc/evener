@@ -131,7 +131,7 @@ test("body shows a multi_select note when the question allows multiple answers",
   const Body = d.body!;
   const questions = [{ ...ONE_QUESTION[0], multi_select: true }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  expect(questionCards()[0]?.querySelector('[data-note="multi-select"]')).not.toBeNull();
+  expect(screen.getByTestId("ask-user-question").querySelector('[data-note="multi-select"]')).not.toBeNull();
 });
 
 test("body shows why/if_unanswered notes when present", () => {
@@ -139,10 +139,10 @@ test("body shows why/if_unanswered notes when present", () => {
   const Body = d.body!;
   const questions = [{ ...ONE_QUESTION[0], why: "affects the release", if_unanswered: "assume yes" }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
-  const card = questionCards()[0];
-  expect(card?.querySelector('[data-note="why"]')?.textContent).toBe("affects the release");
-  expect(card?.querySelector('[data-note="if-unanswered"]')?.textContent).toContain("assume yes");
-  expect(card?.querySelector('[data-note="multi-select"]')).toBeNull();
+  const card = screen.getByTestId("ask-user-question");
+  expect(card.querySelector('[data-note="why"]')?.textContent).toBe("affects the release");
+  expect(card.querySelector('[data-note="if-unanswered"]')?.textContent).toContain("assume yes");
+  expect(card.querySelector('[data-note="multi-select"]')).toBeNull();
 });
 
 test("body renders multiple question cards in order", () => {

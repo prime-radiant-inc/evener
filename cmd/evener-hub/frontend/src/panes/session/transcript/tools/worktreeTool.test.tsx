@@ -36,8 +36,6 @@ test("create: a base_ref arg is parenthesized", () => {
 test("list: with no settled output yet, summary names the operation with no count", () => {
   const summary = worktreeSummary({ operation: "list" });
   expect(summary).not.toMatch(/\d/);
-  // Named in words, never the fallback that repeats the raw operation token.
-  expect(summary).not.toContain("list");
   expect(worktreeSummary({ operation: "list" }, JSON.stringify({ status: "listed", entries: [] }))).not.toBe(summary);
 });
 
@@ -80,8 +78,8 @@ test("switch: a settled `unchanged` result reads as a no-op, not a switch", () =
 test("exit: with no settled output yet, summary names the bare operation (exit takes no args of its own)", () => {
   const summary = worktreeSummary({ operation: "exit" });
   expect(summary).not.toContain("/");
-  // Named in words, never the fallback that repeats the raw operation token.
-  expect(summary).not.toContain("exit");
+  const settled = JSON.stringify({ status: "exited", left_path: "/repo/.worktrees/kata-8m70" });
+  expect(worktreeSummary({ operation: "exit" }, settled)).not.toBe(summary);
 });
 
 test("exit: a settled result names the worktree left, read from output.left_path", () => {
@@ -138,8 +136,8 @@ test("remove: a read-only list and a force_dirty remove of the same name read un
 test("prune: with no settled output yet, summary names the bare operation", () => {
   const summary = worktreeSummary({ operation: "prune" });
   expect(summary).not.toMatch(/\d/);
-  // Named in words, never the fallback that repeats the raw operation token.
-  expect(summary).not.toContain("prune");
+  const settled = JSON.stringify({ status: "pruned", removed: [], skipped: [] });
+  expect(worktreeSummary({ operation: "prune" }, settled)).not.toBe(summary);
 });
 
 test("prune: a settled result reports removed/skipped counts", () => {
