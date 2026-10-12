@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { PinCatalogList } from "./PinCatalogList";
+import { markers } from "./markerTestUtils";
 import { pressable, render, renderedText } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
@@ -29,14 +30,11 @@ function props(previousChange: boolean) {
 }
 
 it("blames the failed load when there is no previous pin change", () => {
-	const text = renderedText(render(createElement(PinCatalogList, props(false))));
-	expect(text).toContain("Check the pinned sections again.");
-	expect(text).not.toContain("previous pin change");
+	expect(markers(render(createElement(PinCatalogList, props(false))), "pin-status")).toEqual(["unread"]);
 });
 
-it("keeps the previous-change wording when a checkpoint is present", () => {
-	const text = renderedText(render(createElement(PinCatalogList, props(true))));
-	expect(text).toContain("Check the previous pin change.");
+it("names the previous change when a checkpoint is present", () => {
+	expect(markers(render(createElement(PinCatalogList, props(true))), "pin-status")).toEqual(["previous-change"]);
 });
 
 // A section's row shows its name and opens it; VoiceOver hears what it does.
