@@ -559,13 +559,11 @@ type TransportFailureError struct {
 }
 
 // Unwrap exposes the synthesized WireError so errors.As(err, &WireError) still
-// matches, and the Cause so errors.Is can name why the read loop ended.
-func (e TransportFailureError) Unwrap() []error {
-	if e.Cause == nil {
-		return []error{e.WireError}
-	}
-	return []error{e.WireError, e.Cause}
-}
+// matches exactly as it did before provenance was retained. Cause stays out of
+// the chain: callers classify request errors with errors.Is against context,
+// EOF and closed-connection sentinels, and a lost connection must not match
+// those just because its read loop ended with one.
+func (e TransportFailureError) Unwrap() error { return e.WireError }
 
 // IsTransportFailure reports whether err is a failure the client synthesized
 // because its read loop is gone (see TransportFailureError), as opposed to an

@@ -424,7 +424,7 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	}
 	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_backpressure", Source: "evener"}}})
 
-	if result := <-done; !errors.Is(result.err, ErrNotificationOverflow) {
+	if result := <-done; !errors.Is(transportCause(result.err), ErrNotificationOverflow) {
 		t.Fatalf("ThreadList err=%v resp=%+v, want notification overflow", result.err, result.resp)
 	}
 }
@@ -491,6 +491,31 @@ func TestClientFailPendingPreservesRequestID(t *testing.T) {
 	}
 }
 
+// transportCause is the read-loop failure a TransportFailureError carries, or
+// nil when err is not one.
+func transportCause(err error) error {
+	tf, ok := errors.AsType[TransportFailureError](err)
+	if !ok {
+		return nil
+	}
+	return tf.Cause
+}
+
+// The cause is provenance for whoever inspects the failure, not part of its
+// error chain: the hub classifies request errors with errors.Is against
+// context, EOF and closed-connection sentinels, and a lost connection whose
+// read loop happened to end with one of those must still read as the
+// transport failure it is.
+func TestTransportFailureCauseStaysOutOfTheErrorChain(t *testing.T) {
+	err := error(TransportFailureError{WireError: InternalError("lost"), Cause: context.Canceled})
+	if errors.Is(err, context.Canceled) {
+		t.Fatal("a transport failure matched its read loop's cause as if the caller had cancelled")
+	}
+	if !IsTransportFailure(err) || !errors.Is(transportCause(err), context.Canceled) {
+		t.Fatalf("err = %v, want a transport failure that keeps its cause", err)
+	}
+}
+
 func TestClientFailPendingMarksTransportFailure(t *testing.T) {
 	client := NewClient(newMemoryTransport())
 	id := NewIntID(7)
@@ -529,7 +554,7 @@ func TestClientRequestSynthesizedFailureIsTransportFailure(t *testing.T) {
 	if !errors.As(err, &wire) || wire.Code != CodeInternalError {
 		t.Fatalf("wrapped error = %+v, want an InternalError WireError via errors.As", wire)
 	}
-	if !errors.Is(tf, recvErr) {
+	if !errors.Is(tf.Cause, recvErr) {
 		t.Fatalf("error = %v, want the transport failure retained as its cause", tf)
 	}
 }
@@ -637,7 +662,7 @@ func TestClientRequestFailsAfterReadLoopExit(t *testing.T) {
 		if err == nil {
 			t.Fatal("request returned nil error on a dead connection")
 		}
-		if !errors.Is(err, recvErr) {
+		if !errors.Is(transportCause(err), recvErr) {
 			t.Fatalf("request error = %v, want the transport failure preserved", err)
 		}
 	case <-time.After(5 * time.Second):
