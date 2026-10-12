@@ -63,6 +63,37 @@ func SetUpdateLogRecordsForTest(n int) (restore func()) {
 // rebuilds.
 var ErrUpdateLogTruncated = errors.New("transcript index update log no longer reaches that length")
 
+// ErrRebuildRequired reports that an operation needed a full rebuild and the
+// handle refuses to perform one (see OpenRefusing): the caller registers a
+// repair and answers a retryable state instead of waiting on one here.
+var ErrRebuildRequired = errors.New("transcript index needs a rebuild this handle refuses to run")
+
+// ErrLockBusy reports that the sidecar's lock is held by another writer and
+// the handle refuses to block on it (see OpenRefusing).
+var ErrLockBusy = errors.New("transcript index lock is held")
+
+// RebuildRequiredError is ErrRebuildRequired carrying the ordinal of the last
+// entry the refused build had recorded — its committed entry count minus one,
+// the ordinal TranscriptHistoryFailed documents — read off the live build's
+// meta.json at refusal time. Zero when there is no live build.
+type RebuildRequiredError struct {
+	LastEntry uint64
+}
+
+func (e *RebuildRequiredError) Error() string {
+	return fmt.Sprintf("%v (last recorded entry %d)", ErrRebuildRequired, e.LastEntry)
+}
+
+func (e *RebuildRequiredError) Is(target error) bool { return target == ErrRebuildRequired }
+
+// errNoLiveBuild, errIdentityChanged and errAnotherFile name the refresh
+// failures a full rebuild fixes, so a refusing handle can refuse on them.
+var (
+	errNoLiveBuild     = errors.New("transcript index has no live build")
+	errIdentityChanged = errors.New("transcript index format, projection, or schema identity changed")
+	errAnotherFile     = errors.New("transcript index describes another file")
+)
+
 // testKillAfterRecordWrites, when set, runs right after an extension's or a
 // rebuild's scan has written its records and before the meta commit that
 // would make them readable: it stands for the process being killed at
@@ -238,12 +269,36 @@ type Index struct {
 	stale bool
 	// rebuilds counts full builds by this handle, for tests.
 	rebuilds int
+	// refusing marks a handle opened by OpenRefusing: it runs no full
+	// rebuild and never blocks on the sidecar's lock, in any operation.
+	refusing bool
 }
 
 // Open returns the index for the transcript at path, kept in dir. A missing,
 // stale or corrupt index is rebuilt from the transcript. Open catches up to
 // the last complete line.
 func Open(path, dir string) (*Index, error) {
+	x, err := openHandle(path, dir, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := x.CatchUp(); err != nil {
+		_ = x.Close()
+		return nil, err
+	}
+	return x, nil
+}
+
+// OpenRefusing opens a handle that performs no full rebuild and never blocks
+// on the sidecar's lock, in any operation: catch-up, extension, window reads
+// and repair-builder paths answer ErrRebuildRequired or ErrLockBusy instead
+// of running or waiting on one. It opens without catching up; the caller runs
+// CatchUp explicitly.
+func OpenRefusing(path, dir string) (*Index, error) {
+	return openHandle(path, dir, true)
+}
+
+func openHandle(path, dir string, refusing bool) (*Index, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create transcript index dir: %w", err)
 	}
@@ -251,12 +306,7 @@ func Open(path, dir string) (*Index, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open transcript index lock: %w", err)
 	}
-	x := &Index{path: path, dir: dir, lock: lock}
-	if err := x.CatchUp(); err != nil {
-		_ = x.Close()
-		return nil, err
-	}
-	return x, nil
+	return &Index{path: path, dir: dir, lock: lock, refusing: refusing}, nil
 }
 
 // Close releases the index's files.
@@ -307,16 +357,33 @@ func (x *Index) locked(exclusive bool, fn func() error) error {
 	if x.lock == nil {
 		return errors.New("transcript index is closed")
 	}
-	if err := lockFile(x.lock, exclusive); err != nil {
+	if x.refusing {
+		if err := lockFileTry(x.lock, exclusive); err != nil {
+			return ErrLockBusy
+		}
+	} else if err := lockFile(x.lock, exclusive); err != nil {
 		return fmt.Errorf("lock transcript index: %w", err)
 	}
 	defer func() { _ = unlockFile(x.lock) }()
 	if err := x.refresh(); err != nil && !exclusive {
 		// Only an extender may rebuild; a reader with no usable index has
-		// nothing to read.
+		// nothing to read. A refusing reader names the sidecar a rebuild
+		// would fix as a refusal, so its repair registers immediately.
+		if x.refusing && rebuildFixes(err) {
+			return x.refuseRebuild()
+		}
 		return err
 	}
 	return fn()
+}
+
+// rebuildFixes reports whether a refresh failure describes a sidecar a full
+// rebuild can make readable again: no live build, an identity this binary
+// cannot adopt, another transcript's file identity, or corruption. I/O errors
+// stay ordinary failures.
+func rebuildFixes(err error) bool {
+	return errors.Is(err, errNoLiveBuild) || errors.Is(err, errIdentityChanged) ||
+		errors.Is(err, errAnotherFile) || errors.Is(err, errCorrupt)
 }
 
 // refresh takes up the sidecar as it is on disk: another build reopens,
@@ -325,7 +392,7 @@ func (x *Index) refresh() error {
 	current, err := os.ReadFile(filepath.Join(x.dir, currentFileName))
 	if err != nil {
 		_ = x.closeBuild()
-		return errors.New("transcript index has no live build")
+		return errNoLiveBuild
 	}
 	name := strings.TrimSpace(string(current))
 	if name != x.build {
@@ -334,6 +401,14 @@ func (x *Index) refresh() error {
 			_ = x.closeBuild()
 			return err
 		}
+		// Stale marks belong to the build they were set on, not to the handle:
+		// this build was committed by another handle — a repair or any foreign
+		// writer — so the marks naming the abandoned build go with it. The
+		// only other clear site is a successful rebuild on this handle, which
+		// a refusing handle never performs; without clearing here, a cached
+		// refusing handle keeps refusing after its repair commits, each read
+		// re-refusing and re-registering, and never converges.
+		x.stale = false
 		return nil
 	}
 	m, err := x.readMeta()
@@ -357,10 +432,10 @@ func (x *Index) readMeta() (meta, error) {
 		return m, err
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return m, err
+		return m, fmt.Errorf("%w: parse meta.json: %v", errCorrupt, err)
 	}
 	if m.Format != formatVersion || m.Projection != currentProjection() {
-		return m, errors.New("transcript index format, projection, or schema identity changed")
+		return m, errIdentityChanged
 	}
 	return m, nil
 }
@@ -456,7 +531,7 @@ func (x *Index) load(name string) error {
 		return err
 	}
 	if apptranscript.FileIdentity(info) != m.FileIdentity {
-		return errors.New("transcript index describes another file")
+		return errAnotherFile
 	}
 	return x.adopt(m)
 }
@@ -493,6 +568,14 @@ func (x *Index) extend(length int64) error {
 	unsafeOffsets, err := x.leftoverUpdatesToCommittedSlots()
 	if err != nil {
 		return x.fail(err)
+	}
+	// The leftover-rows rebuild trigger, refused before the truncation and
+	// rescan that would serve it: a refusal here writes nothing, where
+	// refusing after the scan would leave the tables already truncated. It
+	// can refuse where a completed scan would have healed; the repair
+	// converges either way.
+	if x.refusing && len(unsafeOffsets) > 0 {
+		return x.refuseRebuild()
 	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
@@ -733,12 +816,36 @@ func (x *Index) readHeader() error {
 // when the transcript still extends them; "" mints a new one. A build that
 // fails is removed, and the live build stays as it was.
 func (x *Index) rebuild(length int64, incarnation string) error {
+	if x.refusing {
+		return x.refuseRebuild()
+	}
 	err := x.buildNew(length, incarnation)
 	if err != nil && x.build != "" {
 		failed := filepath.Join(x.dir, x.build)
 		err = errors.Join(err, x.closeBuild(), os.RemoveAll(failed))
 	}
 	return err
+}
+
+// refuseRebuild answers a refusing handle's rebuild trigger: the
+// ErrRebuildRequired refusal carrying the ordinal of the last entry the
+// refused build had recorded. Read off the disk at refusal time — the
+// meta.json the atomic rename published, the only source left after a failed
+// adoption discarded the parsed copy — so the value is tear-safe and holds
+// the committed count even when a discarded mid-scan had advanced the
+// in-memory one. Zero when there is no live build.
+func (x *Index) refuseRebuild() error {
+	last := uint64(0)
+	if current, err := os.ReadFile(filepath.Join(x.dir, currentFileName)); err == nil {
+		data, err := os.ReadFile(filepath.Join(x.dir, string(bytes.TrimSpace(current)), metaFile))
+		if err == nil {
+			var m meta
+			if json.Unmarshal(data, &m) == nil && m.Entries > 0 {
+				last = m.Entries - 1
+			}
+		}
+	}
+	return &RebuildRequiredError{LastEntry: last}
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {
