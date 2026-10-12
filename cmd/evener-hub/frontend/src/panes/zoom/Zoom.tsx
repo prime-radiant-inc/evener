@@ -143,13 +143,18 @@ function ScopeConversation({
                 scope={activity}
                 content={
                   state === "deleted" ? (
-                    <EmptyState title="This session was deleted" hint="Its transcript is gone." />
+                    <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
                   ) : state === "loading" ? (
                     <EmptyState
                       title={
                         snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable
                           ? "Transcript unavailable"
                           : "Loading transcript…"
+                      }
+                      reason={
+                        snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable
+                          ? "unavailable"
+                          : "loading"
                       }
                     />
                   ) : (
@@ -164,7 +169,7 @@ function ScopeConversation({
           <CascadeColumn
             paneId={pane.id}
             scope={activity}
-            content={<EmptyState title="Loading transcript…" />}
+            content={<EmptyState title="Loading transcript…" reason="loading" />}
             conversationFooter={null}
           />
         )
@@ -316,7 +321,11 @@ export default function Zoom({ paneId, focused }: PaneProps<SessionZoomParams>) 
       )}
       <div className={CLASS.body}>
         {mobile && <div className={CLASS.returnRow}>{returnAction}</div>}
-        {!path.ancestryKnown && <p className={CLASS.hint}>Earlier ancestry is incomplete</p>}
+        {!path.ancestryKnown && (
+          <p className={CLASS.hint} data-testid="cascade-ancestry-incomplete">
+            Earlier ancestry is incomplete
+          </p>
+        )}
         <div ref={track} className={CLASS.track}>
           {scopes.map((scope, index) => (
             <ScopeConversation

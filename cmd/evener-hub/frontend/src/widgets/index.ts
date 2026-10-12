@@ -38,7 +38,7 @@ export { Disclosure } from "./disclosure";
 export type { DropzoneProps } from "./dropzone";
 export { Dropzone } from "./dropzone";
 export type { EmptyStateProps } from "./emptystate";
-export { EmptyState } from "./emptystate";
+export { EmptyState, type EmptyStateReason } from "./emptystate";
 export { FailureGlyph } from "./failureglyph";
 export type { FocusScopeProps } from "./focusscope";
 // --- overlays batch (W2T3) ---

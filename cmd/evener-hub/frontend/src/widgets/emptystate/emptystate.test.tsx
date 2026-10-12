@@ -49,3 +49,10 @@ test("size=display adds the display-size title class; the default does not", () 
   rerender(<EmptyState title="No session open" />);
   expect(title()?.className).not.toMatch(/titleDisplay/);
 });
+
+test("exposes why it is empty as data-reason, and omits it when not given", () => {
+  const { rerender } = render(<EmptyState title="No session open" reason="deleted" />);
+  expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("deleted");
+  rerender(<EmptyState title="No session open" />);
+  expect(screen.getByTestId("empty-state").hasAttribute("data-reason")).toBe(false);
+});
