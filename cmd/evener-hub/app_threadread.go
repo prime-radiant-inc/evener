@@ -249,8 +249,11 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 
 // pastTranscriptIndexes holds the hub's open transcript indexes, one per
 // daemonless session read recently. They share each transcript's sidecar with
-// the daemon that wrote it (transcriptindex.DirFor).
-var pastTranscriptIndexes = transcriptindex.NewCache(transcriptindex.DefaultCacheCapacity)
+// the daemon that wrote it (transcriptindex.DirFor). The handles refuse
+// rebuilds: a cache miss opens without catching up, and the read path maps
+// the refusal onto one owned background repair (answerPastTranscriptIndexError),
+// so no daemonless read ever runs a full rebuild inline or parks behind one.
+var pastTranscriptIndexes = transcriptindex.NewCacheWithOpen(transcriptindex.DefaultCacheCapacity, transcriptindex.OpenRefusing)
 
 // pastItemPage is one window of a daemonless session's history, read from its
 // transcript index.
@@ -300,7 +303,10 @@ func pastCursorIdentity(entry hubcore.PastEntry, incarnation string) appitempagi
 // withPastTranscriptIndex runs fn on the session's transcript index caught up
 // to the end of the file. With no daemon writing the session, the file is the
 // whole history: the index covers every complete line and drops an
-// incomplete last one.
+// incomplete last one. The cached handle refuses full rebuilds and never
+// blocks on the sidecar's lock; a refusal or lock contention is mapped onto
+// the hub's read contract (answerPastTranscriptIndexError) instead of being
+// waited on.
 func withPastTranscriptIndex(ctx context.Context, entry hubcore.PastEntry, fn func(*transcriptindex.Index) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -310,10 +316,59 @@ func withPastTranscriptIndex(ctx context.Context, entry hubcore.PastEntry, fn fu
 		return err
 	}
 	defer pastTranscriptIndexes.Release(index)
-	if err := index.CatchUp(); err != nil {
+	err = index.CatchUp()
+	if err == nil {
+		err = fn(index)
+	}
+	return answerPastTranscriptIndexError(entry, err)
+}
+
+// answerPastTranscriptIndexError maps a refusing handle's answers onto the
+// hub's read contract. A sidecar that needs a rebuild gets one owned
+// background repair — registered or joined, never waited on — and the read
+// answers the typed retryable rebuilding error while it runs; a transcript
+// whose header cannot be this format can never be indexed and answers
+// history-failed directly with no repair; a path whose repair budget is
+// exhausted re-arms exactly one repair and answers history-failed itself,
+// naming the refusal's ordinal. Lock contention answers the rebuilding code
+// when the registry's own repair holds the lock, and an ordinary transient
+// error otherwise. Everything a rebuild cannot fix stays an ordinary error.
+func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, transcriptindex.ErrRebuildRequired):
+		var refusal *transcriptindex.RebuildRequiredError
+		errors.As(err, &refusal)
+		last := uint64(0)
+		if refusal != nil {
+			last = refusal.LastEntry
+		}
+		path := pastTranscriptPath(entry)
+		// The header gate first: a transcript whose header cannot be this
+		// format can never be indexed — no false repair, no false status.
+		// The check runs only on this refusal path; the healthy path never
+		// pays it.
+		if err := hubcore.CheckTranscriptHeader(path); err != nil {
+			return appwire.TranscriptHistoryFailed(0)
+		}
+		armed, exhausted := transcriptIndexRepairs.answerRead(path)
+		if armed && !exhausted {
+			return appwire.TranscriptIndexRebuilding()
+		}
+		// The budget's answer — this read re-armed exactly one repair — or
+		// nothing armed because the hub's background is done: either way
+		// this read answers history-failed, naming the refusal's ordinal.
+		return appwire.TranscriptHistoryFailed(last)
+	case errors.Is(err, transcriptindex.ErrLockBusy):
+		if transcriptIndexRepairs.inFlight(pastTranscriptPath(entry)) {
+			return appwire.TranscriptIndexRebuilding()
+		}
+		// A writer mid-extension or a foreign rebuild: ordinary contention,
+		// nothing registered. The client's existing retry converges.
 		return err
 	}
-	return fn(index)
+	return err
 }
 
 // pastEntryLatestItems reads the latest window and, when the client holds a

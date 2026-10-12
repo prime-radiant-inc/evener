@@ -47,6 +47,11 @@ const (
 	// is not a failure: the index shows it as one unreadable-entry item. Its
 	// data is HistoryReadErrorData.
 	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
+	// ErrorTranscriptIndexRebuilding marks a history read whose transcript
+	// index needs a rebuild the hub has taken ownership of in the
+	// background: one repair runs off the read path, and the read that
+	// follows its commit succeeds. Its data is HistoryReadErrorData.
+	ErrorTranscriptIndexRebuilding ErrorInfo = "transcriptIndexRebuilding"
 	// ErrorUpgradeRequired marks initialize refusing a client that announced
 	// an older AppWire protocol than the server speaks; the message names both
 	// versions.
@@ -671,6 +676,21 @@ func TranscriptHistoryFailed(ordinal uint64) WireError {
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
 		Data:    ErrorData{EvenerErrorInfo: ErrorTranscriptHistoryFailed},
+	}
+}
+
+// TranscriptIndexRebuilding reports a history read whose transcript index is
+// being rebuilt in the background: retrying is the right response, and the
+// read that follows the repair's commit succeeds. The history read stamps it
+// with WithHistoryReadIdentity.
+func TranscriptIndexRebuilding() WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: "thread history is being rebuilt in the background",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorTranscriptIndexRebuilding,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
 	}
 }
 

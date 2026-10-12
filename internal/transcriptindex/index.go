@@ -298,6 +298,13 @@ func OpenRefusing(path, dir string) (*Index, error) {
 	return openHandle(path, dir, true)
 }
 
+// OpenWithoutCatchUp opens an ordinary handle that has not caught up,
+// leaving extending and rebuilding to the caller: the repair path's shape,
+// so its own Rebuild is the one rebuild that runs.
+func OpenWithoutCatchUp(path, dir string) (*Index, error) {
+	return openHandle(path, dir, false)
+}
+
 func openHandle(path, dir string, refusing bool) (*Index, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create transcript index dir: %w", err)
@@ -1186,4 +1193,23 @@ func randomName() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(id[:]), nil
+}
+
+// HoldSidecarLockForTest takes the sidecar directory's exclusive lock and
+// holds it until the returned release runs, so a test can stand for the
+// writer or repair whose hold a refusing handle must answer without
+// blocking. Test seam only.
+func HoldSidecarLockForTest(dir string) (func(), error) {
+	lock, err := os.OpenFile(filepath.Join(dir, lockFileName), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile(lock, true); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	return func() {
+		_ = unlockFile(lock)
+		_ = lock.Close()
+	}, nil
 }

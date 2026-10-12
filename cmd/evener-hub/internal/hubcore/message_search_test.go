@@ -45,8 +45,30 @@ func openTestMessageSearch(t *testing.T) *MessageSearch {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The ask is fire-and-forget, the way the hub wires its lane; the
+	// mirror keeps its error for tests that call it directly.
+	index.SetRepairAsker(func(transcriptPath string) {
+		_ = rebuildTranscriptIndexForTest(transcriptPath)
+	})
 	t.Cleanup(func() { _ = index.Close() })
 	return index
+}
+
+// rebuildTranscriptIndexForTest mirrors the repair recipe the hub's registry
+// runs (cmd/evener-hub/app_threadread_repair.go), so a refresh whose refusing
+// read skips a session repairs its sidecar and the next cycle reads it, the
+// way the wired hub does.
+func rebuildTranscriptIndexForTest(transcriptPath string) error {
+	info, err := os.Stat(transcriptPath)
+	if err != nil {
+		return err
+	}
+	index, err := transcriptindex.OpenWithoutCatchUp(transcriptPath, transcriptindex.DirFor(transcriptPath))
+	if err != nil {
+		return err
+	}
+	defer index.Close() //nolint:errcheck // test repair
+	return index.Rebuild(info.Size())
 }
 
 // writeTestTranscript writes a format-2 transcript of turns for sessionID at
@@ -69,6 +91,17 @@ func writeTestTranscript(t *testing.T, path, sessionID string, turns ...schema.T
 		}
 	}
 	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Build the transcript's index sidecar up front: the refresher's
+	// refusing read skips a never-indexed session for the cycle and asks
+	// for the shared repair, and these tests read the transcript's messages
+	// directly.
+	sidecar, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sidecar.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -368,6 +401,14 @@ func TestMessageSearchRereadsARewrittenTranscriptWhole(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Fourteen descriptions mention flags.")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("drop them")),
 	)
+	// The rewritten file is a new inode, so the refusing read answers a
+	// rebuild refusal: the refresh skips the session for the cycle and asks
+	// for the shared repair (wired in openTestMessageSearch), and the next
+	// cycle reads the rewritten transcript whole — the rebuilt index's
+	// update log starts empty, so nothing of the old content survives.
+	if _, err := index.Refresh(context.Background(), sessions); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := index.Refresh(context.Background(), sessions); err != nil {
 		t.Fatal(err)
 	}
