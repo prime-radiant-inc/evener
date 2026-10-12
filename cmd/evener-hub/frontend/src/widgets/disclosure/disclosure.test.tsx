@@ -168,9 +168,8 @@ test("the rule variant is controllable like the others", () => {
 
 // Declaration-level (jsdom runs no cascade): the rule variant centres its
 // caption between two flexible hairlines drawn by the summary's own
-// pseudo-elements, keeps the summary background unchanged on hover and open,
-// and draws the standard focus ring.
-test("the rule variant declares two flex hairlines on --edge, no hover or open background, and the token focus ring", () => {
+// pseudo-elements and keeps the summary background unchanged on hover and open.
+test("the rule variant declares two flex hairlines on --edge and no hover or open background", () => {
   const css = motionCss();
   const rule = (selector: string) =>
     css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
@@ -185,7 +184,19 @@ test("the rule variant declares two flex hairlines on --edge, no hover or open b
     /background:\s*none/,
   );
   expect(rule('.details[data-variant="rule"][open] > .summary')).toMatch(/background:\s*none/);
-  expect(rule('.details[data-variant="rule"] > .summary:focus-visible')).toMatch(/outline:\s*var\(--focus-ring\)/);
+});
+
+// Declaration-level: one shared :focus-visible rule gives every variant's
+// summary the token ring, inset so a flush transcript row inside a clipping
+// scroll port still shows all four sides; no variant overrides it.
+test("every variant's summary draws the token focus ring, inset", () => {
+  const css = motionCss();
+  const shared = css.match(/(?:^|\})\s*\.summary:focus-visible\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(shared).toMatch(/outline:\s*var\(--focus-ring\)/);
+  expect(shared).toMatch(/outline-offset:\s*-2px/);
+  const focusRules = [...css.matchAll(/([^{}]*:focus-visible[^{}]*)\{([^}]*)\}/g)];
+  expect(focusRules).toHaveLength(1);
+  expect(css).not.toMatch(/outline:\s*none/);
 });
 
 test("controlled harness owns the open state", () => {
