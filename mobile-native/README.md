@@ -293,8 +293,10 @@ fingerprint in eight groups of four hexadecimal digits. Compare every group
 with the claim shown in the Web UI and approve it there. The app then opens its
 existing name/review step; **Connect** commits
 the Hub to secure storage. Scanning a second code cannot replace a pending
-invitation. Cancellation, backgrounding and navigation stop polling, and late
-responses cannot select or save a Hub. Foregrounding resumes with the same key.
+invitation. Cancellation immediately invalidates the pending invitation and
+aborts its request, before navigation finishes. Backgrounding and navigation
+stop polling, and late responses cannot select or save a Hub. Foregrounding
+resumes with the same key.
 Network failures retry; an expired or rejected invitation requires a new scan.
 The phone uses the operating system's Tailscale connection when the Hub is on a
 tailnet. No microphone access is needed for pairing.

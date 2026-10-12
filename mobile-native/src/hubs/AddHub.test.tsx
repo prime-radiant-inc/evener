@@ -5,9 +5,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { hasTestID, markers, withTestID } from "../markerTestUtils";
 import { offersButton, render, renderedText, textOf, unmountMountedTrees } from "../renderNative.testkit";
 import { AddHub } from "./AddHub";
+import { PairingApproval } from "./PairingApproval";
 
 type Permission = { granted: boolean; canAskAgain: boolean; status: string };
 const mocks = vi.hoisted(() => ({
+	fetch: vi.fn(),
 	permission: { value: null as Permission | null },
 	request: vi.fn(),
 	get: vi.fn(),
@@ -16,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 	saveHub: vi.fn(),
 	openSettings: vi.fn(),
 }));
+vi.mock("expo/fetch", () => ({ fetch: mocks.fetch }));
 vi.mock("expo-crypto", () => ({ getRandomBytes: () => new Uint8Array(32).fill(7) }));
 vi.mock("expo-camera", () => ({
 	CameraView: "CameraView",
@@ -42,6 +45,11 @@ const OTHER_LINK = "https://paradise-park:9180/auth/other-token";
 const GRANTED: Permission = { granted: true, canAskAgain: true, status: "granted" };
 
 beforeEach(() => {
+	mocks.fetch.mockReset();
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(() => Promise.reject(new Error("Global fetch must not serve native pairing"))),
+	);
 	mocks.permission.value = GRANTED;
 	mocks.request.mockReset();
 	mocks.get.mockReset();
@@ -351,7 +359,7 @@ afterEach(() => {
 it("shows a locally calculated code for an invitation without saving credentials", async () => {
 	const invitation = { invitation: "01".repeat(24), origin: "http://magic-kingdom:9180", tailnet: true, expiresAt: 0 };
 	const comparison = createPairingClaim(invitation, new Uint8Array(32).fill(7)).comparison;
-	vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ state: "pending", comparison })));
+	mocks.fetch.mockImplementation(async () => new Response(JSON.stringify({ state: "pending", comparison })));
 	const { tree } = mount("scan");
 	await act(async () => {
 		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
@@ -400,7 +408,7 @@ function approvedPairingFixture() {
 
 it("reviews an approved invitation before saving the Hub", async () => {
 	const { invitation, reply } = approvedPairingFixture();
-	vi.stubGlobal("fetch", async () => new Response(JSON.stringify(reply)));
+	mocks.fetch.mockImplementation(async () => new Response(JSON.stringify(reply)));
 	const { tree } = mount("scan");
 	await act(async () => {
 		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
@@ -414,8 +422,7 @@ it("reviews an approved invitation before saving the Hub", async () => {
 it("ignores a claim response arriving after cancellation", async () => {
 	const { invitation, reply } = approvedPairingFixture();
 	let answer: ((response: Response) => void) | undefined;
-	vi.stubGlobal(
-		"fetch",
+	mocks.fetch.mockImplementation(
 		() =>
 			new Promise<Response>((resolve) => {
 				answer = resolve;
@@ -442,8 +449,7 @@ type ClaimRequest = {
 
 function captureClaims(honorAbort = true) {
 	const requests: ClaimRequest[] = [];
-	vi.stubGlobal(
-		"fetch",
+	mocks.fetch.mockImplementation(
 		(_url: string, options: RequestInit) =>
 			new Promise<Response>((resolve, reject) => {
 				if (!options.signal || typeof options.body !== "string") throw new Error("Missing claim request");
@@ -576,3 +582,57 @@ it.each(["expired", "rejected"])(
 		expect(camera(tree)).toBeDefined();
 	},
 );
+
+it("uses the native streaming transport when global fetch has no response stream", async () => {
+	const { invitation, reply } = approvedPairingFixture();
+	const globalFetch = vi.fn(async () => ({ ok: true, status: 200, body: null }) as Response);
+	vi.stubGlobal("fetch", globalFetch);
+	mocks.fetch.mockResolvedValue(new Response(JSON.stringify(reply)));
+	const { tree } = mount("scan");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText(invitation) });
+	});
+	expect(pairingWith(tree)).toBe(invitation.origin);
+	expect(mocks.fetch).toHaveBeenCalledTimes(1);
+	expect(globalFetch).not.toHaveBeenCalled();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+});
+
+it("cancels a pending approval before its parent commits unmount", async () => {
+	vi.useFakeTimers();
+	const requests = captureClaims(false);
+	vi.stubGlobal("fetch", mocks.fetch);
+	const { invitation, reply } = approvedPairingFixture();
+	const onApproved = vi.fn(),
+		onCancel = vi.fn();
+	// The parent records Cancel but deliberately has not committed unmount yet.
+	const tree = render(<PairingApproval invitation={invitation} onApproved={onApproved} onCancel={onCancel} />);
+	const first = requests[0];
+	if (!first) throw new Error("Missing initial claim");
+	onCancel.mockImplementation(() => expect(first.signal.aborted).toBe(true));
+	await press(tree, "Cancel pairing");
+	expect(onCancel).toHaveBeenCalledTimes(1);
+	await act(async () => {
+		first.answer(reply);
+	});
+	expect(onApproved).not.toHaveBeenCalled();
+	expect(first.signal.aborted).toBe(true);
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(1);
+});
+
+it("does not review a cancelled invitation after another scan starts", async () => {
+	captureClaims(false);
+	const { tree, invitation } = await startInvitation();
+	const staleApproval = tree.root.findByType(PairingApproval).props.onApproved;
+	await press(tree, "Cancel pairing");
+	await act(async () => {
+		camera(tree).props.onBarcodeScanned({ data: invitationText({ ...invitation, invitation: "02".repeat(24) }) });
+	});
+	await act(async () => {
+		staleApproval({ origin: invitation.origin, token: TOKEN });
+	});
+	expect(pairingWith(tree)).toBeUndefined();
+	expect(button(tree, "Cancel pairing")).toBeDefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+});

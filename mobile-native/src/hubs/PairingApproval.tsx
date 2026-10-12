@@ -5,6 +5,7 @@ import {
 	type DevicePairingInvitation,
 } from "@evener/appwire-client/pairing";
 import { getRandomBytes } from "expo-crypto";
+import { fetch as nativeFetch } from "expo/fetch";
 import { useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
@@ -23,6 +24,7 @@ export function PairingApproval({
 	const [comparison, setComparison] = useState("");
 	const [status, setStatus] = useState("Connecting to the Hub…");
 	const approved = useRef(onApproved);
+	const cancelPairing = useRef<(() => void) | null>(null);
 	approved.current = onApproved;
 	useEffect(() => {
 		const random = getRandomBytes(32),
@@ -41,6 +43,12 @@ export function PairingApproval({
 			clearTimeout(deadline);
 			request?.abort();
 		};
+		const cancel = () => {
+			settled = true;
+			stop();
+			claim.secretKey.fill(0);
+		};
+		cancelPairing.current = cancel;
 		const poll = async () => {
 			if (disposed || settled || !foreground) return;
 			const current = ++generation,
@@ -48,7 +56,7 @@ export function PairingApproval({
 			request = controller;
 			deadline = setTimeout(() => controller.abort(), 10000);
 			try {
-				const reply = await requestPairingClaim(claim, "mobile", controller.signal);
+				const reply = await requestPairingClaim(claim, "mobile", controller.signal, nativeFetch);
 				if (disposed || current !== generation || !foreground) return;
 				if (reply.state === "approved" && reply.envelope) {
 					const target = openPairingEnvelope(claim, reply.envelope);
@@ -84,9 +92,9 @@ export function PairingApproval({
 		void poll();
 		return () => {
 			disposed = true;
-			stop();
+			cancel();
+			cancelPairing.current = null;
 			subscription.remove();
-			claim.secretKey.fill(0);
 		};
 	}, [invitation]);
 	return (
@@ -99,7 +107,14 @@ export function PairingApproval({
 			</Group>
 			<GroupFooter>{status}</GroupFooter>
 			<Group>
-				<Row label="Cancel pairing" tone="accent" onPress={onCancel} />
+				<Row
+					label="Cancel pairing"
+					tone="accent"
+					onPress={() => {
+						cancelPairing.current?.();
+						onCancel();
+					}}
+				/>
 			</Group>
 		</GroupedPage>
 	);

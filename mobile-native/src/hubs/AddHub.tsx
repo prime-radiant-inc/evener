@@ -36,6 +36,7 @@ export function AddHub({
 	const [how, setHow] = useState(initialHow);
 	const [review, setReview] = useState<Review | null>(null);
 	const [invitation, setInvitation] = useState<DevicePairingInvitation | null>(null);
+	const pendingInvitation = useRef<DevicePairingInvitation | null>(null);
 	const selected = useRef(false);
 	const [saving, setSaving] = useState(false);
 	const [refused, setRefused] = useState(false);
@@ -81,8 +82,14 @@ export function AddHub({
 		return (
 			<PairingApproval
 				invitation={invitation}
-				onApproved={(target) => setReview({ target, name: suggestedHubName(target.origin) })}
+				onApproved={(target) => {
+					if (!mounted.current || pendingInvitation.current !== invitation) return;
+					pendingInvitation.current = null;
+					setReview({ target, name: suggestedHubName(target.origin) });
+				}}
 				onCancel={() => {
+					if (pendingInvitation.current !== invitation) return;
+					pendingInvitation.current = null;
 					selected.current = false;
 					setInvitation(null);
 				}}
@@ -125,6 +132,7 @@ export function AddHub({
 				onInvitation={(next) => {
 					if (!selected.current) {
 						selected.current = true;
+						pendingInvitation.current = next;
 						setInvitation(next);
 					}
 				}}
