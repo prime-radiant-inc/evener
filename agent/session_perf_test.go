@@ -482,6 +482,9 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	defer sess.Close()
 
 	data, _ := sess.buildPromptData(sess.currentEnv())
+	if len(sess.skills.Entries) == 0 {
+		t.Fatal("no skills discovered; the length comparison below would be vacuous")
+	}
 	if got := len(data.Skills); got != len(sess.skills.Entries) {
 		t.Errorf("buildPromptData skills length %d != discovered %d", got, len(sess.skills.Entries))
 	}
