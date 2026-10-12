@@ -150,7 +150,7 @@ func TestInstances_DefaultKey(t *testing.T) {
 	// An invalid OLLAMA_HOST hides ollama, the one provider that is an
 	// instance with no credential, leaving no instance at all.
 	r = fixtureLoad(t, map[string]string{"OLLAMA_HOST": "ftp://bad"}, "")
-	if _, _, err := r.DefaultInstance(); err == nil || !strings.Contains(err.Error(), "no default instance") {
+	if _, _, err := r.DefaultInstance(); !errors.Is(err, errNoDefaultInstance) {
 		t.Fatalf("no instance at all: %v", err)
 	}
 }
@@ -494,8 +494,11 @@ func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithADC(t *testing.T) {
 	if !ok || inst.CredentialSource != "adc" {
 		t.Fatalf("instance = %+v ok=%v; want source adc (the stale store value must not shadow it)", inst, ok)
 	}
-	if joined := strings.Join(inst.Warnings, "; "); !strings.Contains(joined, "not a credential JSON") {
-		t.Fatalf("warnings = %q, want it to name the ignored store value", joined)
+	// The ignored store value adds a warning the same instance without it
+	// does not carry.
+	clean, _ := fixtureLoad(t, env, vertexUserInstanceToml).Instance("vertex")
+	if len(inst.Warnings) != len(clean.Warnings)+1 {
+		t.Fatalf("warnings = %q, want one more than without the store value (%q)", inst.Warnings, clean.Warnings)
 	}
 	res, err := r.Resolve("vertex/gemini-2.5-flash")
 	if err != nil {
@@ -2071,7 +2074,7 @@ func TestCredentialHeaderCaseVariantsRefusedAtLoad(t *testing.T) {
 		"protocol = \"openai-chat\"\n" +
 		"auth = \"header\"\n" +
 		"credential_headers = { \"Authorization\" = '''$A''', \"authorization\" = '''$B''' }\n"
-	if _, err := ParseConfig([]byte(config)); err == nil || !strings.Contains(err.Error(), "differ only by case") {
+	if _, err := ParseConfig([]byte(config)); !errors.Is(err, errHeaderNamesDifferOnlyByCase) {
 		t.Fatalf("ParseConfig err = %v; want the case-variant refusal", err)
 	}
 }
@@ -2086,7 +2089,7 @@ func TestCredentialHeaderCaseVariantsWithInterveningNameRefusedAtLoad(t *testing
 		"protocol = \"openai-chat\"\n" +
 		"auth = \"header\"\n" +
 		"credential_headers = { \"Authorization\" = '''$A''', \"X-Key\" = '''$B''', \"authorization\" = '''$C''' }\n"
-	if _, err := ParseConfig([]byte(config)); err == nil || !strings.Contains(err.Error(), "differ only by case") {
+	if _, err := ParseConfig([]byte(config)); !errors.Is(err, errHeaderNamesDifferOnlyByCase) {
 		t.Fatalf("ParseConfig err = %v; want the case-variant refusal", err)
 	}
 }

@@ -263,7 +263,7 @@ func TestRoundEventsTheFailClosedDiagnosticIsNotMarkedRecorded(t *testing.T) {
 		return nil
 	})
 	served := serveFailClosedSession(s)
-	if _, err := s.ProcessInput(context.Background(), "hello", nil); !errors.Is(err, errTranscriptFailedClosed) {
+	if _, err := s.ProcessInput(context.Background(), "hello", nil); !errors.Is(err, ErrTranscriptFailedClosed) {
 		t.Fatalf("input on a failed-closed session = %v, want the fail-closed refusal", err)
 	}
 	evs := served.settle(s)

@@ -514,6 +514,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         <EmptyState
           title="This session was deleted"
           hint="Its transcript is gone. You can close this pane."
+          reason="deleted"
           action={
             <Button variant="quiet" onClick={handleCloseDeleted}>
               Close
@@ -535,6 +536,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       >
         <EmptyState
           title="Loading transcript…"
+          reason="loading"
           hint={
             ref.startsWith("local:")
               ? "If the session is unresponsive, you can stop its process to recover it."

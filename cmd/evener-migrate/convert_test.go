@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -139,14 +140,19 @@ context_window = 262144
 	if _, err := registry.ParseConfig(out); err != nil {
 		t.Fatalf("converted file must load: %v\n%s", err, out)
 	}
-	text := string(out)
-	for _, dropped := range []string{"quirks", "compat", "models"} {
-		if !strings.Contains(text, "# migrate: ") || !strings.Contains(text, dropped) {
-			t.Fatalf("dropped %q must be recorded as a comment:\n%s", dropped, text)
+	var comments []string
+	for line := range strings.Lines(string(out)) {
+		if strings.HasPrefix(line, "#") {
+			comments = append(comments, line)
 		}
 	}
-	if len(notes) == 0 {
-		t.Fatal("dropping fields must surface notes for the report")
+	for _, dropped := range []string{"quirks", "compat", "models"} {
+		if !slices.ContainsFunc(comments, func(c string) bool { return strings.Contains(c, dropped) }) {
+			t.Fatalf("dropped %q must be recorded as a comment:\n%s", dropped, out)
+		}
+	}
+	if len(notes) != 3 {
+		t.Fatalf("notes = %q, want one per dropped field", notes)
 	}
 }
 

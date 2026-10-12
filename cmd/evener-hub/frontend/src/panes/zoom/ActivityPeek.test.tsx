@@ -20,7 +20,7 @@ import { useAttachments } from "../session/composer/attachments/useAttachments";
 import { readComposerDraft } from "../session/composer/draft";
 import { installControlledImageEncoding } from "../session/testing/imageEncoding";
 import { enterAgentCascade } from "./actions";
-import { cascadeClient, cascadeContext } from "./cascadeTestUtils";
+import { cascadeClient, cascadeContext, cascadeScope } from "./cascadeTestUtils";
 import type { SessionZoomParams } from "./intent";
 import Zoom from "./Zoom";
 import "./index";
@@ -95,11 +95,7 @@ function fixture(contextOverride: (ref: string) => SessionActivityContext | unde
   };
 }
 function scope(ref: string) {
-  const element = [...screen.queryAllByTestId("cascade-column"), ...screen.queryAllByTestId("cascade-spine")].find(
-    (item) => item.getAttribute("data-scope-ref") === ref,
-  );
-  if (!element) throw new Error(`Missing scope ${ref}`);
-  return within(element);
+  return within(cascadeScope(ref));
 }
 async function openPeek(ref: string, tab = "Agents") {
   const trigger = await scope(ref).findByRole("button", { name: new RegExp(`^${tab},.* - peek at ${ref}$`) });
@@ -190,7 +186,7 @@ test("a closed spine keeps unknown runtime explicit without fetching its history
   });
   mount();
   try {
-    expect(await scope("root").findByText("State unknown")).toBeTruthy();
+    await waitFor(() => expect(cascadeScope("root").querySelector('[data-runtime-state="unknown"]')).not.toBeNull());
     expect(scope("root").getByRole("button", { name: "Agents, counts unknown - peek at root" })).toBeTruthy();
     expect(
       client.calls.filter(
@@ -236,10 +232,7 @@ test("only a user drill animates a new scope while late ancestry commits immedia
       "cascade",
     ),
   );
-  const added = screen
-    .getAllByTestId("cascade-column")
-    .find((column) => column.getAttribute("data-scope-ref") === "fourth");
-  if (!added) throw new Error("Missing drilled scope");
+  const added = cascadeScope("fourth", "cascade-column");
   try {
     expect(added.style.transform).toContain("48px");
     expect(document.activeElement).toBe(focused);
@@ -252,10 +245,7 @@ test("only a user drill animates a new scope while late ancestry commits immedia
       }),
     );
   }
-  const hydrated = screen
-    .getAllByTestId("cascade-spine")
-    .find((spine) => spine.getAttribute("data-scope-ref") === "earlier");
-  if (!hydrated) throw new Error("Missing authoritative ancestor");
+  const hydrated = cascadeScope("earlier", "cascade-spine");
   expect(hydrated.style.transform).not.toContain("48px");
   expect(document.activeElement).toBe(focused);
 });

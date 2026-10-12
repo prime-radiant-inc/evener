@@ -102,7 +102,9 @@ export function HubEditor({
 						/>
 					) : null}
 				</Group>
-				<GroupFooter>{replaceToken ? TOKEN_REPLACED : TOKEN_KEPT}</GroupFooter>
+				<GroupFooter testID={replaceToken ? "hub-token-replaced" : "hub-token-kept"}>
+					{replaceToken ? TOKEN_REPLACED : TOKEN_KEPT}
+				</GroupFooter>
 			</GroupedPage>
 		</ModalSheet>
 	);

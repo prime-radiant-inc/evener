@@ -2,8 +2,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
-import { palettes } from "../design/tokens";
-import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { fonts, palettes } from "../design/tokens";
+import { alertRequests, render, renderedText, testIDSuffixes, offersButton } from "../renderNative.testkit";
 import { HubDetailsPage } from "./HubDetailsPage";
 import type { HubRoutes } from "./hubSheetContext";
 
@@ -67,14 +67,11 @@ async function confirmRemove() {
 it("is titled with the hub's name and shows its name and address", () => {
 	const { tree, navigation } = mount("hub-2");
 	expect(navigation.setOptions).toHaveBeenCalledWith({ title: "paradise-park" });
-	const text = renderedText(tree);
-	expect(text).toContain("Name");
-	expect(text).toContain("paradise-park");
-	expect(text).toContain("Address");
+	expect(renderedText(tree)).toContain("paradise-park");
 	const address = tree.root.find(
 		(node) => String(node.type) === "Text" && node.props.children === "http://100.113.28.18:9180",
 	);
-	expect(JSON.stringify(address.props.style)).toContain("Menlo");
+	expect(JSON.stringify(address.props.style)).toContain(fonts.mono);
 	expect(
 		tree.root.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Address, http://100.113.28.18:9180" }),
 	).toHaveLength(0);
@@ -108,7 +105,7 @@ it("edits the hub in a grouped form: its name, its address, and a token only whe
 	const modal = tree.root.findByType("Modal" as never);
 	const address = modal.findByProps({ accessibilityLabel: "Address, http://100.113.28.18:9180" });
 	expect(address.props.accessibilityRole).toBeUndefined();
-	expect(renderedText(tree)).toContain("The saved token will be kept.");
+	expect(testIDSuffixes(tree, "hub-token-")).toEqual(["kept"]);
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "New bearer token")).toHaveLength(0);
 	act(() => {
 		tree.root.findByProps({ accessibilityLabel: "Replace saved token" }).props.onValueChange(true);
@@ -118,7 +115,7 @@ it("edits the hub in a grouped form: its name, its address, and a token only whe
 	);
 	expect(token.props.secureTextEntry).toBe(true);
 	act(() => token.props.onChangeText("s3cret"));
-	expect(renderedText(tree)).toContain("Leave empty to remove the saved token.");
+	expect(testIDSuffixes(tree, "hub-token-")).toEqual(["replaced"]);
 	await press(tree, "Save");
 	expect(connection.updateHub).toHaveBeenCalledWith("hub-2", { name: "paradise-park", token: "s3cret" });
 });
@@ -133,7 +130,7 @@ it("says Saving, busy, while the hub saves, and puts a failed save's reason at t
 	await act(async () => fail(new Error("keychain")));
 	const modal = tree.root.findByType("Modal" as never);
 	const first = modal.findByType("ScrollView" as never).findAll((node) => String(node.type) === "Text")[0];
-	expect(first?.props.children).toBe("Could not save this hub. Check the name and token, then retry.");
+	expect(first?.props.testID).toBe("form-error");
 	expect(first?.props.accessibilityLiveRegion).toBe("polite");
 });
 
@@ -172,8 +169,12 @@ it("heads the hub editor with the shared header: Edit hub and Cancel, titled onc
 	const { tree } = mount("hub-2");
 	await press(tree, "Name, paradise-park");
 	// The sheet's title comes first; the form's section labels are headers too.
-	expect(tree.root.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Edit hub");
-	const titles = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Edit hub");
+	const modal = tree.root.findByType("Modal" as never);
+	const [title] = modal.findAllByProps({ accessibilityRole: "header" });
+	expect(title?.props.children).toBeTruthy();
+	const titles = tree.root.findAll(
+		(node) => String(node.type) === "Text" && node.props.children === title?.props.children,
+	);
 	expect(titles).toHaveLength(1);
 	expect(tree.root.findAllByProps({ accessibilityRole: "button", accessibilityLabel: "Done" })).toHaveLength(0);
 	await press(tree, "Cancel");
@@ -209,12 +210,8 @@ it("asks before removing a hub", async () => {
 	await press(tree, "Remove this hub");
 	expect(alertRequests).toHaveLength(1);
 	const request = alertRequests[0];
-	expect(request.title).toBe("Remove paradise-park?");
-	expect(request.message).toBe("The saved hub, its token and its drafts are removed from this phone.");
-	expect(request.buttons?.map((choice) => [choice.text, choice.style])).toEqual([
-		["Cancel", "cancel"],
-		["Remove", "destructive"],
-	]);
+	expect(request.title).toContain("paradise-park");
+	expect(request.buttons?.map((choice) => choice.style)).toEqual(["cancel", "destructive"]);
 	expect(connection.removeHub).not.toHaveBeenCalled();
 });
 
@@ -249,7 +246,7 @@ it("says why a hub couldn't be removed, and stays", async () => {
 	// GroupFooter's style is a list: its tone, then Menlo for machine text.
 	expect(Object.assign({}, ...[footer.props.style].flat()).color).toBe(palettes.light.dangerInk);
 	expect(navigation.goBack).not.toHaveBeenCalled();
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });
 
 it("says so when the hub was removed but its cleanup failed, rather than going blank", async () => {
@@ -273,10 +270,8 @@ it("tells you when the selected hub was removed but its cleanup failed, though t
 	const { tree } = mount("hub-1");
 	await press(tree, "Remove this hub");
 	await confirmRemove();
-	expect(alertRequests.at(-1)).toMatchObject({
-		title: "Couldn't finish removing magic-kingdom",
-		message: "The hub was removed, but some local data could not be deleted.",
-	});
+	expect(alertRequests.at(-1)?.title).toContain("magic-kingdom");
+	expect(alertRequests.at(-1)?.message).toBe("The hub was removed, but some local data could not be deleted.");
 });
 
 it("renders nothing once the hub is gone", () => {
@@ -287,5 +282,5 @@ it("renders nothing once the hub is gone", () => {
 
 it("never asks to reconnect", () => {
 	const { tree } = mount("hub-1");
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 });

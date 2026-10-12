@@ -41,7 +41,7 @@ export { Disclosure } from "./disclosure";
 export type { DropzoneProps } from "./dropzone";
 export { Dropzone } from "./dropzone";
 export type { EmptyStateProps } from "./emptystate";
-export { EmptyState } from "./emptystate";
+export { EmptyState, type EmptyStateReason } from "./emptystate";
 export type { EyebrowProps } from "./eyebrow";
 export { Eyebrow } from "./eyebrow";
 export { FailureGlyph } from "./failureglyph";

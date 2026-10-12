@@ -25,12 +25,14 @@ import {
   activityThread,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
 import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
 import { enterAgentCascade, popAgentCascade } from "./actions";
+import { cascadeScope } from "./cascadeTestUtils";
 import { recordCascadeOrigin } from "./inspectionOrigin";
 import type { SessionZoomParams } from "./intent";
 import Zoom from "./Zoom";
@@ -413,11 +415,8 @@ test.each(["deleted", "missing"] as const)(
     });
     mount(fake);
     await screen.findByText("root content old-root");
-    const child = screen
-      .getAllByTestId("cascade-column")
-      .find((column) => column.getAttribute("data-scope-ref") === "child");
-    if (!child) throw new Error("Missing child column");
-    await within(child).findByText(failure === "deleted" ? "This session was deleted" : "Transcript unavailable");
+    const child = cascadeScope("child", "cascade-column");
+    await waitFor(() => expect(emptyStateReasons(child)).toEqual([failure === "deleted" ? "deleted" : "unavailable"]));
     expect(within(child).queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText("root content old-root")).toBeTruthy();
     if (failure === "deleted") expect(threadsStore.getState().deletedRefs.has("child")).toBe(true);
@@ -458,7 +457,7 @@ test("a deleted child hides its retained transcript without hiding the parent", 
     await expect(threadsStore.getState().refreshThread("child")).rejects.toThrow("target has been deleted");
   });
   expect(threadsStore.getState().threads.get("child")).toBeDefined();
-  expect(screen.getByText("This session was deleted")).toBeTruthy();
+  expect(emptyStateReasons(cascadeScope("child", "cascade-column"))).toEqual(["deleted"]);
   expect(screen.queryByText("child content child-id")).toBeNull();
   expect(screen.getByText("root content old-root")).toBeTruthy();
 });
@@ -471,7 +470,7 @@ test("unsupported child activity does not hide its healthy transcript", async ()
   });
   mount(fake);
   await screen.findByText("child content child-id");
-  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  expect(emptyStateReasons(cascadeScope("child", "cascade-column"))).toEqual([]);
   expect(currentParams().ref).toBe("child");
   expect(columnRefs()).toEqual(["root", "child"]);
 });
@@ -496,8 +495,8 @@ test("a transient child read failure recovers through the existing owner without
   });
   mount(fake);
   await act(async () => failed.promise);
-  expect(screen.queryByText("This session was deleted")).toBeNull();
-  expect(screen.queryByText("Transcript unavailable")).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("deleted");
+  expect(emptyStateReasons(document.body)).not.toContain("unavailable");
   const source = currentPane();
   healed = true;
   act(() =>
@@ -724,14 +723,16 @@ test("an ancestor with pending runtime metadata stays explicitly unknown until i
   const spine = screen.getByTestId("cascade-spine");
   const branch = currentPane();
   try {
-    const runtime = within(spine).getByTitle("State unknown");
-    expect(runtime.getAttribute("data-runtime-state")).toBe("unknown");
-    expect(within(runtime).getByText("State unknown")).toBeTruthy();
+    const runtime = spine.querySelector('[data-runtime-state="unknown"]');
+    if (!(runtime instanceof HTMLElement)) throw new Error("Missing unknown runtime state");
+    const label = runtime.querySelector("[data-runtime-label]");
+    expect(label).not.toBeNull();
+    expect(label?.textContent?.trim()).not.toBe("");
     expect(within(runtime).queryByRole("img")).toBeNull();
   } finally {
     await act(async () => held.resolve(response("root")));
   }
-  await within(spine).findByTitle("Idle");
+  await waitFor(() => expect(spine.querySelector('[data-runtime-state="idle"]')).not.toBeNull());
   expect(within(spine).queryByRole("img")).toBeNull();
   expect(currentPane()).toBe(branch);
   expect(columnRefs()).toEqual(["child", "grandchild"]);
@@ -741,7 +742,7 @@ test("unknown ancestry labels the proven clicked segment without blocking child 
   const { fake } = fixture(false);
   mount(fake);
   await screen.findByText("child content child-id");
-  expect(screen.getByText("Earlier ancestry is incomplete")).toBeTruthy();
+  expect(screen.getByTestId("cascade-ancestry-incomplete")).toBeTruthy();
   expect(columnRefs()).toEqual(["root", "child"]);
 });
 
@@ -971,10 +972,7 @@ test("a held abandoned grandchild read cannot replace a later sibling or move fo
   });
   await screen.findByText("sibling content sibling-id");
   expect(grandchild.alive).toBe(false);
-  const siblingColumn = screen
-    .getAllByTestId("cascade-column")
-    .find((column) => column.getAttribute("data-scope-ref") === "sibling");
-  if (!siblingColumn) throw new Error("Missing sibling column");
+  const siblingColumn = cascadeScope("sibling", "cascade-column");
   const open = within(siblingColumn).getByRole("button", { name: "Open conversation" });
   open.focus();
   await act(async () => held.resolve(response("grandchild")));

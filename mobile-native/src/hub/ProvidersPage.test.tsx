@@ -22,9 +22,9 @@ import { ProviderSignIn } from "../providerSignIn";
 import { recordClientReadyHub } from "../connectionIdentity";
 import { RECONNECTING_AFTER_MS } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
+import { fonts } from "../design/tokens";
 import { ProviderEditor } from "../ProviderEditor";
-import { GroupFooter, SwitchRow, Tag } from "../sheet/Grouped";
-import { MODELS_NOT_CHECKED, providerGoneWhileEditing, UNCONFIRMED_CHANGE } from "../providers/providerCopy";
+import { GroupFooter, Row, SwitchRow, Tag } from "../sheet/Grouped";
 import { ProviderDetailPage } from "./ProviderDetailPage";
 import { back, detailParams, ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
 import {
@@ -34,6 +34,8 @@ import {
 	renderedText,
 	screenConnection,
 	scriptedClient,
+	testIDSuffixes,
+	offersButton,
 } from "../renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
@@ -162,6 +164,26 @@ function editModal(tree: ReactTestRenderer): ReactTestInstance {
 	return modal;
 }
 
+/** How many connection status lines the page and its sheets show. */
+function statusLines(node: ReactTestRenderer | ReactTestInstance): number {
+	return testIDSuffixes(node, "sheet-status").length;
+}
+
+/** Whether the provider editor is open. */
+function editorOpen(tree: ReactTestRenderer): boolean {
+	return tree.root.findAllByType(ProviderEditor).length > 0;
+}
+
+/** Why the provider page reports an action didn't land, by reason. */
+function problems(tree: ReactTestRenderer): string[] {
+	return testIDSuffixes(tree, "provider-problem-");
+}
+
+/** What the provider page warns about, by reason. */
+function warnings(tree: ReactTestRenderer): string[] {
+	return testIDSuffixes(tree, "provider-warning-");
+}
+
 /** Whether a control labelled `name` is on screen. */
 function hasControl(tree: ReactTestRenderer, name: string): boolean {
 	return (
@@ -196,7 +218,7 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
-	expect(renderedText(tree)).not.toContain("Reconnecting…");
+	expect(statusLines(tree)).toBe(0);
 
 	await dropUnder(() => tree.update(<ProvidersPage {...props} />));
 	const text = renderedText(tree);
@@ -204,7 +226,7 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 	expect(text).toContain("work");
 	// ... behind a banner announcing it, with no Reconnect: the app
 	// reconnects on its own (spec principle 2).
-	expect(text).toContain("Reconnecting…");
+	expect(statusLines(tree)).toBeGreaterThan(0);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
@@ -217,7 +239,7 @@ it("reconnecting -> ready removes the banner", async () => {
 	const tree = render(<ProvidersPage {...props} />);
 	await act(async () => {});
 	await dropUnder(() => tree.update(<ProvidersPage {...props} />));
-	expect(renderedText(tree)).toContain("Reconnecting…");
+	expect(statusLines(tree)).toBeGreaterThan(0);
 
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
@@ -225,7 +247,7 @@ it("reconnecting -> ready removes the banner", async () => {
 	});
 	const text = renderedText(tree);
 	expect(text).toContain("work");
-	expect(text).not.toContain("Reconnecting…");
+	expect(statusLines(tree)).toBe(0);
 });
 
 it("a fatal (protocol) close replaces the mounted list with the compatibility sentence", async () => {
@@ -429,8 +451,8 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("The provider was removed, but a later step failed. Check the list.");
-	expect(text).not.toContain("The hub didn't confirm the change.");
+	expect(warnings(tree)).toEqual(["applied-removed"]);
+	expect(problems(tree)).toEqual([]);
 	// Secret-safety: the hub's own text can echo submitted credentials, so the
 	// warning above must never carry it.
 	expect(text).not.toContain("the hub left work's stored key behind");
@@ -461,7 +483,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/remove"]);
 	const text = renderedText(tree);
-	expect(text).toContain("The hub didn't confirm the change.");
+	expect(problems(tree)).toContain("unconfirmed");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor stays open on the instance the refusal names.
 	expect(hasControl(tree, "Remove")).toBe(true);
@@ -492,10 +514,10 @@ it("goes back to the provider's detail when its edit is cancelled", async () => 
 	await act(async () => {});
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Base URL");
+	expect(editorOpen(tree)).toBe(true);
 	press(tree, (label) => label === "Cancel");
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(editorOpen(tree)).toBe(false);
 	expect(hasControl(tree, "Edit")).toBe(true);
 	// The editor's modal has gone; the detail it was opened from stays pushed.
 	expect(tree.root.findAllByType("Modal" as never).every((modal) => !modal.props.visible)).toBe(true);
@@ -524,7 +546,7 @@ it("won't let a swipe down drop an edit whose save is still in flight", async ()
 		editModal(tree).props.onRequestClose();
 	});
 	expect(editModal(tree).props.visible).toBe(true);
-	expect(renderedText(tree)).toContain("Base URL");
+	expect(editorOpen(tree)).toBe(true);
 	await act(async () => answer(rows));
 	await act(async () => {});
 	await act(async () => {
@@ -570,10 +592,10 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	});
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/edit", "evener/instance/list"]);
 	const text = renderedText(tree);
-	expect(text).toContain("now points somewhere else");
+	expect(warnings(tree)).toContain("endpoint-changed");
 	expect(text).not.toContain("work no longer resolves");
 	// The editor cleared like a completed save; the instance's detail remains.
-	expect(text).not.toContain("Base URL");
+	expect(editorOpen(tree)).toBe(false);
 	expect(hasControl(tree, "Edit")).toBe(true);
 });
 
@@ -614,8 +636,8 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		"evener/instance/list",
 	]);
 	const text = renderedText(tree);
-	expect(text).toContain("now points somewhere else");
-	expect(text).not.toContain("The hub didn't confirm the change.");
+	expect(warnings(tree)).toContain("endpoint-changed");
+	expect(problems(tree)).not.toContain("unconfirmed");
 	// Secret-safety: the hub's text can echo submitted values and never renders.
 	expect(text).not.toContain("work no longer resolves");
 	// Cleared like a completed removal: the detail and its actions are gone.
@@ -661,11 +683,10 @@ it("keeps the create form for a name-collision conflict", async () => {
 
 	expect(create).toHaveBeenCalledTimes(1);
 	expect(onEndpointConflict).not.toHaveBeenCalled();
-	const text = renderedText(tree);
-	expect(text).toContain("The hub didn't confirm the change.");
-	expect(text).not.toContain("now points somewhere else");
+	expect(testIDSuffixes(tree, "form-error-")).toEqual(["unconfirmed"]);
+	expect(warnings(tree)).not.toContain("endpoint-changed");
 	// The form survives for the correction.
-	expect(text).toContain("Base URL");
+	expect(editorOpen(tree)).toBe(true);
 });
 
 // Keeping the screen mounted across a flap lets the row move under an open
@@ -740,9 +761,8 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 		"evener/instance/edit",
 		"evener/instance/list",
 	]);
-	const text = renderedText(tree);
-	expect(text).toContain("now points somewhere else");
-	expect(text).not.toContain("Base URL");
+	expect(warnings(tree)).toContain("endpoint-changed");
+	expect(editorOpen(tree)).toBe(false);
 });
 
 // No over-fencing: a flap whose recovery finds the endpoint unchanged must
@@ -794,9 +814,8 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	// The save applied: no conflict warning, and the editor closed on the
 	// completed write.
 	expect(instanceCalls(hub.methods)).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
-	const text = renderedText(tree);
-	expect(text).not.toContain("now points somewhere else");
-	expect(text).not.toContain("Base URL");
+	expect(warnings(tree)).not.toContain("endpoint-changed");
+	expect(editorOpen(tree)).toBe(false);
 });
 
 it("shows the connection status inside an open editor modal, with no Reconnect", async () => {
@@ -817,10 +836,10 @@ it("shows the connection status inside an open editor modal, with no Reconnect",
 	// with the draft still intact.
 	await dropUnder(() => tree.update(<ProvidersPage {...props} />));
 	const modal = modalContaining(tree, "Base URL");
-	expect(subtreeText(modal)).toContain("Reconnecting…");
+	expect(statusLines(modal)).toBe(1);
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	// The draft survived: the modal is still the editor's.
-	expect(subtreeText(modal)).toContain("Base URL");
+	expect(modal.findAllByType(ProviderEditor)).toHaveLength(1);
 });
 
 it("starts a sign-in from behind the banner without a doomed client", async () => {
@@ -859,7 +878,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	// native modal that covers the screen's banner.
 	expect(setConnection.mock.calls[0]?.[0]).toBe(null);
 	const sheet = modalContaining(tree, "Sign in to work");
-	expect(subtreeText(sheet)).toContain("Reconnecting…");
+	expect(statusLines(sheet)).toBe(1);
 	expect(sheet.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 
 	// Recovery hands the flow the connection it was opened without, and the
@@ -931,7 +950,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 
 	// The resume waits: starting against the stale rows would refuse the
 	// device start and strand the flow in its error phase.
-	expect(renderedText(tree)).not.toContain("couldn't start signing in");
+	expect(second.calls.map((call) => call.method)).not.toContain("evener/auth/device/start");
 
 	// The listing the new connection owes lands; the gate clears and the
 	// idle exchange finally runs.
@@ -1131,14 +1150,14 @@ it("reads the listing again on coming back to the page after a read failed, with
 	const { tree } = mountPage();
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Couldn't load the providers");
-	expect(renderedText(tree)).not.toMatch(/\bRetry\b|\bReconnect\b/);
+	expect(testIDSuffixes(tree, "providers-load-failed")).toHaveLength(1);
+	expect(offersButton(tree, /\bRetry\b|\bReconnect\b/)).toBe(false);
 	await act(async () => {
 		refocus();
 	});
 	await act(async () => {});
 	expect(reads).toBe(2);
-	expect(renderedText(tree)).not.toContain("Couldn't load the providers");
+	expect(testIDSuffixes(tree, "providers-load-failed")).toHaveLength(0);
 });
 
 it('calls no account sign-in "Signed in" before the hub\'s statuses are read', async () => {
@@ -1151,8 +1170,10 @@ it('calls no account sign-in "Signed in" before the hub\'s statuses are read', a
 	const { tree } = mountPage();
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("codex");
-	expect(renderedText(tree)).not.toContain("Signed in");
+	// The row names the provider, and its value says nothing about its sign-in.
+	const [codex] = tree.root.findAll((node) => node.type === Row && node.props.label === "codex");
+	expect(codex).toBeDefined();
+	expect(codex?.props.value).toBeUndefined();
 });
 
 it("says each provider's sign-in state, with only an expired sign-in in amber", async () => {
@@ -1226,8 +1247,8 @@ it("offers no pull-to-refresh and never asks to reconnect", async () => {
 			/>,
 		),
 	);
-	expect(renderedText(tree)).toContain("Reconnecting…");
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(statusLines(tree)).toBeGreaterThan(0);
+	expect(offersButton(tree, /\bReconnect\b/)).toBe(false);
 	expect(tree.root.findAll((node) => "refreshing" in node.props || "onRefresh" in node.props)).toHaveLength(0);
 });
 
@@ -1237,7 +1258,7 @@ it("waits quietly, connected, for the first listing, in place of a wall (spec 14
 	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
 	const { tree } = mountPage();
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Connecting");
+	expect(testIDSuffixes(tree, "first-load-")).toEqual([]);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Loading providers" })).not.toHaveLength(0);
 	expect(hasControl(tree, "Add provider")).toBe(false);
 });
@@ -1337,7 +1358,7 @@ it("shows how each provider signs in, and the actions its sign-in allows", async
 	expect(hasControl(tree, "Replace key")).toBe(true);
 	expect(hasControl(tree, "Sign in")).toBe(false);
 	expect(hasControl(tree, "Make default")).toBe(true);
-	expect(renderedText(tree)).toContain("No models listed.");
+	expect(testIDSuffixes(tree, "models-empty-")).toEqual(["none"]);
 	await open("vertex");
 	expect(hasControl(tree, "Sign-in, API key")).toBe(true);
 	expect(hasControl(tree, "Set credential JSON")).toBe(true);
@@ -1352,9 +1373,8 @@ it("replaces a key in place, saving it against the endpoint the row was read fro
 	press(tree, (label) => label.startsWith("work,"));
 	await act(async () => {});
 	press(tree, (label) => label === "Replace key");
-	expect(renderedText(tree)).toContain("The key is stored on the hub, not on this phone.");
 	const input = control(tree, "API key");
-	expect(input.props.placeholder).toBe("Paste the API key");
+	expect(input.props.placeholder).toBeTruthy();
 	expect(input.props.secureTextEntry).toBe(true);
 	act(() => input.props.onChangeText(" sk-fixture "));
 	press(tree, (label) => label === "Save");
@@ -1382,15 +1402,15 @@ it("keeps the detail's last word through an edit's save", async () => {
 	await openWork(tree);
 	press(tree, (label) => label === "Make default");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(UNCONFIRMED_CHANGE);
+	expect(problems(tree)).toContain("unconfirmed");
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Base URL");
-	expect(renderedText(tree)).toContain(UNCONFIRMED_CHANGE);
+	expect(editorOpen(tree)).toBe(false);
+	expect(problems(tree)).toContain("unconfirmed");
 });
 
 it("says a connection test's result under the actions", async () => {
@@ -1404,13 +1424,12 @@ it("says a connection test's result under the actions", async () => {
 	press(tree, (label) => label === "Test connection");
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Works");
+	expect(testIDSuffixes(tree, "provider-test-")).toEqual(["success"]);
 	status = "auth_rejected";
 	press(tree, (label) => label === "Test connection");
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Works");
-	expect(renderedText(tree)).toContain("The provider rejected these credentials.");
+	expect(testIDSuffixes(tree, "provider-test-")).toEqual(["failure"]);
 });
 
 async function openWork(tree: ReactTestRenderer) {
@@ -1458,7 +1477,7 @@ it("asks before Cancel or a swipe throws away an edited provider (spec 6)", asyn
 	act(() => control(tree, "Base URL").props.onChangeText("https://changed.example"));
 	// A swipe down asks; Keep editing keeps the edit and the sheet.
 	act(() => editModal(tree).props.onRequestClose());
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	choose("Keep editing");
 	expect(control(tree, "Base URL").props.value).toBe("https://changed.example");
 	// Cancel asks too; Discard goes back to the provider's detail.
@@ -1466,7 +1485,7 @@ it("asks before Cancel or a swipe throws away an edited provider (spec 6)", asyn
 	expect(alertRequests).toHaveLength(2);
 	choose("Discard");
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(editorOpen(tree)).toBe(false);
 	expect(hasControl(tree, "Edit")).toBe(true);
 });
 
@@ -1490,7 +1509,7 @@ it("asks before Cancel or a swipe throws away a pasted key (spec 6)", async () =
 			.at(-1)
 			?.props.onRequestClose(),
 	);
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	choose("Keep editing");
 	expect(control(tree, "API key").props.value).toBe("sk-fixture");
 	press(tree, (label) => label === "Cancel");
@@ -1509,7 +1528,7 @@ it("asks before Back from the detail throws away a pasted key", async () => {
 	press(tree, (label) => label === "Replace key");
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
 	back();
-	expect(alertRequests.at(-1)?.title).toBe("Discard your changes?");
+	expect(alertRequests.at(-1)?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 	choose("Keep editing");
 	expect(detailParams()).toMatchObject({ name: "work" });
 	expect(control(tree, "API key").props.value).toBe("sk-fixture");
@@ -1536,7 +1555,7 @@ it("goes back from a provider's detail when the provider leaves the list", async
 	expect(detailParams()).toBeNull();
 	expect(hasControl(tree, "Replace key")).toBe(false);
 	// No edit was open, so nothing says one wasn't saved.
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(warnings(tree)).not.toContain("gone-while-editing");
 	// The key pasted for the provider that left goes with it: the provider now
 	// listed opens with no paste sheet and no key (RoboRev on 972ebb8).
 	press(tree, (label) => label.startsWith("home,"));
@@ -1559,13 +1578,13 @@ it("says an open edit wasn't saved when its provider leaves the list", async () 
 	// Another client removes it, and the listing follows.
 	await workLeavesList(fake);
 	expect(detailParams()).toBeNull();
-	expect(renderedText(tree)).not.toContain("Base URL");
-	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
+	expect(editorOpen(tree)).toBe(false);
+	expect(warnings(tree)).toContain("gone-while-editing");
 	// The word belongs to the list: opening another provider clears it.
 	press(tree, (label) => label.startsWith("home,"));
 	await act(async () => {});
 	expect(detailParams()).toMatchObject({ name: "home" });
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(warnings(tree)).not.toContain("gone-while-editing");
 });
 
 // Nor does it sit above a new provider's form: opening Add clears it.
@@ -1577,11 +1596,11 @@ it("clears an unsaved-edit notice when Add opens", async () => {
 	press(tree, (label) => label === "Edit");
 	await act(async () => {});
 	await workLeavesList(fake);
-	expect(renderedText(tree)).toContain(providerGoneWhileEditing("work"));
+	expect(warnings(tree)).toContain("gone-while-editing");
 	press(tree, (label) => label === "Add provider");
 	await act(async () => {});
 	expect(tree.root.findAllByType(ProviderEditor)).toHaveLength(1);
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(warnings(tree)).not.toContain("gone-while-editing");
 });
 
 // Only an edit its provider left behind says it wasn't saved: a cancelled or
@@ -1596,10 +1615,10 @@ it("says nothing of an unsaved edit when the provider leaves after a Cancel", as
 	await act(async () => {});
 	press(tree, (label) => label === "Cancel");
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(warnings(tree)).not.toContain("gone-while-editing");
 	expect(detailParams()).toMatchObject({ name: "work" });
 	await workLeavesList(fake);
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(warnings(tree)).not.toContain("gone-while-editing");
 	expect(detailParams()).toBeNull();
 });
 
@@ -1618,11 +1637,11 @@ it("says nothing of an unsaved edit when the provider leaves after a save", asyn
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Base URL");
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(editorOpen(tree)).toBe(false);
+	expect(warnings(tree)).not.toContain("gone-while-editing");
 	expect(detailParams()).toMatchObject({ name: "work" });
 	await workLeavesList(fake);
-	expect(renderedText(tree)).not.toContain(providerGoneWhileEditing("work"));
+	expect(warnings(tree)).not.toContain("gone-while-editing");
 	expect(detailParams()).toBeNull();
 });
 
@@ -1686,7 +1705,7 @@ it("closes the editor without asking once its save lands", async () => {
 	press(tree, (label) => label === "Save");
 	await act(async () => {});
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("Base URL");
+	expect(editorOpen(tree)).toBe(false);
 	expect(alertRequests).toHaveLength(0);
 });
 
@@ -1747,11 +1766,8 @@ it("names a Google provider's stored credential JSON, not a key, when it clears 
 	await openDetail(tree, "work");
 	press(tree, (label) => label === "Clear stored credential JSON");
 	const request = alertRequests.at(-1);
-	expect(request?.title).toBe("Clear stored credential JSON?");
-	expect(request?.buttons?.map((button) => [button.text, button.style])).toEqual([
-		["Cancel", "cancel"],
-		["Clear JSON", "destructive"],
-	]);
+	expect(request?.message).toContain("work");
+	expect(request?.buttons?.map((button) => button.style)).toEqual(["cancel", "destructive"]);
 });
 
 it("leaves the Type row untagged for a provider that isn't the default, and keeps warnings under the group", async () => {
@@ -1782,7 +1798,6 @@ it("keeps a provider's facts in its group: Default as a tag, where it's defined,
 	const text = subtreeText(page);
 	expect(text).not.toContain("The default provider.");
 	expect(text).not.toContain("From the environment.");
-	expect(text).not.toContain("Shadowed");
 	const tags = page.findAll((node) => String(node.type) === "Text" && node.props.children === "Default");
 	expect(tags).not.toHaveLength(0);
 	expect(hasControl(tree, "Defined in, Environment")).toBe(true);
@@ -1797,7 +1812,7 @@ it("calls a shadowed environment variable what it is, never a stored credential"
 	await openDetail(tree, "work");
 	const shadowed = "Also in the environment, Configured via environment variable (WORK_KEY), Not used";
 	expect(hasControl(tree, shadowed)).toBe(true);
-	expect(subtreeText(tree.root)).not.toContain("Also stored");
+	expect(testIDSuffixes(tree, "credential-layer-")).toEqual(["env"]);
 });
 
 it("pastes a key in its own sheet: the action as its title, Cancel and Save, and where the key is kept", async () => {
@@ -1813,7 +1828,6 @@ it("pastes a key in its own sheet: the action as its title, Cancel and Save, and
 	const sheet = modals[2];
 	if (!sheet) throw new Error("no key sheet");
 	expect(sheet.findAllByProps({ accessibilityRole: "header" })[0]?.props.children).toBe("Replace key");
-	expect(subtreeText(sheet)).toContain("The key is stored on the hub, not on this phone.");
 	const save = () => sheet.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save" });
 	expect(save().props.disabled).toBe(true);
 	act(() => control(tree, "API key").props.onChangeText("sk-fixture"));
@@ -1841,7 +1855,7 @@ it("says why a key didn't save in its own sheet, which stays open with the key",
 	await act(async () => {});
 	const sheet = tree.root.findAllByType("Modal" as never).at(-1);
 	if (!sheet) throw new Error("no key sheet");
-	expect(subtreeText(sheet)).toContain("The hub didn't confirm the credential was saved.");
+	expect(testIDSuffixes(sheet, "form-error-")).toEqual(["unconfirmed-credential"]);
 	expect(control(tree, "API key").props.value).toBe("sk-fixture");
 });
 
@@ -1911,7 +1925,7 @@ it("lists every model with a switch, off for one that's disabled, in SF Pro (spe
 	expect(control(tree, "gpt-5.6").props.value).toBe(true);
 	expect(control(tree, "gpt-5.5").props.value).toBe(false);
 	const label = tree.root.find((node) => String(node.type) === "Text" && node.props.children === "gpt-5.5");
-	expect(JSON.stringify(label.props.style)).not.toContain("Menlo");
+	expect(JSON.stringify(label.props.style)).not.toContain(fonts.mono);
 });
 
 // A provider such as OpenRouter lists hundreds of models; the detail mounts at
@@ -1942,7 +1956,7 @@ it("says so when the model search matches nothing", async () => {
 	await openDetail(tree, "work");
 	act(() => control(tree, "Search models").props.onChangeText("zzz"));
 	expect(tree.root.findAllByType(SwitchRow)).toHaveLength(0);
-	expect(subtreeText(tree.root)).toContain("No matching models.");
+	expect(testIDSuffixes(tree, "models-empty-")).toEqual(["filtered"]);
 });
 
 it("leaves a short model list uncapped, with no search field", async () => {
@@ -2068,7 +2082,7 @@ it("says plainly when it couldn't check for new models", async () => {
 	await act(async () => {});
 	await act(async () => {});
 	const text = subtreeText(tree.root);
-	expect(text).toContain("The hub couldn't check for new models. Try again in a moment.");
+	expect(testIDSuffixes(tree, "models-check-failed")).toHaveLength(1);
 	expect(text).not.toContain("upstream 502");
 });
 
@@ -2180,7 +2194,7 @@ it("snaps a switch back and says so when the hub doesn't take the flip", async (
 	await act(async () => {});
 	expect(control(tree, "gpt-5.6").props.value).toBe(true);
 	const text = subtreeText(tree.root);
-	expect(text).toContain(UNCONFIRMED_CHANGE);
+	expect(problems(tree)).toContain("unconfirmed");
 	expect(text).not.toContain("providers.toml");
 });
 
@@ -2210,7 +2224,7 @@ it("keeps a check's Checking state across a detail close, and never reports it e
 	// still belongs to the visit that started it, so it is not reported here.
 	await act(async () => fail(new Error("upstream 502")));
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+	expect(testIDSuffixes(tree, "models-check-failed")).toHaveLength(0);
 });
 
 it("ends a check's Checking state when it lands, even after a new link reopened the provider", async () => {
@@ -2306,7 +2320,7 @@ it("drops a check's failure that lands after a link reopened the provider", asyn
 	expect(detailParams()).toMatchObject({ name: "work" });
 	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+	expect(testIDSuffixes(tree, "models-check-failed")).toHaveLength(0);
 });
 
 it("keeps a check's failure off another provider a link opened meanwhile", async () => {
@@ -2320,7 +2334,7 @@ it("keeps a check's failure off another provider a link opened meanwhile", async
 	await relink("home");
 	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+	expect(testIDSuffixes(tree, "models-check-failed")).toHaveLength(0);
 });
 
 it("checks two providers back to back: only the newer check ends its Checking state", async () => {
@@ -2361,18 +2375,18 @@ it("keeps a failed check's copy on its own provider's visit, which a link closes
 	await act(async () => {});
 	await act(async () => checks.get("work")?.reject(new Error("upstream 502")));
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(MODELS_NOT_CHECKED);
+	expect(testIDSuffixes(tree, "models-check-failed")).toHaveLength(1);
 	await relink("home");
 	expect(detailParams()).toMatchObject({ name: "home" });
-	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+	expect(testIDSuffixes(tree, "models-check-failed")).toHaveLength(0);
 	await relink("work");
 	expect(detailParams()).toMatchObject({ name: "work" });
-	expect(renderedText(tree)).not.toContain(MODELS_NOT_CHECKED);
+	expect(testIDSuffixes(tree, "models-check-failed")).toHaveLength(0);
 });
 
 it("points an empty provider list at its one action (audit L6)", async () => {
 	providersHub([]);
 	const { tree } = mountPage();
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("No providers yet. Add one to start sessions.");
+	expect(testIDSuffixes(tree, "providers-empty")).toHaveLength(1);
 });

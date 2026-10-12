@@ -99,3 +99,10 @@ test("size=compact declares a left-aligned block on the UI type step", () => {
   const hint = /\.compact \.hint\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(hint).toContain("font-size: var(--font-size-caption)");
 });
+
+test("exposes why it is empty as data-reason, and omits it when not given", () => {
+  const { rerender } = render(<EmptyState title="No session open" reason="deleted" />);
+  expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("deleted");
+  rerender(<EmptyState title="No session open" />);
+  expect(screen.getByTestId("empty-state").hasAttribute("data-reason")).toBe(false);
+});

@@ -153,7 +153,7 @@ func TestRunLLMCall_ErrorsOnToolCalls(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when tool calls are returned")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "tool calls") {
+	if !errors.Is(err, errToolCallsForbidden) {
 		t.Fatalf("expected tool-call error, got: %v", err)
 	}
 }

@@ -191,8 +191,8 @@ func TestDecodeStrictMultipleJSONValues(t *testing.T) {
 	if err == nil {
 		t.Fatal("decodeStrict with multiple JSON values should error")
 	}
-	if !strings.Contains(err.Error(), "multiple JSON values") {
-		t.Fatalf("error = %v, want 'multiple JSON values'", err)
+	if !errors.Is(err, errMultipleJSONValues) {
+		t.Fatalf("error = %v, want errMultipleJSONValues", err)
 	}
 }
 

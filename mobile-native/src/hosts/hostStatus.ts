@@ -5,6 +5,8 @@
 import type { HostRow } from "@evener/appwire-client";
 
 export interface HostStatus {
+	/** The state the word names. */
+	state: "connected" | "connecting" | "reconnecting" | "offline";
 	word: "Connected" | "Connecting…" | "Offline · reconnecting" | "Offline";
 	/** Offline states take the attention ink: a human may be needed. */
 	tone: "ink" | "attention";
@@ -17,16 +19,18 @@ export interface HostStatus {
 const UNREACHABLE = "This host is offline, so its sessions can't be reached.";
 
 export function hostStatus(row: HostRow, connecting: boolean): HostStatus {
-	if (row.attached) return { word: "Connected", tone: "ink", canConnect: false, footer: null };
-	if (connecting) return { word: "Connecting…", tone: "ink", canConnect: false, footer: null };
+	if (row.attached) return { state: "connected", word: "Connected", tone: "ink", canConnect: false, footer: null };
+	if (connecting) return { state: "connecting", word: "Connecting…", tone: "ink", canConnect: false, footer: null };
 	if (row.midAttach)
 		return {
+			state: "reconnecting",
 			word: "Offline · reconnecting",
 			tone: "attention",
 			canConnect: false,
 			footer: `${UNREACHABLE} The hub keeps trying to reach it.`,
 		};
 	return {
+		state: "offline",
 		word: "Offline",
 		tone: "attention",
 		canConnect: !row.removed,

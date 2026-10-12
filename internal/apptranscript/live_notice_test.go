@@ -26,8 +26,8 @@ func TestRoundTimingsAnnouncementCarriesTheTimingsOnRaw(t *testing.T) {
 
 func TestPluginLoadedAnnouncementWithoutAName(t *testing.T) {
 	announcement := PluginLoadedAnnouncement(events.PluginLoadedData{})
-	if !strings.Contains(announcement.Description, "Loaded plugin (") {
-		t.Fatalf("no name should say 'Loaded plugin (', got %q", announcement.Description)
+	if announcement.Description == "" || strings.Contains(announcement.Description, "  ") {
+		t.Fatalf("no name should leave no gap where the name goes, got %q", announcement.Description)
 	}
 	item, ok := SystemMessage(announcement, "id", "turn")
 	if !ok || item.Text != "" || item.Raw == nil {

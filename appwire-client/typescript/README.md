@@ -208,7 +208,8 @@ The root exports `parseJobOutputPage(data)`, which returns a validated page
 with `bytes: Uint8Array`, or `null` for invalid input. It accepts lossless `utf8`
 and standard base64 without Node globals. `decodeJobOutputText(bytes)` renders
 raw bytes; join contiguous pages before decoding split UTF-8 scalars.
-`forEachJobOutputScalar` supplies source-byte spans for bounded rendering.
+`forEachJobOutputScalar` supplies source-byte spans for bounded rendering;
+its callback returns `false` to stop the walk early.
 `jobOutputPrunedBounds(error)` extracts the structured `jobOutputPruned`
 floor and total from error code `-32014`.
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 )
@@ -425,7 +424,7 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	}
 	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_backpressure", Source: "evener"}}})
 
-	if result := <-done; result.err == nil || !strings.Contains(result.err.Error(), "notification buffer overflow") {
+	if result := <-done; !errors.Is(transportCause(result.err), ErrNotificationOverflow) {
 		t.Fatalf("ThreadList err=%v resp=%+v, want notification overflow", result.err, result.resp)
 	}
 }
@@ -492,6 +491,31 @@ func TestClientFailPendingPreservesRequestID(t *testing.T) {
 	}
 }
 
+// transportCause is the read-loop failure a TransportFailureError carries, or
+// nil when err is not one.
+func transportCause(err error) error {
+	tf, ok := errors.AsType[TransportFailureError](err)
+	if !ok {
+		return nil
+	}
+	return tf.Cause
+}
+
+// The cause is provenance for whoever inspects the failure, not part of its
+// error chain: the hub classifies request errors with errors.Is against
+// context, EOF and closed-connection sentinels, and a lost connection whose
+// read loop happened to end with one of those must still read as the
+// transport failure it is.
+func TestTransportFailureCauseStaysOutOfTheErrorChain(t *testing.T) {
+	err := error(TransportFailureError{WireError: InternalError("lost"), Cause: context.Canceled})
+	if errors.Is(err, context.Canceled) {
+		t.Fatal("a transport failure matched its read loop's cause as if the caller had cancelled")
+	}
+	if !IsTransportFailure(err) || !errors.Is(transportCause(err), context.Canceled) {
+		t.Fatalf("err = %v, want a transport failure that keeps its cause", err)
+	}
+}
+
 func TestClientFailPendingMarksTransportFailure(t *testing.T) {
 	client := NewClient(newMemoryTransport())
 	id := NewIntID(7)
@@ -511,7 +535,8 @@ func TestClientFailPendingMarksTransportFailure(t *testing.T) {
 // tell it from an InternalError that arrived intact, while errors.As still
 // reaches the CodeInternalError WireError generic callers match.
 func TestClientRequestSynthesizedFailureIsTransportFailure(t *testing.T) {
-	transport := &deadPeerTransport{recvErr: errors.New("websocket: unexpected eof")}
+	recvErr := errors.New("websocket: unexpected eof")
+	transport := &deadPeerTransport{recvErr: recvErr}
 	client := NewClient(transport)
 	client.Start(t.Context())
 	for range client.Notifications() {
@@ -529,8 +554,8 @@ func TestClientRequestSynthesizedFailureIsTransportFailure(t *testing.T) {
 	if !errors.As(err, &wire) || wire.Code != CodeInternalError {
 		t.Fatalf("wrapped error = %+v, want an InternalError WireError via errors.As", wire)
 	}
-	if !strings.Contains(tf.Message, "unexpected eof") {
-		t.Fatalf("message = %q, want the transport failure text retained", tf.Message)
+	if !errors.Is(tf.Cause, recvErr) {
+		t.Fatalf("error = %v, want the transport failure retained as its cause", tf)
 	}
 }
 
@@ -617,7 +642,8 @@ func (d *deadPeerTransport) Close() error { return nil }
 // no goroutine can deliver. The request deliberately carries a context with no
 // deadline, because that is how hub call sites drive it.
 func TestClientRequestFailsAfterReadLoopExit(t *testing.T) {
-	transport := &deadPeerTransport{recvErr: errors.New("websocket: close 1006 (abnormal closure): dropped")}
+	recvErr := errors.New("websocket: close 1006 (abnormal closure): dropped")
+	transport := &deadPeerTransport{recvErr: recvErr}
 	client := NewClient(transport)
 	client.Start(t.Context())
 
@@ -636,7 +662,7 @@ func TestClientRequestFailsAfterReadLoopExit(t *testing.T) {
 		if err == nil {
 			t.Fatal("request returned nil error on a dead connection")
 		}
-		if !strings.Contains(err.Error(), "abnormal closure") {
+		if !errors.Is(transportCause(err), recvErr) {
 			t.Fatalf("request error = %v, want the transport failure preserved", err)
 		}
 	case <-time.After(5 * time.Second):

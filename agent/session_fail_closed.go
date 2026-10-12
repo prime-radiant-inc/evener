@@ -26,8 +26,9 @@ import (
 // decided at the moment of failure: an unserved session keeps
 // warn-and-continue.
 
-// errTranscriptFailedClosed marks the refusal of a session that failed closed.
-var errTranscriptFailedClosed = errors.New("session stopped: its transcript cannot record what it shows")
+// ErrTranscriptFailedClosed marks the refusal of a session that failed closed:
+// every input after the failure is refused with it.
+var ErrTranscriptFailedClosed = errors.New("session stopped: its transcript cannot record what it shows")
 
 // failClosedCause is the Cause.Kind of the one diagnostic a session that
 // failed closed emits, so a consumer can tell it from other errors.
@@ -58,7 +59,7 @@ func (s *Session) failClosed(cause error) error {
 	if !s.servedByDaemon() {
 		return nil
 	}
-	refusal := fmt.Errorf("%w: %w", errTranscriptFailedClosed, cause)
+	refusal := fmt.Errorf("%w: %w", ErrTranscriptFailedClosed, cause)
 	if s.failedClosed.cause.CompareAndSwap(nil, &refusal) {
 		if cancel := s.failedClosed.cancelExecution.Load(); cancel != nil {
 			(*cancel)()

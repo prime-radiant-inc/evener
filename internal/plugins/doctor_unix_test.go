@@ -38,7 +38,7 @@ func TestDoctor_OrphanCacheDir_WalksAStoreWithAReadOnlyLockFile(t *testing.T) {
 	if f := findFinding(t, findings, orphan); f.Level != LevelWarn {
 		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
 	}
-	if hasFinding(findings, "unreferenced cache directories") {
+	if hasCheck(findings, checkOrphanScanSkipped) {
 		t.Errorf("a lock file that denies writes was reported as contention: %+v", findings)
 	}
 }

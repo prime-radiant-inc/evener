@@ -179,6 +179,8 @@ export interface RowProps {
 	onPress?: () => void;
 	/** VoiceOver's reading when the visible text isn't enough. */
 	accessibilityLabel?: string;
+	/** Names the state the row reports, so a test can read it without its words. */
+	testID?: string;
 	/** A control of its own at the row's end, such as a mini button
 	 * ("Install"): outside what a press on the row opens, so each is its own
 	 * target and its own VoiceOver element. */
@@ -282,6 +284,7 @@ export function Row({
 	disabled = false,
 	onPress,
 	accessibilityLabel,
+	testID,
 	accessory,
 }: RowProps) {
 	const { palette } = useColors();
@@ -328,7 +331,7 @@ export function Row({
 	// width and the control sits beside it, inset like the row's text.
 	const own = accessory ? [style, { flex: 1, paddingRight: 0 }] : style;
 	const row = !onPress ? (
-		<View accessible accessibilityLabel={reading} accessibilityState={state} style={own}>
+		<View accessible accessibilityLabel={reading} accessibilityState={state} testID={testID} style={own}>
 			{body}
 		</View>
 	) : (
@@ -336,6 +339,7 @@ export function Row({
 			accessibilityRole="button"
 			accessibilityLabel={reading}
 			accessibilityState={state}
+			testID={testID}
 			disabled={disabled}
 			onPress={onPress}
 			style={({ pressed }) => [own, pressed ? { backgroundColor: palette.pressed } : null]}
@@ -688,7 +692,7 @@ export function FormError({ error }: { error: FormErrorReport | null }) {
 		if (error && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(error.message);
 	}, [error]);
 	return error ? (
-		<GroupFooter tone="danger" live>
+		<GroupFooter tone="danger" live testID={error.reason ? `form-error-${error.reason}` : "form-error"}>
 			{error.message}
 		</GroupFooter>
 	) : null;
@@ -698,13 +702,18 @@ export function FormError({ error }: { error: FormErrorReport | null }) {
  * that repeats the last one's words still scrolls and speaks again. */
 export interface FormErrorReport {
 	message: string;
+	/** Why the save was refused, when the form tells refusals apart, such as "write-busy". */
+	reason?: string;
 }
 
 /** A form's error state: set a message (or null to clear it) as with
  * useState, and each message becomes its own FormErrorReport. */
-export function useFormError(): [FormErrorReport | null, (message: string | null) => void] {
+export function useFormError(): [FormErrorReport | null, (message: string | null, reason?: string) => void] {
 	const [error, setError] = useState<FormErrorReport | null>(null);
-	const report = useCallback((message: string | null) => setError(message === null ? null : { message }), []);
+	const report = useCallback(
+		(message: string | null, reason?: string) => setError(message === null ? null : { message, reason }),
+		[],
+	);
 	return [error, report];
 }
 
@@ -726,6 +735,7 @@ export function GroupFooter({
 	tone = "normal",
 	machine = false,
 	live = false,
+	testID,
 }: {
 	children: string;
 	tone?: "normal" | "attention" | "danger";
@@ -733,6 +743,8 @@ export function GroupFooter({
 	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;
+	/** Names what the footer reports, so a test can tell one report from another. */
+	testID?: string;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -741,6 +753,7 @@ export function GroupFooter({
 		<Text
 			allowFontScaling={allowFontScaling}
 			accessibilityLiveRegion={live ? "polite" : undefined}
+			testID={testID}
 			style={[
 				{
 					color,
