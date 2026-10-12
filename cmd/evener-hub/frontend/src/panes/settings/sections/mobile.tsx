@@ -12,12 +12,13 @@ import { useConnectedEffect } from "./useConnectedEffect";
 // is scoped to the QR slot so a slow chunk shows a placeholder in this
 // section only, never the whole pane.
 const QRCodeSVG = lazy(() => import("qrcode.react").then((m) => ({ default: m.QRCodeSVG })));
+const DeviceSetup = lazy(() => import("./devicePairing/DeviceSetup").then((m) => ({ default: m.DeviceSetup })));
 
 // A failed chunk load rejects the lazy promise, which Suspense does not
 // catch: without a boundary React unmounts the whole tree. Scope the blast
 // radius to the QR slot and keep the pairing link (already loaded) usable via
 // the copy button below.
-class QRChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class QRChunkBoundary extends Component<{ children: ReactNode; fallback?: ReactNode }, { failed: boolean }> {
   state = { failed: false };
 
   static getDerivedStateFromError(): { failed: boolean } {
@@ -27,10 +28,12 @@ class QRChunkBoundary extends Component<{ children: ReactNode }, { failed: boole
   render(): ReactNode {
     if (this.state.failed) {
       return (
-        <EmptyState
-          title="Couldn't load the QR renderer"
-          hint="The pairing link below still works — copy it instead, or reload this page to try again."
-        />
+        this.props.fallback ?? (
+          <EmptyState
+            title="Couldn't load the QR renderer"
+            hint="The pairing link below still works — copy it instead, or reload this page to try again."
+          />
+        )
       );
     }
     return this.props.children;
@@ -50,6 +53,28 @@ type PairingState =
  * here.
  */
 export function MobileSection() {
+  const [setup, setSetup] = useState(false);
+  return (
+    <>
+      {setup ? (
+        <QRChunkBoundary
+          fallback={<EmptyState title="Couldn't load device setup" hint="Reload this page to try again." />}
+        >
+          <Suspense fallback={<Skeleton lines={4} />}>
+            <DeviceSetup onClose={() => setSetup(false)} />
+          </Suspense>
+        </QRChunkBoundary>
+      ) : (
+        <Button size="sm" onClick={() => setSetup(true)}>
+          Pair a device
+        </Button>
+      )}
+      <DirectPairing />
+    </>
+  );
+}
+
+function DirectPairing() {
   const client = useClient();
   const [state, setState] = useState<PairingState>({ kind: "loading" });
 
