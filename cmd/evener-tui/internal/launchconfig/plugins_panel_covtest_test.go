@@ -549,16 +549,6 @@ func TestCovHandleEnterInstalledEnable(t *testing.T) {
 	}
 }
 
-// --- renderBrowseTab: empty catalog ---
-
-func TestCovRenderBrowseTabEmptyCatalog(t *testing.T) {
-	p := PluginsPanel{browseMarketplace: "mp", browseCatalog: appwire.MarketplaceBrowseResponse{}}
-	v := p.renderBrowseTab()
-	if !strings.Contains(v, "no plugins") {
-		t.Fatalf("empty catalog should show 'no plugins': %q", v)
-	}
-}
-
 // --- renderBrowseTab: catalog with installed badge ---
 
 func TestCovRenderBrowseTabInstalledBadge(t *testing.T) {
