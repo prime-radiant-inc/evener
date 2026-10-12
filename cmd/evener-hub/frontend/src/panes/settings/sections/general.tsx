@@ -42,6 +42,7 @@ export function GeneralSection() {
     return (
       <EmptyState
         title="Couldn't load general settings"
+        reason="unavailable"
         // friendlyErrorMessage, not the raw store error: settingsOverview.ts
         // stores errorText(err) as-is, which is AppwireClient's own message
         // verbatim for a client-unreachable rejection - internal wiring

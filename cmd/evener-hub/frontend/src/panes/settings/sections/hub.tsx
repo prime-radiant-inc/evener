@@ -36,6 +36,7 @@ export function HubSection() {
     return (
       <EmptyState
         title="Couldn't load hub settings"
+        reason="unavailable"
         // friendlyErrorMessage, not the raw store error - see general.tsx's
         // matching comment for why (settingsOverview.ts stores errorText(err)
         // verbatim, including AppwireClient's own internal-wiring text).
