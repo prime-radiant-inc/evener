@@ -323,6 +323,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
                 // the strip is one stop, not N, and arrows move within it.
                 tabIndex={selected ? 0 : -1}
                 className={CLASS.tab}
+                data-state={answered ? "answered" : "open"}
                 onClick={() => selectTab(index, false)}
                 // aria-label, not a visually-hidden suffix inside the
                 // content: the answered state must read identically
@@ -362,7 +363,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
       <div className={CLASS.footer}>
         {/* Visual count only - NOT a live region (virtualized remounts would
             re-announce it; AskDockAnnouncements owns count announcements). */}
-        <span className={CLASS.count}>
+        <span className={CLASS.count} data-testid="ask-dock-count" data-answered={answeredCount} data-total={total}>
           {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
         </span>
         {/* Blue primary, same pattern as sandboxEscalation's Allow button
@@ -391,11 +392,18 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
 // count moving (the old in-row count span's text), and resolution clearing
 // the region. The composer owns the exit half ("Message composer ready.")
 // for the same reason it always has.
+// What the live region last announced: the prompt a pending set activates
+// with, or the answered count moving.
+type AnnouncementKind = "prompt" | "progress";
+
 export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
   const epoch = useAskDockStore((s) => s.byRef.get(sessionRef)?.activationEpoch ?? 0);
-  const [announcement, setAnnouncement] = useState({ text: "", key: 0 });
+  const [announcement, setAnnouncement] = useState<{ text: string; kind?: AnnouncementKind; key: number }>({
+    text: "",
+    key: 0,
+  });
   const prevRef = useRef<{ ref: string; pending: boolean; count: string; epoch: number }>({
     ref: sessionRef,
     pending: false,
@@ -411,7 +419,10 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   );
   const count = pending ? `${answered} of ${total} ${total === 1 ? "question" : "questions"} answered` : "";
 
-  const announce = useCallback((text: string) => setAnnouncement((a) => ({ text, key: a.key + 1 })), []);
+  const announce = useCallback(
+    (text: string, kind?: AnnouncementKind) => setAnnouncement((a) => ({ text, kind, key: a.key + 1 })),
+    [],
+  );
 
   useEffect(() => {
     const prev = prevRef.current;
@@ -422,7 +433,8 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
     // audible at all - a live region announces content mutations, and
     // unchanged text is no mutation.
     if (prev.ref !== sessionRef) {
-      announce(pending ? "Answer the agent’s questions." : "");
+      if (pending) announce("Answer the agent’s questions.", "prompt");
+      else announce("");
       return;
     }
     // Every activation announces the prompt - including an atomic
@@ -430,18 +442,18 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
     // true throughout and the new set may carry an identical answered
     // count, so neither other signal moves.
     if (epoch !== prev.epoch && epoch > 0) {
-      announce("Answer the agent’s questions.");
+      announce("Answer the agent’s questions.", "prompt");
       return;
     }
     if (pending && count !== prev.count) {
-      announce(count);
+      announce(count, "progress");
     } else if (!pending && prev.pending) {
       announce("");
     }
   }, [sessionRef, pending, count, epoch, announce]);
 
   return (
-    <div role="status" aria-live="polite" data-testid="ask-dock-announcements">
+    <div role="status" aria-live="polite" data-testid="ask-dock-announcements" data-kind={announcement.kind}>
       <VisuallyHidden key={announcement.key}>{announcement.text}</VisuallyHidden>
     </div>
   );

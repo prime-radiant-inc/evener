@@ -155,7 +155,7 @@ export function CollectionEditor<T>({
         ) : (
           <>
             {rowKeys(items, getKey).map(([item, key]) => (
-              <li key={key} className={CLASS.row} data-kind="item">
+              <li key={key} className={CLASS.row} data-kind="local">
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <IconButton
                   label={removeLabel(item)}

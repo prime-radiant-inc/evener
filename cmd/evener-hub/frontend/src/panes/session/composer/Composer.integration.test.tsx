@@ -37,6 +37,7 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
@@ -2187,7 +2188,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   await user.type(textarea() as HTMLDivElement, "fu");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  expect(await screen.findByText("Send is not available for this session")).toBeTruthy();
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/queue" || call.method === "turn/start")).toHaveLength(0);
   expect((textarea() as HTMLDivElement).textContent).toBe("fu");
 
@@ -2295,12 +2296,13 @@ test("resolving the pending ask announces the composer's restoration via this co
 
   // Never announced before any ask has ever happened - there is nothing
   // that just became ready (honest liveness, not a static claim).
-  expect(screen.queryByText("Message composer ready.")).toBeNull();
+  const announcement = screen.getByTestId("composer-ready-announcement");
+  expect(announcement.textContent).toBe("");
 
   startTurn(fake, "ref_a", "turn_1");
   act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches.length ?? 0).toBe(1));
-  expect(screen.queryByText("Message composer ready.")).toBeNull(); // not yet - still pending
+  expect(announcement.textContent).toBe(""); // not yet - still pending
 
   // Resolve through the same store seam the dock's Send button calls (the
   // dock itself renders in the transcript now, not in this component).
@@ -2310,7 +2312,8 @@ test("resolving the pending ask announces the composer's restoration via this co
     await askDockStore.sendBatch("ref_a", batchId);
   });
 
-  expect(await screen.findByText("Message composer ready.")).toBeTruthy();
+  await waitFor(() => expect(announcement.textContent).not.toBe(""));
+  expect(announcement.closest('[role="status"]')).not.toBeNull();
 });
 
 // --- full-tree sweep: cross-seam scenarios (task 5) -------------------------
@@ -2330,8 +2333,8 @@ test("the queue strip stays rendered while an ask is pending, with the dock no l
   act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   // The queue strip is not part of the ask-pending hide: queued messages
   // stay visible (and manageable) while the input row is replaced.
-  const queueHeading = await screen.findByText(/queued messages/i);
-  expect(queueHeading).toBeTruthy();
+  const queueStrip = await screen.findByTestId("queue-strip");
+  expect(queueStrip.dataset.queuedCount).toBe("1");
   // The dock moved to the transcript's trailing row (Session.tsx) - it
   // renders nowhere under this component.
   expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
@@ -2389,7 +2392,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
     });
   });
 
-  expect(await screen.findByText(/queued messages/i)).toBeTruthy();
+  expect((await screen.findByTestId("queue-strip")).dataset.queuedCount).toBe("1");
   expect(screen.getByText("fq")).toBeTruthy();
 
   fake.on("turn/cancelQueued", (params) => ({

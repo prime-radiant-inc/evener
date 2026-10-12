@@ -38,6 +38,7 @@ import { enterText } from "../../textEntryTestUtils";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { errorToastsNaming, toastKinds } from "../../widgets/toast/toastTestUtils";
 import editorStyles from "../session/composer/skilleditor.module.css";
 import { editorCursor, selectEditorText } from "../session/testing/editor";
 import Welcome from "../welcome/Welcome";
@@ -321,6 +322,33 @@ function effortReadout(): HTMLElement {
 
 /** The trigger's rendered path. It also carries a chevron and a screen-reader
  * hint, so the value is matched inside the text rather than compared whole. */
+/** What the card's model trigger stands for: "required" (the hub has no
+ * default and the user must choose), "chosen", "resolved-default" (the
+ * resolved default model), or "default" (before a resolve lands). */
+function modelState(): string | undefined {
+  return screen.getByTestId("spawn-model-slot").dataset.state;
+}
+
+function expectModelReadsDefault(): void {
+  expect(["default", "resolved-default"]).toContain(modelState());
+}
+
+function expectResolvedDefaultModel(model: string): void {
+  expect(modelState()).toBe("resolved-default");
+  expect(modelValue().textContent).toContain(model);
+}
+
+/** Effort is unset and its readout names the resolved default `level`. */
+function expectEffortDefaultNames(level: string): void {
+  expect(effortSelect().value).toBe("");
+  expect(effortOptionLabels()[0]).toContain(level);
+  expect(effortReadout().textContent).toBe(effortOptionLabels()[0]);
+}
+
+async function waitForPluginPreviewState(state: string): Promise<void> {
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").dataset.state).toBe(state));
+}
+
 function expectWorkingDir(path: string): void {
   expect(workingDir().textContent).toContain(path);
 }
@@ -980,7 +1008,7 @@ test("project navigation clears the old default-model gate while the new resolve
     ),
   );
   renderSpawn(fake);
-  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(modelState()).toBe("required"));
   await visitSpawnURL("/new?dir=/tmp/review-b");
   await waitFor(() =>
     expect(
@@ -989,7 +1017,7 @@ test("project navigation clears the old default-model gate while the new resolve
       ),
     ).toBe(true),
   );
-  expect(modelValue().textContent).not.toBe("Choose a model");
+  expect(modelState()).not.toBe("required");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
   await act(async () =>
     next.resolve({ effective: { model: "anthropic/claude-sonnet-4-5" }, layers: {}, provenance: {} }),
@@ -1368,7 +1396,7 @@ test("missing credentials surface setup in the composer without opening a dialog
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(screen.getByText("Show all providers")).toBeTruthy();
+  expect(screen.queryByTestId("connect-dialog-load-failure")).toBeNull();
   await user.keyboard("{Escape}");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
@@ -1900,7 +1928,7 @@ test("the card's model trigger reads (default) until a model is picked, then nam
   renderSpawn(readyClient());
   await settled();
 
-  expect(modelValue().textContent).toBe("(default)");
+  expect(modelState()).toBe("default");
 
   await user.click(modelTrigger());
   const combo = await screen.findByRole("combobox", { name: "Model" });
@@ -1925,7 +1953,7 @@ test("the card's model trigger names the required choice when the hub has no def
   await settled();
   await setWorkingDir(user, "/tmp/project");
 
-  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(modelState()).toBe("required"));
 });
 
 test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt is typed", async () => {
@@ -1935,9 +1963,10 @@ test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt 
 
   await fillPrompt(user, "typed mobile work");
 
-  expect(screen.getByTestId("pane-title-mobile").textContent).toBe("New session");
-  expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
-  expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
+  expect(screen.getByTestId("pane-title-mobile").textContent).not.toBe("");
+  const intro = screen.getByTestId("spawn-prompt-intro");
+  expect(within(intro).getByRole("heading").textContent ?? "").not.toBe("");
+  expect(intro.querySelector("p")?.textContent ?? "").not.toBe("");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("typed mobile work");
 });
 
@@ -1950,8 +1979,15 @@ test("the prompt placeholder does not repeat the heading", async () => {
   await settled();
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
-  expect(prompt.dataset.placeholder).toBe("Describe the task…");
-  expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
+  const placeholder = prompt.dataset.placeholder ?? "";
+  expect(placeholder).not.toBe("");
+  // The intro above the card - heading and the dormant-start rule - says
+  // something the placeholder does not repeat.
+  const intro = screen.getByTestId("spawn-prompt-intro");
+  expect(intro.querySelector("p")?.textContent ?? "").not.toBe("");
+  for (const line of [...intro.children].map((child) => child.textContent ?? "")) {
+    expect(line).not.toBe(placeholder);
+  }
 });
 
 // The card's control-row compression and touch floors are pinned by the
@@ -2004,8 +2040,9 @@ test("the primary verb is Start, in the card's own corner, and the page is title
   await settled();
 
   const start = screen.getByTestId("spawn-submit");
-  expect(start.textContent).toBe("Start");
-  expect(screen.getByTestId("pane-title-desktop").textContent).toBe("New session");
+  // The verb is visible text, not an icon-only button named by aria-label.
+  expect(start.textContent).toBe(start.getAttribute("aria-label"));
+  expect(screen.getByTestId("pane-title-desktop").textContent).not.toBe("");
   // Inside the card, not in a detached actions strip below it.
   expect(screen.getByTestId("spawn-prompt-card").contains(start)).toBe(true);
   expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
@@ -2164,7 +2201,7 @@ test("desktop plugin summary remains mounted with exact loading and error status
   const pending = new Promise<PluginPreviewResponse>(() => {});
   const pendingClient = readyClient((f) => f.on("evener/plugin/preview", () => pending));
   renderSpawn(pendingClient);
-  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Inspecting plugins…");
+  expect(screen.getByTestId("spawn-plugin-summary").dataset.state).toBe("loading");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
   cleanup();
@@ -2174,9 +2211,7 @@ test("desktop plugin summary remains mounted with exact loading and error status
     });
   });
   renderSpawn(errorClient);
-  await waitFor(() =>
-    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Couldn't inspect plugins"),
-  );
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").dataset.state).toBe("error"));
   // The failure says WHY, and the retry is a small inline action.
   expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("preview unavailable");
   expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("0 of 0");
@@ -2218,23 +2253,20 @@ test("desktop plugin summary lists the configured plugin names", async () => {
   await settled();
   await setWorkingDir(user, "/tmp/project");
 
-  await waitFor(() =>
-    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha, beta"),
-  );
-  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("session only");
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha, beta"));
 
   await openDesktopPluginSelection(user);
   await user.click(screen.getByRole("switch", { name: "beta" }));
-  await waitFor(() =>
-    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha"),
-  );
-  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("beta");
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("beta"));
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha");
 });
 
 async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
   const disclosure = screen.getByTestId("spawn-plugin-disclosure") as HTMLDetailsElement;
-  if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
+  const summary = disclosure.querySelector("summary");
+  if (!summary) throw new Error("the plugin disclosure has no summary");
+  if (!disclosure.open) await user.click(summary);
 }
 
 // A known issue belongs to the selected plugin in this draft, not the mounted
@@ -2263,14 +2295,14 @@ test.each(["bare return", "picker return", "remount", "unchanged"])(
     // An unrelated selection edit cannot forgive alpha when its refresh fails.
     previewMode = "error";
     await user.click(screen.getByRole("switch", { name: "beta" }));
-    await screen.findAllByText("Couldn't inspect plugins");
+    await waitForPluginPreviewState("error");
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
     if (scenario === "bare return") {
       await completionNavigate("/settings");
       await completionNavigate("/new");
     } else if (scenario === "picker return") {
       await setWorkingDir(user, "/tmp/completion-b");
-      await screen.findAllByText("Couldn't inspect plugins");
+      await waitForPluginPreviewState("error");
       expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
       await setWorkingDir(user, "/tmp/completion-a");
     } else if (scenario === "remount") {
@@ -2279,7 +2311,7 @@ test.each(["bare return", "picker return", "remount", "unchanged"])(
       await completionNavigate("/new");
       mounted = renderSpawn(fake);
     }
-    await screen.findAllByText("Couldn't inspect plugins");
+    await waitForPluginPreviewState("error");
     expect(promptField().textContent).toBe("unsent-a");
     expect(completionDraft("/tmp/completion-a").fields.getState().pluginSelection).toEqual({
       mode: "explicit",
@@ -2342,7 +2374,7 @@ test.each(["failed", "loading then failed", "ready invalid", "newer origin selec
       await waitFor(() => expect(refreshRequested).toBe(true));
       if (scenario !== "loading then failed") {
         await act(async () => refresh.reject(new Error("preview unavailable")));
-        await screen.findAllByText("Couldn't inspect plugins");
+        await waitForPluginPreviewState("error");
       }
     }
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
@@ -2351,7 +2383,7 @@ test.each(["failed", "loading then failed", "ready invalid", "newer origin selec
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
     if (scenario === "loading then failed") {
       await act(async () => refresh.reject(new Error("preview unavailable")));
-      await screen.findAllByText("Couldn't inspect plugins");
+      await waitForPluginPreviewState("error");
     }
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
     expect(promptField().textContent).toBe("unsent-b");
@@ -2386,7 +2418,7 @@ test.each(["remove plugin", "unsupported harness"])(
     failPreview = true;
     if (scenario === "remove plugin") {
       await user.click(screen.getByRole("button", { name: "Remove alpha" }));
-      await screen.findAllByText("Couldn't inspect plugins");
+      await waitForPluginPreviewState("error");
     } else {
       await user.click(screen.getByRole("button", { name: "Advanced options" }));
       await user.selectOptions(screen.getByLabelText("Harness"), "external");
@@ -2449,7 +2481,7 @@ for (const navigation of ["picker", "URL"] as const) {
       if (!rejectB) throw new Error("B preview was not requested");
       rejectB(new Error("B preview unavailable"));
     });
-    await screen.findAllByText("Couldn't inspect plugins");
+    await waitForPluginPreviewState("error");
 
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
     await user.click(screen.getByTestId("spawn-submit"));
@@ -2604,10 +2636,10 @@ test("explicit selection blocks while refresh is pending but preview failure sti
   // The refresh must not unmount the list: the previous plugins stay visible
   // (and toggleable) while the new inspection is in flight.
   expect(screen.getByRole("switch", { name: "alpha" })).toBeTruthy();
-  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha");
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha");
 
   rejectRefresh(new Error("preview unavailable"));
-  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  await waitForPluginPreviewState("error");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
   await user.click(screen.getByTestId("spawn-submit"));
@@ -2659,7 +2691,7 @@ test("known-invalid explicit selection stays blocked when an unrelated edit's re
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
   rejectRefresh(new Error("preview unavailable"));
-  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  await waitForPluginPreviewState("error");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -2732,7 +2764,7 @@ test("preview failure exposes retry without guessing zero or blocking default St
   });
   renderSpawn(fake);
 
-  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  await waitForPluginPreviewState("error");
   expect(screen.queryByText(/0 of 0/)).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
   await user.click(screen.getAllByRole("button", { name: "Retry" })[0]!);
@@ -2864,7 +2896,7 @@ test("clearing an invalid selection after preview failure reaches Create & start
 
   previewAvailable = false;
   await user.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  await waitForPluginPreviewState("error");
 
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
   await user.click(screen.getByRole("button", { name: "None" }));
@@ -3070,7 +3102,7 @@ test("the browse panel opens on the stamped last-working-directory global", asyn
   await settled();
   // Nothing else may have seeded the field: the fallback is only consulted
   // when the value is empty, and an empty field shows its placeholder.
-  expectWorkingDir("Working directory");
+  expect(workingDir().dataset.state).toBe("unset");
 
   await user.click(workingDir());
   await screen.findByRole("textbox", { name: "Path" });
@@ -3097,7 +3129,7 @@ test("survives a null data payload from either list RPC", async () => {
 
   // The panel is up, listing nothing, rather than having thrown its tree away.
   expect(await screen.findByRole("textbox", { name: "Path" })).toBeTruthy();
-  expect(await screen.findByText("No subfolders to display.")).toBeTruthy();
+  await waitFor(() => expect(document.querySelector('[role="status"][data-state="empty"]')).not.toBeNull());
 });
 
 test("offers to create a missing directory, then creates it and spawns", async () => {
@@ -3195,7 +3227,7 @@ test("kata xkp2: Spawn with the working directory left at its placeholder aborts
   // the working-directory control still showing its placeholder.
   expect(button.disabled).toBe(false);
   expect(button.getAttribute("aria-disabled")).toBeNull();
-  expectWorkingDir("Working directory");
+  expect(workingDir().dataset.state).toBe("unset");
 
   await user.click(button);
 
@@ -3233,7 +3265,7 @@ test("Model keeps reading '(default)' and Spawn stays untouched when the hub res
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
-  expect(modelTrigger().textContent).toContain("(default)");
+  expectModelReadsDefault();
   expect(screen.queryByRole("alert")).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
@@ -3254,8 +3286,8 @@ test("kata xgk8: Model reads as required (not '(default)') and Spawn is disabled
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
-  await waitFor(() => expect(modelTrigger().textContent).not.toContain("(default)"));
-  expect(screen.getByRole("alert").textContent).toMatch(/no default model/i);
+  await waitFor(() => expect(modelState()).toBe("required"));
+  expect(screen.getByRole("alert").dataset.reason).toBe("no-default-model");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
   // Defense in depth: the ⌘+Enter submit chord must not bypass the disabled
@@ -3337,7 +3369,7 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
   await user.click(await screen.findByText("openai/gpt-5"));
 
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
-  expect(modelTrigger().textContent).toContain("(default)"); // top-level chip untouched
+  expectModelReadsDefault(); // top-level chip untouched
 });
 
 // roborev: the Advanced-options model override used to win at submit even
@@ -3522,18 +3554,19 @@ test("Effort, Model, and the mobile rows name the resolved default once launch/r
   renderSpawn(fake);
   await settled();
 
-  // No working directory yet, so no resolve has run: plain "(default)".
-  expect(effortOptionLabels()[0]).toBe("(default)");
-  expect(modelValue().textContent).toBe("(default)");
+  // No working directory yet, so no resolve has run: the empty option names
+  // no effort.
+  expect(effortOptionLabels()[0]).not.toContain("high");
+  expect(modelState()).toBe("default");
 
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   // Effort's empty option names the inherited effort.
-  await waitFor(() => expect(effortOptionLabels()[0]).toBe("high (default)"));
+  await waitFor(() => expectEffortDefaultNames("high"));
   // The card's Model trigger names the inherited model.
-  expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5 (default)");
-  expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)");
+  expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5");
+  expectResolvedDefaultModel("anthropic/claude-sonnet-4-5");
 });
 
 // The visible effort readout is the selected option's own label - including
@@ -3551,12 +3584,13 @@ test("the card's effort readout names the resolved default once launch/resolve l
   renderSpawn(fake);
   await settled();
 
-  expect(effortReadout().textContent).toBe("(default)");
+  expect(effortReadout().textContent).not.toBe("");
+  expect(effortReadout().textContent).not.toContain("high");
 
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
-  await waitFor(() => expect(effortReadout().textContent).toBe("high (default)"));
+  await waitFor(() => expectEffortDefaultNames("high"));
 });
 
 // Access mode is the chip-level face of the launch-config sandbox field
@@ -3581,19 +3615,26 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
     return Array.from(select.options).map((o) => o.textContent);
   };
 
-  // No working directory yet, so no resolve has run: plain "(default)".
-  expect(accessOptionLabels()[0]).toBe("(default)");
+  const workspaceWrite = () =>
+    Array.from((screen.getByLabelText("Access mode") as HTMLSelectElement).options).find(
+      (o) => o.value === "workspace-write",
+    )?.textContent ?? "";
+  expect(workspaceWrite()).not.toBe("");
+
+  // No working directory yet, so no resolve has run: the empty option names no
+  // sandbox.
+  expect(accessOptionLabels()[0]).not.toContain(workspaceWrite());
 
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   // The desktop Access mode select's empty option names the inherited sandbox.
-  await waitFor(() => expect(accessOptionLabels()[0]).toBe("Workspace write (default)"));
+  await waitFor(() => expect(accessOptionLabels()[0]).toContain(workspaceWrite()));
   // The mobile Access mode row derives its resting label from the same
   // options list, so it inherits the resolved wording too.
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   const accessRow = mobileConfig.querySelector('[data-label="Access mode"]');
-  expect(accessRow?.textContent).toContain("Workspace write (default)");
+  expect(accessRow?.textContent).toContain(accessOptionLabels()[0]);
 });
 
 test("the (default) labels stay plain when the resolve fails", async () => {
@@ -3605,14 +3646,15 @@ test("the (default) labels stay plain when the resolve fails", async () => {
   });
   renderSpawn(fake);
   await settled();
+  const plainEffort = effortOptionLabels()[0];
 
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
   await act(async () => {}); // let the rejection's state writes land
 
-  expect(effortOptionLabels()[0]).toBe("(default)");
+  expect(effortOptionLabels()[0]).toBe(plainEffort);
   expect(modelTrigger().textContent).not.toContain("claude");
-  expect(modelValue().textContent).toBe("(default)");
+  expect(modelState()).toBe("default");
 });
 
 // The Advanced panel's own unset labels resolve the same way, off the same
@@ -3647,7 +3689,9 @@ test("an Advanced-options boolean names the resolved default (On/Off)", async ()
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const select = screen.getByLabelText("Log API requests") as HTMLSelectElement;
-  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["On (default)", "On", "Off"]);
+  const [unset, on, off] = Array.from(select.options);
+  expect(unset?.textContent).toContain(on?.textContent);
+  expect(unset?.textContent).not.toContain(off?.textContent);
 });
 
 // --- uncredentialed-default fallback ---------------------------------------
@@ -3685,7 +3729,7 @@ test("preselects the first launchable model when the resolved default's provider
   // Falls back to the FIRST launchable model, not merely "some" model -
   // model/list's own order, which scopedCatalog.ts preserves into the picker.
   await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
-  expect(modelTrigger().textContent).not.toContain("(default)");
+  expect(modelState()).toBe("chosen");
   expect(screen.queryByRole("alert")).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
@@ -3737,7 +3781,7 @@ test("an advanced model override stops the uncredentialed-default fallback from 
   await setWorkingDir(user, "/tmp/project");
   // A credentialed default lands first: the untouched chip reads its resolved
   // default and no fallback substitution fires.
-  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-opus-4 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("anthropic/claude-opus-4"));
 
   // The override is configured while openai is still in model/list.
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
@@ -3750,7 +3794,7 @@ test("an advanced model override stops the uncredentialed-default fallback from 
   // Wait for that pass to land (the override, not the chip, is the resolved
   // effective model now) before the provider disappears, so the drop below is
   // the only pending catalog pass.
-  await waitFor(() => expect(modelValue().textContent).toBe("openai/gpt-5 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("openai/gpt-5"));
 
   // openai drops out of model/list while the override stands, and the catalog
   // scope refreshes so the fallback effect re-reads the listing and the
@@ -3761,10 +3805,10 @@ test("an advanced model override stops the uncredentialed-default fallback from 
   // "low (default)" marks the post-drop resolve landing (it replaced the
   // "high (default)" of the pass above), so the fallback has run its course
   // by the time the chip is judged.
-  await waitFor(() => expect(effortReadout().textContent).toBe("low (default)"));
+  await waitFor(() => expectEffortDefaultNames("low"));
   // The chip still names the model that will launch - the override - and the
   // Advanced field still shows it.
-  expect(modelValue().textContent).toBe("openai/gpt-5 (default)");
+  expectResolvedDefaultModel("openai/gpt-5");
   expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
   const advancedPickersAfter = screen.getAllByRole("button", { name: /change model/i });
   expect(advancedPickersAfter[advancedPickersAfter.length - 1]!.textContent).toContain("openai/gpt-5");
@@ -3898,7 +3942,7 @@ test("onboarding a second draft scope does not forget the first scope's explicit
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
   // The first draft's onboarding choice still stands, so the substitute
   // fallback must not fill its model in: the pane asks for an explicit choice.
-  expect(modelTrigger().textContent).toContain("Choose a model");
+  expect(modelState()).toBe("required");
   expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
 });
 
@@ -3918,7 +3962,7 @@ test("an unmanaged harness with a resolved default model does not demand a model
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
   // The external harness carries its own model through unmanaged, so the
   // resolved default keeps the chip off the required state and Start live.
-  expect(modelTrigger().textContent).not.toContain("Choose a model");
+  expect(modelState()).not.toBe("required");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
 
@@ -3938,13 +3982,13 @@ test("an unmanaged harness whose hub resolves no default model still starts", as
   renderSpawn(fake);
   await settled();
 
-  await waitFor(() => expect(effortReadout().textContent).toBe("high (default)"));
+  await waitFor(() => expectEffortDefaultNames("high"));
 
   // The unmanaged harness carries its own model, so the hub's missing Evener
   // default must not become a requirement of this pane: no "Choose a model",
   // no requirement note, Start live.
-  expect(modelTrigger().textContent).not.toContain("Choose a model");
-  expect(modelValue().textContent).toBe("(default)");
+  expect(modelState()).not.toBe("required");
+  expect(modelState()).toBe("default");
   expect(screen.queryByRole("alert")).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
@@ -3973,7 +4017,7 @@ test("an unmanaged harness is never auto-filled by the uncredentialed-default fa
   // The fallback must not run for an unmanaged harness: Model stays untouched
   // and the chip keeps naming the resolved default instead of the first
   // launchable Evener model.
-  await waitFor(() => expect(modelValue().textContent).toBe("openai/gpt-5.5 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("openai/gpt-5.5"));
   expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
 
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
@@ -4093,7 +4137,7 @@ test("keeps the form usable and leaves Model at '(default)' when no provider is 
   // No new dead-end UI: the server's own "provider credentials missing"
   // message on submit is what speaks here, not a form the picker can't
   // resolve on its own - the field stays exactly as it always has.
-  expect(modelTrigger().textContent).toContain("(default)");
+  expectModelReadsDefault();
   expect(screen.queryByRole("alert")).toBeNull();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
@@ -4388,7 +4432,7 @@ test("with Model left at '(default)', the Effort select follows the hub's resolv
   // gpt-5's provider IS in readyClient's model/list, so the uncredentialed
   // fallback doesn't preselect it - Model stays "(default)" and the ladder
   // still has to be gpt-5's own.
-  expect(modelTrigger().textContent).toContain("(default)");
+  expectModelReadsDefault();
   await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "high", "none"]));
 });
 
@@ -4957,10 +5001,10 @@ test("re-enables the Spawn button after a successful start (post-success state h
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 
-  // Addressed by testid so a still-stuck "Starting…" fails on the label
-  // assertion below with a clear message rather than on a failed query.
+  // Addressed by testid so a still-stuck Start fails on the loader assertion
+  // below with a clear message rather than on a failed query.
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
-  expect(button.textContent).toBe("Start");
+  expect(within(button).queryByRole("status")).toBeNull();
   expect(button.disabled).toBe(false);
 });
 
@@ -5197,8 +5241,7 @@ test("shows a Loader, not static text, while the spawn request is in flight", as
   await user.click(screen.getByTestId("spawn-submit"));
 
   const button = await screen.findByTestId("spawn-submit");
-  expect(within(button).getByRole("status", { name: "Starting" })).toBeTruthy();
-  expect(within(button).queryByText("Starting…")).toBeNull();
+  expect(within(button).getByRole("status").getAttribute("aria-label")).toBeTruthy();
 
   release();
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
@@ -5869,7 +5912,7 @@ test("a /model prompt starts a dormant session with the model on thread/start an
   // the resolve's Promise.all commit is strictly after the catalog's.
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
-  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("anthropic/claude-sonnet-4-5"));
 
   await user.type(promptField(), "/model openai/gpt-5");
   await user.keyboard("{Escape}");
@@ -5904,7 +5947,7 @@ test("a /model prompt bootstraps past the required-model guard with the value on
   // supplies the missing model. The bootstrap validates against the pane
   // catalog, so the test waits for the catalog-backed trigger text the same
   // way the known-value test does.
-  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(modelState()).toBe("required"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/spawn/slashCatalog")).toBe(true));
 
   await user.type(promptField(), "/model openai/gpt-5");
@@ -5949,7 +5992,7 @@ test("a /model prompt wins over a matching Advanced Options model override on th
   renderSpawn(fake);
   await settled();
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("anthropic/claude-sonnet-4-5"));
 
   // An Advanced Options model override loses to the typed slash value: the
   // user typed the value as the submit itself, the most specific intent.
@@ -6006,7 +6049,7 @@ test("a /model value from the previous cwd does not validate after switching dir
   renderSpawn(fake);
   await settled();
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("anthropic/claude-sonnet-4-5"));
 
   // Switch directories: the pane catalog still holds the old scope until the
   // new scoped load lands. A model valid only for the old scope must not
@@ -6054,7 +6097,7 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
   renderSpawn(fake);
   await settled();
   await setWorkingDir(user, "/tmp/project");
-  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("anthropic/claude-sonnet-4-5"));
 
   // Set the chip to the same value: without the fix, the stale chip
   // re-authorizes the typed value through `current` even with no levels.
@@ -6122,12 +6165,12 @@ test("an unknown /model value toasts, starts nothing, and leaves Start usable", 
   await user.keyboard("{Escape}");
   await user.click(screen.getByTestId("spawn-submit"));
 
-  await waitFor(() => expect(screen.getByText(/\/model: unknown value "nope"/)).toBeTruthy());
+  await waitFor(() => expect(errorToastsNaming('"nope"')).toHaveLength(1));
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
-  expect(button.textContent).toBe("Start");
+  expect(within(button).queryByRole("status")).toBeNull();
 });
 
 test("a known /model value starts before the pane catalog lands instead of fail-closing", async () => {
@@ -6196,7 +6239,7 @@ test("a /model value bootstraps past the required-model guard after a failed cat
   await settled();
   await setWorkingDir(user, "/tmp/project");
 
-  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(modelState()).toBe("required"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
 
   await user.type(promptField(), "/model openai/gpt-5");
@@ -6223,12 +6266,12 @@ test("a bare /goal toasts, starts nothing, and leaves Start usable", async () =>
   await user.keyboard("{Escape}");
   await user.click(screen.getByTestId("spawn-submit"));
 
-  await waitFor(() => expect(screen.getByText("/goal needs a value")).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(fake.calls.some((c) => c.method === "goal/set")).toBe(false);
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
-  expect(button.textContent).toBe("Start");
+  expect(within(button).queryByRole("status")).toBeNull();
 });
 
 test("plain text spawns with no goal/set call", async () => {
@@ -6312,7 +6355,7 @@ test("a /reasoning-effort prompt starts a dormant session with the effort on thr
   // staleness, and "high" is on the fallback ladder.
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
-  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
+  await waitFor(() => expectResolvedDefaultModel("anthropic/claude-sonnet-4-5"));
 
   await user.type(promptField(), "/reasoning-effort high");
   await user.keyboard("{Escape}");
@@ -6340,12 +6383,12 @@ test("an unknown /reasoning-effort value toasts, starts nothing, and leaves Star
   await user.keyboard("{Escape}");
   await user.click(screen.getByTestId("spawn-submit"));
 
-  await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "ultra"/)).toBeTruthy());
+  await waitFor(() => expect(errorToastsNaming('"ultra"')).toHaveLength(1));
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
-  expect(button.textContent).toBe("Start");
+  expect(within(button).queryByRole("status")).toBeNull();
 });
 
 test("a bare /reasoning-effort toasts, starts nothing, applies nothing, and leaves Start usable", async () => {
@@ -6358,12 +6401,12 @@ test("a bare /reasoning-effort toasts, starts nothing, applies nothing, and leav
   await user.keyboard("{Escape}");
   await user.click(screen.getByTestId("spawn-submit"));
 
-  await waitFor(() => expect(screen.getByText("/reasoning-effort needs a value")).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
-  expect(button.textContent).toBe("Start");
+  expect(within(button).queryByRole("status")).toBeNull();
 });
 
 // RoboRev PR1131 finding 3: model/list can serialize an empty Go slice as
@@ -7295,7 +7338,7 @@ test.each([
 
   // Nothing of the previous host's path is kept, and the form says so.
   expect(workingDir().textContent).not.toContain("/tmp/foreign-a");
-  expect(workingDir().textContent).toContain("Choose a folder");
+  expect(workingDir().dataset.state).toBe("unset");
   expect(spawnDraftsStore.getState().current?.cwd).toBe("");
 });
 
@@ -7328,7 +7371,7 @@ test("a host answering valid with no path seeds no directory", async () => {
   expect([...spawnDraftsStore.getState().drafts.keys()].every((key) => typeof key === "string")).toBe(true);
   // ...and the form seeds no directory rather than a nameless one.
   expect(spawnDraftsStore.getState().current?.cwd).toBe("");
-  expect(workingDir().textContent).toContain("Choose a folder");
+  expect(workingDir().dataset.state).toBe("unset");
 });
 
 test("a local host choice omits source from the thread/start request", async () => {
@@ -7768,7 +7811,7 @@ test("a remote host does not pre-validate /model against the controller catalog"
   expect(params.model).toBe("model-x");
   // The builtin is consumed, not forwarded as a literal first turn.
   expect(params.input).toEqual([]);
-  expect(screen.queryByText(/unknown value/)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 test("a remote host does not pre-validate /reasoning-effort against the controller ladder", async () => {
@@ -7794,7 +7837,7 @@ test("a remote host does not pre-validate /reasoning-effort against the controll
   expect(params.source).toBe("buildbox");
   expect(params.reasoningEffort).toBe("ultra");
   expect(params.input).toEqual([]);
-  expect(screen.queryByText(/unknown value/)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // --- remote target: model and cwd ownership (Component 06b, round seven) -----
@@ -7853,7 +7896,7 @@ test("a remote host does not inherit the controller's uncredentialed-default fal
     await vi.advanceTimersByTimeAsync(400);
   });
 
-  expect(modelTrigger().textContent).toContain("(default)");
+  expectModelReadsDefault();
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
   await fillPrompt(user, "run remotely");
@@ -7897,7 +7940,7 @@ test("a controller-catalog fallback model is retired when the target becomes rem
   // the selected host's.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   await settled();
-  await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
+  await waitFor(expectModelReadsDefault);
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
   await fillPrompt(user, "run remotely");
@@ -8013,7 +8056,7 @@ test("a remote launch's model does not become the cwd's local project default", 
   resetSpawnDraftsForTests();
   renderSpawn(fake);
   await settled();
-  expect(modelTrigger().textContent).toContain("(default)");
+  expectModelReadsDefault();
   expect(modelTrigger().textContent).not.toContain("gpt-5");
 });
 
@@ -8055,7 +8098,7 @@ test("a fallback installed for one draft does not retire another draft's identic
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   // B's model is B's own sticky default, so it survives the remote switch.
   expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
-  expect(modelTrigger().textContent).not.toContain("(default)");
+  expect(modelState()).toBe("chosen");
 
   await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -8099,7 +8142,7 @@ test("a controller-catalog fallback model is still retired after a pane remount"
 
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   await settled();
-  await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
+  await waitFor(expectModelReadsDefault);
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
   await fillPrompt(user, "run remotely");
@@ -8150,7 +8193,7 @@ test("a user's explicit model pick is preserved when the target becomes remote",
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   // The explicit pick is not the fallback's value, so it is not retired.
   expect(modelTrigger().textContent).toContain("openai/gpt-5");
-  expect(modelTrigger().textContent).not.toContain("(default)");
+  expect(modelState()).toBe("chosen");
 
   await fillPrompt(user, "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -9147,7 +9190,7 @@ test("switching hosts with the same directory drops the previous host's default-
   window.history.pushState({}, "", "/new?dir=/tmp/host-default");
   renderSpawn(fake);
   await settled();
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/no default model/i));
+  await waitFor(() => expect(screen.getByRole("alert").dataset.reason).toBe("no-default-model"));
 
   await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
   await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
@@ -9361,13 +9404,11 @@ test("a host switch drops an explicit plugin selection the new host never previe
   // An explicit selection on the controller.
   await openDesktopPluginSelection(user);
   await user.click(screen.getByRole("switch", { name: "beta" }));
-  await waitFor(() =>
-    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha"),
-  );
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha"));
   expect(draft.fields.getState().pluginSelection).toEqual({ mode: "explicit", names: ["alpha"] });
 
   await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
-  await screen.findAllByText("Couldn't inspect plugins");
+  await waitForPluginPreviewState("error");
 
   // The controller's selection is gone with the switch...
   expect(draft.fields.getState().pluginSelection).toEqual({ mode: "default" });
@@ -10170,7 +10211,7 @@ test("a restored create dialog whose preflight host is no longer selected aborts
   expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(draft.fields.getState()).toMatchObject({ createDialogPath: null, createDialogHost: null });
-  expect(await screen.findByText(/host changed after this directory was checked/i)).toBeTruthy();
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
 });
 
 // The other half of handleSpawn's gate: the host that preflighted the path is

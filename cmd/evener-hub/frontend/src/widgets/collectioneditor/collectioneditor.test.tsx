@@ -217,7 +217,7 @@ describe("inheritedItems", () => {
       <CollectionEditor<DirItem> {...baseProps({ inheritedItems: [{ path: "/etc/defaults/plugins" }] })} />,
     );
     const rows = within(screen.getByRole("list")).getAllByRole("listitem");
-    expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["item", "item", "inherited"]);
+    expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["local", "local", "inherited"]);
     rerender(<CollectionEditor<DirItem> {...baseProps({ items: [], inheritedItems: [] })} />);
     const [empty] = within(screen.getByRole("list")).getAllByRole("listitem");
     expect(empty?.getAttribute("data-reason")).toBe("empty");
