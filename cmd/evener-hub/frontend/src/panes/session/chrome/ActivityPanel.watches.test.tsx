@@ -9,6 +9,7 @@ import {
   activityThread,
   activityWatch,
 } from "../../../stores/sessionActivityTestUtils";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { ActivityPanelBody } from "./ActivityPanel";
 
 const ref = "remote:owner",
@@ -31,7 +32,7 @@ test("typed receiver watches remain visible while an independent job page is pen
   connectionStore.getState().connect(client);
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   expect(await screen.findByRole("treeitem", { name: "Watch: receiver heartbeat" })).toBeTruthy();
-  expect(screen.queryByText("No retained activity yet")).toBeNull();
+  expect(emptyStateReasons(document.body)).toEqual([]);
   await act(async () =>
     pending.resolve({ context: activityContext(), scope: "subtree", jobs: [], page: { complete: true, issues: [] } }),
   );
@@ -63,6 +64,6 @@ test("authoritative empty requires completed collection reads", async () => {
   }));
   connectionStore.getState().connect(client);
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
-  await waitFor(() => expect(screen.getByText("No retained activity yet")).toBeTruthy());
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["empty"]));
   expect(client.calls.filter((c) => c.method === "evener/thread/watches/list")).toHaveLength(1);
 });

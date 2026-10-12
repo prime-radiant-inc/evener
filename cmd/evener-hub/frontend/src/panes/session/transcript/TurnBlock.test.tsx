@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig, projectThread, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+  ACTION_SUMMARY_UNAVAILABLE,
+  makeTranscriptDisplayConfig,
+  projectThread,
+  type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo, type ReactNode } from "react";
 import { afterEach, expect, test } from "vitest";
@@ -133,7 +138,7 @@ test("wires a content-free thinking entry through TurnBlock to the placeholder (
     config,
   );
   render(withConfig(config, <TurnBlock turn={projected} />));
-  expect(screen.getByText(/Thinking…/)).toBeTruthy();
+  expect(screen.getByTestId("think-block").getAttribute("data-live")).toBe("true");
   expect(screen.getByTestId("loader-grid")).toBeTruthy();
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
@@ -147,7 +152,8 @@ test("redacts a critical reasoning row on a terminal turn", () => {
     config,
   );
   render(withConfig(config, <TurnBlock turn={projected} />));
-  expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
+  expect(screen.getByTestId("think-block").getAttribute("data-redacted")).toBe("true");
+  expect(screen.getByTestId("think-block-redacted").textContent).not.toBe("");
   expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
   expect(document.querySelector("details")).toBeNull();
@@ -357,7 +363,7 @@ test("an intent-less read_file shows the Read summary, never 'Action summary una
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const { unmount } = render(withConfig(config, <TurnBlock turn={turn([read], {}, config)} />));
     expect(screen.getByTestId("tool-row-summary").textContent).toBe("Read src/foo.ts · lines 1-2");
-    expect(screen.queryByText("Action summary unavailable")).toBeNull();
+    expect(screen.queryByText(ACTION_SUMMARY_UNAVAILABLE)).toBeNull();
     unmount();
   }
 });
@@ -468,7 +474,7 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   render(withConfig(config, <TurnBlock turn={turn([failedAction], { status: "completed" }, config)} />));
 
   expect(screen.getByTestId("intent-group")).toBeTruthy();
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expect(screen.getByTestId("failure-glyph").getAttribute("role")).toBe("img");
   // ToolCallItem renders eagerly inside the intent group. A failed row no
   // longer force-expands: it settles collapsed, and the body opens on the
   // reader's own toggle. "Action summary unavailable" is still never shown,
@@ -476,7 +482,7 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
   expect(screen.queryByTestId("tool-call-body")).toBeNull();
   expect(screen.queryByText("command failed")).toBeNull();
-  expect(screen.queryByText("Action summary unavailable")).toBeNull();
+  expect(screen.queryByText(ACTION_SUMMARY_UNAVAILABLE)).toBeNull();
   // The row stays an expandable disclosure: opening it surfaces the body's
   // error output as the single representation of the command.
   fireEvent.click(screen.getByTestId("tool-row-trigger"));
@@ -672,7 +678,7 @@ test("promptLoaded off hides the system-prompt scaffold disclosure; on shows it"
   expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
 
   rerender(withConfig(shown, <TurnBlock turn={turn(items, {}, shown)} />));
-  expect(screen.getByTestId("system-notice-scaffold").textContent).toContain("System prompt");
+  expect(screen.getByTestId("system-notice-scaffold-body").textContent).toContain("You are a helpful assistant.");
 });
 
 test("items no toggle governs are untouched with every toggle off", () => {

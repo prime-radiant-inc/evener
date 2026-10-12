@@ -467,7 +467,9 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
     const sheet = screen.getByRole("dialog", { name: "Verbosity" });
     expect(sheet.className).toContain("bottom");
     expect(within(sheet).getAllByRole("radio")).toHaveLength(6);
-    expect(within(sheet).getByText(/^Customize & advanced/)).toBeTruthy();
+    expect(
+      within(sheet).getByRole("region", { name: "Transcript detail editor" }).querySelector("summary"),
+    ).not.toBeNull();
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();

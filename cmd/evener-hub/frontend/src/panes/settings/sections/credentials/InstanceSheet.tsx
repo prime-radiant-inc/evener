@@ -37,7 +37,6 @@ import {
   fromEnvironment,
   isEndpointConflict,
   isInstanceRenamePersisted,
-  keylessByDesign,
   renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
@@ -48,6 +47,8 @@ import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { CREDENTIAL_DOT, credentialState } from "./credentialState";
+import type { FormError } from "./formError";
 import styles from "./InstanceSheet.module.css";
 import {
   draftFor,
@@ -120,6 +121,20 @@ const RENAME_PENDING_ACTION_MESSAGE =
 // once the listing on screen shows the destination now in effect.
 const ENDPOINT_CHANGED_SAVE_ERROR =
   "This instance changed to a different endpoint since the form was opened. Review its destination and save again.";
+
+/** Why the form refused or failed a save, rendered as the alert's
+ * `data-reason`: the rename is still being confirmed, a different instance
+ * took the name, the Name was emptied, the credential header is a literal, the
+ * connection was replaced, the hub refused the asserted endpoint, or the hub
+ * failed the save outright. */
+type FormErrorReason =
+  | "rename-pending"
+  | "instance-replaced"
+  | "empty-name"
+  | "literal-header"
+  | "connection-replaced"
+  | "endpoint-changed"
+  | "save-failed";
 
 // The immutable identity of the entry a draft belongs to: the name plus the
 // fields no edit through this sheet changes. providerId/base/auth pick the
@@ -241,7 +256,7 @@ export function InstanceSheet({
 
   const [initial, setInitial] = useState<InstanceDraft | null>(null);
   const [draft, setDraft] = useState<InstanceDraft | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<FormError<FormErrorReason> | null>(null);
   const [busy, setBusy] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
   // The rename of this sheet's own that went out, held with the request that
@@ -412,7 +427,7 @@ export function InstanceSheet({
     // Refuse with the reason (the file's pressable-refusal precedent) and send
     // nothing - the button and the form's own submit door both land here.
     if (renameGap) {
-      setFormError(RENAME_PENDING_SAVE_ERROR);
+      setFormError({ reason: "rename-pending", message: RENAME_PENDING_SAVE_ERROR });
       return;
     }
     // The draft belongs to the instance it was seeded from. A removal and
@@ -423,7 +438,7 @@ export function InstanceSheet({
     // the same refusal the guided flow makes when its destination moves.
     if (draftIdentity(instance) !== seededIdentity.current) {
       seed(instance);
-      setFormError(CHANGED_INSTANCE_ERROR);
+      setFormError({ reason: "instance-replaced", message: CHANGED_INSTANCE_ERROR });
       return;
     }
     // Ahead of the `params === null` guard, not behind it: an emptied Name is
@@ -432,12 +447,12 @@ export function InstanceSheet({
     // empty newName as "unchanged" - the request would succeed and rename
     // nothing while the toast claimed a save.
     if (emptiedName) {
-      setFormError(EMPTY_NAME_ERROR);
+      setFormError({ reason: "empty-name", message: EMPTY_NAME_ERROR });
       return;
     }
     if (params === null) return;
     if (params.credentialHeader !== undefined && !params.credentialHeader.includes("$")) {
-      setFormError(LITERAL_HEADER_ERROR);
+      setFormError({ reason: "literal-header", message: LITERAL_HEADER_ERROR });
       return;
     }
     // The endpoint the draft was seeded from travels with the save, so the hub
@@ -599,7 +614,7 @@ export function InstanceSheet({
           .catch(() => {});
         if (shownName.current === instance.name) {
           setRenamingFrom(undefined);
-          setFormError(CONNECTION_REPLACED_ERROR);
+          setFormError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
         }
         toast.push("warning", CONNECTION_REPLACED_ERROR);
         return;
@@ -611,7 +626,7 @@ export function InstanceSheet({
         // screen.
         if (shownName.current === instance.name) {
           setRenamingFrom(undefined);
-          setFormError(ENDPOINT_CHANGED_SAVE_ERROR);
+          setFormError({ reason: "endpoint-changed", message: ENDPOINT_CHANGED_SAVE_ERROR });
         }
         toast.push("error", ENDPOINT_CHANGED_SAVE_ERROR);
         // The retry this message asks for can only land once the sheet asserts
@@ -676,7 +691,7 @@ export function InstanceSheet({
       // for releasing the rename guard, which only this sheet's save set.
       if (shownName.current === instance.name) {
         setRenamingFrom(undefined);
-        setFormError(message);
+        setFormError({ reason: "save-failed", message });
       }
       toast.push("error", `Save failed: ${message}`);
     } finally {
@@ -725,6 +740,14 @@ export function InstanceSheet({
   const renaming =
     initial !== null && draft !== null && draft.name.trim() !== "" && draft.name.trim() !== initial.name.trim();
   const nameHelp = instance !== undefined && renaming ? renameNote(instance) : undefined;
+  // Which rename the note under Name describes, as the form's data-rename.
+  const renameKind =
+    instance !== undefined && renaming
+      ? renameLeavesEnvironmentRow(instance)
+        ? "leaves-row"
+        : "keeps-old-name"
+      : undefined;
+  const headingState = instance === undefined ? undefined : credentialState(instance, undefined);
 
   return (
     <Sheet
@@ -743,15 +766,16 @@ export function InstanceSheet({
     >
       {instance !== undefined && (
         <>
-          <div className={CLASS.headingRow}>
-            <StatusDot state={layers.length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
-            {instance.isDefault && <Chip>★ default</Chip>}
-            {fromEnvironment(instance) && <Chip>from environment</Chip>}
+          <div className={CLASS.headingRow} data-credential-state={headingState}>
+            {headingState !== undefined && <StatusDot state={CREDENTIAL_DOT[headingState]} />}
+            {instance.isDefault && <Chip kind="default">★ default</Chip>}
+            {fromEnvironment(instance) && <Chip kind="environment">from environment</Chip>}
           </div>
           {draft !== null && (
             <form
               className={CLASS.form}
               aria-label={`Edit ${instance.name}`}
+              data-rename={renameKind}
               onSubmit={(event) => {
                 event.preventDefault();
                 void handleSave();
@@ -767,7 +791,9 @@ export function InstanceSheet({
               </FormRow>
               <div className={CLASS.metaRow}>
                 <span className={CLASS.metaLabel}>Base provider</span>
-                <span className={CLASS.metaValue}>{instance.providerId}</span>
+                <span className={CLASS.metaValue} data-testid="base-provider">
+                  {instance.providerId}
+                </span>
               </div>
               <FormRow
                 label="Base URL"
@@ -833,8 +859,8 @@ export function InstanceSheet({
                 />
               </FormRow>
               {formError !== null && (
-                <p className={CLASS.formError} role="alert">
-                  {formError}
+                <p className={CLASS.formError} role="alert" data-reason={formError.reason}>
+                  {formError.message}
                 </p>
               )}
             </form>
@@ -852,9 +878,11 @@ export function InstanceSheet({
           ) : (
             <div className={CLASS.layers}>
               {layers.map((layer) => (
-                <div key={layer.source} className={CLASS.layer}>
+                <div key={layer.source} className={CLASS.layer} data-source={layer.source}>
                   <span>↳ {layer.label}</span>
-                  <Chip tone={layer.effective ? "alive" : "neutral"}>{layer.effective ? "effective" : "shadowed"}</Chip>
+                  <Chip tone={layer.effective ? "alive" : "neutral"} kind={layer.effective ? "effective" : "shadowed"}>
+                    {layer.effective ? "effective" : "shadowed"}
+                  </Chip>
                 </div>
               ))}
             </div>
@@ -907,7 +935,9 @@ export function InstanceSheet({
                   </div>
                 ))}
                 {modelQuery !== "" && matchingModels.length === 0 && (
-                  <p className={CLASS.modelNote}>No matching models.</p>
+                  <p className={CLASS.modelNote} data-reason="no-match">
+                    No matching models.
+                  </p>
                 )}
                 {shownModels.length < matchingModels.length && (
                   <p className={CLASS.modelNote}>
@@ -929,7 +959,7 @@ export function InstanceSheet({
               </Button>
             </div>
             {safeTestResult && (
-              <p className={CLASS.testResult} role="status">
+              <p className={CLASS.testResult} role="status" data-state={safeTestResult.status}>
                 {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
               </p>
             )}

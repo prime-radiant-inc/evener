@@ -169,7 +169,11 @@ export function AskQuestionCard({
               spaces are load-bearing: JSX concatenates adjacent elements,
               and inline flow needs real whitespace between them. */}
           <span className={CLASS.optionLabel}>{opt.label}</span>
-          {opt.recommended && <span className={CLASS.optionRecommended}> · recommended</span>}{" "}
+          {opt.recommended && (
+            <span className={CLASS.optionRecommended} data-slot="recommended">
+              {" · recommended"}
+            </span>
+          )}{" "}
           <span className={CLASS.optionDetail}>{opt.detail}</span>
         </label>
       ))}

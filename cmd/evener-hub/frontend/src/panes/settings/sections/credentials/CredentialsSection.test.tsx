@@ -6,12 +6,9 @@ import type {
   InstanceListResponse,
 } from "@evener/appwire-client";
 import {
-  CONNECTION_REPLACED_ERROR,
-  ENDPOINT_CHANGED_TEST_MESSAGE,
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
-  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
@@ -24,8 +21,23 @@ import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
-import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds, toastReasons } from "../../../../widgets/toast/toastTestUtils";
 import { CredentialsSection } from "./CredentialsSection";
+
+// The section's outcomes, read from their markers rather than from the words
+// shown for them: toasts by kind and reason, a row by its credential state, and
+// the sheet's credential-test result by its wire status.
+const waitForToastKind = (kind: string): Promise<void> => waitFor(() => expect(toastKinds()).toContain(kind));
+const waitForToastReason = (reason: string): Promise<void> => waitFor(() => expect(toastReasons()).toContain(reason));
+const rowState = (name: RegExp): string | null | undefined =>
+  screen
+    .getByRole("button", { name, hidden: true })
+    .querySelector("[data-credential-state]")
+    ?.getAttribute("data-credential-state");
+const testResultShown = (status: string): boolean =>
+  document.querySelector(`[role="status"][data-state="${status}"]`) !== null;
 
 /** The refusal these controls use instead of the native attribute: a click that
  * starts work must not drop the keyboard, so the pending/busy state is
@@ -113,7 +125,7 @@ test("Settings Connect provider opens discovery and retains management on cancel
   render(<CredentialsSection sectionId="credentials" />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Connect provider" }));
-  expect(await screen.findByText("Show all providers")).toBeTruthy();
+  expect(await screen.findByTestId("show-all-providers")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect(await screen.findByText("work")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
@@ -132,7 +144,7 @@ test("shows a rejected credential as Error until the hub reports it fixed", asyn
   ];
   fake.on("evener/auth/list", () => ({ providers: statuses }));
   render(<CredentialsSection sectionId="credentials" />);
-  await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
+  await waitFor(() => expect(rowState(/work/)).toBe("error"));
   const sheet = await openSheet(user, "work");
   expect(within(sheet).getByRole("status", { name: "Credential error" }).textContent).toBe(error);
 
@@ -140,7 +152,7 @@ test("shows a rejected credential as Error until the hub reports it fixed", asyn
   act(() => fake.emitNotification({ method: "evener/auth/updated", params: {} }));
   await waitFor(() => expect(within(sheet).queryByRole("status", { name: "Credential error" })).toBeNull());
   // The open sheet hides the listing from the accessibility tree.
-  expect(screen.getByRole("button", { name: /work/, hidden: true }).textContent).not.toContain("Error");
+  expect(rowState(/work/)).not.toBe("error");
 });
 
 // A listing kept from a replaced connection is another hub's until this one
@@ -155,9 +167,9 @@ test("shows no credential errors against a listing from a previous connection", 
     ],
   }));
   render(<CredentialsSection sectionId="credentials" />);
-  await waitFor(() => expect(screen.getByRole("button", { name: /work/ }).textContent).toContain("Error"));
+  await waitFor(() => expect(rowState(/work/)).toBe("error"));
   act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
-  expect(screen.getByRole("button", { name: /work/ }).textContent).not.toContain("Error");
+  expect(rowState(/work/)).not.toBe("error");
 });
 
 describe("initial load", () => {
@@ -199,7 +211,7 @@ describe("initial load", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     render(<CredentialsSection sectionId="credentials" />);
-    await screen.findByText("No provider instances configured.");
+    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["no-instances"]));
   });
 
   test("load failure shows an error message", async () => {
@@ -209,7 +221,7 @@ describe("initial load", () => {
     });
     render(<CredentialsSection sectionId="credentials" />);
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByText(/Failed to load: Something went wrong/);
+    await screen.findByTestId("load-error");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/network down/)).toBeNull();
   });
@@ -324,7 +336,7 @@ test("a failed refresh keeps the rows and shows the banner", async () => {
     await credentialsStore.getState().fetch();
   });
 
-  expect(screen.getByText(/Failed to load/)).toBeTruthy();
+  expect(screen.getByTestId("load-error")).toBeTruthy();
   expect(screen.getByRole("button", { name: /work/ })).toBe(workRow);
 });
 
@@ -366,19 +378,19 @@ test("a replaced connection's warnings stay hidden until its own listing lands",
   fake.on("evener/instance/list", () => ({ ...LIST, diagnostics: ['providers.toml: unexpected key "type"'] }));
   render(<CredentialsSection sectionId="credentials" />);
   await screen.findByText("work");
-  expect(screen.getByText("Warnings")).toBeTruthy();
+  expect(screen.getByTestId("diagnostics")).toBeTruthy();
 
   const restored = deferred<InstanceListResponse>();
   const replacement = new FakeClient("ready");
   replacement.on("evener/instance/list", () => restored.promise);
   await act(async () => connectionStore.getState().connect(replacement));
-  expect(screen.queryByText("Warnings")).toBeNull();
+  expect(screen.queryByTestId("diagnostics")).toBeNull();
 
   await act(async () => {
     restored.resolve({ ...LIST, diagnostics: ["user layer: /home/x/.config/evener/providers.toml"] });
     await restored.promise;
   });
-  expect(await screen.findByText("Warnings")).toBeTruthy();
+  expect(await screen.findByTestId("diagnostics")).toBeTruthy();
   expect(screen.getByText(/user layer/)).toBeTruthy();
 });
 
@@ -393,14 +405,14 @@ test("a replaced connection's warnings are hidden even when its listing held no 
     diagnostics: ['providers.toml: unexpected key "type"'],
   }));
   render(<CredentialsSection sectionId="credentials" />);
-  await screen.findByText("Warnings");
+  await screen.findByTestId("diagnostics");
 
   const replacement = new FakeClient("ready");
   replacement.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
   await act(async () => connectionStore.getState().connect(replacement));
 
   expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
-  expect(screen.queryByText("Warnings")).toBeNull();
+  expect(screen.queryByTestId("diagnostics")).toBeNull();
 });
 
 // A refresh is a read, so it is allowed while the rows are a replaced
@@ -454,7 +466,7 @@ describe("the detail sheet", () => {
     await screen.findByText("work");
     const user = userEvent.setup();
     const inspector = await openSheet(user, "work");
-    expect(within(inspector).getByText(/Configured via stored API key/)).toBeTruthy();
+    expect(inspector.querySelector('[data-source="store"]')).not.toBeNull();
     await user.click(within(inspector).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "work" })).toBeNull());
   });
@@ -490,7 +502,7 @@ describe("the detail sheet", () => {
     await user.click(within(inspector).getByRole("button", { name: "Remove" }));
     const confirm = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
-    await screen.findByText("Removed instance personal");
+    await waitForToastReason("removed");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
   });
 
@@ -534,7 +546,7 @@ describe("the detail sheet", () => {
     // reported as done once the store applied a listing without the authored
     // row, which takes a read of its own (the mount read and the test's own
     // superseding read are the first two).
-    await waitFor(() => expect(getToasts().some((toast) => toast.text === "Removed instance personal")).toBe(true));
+    await waitFor(() => expect(toastReasons().includes("removed")).toBe(true));
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThanOrEqual(3);
     expect(credentialsStore.getState().instances).toEqual([WORK]);
     expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
@@ -585,12 +597,12 @@ describe("the detail sheet", () => {
       // The reconcile read fails outright; wait until the flow settles on
       // either the honest unconfirmed-removal error or (wrongly) a success.
       await vi.waitFor(() => {
-        if (!screen.queryByText(/could not be confirmed/) && !screen.queryByText("Removed instance personal")) {
+        if (!toastReasons().some((reason) => reason === "removal-unconfirmed" || reason === "removed")) {
           throw new Error("no outcome toast yet");
         }
       });
     });
-    expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy();
+    expect(toastReasons()).toContain("removal-unconfirmed");
     expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
   });
 
@@ -614,8 +626,8 @@ describe("the detail sheet", () => {
     const confirm = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
 
-    await waitFor(() => expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy());
-    expect(screen.queryByText("Removed instance personal")).toBeNull();
+    await waitForToastReason("removal-unconfirmed");
+    expect(toastReasons()).not.toContain("removed");
     // The row is gone on the host: re-issuing the remove could only fail, so
     // the confirm dialog closes with the failure.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
@@ -664,7 +676,7 @@ describe("the detail sheet", () => {
     // ...and the hub's own message is a warning naming what was left behind,
     // never a failed Remove.
     expect(await screen.findByText(HUB_MESSAGE)).toBeTruthy();
-    expect(screen.queryByText(/Remove failed/)).toBeNull();
+    expect(toastKinds()).not.toContain("error");
   });
 
   // `implicit` is not the same as "the environment supplies it": a stored key
@@ -718,9 +730,9 @@ describe("the detail sheet", () => {
 
     // The row still on the host is the user's own stored-key row, so the
     // removal is not confirmed and the success wording must not appear.
-    await screen.findByText(/could not be confirmed for groq/);
-    expect(screen.queryByText("Removed instance groq")).toBeNull();
-    expect(screen.queryByText(/environment access for it is still active/)).toBeNull();
+    await waitForToastReason("removal-unconfirmed");
+    expect(toastReasons()).not.toContain("removed");
+    expect(toastReasons()).not.toContain("removed-environment-remains");
     // The removal's RPC did resolve: the owner still hears so it can drop what
     // it retained for the name.
     expect(onInstanceRemoved).toHaveBeenCalledWith("groq");
@@ -757,8 +769,8 @@ describe("the detail sheet", () => {
     const confirm = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
 
-    await screen.findByText("Removed instance personal; environment access for it is still active");
-    expect(screen.queryByText(/could not be confirmed/)).toBeNull();
+    await waitForToastReason("removed-environment-remains");
+    expect(toastReasons()).not.toContain("removal-unconfirmed");
     expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
   });
 });
@@ -786,7 +798,7 @@ describe("credential verification", () => {
     expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
 
     response.resolve({ provider: customName, status: "success", message: "Credentials verified." });
-    expect((await screen.findByRole("status")).textContent).toContain("Credentials verified.");
+    expect((await screen.findByRole("status")).getAttribute("data-state")).toBe("success");
     expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false);
   });
 
@@ -843,9 +855,8 @@ describe("credential verification", () => {
     response.resolve({ provider: WORK.name, status: "missing", message: "raw provider message" });
 
     const statusNode = await screen.findByRole("status");
-    expect(statusNode.textContent).toBe(
-      "missing: No credentials are configured for this instance. Add a key or sign in first.",
-    );
+    expect(statusNode.getAttribute("data-state")).toBe("missing");
+    expect(statusNode.textContent).not.toContain("raw provider message");
   });
 
   test("does not render a supplied secret from a response message", async () => {
@@ -859,7 +870,7 @@ describe("credential verification", () => {
     await userEvent.setup().click(within(inspector).getByRole("button", { name: "Test credentials" }));
 
     const status = await screen.findByRole("status");
-    expect(status.textContent).toContain("The provider rejected these credentials. Replace the key or sign in again.");
+    expect(status.getAttribute("data-state")).toBe("auth_rejected");
     expect(document.body.textContent).not.toContain(secret);
   });
 
@@ -876,9 +887,7 @@ describe("credential verification", () => {
     await userEvent.setup().click(within(inspector).getByRole("button", { name: "Test credentials" }));
 
     const status = await screen.findByRole("status");
-    expect(status.textContent).toContain(
-      "The provider endpoint could not be reached. Check the endpoint and network connection.",
-    );
+    expect(status.getAttribute("data-state")).toBe("endpoint_failure");
     expect(document.body.textContent).not.toContain(secret);
   });
 
@@ -910,7 +919,7 @@ describe("credential verification", () => {
     fake.on("evener/auth/test", () => response.promise);
     render(<CredentialsSection sectionId="credentials" />);
     const inspector = await openSheet(userEvent.setup(), "work");
-    await screen.findByText("Not configured · openai-chat · base https://old.example/v1");
+    await screen.findByText(/https:\/\/old\.example\/v1/);
     await userEvent.setup().click(within(inspector).getByRole("button", { name: "Test credentials" }));
     expect(within(inspector).getByRole("button", { name: "Testing credentials…" })).toBeTruthy();
 
@@ -919,7 +928,7 @@ describe("credential verification", () => {
     });
     // The row reads the instance from the store, so the refreshed base URL
     // lands live; the stale pending state from the old configuration is gone.
-    await screen.findByText("Not configured · openai-chat · base https://new.example/v1");
+    await screen.findByText(/https:\/\/new\.example\/v1/);
     const refreshedButton = within(inspector).getByRole("button", { name: /Test(?:ing credentials…)?/ });
     expect(isRefused(refreshedButton)).toBe(false);
     response.resolve({ provider: "work", status: "success", message: "Credentials verified." });
@@ -952,7 +961,7 @@ describe("credential verification", () => {
     await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
 
     expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toEqual([]);
-    await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+    await waitForToastKind("error");
     expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false);
   });
 
@@ -1029,7 +1038,7 @@ describe("credential verification", () => {
     // ...and its answer, which describes the connection that is gone, is not
     // shown as a result for the rows still on screen.
     await act(async () => pending.resolve({ provider: "work", status: "success", message: "Credentials verified." }));
-    expect(screen.queryByText("Credentials verified.")).toBeNull();
+    expect(testResultShown("success")).toBe(false);
 
     await act(async () => finishRestore(LIST));
     await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
@@ -1058,8 +1067,8 @@ describe("credential verification", () => {
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
 
-    await screen.findByText(ENDPOINT_CHANGED_TEST_MESSAGE);
-    expect(screen.queryByText(/provider endpoint could not be reached/)).toBeNull();
+    await waitForToastKind("error");
+    expect(testResultShown("endpoint_failure")).toBe(false);
     // The refused assertion is not a result: the pending test clears and the
     // action returns to its idle label.
     await waitFor(() =>
@@ -1127,8 +1136,8 @@ describe("actions refused while the held listing belongs to a replaced connectio
     // No probe reached the replacement connection - the test was refused, not
     // run against a destination this connection never read.
     expect(replacement.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
-    await screen.findByText(CONNECTION_REPLACED_ERROR);
-    expect(screen.queryByText(/provider endpoint could not be reached/)).toBeNull();
+    await waitForToastKind("warning");
+    expect(testResultShown("endpoint_failure")).toBe(false);
     // The pending test clears, so the action does not sit in "Testing…".
     await waitFor(() =>
       expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false),
@@ -1154,8 +1163,8 @@ describe("actions refused while the held listing belongs to a replaced connectio
     await user.click(within(inspector).getByRole("button", { name: /make default/i }));
 
     expect(replacement.calls.filter((call) => call.method === "evener/instance/setDefault")).toHaveLength(0);
-    await screen.findByText(CONNECTION_REPLACED_ERROR);
-    expect(screen.queryByText(/Set default failed/)).toBeNull();
+    await waitForToastKind("warning");
+    expect(toastKinds()).not.toContain("error");
   });
 
   test("starting a sign-in is refused with the change, not reported as a failed sign-in", async () => {
@@ -1166,8 +1175,8 @@ describe("actions refused while the held listing belongs to a replaced connectio
 
     expect(replacement.calls.filter((call) => call.method === "evener/auth/device/start")).toHaveLength(0);
     expect(replacement.calls.filter((call) => call.method === "evener/auth/login/start")).toHaveLength(0);
-    await screen.findByText(CONNECTION_REPLACED_ERROR);
-    expect(screen.queryByText(/Sign-in failed/)).toBeNull();
+    await waitForToastKind("warning");
+    expect(toastKinds()).not.toContain("error");
   });
 
   // Every instance-scoped write goes through the same gate, the model toggle
@@ -1201,8 +1210,8 @@ describe("actions refused while the held listing belongs to a replaced connectio
     await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
 
     expect(replacement.calls.filter((call) => call.method === "evener/instance/setModelDisabled")).toHaveLength(0);
-    await screen.findByText(CONNECTION_REPLACED_ERROR);
-    expect(screen.queryByText(/Model toggle failed/)).toBeNull();
+    await waitForToastKind("warning");
+    expect(toastKinds()).not.toContain("error");
   });
 
   test("a confirm-gated removal is refused with the change, not reported as a failed removal", async () => {
@@ -1214,8 +1223,8 @@ describe("actions refused while the held listing belongs to a replaced connectio
     await user.click(within(dialog).getByRole("button", { name: "Remove" }));
 
     expect(replacement.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(0);
-    await screen.findByText(CONNECTION_REPLACED_ERROR);
-    expect(screen.queryByText(/Remove failed/)).toBeNull();
+    await waitForToastKind("warning");
+    expect(toastKinds()).not.toContain("error");
     // The confirmation carried the fingerprint the row showed on the connection
     // that is gone, so it closes: the retry captures the fresh row instead of
     // retrying with a stale assertion.
@@ -1325,7 +1334,7 @@ describe("OAuth start branches", () => {
     const inspector = await openSheet(user, "personal");
     await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByText("Sign-in failed: Something went wrong.");
+    await waitForToastKind("error");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/provider unavailable/)).toBeNull();
     // No dialog of any kind: the inspector closed on the click, and the
@@ -1393,7 +1402,7 @@ describe("OAuth start branches", () => {
 
     // Flow A expires.
     await advanceTime(1000);
-    expect(screen.getByText(/Code expired/)).toBeTruthy();
+    expect(screen.getByRole("status").getAttribute("data-state")).toBe("expired");
     await act(async () => {
       const requestIndex = request.mock.calls.length;
       fireEvent.click(screen.getByRole("button", { name: "Start again" }));
@@ -1405,7 +1414,7 @@ describe("OAuth start branches", () => {
 
     // Flow B starts fresh: its own code, NOT flow A's leftover expired state.
     await waitFor(() => expect(screen.getByText("BBBB-2222")).toBeTruthy());
-    expect(screen.queryByText(/Code expired/)).toBeNull();
+    expect(screen.getByRole("status").getAttribute("data-state")).not.toBe("expired");
     expect(screen.getByRole("button", { name: /copy code/i })).toBeTruthy();
 
     // Flow B is genuinely polling under its own flowId.
@@ -1457,7 +1466,7 @@ describe("set default", () => {
     const inspector = await openSheet(user, "personal");
     await user.click(within(inspector).getByRole("button", { name: /make default/i }));
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByText("Set default failed: Something went wrong.");
+    await waitForToastKind("error");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/boom/)).toBeNull();
   });
@@ -1593,7 +1602,7 @@ describe("model live refresh", () => {
     const user = userEvent.setup();
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
-    await screen.findByText("Live refresh failed: Something went wrong.");
+    await waitForToastKind("error");
     expect(screen.queryByText(/boom/)).toBeNull();
     // Catalog rows from the list fetch still render.
     within(inspector).getByRole("switch", { name: "claude-opus-4-6" });
@@ -1630,7 +1639,7 @@ describe("model toggles", () => {
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/setModelDisabled")).toBe(true));
-    await screen.findByText("Disabled claude-opus-4-6");
+    await waitForToastKind("success");
   });
 
   test("a switch disables while its toggle is in flight", async () => {
@@ -1664,7 +1673,7 @@ describe("model toggles", () => {
       expect(isRefused(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(true),
     );
     release({ instances: [{ ...WORK, models: [{ id: "claude-opus-4-6", disabled: true }] }], availableProviders: [] });
-    await screen.findByText("Disabled claude-opus-4-6");
+    await waitForToastKind("success");
     await waitFor(() =>
       expect(isRefused(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(false),
     );
@@ -1705,7 +1714,7 @@ describe("model toggles", () => {
     expect(document.activeElement).toBe(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
 
     release({ instances: [{ ...WORK, models: [{ id: "claude-opus-4-6", disabled: true }] }], availableProviders: [] });
-    await screen.findByText("Disabled claude-opus-4-6");
+    await waitForToastKind("success");
   });
 
   // The same property for the two buttons whose own click starts their work:
@@ -1733,7 +1742,7 @@ describe("model toggles", () => {
     expect(document.activeElement).toBe(within(inspector).getByRole("button", { name: "Testing credentials…" }));
 
     probe.resolve({ provider: "work", status: "success", message: "Credentials verified." });
-    expect((await screen.findByRole("status")).textContent).toContain("Credentials verified.");
+    expect((await screen.findByRole("status")).getAttribute("data-state")).toBe("success");
   });
 
   test("clicking Refresh live models keeps the keyboard on it while the read is out", async () => {
@@ -1813,7 +1822,7 @@ describe("model toggles", () => {
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByText("Model toggle failed: Something went wrong.");
+    await waitForToastKind("error");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/boom/)).toBeNull();
   });
@@ -1847,7 +1856,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     // The sheet's own Clear button is still present behind the confirm, so
     // scope this second click to the dialog's own Clear/confirm button.
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText("Credentials cleared for work");
+    await waitForToastKind("success");
   });
 
   test("a cleared credential whose listing read is lost is still reported as cleared", async () => {
@@ -1887,8 +1896,8 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     // The handler continues past the lost listing read over a few more
     // microtasks; flush them inside act before asserting.
     await act(async () => {});
-    await screen.findByText("Credentials cleared for work");
-    expect(screen.queryByText(/Clear failed/)).toBeNull();
+    await waitForToastKind("success");
+    expect(toastKinds()).not.toContain("error");
   });
 
   // #713: a stray stored key shadowed behind an active OAuth login needs an
@@ -1927,7 +1936,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
     expect(dialog).toBeTruthy();
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText("Stored key cleared for shadowed");
+    await waitForToastKind("success");
   });
 
   // roborev round 3, F3: a gcp-adc instance's stored credential is a JSON
@@ -1969,7 +1978,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     expect(dialog).toBeTruthy();
     expect(within(dialog).getByText(/credential JSON for "vertex"/)).toBeTruthy();
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText("Stored credential JSON cleared for vertex");
+    await waitForToastKind("success");
   });
 
   test("Remove opens a ConfirmDialog; confirming calls instanceRemove", async () => {
@@ -1994,7 +2003,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     // The sheet's own Remove button is still present behind the confirm, so
     // scope this second click to the dialog's own Remove/confirm button.
     await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-    await screen.findByText("Removed instance personal");
+    await waitForToastReason("removed");
   });
 
   // A confirmation is issued against the instance the user was looking at:
@@ -2024,7 +2033,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await user.click(within(inspector).getByRole("button", { name: "Clear" }));
     const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText("Credentials cleared for work");
+    await waitForToastKind("success");
   });
 
   test("Clear stored key sends the endpoint fingerprint of the row the confirm was opened for", async () => {
@@ -2060,7 +2069,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
     const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText("Stored key cleared for shadowed");
+    await waitForToastKind("success");
   });
 
   test("Remove sends the endpoint fingerprint of the row the confirm was opened for", async () => {
@@ -2087,7 +2096,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await user.click(within(inspector).getByRole("button", { name: "Remove" }));
     const dialog = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-    await screen.findByText("Removed instance personal");
+    await waitForToastReason("removed");
   });
 
   // The confirm-gated actions assert the listed row's endpoint fingerprint, and
@@ -2132,8 +2141,8 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     // holding the retry open.
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull());
     expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull();
-    await screen.findByText(/changed to a different endpoint/);
-    expect(screen.queryByText(/Remove failed/)).toBeNull();
+    await waitForToastKind("warning");
+    expect(toastKinds()).not.toContain("error");
     // ...and the listing was re-read, so the retry can assert where the name
     // resolves now.
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
@@ -2196,8 +2205,8 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Clear stored key" })).toBeNull());
     expect(screen.queryByRole("dialog", { name: "shadowed" })).toBeNull();
-    await screen.findByText(/changed to a different endpoint/);
-    expect(screen.queryByText(/Clear stored key failed/)).toBeNull();
+    await waitForToastKind("warning");
+    expect(toastKinds()).not.toContain("error");
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
 
     const reopened = await openSheet(user, "shadowed");
@@ -2251,8 +2260,8 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await user.click(within(inspector).getByRole("button", { name: "Remove" }));
     const confirm = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
-    await screen.findByText(/Removed instance personal/);
-    expect(screen.queryByText(/could not be confirmed/)).toBeNull();
+    await waitForToastReason("removed-environment-remains");
+    expect(toastReasons()).not.toContain("removal-unconfirmed");
   });
 
   // The authored entry's name can survive the removal as an environment-
@@ -2294,7 +2303,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const confirm = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
 
-    await screen.findByText(/Removed instance work; environment access for it is still active/);
+    await waitForToastReason("removed-environment-remains");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "work" })).toBeNull());
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(
@@ -2340,7 +2349,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await user.click(within(inspector).getByRole("button", { name: "Clear" }));
     const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText("Clear failed: Something went wrong.");
+    await waitForToastKind("error");
     expect(screen.getByRole("dialog", { name: "Clear credentials" })).toBeTruthy();
   });
 
@@ -2371,7 +2380,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
     const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
-    await screen.findByText("Clear stored key failed: Something went wrong.");
+    await waitForToastKind("error");
     expect(screen.getByRole("dialog", { name: "Clear stored key" })).toBeTruthy();
   });
 
@@ -2393,7 +2402,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await user.click(within(inspector).getByRole("button", { name: "Remove" }));
     const dialog = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(dialog).getByRole("button", { name: "Remove" }));
-    await screen.findByText("Remove failed: Something went wrong.");
+    await waitForToastKind("error");
     expect(screen.getByRole("dialog", { name: "Remove instance" })).toBeTruthy();
   });
 });
@@ -2429,7 +2438,7 @@ describe("credential dialogs against a moving endpoint", () => {
       await credentialsStore.getState().fetch();
     });
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("different endpoint"));
+    await waitFor(() => expect(within(dialog).getByRole("alert").getAttribute("data-reason")).toBe("endpoint-changed"));
     expect(setKey).not.toHaveBeenCalled();
     expect((within(dialog).getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
   });
@@ -2488,7 +2497,7 @@ describe("diagnostics and writesRefused", () => {
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
-    expect(screen.queryByText("Warnings")).toBeNull();
+    expect(screen.queryByTestId("diagnostics")).toBeNull();
   });
 
   test("writesRefused gates the raw add-instance action, not the guided connector or credential-only actions", async () => {
@@ -2623,7 +2632,7 @@ describe("rename from the sheet", () => {
     await user.click(within(inspector).getByRole("button", { name: "Save" }));
 
     await screen.findByText(/OAuth record not read/);
-    expect(screen.queryByText(/Save failed/)).toBeNull();
+    expect(toastKinds()).not.toContain("error");
     // The rename stood: the sheet follows the instance to its new name.
     await screen.findByRole("dialog", { name: "work2" });
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
@@ -2660,7 +2669,7 @@ describe("rename from the sheet", () => {
     await user.click(within(inspector).getByRole("button", { name: "Save" }));
 
     await screen.findByText(/OAuth record not read/);
-    expect(screen.queryByText(/Save failed/)).toBeNull();
+    expect(toastKinds()).not.toContain("error");
     // The listing has not caught up, so the held entry is keeping the sheet
     // alive: it is still open, not closed on the missing row.
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
@@ -2810,7 +2819,7 @@ describe("rename from the sheet", () => {
     // The draft is still dirty and Save pressable; pressing must refuse.
     await user.click(within(inspector).getByRole("button", { name: "Save" }));
     expect(edits()).toHaveLength(1);
-    expect(within(inspector).getByRole("alert").textContent).toMatch(/still being confirmed/);
+    expect(within(inspector).getByRole("alert").getAttribute("data-reason")).toBe("rename-pending");
 
     // The form's own submit door refuses too.
     fireEvent.submit(within(inspector).getByRole("form", { name: "Edit work" }));
@@ -2861,7 +2870,7 @@ describe("rename from the sheet", () => {
     expect(screen.queryByRole("dialog", { name: "Clear credentials" })).toBeNull();
     expect(fake.calls.filter((call) => call.method === "evener/auth/logout")).toHaveLength(0);
     // The user is told why, and the impostor is untouched.
-    expect((await screen.findAllByText(/still being confirmed/)).length).toBeGreaterThan(0);
+    await waitForToastKind("warning");
     expect(credentialsStore.getState().instances.some((i) => i.name === "work2")).toBe(true);
 
     // The real row arrives: the actions work again.
@@ -2894,7 +2903,7 @@ describe("rename from the sheet", () => {
     await user.type(within(inspector).getByLabelText("Name"), "2");
     await user.click(within(inspector).getByRole("button", { name: "Save" }));
 
-    await screen.findByText(/Save failed/);
+    await waitForToastKind("error");
     expect(screen.queryByRole("dialog", { name: "work2" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "work" })).toBeTruthy();
   });

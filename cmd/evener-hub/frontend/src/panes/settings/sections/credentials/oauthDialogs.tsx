@@ -278,6 +278,18 @@ export function DeviceCodeDialog({
   }
 
   const done = expired || error !== null;
+  // What the status line reports, as its data-state: the code expired, the
+  // poll failed, the poll waits on this connection's listing, the copy failed,
+  // or the flow waits on the user to authorize.
+  const status = expired
+    ? "expired"
+    : error !== null
+      ? "error"
+      : waitingForConnection
+        ? "waiting-for-connection"
+        : copyFailed
+          ? "copy-failed"
+          : "waiting-for-authorization";
   const statusText =
     error ??
     (waitingForConnection
@@ -299,7 +311,7 @@ export function DeviceCodeDialog({
             machine that is not this one, and the user has to be able to read or
             copy the address to reach it from wherever they are. */}
         {host !== undefined && <p className={CLASS.url}>{verificationUrl}</p>}
-        <p className={CLASS.status} role="status" aria-live="polite">
+        <p className={CLASS.status} role="status" aria-live="polite" data-state={status}>
           {statusText}
         </p>
         <div className={CLASS.actions}>

@@ -114,6 +114,9 @@ func TestSafeMobileOriginAllowsOrdinaryHTTPSDNSNameWithoutResolution(t *testing.
 		"https://foo_bar.example:9443",
 		"https://-foo.example:9443",
 		"https://foo-.example:9443",
+		"https://123.example:9443",
+		"https://hub123:9443",
+		"https://hub.0xgg:9443",
 	} {
 		t.Run(origin, func(t *testing.T) {
 			if got, ok := safeMobileOrigin(origin); !ok || got != origin {

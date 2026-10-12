@@ -149,11 +149,13 @@ export function CollectionEditor<T>({
     <div className={CLASS.root}>
       <ul aria-label={label} className={CLASS.list}>
         {items.length === 0 && inheritedItems.length === 0 ? (
-          <li className={CLASS.empty}>{emptyMessage}</li>
+          <li className={CLASS.empty} data-kind="empty">
+            {emptyMessage}
+          </li>
         ) : (
           <>
             {rowKeys(items, getKey).map(([item, key]) => (
-              <li key={key} className={CLASS.row}>
+              <li key={key} className={CLASS.row} data-kind="local">
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <IconButton
                   label={removeLabel(item)}
@@ -165,7 +167,7 @@ export function CollectionEditor<T>({
               </li>
             ))}
             {inheritedItems.map((item) => (
-              <li key={`inherited:${getKey(item)}`} className={`${CLASS.row} ${CLASS.inherited}`}>
+              <li key={`inherited:${getKey(item)}`} className={`${CLASS.row} ${CLASS.inherited}`} data-kind="inherited">
                 <div className={CLASS.content}>{renderItem(item)}</div>
                 <span className={CLASS.inheritedTag}>(default)</span>
               </li>

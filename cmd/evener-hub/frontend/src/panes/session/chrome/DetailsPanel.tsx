@@ -82,9 +82,20 @@ function isEndedStatus(type: string): boolean {
   return type === "ended" || type === "closed";
 }
 
-function DetailRow({ label, testId, children }: { label: string; testId: string; children: React.ReactNode }) {
+function DetailRow({
+  label,
+  testId,
+  scope,
+  children,
+}: {
+  label: string;
+  testId: string;
+  /** What the row's figure counts, when that can vary (the token total). */
+  scope?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className={CLASS.row} data-testid={testId}>
+    <div className={CLASS.row} data-testid={testId} data-scope={scope}>
       <dt className={CLASS.label}>{label}</dt>
       <dd className={CLASS.value}>{children}</dd>
     </div>
@@ -174,7 +185,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
           </DetailRow>
         )}
         {tokens && (
-          <DetailRow label={tokensLabel} testId="session-details-tokens">
+          <DetailRow label={tokensLabel} testId="session-details-tokens" scope={tokens.scope}>
             <span>↑{formatTokenCount(tokens.inputTokens)}</span>
             <span>↓{formatTokenCount(tokens.outputTokens)}</span>
           </DetailRow>

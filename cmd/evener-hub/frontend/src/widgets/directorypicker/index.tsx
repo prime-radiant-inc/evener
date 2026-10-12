@@ -355,17 +355,17 @@ export function DirectoryPicker({
             aria-busy={!pathEdited && entries === null && error === null}
           >
             {pathEdited ? (
-              <p className={CLASS.status} role="status">
+              <p className={CLASS.status} role="status" data-state="edited">
                 Press Go to browse this path.
               </p>
             ) : entries === null ? (
               !error && (
-                <p className={CLASS.status} role="status">
+                <p className={CLASS.status} role="status" data-state="loading">
                   Loading directories…
                 </p>
               )
             ) : entries.length === 0 ? (
-              <p className={CLASS.status} role="status">
+              <p className={CLASS.status} role="status" data-state="empty">
                 No subfolders to display.
               </p>
             ) : (

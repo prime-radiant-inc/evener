@@ -66,6 +66,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/pairing": path.join(appwirePackageDir, "pairing.ts"),
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
       "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
@@ -91,6 +92,7 @@ export default defineConfig({
       // the package's KeybindingParser port; the package itself never names
       // tinykeys, so this alias serves only its tests.
       tinykeys: path.join(__dirname, "node_modules", "tinykeys"),
+      tweetnacl: path.join(__dirname, "node_modules", "tweetnacl"),
     },
   },
   server: {

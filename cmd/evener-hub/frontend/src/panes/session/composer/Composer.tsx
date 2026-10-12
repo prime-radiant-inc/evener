@@ -1472,7 +1472,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           permanent "ready" line to usefully say (honest-liveness: only
           announce a real transition, never a static claim). */}
       <VisuallyHidden>
-        <span role="status" aria-live="polite">
+        <span role="status" aria-live="polite" data-testid="composer-ready-announcement">
           {readyAnnouncement}
         </span>
       </VisuallyHidden>
@@ -1548,7 +1548,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
               onSelect={commitSlashCompletion}
             />
           )}
-          <form ref={formRef} onSubmit={handleFormSubmit}>
+          <form
+            ref={formRef}
+            onSubmit={handleFormSubmit}
+            data-testid="composer-form"
+            data-mode={ended ? "follow-up" : "message"}
+          >
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
                 data-testid="composer-input-card"

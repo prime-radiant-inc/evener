@@ -17,6 +17,8 @@ flowchart TD
     Native[Native phone app] --> TS
     TS --> Hub[Hub: routing, hosts, settings, navigation]
     TUI[Terminal dashboard] --> Hub
+    Playdate[Playdate C client] --> Hub
+    Playdate --> Transcription[OpenAI Realtime transcription]
     Hub --> Local[Local session daemon]
     Hub --> Remote[SSH attachment to remote hub]
     Remote --> RemoteDaemon[Remote session daemon]
@@ -53,6 +55,22 @@ executable provides the commands that launch these processes. See
 | Diagnose a stuck session or repair setup | S21 diagnostics; S15 settings | The affected subsystem's authority and recovery owner below |
 
 ## Clients and interaction
+
+The [Playdate client](playdate-client.md) is a small additional client surface.
+Its [separate C repository](https://github.com/prime-radiant-inc/evener-client-playdate) owns paged navigation,
+chat projection, scrolling, immediate microphone capture, recoverable audio,
+review drafts and persisted mutation identity. Its native Tailscale transport
+owns DERP, WireGuard, TCP, native enrollment, authenticated control maps and
+device identity recovery. The Hub owns generic short-lived device invitations and browser approvals;
+[device pairing](../device-pairing.md) defines the shared QR/acoustic wire format
+and encrypted credential delivery. The browser sends invitations and confirms
+matching codes. Clients own durable settings and saved work scoped by destination
+and authenticated Tailscale peer. S05 AppWire
+and S06 Hub routing own its session protocol;
+S10 history and S11 durable intent remain authoritative for recorded messages
+and accepted input. The device reconnects and hydrates that authority, preserving
+its drafts. OpenAI owns transcription; the device connects directly using SDK
+TLS, without a Hub or Mac transcription proxy.
 
 | ID and responsibility | Entry points and implementation | State authority and recovery ownership | Owning references |
 | --- | --- | --- | --- |

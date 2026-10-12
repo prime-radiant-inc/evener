@@ -1,7 +1,7 @@
 import type { HostPushCredentialsResponse, HostRow, InstanceEntry } from "@evener/appwire-client";
 import { RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -9,8 +9,13 @@ import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../..
 import { HOST_GATE_TIMEOUT_MS, hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
+import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsHostScope } from "./CredentialsHostScope";
+
+// What the push action and the listing above it say, read by reason rather
+// than by their words.
+const reasonShown = (reason: string): boolean => document.querySelector(`[data-reason="${reason}"]`) !== null;
 
 // The credential PUSH action on the remote-credentials surface (component 07c):
 // the selected remote host is the copy's TARGET, this hub's local store is its
@@ -352,7 +357,7 @@ test("a push failure that lands after a host switch is not rendered for the new 
 
   // Nothing about beta's failure is rendered, least of all naming gamma.
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.queryByText(/Couldn't push credentials to gamma/)).toBeNull();
+  expect(reasonShown("failed")).toBe(false);
 });
 
 // MEDIUM 2: unverifiable means the listing was withheld because the host's name
@@ -361,7 +366,6 @@ test("a push failure that lands after a host switch is not rendered for the new 
 // its button disabled, nothing reaching the wire - never unmounted: unmounting
 // it destroys a report or an in-flight attempt's state (see the two tests
 // below), and the listing's own state already says why the button waits.
-const REGISTRY_UNVERIFIABLE_PUSH_NOTICE = /hosts list couldn't be read, so nothing here confirms beta/;
 
 test("the push action is held while the host is unverifiable", async () => {
   const fake = connectFakeClient();
@@ -377,11 +381,11 @@ test("the push action is held while the host is unverifiable", async () => {
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
   const held = screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement;
   expect(held.disabled).toBe(true);
   // The action names its own reason, in this state's terms.
-  expect(screen.getByText(REGISTRY_UNVERIFIABLE_PUSH_NOTICE)).toBeTruthy();
+  expect(reasonShown("registry-unreadable")).toBe(true);
   // A disabled control cannot be fired, so nothing reaches the wire.
   await userEvent.setup().click(held);
   expect(fake.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(false);
@@ -392,7 +396,7 @@ test("the push action is held while the host is unverifiable", async () => {
 // read - only the registry's answer naming the host. The parent's
 // `{!unverifiable && <PushCredentials/>}` then unmounted the action on a later
 // registry read failure, destroying the report (local state) and leaving only
-// the listing's "Couldn't check" empty state over a mutation that may already
+// the listing's unverifiable empty state over a mutation that may already
 // have landed - and, once the registry recovered, a fresh live button inviting
 // the blind re-push this feature's unknown-outcome state exists to prevent.
 test("a push report survives a registry read that fails under it", async () => {
@@ -419,7 +423,7 @@ test("a push report survives a registry read that fails under it", async () => {
   // The registry's next read fails: beta's registration can no longer be
   // checked, so the listing says so...
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
-  expect(screen.getByText(/Couldn't check beta's registration/)).toBeTruthy();
+  expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]);
 
   // ...and the report is RETAINED beneath it: the action was not unmounted, so
   // the outcome of a mutation this hub already sent stays readable.
@@ -456,7 +460,7 @@ test("a push in flight when the registry read fails still lands its report", asy
 
   // The registry's next read fails while the push is out...
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
-  expect(screen.getByText(/Couldn't check beta's registration/)).toBeTruthy();
+  expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]);
 
   // ...and the answer already on its way is still this action's to show.
   await act(async () => settle[0]!.resolve({ host: "beta", results: [{ instance: "on-beta", action: "added" }] }));
@@ -471,7 +475,6 @@ test("a push in flight when the registry read fails still lands its report", asy
 // offered a live credential mutation for a name nothing had confirmed was still
 // a configured host. The action is gated on the registry's CURRENT answer naming
 // the host: absent is not enough, it must have answered.
-const REGISTRY_UNNAMED_NOTICE = /hosts list has no answer for beta yet/;
 
 test("the push action is held until the registry's own listing names the host", async () => {
   const fake = connectFakeClient();
@@ -490,7 +493,7 @@ test("the push action is held until the registry's own listing names the host", 
 
   const held = screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement;
   expect(held.disabled).toBe(true);
-  expect(screen.getByText(REGISTRY_UNNAMED_NOTICE)).toBeTruthy();
+  expect(reasonShown("registry-unanswered")).toBe(true);
   // A disabled control cannot be fired, so nothing reaches the wire.
   await userEvent.setup().click(held);
   expect(fake.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(false);
@@ -501,7 +504,7 @@ test("the push action is held until the registry's own listing names the host", 
   });
   expect(await screen.findByText("on-beta")).toBeTruthy();
   expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(false);
-  expect(screen.queryByText(REGISTRY_UNNAMED_NOTICE)).toBeNull();
+  expect(reasonShown("registry-unanswered")).toBe(false);
 });
 
 // The same gate, on the state a previous round deliberately kept: a verified
@@ -525,10 +528,10 @@ test("a verified listing that outlives a failed registry read keeps its rows, wi
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
 
   expect(screen.getByText("on-beta")).toBeTruthy();
-  expect(screen.queryByText(/Couldn't check/)).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("unverifiable");
   // ...and the action is held until the registry answers again.
   expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByText(REGISTRY_UNNAMED_NOTICE)).toBeTruthy();
+  expect(reasonShown("registry-unanswered")).toBe(true);
 });
 
 // MEDIUM 3: a push performs many sequential remote operations over SSH, so the
@@ -576,7 +579,6 @@ test("the push call passes the host-mutation timeout, not the client's 30s defau
 // click of a mutation that may already have landed: the keys applied twice, or a
 // value the host took since overwritten by this hub's older one.
 const TIMED_OUT = 'AppwireClient: "evener/host/pushCredentials" timed out after 2100000ms';
-const UNKNOWN_OUTCOME_NOTICE = /not known here: beta may have applied the keys/;
 
 test("a push that times out reads as an unknown outcome, not as the host's refusal", async () => {
   const fake = connectFakeClient();
@@ -598,10 +600,10 @@ test("a push that times out reads as an unknown outcome, not as the host's refus
   // The outcome is stated as unknown - the host may have applied the keys - and
   // the settled attempt is never reported as beta's own refusal.
   const warning = await screen.findByRole("alert");
-  expect(warning.textContent).toMatch(UNKNOWN_OUTCOME_NOTICE);
-  expect(screen.queryByText(/Couldn't push credentials to beta/)).toBeNull();
+  expect(warning.getAttribute("data-reason")).toBe("unknown-outcome");
+  expect(reasonShown("failed")).toBe(false);
   // The client's internal deadline text is not passed off as the host's answer.
-  expect(screen.queryByText(/timed out after/)).toBeNull();
+  expect(document.body.textContent).not.toContain(TIMED_OUT);
   // No blind retry: the action that was clicked is gone, and the only way to
   // send the keys again is the deliberate re-send, under the warning.
   expect(screen.queryByRole("button", { name: "Push credentials to beta" })).toBeNull();
@@ -662,7 +664,7 @@ test("a zero-result report says there is nothing to push and renders no rows", a
   await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
 
   const report = await screen.findByRole("status", { name: "Push report for beta" });
-  expect(report.textContent).toBe("Nothing to push to beta: this hub has no provider-instance keys.");
+  expect(report.getAttribute("data-reason")).toBe("no-keys");
   expect(within(report).queryAllByRole("listitem")).toHaveLength(0);
 });
 
@@ -709,7 +711,6 @@ test("a host re-registered under the same name does not keep the previous regist
 // notion stores/credentials.ts's host partitions are current under): a
 // settlement from a generation the action is no longer on is dropped rather
 // than shown, and the attempt reads as an outcome this connection never saw.
-const REPLACED_CONNECTION_NOTICE = /was replaced while the push to beta was in flight/;
 
 function connectReplacementClient(): FakeClient {
   const replacement = new FakeClient("ready");
@@ -753,7 +754,7 @@ test("a push in flight when the connection is replaced is not reported as the ne
   expect(screen.queryByText("old-connection-key")).toBeNull();
   // The attempt is readable as what it is, rather than as a success or a
   // failure of the connection that replaced it...
-  expect(screen.getByText(REPLACED_CONNECTION_NOTICE)).toBeTruthy();
+  expect(reasonShown("orphaned")).toBe(true);
   // ...and the mutation was not sent a second time behind the user's back.
   expect(settle).toHaveLength(1);
   expect(
@@ -790,9 +791,9 @@ test("a push failure that lands on a replaced connection is not rendered as the 
 
   // The failure belongs to the connection that is gone, so it is not rendered
   // as this one's - the attempt reads as an unknown outcome instead.
-  expect(screen.queryByText(/Couldn't push credentials to beta/)).toBeNull();
+  expect(reasonShown("failed")).toBe(false);
   expect(screen.queryByText(/the replaced connection refused the push/)).toBeNull();
-  expect(screen.getByText(REPLACED_CONNECTION_NOTICE)).toBeTruthy();
+  expect(reasonShown("orphaned")).toBe(true);
 });
 
 test("the connection that issued a push still renders that push's own report", async () => {
@@ -817,7 +818,7 @@ test("the connection that issued a push still renders that push's own report", a
   await act(async () => {
     replacement = connectReplacementClient();
   });
-  expect(screen.getByText(REPLACED_CONNECTION_NOTICE)).toBeTruthy();
+  expect(reasonShown("orphaned")).toBe(true);
 
   // The guard cannot pass by never showing anything: a push issued on the
   // connection that is CURRENT renders that connection's own report.
@@ -829,7 +830,7 @@ test("the connection that issued a push still renders that push's own report", a
 
   const report = await screen.findByRole("status", { name: "Push report for beta" });
   expect(within(report).getByRole("listitem").textContent).toBe("new-connection-keyupdated");
-  expect(screen.queryByText(REPLACED_CONNECTION_NOTICE)).toBeNull();
+  expect(reasonShown("orphaned")).toBe(false);
   expect(replacement.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(true);
 
   // The replaced connection's answer lands only now - after the new
@@ -843,7 +844,7 @@ test("the connection that issued a push still renders that push's own report", a
   const rows = within(screen.getByRole("status", { name: "Push report for beta" })).getAllByRole("listitem");
   expect(rows.map((row) => row.textContent)).toEqual(["new-connection-keyupdated"]);
   expect(screen.queryByText("old-connection-key")).toBeNull();
-  expect(screen.queryByText(REPLACED_CONNECTION_NOTICE)).toBeNull();
+  expect(reasonShown("orphaned")).toBe(false);
 });
 
 // MEDIUM 2 (roborev on 81d1e20): the generation guard dropped a settlement that
@@ -853,7 +854,6 @@ test("the connection that issued a push still renders that push's own report", a
 // the connection that was gone. The attempt's generation now travels WITH its
 // outcome, and an outcome from a generation this action is no longer on is
 // withheld, with the reason said out loud.
-const SETTLED_THEN_REPLACED_NOTICE = /was replaced after the push to beta settled/;
 
 test("a report on screen is withheld once the connection it described is replaced", async () => {
   const fake = connectFakeClient();
@@ -884,7 +884,7 @@ test("a report on screen is withheld once the connection it described is replace
   });
 
   expect(screen.queryByRole("status", { name: "Push report for beta" })).toBeNull();
-  expect(screen.getByText(SETTLED_THEN_REPLACED_NOTICE)).toBeTruthy();
+  expect(reasonShown("stale-outcome")).toBe(true);
   // The action is not a dead end: the listing is the new connection's, and a
   // push from here goes to the connection that is current.
   expect(await screen.findByText("on-beta")).toBeTruthy();

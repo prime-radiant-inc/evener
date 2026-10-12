@@ -1,6 +1,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { Chevron, type ChevronDirection } from "../../../../widgets";
 import { NewContentPill } from "./NewContentPill";
+
+// The path the shared Chevron draws for `direction`, read off a standalone render.
+function chevronPath(direction: ChevronDirection): string | null | undefined {
+  const { container, unmount } = render(<Chevron direction={direction} />);
+  const d = container.querySelector("path")?.getAttribute("d");
+  unmount();
+  return d;
+}
 
 test("renders nothing when count is 0 and not needsYou", () => {
   render(<NewContentPill count={0} needsYou={false} onClick={() => {}} />);
@@ -10,7 +19,7 @@ test("renders nothing when count is 0 and not needsYou", () => {
 test("renders the plain jump-to-latest form when visible with count 0 - scrolled back, nothing new yet", () => {
   render(<NewContentPill visible count={0} needsYou={false} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
-  expect(pill.textContent!.toLowerCase()).toContain("latest");
+  expect(pill.getAttribute("data-kind")).toBe("latest");
   // No numeric badge in the plain form - there is nothing to count.
   expect(pill.textContent).not.toMatch(/\d/);
 });
@@ -18,14 +27,14 @@ test("renders the plain jump-to-latest form when visible with count 0 - scrolled
 test("visible with count 0 and needsYou reads 'needs you' (an awaiting flip can land after the reader scrolled away)", () => {
   render(<NewContentPill visible count={0} needsYou={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
-  expect(pill.textContent!.toLowerCase()).toContain("needs you");
+  expect(pill.getAttribute("data-kind")).toBe("needs-you");
 });
 
 test("visible still shows the count form once new items arrive", () => {
   render(<NewContentPill visible count={3} needsYou={false} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
+  expect(pill.getAttribute("data-kind")).toBe("count");
   expect(pill.textContent).toContain("3");
-  expect(pill.textContent!.toLowerCase()).toContain("new");
 });
 
 test("renders nothing when count is 0 even if needsYou is (defensively) true", () => {
@@ -36,15 +45,14 @@ test("renders nothing when count is 0 even if needsYou is (defensively) true", (
 test("shows the plain count via Badge when not needsYou", () => {
   render(<NewContentPill count={5} needsYou={false} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
+  expect(pill.getAttribute("data-kind")).toBe("count");
   expect(pill.textContent).toContain("5");
-  expect(pill.textContent!.toLowerCase()).toContain("new");
-  expect(pill.textContent!.toLowerCase()).not.toContain("needs you");
 });
 
 test("reads 'needs you' instead of the plain count when needsYou is true, per the pinned pill-upgrade contract", () => {
   render(<NewContentPill count={5} needsYou={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
-  expect(pill.textContent!.toLowerCase()).toContain("needs you");
+  expect(pill.getAttribute("data-kind")).toBe("needs-you");
   // The raw count is not shown once upgraded - matches
   // docs/web-ui/parity/contracts-transcript-scroll-liveness.md: "New content
   // arriving under an awaiting/attention state reads '↓ needs you' instead
@@ -96,20 +104,19 @@ test("caps a very large count via Badge's own 99+ display, without the pill inve
 test("renders the pill when count is 0 but error is true - an itemless failed turn is itself the news", () => {
   render(<NewContentPill count={0} needsYou={false} error={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
-  expect(pill.textContent!.toLowerCase()).toContain("failed turn");
+  expect(pill.getAttribute("data-kind")).toBe("failed-turn");
 });
 
 test("shows the danger variant when error is true", () => {
   render(<NewContentPill count={5} needsYou={false} error={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
-  expect(pill.textContent!.toLowerCase()).toContain("failed turn");
+  expect(pill.getAttribute("data-kind")).toBe("failed-turn");
 });
 
 test("error outranks needsYou when both are true, per the pinned precedence contract", () => {
   render(<NewContentPill count={5} needsYou={true} error={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
-  expect(pill.textContent!.toLowerCase()).toContain("failed turn");
-  expect(pill.textContent!.toLowerCase()).not.toContain("needs you");
+  expect(pill.getAttribute("data-kind")).toBe("failed-turn");
 });
 
 test("the error variant does not show a numeric count - matches the legacy pill's bare 'error' label, no digit", () => {
@@ -125,22 +132,19 @@ test("the error variant never renders a literal ✕ character", () => {
 test("error defaults to false - existing count/needsYou-only callers are unaffected", () => {
   render(<NewContentPill count={5} needsYou={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
-  expect(pill.textContent!.toLowerCase()).toContain("needs you");
-  expect(pill.textContent!.toLowerCase()).not.toContain("failed turn");
+  expect(pill.getAttribute("data-kind")).toBe("needs-you");
 });
 
 test("renders a chevron pointing down by default", () => {
   render(<NewContentPill count={5} needsYou={false} onClick={() => {}} />);
   const chevron = screen.getByTestId("new-content-pill").querySelector("svg");
   expect(chevron).toBeTruthy();
-  // Chevron path for down direction
-  expect(chevron?.querySelector("path")?.getAttribute("d")).toBe("M3.5 6 L8 10.5 L12.5 6");
+  expect(chevron?.querySelector("path")?.getAttribute("d")).toBe(chevronPath("down"));
 });
 
 test("renders a chevron pointing up when pillArrowDirection is 'up'", () => {
   render(<NewContentPill count={5} needsYou={false} pillArrowDirection="up" onClick={() => {}} />);
   const chevron = screen.getByTestId("new-content-pill").querySelector("svg");
   expect(chevron).toBeTruthy();
-  // Chevron path for up direction
-  expect(chevron?.querySelector("path")?.getAttribute("d")).toBe("M3.5 10 L8 5.5 L12.5 10");
+  expect(chevron?.querySelector("path")?.getAttribute("d")).toBe(chevronPath("up"));
 });
