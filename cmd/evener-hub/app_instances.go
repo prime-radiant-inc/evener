@@ -858,7 +858,7 @@ func credentialHeaderFrom(field string) (map[string]string, error) {
 // controller.
 func (c *hubInstancesController) requireAuth() error {
 	if c.auth == nil {
-		return causedWireError{wire: appwire.InternalError(errNoCredentialController.Error()), cause: errNoCredentialController}
+		return wireRefusal(appwire.InternalError, errNoCredentialController)
 	}
 	return nil
 }

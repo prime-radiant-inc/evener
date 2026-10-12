@@ -12,7 +12,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -92,7 +91,7 @@ func TestAuth_LoginFlowOlderThanTheWindowIsRefusedAndDropped(t *testing.T) {
 	if err == nil {
 		t.Fatal("LoginComplete = nil, want the expired-flow refusal")
 	}
-	if !strings.Contains(err.Error(), "expired") {
+	if !errors.Is(err, errLoginFlowExpired) {
 		t.Fatalf("LoginComplete err = %v, want it to say the sign-in flow expired", err)
 	}
 	var wireErr appwire.WireError
@@ -109,7 +108,7 @@ func TestAuth_LoginFlowOlderThanTheWindowIsRefusedAndDropped(t *testing.T) {
 	}
 
 	err = completeFlow(ctrl, start.FlowID, redirect)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
+	if !errors.Is(err, errLoginFlowNotFound) {
 		t.Fatalf("second LoginComplete err = %v, want the flow-not-found error after the expired entry was deleted", err)
 	}
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
@@ -136,7 +135,7 @@ func TestAuth_AbandonedLoginFlowIsSweptWhenANewOneStarts(t *testing.T) {
 	}
 
 	err := completeFlow(ctrl, flowA.FlowID, redirectA)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
+	if !errors.Is(err, errLoginFlowNotFound) {
 		t.Fatalf("LoginComplete(A) err = %v, want flow-not-found: B's start must sweep A, not leave it to the expiry refusal", err)
 	}
 	var wireErr appwire.WireError

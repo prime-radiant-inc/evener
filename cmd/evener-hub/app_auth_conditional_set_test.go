@@ -9,6 +9,7 @@ package hub
 // silently clobbering a credential that changed underneath the caller.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -376,7 +377,7 @@ func TestAuth_ApiKeyConditionalSet_RefusesCommandExpression(t *testing.T) {
 	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
 
 	_, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{Provider: "work-ant", Value: "$(get-gateway-token)"})
-	if err == nil || !strings.Contains(err.Error(), "credential header") {
+	if !errors.Is(err, errStoredCommandExpression) {
 		t.Fatalf("err = %v; want a refusal pointing at the credential header field", err)
 	}
 	if _, has := loadStoredKey(t, dir, "work-ant"); has {

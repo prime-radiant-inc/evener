@@ -14,8 +14,14 @@ type causedWireError struct {
 func (e causedWireError) Error() string   { return e.wire.Message }
 func (e causedWireError) Unwrap() []error { return []error{e.wire, e.cause} }
 
+// wireRefusal is the refusal newWire builds from cause's text, keeping cause
+// in the error chain.
+func wireRefusal(newWire func(message string) appwire.WireError, cause error) error {
+	return causedWireError{wire: newWire(cause.Error()), cause: cause}
+}
+
 // invalidParamsFor is appwire.InvalidParams with cause's text, keeping cause
 // in the error chain.
 func invalidParamsFor(cause error) error {
-	return causedWireError{wire: appwire.InvalidParams(cause.Error()), cause: cause}
+	return wireRefusal(appwire.InvalidParams, cause)
 }

@@ -3019,8 +3019,8 @@ func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
 		t.Fatal("ApiKeySet accepted a write whose destination the hub cannot key a fingerprint for")
 	}
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict || !wireErrorInfoIs(wire.Data, appwire.ErrorEndpointConflict) {
-		t.Fatalf("ApiKeySet = %v, want an endpoint conflict saying the destination cannot be verified", err)
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict || !errors.Is(err, errEndpointUnkeyable) {
+		t.Fatalf("ApiKeySet = %v, want a Conflict saying the destination cannot be verified", err)
 	}
 	if v, _ := f.store.Get("work"); v != "" {
 		t.Fatalf("stored key = %q, want nothing stored for a write the hub cannot verify", v)
