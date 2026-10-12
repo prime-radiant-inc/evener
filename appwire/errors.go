@@ -553,11 +553,19 @@ func (e WireError) Error() string {
 // mutation retry for a failure that was never a transport loss.
 type TransportFailureError struct {
 	WireError
+	// Cause is the failure that ended the client's read loop, such as the
+	// transport's receive error or ErrNotificationOverflow, when known.
+	Cause error
 }
 
 // Unwrap exposes the synthesized WireError so errors.As(err, &WireError) still
-// matches exactly as it did before provenance was retained.
-func (e TransportFailureError) Unwrap() error { return e.WireError }
+// matches, and the Cause so errors.Is can name why the read loop ended.
+func (e TransportFailureError) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{e.WireError}
+	}
+	return []error{e.WireError, e.Cause}
+}
 
 // IsTransportFailure reports whether err is a failure the client synthesized
 // because its read loop is gone (see TransportFailureError), as opposed to an
