@@ -175,6 +175,8 @@ export interface RowProps {
 	onPress?: () => void;
 	/** VoiceOver's reading when the visible text isn't enough. */
 	accessibilityLabel?: string;
+	/** Names the state the row reports, so a test can read it without its words. */
+	testID?: string;
 	/** A control of its own at the row's end, such as a mini button
 	 * ("Install"): outside what a press on the row opens, so each is its own
 	 * target and its own VoiceOver element. */
@@ -278,6 +280,7 @@ export function Row({
 	disabled = false,
 	onPress,
 	accessibilityLabel,
+	testID,
 	accessory,
 }: RowProps) {
 	const { palette } = useColors();
@@ -324,7 +327,7 @@ export function Row({
 	// width and the control sits beside it, inset like the row's text.
 	const own = accessory ? [style, { flex: 1, paddingRight: 0 }] : style;
 	const row = !onPress ? (
-		<View accessible accessibilityLabel={reading} accessibilityState={state} style={own}>
+		<View accessible accessibilityLabel={reading} accessibilityState={state} testID={testID} style={own}>
 			{body}
 		</View>
 	) : (
@@ -332,6 +335,7 @@ export function Row({
 			accessibilityRole="button"
 			accessibilityLabel={reading}
 			accessibilityState={state}
+			testID={testID}
 			disabled={disabled}
 			onPress={onPress}
 			style={({ pressed }) => [own, pressed ? { backgroundColor: palette.pressed } : null]}
