@@ -257,5 +257,19 @@ test("renders the hint", () => {
         self.assertEqual([n for _, n in inventory.copy_only_tests(src, {3}, "go")], ["TestHelpShowsUsage"])
 
 
+class JsxIsNotARegex(unittest.TestCase):
+    def test_inline_jsx_closing_tags_do_not_merge_neighbouring_tests(self):
+        src = """test("renders the body", () => render(<div>body</div>));
+
+test("shows the hint", () => {
+  render(<span>/tmp/path</span>);
+  expect(screen.getByText("Try again")).toBeTruthy();
+});
+"""
+        blocks = inventory.test_blocks(src, "ts")
+        self.assertEqual([name for _, name, _ in blocks], ["renders the body", "shows the hint"])
+        self.assertEqual([n for _, n in inventory.copy_only_tests(src, {5}, "ts")], ["shows the hint"])
+
+
 if __name__ == "__main__":
     unittest.main()

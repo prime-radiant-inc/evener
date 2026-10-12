@@ -250,8 +250,10 @@ GO_CHECK = re.compile(r"^\s*if\b|\b(?:require|assert)\.\w+\(")
 GO_SETUP_GUARD = re.compile(r"^\s*if\s+err\s*!=\s*nil\s*\{")
 
 
-# Characters after which a `/` in TypeScript starts a regex literal, not a division.
-TS_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%~^<>")
+# Characters after which a `/` in TypeScript starts a regex literal, not a
+# division. `<` and `>` are left out: after them a `/` is JSX (`</div>`, or a
+# child's text like `<span>/tmp</span>`), and a regex there is vanishingly rare.
+TS_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%~^")
 
 
 def sanitize(line, lang):
