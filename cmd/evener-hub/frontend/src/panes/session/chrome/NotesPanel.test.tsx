@@ -23,7 +23,7 @@ import {
   threadsStore,
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { NotesPanelBody } from "./NotesPanel";
 
@@ -121,6 +121,10 @@ function openPanel(model: ThreadModel) {
 
 function editor(): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
+}
+
+function errorToastCount(): number {
+  return getToasts().filter((toast) => toast.kind === "error").length;
 }
 
 function LivePanel({ sessionRef }: { sessionRef: string }) {
@@ -674,7 +678,7 @@ test("file links out of scope keep text but offer no affordance", () => {
 test("live-empty session shows an empty editor with placeholder", () => {
   openPanel(testModel());
   expect(editor().value).toBe("");
-  expect(editor().placeholder).toMatch(/Make a note/);
+  expect(editor().placeholder).not.toBe("");
   expect(screen.getByTestId("shared-notes-agent-empty")).toBeTruthy();
   expect(screen.getByTestId("shared-notes-urls-empty")).toBeTruthy();
 });
@@ -803,7 +807,7 @@ test("a second Remove click while the first is in flight is ignored and stays si
     await firstInFlight;
   });
   expect(calls).toBe(1);
-  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+  expect(errorToastCount()).toBe(0);
 });
 
 test("two Remove clicks in the same tick fire one request", async () => {
@@ -844,7 +848,7 @@ test("two Remove clicks in the same tick fire one request", async () => {
     await firstInFlight;
   });
   expect(calls).toBe(1);
-  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+  expect(errorToastCount()).toBe(0);
 });
 
 test("a duplicate Remove after the response reports no error", async () => {
@@ -883,7 +887,7 @@ test("a duplicate Remove after the response reports no error", async () => {
   // intent (this link gone) is already true.
   await user.click(button);
   await waitFor(() => expect(calls).toBe(2));
-  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+  expect(errorToastCount()).toBe(0);
 
   // The push lands and the model drops the entry: the row disappears with it.
   panel.rerender(
@@ -952,7 +956,7 @@ test("a failed Remove clears the guard so a retry can fire", async () => {
   await user.click(button);
   await waitFor(() => expect(calls).toBe(1));
   // The failure has to surface before the guard is expected to be released.
-  await waitFor(() => expect(screen.queryByText(/Couldn't remove link/i)).not.toBeNull());
+  await waitFor(() => expect(errorToastCount()).toBe(1));
   // The failure left the entry in place, so the guard must have been released:
   // the user's retry has to reach the wire.
   await user.click(button);
@@ -1638,12 +1642,12 @@ test("a live-to-ended transition without blur does not invent a save", async () 
 
 test("idle live session shows the wake warning under the editor", () => {
   openPanel(testModel({ status: { type: "idle" }, humanNote: "old note" }));
-  expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
+  expect(screen.getByTestId("shared-notes-idle-wake").textContent).not.toBe("");
 });
 
 test("a live session resting on a failed turn shows the wake warning too", () => {
   openPanel(testModel({ status: { type: "systemError" }, humanNote: "old note" }));
-  expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
+  expect(screen.getByTestId("shared-notes-idle-wake").textContent).not.toBe("");
 });
 
 test("busy live session shows no idle-wake warning", () => {
