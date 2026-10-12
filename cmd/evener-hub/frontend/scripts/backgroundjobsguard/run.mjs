@@ -322,6 +322,11 @@ async function runOutputPagingJourney(fixture) {
       following:scroller.scrollHeight-scroller.clientHeight-scroller.scrollTop<=4};
   })()`;
   const state = () => read(stateExpr);
+  // A history response lands on the wire before the virtual list has rendered
+  // it and restored the reader's anchor; until then the viewport can hold only
+  // the unloaded marker or blank space. Wait for the rendered visible row
+  // instead of reading the state once.
+  const visibleState = label => wait(`(() => { const value=${stateExpr}; return value?.first ? value : null; })()`, label);
   const outputCalls = (after = 0) => sent(after).filter(f => f.method === 'evener/jobs/output' && f.params.ref === fixture.outputOwnerRef && f.params.jobId === fixture.outputJobId);
   const page = request => response(request)?.result?.data;
   const bytes = page => page.encoding === 'base64' ? Buffer.from(page.data, 'base64') : Buffer.from(page.data, 'utf8');
@@ -476,8 +481,7 @@ async function runOutputPagingJourney(fixture) {
   // reach history through the owner RPC, not merely move a bounded tail.
   await backward();
   for (let index = 0; index < 3; index++) await backward();
-  let baseline = (await state()).first;
-  assert.ok(baseline, 'later loaded page has a visible source-byte row');
+  let baseline = (await visibleState('later loaded page has a visible source-byte row')).first;
   const historyAfter = frames.length;
   await control('middle');
   await latest('MIDDLE_MARKER', historyAfter);
@@ -486,7 +490,8 @@ async function runOutputPagingJourney(fixture) {
 
   const remembered = baseline.start;
   for (let index = 0; index < 10; index++) await backward();
-  assert.ok((await bounded()).older > 400*1024, 'older window crossed its raw trim threshold');
+  await wait(`${stateExpr}?.older > ${400*1024}`, 'older window crossed its raw trim threshold');
+  await bounded();
   const beforeRefetch = frames.length;
   const refetched = () => outputCalls(beforeRefetch).some(request => page(request) && page(request).offsetBytes <= remembered && page(request).offsetBytes+page(request).bytesReturned > remembered);
   const forwardHistory = () => outputCalls(beforeRefetch).filter(request => request.params.beforeBytes !== undefined && page(request));
@@ -518,9 +523,8 @@ async function runOutputPagingJourney(fixture) {
   }), 'actual controls-only page advances across the unloaded interval');
   await captureOutput('paging-gap');
   for (let index = 0; index < 80; index++) {
-    const before = await state();
+    const before = await visibleState('loaded long-line history has a visible byte row');
     if (before.rows.some(row => row.kind === 'output' && row.visible && row.start <= longStart && row.end > longStart)) break;
-    assert.ok(before.first, 'loaded long-line history has a visible byte row');
     await wheel(before.first.start > longStart ? -before.height : before.height);
     await wait(`(() => { const value=${stateExpr}; return value && (value.top!==${before.top} || value.first?.start!==${before.first?.start} || value.first?.top!==${before.first?.top}); })()`, 'trusted wheel advances within loaded long-line history');
   }
@@ -528,8 +532,7 @@ async function runOutputPagingJourney(fixture) {
   assert.ok((await state()).rows.filter(row=>row.kind==='output').every(row=>row.end-row.start<=4096), 'long-line fragments remain bounded');
   await captureOutput('paging-text');
 
-  baseline = (await state()).first;
-  assert.ok(baseline);
+  baseline = (await visibleState('long-line history has a visible baseline row')).first;
   const liveBefore = checkPages().at(-1).page.totalBytes;
   for (let index = 0; index < 17; index++) {
     const after = frames.length;
@@ -548,7 +551,7 @@ async function runOutputPagingJourney(fixture) {
   await assertAnchor(baseline);
   await captureOutput('paging-refresh');
   let after = frames.length;
-  let socketAfter = sockets.length;
+  const socketAfter = sockets.length;
   await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
   assert.equal(await read(`(() => { const live=window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN && new URL(s.url).pathname==='/rpc'); for(const s of live) s.close(4000,'paging transport boundary'); return live.length; })()`),1);
   await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'real output socket closes');
@@ -576,10 +579,23 @@ async function runOutputPagingJourney(fixture) {
   assert.ok(page(preterminal));
   await control('finish');
   await waitFrames(()=>sent().some(request=>request.method==='evener/jobs/get' && request.params.jobId===fixture.outputJobId && response(request)?.result?.data?.terminal),'terminal metadata observed while earlier output remains held');
-  after=frames.length; socketAfter=sockets.length;
+  after=frames.length;
   await driver.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
-  await read(`(() => { for(const s of window.__backgroundJobsSockets.filter(s=>s.readyState===WebSocket.OPEN)) s.close(4000,'fresh terminal drain boundary'); window.__pagingWire.replies.length=0; })()`);
-  await waitFrames(()=>sockets.slice(socketAfter).some(s=>s.method==='Network.webSocketClosed'),'terminal drain connection closes');
+  // The held reply names the connection that carried the pending preterminal
+  // read; the drain must happen on a fresh one. Await that socket's own close
+  // event. Waiting for any CDP close after closing only OPEN sockets could
+  // never succeed once that socket had already left OPEN: nothing was closed.
+  try {
+    await read(`new Promise(resolve => {
+      const held = window.__pagingWire.replies[0].socket;
+      window.__pagingWire.replies.length = 0;
+      if (held.readyState === WebSocket.CLOSED) resolve();
+      else held.addEventListener('close', () => resolve(), { once: true });
+      for (const s of window.__backgroundJobsSockets.filter(s => s.readyState === WebSocket.OPEN)) s.close(4000, 'fresh terminal drain boundary');
+    })`);
+  } catch (error) {
+    throw new Error(`terminal drain connection closes: ${error.message}`, { cause: error });
+  }
   await driver.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
   await latest('FINAL_AFTER_PENDING_READ_é_😀',after);
   const finalPage = outputCalls(after).find(request=>page(request) && bytes(page(request)).includes(Buffer.from('FINAL_AFTER_PENDING_READ_é_😀')));
