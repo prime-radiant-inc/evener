@@ -216,5 +216,46 @@ test("renders the label", () =>
         self.assertEqual([n for _, n in found], ["shows the hint", "renders the label"])
 
 
+class RoborevRound3(unittest.TestCase):
+    def test_a_machine_token_comparison_is_not_a_copy_term(self):
+        src = """func TestHelpShowsUsage(t *testing.T) {
+	status, out := run()
+	if status != "running" || !strings.Contains(out, "Usage: evener") {
+		t.Fatal(out)
+	}
+}
+"""
+        self.assertEqual(inventory.copy_only_tests(src, {3}, "go"), [])
+
+    def test_parentheses_in_regex_literals_do_not_end_or_extend_a_test(self):
+        early_end = """test("shows the retry label", async () => {
+  expect(screen.getByText(/Retry[)]/)).toBeTruthy();
+  await send();
+  expect(fake.calls).toHaveLength(1);
+});
+"""
+        self.assertEqual(inventory.copy_only_tests(early_end, {2}, "ts"), [])
+        absorbs = """test("shows the open paren label", () => {
+  expect(screen.getByText(/Open[(]/)).toBeTruthy();
+});
+
+test("renders the hint", () => {
+  expect(screen.getByText("Try again")).toBeTruthy();
+});
+"""
+        found = inventory.copy_only_tests(absorbs, {2, 6}, "ts")
+        self.assertEqual([n for _, n in found], ["shows the open paren label", "renders the hint"])
+
+    def test_a_semicolon_in_a_trailing_comment_does_not_split_the_condition(self):
+        src = """func TestHelpShowsUsage(t *testing.T) {
+	out := help()
+	if !strings.Contains(out, "Usage: evener") { // check; wording
+		t.Fatal(out)
+	}
+}
+"""
+        self.assertEqual([n for _, n in inventory.copy_only_tests(src, {3}, "go")], ["TestHelpShowsUsage"])
+
+
 if __name__ == "__main__":
     unittest.main()

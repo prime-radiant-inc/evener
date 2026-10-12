@@ -239,42 +239,79 @@ GO_CHECK = re.compile(r"^\s*if\b|\b(?:require|assert)\.\w+\(")
 GO_SETUP_GUARD = re.compile(r"^\s*if\s+err\s*!=\s*nil\s*\{")
 
 
-CODE_STRINGS = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`[^`\n]*`')
+# Characters after which a `/` in TypeScript starts a regex literal, not a division.
+TS_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%~^<>")
 
 
-def code_only(line):
-    """The line with string contents blanked and a trailing // comment cut, so
-    braces or operators in fixture text don't move block boundaries or split
-    conditions."""
-    # Blank string contents but keep their length, so offsets into the
-    # result line up with the original line.
-    line = CODE_STRINGS.sub(lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1], line)
-    cut = line.find("//")
-    return line if cut < 0 else line[:cut]
+def sanitize(line, lang):
+    """The line with the contents of strings, TS regex literals and comments
+    replaced by spaces. Its length is unchanged, so offsets found in it apply
+    to the original line; braces, parentheses, operators and semicolons inside
+    text no longer count as code."""
+    out, i, n, prev = list(line), 0, len(line), ""
+
+    def blank(a, b):
+        for k in range(a, min(b, n)):
+            out[k] = " "
+
+    while i < n:
+        c = line[i]
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            blank(i, n)
+            break
+        if c in "\"'`":
+            j = i + 1
+            while j < n and line[j] != c:
+                j += 2 if line[j] == "\\" else 1
+            blank(i + 1, j)
+            i, prev = j + 1, c
+            continue
+        if lang == "ts" and c == "/" and (prev == "" or prev in TS_REGEX_PRECEDERS):
+            j, in_class = i + 1, False
+            while j < n and (line[j] != "/" or in_class):
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                in_class = (in_class or line[j] == "[") and line[j] != "]"
+                j += 1
+            blank(i + 1, j)
+            i, prev = j + 1, "/"
+            continue
+        if not c.isspace():
+            prev = c
+        i += 1
+    return "".join(out)
 
 
-# A Go condition term that asks only about text.
-GO_COPY_TERM = re.compile(r"strings\.\w+\(|\.MatchString\(|\.Error\(\)|[=!]=\s*\"|\"\s*[=!]=")
+GO_COPY_OPERATOR = re.compile(r"strings\.\w+\(|\.MatchString\(|[=!]=\s*[\"`]|[\"`]\s*[=!]=")
+
+
+def go_copy_term(term):
+    """A condition term that asks only about text: a copy operator applied to a
+    string literal that isn't a machine-contract token (`status != "running"`
+    checks state, not wording)."""
+    literals = [go_unquote(m.group(1), m.group(2)).strip() for m in re.finditer(GO_STR, term)]
+    return bool(GO_COPY_OPERATOR.search(term)) and any(not contract_shaped(lit) for lit in literals)
 
 
 def go_condition_terms(line):
-    """The && / || terms of an `if` condition (string literals blanked first,
-    so operators inside text don't split it)."""
-    code = code_only(line)
-    m = re.search(r"\bif\b(.*)\{\s*$", code)
-    cond = m.group(1) if m else code
-    if ";" in cond:
-        cond = cond.rsplit(";", 1)[1]
-    original = re.search(r"\bif\b(.*)\{\s*$", line)
-    raw = original.group(1) if original else line
-    if ";" in raw:
-        raw = raw.rsplit(";", 1)[1]
-    # Split the raw condition at the operator positions found in the blanked one.
-    terms, last = [], 0
-    for op in re.finditer(r"&&|\|\|", cond):
-        terms.append(raw[last:op.start()])
-        last = op.end()
-    terms.append(raw[last:])
+    """The && / || terms of an `if` condition, after any `init;` statement.
+    Every boundary is found in the sanitized line and applied to the original,
+    so operators, braces and semicolons inside strings or comments don't count."""
+    code = sanitize(line, "go")
+    m = re.search(r"\bif\b", code)
+    if not m:
+        return [line]
+    lo, hi = m.end(), code.rfind("{")
+    hi = hi if hi > lo else len(code)
+    semi = code.rfind(";", lo, hi)
+    if semi >= 0:
+        lo = semi + 1
+    terms, last = [], lo
+    for op in re.finditer(r"&&|\|\|", code[lo:hi]):
+        terms.append(line[last:lo + op.start()])
+        last = lo + op.end()
+    terms.append(line[last:hi])
     return [t for t in terms if t.strip()]
 
 
@@ -298,7 +335,7 @@ def test_blocks(text, lang):
         open_ch, close_ch = ("(", ")") if lang == "ts" else ("{", "}")
         depth, body, j, opened = 0, [], i, False
         while j < len(lines):
-            code = code_only(lines[j])
+            code = sanitize(lines[j], lang)
             depth += code.count(open_ch) - code.count(close_ch)
             opened = opened or open_ch in code
             body.append((j + 1, lines[j]))
@@ -346,7 +383,7 @@ def copy_only_tests(text, hit_lines, lang, purpose="copy"):
         def copy_claim(n, line):
             if n not in hit_lines or BEHAVIOR_ON_LINE.search(line):
                 return False
-            if lang == "go" and not all(GO_COPY_TERM.search(t) for t in go_condition_terms(line)):
+            if lang == "go" and not all(go_copy_term(t) for t in go_condition_terms(line)):
                 return False
             literals = [first(m.groups()) for m in QUOTED.finditer(line)]
             return not any(lit and lit in inputs for lit in literals)
