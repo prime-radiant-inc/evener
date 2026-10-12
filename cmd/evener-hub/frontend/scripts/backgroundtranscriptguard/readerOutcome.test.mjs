@@ -258,6 +258,25 @@ describe("finding 2: shell OUTPUT region", () => {
   });
   test("repaired: readShellOutputRegion opens the disclosure and reads the output", async () => {
     renderShellPane();
+    // jsdom performs no layout, so every element reports a zero box. The harness
+    // (run.mjs readShellOutputRegion) now waits for the disclosure control to be
+    // present AND have a non-zero box before clicking it - a real precondition on
+    // a genuinely asynchronous UI state, not a blind retry. Give the real
+    // rendered control the box a laid-out browser would, so the wait can pass.
+    const trigger = document.querySelector(
+      "[data-pane-scaffold='session:local:tgt'] [data-testid='tool-call-item'] button[aria-controls]",
+    );
+    expect(trigger).not.toBeNull();
+    trigger.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 12,
+      bottom: 12,
+      width: 12,
+      height: 12,
+    });
     expect(await guard.readShellOutputRegion(fakeDriver(), REF, TOOL_OUTPUT, 80)).toEqual({
       shellRows: 1,
       outputRegions: 1,
@@ -299,11 +318,17 @@ describe("finding 1: reconnect window", () => {
     });
     expect(guard.reconnectValidator(before, ev, { cursor: "c2", domain: wrong }).appliedMatches).toBe(false);
   });
-  test("RED: extra stale history is rejected", () => {
+  test("RED: extra stale content inside the read's own returned turn is rejected", () => {
+    // The reconnect validator compares per returned turn by turnId (run.mjs
+    // reconnectValidator) because the ordinary entry route deliberately keeps the
+    // history a reader had already loaded, so an EXTRA older turn outside the
+    // reconnect read's window is now tolerated by design. Extra RECORDED content
+    // inside a turn the read did return is still a mismatch of the applied
+    // window against the read, and must still be rejected.
     const ev = guard.targetPagingEvidence(REF, newConnPath);
     const extra = appliedWindow({
       items: [
-        { turnId: "turn_old", id: "old1", type: "agentMessage", text: "old", output: "", status: "completed" },
+        { turnId: "turn_new", id: "extra1", type: "agentMessage", text: "stale", output: "", status: "completed" },
         ...appliedWindow().items,
       ],
     });
