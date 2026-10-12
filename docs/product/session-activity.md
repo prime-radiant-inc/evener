@@ -566,8 +566,12 @@ inspection is open. A retained source in an existing in-place cascade keeps
 that demand even while collapsed. Another same-ref reader cannot adopt or cancel
 it. Ordinary navigation can adopt a genuinely disposed predecessor's pending
 demand. The inspector's footer and shared sidebar stay scoped to the selected
-leaf, including while the reader selects text in a parent. Each ordinary pane's
-footer remains bound to its own conversation.
+leaf, including while the reader selects text in a parent. Opening Overview
+from an embedded column's own chrome holds that column's scope explicitly —
+the sidebar describes that conversation, its checkmarks mark it, and its
+breadcrumbs show its own ancestry — until the workspace scope moves or
+Overview closes, after which the sidebar follows focus again. Each ordinary
+pane's footer remains bound to its own conversation.
 
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
 Tasks. A column's activity controls render below its transcript content, with
@@ -729,7 +733,9 @@ identity, so opening Overview preserves that instance.
 The [application shell](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx)
 ends route deferral when the resolved location confirms an already placed
 session. Opening its child conversation then preserves child focus and the parent
-URL, rather than reapplying the parent route.
+URL, rather than reapplying the parent route. A nested conversation's job log
+keeps that focus on the settled parent route too, following the conversation
+context the child opened under rather than the transcript-type pane walk.
 
 The [activity sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
 retains open/category choices and a semantic row anchor per public session ref

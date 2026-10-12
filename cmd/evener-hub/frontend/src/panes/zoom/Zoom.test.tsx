@@ -26,6 +26,7 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
+import { replaceEditorText } from "../session/testing/editor";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
 import { holdReaderFrames, installTranscriptGeometry } from "../session/transcript/transcriptReadingGeometryTestUtils";
@@ -505,6 +506,56 @@ test("a transient child read failure recovers through the existing owner without
   expect(currentPane()).toBe(source);
   expect(columnRefs()).toEqual(["root", "child"]);
   expect(workspaceStore.getState().focusedPaneId).toBe("cascade");
+});
+
+test("a store-driven resume replaces the drilled column's identity in place", async () => {
+  const { fake } = fixture();
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  act(() =>
+    enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+  );
+  await screen.findByText("grandchild content grandchild-id");
+  expect(columnRefs()).toEqual(["child", "grandchild"]);
+  const lifetime = conversationPaneLifetime(currentPane());
+  const childView = retainedTranscriptReadView(lifetime, "child", "cascade");
+  // A draft typed in the parent column must follow the resumed identity.
+  const editor = within(cascadeScope("child")).getByRole("textbox", { name: "Message" });
+  replaceEditorText(editor, "draft follows the resume");
+
+  // The resume driver's seam: the store resumed the conversation the column
+  // was showing onto a new ref, already hydrated by the driver's refresh
+  // before the identity publishes.
+  await act(async () => {
+    await threadsStore.getState().ensureThread("child-resumed");
+  });
+  act(() =>
+    threadsStore.setState((state) => ({
+      resumedIdentities: new Map(state.resumedIdentities).set("child", "child-resumed"),
+    })),
+  );
+  await screen.findByText("child-resumed content child-resumed");
+
+  // The path entry is replaced in place: the column keeps its position, the
+  // drilled descendant keeps its edge, and the superseded identity's retained
+  // reader is retired.
+  expect(columnRefs()).toEqual(["child-resumed", "grandchild"]);
+  expect(screen.getByText("grandchild content grandchild-id")).toBeTruthy();
+  expect(childView.alive).toBe(false);
+  expect(currentParams()).toEqual({
+    ref: "grandchild",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [
+      { ownerRef: "root", childRef: "child-resumed", delegateId: "d1" },
+      { ownerRef: "child-resumed", childRef: "grandchild", delegateId: "d2" },
+    ],
+  });
+  await waitFor(() =>
+    expect(within(cascadeScope("child-resumed")).getByRole("textbox", { name: "Message" }).textContent).toBe(
+      "draft follows the resume",
+    ),
+  );
 });
 
 test("deeper drill retains the root view as a paused spine and pop reuses its source role", async () => {

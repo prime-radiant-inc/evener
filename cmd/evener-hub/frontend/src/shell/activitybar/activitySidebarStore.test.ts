@@ -5,6 +5,7 @@ import {
   ACTIVITY_VIEW_LIMIT,
   ACTIVITY_VIEW_STORAGE_KEY,
   activitySidebarReturnFocusTarget,
+  activitySidebarScopeRef,
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
 } from "./activitySidebarStore";
@@ -108,6 +109,29 @@ test("openFor preserves the focused pane when the session has multiple instances
   activitySidebarStore.getState().openFor("remote:owner", "about");
   expect(workspaceStore.getState().focusedPaneId).toBe("focused-instance");
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote:owner", tab: "about" });
+  // A focus-carried open holds no explicit scope: the sidebar follows focus.
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+});
+
+test("an embedded column's explicit scope holds until the workspace scope moves or the sidebar closes", () => {
+  workspaceStore.setState({ panes: [], focusedPaneId: null });
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "remote:column" });
+  expect(activitySidebarScopeRef()).toBe("remote:column");
+  // The workspace scope arriving at the held ref releases the hold even
+  // though retarget early-returns on the same ref.
+  workspaceStore.setState({
+    panes: [{ id: "pane-child", type: "session", params: { ref: "remote:column" }, slot: "main" }],
+    focusedPaneId: "pane-child",
+  });
+  expect(activitySidebarScopeRef()).toBe("remote:column");
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+  // Closing the sidebar ends the inspection: a chip open follows focus again.
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().close();
+  expect(activitySidebarScopeRef()).toBe("remote:column");
+  activitySidebarStore.getState().openWith("jobs");
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
 });
 
 function sessionActions(parent: HTMLElement, ref: string, paneId: string): HTMLButtonElement {

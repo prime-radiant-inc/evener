@@ -18,7 +18,6 @@ import { FocusScope, IconButton, SegmentedControl } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { useFocusedActivityScopeRef } from "../focusedSession";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
 import { useWorkspaceStore } from "../workspace";
@@ -27,6 +26,7 @@ import styles from "./activitybar.module.css";
 import {
   activitySidebarReturnFocusTarget,
   activitySidebarStore,
+  useActivitySidebarScopeRef,
   useActivitySidebarStore,
 } from "./activitySidebarStore";
 import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
@@ -71,7 +71,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   // Narrow subscriptions: re-render on the resources map (nav data) or the
   // scope's ref, not on every store touch.
   const resources = useNavigationStore((state) => state.resources);
-  const ref = useFocusedActivityScopeRef();
+  const ref = useActivitySidebarScopeRef();
   const focusedPane = useWorkspaceStore((state) => state.panes.find((pane) => pane.id === state.focusedPaneId));
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
@@ -97,7 +97,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     const derived = deriveScope(navigationStore.getState(), ref, snapshot, subagents);
     if (focusedPane?.type !== "sessionZoom" || !derived.ancestryKnown) return derived;
     const params = parseZoomParams(focusedPane.params);
-    if (!params) return derived;
+    // The crumb rebase describes the focused cascade's selected leaf; an
+    // explicitly held column scope (an embedded conversation's Overview)
+    // shows its own ancestry instead.
+    if (!params || params.ref !== ref) return derived;
     const { scopes } = deriveCascadePath(params, snapshot?.context ?? null);
     // The origin conversation never renders in the cascade, so the breadcrumb
     // cannot offer it: the rendered scopes are the clickable path.

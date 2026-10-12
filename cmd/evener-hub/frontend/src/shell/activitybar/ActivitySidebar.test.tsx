@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { useStore } from "zustand";
 import { MotionProvider } from "../../motion";
+import { SessionChrome } from "../../panes/session/chrome/SessionChrome";
 import type { SessionPaneParams } from "../../panes/session/Session";
 import { replaceEditorText, selectEditorText } from "../../panes/session/testing/editor";
 import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
@@ -20,7 +21,7 @@ import {
   activityDelegate,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
-import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { ClientProvider } from "../clientContext";
 import { conversationPaneLifetime } from "../paneLifetime";
@@ -538,6 +539,74 @@ test("cascade sidebar parent crumbs preserve the requested source alias at its p
   expect(workspaceStore.getState().focusedPaneId).toBe("source");
   expect(workspaceStore.getState().panes).toHaveLength(2);
   expect(workspaceStore.getState().panes.find((item) => item.id === "unrelated")).toBe(unrelated);
+});
+
+test("an embedded column's Overview describes that column, then the sidebar follows focus again", async () => {
+  const user = userEvent.setup();
+  const context = (ref: string) =>
+    cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []);
+  const client = cascadeClient(context);
+  client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
+    context: context(ref),
+    scope: scope ?? "session",
+    delegates: [activityDelegate({ ownerRef: ref, description: `delegate owned by ${ref}` })],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope("grandchild");
+  const params: SessionZoomParams = {
+    ref: "grandchild",
+    source: { type: "session", params: { ref: "root" } },
+    edges: [
+      { ownerRef: "root", childRef: "child", delegateId: "d1" },
+      { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
+    ],
+  };
+  workspaceStore.setState({
+    panes: [{ id: "zoom", type: "sessionZoom", params, slot: "main" }],
+    focusedPaneId: "zoom",
+  });
+  // The embedded conversation hydrates its column's thread before the chrome
+  // mounts; mirror that load so the standalone chrome renders.
+  await act(async () => {
+    await threadsStore.getState().ensureThread("child");
+  });
+  const mounted = render(
+    <ClientProvider client={client}>
+      <MotionProvider>
+        {/* The parent column's real chrome: an embedded conversation names
+            its own ref while the focused zoom pane resolves to the leaf. */}
+        <SessionChrome ref="child" paneId="zoom" discoverActivity />
+        <ActivitySidebar />
+      </MotionProvider>
+    </ClientProvider>,
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
+    const sidebar = within(screen.getByTestId("activity-sidebar"));
+    // The open request named the parent column, so the sidebar describes it:
+    // its delegates, its wire identity, and its own ancestry - never the
+    // focused leaf's.
+    await sidebar.findByRole("button", { name: /delegate owned by child/ });
+    expect(sidebar.queryByRole("button", { name: /delegate owned by grandchild/ })).toBeNull();
+    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    await sidebar.findByText("wire-child");
+    expect(sidebar.queryByText("wire-grandchild")).toBeNull();
+    expect(sidebar.getByRole("button", { name: "root" })).toBeTruthy();
+    // The checkmark marks the scope the sidebar shows: the column's own menu
+    // offers Overview as checked.
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.getByRole("menuitem", { name: /^Overview.*✓$/ })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
+    // The held scope releases when the workspace scope moves: the sidebar
+    // goes back to following focus.
+    act(() => workspaceStore.getState().openPane("session", { ref: "remote:other" }));
+    await sidebar.findByRole("button", { name: /delegate owned by remote:other/ });
+  } finally {
+    mounted.unmount();
+  }
 });
 
 test("activity tabs keep a named keyboard radio group without a visible heading", async () => {

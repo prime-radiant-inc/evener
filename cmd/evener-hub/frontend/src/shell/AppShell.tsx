@@ -12,8 +12,9 @@ import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
-import { conversationContextIncludes, transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
-import { deriveCascadePath, parseZoomParams } from "../panes/zoom/intent";
+import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
+import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
+import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
   selectLiveRows,
@@ -23,7 +24,6 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
-import { sessionActivitySnapshot } from "../stores/sessionActivity";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
@@ -227,7 +227,11 @@ function routePlacementIsApplied(
     if (pane?.type !== "transcript") return false;
     const params = pane.params as { ref?: unknown; parentRef?: unknown };
     return (
-      (typeof params.parentRef === "string" && transcriptContextIncludes(params.parentRef, ref)) ||
+      // A job log's parent context can cross into a conversation pane's
+      // recorded parent chain, so the check must follow the conversation
+      // walk (both holder types plus the recorded edge), not the pure
+      // transcript-params walk that stops at the first session pane.
+      (typeof params.parentRef === "string" && conversationContextIncludes(params.parentRef, ref)) ||
       (ancestorRef !== ref && params.ref === ref && params.parentRef === ancestorRef)
     );
   };
@@ -246,20 +250,23 @@ function routePlacementIsApplied(
     rawFocused?.slot === "secondary" &&
     !!focusedIntent?.inspection;
   const conversationRef = focusedPane?.type === "session" ? sessionRefOf(focusedPane) : null;
+  // The cascade was opened from this route - through its own inspection, the
+  // route's session as its source, or a job transcript the route's chain
+  // includes - so its column conversations are companions of the route.
+  const zoomCoversRouteSource = (pane: OpenPaneRecord, params: SessionZoomParams): boolean => {
+    const role = routeRole(pane);
+    return (
+      !!params.inspection || (role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role)
+    );
+  };
   const focusedCascadeConversation =
     allowFocusedCompanion &&
     conversationRef !== null &&
     workspace.panes.some((pane) => {
       if (pane.type !== "sessionZoom") return false;
       const params = parseZoomParams(pane.params);
-      if (!params) return false;
-      const role = routeRole(pane);
-      const coversSource =
-        !!params.inspection || (role.type === "session" && sessionRefOf(role) === ref) || transcriptMatchesRoute(role);
-      if (!coversSource) return false;
-      const client = connectionStore.getState().client;
-      const context = client ? (sessionActivitySnapshot(client, params.ref, "session")?.context ?? null) : null;
-      return deriveCascadePath(params, context).scopes.some((scope) => scope.requestedRef === conversationRef);
+      if (!params || !zoomCoversRouteSource(pane, params)) return false;
+      return zoomParamsCoverConversation(params, conversationRef);
     });
   const documentState = focusedPane?.type === "doc" ? documentPaneState(focusedPane) : undefined;
   if (
@@ -279,6 +286,15 @@ function routePlacementIsApplied(
     ) {
       return true;
     }
+  }
+  if (allowFocusedCompanion && documentState?.origin?.type === "sessionZoom") {
+    const origin = documentState.origin;
+    const params = parseZoomParams(origin.params);
+    // A cascade column's filename open binds its document to the hosting
+    // zoom: that pane's cascade covers the routed conversation, so the
+    // focused document is the route's companion, like the column
+    // conversation above.
+    if (params && zoomCoversRouteSource(origin, params)) return true;
   }
   const focusedCompanion =
     focusedPane?.type === "sessionTasks" ||

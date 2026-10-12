@@ -165,3 +165,28 @@ export function reconcileCascadeBinding(expected: OpenPaneRecord, ref: string, s
   }
   lifetime.resolvedSessions.set(ref, sessionId);
 }
+
+/** A store-driven resume returned a new ref for the conversation shown at
+ * `ref` in this cascade. Replace the path entry in place — the resumed
+ * conversation keeps its position and its drilled descendants, whose parent
+ * edges follow the resumed identity — so the column re-renders on the
+ * resumed ref with a fresh retained reader and the carried draft. The
+ * resume driver has already hydrated the resumed ref before it publishes
+ * the identity this answers. */
+export function resumeCascadeScope(expected: OpenPaneRecord, ref: string, resumedRef: string): void {
+  if (ref === resumedRef) return;
+  if (!workspaceStore.getState().panes.includes(expected)) return;
+  const params = intentFor(expected);
+  if (!params) return;
+  if (!pathFor(params).scopes.some((scope) => scope.requestedRef === ref)) return;
+  const next: SessionZoomParams = {
+    ...params,
+    ref: params.ref === ref ? resumedRef : params.ref,
+    edges: params.edges.map((edge) => ({
+      ...edge,
+      ownerRef: edge.ownerRef === ref ? resumedRef : edge.ownerRef,
+      childRef: edge.childRef === ref ? resumedRef : edge.childRef,
+    })),
+  };
+  updateIntent(expected, next);
+}

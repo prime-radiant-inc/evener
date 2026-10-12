@@ -330,6 +330,70 @@ describe("source-aware document placement", () => {
     expect(documentPaneState(oldDocument)).toBeUndefined();
   });
 
+  test("a cascade column's filename open binds the hosting zoom without displacing the cascade", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const rootRef = "local:034MXwo6BpPH0QQCgdICSf";
+    const childRef = "local:02wMz5TxvEMoJEDTDGOTil";
+    const grandchildRef = "local:01ZoomFixtureAAAAAAAAAAA";
+    const workspace = workspaceStore.getState();
+    const originId = workspace.openPane("session", { ref: rootRef });
+    const zoom: OpenPaneRecord = {
+      id: "cascade-zoom",
+      type: "sessionZoom",
+      params: {
+        ref: grandchildRef,
+        source: { type: "session", params: { ref: rootRef } },
+        edges: [
+          { ownerRef: rootRef, childRef: childRef, delegateId: "d1" },
+          { ownerRef: childRef, childRef: grandchildRef, delegateId: "d2" },
+        ],
+      },
+      slot: "secondary",
+    };
+    workspaceStore.setState({ panes: [...workspaceStore.getState().panes, zoom] });
+    const origin = workspaceStore.getState().panes.find((pane) => pane.id === originId);
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference || !origin) throw new Error("fixture did not create the cascade");
+    // The embedded parent column's filename open names the hosting zoom pane.
+    openDocBeside({ session: childRef, reference, sourcePaneId: zoom.id });
+    const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!document) throw new Error("document did not open");
+    expect(documentPaneState(document)?.origin).toBe(zoom);
+    // The cascade keeps its placement: the zoom stays secondary and the
+    // origin conversation keeps main, so a primary navigation cannot
+    // replace the inspection out from under the document.
+    expect(zoom.slot).toBe("secondary");
+    expect(origin.slot).toBe("main");
+  });
+
+  test("a zoom whose cascade does not host the conversation does not adopt its document", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const hostedRef = "local:02wMz5TxvEMoJEDTDGOTil";
+    const routedRef = "local:034MXwo6BpPH0QQCgdICSf";
+    const workspace = workspaceStore.getState();
+    const sourceId = workspace.openPane("session", { ref: routedRef });
+    const zoom: OpenPaneRecord = {
+      id: "cascade-zoom",
+      type: "sessionZoom",
+      params: {
+        ref: hostedRef,
+        source: { type: "session", params: { ref: routedRef } },
+        edges: [{ ownerRef: routedRef, childRef: hostedRef, delegateId: "d1" }],
+      },
+      slot: "secondary",
+    };
+    workspaceStore.setState({ panes: [...workspaceStore.getState().panes, zoom] });
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference) throw new Error("fixture did not bind the document");
+    // A stale request whose session no longer appears in the zoom's cascade
+    // must not bind the zoom as the document's origin.
+    openDocBeside({ session: "local:absent", reference, sourcePaneId: zoom.id });
+    const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!document) throw new Error("document did not open");
+    expect(documentPaneState(document)?.origin).toBeUndefined();
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === sourceId)?.slot).toBe("main");
+  });
+
   test("reset retires a still-bound document before pane ids are reused", async () => {
     const { openDocBeside } = await import("../panes/doc/openDoc");
     const session = "local:02wMz5TxvEMoJEDTDGOTil";

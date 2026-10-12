@@ -2672,6 +2672,52 @@ test("initial filename open survives a synchronous workspace commit before its b
   expect(documentPaneState(doc)?.origin).toBe(source);
 });
 
+test("a cascade column's filename open keeps its document focused beside the cascade", async () => {
+  vi.stubGlobal("fetch", async () => new Response("# Focus document", { headers: { "Content-Type": "text/plain" } }));
+  window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:session-a")?.id));
+  const source = paneFor("local:session-a");
+  if (source?.type !== "session") throw new Error("expected the routed conversation");
+  // Drill the cascade as the sidebar's inspect row does: the zoom hosts the
+  // child conversation as its readable column.
+  let cascadeId = "";
+  act(() => {
+    cascadeId = enterAgentCascade(
+      activityDelegate({
+        ownerRef: "local:session-a",
+        childRef: "local:child",
+        delegateId: "edge-child",
+      }),
+      source.id,
+    );
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade) throw new Error("cascade did not open");
+  // The column's real filename-open producer, naming the hosting zoom pane.
+  await act(async () =>
+    openDocBeside({ session: "local:child", reference: focusFileReference, sourcePaneId: cascadeId }),
+  );
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc).toBeDefined();
+  if (!doc) throw new Error("document missing");
+  expect(documentPaneState(doc)?.origin).toBe(cascade);
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  // The cascade keeps its inspection placement and the routed conversation
+  // keeps main.
+  expect(cascade.slot).toBe("secondary");
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+  // Settle the route's deferred generic-document recheck: the zoom-hosted
+  // document is the route's companion, so focus must stay with it.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(doc.id);
+  expect(workspaceStore.getState().mainPane()).toBe(source);
+});
+
 test("initial filename open retains focus through a reference-only document binding publication", async () => {
   const ref = "local:session-a";
   await settledDocumentRoute(ref);
@@ -3675,6 +3721,37 @@ test("Opening the conversation retains focused child on desktop until explicit n
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:next" }));
   expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
   expect(paneFor("local:child")).toBeUndefined();
+});
+
+test("Opening a nested conversation's job log retains focus on the settled parent route", async () => {
+  window.history.pushState({}, "", "/s/local:owner");
+  installLocationForRoute("local:owner");
+  const user = userEvent.setup();
+
+  render(
+    <>
+      <AppShell client={navClient()} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+      <OpenTranscriptButton transcriptRef="job:child-run" parentRef="local:child" label="Open job log" />
+    </>,
+  );
+  await screen.findByText(/loading transcript/i);
+  const parent = paneFor("local:owner");
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id));
+
+  await user.click(screen.getByRole("button", { name: "Open child" }));
+  const child = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:child");
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+
+  // The child's job log: its parent context follows the child's recorded
+  // conversation parent (the routed owner), so the settled route must treat
+  // the focused job log as a companion instead of refocusing the owner.
+  await user.click(screen.getByRole("button", { name: "Open job log" }));
+  const job = paneFor("job:child-run");
+  expect(job).toMatchObject({ type: "transcript", slot: "secondary" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(job?.id);
 });
 
 test.each(["local:owner", "local:child"])(

@@ -116,6 +116,11 @@ export interface ActivitySidebarState {
   open: boolean;
   tab: ActivityTab;
   ref: string | null;
+  /** The scope an open request named that focus does not resolve to (an
+   * embedded cascade column's Overview). Held until the workspace scope
+   * moves or the sidebar closes; null means the sidebar follows the focused
+   * scope. */
+  explicitScopeRef: string | null;
   views: ReadonlyMap<string, ActivitySessionView>;
   openWith(tab?: ActivityTab, opener?: HTMLElement): void;
   openFor(ref: string, tab?: ActivityTab, opener?: HTMLElement): void;
@@ -153,6 +158,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
     open: false,
     tab: "agents",
     ref: null,
+    explicitScopeRef: null,
     views: new Map(),
     openWith: (tab, opener) => {
       captureActivitySidebarOpener(opener);
@@ -165,14 +171,27 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       );
       const pane = panes.find((candidate) => candidate.id === workspace.focusedPaneId) ?? panes[0];
       if (pane) workspaceStore.getState().focusPane(pane.id);
-      else get().retarget(ref);
+      else {
+        // An embedded conversation (a cascade column) has no pane of its
+        // own, so focus cannot carry the request: hold the requested scope
+        // explicitly so the sidebar describes that column, not the focused
+        // pane's leaf.
+        get().retarget(ref);
+        set({ explicitScopeRef: ref });
+      }
       get().openWith(tab, opener);
     },
-    close: () => update({ open: false }),
+    close: () => {
+      update({ open: false });
+      // The inspection ended: a later open follows the focused scope again.
+      set({ explicitScopeRef: null });
+    },
     setTab: (tab) => update({ tab }),
     toggle: () => {
-      if (!get().open) captureActivitySidebarOpener();
+      const opening = !get().open;
+      if (opening) captureActivitySidebarOpener();
       update({ open: !get().open });
+      if (!opening) set({ explicitScopeRef: null });
     },
     retarget(ref) {
       const state = get();
@@ -227,7 +246,12 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
 
 workspaceStore.subscribe((state, previous) => {
   const ref = currentSessionRef(state);
-  if (ref !== currentSessionRef(previous)) activitySidebarStore.getState().retarget(ref);
+  if (ref === currentSessionRef(previous)) return;
+  // The workspace scope moved: an explicitly held column scope releases even
+  // when retarget early-returns on the same ref, and the sidebar follows
+  // focus again.
+  activitySidebarStore.setState({ explicitScopeRef: null });
+  activitySidebarStore.getState().retarget(ref);
 });
 
 export function activitySidebarReturnFocusTarget(tab: ActivityTab): HTMLElement | null {
@@ -272,23 +296,34 @@ export function useActivitySidebarStore<T>(selector: (state: ActivitySidebarStat
   return useStore(activitySidebarStore, selector);
 }
 
+/** The scope the sidebar describes right now: an open request's explicitly
+ * held column scope while it holds, else the focused scope. */
+export function activitySidebarScopeRef(): string | null {
+  return activitySidebarStore.getState().explicitScopeRef ?? focusedActivityScopeRef();
+}
+
+export function useActivitySidebarScopeRef(): string | null {
+  const explicit = useActivitySidebarStore((state) => state.explicitScopeRef);
+  const focused = useFocusedActivityScopeRef();
+  return explicit ?? focused;
+}
+
 /** The Activity ✓ semantics, shared by the rail row and the session chrome:
- * the sidebar is open AND scoped to this session (the sidebar always describes
- * the focused session, so a bare "open" would mark every row). Subscribes to
- * BOTH inputs: the sidebar store's open, and the workspace scope - a focus
- * move can keep the same open value, and without the scope subscription
- * the ✓ keeps naming the session the sidebar showed before the move (the
- * menu holds its open state internally, so re-opening it never re-renders
- * the owner into a fresh read). */
+ * the sidebar is open AND describing this session. Subscribes to BOTH inputs:
+ * the sidebar store's open, and the displayed scope - a focus move can keep
+ * the same open value, and without the scope subscription the ✓ keeps naming
+ * the session the sidebar showed before the move (the menu holds its open
+ * state internally, so re-opening it never re-renders the owner into a fresh
+ * read). */
 export function useActivitySidebarOpenFor(ref: string): boolean {
   const open = useActivitySidebarStore((state) => state.open);
-  const scopeRef = useFocusedActivityScopeRef();
+  const scopeRef = useActivitySidebarScopeRef();
   return open && scopeRef === ref;
 }
 
 /** The imperative twin for non-React call sites. */
 export function activitySidebarOpenFor(ref: string): boolean {
-  return activitySidebarStore.getState().open && focusedActivityScopeRef() === ref;
+  return activitySidebarStore.getState().open && activitySidebarScopeRef() === ref;
 }
 
 // resetActivitySidebarStoreForTests restores the initial state between tests -
@@ -308,5 +343,5 @@ export function resetActivitySidebarStoreForTests({ preserveStorage = false } = 
   clearTimeout(saveTimer);
   saveTimer = undefined;
   hydrated = false;
-  activitySidebarStore.setState({ open: false, tab: "agents", ref: null, views: new Map() });
+  activitySidebarStore.setState({ open: false, tab: "agents", ref: null, explicitScopeRef: null, views: new Map() });
 }

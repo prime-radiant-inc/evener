@@ -23,6 +23,7 @@ import {
   hasCascadeUserTransition,
   popAgentCascade,
   reconcileCascadeBinding,
+  resumeCascadeScope,
   returnFromAgentCascade,
 } from "./actions";
 import { CascadeColumn } from "./CascadeColumn";
@@ -76,7 +77,13 @@ function ScopeConversation({
       return thread === undefined ? undefined : { name: thread.name, imageSessionId: thread.imageSessionId };
     }),
   );
-  const sessionId = snapshot?.context?.sessionId ?? scope.sessionId;
+  // The scope's node describes the path's canonical session, but a ref the
+  // canonical data does not describe yet - a column the resume driver just
+  // moved onto a resumed ref, whose thread hydration precedes its activity
+  // snapshot - must not fence-pop on the stale canonical identity. The
+  // requested ref's own hydrated session (the wire Thread.sessionId the
+  // model keeps as imageSessionId) is the truth for that window.
+  const sessionId = snapshot?.context?.sessionId ?? model?.imageSessionId ?? scope.sessionId;
   const previous = lifetime.resolvedSessions.get(scope.requestedRef);
   const rebinding = sessionId !== undefined && previous !== undefined && previous !== sessionId;
   // A new thread image can arrive before its activity context. Keep its bytes
@@ -116,11 +123,13 @@ function ScopeConversation({
       // autofocuses its composer — the user taps in, or the pane's own
       // focus plumbing acts.
       focused: false,
-      // The cascade reconciles a resumed conversation in place; no route
-      // to replace. The session menu belongs to the conversation pane.
+      // A resumed conversation replaces its path entry in place; a cascade
+      // column has no route of its own to navigate. The session menu
+      // belongs to the conversation pane.
+      onResumedIdentity: (resumedRef) => resumeCascadeScope(pane, scope.requestedRef, resumedRef),
       sessionMenu: false,
     }),
-    [view, composer, leaf, pane.id],
+    [view, composer, leaf, pane, scope.requestedRef],
   );
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;
