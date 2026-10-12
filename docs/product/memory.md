@@ -361,7 +361,7 @@ as an unquoted scalar holding `: ` or ending in `:`
 YAML string, when that makes the frontmatter parse, so the model needs no
 second call to fix it. A written page with no description gets a note asking
 for one, a page with a readable description and no `when` gets a note asking
-for one, and a page whose frontmatter still does not parse is left as written
+for a `when`, and a page whose frontmatter still does not parse is left as written
 and gets its own note asking to fix the YAML.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
