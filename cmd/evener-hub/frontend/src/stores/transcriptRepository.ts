@@ -1025,18 +1025,18 @@ export class TranscriptRepository {
             window.rows.length < limit
           ) {
             // Durable rows below the certified window that the opening cut had
-            // loaded. The certified older query only reaches them while this
-            // baseline's own page chain is intact; a reconciliation (a fresh
-            // baseline after a reconnect or an unverified frontier), a newer
-            // authoritative read, or a failed durable write retires that chain,
-            // and the certified query also returns nothing when the requested
-            // boundary has no connected certificate (an intact chain that simply
-            // does not reach these positions), so the fallback fires in that case
-            // too. Either way the rows are still recorded history. Restore the
-            // bounded seeds the opening had loaded without certifying an interval
-            // or handing out a cursor, so a reopened pane is not silently
-            // truncated to the latest window (global-contracts: isolated stored
-            // seeds merge without certifying an interval).
+            // loaded. The certified older query is scoped to connected
+            // certificates and deliberately refuses numeric adjacency, so its
+            // returned set can be gapped or stop short of the opening cut's
+            // oldest row; no probe of its depth can prove the loaded interval is
+            // filled. Take the whole interval from the bounded durable rows and
+            // merge in any certified rows the query did return, letting the
+            // keyed, version-ordered dedupe below decide which row wins. The
+            // certified rows keep their job of adding certification; the merge
+            // itself certifies no interval and hands out no cursor, so a
+            // reopened pane is never silently truncated to the latest window
+            // (global-contracts: isolated stored seeds merge without certifying
+            // an interval).
             let olderRows: readonly TranscriptItemRow<unknown>[] = [];
             if (cut.authorityValid) {
               const older = await this.#cache.getOlderWindow(
@@ -1047,26 +1047,18 @@ export class TranscriptRepository {
               );
               if (!older.stale) olderRows = older.rows;
             }
-            // The certified older query is scoped to connected certificates, so
-            // it can return the rows its chain does reach and still stop short
-            // of the oldest row the opening cut had loaded: another baseline's
-            // chain, an uncertified earlier window, or a gap below the connected
-            // component all leave the oldest identities body-less. Supplement
-            // with the bounded durable rows whenever the certified rows do not
-            // reach `loadedStart`, so a recorded row whose body is still on disk
-            // is never published as an empty settle (global-contracts: isolated
-            // stored seeds merge without certifying an interval).
-            const certifiedReachesLoadedStart = olderRows.some(
-              (row) => comparePosition(row.position, loadedStart) <= 0,
-            );
-            if (olderRows.length === 0 || !certifiedReachesLoadedStart) {
-              olderRows = await this.#cache.getLatest(this.#binding.historyKey, limit);
+            const durableOlder = await this.#cache.getLatest(this.#binding.historyKey, limit);
+            const olderByKey = new Map<string, TranscriptItemRow<unknown>>();
+            for (const row of [...olderRows, ...durableOlder]) {
+              const held = olderByKey.get(row.transcriptKey);
+              if (!held || held.version <= row.version) olderByKey.set(row.transcriptKey, row);
             }
-            const boundedOlder = olderRows.filter(
+            const boundedOlder = [...olderByKey.values()].filter(
               (row) =>
                 comparePosition(row.position, latestStart) < 0 && comparePosition(row.position, loadedStart) >= 0,
             );
             if (boundedOlder.length > 0) {
+              boundedOlder.sort((left, right) => comparePosition(left.position, right.position));
               window = { ...window, rows: [...boundedOlder, ...window.rows] };
             }
           }

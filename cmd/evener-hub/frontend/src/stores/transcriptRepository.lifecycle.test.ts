@@ -1032,32 +1032,38 @@ test("a reopened opening restores the durable older rows a retired page chain no
   repo.dispose();
 });
 
-test("a local opening restores the durable bodies the certified older window does not reach", async () => {
+test("a local opening restores the durable bodies through an interior gap in the certified older set", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
   const repo = repository(fixture.cache, { lifetime: 1 });
-  // The oldest recorded rows were loaded by an earlier read whose certified
-  // range stands alone, connected to no later chain.
-  repo.acceptRead(readOf([135, 138, 139], { length: 139 }), { lifetime: 1, readId: "r1", boundary: "b1" });
+  // The latest read's certified range starts above the oldest loaded rows.
+  repo.acceptRead(readOf([144, 145, 146, 147, 148], { length: 300, olderCursor: "C1" }), {
+    lifetime: 1,
+    readId: "r1",
+    boundary: "b1",
+  });
   await repo.settled();
-  // The page the pane loaded below the latest window, continuing a cursor.
   const authority = repo.getBaselineIdentity();
-  repo.acceptPage(pageOf([140, 143], { nextCursor: "C2", length: 300 }), {
+  // A deep page whose provenance joins the latest read, covering [135,139]: the
+  // anchored older component's deepest certified range.
+  repo.acceptPage(pageOf([135, 138, 139], { length: 300 }), {
     lifetime: 1,
     readId: "r1",
     boundary: "p1",
     authority,
-    requestCursor: "C1",
     before: { entry: 144, item: 0 },
   });
   await repo.settled();
-  // The latest read's certified range starts above the oldest loaded rows, and
-  // its connected older chain stops at the page: the certified older query
-  // reaches 140 and 143 but not the still-durable 135, 138 and 139.
-  repo.acceptRead(readOf([144, 145, 146, 147, 148], { length: 300, olderCursor: "C1" }), {
+  // A middle page covering [140,143], same authority but disconnected from that
+  // component (no range overlap, its before is outside the deep range, no
+  // matching cursor). The anchored certified set is therefore gapped: it has a
+  // row at the opening cut's oldest (135) but a hole above it (140, 143).
+  repo.acceptPage(pageOf([140, 143], { length: 300 }), {
     lifetime: 1,
     readId: "r1",
-    boundary: "b2",
+    boundary: "p2",
+    authority,
+    before: { entry: 141, item: 0 },
   });
   await repo.settled();
   // Background-idle pruning leaves the model holding the recorded identities
@@ -1067,7 +1073,7 @@ test("a local opening restores the durable bodies the certified older window doe
   const reader = repo.attachReader();
   const opened = await reader.openLocal(200);
   // Every recorded row the opening cut had loaded is restored with its body,
-  // not just the rows the latest certified older window happens to reach.
+  // including the interior gap the certified older set leaves uncovered.
   expect(displayedPositions(opened.model)).toEqual([135, 138, 139, 140, 143, 144, 145, 146, 147, 148]);
   reader.dispose();
   repo.dispose();
