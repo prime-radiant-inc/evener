@@ -193,7 +193,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				{why ? (
 					<Text
 						// Held for the connection, or because the session takes no message.
-						testID={`review-held:${online ? "session" : "offline"}`}
+						testID={`review-held:${online ? "unavailable" : "offline"}`}
 						allowFontScaling={allowFontScaling}
 						style={{ ...small, color: palette.inkMid }}
 					>

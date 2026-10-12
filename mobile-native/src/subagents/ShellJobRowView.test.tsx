@@ -79,7 +79,10 @@ describe("a shell job's row", () => {
 		expect(label(ended("done", "stopped", "neutral"))).toContain("stopped, 3 minutes");
 		const done = ended("done", "completed", "success");
 		expect(renderedText(done)).toContain("3m");
-		expect(renderedText(done)).not.toContain("Done");
+		// The clean ending VoiceOver hears isn't shown: the duration stands alone.
+		const ending = label(done).split(", ")[2];
+		expect(ending).toMatch(/\S/);
+		expect(renderedText(done)).not.toContain(ending);
 		expect(label(done)).toBe("Shell job, Serving the docs, completed, 3 minutes, under Fix race in tree settle");
 		expect(glyphColor(done)).toBe(palette.inkLow);
 	});

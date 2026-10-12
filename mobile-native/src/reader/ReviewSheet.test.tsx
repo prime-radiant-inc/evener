@@ -313,7 +313,7 @@ it("sends nothing to a session that stopped taking messages after the sheet open
 	await act(async () => sendButton(tree)?.props.onPress());
 	await settle();
 	expect(mutations()).toEqual([]);
-	expect(markers(tree, "review-held")).toEqual(["session"]);
+	expect(markers(tree, "review-held")).toEqual(["unavailable"]);
 	expect(sheetNavigation.pop).not.toHaveBeenCalled();
 });
 
@@ -360,7 +360,7 @@ it.each([
 	const tree = await mount();
 	choose(tree, "Approve");
 	expect(sendDisabled(tree)).toBe(true);
-	expect(markers(tree, "review-held")).toEqual(["session"]);
+	expect(markers(tree, "review-held")).toEqual(["unavailable"]);
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

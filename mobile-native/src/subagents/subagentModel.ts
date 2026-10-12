@@ -22,7 +22,7 @@ import {
 	plainQuoteLine,
 	shellJobState,
 } from "@evener/appwire-client";
-import { subagentQuietLine, waitingOnSubagents } from "../board/attention";
+import { AGENT_QUIET_AFTER_MS, subagentQuietLine, waitingOnSubagents } from "../board/attention";
 import { compactDuration, spokenDuration } from "../session/format";
 import type { SubagentTally } from "../session/sessionState";
 
@@ -320,6 +320,9 @@ export function stripSegments(
 }
 
 export interface SubagentWhy {
+	/** What the line reports: a failure, a stop, a report or a bare finish; a
+	 * running command, the subagents it waits on, or its quiet clock. */
+	kind: "failed" | "stopped" | "report" | "finished" | "command" | "waiting" | "working" | "quiet";
 	/** The actual unsuccessful outcome, displayed beside its cause. */
 	word?: "Failed";
 	text: string;
@@ -337,20 +340,23 @@ function runningCommand(session: ActivitySessionNode | undefined): string | unde
  * (ruling 6). */
 export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 	const delegate = row.delegate;
-	if (row.state === "failed") return { word: "Failed", text: delegateEndingText(delegate) ?? "" };
+	if (row.state === "failed") return { kind: "failed", word: "Failed", text: delegateEndingText(delegate) ?? "" };
 	if (row.state === "done") {
-		if (row.stopped) return { text: "Stopped" };
+		if (row.stopped) return { kind: "stopped", text: "Stopped" };
 		const report =
 			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
-		return { text: report || "Finished" };
+		return report ? { kind: "report", text: report } : { kind: "finished", text: "Finished" };
 	}
 	const command = runningCommand(delegate.child);
-	if (command) return { text: `Running ${command}` };
+	if (command) return { kind: "command", text: `Running ${command}` };
 	const waiting = runningSubagentCount(
 		(delegate.child?.entries ?? []).filter((entry) => entry.kind === "delegate").map((entry) => entry.delegate),
 	);
-	if (waiting > 0) return { text: waitingOnSubagents(waiting) };
-	return subagentQuietLine(delegateTiming(delegate, now));
+	if (waiting > 0) return { kind: "waiting", text: waitingOnSubagents(waiting) };
+	const timing = delegateTiming(delegate, now);
+	// quietOrWorking's threshold, which picks the line's words.
+	const quiet = (timing.quietForMs ?? 0) >= AGENT_QUIET_AFTER_MS;
+	return { kind: quiet ? "quiet" : "working", ...subagentQuietLine(timing) };
 }
 
 // Cache the same qualified entity identity used by the shared projection.
