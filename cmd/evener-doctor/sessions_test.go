@@ -197,7 +197,7 @@ func TestRun_SessionsBucketFilter(t *testing.T) {
 func TestRun_SessionsBucketAndAllMutuallyExclusive(t *testing.T) {
 	base, _, _ := sessionsFixture(t)
 	var out, errb bytes.Buffer
-	if code := run([]string{"sessions", "--bucket", "x", "--all", "--state-dir", base}, &out, &errb); code == 0 {
+	if code := run([]string{"sessions", "--bucket", "project-test-0123456789", "--all", "--state-dir", base}, &out, &errb); code == 0 {
 		t.Fatalf("--bucket and --all together should not exit 0; stdout=%s", out.String())
 	}
 	if out.Len() != 0 || errb.Len() == 0 {
