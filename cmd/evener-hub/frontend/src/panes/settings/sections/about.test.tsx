@@ -30,6 +30,13 @@ async function renderDisconnectedAbout(): Promise<void> {
   await screen.findByTestId("about-version-unavailable");
 }
 
+// Attribution the borrowed design language requires: its presence is the
+// contract, its wording is not.
+test("renders the design-credit line", async () => {
+  await renderDisconnectedAbout();
+  expect(screen.getByTestId("design-credit").textContent?.trim()).not.toBe("");
+});
+
 test("the MIT license text is collapsed behind a disclosure until opened", async () => {
   await renderDisconnectedAbout();
   const license = screen.getByTestId("about-mit-license");

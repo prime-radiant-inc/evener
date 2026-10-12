@@ -78,7 +78,7 @@ export function AboutSection() {
         </p>
       )}
 
-      <p className={CLASS.help}>
+      <p className={CLASS.help} data-testid="design-credit">
         The visual design language is adapted from Beautiful UI (https://www.beautifului.dev) by Shane Levine, used
         under the MIT License.
       </p>
