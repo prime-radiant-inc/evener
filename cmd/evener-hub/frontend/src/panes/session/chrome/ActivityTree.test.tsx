@@ -822,6 +822,10 @@ describe("ActivityTree", () => {
     // first claim on its own space (the review's 200-rune intent scenario).
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*flex:\s*0 1 auto/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*min-width:\s*0/);
+    // Proportional shrink alone distributes by content width, so a long
+    // intent still starves a short name; the cap holds the meta to a share
+    // the name can survive.
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*max-width:\s*60%/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*overflow:\s*hidden/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*text-overflow:\s*ellipsis/);
   });
