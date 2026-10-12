@@ -704,6 +704,103 @@ func TestForceCompact_OversizedNewestMessageFitsTheCeiling(t *testing.T) {
 	}
 }
 
+// A message longer than both the checkpoint's cap and the model's ceiling is
+// trimmed once, from the message as written. Fitting it to the cap and then to
+// the ceiling would cut the middle of an already-trimmed text, leaving a note
+// whose count no longer says how much was removed. Windows of 50k-60k tokens
+// are where the ceiling falls below the 60,000-char cap.
+func TestForceCompact_MessageOverBothCapAndCeilingIsTrimmedOnce(t *testing.T) {
+	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(emptySummaryReply)} }
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	const window = 54_000
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	log := "LOG_HEAD " + strings.Repeat("log line\n", 8100) + " LOG_TAIL"
+	if ceiling := partnerCarryCeiling(cm.currentProfile()); ceiling >= maxCheckpointChars {
+		t.Fatalf("fixture: the ceiling is %d chars, not below the %d-char cap", ceiling, maxCheckpointChars)
+	}
+	if len(log) <= maxCheckpointChars {
+		t.Fatalf("fixture: the message is %d chars, not past the %d-char cap", len(log), maxCheckpointChars)
+	}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(log)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reading")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	carry := markdownSection(history[0].Message.Text(), checkpointConversationHeading)
+	ceiling := partnerCarryCeiling(cm.currentProfile())
+	if len(carry) > ceiling {
+		t.Fatalf("the carry is %d chars, over the %d-char ceiling", len(carry), ceiling)
+	}
+	if ceiling-len(carry) > carryCeilingSlack {
+		t.Fatalf("the carry is %d chars, leaving %d of the %d-char ceiling unused: it was trimmed past the bound",
+			len(carry), ceiling-len(carry), ceiling)
+	}
+	entries := extractMarkdownConversation(history[0].Message.Text())
+	if len(entries) != 1 {
+		t.Fatalf("want one carried partner message, got %d", len(entries))
+	}
+	if !isMiddleTrimOf(entries[0].Text, log) {
+		t.Fatalf("want one trim of the message as written, with its note counting what was removed:\n%.300s", entries[0].Text)
+	}
+}
+
+// carryCeilingSlack is how far under the ceiling a carry may sit before a test
+// calls it over-trimmed. The carry holds the section heading, the entry's fence
+// and the trimmed-message note, none of which is the partner's own text, and the
+// note's own length moves with its count's digits.
+const carryCeilingSlack = 100
+
+// A ceiling below the fit's edge floor still bounds the carry: the fit keeps
+// partnerMessageEdgeChars at each end and stops short, so the ceiling's own cut
+// finishes the job. It cuts the message as written, so the note still counts
+// what the model lost rather than what the fit had already left of it.
+func TestForceCompact_CeilingBelowTheTrimFloorStillFitsAndCounts(t *testing.T) {
+	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(emptySummaryReply)} }
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
+	client := llm.NewClient()
+	client.Register(adapter)
+	const window = 1_500
+	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	cm.Meta = *persistentMeta
+	log := "LOG_HEAD " + strings.Repeat("log line\n", 555) + " LOG_TAIL"
+	ceiling := partnerCarryCeiling(cm.currentProfile())
+	if ceiling <= 0 || ceiling >= 2*partnerMessageEdgeChars {
+		t.Fatalf("fixture: the ceiling is %d chars, not below the %d-char trim floor", ceiling, 2*partnerMessageEdgeChars)
+	}
+	if len(log) <= ceiling {
+		t.Fatalf("fixture: the message is %d chars, not past the %d-char ceiling", len(log), ceiling)
+	}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(log)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reading")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	cm.ForceCompact(context.Background(), &history, "", noopEmit)
+	carry := markdownSection(history[0].Message.Text(), checkpointConversationHeading)
+	if len(carry) > ceiling {
+		t.Fatalf("the carry is %d chars, over the %d-char ceiling", len(carry), ceiling)
+	}
+	if ceiling-len(carry) > carryCeilingSlack {
+		t.Fatalf("the carry is %d chars, leaving %d of the %d-char ceiling unused: it was trimmed past the bound",
+			len(carry), ceiling-len(carry), ceiling)
+	}
+	entries := extractMarkdownConversation(history[0].Message.Text())
+	if len(entries) != 1 {
+		t.Fatalf("want one carried partner message, got %d", len(entries))
+	}
+	if !isMiddleTrimOf(entries[0].Text, log) {
+		t.Fatalf("want the message trimmed with its note counting what was removed from it:\n%.300s", entries[0].Text)
+	}
+}
+
 // checkpoint-pred's prediction never sees the partner's messages whole, so
 // its predictive checkpoint keeps every one rather than leaving any to it.
 func TestCheckpointPred_PredictionKeepsEveryPartnerMessage(t *testing.T) {
