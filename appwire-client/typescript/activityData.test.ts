@@ -24,9 +24,14 @@ describe("jobStatusDisplay", () => {
     }
   });
 
-  it("renders the command-outcome statuses under the card's display words", () => {
-    expect(jobStatusDisplay("command_exited_nonzero")).toBe("Command failed");
-    expect(jobStatusDisplay("command_killed")).toBe("Command killed");
+  it("shows each command-outcome status as its legacy failed record does, and the two apart", () => {
+    const exited = jobStatusDisplay("command_exited_nonzero");
+    const killed = jobStatusDisplay("command_killed");
+    expect(exited).toBe(jobStatusDisplay("failed", "exit_nonzero"));
+    expect(killed).toBe(jobStatusDisplay("failed", "killed_by_signal: terminated"));
+    expect(exited).not.toBe(killed);
+    expect(exited).not.toBe("command_exited_nonzero");
+    expect(killed).not.toBe("command_killed");
   });
 
   it("joins a legacy pre-split failed record to the display words by its reason", () => {

@@ -6,6 +6,7 @@ import { type ToolWireCall, toolWireCwd, toolWireStep } from "./testing/toolWire
 import {
   mcpToolParts,
   type ToolStep,
+  taskListChanges,
   toolFamily,
   toolStepProgress,
   toolStepSummary,
@@ -156,18 +157,26 @@ test("says a task_list update that changed no status as updating the list", () =
     toolName: "task_list",
     argumentsJSON: JSON.stringify({ update: [{ id: 1, notes: "Still flaky." }] }),
   };
-  expect(toolStepSummary(noted)).toBe("Updated the task list");
+  expect(taskListChanges(noted)).toBe(true);
+  expect(toolStepSummary(noted)).not.toBe(toolStepSummary({ toolName: "task_list", argumentsJSON: "{}" }));
 });
 
 // The historical action form: "append" with tasks, "update" with updates.
 test("says a historical task_list action changed the list only when it carried a change", () => {
-  const called = (args: Record<string, unknown>) =>
-    toolStepSummary({ toolName: "task_list", argumentsJSON: JSON.stringify(args) });
-  expect(called({ action: "append", tasks: [] })).toBe("Checked the task list");
-  expect(called({ action: "update", updates: [] })).toBe("Checked the task list");
-  expect(called({ action: "view" })).toBe("Checked the task list");
-  expect(called({ action: "rename" })).toBe("Checked the task list");
-  expect(called({ action: "update", updates: [{ id: 1, notes: "Still flaky." }] })).toBe("Updated the task list");
+  const call = (args: Record<string, unknown>) => ({ toolName: "task_list", argumentsJSON: JSON.stringify(args) });
+  const checked = toolStepSummary(call({}));
+  for (const args of [
+    { action: "append", tasks: [] },
+    { action: "update", updates: [] },
+    { action: "view" },
+    { action: "rename" },
+  ]) {
+    expect(taskListChanges(call(args)), args.action).toBe(false);
+    expect(toolStepSummary(call(args)), args.action).toBe(checked);
+  }
+  const changed = call({ action: "update", updates: [{ id: 1, notes: "Still flaky." }] });
+  expect(taskListChanges(changed)).toBe(true);
+  expect(toolStepSummary(changed)).not.toBe(checked);
 });
 
 test("counts a transcript's turns and a search's finds in their own number", () => {
