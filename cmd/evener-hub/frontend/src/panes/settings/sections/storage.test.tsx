@@ -1,9 +1,11 @@
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
+import { statusReasons } from "./reasonTestUtils";
 import { settingsFieldHelp, settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 import { StorageSection } from "./storage";
 
@@ -88,4 +90,26 @@ test("pluralizes 'session' (not 'sessions') when the count is exactly 1", async 
   render(<StorageSection />);
 
   expect(await screen.findByText(/Currently tracking 1 session\./)).toBeTruthy();
+});
+
+test("a load failure is a polite danger notice whose Retry re-requests the overview", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => {
+    throw new Error("raw-overview-failure");
+  });
+  const user = userEvent.setup();
+
+  render(<StorageSection />);
+
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(screen.queryByTestId("empty-state")).toBeNull();
+  expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
+  const notice = document.querySelector<HTMLElement>('[role="status"][data-reason="unavailable"]');
+  if (notice === null) throw new Error("load failure shows no notice");
+
+  fake.on("evener/settings/overview", () => ({ hub: {}, storage: {} }) as SettingsOverviewResponse);
+  await user.click(within(notice).getByRole("button", { name: "Retry" }));
+
+  await waitFor(() => expect(settingsFieldIds()).toContain("hub-config"));
+  expect(fake.calls.filter((call) => call.method === "evener/settings/overview")).toHaveLength(2);
 });

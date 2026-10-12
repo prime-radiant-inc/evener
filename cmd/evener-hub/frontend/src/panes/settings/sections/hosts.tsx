@@ -328,16 +328,19 @@ export function HostsSection(_props: HostsSectionProps) {
   if (load.phase === "loading") return <Skeleton lines={3} />;
   if (load.phase === "error") {
     return (
-      <EmptyState
+      <InlineNotice
+        tone="danger"
+        live="status"
+        data-reason="unavailable"
         title="Couldn't load hosts"
-        reason="unavailable"
-        hint={load.message}
         action={
           <Button size="sm" onClick={() => void hostsStore.getState().fetch()}>
             Retry
           </Button>
         }
-      />
+      >
+        {load.message}
+      </InlineNotice>
     );
   }
 

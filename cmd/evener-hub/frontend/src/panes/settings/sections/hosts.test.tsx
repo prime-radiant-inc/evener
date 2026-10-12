@@ -13,10 +13,10 @@ import { connectionStore } from "../../../stores/connection";
 import { hostOpsStore } from "../../../stores/hostOps";
 import { hostsStore } from "../../../stores/hosts";
 import { enterText } from "../../../textEntryTestUtils";
-import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { HOST_POLL_MS, HostsSection, OPERATION_POLL_MS } from "./hosts";
+import { statusReasons } from "./reasonTestUtils";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
@@ -428,7 +428,8 @@ test("load failure shows retry", async () => {
     throw new Error("hub unavailable");
   });
   render(<HostsSection sectionId="hosts" />);
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(screen.queryByTestId("empty-state")).toBeNull();
   const reads = () => fake.calls.filter((call) => call.method === "evener/host/list").length;
   const before = reads();
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -438,7 +439,7 @@ test("load failure shows retry", async () => {
     expect(reads()).toBe(before + 1);
     expect(hostsStore.getState().load.phase).toBe("error");
   });
-  expect(emptyStateReasons(document.body)).toEqual(["unavailable"]);
+  expect(statusReasons(document.body)).toEqual(["unavailable"]);
 });
 
 test("a server-side mid-attach row settles via the poll: in-progress -> failed re-enables Connect", async () => {

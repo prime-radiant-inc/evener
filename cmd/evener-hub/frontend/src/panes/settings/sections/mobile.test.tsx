@@ -6,6 +6,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { MobileSection } from "./mobile";
+import { statusReasons } from "./reasonTestUtils";
 
 // Lets one test simulate a rejected `import("qrcode.react")` chunk load: the
 // mock only throws while the flag is set, so every other test imports the
@@ -88,7 +89,8 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
 
     // The failure stays scoped to the QR slot: an error fallback instead of
     // the QR, with the section and its copy-pairing-link action intact.
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+    expect(emptyStateReasons(document.body)).toEqual([]);
     expect(screen.getByRole("button", { name: "Copy pairing link" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Mobile app" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();

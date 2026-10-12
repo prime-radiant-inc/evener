@@ -2,7 +2,7 @@ import type { AppwireClientLike } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
-import { Button, EmptyState, Skeleton } from "../../../widgets";
+import { Button, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
 import { copyText } from "./credentials/clipboard";
 import { useConnectedEffect } from "./useConnectedEffect";
 
@@ -29,11 +29,9 @@ class QRChunkBoundary extends Component<{ children: ReactNode; fallback?: ReactN
     if (this.state.failed) {
       return (
         this.props.fallback ?? (
-          <EmptyState
-            title="Couldn't load the QR renderer"
-            hint="The pairing link below still works — copy it instead, or reload this page to try again."
-            reason="unavailable"
-          />
+          <InlineNotice tone="danger" live="status" data-reason="unavailable" title="Couldn't load the QR renderer">
+            The pairing link below still works — copy it instead, or reload this page to try again.
+          </InlineNotice>
         )
       );
     }
@@ -75,11 +73,9 @@ export function MobileSection() {
         <>
           <QRChunkBoundary
             fallback={
-              <EmptyState
-                title="Couldn't load device setup"
-                hint="Return to pairing to use the existing link, or reload to try setup again."
-                reason="unavailable"
-              />
+              <InlineNotice tone="danger" data-reason="unavailable" title="Couldn't load device setup">
+                Return to pairing to use the existing link, or reload to try setup again.
+              </InlineNotice>
             }
           >
             <Suspense fallback={<Skeleton lines={4} />}>
@@ -115,11 +111,9 @@ function DirectPairing({ state }: { state: PairingState }) {
 
   if (state.kind === "error") {
     return (
-      <EmptyState
-        title="Couldn't create a mobile pairing link"
-        hint="Reload this page to try again."
-        reason="unavailable"
-      />
+      <InlineNotice tone="danger" live="status" data-reason="unavailable" title="Couldn't create a mobile pairing link">
+        Reload this page to try again.
+      </InlineNotice>
     );
   }
 

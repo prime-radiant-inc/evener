@@ -1,7 +1,7 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, EmptyState, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
+import { Button, InlineNotice, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SESSION_CACHE_HELP, SESSION_CACHE_LABEL, SessionCacheStatus } from "./sessionCacheRow";
 import { Code, FieldDim, FieldValue } from "./settingsField";
@@ -41,18 +41,22 @@ export function StorageSection() {
 
   if (!data && error) {
     return (
-      <EmptyState
+      <InlineNotice
+        tone="danger"
+        live="status"
+        data-reason="unavailable"
         title="Couldn't load storage settings"
-        // friendlyErrorMessage, not the raw store error - see general.tsx's
-        // matching comment for why (settingsOverview.ts stores errorText(err)
-        // verbatim, including AppwireClient's own internal-wiring text).
-        hint={friendlyErrorMessage(error)}
         action={
           <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
             Retry
           </Button>
         }
-      />
+      >
+        {/* friendlyErrorMessage, not the raw store error - see general.tsx's
+            matching comment for why (settingsOverview.ts stores errorText(err)
+            verbatim, including AppwireClient's own internal-wiring text). */}
+        {friendlyErrorMessage(error)}
+      </InlineNotice>
     );
   }
 

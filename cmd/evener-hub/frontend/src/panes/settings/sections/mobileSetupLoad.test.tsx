@@ -5,6 +5,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { MobileSection } from "./mobile";
+import { alertReasons } from "./reasonTestUtils";
 
 const setupChunk = vi.hoisted(() => {
   let reject: (error: Error) => void = () => {};
@@ -45,7 +46,8 @@ test("keeps the pairing link accessible while setup loads and after a load failu
     writeText.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Pair a device" }));
     await act(async () => setupChunk.reject(failure));
-    await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+    await waitFor(() => expect(alertReasons(document.body)).toEqual(["unavailable"]));
+    expect(emptyStateReasons(document.body)).toEqual([]);
     fireEvent.click(screen.getByRole("button", { name: "Close setup" }));
     fireEvent.click(await screen.findByRole("button", { name: "Copy pairing link" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(authURL));

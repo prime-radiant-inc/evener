@@ -6,6 +6,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
 import { MobileSection } from "./mobile";
+import { statusReasons } from "./reasonTestUtils";
 
 let client: FakeClient;
 beforeEach(() => {
@@ -37,7 +38,8 @@ test("keeps in-app destination selection available when automatic discovery cann
 test("keeps destination selection usable when the discovered URL is not supported by the browser", async () => {
   client.on("evener/mobile/pairing", () => ({ authUrl: "http://[fe80::1%25en0]:9180/auth/mobile-secret" }));
   renderMobileSection();
-  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(emptyStateReasons(document.body)).toEqual([]);
   fireEvent.click(screen.getByRole("button", { name: "Pair a device" }));
   expect(await screen.findByRole("textbox", { name: "Hub address" })).toBeTruthy();
 });
