@@ -11,7 +11,8 @@
 #     group exists, then exit 143 and stop the group;
 #   - TERM-ignoring run: TERM lands after registration, on a test that ignores
 #     TERM and leaves a worker that ignores it too, both blocked on a FIFO
-#     nobody writes, so only KILL stops them;
+#     nobody writes, so only KILL stops them. It runs twice, once with the
+#     parent's registration held until the test is ready;
 #   - completed runs: a run that ends on its own is drained without incident.
 #
 # Every case checks the exit status, that no test process and no throwaway
@@ -20,7 +21,7 @@
 # There are no sleeps for synchronization; the 30s ceilings are tripwires
 # for a hang.
 #
-# Usage: tools/copy-oracle/test_mutate.sh   (takes about 6 seconds; exit 0 = pass)
+# Usage: tools/copy-oracle/test_mutate.sh   (takes about 11 seconds; exit 0 = pass)
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd -P)
@@ -55,13 +56,15 @@ mkfifo "$tmp/never" "$tmp/gate"
 #   GATE       the launcher announces "forked" on $HOOKS, then blocks opening
 #              this FIFO, before setpgrp;
 #   HOOKS      the parent announces "deferred" when it defers a signal, and
-#              "registered" once it has recorded the launched run.
+#              "registered" once it has recorded the launched run;
+#   REGATE     the parent blocks opening this FIFO before it announces
+#              "registered", so a test can hold registration back.
 instrumented="$tmp/mutate-instrumented.sh"
 perl -0pe '
   s/^(set -euo pipefail\n)/$1kill() { [[ -z "\${KILL_LOG:-}" ]] || echo "\$*" >>"\$KILL_LOG"; builtin kill "\$@"; }\n/m or die "no set line\n";
   s/setpgrp\(0, 0\)/if (\$ENV{GATE}) { open(my \$h, ">", \$ENV{HOOKS}); print \$h "forked\\n"; close \$h; open(my \$g, "<", \$ENV{GATE}) } setpgrp(0, 0)/ or die "no setpgrp\n";
   s/^(\s*)(pending_signal=\$1\n)/$1$2$1\[[ -z "\${HOOKS:-}" ]] || echo deferred >"\$HOOKS"\n/m or die "no deferral\n";
-  s/^(\s*)(child=\$pid\n)/$1$2$1\[[ -z "\${HOOKS:-}" ]] || echo registered >"\$HOOKS"\n/m or die "no registration\n";
+  s/^(\s*)(child=\$pid\n)/$1$2$1\[[ -z "\${REGATE:-}" ]] || : <"\$REGATE"\n$1\[[ -z "\${HOOKS:-}" ]] || echo registered >"\$HOOKS"\n/m or die "no registration\n";
 ' "$here/mutate.sh" >"$instrumented" || fail "could not instrument mutate.sh"
 chmod +x "$instrumented"
 
@@ -80,11 +83,18 @@ start() {
   pid=$!
 }
 
-# expect_hook <name> <word> waits for the next hook announcement.
-expect_hook() {
-  local line=""
-  read -r -t 30 line <&3 || fail "$1: no hook announcement within 30s, want $2"
-  [[ "$line" == "$2" ]] || fail "$1: hook announced '$line', want '$2'"
+# expect_hooks <name> <word...> waits until each word has been announced, in
+# any order: announcements from separate processes are not ordered.
+expect_hooks() {
+  local name=$1 line="" left deadline=$((SECONDS + 30))
+  shift
+  left=" $* "
+  while [[ "$left" != " " ]]; do
+    read -r -t $((deadline > SECONDS ? deadline - SECONDS : 1)) line <&3 ||
+      fail "$name: no hook announcement within 30s, still want${left% }"
+    [[ "$left" == *" $line "* ]] || fail "$name: hook announced '$line', want one of${left% }"
+    left=${left/ $line / }
+  done
 }
 
 # finish_case <name> <status> waits for mutate.sh and checks what it left.
@@ -112,22 +122,28 @@ finish_case() {
 
 # Deferred launch: TERM arrives while the launcher is held before setpgrp.
 GATE="$tmp/gate" start deferred-launch perl -e 'open(my $g, "<", $ARGV[0])' "$tmp/never" "$tmp/deferred-launch"
-expect_hook deferred-launch forked
+expect_hooks deferred-launch forked
 kill -TERM "$pid"
-expect_hook deferred-launch deferred
+expect_hooks deferred-launch deferred
 exec 5>"$tmp/gate" # releases the launcher into setpgrp and the test
 exec 5>&-
-expect_hook deferred-launch registered
+expect_hooks deferred-launch registered
 finish_case deferred-launch 143
 
-# TERM-ignoring run: TERM arrives once the run is registered and both test
-# processes ignore TERM.
-start term-ignoring perl -e '$SIG{TERM} = "IGNORE"; fork or do { open(my $g, "<", $ARGV[0]); exit }; open(my $h, ">", $ENV{HOOKS}); print $h "ready\n"; close $h; open(my $g, "<", $ARGV[0])' \
-  "$tmp/never" "$tmp/term-ignoring"
-expect_hook term-ignoring registered
-expect_hook term-ignoring ready
-kill -TERM "$pid"
-finish_case term-ignoring 143
+# term_ignoring <name> runs a test whose processes ignore TERM, and sends TERM
+# once the run is registered and the test is ready. When REGATE is set, the
+# test releases the parent's registration only after announcing ready, which
+# forces the reverse of the usual announcement order.
+term_ignoring() {
+  start "$1" perl -e '$SIG{TERM} = "IGNORE"; fork or do { open(my $g, "<", $ARGV[0]); exit }; open(my $h, ">", $ENV{HOOKS}); print $h "ready\n"; close $h; if ($ENV{REGATE}) { open(my $r, ">", $ENV{REGATE}); close $r } open(my $g, "<", $ARGV[0])' \
+    "$tmp/never" "$tmp/$1"
+  expect_hooks "$1" registered ready
+  kill -TERM "$pid"
+  finish_case "$1" 143
+}
+term_ignoring term-ignoring
+mkfifo "$tmp/regate"
+REGATE="$tmp/regate" term_ignoring term-ignoring-ready-first
 
 # Completed runs: the baseline and mutated runs end on their own, leaving a
 # worker each, and the tests pass both times (SURVIVED, exit 1).
