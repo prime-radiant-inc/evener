@@ -423,6 +423,21 @@ func (x *Index) adopt(m meta) error {
 	}
 	x.meta, x.items.n, x.turns.n, x.updates.n, x.strings.n = m, m.Items, m.Turns, m.Updates, uint64(info.Size())
 	x.builderStale = true
+	// The adopting handle's buffered copies of the record files end where its
+	// own last build left them, below the counts just taken up from another
+	// handle's meta: reload them, or every read past that point would slice a
+	// buffer that ends short of the records it names. Nothing of this handle's
+	// own can be mid-flight here — adopt runs at lock time, before the scan
+	// whose writes it would drop.
+	if err := x.items.load(); err != nil {
+		return err
+	}
+	if err := x.turns.load(); err != nil {
+		return err
+	}
+	if err := x.strings.load(); err != nil {
+		return err
+	}
 	return x.readHeader()
 }
 
@@ -796,7 +811,7 @@ func (x *Index) removeOtherBuilds() {
 
 // scan covers complete lines from the covered end up to length.
 func (x *Index) scan(length int64) error {
-	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, x.meta.Length, length-x.meta.Length), 64<<10)
+	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, x.meta.Length, length-x.meta.Length), 1<<20)
 	offset := x.meta.Length
 	for {
 		line, complete, n, err := transcript.ReadLine(reader, maxLineBytes)
@@ -922,6 +937,16 @@ func (x *Index) removeOtherUpdateLogs() {
 // cutting the update log first when it has grown past its bound. A meta that
 // fails to publish a cut leaves the index to rebuild.
 func (x *Index) writeMeta() error {
+	// The buffered records must be on the files before the meta that counts
+	// them publishes, and after the update log's rows, which never buffer.
+	for _, t := range []*table{&x.items, &x.turns} {
+		if err := t.flush(); err != nil {
+			return err
+		}
+	}
+	if err := x.strings.flush(); err != nil {
+		return err
+	}
 	cut, err := x.cutUpdateLog()
 	if err != nil {
 		return err
@@ -1014,7 +1039,20 @@ func (x *Index) openFiles(create bool) error {
 		x.updates.size, x.updatesName = updateRecordSize, updatesFile
 	}
 	x.strings.file, err = open(stringsFile)
-	return err
+	if err != nil {
+		return err
+	}
+	// The record files buffer their content in memory (see table and blob):
+	// a build's appends and in-place rewrites become memcpys, flushed once
+	// before the meta that counts them publishes. The update log does not:
+	// its rows are the crash evidence a recovery must find on disk.
+	if err := x.items.load(); err != nil {
+		return err
+	}
+	if err := x.turns.load(); err != nil {
+		return err
+	}
+	return x.strings.load()
 }
 
 // closeBuild drops the open build and its view of the transcript.
@@ -1031,6 +1069,7 @@ func (x *Index) closeBuild() error {
 	x.meta = meta{}
 	x.prelude = nil
 	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0
+	x.items.buf, x.turns.buf, x.strings.buf = nil, nil, nil
 	return errors.Join(errs...)
 }
 
