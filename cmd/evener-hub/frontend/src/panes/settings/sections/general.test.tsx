@@ -28,8 +28,11 @@ const FULL_RESPONSE: SettingsOverviewResponse = {
   storage: { stateDir: "/home/user/.evener" },
 };
 
-function loadFailureHint(): string | null | undefined {
-  return screen.getByTestId("empty-state").querySelector('[data-slot="hint"]')?.textContent;
+/** The load-failure explanation's text; throws when the hint is missing. */
+function loadFailureHint(): string {
+  const hint = screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
+  if (hint === null) throw new Error("load failure shows no hint");
+  return hint.textContent?.trim() ?? "";
 }
 
 beforeEach(() => {
@@ -119,7 +122,7 @@ test("shows an inline error state with retry on load failure, not a toast", asyn
   render(<GeneralSection />);
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-  expect(loadFailureHint()).not.toBe("");
+  expect(loadFailureHint()).toMatch(/\S/);
   expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
 });
 
@@ -136,6 +139,6 @@ test("a client-unreachable rejection (the reported bug) shows the friendly hub-u
   render(<GeneralSection />);
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
-  expect(loadFailureHint()).not.toBe("");
+  expect(loadFailureHint()).toMatch(/\S/);
   expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });

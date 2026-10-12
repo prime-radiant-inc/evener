@@ -34,7 +34,7 @@ async function renderDisconnectedAbout(): Promise<void> {
 // contract, its wording is not.
 test("renders the design-credit line", async () => {
   await renderDisconnectedAbout();
-  expect(screen.getByTestId("design-credit").textContent?.trim()).not.toBe("");
+  expect(screen.getByTestId("design-credit").textContent).toMatch(/\S/);
 });
 
 test("the MIT license text is collapsed behind a disclosure until opened", async () => {

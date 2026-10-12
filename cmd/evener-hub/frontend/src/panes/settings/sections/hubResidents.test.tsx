@@ -843,8 +843,9 @@ describe("force-stop dialog", () => {
     // A friendly error must appear in the row (role="alert" for announcements)
     const updatedRow = await screen.findByRole("row", { name: /ForceStop error daemon/ });
     const alert = updatedRow.querySelector("[role='alert']");
-    expect(alert).toBeTruthy();
-    expect(alert?.textContent).not.toContain("network error");
+    if (alert === null) throw new Error("force-stop failure raised no row alert");
+    expect(alert.textContent).toMatch(/\S/);
+    expect(alert.textContent).not.toContain("network error");
   });
 });
 
@@ -880,8 +881,9 @@ test("retire RPC failure displays a friendly error in the row", async () => {
   // A friendly error must appear in the row after the RPC fails
   const updatedRow = await screen.findByRole("row", { name: /Retire error daemon/ });
   const alert = updatedRow.querySelector("[role='alert']");
-  expect(alert).toBeTruthy();
-  expect(alert?.textContent).not.toContain("network error");
+  if (alert === null) throw new Error("retire failure raised no row alert");
+  expect(alert.textContent).toMatch(/\S/);
+  expect(alert.textContent).not.toContain("network error");
 });
 
 // ─── Timeout rendering ────────────────────────────────────────────────────────

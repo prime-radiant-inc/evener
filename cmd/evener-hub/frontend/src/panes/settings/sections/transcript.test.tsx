@@ -240,7 +240,7 @@ test("reverts a failed hub mutation and retries the last draft", async () => {
   retryResponse.resolve({ layout: "desktop", revision: 2, config: toWireConfig(draft) });
   await savedOnce();
   const notifications = screen.getByRole("region", { name: "Notifications" });
-  await waitFor(() => expect(notifications.textContent).not.toBe(""));
+  await waitFor(() => expect(notifications.textContent).toMatch(/\S/));
   alertInsertions.stop();
   expect(patchCalls).toBe(2);
 });

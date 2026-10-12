@@ -149,7 +149,7 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
     unmount();
     render(<ScalarField option={pathOption()} layer="project" value="" onChange={() => {}} />);
     const projectMarker = screen.getByLabelText(pathOption().label).textContent;
-    expect(projectMarker).not.toBe("");
+    expect(projectMarker).toMatch(/\S/);
     expect(projectMarker).not.toBe(globalMarker);
   });
 
@@ -378,7 +378,7 @@ describe("ScalarField: integer renders a numeric Input", () => {
     );
     // The -1 "unlimited" sentinel is named, never shown as a raw number.
     const placeholder = screen.getByLabelText("Max rounds").getAttribute("placeholder");
-    expect(placeholder).not.toBe("");
+    expect(placeholder).toMatch(/\S/);
     expect(placeholder).not.toContain("-1");
   });
 });

@@ -77,7 +77,8 @@ describe("on load failure", () => {
 
     await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
     const hint = screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
-    expect(hint?.textContent).not.toBe("");
+    if (hint === null) throw new Error("load failure shows no hint");
+    expect(hint.textContent).toMatch(/\S/);
     expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
   });
 
