@@ -178,5 +178,43 @@ func TestHelpShowsUsage(t *testing.T) {
         self.assertEqual([n for _, n in inventory.copy_only_tests(ts, {3}, "ts")], ["renders No sessions yet"])
 
 
+class RoborevRound2(unittest.TestCase):
+    def test_a_variable_comparison_in_the_condition_is_a_behavior_claim(self):
+        src = """func TestHelpShowsUsage(t *testing.T) {
+	out, status := run("--help")
+	if status != expectedStatus || !strings.Contains(out, "Usage: evener") {
+		t.Fatal(out)
+	}
+}
+"""
+        self.assertEqual(inventory.copy_only_tests(src, {3}, "go"), [])
+
+    def test_operators_after_a_string_still_split_at_the_right_place(self):
+        src = """func TestHelpShowsUsage(t *testing.T) {
+	out, status := run("--help")
+	if !strings.Contains(out, "Usage: evener && more") || status != expectedStatus {
+		t.Fatal(out)
+	}
+}
+"""
+        self.assertEqual(inventory.copy_only_tests(src, {3}, "go"), [])
+        self.assertEqual([t.strip() for t in inventory.go_condition_terms(src.splitlines()[2])],
+                         ['!strings.Contains(out, "Usage: evener && more")', "status != expectedStatus"])
+
+    def test_expression_bodied_tests_do_not_swallow_their_neighbours(self):
+        src = """test("shows the hint", () => expect(screen.getByText("Try again")).toBeTruthy());
+
+test("sends the request", async () => {
+  await send();
+  expect(fake.calls).toHaveLength(1);
+});
+
+test("renders the label", () =>
+  expect(screen.getByText("Retry")).toBeTruthy());
+"""
+        found = inventory.copy_only_tests(src, {1, 9}, "ts")
+        self.assertEqual([n for _, n in found], ["shows the hint", "renders the label"])
+
+
 if __name__ == "__main__":
     unittest.main()

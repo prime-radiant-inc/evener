@@ -243,11 +243,39 @@ CODE_STRINGS = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`[^`\n]*`
 
 
 def code_only(line):
-    """The line without string literals and a trailing // comment, so braces in
-    fixture text or comments don't move block boundaries."""
-    line = CODE_STRINGS.sub('""', line)
+    """The line with string contents blanked and a trailing // comment cut, so
+    braces or operators in fixture text don't move block boundaries or split
+    conditions."""
+    # Blank string contents but keep their length, so offsets into the
+    # result line up with the original line.
+    line = CODE_STRINGS.sub(lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1], line)
     cut = line.find("//")
     return line if cut < 0 else line[:cut]
+
+
+# A Go condition term that asks only about text.
+GO_COPY_TERM = re.compile(r"strings\.\w+\(|\.MatchString\(|\.Error\(\)|[=!]=\s*\"|\"\s*[=!]=")
+
+
+def go_condition_terms(line):
+    """The && / || terms of an `if` condition (string literals blanked first,
+    so operators inside text don't split it)."""
+    code = code_only(line)
+    m = re.search(r"\bif\b(.*)\{\s*$", code)
+    cond = m.group(1) if m else code
+    if ";" in cond:
+        cond = cond.rsplit(";", 1)[1]
+    original = re.search(r"\bif\b(.*)\{\s*$", line)
+    raw = original.group(1) if original else line
+    if ";" in raw:
+        raw = raw.rsplit(";", 1)[1]
+    # Split the raw condition at the operator positions found in the blanked one.
+    terms, last = [], 0
+    for op in re.finditer(r"&&|\|\|", cond):
+        terms.append(raw[last:op.start()])
+        last = op.end()
+    terms.append(raw[last:])
+    return [t for t in terms if t.strip()]
 
 
 def test_blocks(text, lang):
@@ -264,11 +292,15 @@ def test_blocks(text, lang):
         if not m:
             i += 1
             continue
+        # A TS test ends where its test(...) call closes, which also covers
+        # expression-bodied callbacks with no braces; a Go test ends where its
+        # func body closes.
+        open_ch, close_ch = ("(", ")") if lang == "ts" else ("{", "}")
         depth, body, j, opened = 0, [], i, False
         while j < len(lines):
             code = code_only(lines[j])
-            depth += code.count("{") - code.count("}")
-            opened = opened or "{" in code
+            depth += code.count(open_ch) - code.count(close_ch)
+            opened = opened or open_ch in code
             body.append((j + 1, lines[j]))
             j += 1
             if opened and depth <= 0:
@@ -313,6 +345,8 @@ def copy_only_tests(text, hit_lines, lang, purpose="copy"):
 
         def copy_claim(n, line):
             if n not in hit_lines or BEHAVIOR_ON_LINE.search(line):
+                return False
+            if lang == "go" and not all(GO_COPY_TERM.search(t) for t in go_condition_terms(line)):
                 return False
             literals = [first(m.groups()) for m in QUOTED.finditer(line)]
             return not any(lit and lit in inputs for lit in literals)
