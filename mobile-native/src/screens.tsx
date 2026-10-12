@@ -57,6 +57,7 @@ import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { openProviders } from "./board/BoardNotices";
+import { stopToast } from "./board/boardStops";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -2318,7 +2319,7 @@ export function ConversationScreen({
 			await store.getState().interrupt(service);
 			const accepted = store.getState().lastAcceptedMutation;
 			if (!accepted || accepted === previous || accepted.kind !== "interrupt") return "notKept";
-			toaster.show({ text: "Stopped", kind: "stop:stopped" });
+			toaster.show(stopToast("stopped", route.params.title ?? ""));
 			return "stopped";
 		} catch {
 			// Stop only acts while a turn runs; a turn that ended first has
