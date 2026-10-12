@@ -390,24 +390,7 @@ func TestRestoredWindowFrameCarriesStandingFoldedIntent(t *testing.T) {
 	// A real restart: a fresh controller folds the same journal, and the
 	// restored window re-binds the live state with no in-process intent — the
 	// zero value a restored delegateLiveState carries.
-	store, err := delegatestore.Open(journalPath)
-	if err != nil {
-		t.Fatalf("reopen the delegate journal: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	root := filepath.Dir(journalPath)
-	restart, err := openDelegateTreeController(delegateTreeControllerConfig{
-		store:         store,
-		rootSessionID: "root-session",
-		stateDir:      root,
-		worktreeRoot:  filepath.Join(root, "worktrees"),
-		turnLimit:     1,
-		driveLimit:    1,
-		now:           func() time.Time { return time.Unix(100, 0).UTC() },
-	})
-	if err != nil {
-		t.Fatalf("reopen the controller over the journal: %v", err)
-	}
+	restart := reopenIntentController(t, journalPath)
 	restart.mu.Lock()
 	restart.live[lease.delegateID] = &delegateLiveState{
 		binding: &delegateRuntimeBinding{
@@ -457,30 +440,13 @@ func TestRuntimeLostReconcileRetiresTheStatedIntent(t *testing.T) {
 
 	// The restart finds the generation open with its runtime gone: the same
 	// journal, a fresh controller, and no live binding to reclaim the run.
-	store, err := delegatestore.Open(journalPath)
-	if err != nil {
-		t.Fatalf("reopen the delegate journal: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	root := filepath.Dir(journalPath)
-	restart, err := openDelegateTreeController(delegateTreeControllerConfig{
-		store:         store,
-		rootSessionID: "root-session",
-		stateDir:      root,
-		worktreeRoot:  filepath.Join(root, "worktrees"),
-		turnLimit:     1,
-		driveLimit:    1,
-		now:           func() time.Time { return time.Unix(100, 0).UTC() },
-	})
-	if err != nil {
-		t.Fatalf("reopen the controller over the journal: %v", err)
-	}
+	restart := reopenIntentController(t, journalPath)
 	restart.mu.Lock()
 	restart.reconcileOrder = []delegateLease{lease}
-	_, err = restart.reconcileRuntimeLostFromEvidenceLocked()
+	_, reconcileErr := restart.reconcileRuntimeLostFromEvidenceLocked()
 	restart.mu.Unlock()
-	if err != nil {
-		t.Fatalf("runtime-lost reconcile: %v", err)
+	if reconcileErr != nil {
+		t.Fatalf("runtime-lost reconcile: %v", reconcileErr)
 	}
 
 	aggregate := durableIntentState(t, restart, lease.delegateID)
@@ -523,6 +489,31 @@ func TestReportIntentRejectsStaleLease(t *testing.T) {
 	}
 }
 
+// reopenIntentController rebuilds the controller over the journal the harness
+// wrote — a real restart: the same durable events, a fresh process's state.
+func reopenIntentController(t *testing.T, journalPath string) *delegateTreeController {
+	t.Helper()
+	store, err := delegatestore.Open(journalPath)
+	if err != nil {
+		t.Fatalf("reopen the delegate journal: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	root := filepath.Dir(journalPath)
+	restart, err := openDelegateTreeController(delegateTreeControllerConfig{
+		store:         store,
+		rootSessionID: "root-session",
+		stateDir:      root,
+		worktreeRoot:  filepath.Join(root, "worktrees"),
+		turnLimit:     1,
+		driveLimit:    1,
+		now:           func() time.Time { return time.Unix(100, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("reopen the controller over the journal: %v", err)
+	}
+	return restart
+}
+
 // TestRunBoundariesRetireTheIntentLine pins the two generation boundaries: run
 // settlement clears the fold, the live line and the settled frame together,
 // and a new generation starts with an empty line even if a stale one somehow
@@ -542,7 +533,6 @@ func TestRunBoundariesRetireTheIntentLine(t *testing.T) {
 	for i := range plans.updates {
 		for _, row := range plans.updates[i].rows {
 			if row.id == lease.delegateID {
-				row := row
 				settled = &row
 			}
 		}

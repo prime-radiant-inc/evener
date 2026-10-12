@@ -197,13 +197,9 @@ func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, 
 				if live.activityAt.After(row.LatestActivityAt) {
 					candidate.row.LatestActivityAt = live.activityAt.UTC().Format(time.RFC3339Nano)
 				}
-				// The frame builder's join: the controller's live value when
-				// non-empty, else the folded value the capture already
-				// projected — so the read and a pushed frame agree for every
-				// row state, restored window included.
-				if live.intent != "" {
-					candidate.row.LatestIntent = live.intent
-				}
+				// The frame builder's join, shared with the capture above: the
+				// read and a pushed frame agree for every row state.
+				candidate.row.LatestIntent = delegateDisplayIntent(live.intent, candidate.row.LatestIntent)
 			}
 		}
 		candidates = append(candidates, candidate)

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type ActivityCounts,
   type ActivityTree as ActivityTreeData,
   buildActivityRows,
   projectSessionActivity,
@@ -81,6 +82,51 @@ function shellJob(overrides: Record<string, unknown>) {
     startedAt: "2026-08-05T15:00:00Z",
     outputBytes: 0,
     ...overrides,
+  };
+}
+
+// The two intent tests' one-delegate tree: the shape both share, with the
+// live row as the delegate defaults. Each test passes the root counts and the
+// fields its row differs by, so a live-only field a terminal row must not
+// carry is neutralized by the override rather than duplicated away.
+function intentDelegateTree(overrides: Record<string, unknown>, counts: ActivityCounts): ActivityTreeData {
+  return {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "sess_root",
+      ref: "ref_root",
+      label: "Root session",
+      aggregate: "running",
+      counts,
+      entries: [
+        {
+          kind: "delegate",
+          delegate: {
+            delegateId: "dlg_intent",
+            ownerSessionId: "sess_root",
+            rootSessionId: "sess_root",
+            childSessionId: "sess_child",
+            childRef: "ref_child",
+            transcriptRef: "ref_child",
+            type: "delegate",
+            lifecycle: "active",
+            phase: "running",
+            status: "running",
+            projectionRevision: 1,
+            terminal: false,
+            resumable: true,
+            name: "inspect",
+            mandate: "Inspect the repo",
+            runStartedAt: "2026-08-05T15:00:00Z",
+            latestIntent: "Reading the board.",
+            branch: {},
+            ...overrides,
+          },
+        },
+      ],
+      branch: {},
+    },
   };
 }
 
@@ -548,43 +594,7 @@ describe("ActivityTree", () => {
   });
 
   test("a live delegate row shows its intent while aria and glyph keep the status", () => {
-    const tree: ActivityTreeData = {
-      revision: 1,
-      root: {
-        kind: "session",
-        sessionId: "sess_root",
-        ref: "ref_root",
-        label: "Root session",
-        aggregate: "running",
-        counts: { active: 1, failed: 0, completed: 0, complete: false },
-        entries: [
-          {
-            kind: "delegate",
-            delegate: {
-              delegateId: "dlg_intent",
-              ownerSessionId: "sess_root",
-              rootSessionId: "sess_root",
-              childSessionId: "sess_child",
-              childRef: "ref_child",
-              transcriptRef: "ref_child",
-              type: "delegate",
-              lifecycle: "active",
-              phase: "running",
-              status: "running",
-              projectionRevision: 1,
-              terminal: false,
-              resumable: true,
-              name: "inspect",
-              mandate: "Inspect the repo",
-              runStartedAt: "2026-08-05T15:00:00Z",
-              latestIntent: "Reading the board.",
-              branch: {},
-            },
-          },
-        ],
-        branch: {},
-      },
-    };
+    const tree = intentDelegateTree({}, { active: 1, failed: 0, completed: 0, complete: false });
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "inspect" });
     expect(metaText(row)).toBe("Reading the board.");
@@ -594,40 +604,19 @@ describe("ActivityTree", () => {
   });
 
   test("a terminal delegate row keeps its status word over a stale intent", () => {
-    const tree: ActivityTreeData = {
-      revision: 1,
-      root: {
-        kind: "session",
-        sessionId: "sess_root",
-        ref: "ref_root",
-        label: "Root session",
-        aggregate: "running",
-        counts: { active: 0, failed: 0, completed: 1, complete: true },
-        entries: [
-          {
-            kind: "delegate",
-            delegate: {
-              delegateId: "dlg_done",
-              ownerSessionId: "sess_root",
-              rootSessionId: "sess_root",
-              childSessionId: "sess_child",
-              childRef: "ref_child",
-              transcriptRef: "ref_child",
-              type: "delegate",
-              lifecycle: "idle",
-              phase: "done",
-              status: "completed",
-              terminal: true,
-              resumable: true,
-              name: "inspect",
-              latestIntent: "Stale line.",
-              branch: {},
-            },
-          },
-        ],
-        branch: {},
+    const tree = intentDelegateTree(
+      {
+        delegateId: "dlg_done",
+        lifecycle: "idle",
+        phase: "done",
+        status: "completed",
+        terminal: true,
+        latestIntent: "Stale line.",
+        mandate: undefined,
+        runStartedAt: undefined,
       },
-    };
+      { active: 0, failed: 0, completed: 1, complete: true },
+    );
     render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "inspect" });
     expect(metaText(row)).toBe("completed");

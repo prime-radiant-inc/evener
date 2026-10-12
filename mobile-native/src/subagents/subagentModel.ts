@@ -11,8 +11,8 @@ import {
 	delegateEndingText,
 	delegateHasActiveWork,
 	delegateModel,
+	delegateStatedIntent,
 	delegateTiming,
-	delegateWorkText,
 	firstLine,
 	formatTokenCount,
 	isActivityFailure,
@@ -346,10 +346,10 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 		return { text: report || "Finished" };
 	}
 	// The shared display rule: a running row's non-empty stated intent stands
-	// in for the whole line. The empty status word is the point — this line
-	// has no word of its own to keep, so the helper's answer is the intent,
-	// and today's chain stays the fallback.
-	const stated = delegateWorkText(delegate, "");
+	// in for the whole line. The predicate's empty answer is the point — this
+	// line has no word of its own to keep, so the rule alone decides, and
+	// today's chain stays the fallback.
+	const stated = delegateStatedIntent(delegate);
 	if (stated !== "") return { text: stated };
 	const command = runningCommand(delegate.child);
 	if (command) return { text: `Running ${command}` };

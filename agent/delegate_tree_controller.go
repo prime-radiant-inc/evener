@@ -1131,15 +1131,20 @@ func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delega
 		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
 			snapshot.latestProductiveActivityAt = live.productiveActivityAt
 		}
-		// The read's join: the controller's live value when non-empty, else the
-		// folded value — so a frame published during the restored window (live
-		// state fresh, journal standing) carries the standing intent and the
-		// frame field and the read field agree for every row state.
-		if live.intent != "" {
-			snapshot.latestIntent = live.intent
-		}
+		snapshot.latestIntent = delegateDisplayIntent(live.intent, snapshot.latestIntent)
 	}
 	return snapshot
+}
+
+// delegateDisplayIntent is the one join a row's displayed intent reads: the
+// controller's live value when non-empty, else the folded value. The frame
+// builder and the read capture both apply it, so a pushed frame and a read
+// agree for every row state — the restored window included.
+func delegateDisplayIntent(live, folded string) string {
+	if live != "" {
+		return live
+	}
+	return folded
 }
 
 func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapshot {

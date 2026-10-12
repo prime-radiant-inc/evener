@@ -961,12 +961,8 @@ export class SessionActivityStore {
   ): SessionDelegate[] {
     const previousById = new Map(previous.map((row) => [rowIdentity("delegates", row), row]));
     return incoming.map((servedRow) => {
-      // The served row rides the same bound as a frame: an over-bound or
-      // invalid intent reads as omitted, and the row keeps every other field.
-      const row =
-        servedRow.latestIntent !== undefined && boundedIntent(servedRow.latestIntent) === undefined
-          ? { ...servedRow, latestIntent: undefined }
-          : servedRow;
+      // The served row rides the same bound as a frame.
+      const row = inadmissibleIntent(servedRow.latestIntent) ? { ...servedRow, latestIntent: undefined } : servedRow;
       const identity = rowIdentity("delegates", row);
       const existing = previousById.get(identity);
       const applied = this.appliedRevision(identity);
@@ -1264,6 +1260,12 @@ export class SessionActivityStore {
 function boundedIntent(value: unknown): string | undefined {
   return typeof value === "string" && intentWithinBound(value) ? value : undefined;
 }
+/** Whether value is present but not admissible — the one case both strip sites
+ * read the same way: an over-bound or invalid line applies as omitted, and
+ * the row or frame keeps every other field. */
+function inadmissibleIntent(value: string | undefined): boolean {
+  return value !== undefined && boundedIntent(value) === undefined;
+}
 /** A winning frame supplies every mutating field, absent optionals included,
  * so it clears what it omits; only the loaded row's identity survives: a frame
  * carries no refs and `name` is immutable per delegate. */
@@ -1391,9 +1393,7 @@ function boundedDelegateFrame(frame: EvenerDelegateInfo): EvenerDelegateInfo {
   } = frame;
   // The buffer's entry cap bounds ids, not memory, so an intent past the
   // wire's bound is dropped here rather than held by 128 buffered frames.
-  return boundedIntent(bounded.latestIntent) === undefined && bounded.latestIntent !== undefined
-    ? { ...bounded, latestIntent: undefined }
-    : bounded;
+  return inadmissibleIntent(bounded.latestIntent) ? { ...bounded, latestIntent: undefined } : bounded;
 }
 /** The projector's join for two frame snapshots of one delegate: the strictly
  * greater revision supplies the fields, latestActivityAt is the independent
