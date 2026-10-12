@@ -91,7 +91,7 @@ func TestPluginSelectionBeforeSpawn(t *testing.T) {
 			EnabledPlugins: &selected,
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+	if !errors.Is(err, plugins.ErrSelectionUnavailable) {
 		t.Fatalf("ThreadStart error = %v, want invalid selection", err)
 	}
 	if got := len(spawner.Spawns()); got != 0 {

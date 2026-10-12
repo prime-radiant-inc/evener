@@ -232,7 +232,7 @@ func TestHubUpdateApplyDevBuildRefused(t *testing.T) {
 	})
 	restarts := stubScheduleRestart(t)
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{})
-	if err == nil || !strings.Contains(err.Error(), "dev build") {
+	if !errors.Is(err, errDevBuildUpdate) {
 		t.Fatalf("err = %v", err)
 	}
 	if *upgrades != 0 || len(*restarts) != 0 {
@@ -425,7 +425,7 @@ func TestHubUpdateApplySerializesConcurrentCalls(t *testing.T) {
 	<-entered
 
 	_, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{})
-	if err == nil || !strings.Contains(err.Error(), "already in progress") {
+	if !errors.Is(err, errHubUpdateInProgress) {
 		t.Fatalf("second apply err = %v", err)
 	}
 
