@@ -992,9 +992,8 @@ export function renderDocument(
         const content = capture(raw, lexer.tokenizerRef.rules.block.fences, 3);
         const last = content.spans.at(-1);
         const next = last?.end;
-        const normalized = replace(originalTrace(source), /\r\n|\r/g, (m) => spelling(m, "\n"));
-        const newline = normalized.spans.findIndex((span) => span.start === next);
-        const unit = slice(normalized, newline, newline + 1);
+        const newline = input.spans.findIndex((span) => span.start === next);
+        const unit = slice(input, newline, newline + 1);
         if (unit.text !== "\n") throw new Error("Unverified Mermaid final newline");
         fallback = concat(trace, unit);
       }

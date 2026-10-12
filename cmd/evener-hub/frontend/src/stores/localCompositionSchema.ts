@@ -79,21 +79,20 @@ export interface AnnotationExpiryRow {
   receipt: ExpiryReceipt;
 }
 
+function namespaceId(namespace: DocumentKey["namespace"]): string {
+  return namespace.kind === "browser" ? namespace.origin : namespace.hubId;
+}
+
 export function annotationNamespaceKey(namespace: DocumentKey["namespace"]): string {
-  return JSON.stringify([namespace.kind, namespace.kind === "browser" ? namespace.origin : namespace.hubId]);
+  return JSON.stringify([namespace.kind, namespaceId(namespace)]);
 }
 
 export function annotationOperationKey(namespace: DocumentKey["namespace"], id: string): string {
-  return JSON.stringify([namespace.kind, namespace.kind === "browser" ? namespace.origin : namespace.hubId, id]);
+  return JSON.stringify([namespace.kind, namespaceId(namespace), id]);
 }
 
 export function annotationDocumentKey(key: DocumentKey): string {
-  return JSON.stringify([
-    key.namespace.kind,
-    key.namespace.kind === "browser" ? key.namespace.origin : key.namespace.hubId,
-    key.sessionRef,
-    key.path,
-  ]);
+  return JSON.stringify([key.namespace.kind, namespaceId(key.namespace), key.sessionRef, key.path]);
 }
 
 export function annotationExpiryKey(documentKey: string, epoch: string): string {

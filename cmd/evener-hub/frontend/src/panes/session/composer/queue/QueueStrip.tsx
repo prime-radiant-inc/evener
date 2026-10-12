@@ -471,21 +471,20 @@ export function QueueStrip({
   async function handleDismiss(record: MutationRecoveryRecord): Promise<void> {
     // Capture before any yield, never refresh destructive authority after a
     // competitor commits while the original press is waiting.
-    const originalSource = source;
-    const token = Object.freeze({ ...originalSource.getDraftToken() });
-    const key = browserDraftKey(originalSource.ref);
-    const generation = originalSource.getLocalGeneration();
-    const backing = originalSource.getRuntimeBacking();
-    const replacementEpoch = originalSource.continuity.recoveryReplacementEpochRef.current;
+    const token = Object.freeze({ ...source.getDraftToken() });
+    const key = browserDraftKey(source.ref);
+    const generation = source.getLocalGeneration();
+    const backing = source.getRuntimeBacking();
+    const replacementEpoch = source.continuity.recoveryReplacementEpochRef.current;
     const guard = Object.freeze({
       key: Object.freeze({ namespace: Object.freeze({ ...key.namespace }), sessionRef: key.sessionRef }),
       token,
       stillAuthorized: () => {
-        const currentBacking = originalSource.getRuntimeBacking();
+        const currentBacking = source.getRuntimeBacking();
         return (
-          originalSource.alive &&
-          originalSource.getLocalGeneration() === generation &&
-          originalSource.continuity.recoveryReplacementEpochRef.current === replacementEpoch &&
+          source.alive &&
+          source.getLocalGeneration() === generation &&
+          source.continuity.recoveryReplacementEpochRef.current === replacementEpoch &&
           currentBacking.kind === backing.kind &&
           (backing.kind !== "recovery" ||
             (currentBacking.kind === "recovery" && currentBacking.recoveryId === backing.recoveryId))

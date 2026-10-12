@@ -13,7 +13,7 @@ import type { DraftSessionToken } from "@evener/appwire-client/state/mutation";
 import type { SkillEditorValue } from "../panes/session/composer/skillDocument";
 import type { BrowserDraftKey, StoredComposerDraft } from "./browserDraftRepository";
 import { requestResult } from "./idbConnection";
-import { ANNOTATION_NAMESPACES_STORE, COMPOSER_DRAFTS_STORE } from "./localCompositionSchema";
+import { ANNOTATION_NAMESPACES_STORE, annotationNamespaceKey, COMPOSER_DRAFTS_STORE } from "./localCompositionSchema";
 import { createSecureUUID } from "./secureUUID";
 
 export interface NamespaceRow {
@@ -27,8 +27,10 @@ export function serializeSessionKey(key: BrowserDraftKey): string {
   return JSON.stringify([key.namespace.kind, key.namespace.origin, key.sessionRef]);
 }
 
+// The serialized identity of a browser draft namespace is the shared
+// annotation namespace key; the one encoding lives in localCompositionSchema.
 export function serializeNamespace(namespace: BrowserDraftKey["namespace"]): string {
-  return JSON.stringify([namespace.kind, namespace.origin]);
+  return annotationNamespaceKey(namespace);
 }
 
 export function readNamespaceRow(
@@ -36,7 +38,7 @@ export function readNamespaceRow(
   namespace: BrowserDraftKey["namespace"],
 ): Promise<NamespaceRow | undefined> {
   return requestResult<NamespaceRow | undefined>(
-    transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(serializeNamespace(namespace)),
+    transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(namespace)),
   );
 }
 
@@ -79,7 +81,7 @@ export function putSessionRow(transaction: IDBTransaction, row: SessionRow): IDB
 export async function ensureSessionRow(transaction: IDBTransaction, key: BrowserDraftKey): Promise<SessionRow> {
   const existing = await readSessionRow(transaction, key);
   if (existing) return existing;
-  const namespaceKey = serializeNamespace(key.namespace);
+  const namespaceKey = annotationNamespaceKey(key.namespace);
   const namespaceStore = transaction.objectStore(ANNOTATION_NAMESPACES_STORE);
   const current = await requestResult<NamespaceRow | undefined>(namespaceStore.get(namespaceKey));
   const incarnation = current?.incarnation ?? createSecureUUID();

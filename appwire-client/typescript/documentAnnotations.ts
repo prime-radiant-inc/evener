@@ -228,7 +228,7 @@ export function contextForRange(source: string, range: SourceRange): { before: s
 
   let contextStart = paragraphs[first]?.start ?? 0;
   let contextEnd = paragraphs[last]?.end ?? source.length;
-  while (occurrenceCount(source, source.slice(contextStart, contextEnd)) > 1) {
+  while (occursMoreThanOnce(source, source.slice(contextStart, contextEnd))) {
     const canExpandBefore = first > 0;
     const canExpandAfter = last + 1 < paragraphs.length;
     if (!canExpandBefore && !canExpandAfter) break;
@@ -257,18 +257,10 @@ function paragraphRanges(source: string): ParagraphRange[] {
   return ranges;
 }
 
-function occurrenceCount(source: string, needle: string): number {
-  if (needle === "") return 0;
-  let count = 0;
-  let offset = 0;
-  while (offset <= source.length - needle.length) {
-    const found = source.indexOf(needle, offset);
-    if (found < 0) break;
-    count += 1;
-    if (count > 1) break;
-    offset = found + 1;
-  }
-  return count;
+function occursMoreThanOnce(source: string, needle: string): boolean {
+  if (needle === "") return false;
+  const first = source.indexOf(needle);
+  return first >= 0 && source.indexOf(needle, first + 1) >= 0;
 }
 
 export function formatAnnotationReference(capture: CapturedPassage, path: string, note: string): string {

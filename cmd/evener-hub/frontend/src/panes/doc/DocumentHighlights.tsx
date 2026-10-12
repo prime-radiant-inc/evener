@@ -48,7 +48,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
         operationId: annotation.operation.operationId,
         sourceRange: annotation.operation.capture.sourceRange,
       }));
-      setFragments(measureDocumentHighlights(map, targets, clip).slice());
+      setFragments(measureDocumentHighlights(map, targets, clip));
     };
     // Saved bands are pointer-events:none decorations, so a real pointer targets
     // the prose beneath them. Reveal is resolved BOTH from the event target
