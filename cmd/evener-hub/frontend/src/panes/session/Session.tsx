@@ -294,6 +294,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // "Loading transcript…" forever. Deliberately independent of `model` - see
   // the deleted-surface guard below.
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
+  // #4343: a ref whose latest read answered the hub's transcriptIndexRebuilding
+  // discriminant is being repaired in the background, not stalled: the
+  // loading surface says so. Follows the ref's reads — cleared by the next
+  // read that does not fail with the code — so it never outlives the repair.
+  const repairingRef = useThreadsStore((s) => s.repairingRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
@@ -535,7 +540,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         edgeFooter={edgeFooter}
       >
         <EmptyState
-          title="Loading transcript…"
+          title={repairingRef ? "Repairing session history" : "Loading transcript…"}
           hint={
             ref.startsWith("local:")
               ? "If the session is unresponsive, you can stop its process to recover it."

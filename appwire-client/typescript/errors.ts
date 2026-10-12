@@ -121,6 +121,19 @@ export function isTranscriptHistoryFailedError(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptHistoryFailed;
 }
 
+// ErrorTranscriptIndexRebuilding is the hub's discriminator for a history read
+// whose transcript index needs a rebuild the hub has taken ownership of in the
+// background (appwire.ErrorTranscriptIndexRebuilding, appwire/errors.go): one
+// repair runs off the read path, and the read that follows its commit
+// succeeds. A client that recognizes it keeps the history it holds and
+// retries; the data carries no snapshot identity, so nothing is adopted from
+// it. The binding test (errors.test.ts) reads the Go constant.
+export const ErrorTranscriptIndexRebuilding = "transcriptIndexRebuilding";
+
+export function isTranscriptIndexRebuildingError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptIndexRebuilding;
+}
+
 // ErrorUpgradeRequired is the hub's discriminator for initialize refusing a
 // client that announced an older AppWire protocol (appwire.ErrorUpgradeRequired,
 // appwire/errors.go). Retrying cannot help; the client itself must update. The

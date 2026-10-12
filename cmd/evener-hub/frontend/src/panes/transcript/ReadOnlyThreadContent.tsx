@@ -64,6 +64,9 @@ export function ReadOnlyThreadContent({
 
   const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(ref, view);
   const deletedRef = useThreadsStore((state) => state.deletedRefs.has(ref));
+  // #4343: same per-ref flag Session.tsx reads — a watched ref's latest read
+  // answered the hub's transcriptIndexRebuilding discriminant.
+  const repairingRef = useThreadsStore((state) => state.repairingRefs.has(ref));
   const initialViewCapture = view.getCapture();
   const listRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
@@ -115,7 +118,7 @@ export function ReadOnlyThreadContent({
         />
       );
     }
-    return <EmptyState title="Loading transcript…" />;
+    return <EmptyState title={repairingRef ? "Repairing session history" : "Loading transcript…"} />;
   }
   return (
     <SessionNowContext.Provider value={now}>

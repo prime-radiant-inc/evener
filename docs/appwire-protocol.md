@@ -72,7 +72,13 @@ change it, edit the catalog and/or the prose template
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 `error.data.evenerErrorInfo` carries a structured evener-specific detail string
 when present. Common cases: method-not-found, invalid-params (params failed to
-unmarshal), invalid-request (e.g. a request before `initialize`).
+unmarshal), invalid-request (e.g. a request before `initialize`). A history
+read whose transcript index needs a rebuild the server has taken ownership of
+in the background answers `transcriptIndexRebuilding` with
+`data.retryDisposition: "automatic"`: retrying is the right response, and the
+read that follows the repair's commit succeeds; its terminal sibling
+`transcriptHistoryFailed` names the last entry the failed history had
+recorded.
 
 ## Explicit skill and command input
 

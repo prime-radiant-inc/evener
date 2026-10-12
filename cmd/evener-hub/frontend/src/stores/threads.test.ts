@@ -2829,6 +2829,105 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  // The hub's transcriptIndexRebuilding answer (#4343): a daemonless read
+  // whose sidecar needs a rebuild answers a typed retryable error while one
+  // owned repair runs off the read path. In the store it is deliberately NOT
+  // the history-failed discriminant — hydrations land in the paced
+  // retry-forever owner, the held history stays, and the per-ref flag the
+  // loading surface reads shows the concise repair status until a read that
+  // does not fail with the code lands.
+  describe("transcript index rebuilding answers", () => {
+    const rebuildingRejection = () =>
+      new WireError("thread history is being rebuilt in the background", -32000, {
+        evenerErrorInfo: "transcriptIndexRebuilding",
+      });
+
+    test("a first open arms the owned retry, marks the ref repairing, and clears the flag when a later read succeeds", async () => {
+      const fake = connectFakeClient();
+      let reads = 0;
+      fake.on("thread/read", () => {
+        reads += 1;
+        if (reads === 1) throw rebuildingRejection();
+        return readResponse("ref_a", { name: "Repaired" });
+      });
+
+      const ensuring = threadsStore.getState().ensureThread("ref_a");
+      await flushUntil(() => scheduledHydrationRetries.length === 1);
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+      // Nothing was published for a first open — no model, so no surface to
+      // carry a history-failed diagnostic either.
+      expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+      runScheduledHydrationRetry(0);
+      await ensuring;
+      expect(threadsStore.getState().threads.get("ref_a")?.name).toBe("Repaired");
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+    });
+
+    test("an already-open session keeps its held model without a history-failed diagnostic while its refresh reports the repair", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => readResponse("ref_a", { name: "Held" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      await threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushUntil(() => scheduledHydrationRetries.length === 1);
+
+      // The held model stays exactly as it was, with no failure marker, and
+      // the surface flag says what is actually happening.
+      expect(threadsStore.getState().threads.get("ref_a")?.name).toBe("Held");
+      expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBeUndefined();
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      // The repair commits and the paced retry's read succeeds: the flag
+      // clears and the re-hydration publishes.
+      let reads = 0;
+      fake.on("thread/read", () => {
+        reads += 1;
+        return readResponse("ref_a", { name: "Held" });
+      });
+      runScheduledHydrationRetry(0);
+      await flushUntil(() => reads === 1 && !threadsStore.getState().repairingRefs.has("ref_a"));
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+      expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBeUndefined();
+    });
+
+    test("a history-failed answer after a rebuilding one clears the flag and applies the diagnostic, arming no further retry", async () => {
+      const fake = connectFakeClient();
+      fake.on("thread/read", () => readResponse("ref_a", { name: "Held" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      fake.on("thread/read", () => {
+        throw rebuildingRejection();
+      });
+      await threadsStore
+        .getState()
+        .refreshThread("ref_a")
+        .catch(() => undefined);
+      await flushUntil(() => scheduledHydrationRetries.length === 1);
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(true);
+
+      // The budget-exhausted answer arrives on the retry: the existing
+      // history-failed diagnostic applies, never a false repair status, and
+      // the no-auto-retry branch means no new retry is armed.
+      fake.on("thread/read", () => {
+        throw new WireError("thread history failed at entry 3", -32000, {
+          evenerErrorInfo: "transcriptHistoryFailed",
+        });
+      });
+      runScheduledHydrationRetry(0);
+      await flushUntil(() => !threadsStore.getState().repairingRefs.has("ref_a"));
+      expect(threadsStore.getState().repairingRefs.has("ref_a")).toBe(false);
+      expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBe("thread history failed at entry 3");
+      expect(scheduledHydrationRetries.length).toBe(1);
+    });
+  });
+
   // ensureThread's client-swap re-arm waits for the replacement client to reach
   // ready. Anything captured before that wait can be a whole ready generation
   // out of date when it resumes, and a client captured there is the one thing a

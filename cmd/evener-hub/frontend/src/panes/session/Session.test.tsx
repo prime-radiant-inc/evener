@@ -512,6 +512,31 @@ test("a slow-but-alive ref keeps showing the loading placeholder, never the dele
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
 });
 
+// #4343's client-visible half: a daemonless read whose transcript index is
+// being rebuilt in the background answers the typed transcriptIndexRebuilding
+// discriminant. The store owns the paced retry (threads.test.ts pins the flag
+// and retry lifecycle); this pane's loading surface reads the per-ref flag
+// and shows the agreed concise status instead of an eternal "Loading
+// transcript…", and never the deleted state — a repair is not a deletion.
+test("a ref whose index is being rebuilt shows the repairing status, not a stall or a deletion", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => {
+    throw new WireError("thread history is being rebuilt in the background", -32000, {
+      evenerErrorInfo: "transcriptIndexRebuilding",
+    });
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText("Repairing session history")).toBeTruthy());
+  expect(screen.queryByText(/loading/i)).toBeNull();
+  expect(screen.queryByText(/deleted/i)).toBeNull();
+});
+
 // The daemon fences every request against a target it has actually deleted
 // with a WireError carrying data.mutationOutcome === "targetDeleted"
 // (cmd/evener-hub/app_sources.go's deletionFenceError, surfaced to thread/read

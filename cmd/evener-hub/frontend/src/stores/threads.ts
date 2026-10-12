@@ -46,6 +46,7 @@ import {
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
+  isTranscriptIndexRebuildingError,
   mergeOlderItemPage,
   mergeTailTurns,
   mutationErrorData,
@@ -230,6 +231,16 @@ export interface ThreadsStoreState {
   // markThreadDeletedIfFenced. An ordinary transient rejection is still
   // presumed transport and keeps its retry-forever contract.
   deletedRefs: Set<string>;
+  /** Refs whose latest latest-window read answered the hub's
+   * transcriptIndexRebuilding discriminant (#4343): one owned repair runs
+   * off the read path, the store's paced hydration retry keeps re-reading,
+   * and the loading surface shows "Repairing session history" for these
+   * refs. Set when the latest read failed with the code, cleared by the
+   * next read that does not — success or any other failure, the
+   * budget-exhausted history-failed answer included — and dropped with the
+   * ref's model state on release. Unlike `deletedRefs` this is not terminal:
+   * it follows the ref's reads. */
+  repairingRefs: Set<string>;
   /** Cache state follows the owned model through its final release, including
    * mutation pins. A sibling deletion can create a suppression-only record
    * before a claim captures its lease; that record must not block a cold read.
@@ -867,7 +878,14 @@ function removeThreadModel(ref: string): void {
     nextFrameTimes.delete(ref);
     const nextDeletedRefs = new Set(s.deletedRefs);
     nextDeletedRefs.delete(ref);
-    return { threads: nextThreads, frameTimes: nextFrameTimes, deletedRefs: nextDeletedRefs };
+    const nextRepairingRefs = new Set(s.repairingRefs);
+    nextRepairingRefs.delete(ref);
+    return {
+      threads: nextThreads,
+      frameTimes: nextFrameTimes,
+      deletedRefs: nextDeletedRefs,
+      repairingRefs: nextRepairingRefs,
+    };
   });
 }
 
@@ -2289,6 +2307,23 @@ function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err:
   return held !== undefined && isStaleCursorError(err);
 }
 
+// setThreadRepairing records the ref's latest latest-window read outcome for
+// #4343's rebuilding status: true when the read answered the hub's
+// transcriptIndexRebuilding discriminant, false when it answered anything
+// else or succeeded. The rule is per-ref and per-read — the flag never
+// outlives the read that set it — so the loading surface reading it stays
+// honest through the whole repair-and-retry cycle, including the
+// budget-exhausted transition to the history-failed diagnostic.
+function setThreadRepairing(ref: string, repairing: boolean): void {
+  threadsStore.setState((s) => {
+    if (s.repairingRefs.has(ref) === repairing) return s;
+    const next = new Set(s.repairingRefs);
+    if (repairing) next.add(ref);
+    else next.delete(ref);
+    return { repairingRefs: next };
+  });
+}
+
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
@@ -2318,6 +2353,10 @@ async function hydrateAndSubscribe(
     // rejection here is a transport failure, not a slow file read and not a
     // lost claim. Ask this ref's owner generation to read again.
     markThreadDeletedIfFenced(ref, err);
+    // #4343: a typed "index rebuilding" answer is a retryable state — record
+    // it for the loading surface (set on this code, cleared by any other
+    // outcome, the success path below included).
+    setThreadRepairing(ref, isTranscriptIndexRebuildingError(err));
     // A structured "history failed" response is not a transport hiccup: the
     // spec says the client shows one visible diagnostic and waits for a later
     // read to succeed, never auto-retrying in a loop. Applied only against
@@ -2330,6 +2369,8 @@ async function hydrateAndSubscribe(
     }
     throw err;
   }
+  // The read succeeded: any repairing status from an earlier read is over.
+  setThreadRepairing(ref, false);
   if (discardHeldHistory) clearOversizeMemo(ref); // the stale-snapshot retry's replacement is a mid-lifetime shrink
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
@@ -2456,6 +2497,9 @@ async function hydrateAndSubscribeWatch(
     }
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
+    // #4343: same per-ref recording as hydrateAndSubscribe's own catch —
+    // the watched read is this ref's latest read too.
+    setThreadRepairing(ref, isTranscriptIndexRebuildingError(err));
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
       putWatchedThreadModel(
         ref,
@@ -2466,6 +2510,8 @@ async function hydrateAndSubscribeWatch(
     }
     throw err;
   }
+  // The read succeeded: any repairing status from an earlier read is over.
+  setThreadRepairing(ref, false);
   // See hydrateAndSubscribe's identical comment: a retry that dropped the
   // held snapshot must fully replace history, not merge into it.
   const model =
@@ -4851,6 +4897,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   hydrations: new Map(),
   watchedThreads: new Map(),
   deletedRefs: new Set(),
+  repairingRefs: new Set(),
   cacheLifetimes: new Map(),
   clearInFlight: undefined,
 
@@ -6228,6 +6275,7 @@ export function resetThreadsStoreForTests(): void {
       hydrations: new Map(),
       watchedThreads: new Map(),
       deletedRefs: new Set(),
+      repairingRefs: new Set(),
       cacheLifetimes: new Map(),
       clearInFlight: undefined,
     },
