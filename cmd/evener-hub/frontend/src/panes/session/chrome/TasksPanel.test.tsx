@@ -148,10 +148,12 @@ function errorToasts(): string[] {
     .map((toast) => toast.text);
 }
 
-// Every failed first-fetch notice on the page. A failure is an InlineNotice
-// (role=alert), never an EmptyState, so emptyStateReasons does not see it.
+// Every failed first-fetch notice on the page. A failure is an InlineNotice,
+// never an EmptyState, so emptyStateReasons does not see it. The first fetch
+// runs as the panel opens, so its failure is a polite status (role=status)
+// rather than an alert that interrupts a screen reader.
 function failedNotices(): Element[] {
-  return [...document.querySelectorAll('[role="alert"][data-reason="failed"]')];
+  return [...document.querySelectorAll('[role="status"][data-reason="failed"]')];
 }
 
 // The failed first-fetch notice's heading and detail, joined the way a toast

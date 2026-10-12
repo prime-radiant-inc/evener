@@ -564,7 +564,7 @@ export function CredentialsSection({
           (readListing), so those rows stay too, with the banner above them. */}
       {loading && instances.length === 0 && <Skeleton />}
       {error && (
-        <InlineNotice tone="danger" data-testid="load-error">
+        <InlineNotice tone="danger" live="status" data-testid="load-error">
           Failed to load: {friendlyErrorMessage(error)}
         </InlineNotice>
       )}

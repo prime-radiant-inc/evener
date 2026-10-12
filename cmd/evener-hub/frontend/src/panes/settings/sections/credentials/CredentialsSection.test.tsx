@@ -222,7 +222,9 @@ describe("initial load", () => {
     });
     render(<CredentialsSection sectionId="credentials" />);
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
-    await screen.findByTestId("load-error");
+    const notice = await screen.findByTestId("load-error");
+    // The list loads as the section opens, so its failure is a polite status.
+    expect(notice.getAttribute("role")).toBe("status");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/network down/)).toBeNull();
   });

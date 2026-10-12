@@ -462,7 +462,7 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
     if (rows === null) {
       if (error)
         return (
-          <InlineNotice tone="danger" title={error.headline} action={retry} data-reason="failed">
+          <InlineNotice tone="danger" live="status" title={error.headline} action={retry} data-reason="failed">
             {error.detail}
           </InlineNotice>
         );

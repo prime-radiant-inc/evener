@@ -234,7 +234,7 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
       </header>
       <p className={CLASS.help}>{copy}</p>
       {error !== null ? (
-        <InlineNotice tone="danger" data-reason="unavailable">
+        <InlineNotice tone="danger" live="status" data-reason="unavailable">
           Failed to load: {error}
         </InlineNotice>
       ) : loading && layer === null ? (
