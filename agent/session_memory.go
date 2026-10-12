@@ -93,6 +93,22 @@ func (s *Session) memoryContextEnabled() bool {
 	return !s.cfg.DisableMemory && s.cfg.MemoryStateRoot != "" && s.reg != nil && s.reg.Get("memory_read") != nil
 }
 
+// gardeningMemorySkillName is the bundled skill whose instructions correct
+// memory pages with memory_write, memory_edit and memory_delete.
+const gardeningMemorySkillName = "gardening-memory"
+
+// skillAvailableToSession reports whether this session may advertise and load a
+// catalog skill. The gardening-memory skill corrects pages with the memory save
+// tools, so a session without them (a delegate, a memory-disabled session, or a
+// profile that denies a save tool) must neither see it in its catalog nor
+// activate it. Every other skill is available as the catalog advertises it.
+func (s *Session) skillAvailableToSession(name string) bool {
+	if name == gardeningMemorySkillName {
+		return s.memorySaveInstructionsEnabled()
+	}
+	return true
+}
+
 // memorySaveInstructionsEnabled gates text that tells the model to write or
 // correct memory: a session that can read but not write memory still gets its
 // indexes and read guidance, never instructions it cannot follow.
