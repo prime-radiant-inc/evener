@@ -10,6 +10,7 @@ import { PairingApproval } from "./PairingApproval";
 type Permission = { granted: boolean; canAskAgain: boolean; status: string };
 const mocks = vi.hoisted(() => ({
 	fetch: vi.fn(),
+	random: vi.fn(),
 	permission: { value: null as Permission | null },
 	request: vi.fn(),
 	get: vi.fn(),
@@ -18,8 +19,23 @@ const mocks = vi.hoisted(() => ({
 	saveHub: vi.fn(),
 	openSettings: vi.fn(),
 }));
+const navigation = vi.hoisted(() => {
+	const state = { focused: true };
+	const listeners = { focus: new Set<() => void>(), blur: new Set<() => void>() };
+	const api = {
+		isFocused: () => state.focused,
+		addListener: (event: "focus" | "blur", listener: () => void) => {
+			listeners[event].add(listener);
+			return () => {
+				listeners[event].delete(listener);
+			};
+		},
+	};
+	return { state, listeners, api };
+});
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => navigation.api }));
 vi.mock("expo/fetch", () => ({ fetch: mocks.fetch }));
-vi.mock("expo-crypto", () => ({ getRandomBytes: () => new Uint8Array(32).fill(7) }));
+vi.mock("expo-crypto", () => ({ getRandomBytes: mocks.random }));
 vi.mock("expo-camera", () => ({
 	CameraView: "CameraView",
 	useCameraPermissions: () => [mocks.permission.value, mocks.request, mocks.get],
@@ -46,6 +62,10 @@ const GRANTED: Permission = { granted: true, canAskAgain: true, status: "granted
 
 beforeEach(() => {
 	mocks.fetch.mockReset();
+	mocks.random.mockReset().mockImplementation(() => new Uint8Array(32).fill(7));
+	navigation.state.focused = true;
+	navigation.listeners.focus.clear();
+	navigation.listeners.blur.clear();
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(() => Promise.reject(new Error("Global fetch must not serve native pairing"))),
@@ -635,4 +655,46 @@ it("does not review a cancelled invitation after another scan starts", async () 
 	expect(pairingWith(tree)).toBeUndefined();
 	expect(button(tree, "Cancel pairing")).toBeDefined();
 	expect(mocks.saveHub).not.toHaveBeenCalled();
+});
+
+it("pauses a retained screen on navigation blur and resumes the same claim on focus", async () => {
+	vi.useFakeTimers();
+	const requests = captureClaims(false);
+	const { tree, reply, invitation } = await startInvitation();
+	const first = requests[0];
+	if (!first) throw new Error("Missing initial claim");
+	act(() => {
+		navigation.state.focused = false;
+		for (const listener of navigation.listeners.blur) listener();
+	});
+	expect(first.signal.aborted).toBe(true);
+	await act(async () => {
+		for (const listener of mocks.appState) listener("background");
+		for (const listener of mocks.appState) listener("active");
+		first.answer(reply);
+	});
+	await advancePairingTime(30000);
+	expect(requests).toHaveLength(1);
+	expect(pairingWith(tree)).toBeUndefined();
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	act(() => {
+		navigation.state.focused = true;
+		for (const listener of navigation.listeners.focus) listener();
+	});
+	expect(requests).toHaveLength(2);
+	const resumed = requests[1];
+	if (!resumed) throw new Error("Missing focused claim");
+	expect(resumed.body).toEqual(first.body);
+	expect(mocks.random).toHaveBeenCalledTimes(1);
+	await act(async () => {
+		resumed.answer(reply);
+	});
+	expect(pairingWith(tree)).toBe(invitation.origin);
+	expect(mocks.saveHub).not.toHaveBeenCalled();
+	await press(tree, "Connect");
+	expect(mocks.saveHub).toHaveBeenCalledExactlyOnceWith({
+		name: "magic-kingdom",
+		origin: invitation.origin,
+		token: TOKEN,
+	});
 });

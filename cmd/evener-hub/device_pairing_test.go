@@ -22,6 +22,26 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
+func TestDevicePairingRejectsUnsupportedCredentials(t *testing.T) {
+	for _, tc := range []struct{ name, token string }{
+		{"empty", ""}, {"too long", strings.Repeat("a", 512)},
+		{"embedded space", "synthetic credential"}, {"tab", "synthetic\tcredential"},
+		{"control", "synthetic\x7fcredential"}, {"unicode", "synthetic-é"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newDevicePairings(hubcore.WebConfig{AuthToken: tc.token})
+			invite, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://magic-kingdom:9180", Tailnet: true})
+			if err == nil || invite.Invitation != "" || len(p.entries) != 0 {
+				t.Fatal("created an invitation for a credential the receiver cannot save")
+			}
+		})
+	}
+	p := newDevicePairings(hubcore.WebConfig{AuthToken: "!" + strings.Repeat("~", 510)})
+	if _, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://magic-kingdom:9180", Tailnet: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDevicePairingIncompleteBodyTimesOut(t *testing.T) {
 	requestBody := `{"invitation":"` + strings.Repeat("01", 24) + `","publicKey":"9bd266e486eedd293ba03546df3a37b7666c2cc62e5d5063944d50eea04cb749","client":"mobile"}`
 	for _, tc := range []struct{ name, body string }{{"partial JSON", `{"invitation":`}, {"missing body EOF", requestBody}} {

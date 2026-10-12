@@ -4,6 +4,7 @@ import {
 	requestPairingClaim,
 	type DevicePairingInvitation,
 } from "@evener/appwire-client/pairing";
+import { useNavigation } from "@react-navigation/native";
 import { getRandomBytes } from "expo-crypto";
 import { fetch as nativeFetch } from "expo/fetch";
 import { useEffect, useRef, useState } from "react";
@@ -21,6 +22,7 @@ export function PairingApproval({
 	onApproved(target: PairingTarget): void;
 	onCancel(): void;
 }) {
+	const navigation = useNavigation();
 	const [comparison, setComparison] = useState("");
 	const [status, setStatus] = useState("Connecting to the Hub…");
 	const approved = useRef(onApproved);
@@ -34,6 +36,7 @@ export function PairingApproval({
 		let disposed = false,
 			settled = false,
 			foreground = AppState.currentState === "active",
+			focused = navigation.isFocused(),
 			generation = 0;
 		let timer: ReturnType<typeof setTimeout> | undefined, deadline: ReturnType<typeof setTimeout> | undefined;
 		let request: AbortController | undefined;
@@ -50,14 +53,14 @@ export function PairingApproval({
 		};
 		cancelPairing.current = cancel;
 		const poll = async () => {
-			if (disposed || settled || !foreground) return;
+			if (disposed || settled || !foreground || !focused) return;
 			const current = ++generation,
 				controller = new AbortController();
 			request = controller;
 			deadline = setTimeout(() => controller.abort(), 10000);
 			try {
 				const reply = await requestPairingClaim(claim, "mobile", controller.signal, nativeFetch);
-				if (disposed || current !== generation || !foreground) return;
+				if (disposed || current !== generation || !foreground || !focused) return;
 				if (reply.state === "approved" && reply.envelope) {
 					const target = openPairingEnvelope(claim, reply.envelope);
 					settled = true;
@@ -75,12 +78,12 @@ export function PairingApproval({
 					);
 				} else setStatus("Compare this code with the one in Evener on your computer, then approve it there.");
 			} catch (error) {
-				if (!disposed && current === generation && foreground)
+				if (!disposed && current === generation && foreground && focused)
 					setStatus(error instanceof Error ? error.message : "Reconnecting to the Hub…");
 			} finally {
 				if (current === generation) {
 					clearTimeout(deadline);
-					if (!disposed && !settled && foreground) timer = setTimeout(() => void poll(), 1200);
+					if (!disposed && !settled && foreground && focused) timer = setTimeout(() => void poll(), 1200);
 				}
 			}
 		};
@@ -89,14 +92,25 @@ export function PairingApproval({
 			stop();
 			if (foreground) void poll();
 		});
+		const unsubscribeFocus = navigation.addListener("focus", () => {
+			focused = true;
+			stop();
+			void poll();
+		});
+		const unsubscribeBlur = navigation.addListener("blur", () => {
+			focused = false;
+			stop();
+		});
 		void poll();
 		return () => {
 			disposed = true;
 			cancel();
 			cancelPairing.current = null;
 			subscription.remove();
+			unsubscribeFocus();
+			unsubscribeBlur();
 		};
-	}, [invitation]);
+	}, [invitation, navigation]);
 	return (
 		<GroupedPage>
 			<Group label="Pair with">

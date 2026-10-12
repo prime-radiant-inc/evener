@@ -93,8 +93,8 @@ func (p *devicePairings) create(params appwire.DevicePairingCreateParams) (appwi
 		host = "[" + host + "]"
 	}
 	origin = (&url.URL{Scheme: u.Scheme, Host: host}).String()
-	if len(p.cfg.AuthToken) == 0 || len(p.cfg.AuthToken) > 511 {
-		return appwire.DevicePairingInvitation{}, appwire.Conflict("Hub credential cannot be paired")
+	if len(p.cfg.AuthToken) == 0 || len(p.cfg.AuthToken) > 511 || strings.IndexFunc(p.cfg.AuthToken, func(c rune) bool { return c < '!' || c > '~' }) >= 0 {
+		return appwire.DevicePairingInvitation{}, appwire.Conflict("pairing requires a Hub credential of 1–511 non-space printable ASCII characters")
 	}
 	if len(p.entries) >= 16 {
 		return appwire.DevicePairingInvitation{}, appwire.Conflict("too many active invitations; cancel one or wait for expiry")

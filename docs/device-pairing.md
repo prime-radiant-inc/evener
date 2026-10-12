@@ -59,6 +59,10 @@ are pruned on access. A Hub restart discards all pending invitations. Existing
 saved client credentials remain valid. `mobile_base_url`, when configured,
 takes precedence over the browser's proposed origin.
 
+Creating an invitation requires a Hub credential of 1–511 non-space printable
+ASCII bytes, matching the envelope receivers. Unsupported credentials are
+reported before an invitation is issued; ordinary Hub authentication is unchanged.
+
 `tailnet` marks a destination reached through Tailscale. A tailnet locator may
 use MagicDNS. Direct HTTP retains the
 mobile pairing private-network origin rules; direct HTTPS accepts a reachable
