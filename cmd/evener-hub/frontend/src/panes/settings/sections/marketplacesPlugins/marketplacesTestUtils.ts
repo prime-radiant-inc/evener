@@ -1,3 +1,5 @@
+import { shownReasons } from "../reasonTestUtils";
+
 /** The `kind` of every Chip inside `container`, in document order, so a test
  * can tell which badges a plugin row shows without reading their labels. */
 export function chipKinds(container: ParentNode = document): (string | null)[] {
@@ -6,5 +8,5 @@ export function chipKinds(container: ParentNode = document): (string | null)[] {
 
 /** Whether `container` shows an empty-list row. */
 export function showsEmptyRow(container: ParentNode = document): boolean {
-  return container.querySelector("[data-reason='empty']") !== null;
+  return shownReasons(container).includes("empty");
 }

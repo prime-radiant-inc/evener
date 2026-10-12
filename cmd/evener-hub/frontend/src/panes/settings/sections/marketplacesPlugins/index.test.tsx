@@ -7,8 +7,8 @@ import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { chipKinds } from "./chipTestUtils";
 import { MarketplacesPluginsSection } from "./index";
+import { chipKinds } from "./marketplacesTestUtils";
 
 const LINTER: PluginEntry = {
   plugin: "linter",

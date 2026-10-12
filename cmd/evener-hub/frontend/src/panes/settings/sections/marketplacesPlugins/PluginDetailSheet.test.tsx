@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { chipKinds } from "./chipTestUtils";
+import { chipKinds } from "./marketplacesTestUtils";
 import { PluginDetailSheet } from "./PluginDetailSheet";
 
 const LINTER: PluginEntry = {

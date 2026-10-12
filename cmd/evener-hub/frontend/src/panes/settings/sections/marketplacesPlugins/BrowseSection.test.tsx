@@ -8,7 +8,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { BrowseSection } from "./BrowseSection";
-import { chipKinds, showsEmptyRow } from "./chipTestUtils";
+import { chipKinds, showsEmptyRow } from "./marketplacesTestUtils";
 
 const MARKETPLACE_A: MarketplaceEntry = {
   name: "acme-plugins",

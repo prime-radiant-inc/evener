@@ -6,8 +6,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
-import { showsEmptyRow } from "./chipTestUtils";
 import { MarketplacesSection } from "./MarketplacesSection";
+import { showsEmptyRow } from "./marketplacesTestUtils";
 
 const MARKETPLACE_A: MarketplaceEntry = {
   name: "acme-plugins",
