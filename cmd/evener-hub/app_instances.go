@@ -1422,14 +1422,14 @@ var (
 	errRefusalMarkerNotCopied   = errors.New("refresh-refusal marker not copied")
 )
 
-// errorList is several failures reported in one sentence: Error joins their
+// joinedError is several failures reported in one sentence: Error joins their
 // messages with sep, and errors.Is and errors.As see each of them.
-type errorList struct {
+type joinedError struct {
 	errs []error
 	sep  string
 }
 
-func (e errorList) Error() string {
+func (e joinedError) Error() string {
 	msgs := make([]string, len(e.errs))
 	for i, err := range e.errs {
 		msgs[i] = err.Error()
@@ -1437,7 +1437,7 @@ func (e errorList) Error() string {
 	return strings.Join(msgs, e.sep)
 }
 
-func (e errorList) Unwrap() []error { return e.errs }
+func (e joinedError) Unwrap() []error { return e.errs }
 
 // removeApplied wraps err as a standing removal unless it already carries the
 // discriminator - restoreFailedRemoval marks its own result, and the config
@@ -1521,7 +1521,7 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		// cleanly: renamePersistedError is what the RPC handler reads to hand
 		// the client the discriminator, and the config write the rename landed
 		// marked the applied state the handler broadcasts on.
-		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, errorList{errs: problems, sep: "; "})}
+		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, joinedError{errs: problems, sep: "; "})}
 	}
 	return nil
 }
@@ -2138,7 +2138,7 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		carried = len(problems) == 0
 	}
 	if !carried {
-		standing := fmt.Errorf("%w; %w, but %w", cause, frame, errorList{errs: problems, sep: " and "})
+		standing := fmt.Errorf("%w; %w, but %w", cause, frame, joinedError{errs: problems, sep: " and "})
 		if supplies == supplyStoredKey || supplies == supplyOAuth {
 			return false, removeApplied(standing)
 		}
@@ -2149,7 +2149,7 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		// plain rollback, so the caller learns what is missing while the
 		// credential-deletion mark removeCredentials set keeps the change
 		// announced.
-		return true, removalLeftoversError{errorList{errs: problems, sep: " and "}}
+		return true, removalLeftoversError{joinedError{errs: problems, sep: " and "}}
 	}
 	// Every layer this call deleted is back, and so is the one that carries the
 	// instance: the removal is undone, so there is nothing to announce.
@@ -2162,7 +2162,7 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 // put back. The caller folds it into its own rollback report: the removal
 // rolled back, but a credential is still gone, and the credential deletion's
 // applied mark is what makes every other client hear about it.
-type removalLeftoversError struct{ errorList }
+type removalLeftoversError struct{ joinedError }
 
 // removeCredentials deletes the credential layers filed under a name whose
 // instance is being removed: the stored key and the OAuth record. Both go

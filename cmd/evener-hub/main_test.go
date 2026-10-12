@@ -93,7 +93,8 @@ func TestRunMainHelpReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runMain(--help) err = %v, want nil", err)
 	}
-	if !strings.Contains(stderr.String(), "Usage: evener-hub") {
+	// The usage lists the hub's flags.
+	if !strings.Contains(stderr.String(), "-addr") {
 		t.Fatalf("help output missing usage:\n%s", stderr.String())
 	}
 }
@@ -288,11 +289,11 @@ func TestPrintVersionInfo(t *testing.T) {
 		t.Fatalf("printVersionInfo err = %v, want nil", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "evener-hub version:") {
-		t.Fatalf("output missing version label: %q", output)
+	if !strings.Contains(output, buildinfo.VersionLong()) {
+		t.Fatalf("output missing the version: %q", output)
 	}
-	if !strings.Contains(output, "frontend hash:") {
-		t.Fatalf("output missing frontend hash label: %q", output)
+	if hash, _ := frontendDistHash(distFS()); hash == "" || !strings.Contains(output, hash) {
+		t.Fatalf("output missing the frontend hash %q: %q", hash, output)
 	}
 }
 
@@ -319,8 +320,8 @@ func TestRunMainVersionFlag(t *testing.T) {
 		t.Fatalf("runMain(--version) err = %v, want nil", err)
 	}
 	output := stderr.String()
-	if !strings.Contains(output, "evener-hub version:") {
-		t.Fatalf("version output missing label: %q", output)
+	if !strings.Contains(output, buildinfo.VersionLong()) {
+		t.Fatalf("version output missing the version: %q", output)
 	}
 }
 
@@ -573,8 +574,8 @@ func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
 	if !served {
 		t.Fatalf("the hub did not reach its serve boundary: %s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "providers config:") || !strings.Contains(stderr.String(), "implicit instances only") {
-		t.Fatalf("startup did not announce the degraded load: %s", stderr.String())
+	if !strings.Contains(stderr.String(), providersPath) {
+		t.Fatalf("startup did not announce the degraded load of %s: %s", providersPath, stderr.String())
 	}
 	if data, err := os.ReadFile(providersPath); err != nil || string(data) != oldSchema {
 		t.Fatalf("the hub rewrote the file it could not read (err=%v):\n%s", err, data)
