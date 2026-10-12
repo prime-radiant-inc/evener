@@ -507,7 +507,7 @@ test("UserMessageView defaults are unchanged: user speaker, 'You' name, item.sta
   render(<UserMessageView item={item({ text: "hi" })} />);
   const root = screen.getByTestId("user-message-item");
   expect(root.dataset.speaker).toBe("user");
-  expect(root.querySelector(`.${styles.name}`)?.textContent).not.toBe("");
+  expect(root.querySelector(`.${styles.name}`)?.textContent ?? "").not.toBe("");
 });
 
 // --- the provisional register (steering-ghost live edge) ---------------------

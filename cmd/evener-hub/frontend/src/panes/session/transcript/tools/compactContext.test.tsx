@@ -21,10 +21,15 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
 
-// precedes pins DOM order: the spec numbers the body's fields (note,
-// instructions, skills, intent), so the labels must appear in that order.
-function precedes(a: HTMLElement, b: HTMLElement): boolean {
-  return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+// One labeled field of the body, by its section, or null when absent.
+function section(key: string, root: ParentNode = document): Element | null {
+  return root.querySelector(`[data-section="${key}"]`);
+}
+
+// The body's fields in DOM order: the spec numbers them (note, instructions,
+// skills, intent), so they must appear in that order.
+function sectionOrder(root: ParentNode = document): (string | undefined)[] {
+  return [...root.querySelectorAll<HTMLElement>("[data-section]")].map((field) => field.dataset.section);
 }
 
 test("the descriptor keeps the shared step words and pins the fold icon without folding runs", () => {
@@ -61,10 +66,10 @@ test("the body renders the fields in the spec's order, and the tool's output as 
       live={false}
     />,
   );
-  expect(screen.getByText("Note to self")).toBeTruthy();
-  expect(screen.getByText("Compaction instructions")).toBeTruthy();
-  expect(screen.getByText("Skills to reload")).toBeTruthy();
-  expect(screen.getByText("Intent")).toBeTruthy();
+  expect(section("note")).not.toBeNull();
+  expect(section("instructions")).not.toBeNull();
+  expect(section("skills")).not.toBeNull();
+  expect(section("intent")).not.toBeNull();
   // The note is markdown, not literal text: a heading renders as a heading.
   expect(screen.getByRole("heading", { name: "Next steps" })).toBeTruthy();
   expect(screen.getByText("run the race detector")).toBeTruthy();
@@ -78,9 +83,7 @@ test("the body renders the fields in the spec's order, and the tool's output as 
   // as machine evidence (a CodeBlock would wrap it in pre).
   expect(outputLine.closest("pre, code")).toBeNull();
   // The spec's numbered order: note, then instructions, then skills, then intent.
-  expect(precedes(screen.getByText("Note to self"), screen.getByText("Compaction instructions"))).toBe(true);
-  expect(precedes(screen.getByText("Compaction instructions"), screen.getByText("Skills to reload"))).toBe(true);
-  expect(precedes(screen.getByText("Skills to reload"), screen.getByText("Intent"))).toBe(true);
+  expect(sectionOrder()).toEqual(["note", "instructions", "skills", "intent"]);
 });
 
 test("an explicit empty reload_skills renders None, the tool's own semantics for an empty array", () => {
@@ -94,8 +97,9 @@ test("an explicit empty reload_skills renders None, the tool's own semantics for
       live={false}
     />,
   );
-  expect(screen.getByText("Skills to reload")).toBeTruthy();
-  expect(screen.getByText("None.")).toBeTruthy();
+  expect(section("skills")).not.toBeNull();
+  // An explicit none, never an empty cell.
+  expect(section("skills")?.querySelector("[data-empty]")?.textContent ?? "").not.toBe("");
 });
 
 test("an absent or null reload_skills renders no skills block", () => {
@@ -109,7 +113,7 @@ test("an absent or null reload_skills renders no skills block", () => {
       live={false}
     />,
   );
-  expect(within(nulled.container).queryByText("Skills to reload")).toBeNull();
+  expect(section("skills", nulled.container)).toBeNull();
   const absent = render(
     <Body
       item={item({
@@ -119,7 +123,7 @@ test("an absent or null reload_skills renders no skills block", () => {
       live={false}
     />,
   );
-  expect(within(absent.container).queryByText("Skills to reload")).toBeNull();
+  expect(section("skills", absent.container)).toBeNull();
 });
 
 test("an intent argument matching the row's stated intent is not rendered again in the body, at label or value level", () => {
@@ -135,7 +139,7 @@ test("an intent argument matching the row's stated intent is not rendered again 
       live={false}
     />,
   );
-  expect(within(container).queryByText("Intent")).toBeNull();
+  expect(section("intent", container)).toBeNull();
   expect(within(container).queryByText(intent)).toBeNull();
 });
 
@@ -150,7 +154,7 @@ test("an intent argument with no stated intent on the row renders under an Inten
       live={false}
     />,
   );
-  expect(screen.getByText("Intent")).toBeTruthy();
+  expect(section("intent")).not.toBeNull();
   expect(screen.getByText("Freeing context before the diagnosis run.")).toBeTruthy();
 });
 
@@ -166,7 +170,7 @@ test("an intent argument that differs from the row's stated intent renders under
       live={false}
     />,
   );
-  expect(screen.getByText("Intent")).toBeTruthy();
+  expect(section("intent")).not.toBeNull();
   expect(screen.getByText("Freeing context before the diagnosis run.")).toBeTruthy();
 });
 
@@ -182,7 +186,7 @@ test("a whitespace-only description counts as no stated intent, matching the row
       live={false}
     />,
   );
-  expect(screen.getByText("Intent")).toBeTruthy();
+  expect(section("intent")).not.toBeNull();
 });
 
 test("an unexpected argument renders in the additional-arguments block, not dropped", () => {
@@ -211,7 +215,7 @@ test("null-valued arguments land in the additional-arguments block too, not drop
       live={false}
     />,
   );
-  expect(within(container).queryByText("Note to self")).toBeNull();
+  expect(section("note", container)).toBeNull();
   const extra = screen.getByLabelText("Additional arguments");
   expect(extra.textContent).toContain("note_to_self");
   expect(extra.textContent).toContain("mystery");
@@ -228,7 +232,7 @@ test("a known key with a wrong-typed value lands in the additional-arguments blo
       live={false}
     />,
   );
-  expect(within(container).queryByText("Note to self")).toBeNull();
+  expect(section("note", container)).toBeNull();
   const extra = screen.getByLabelText("Additional arguments");
   expect(extra.textContent).toContain("42");
 });
@@ -294,7 +298,7 @@ test("an intent argument whose trimmed value matches the row's stated intent sta
       live={false}
     />,
   );
-  expect(within(container).queryByText("Intent")).toBeNull();
+  expect(section("intent", container)).toBeNull();
   expect(within(container).queryByText("Freeing context at the boundary.")).toBeNull();
 });
 
@@ -309,7 +313,7 @@ test("a whitespace-only note renders its block: the tool pins it rather than cle
       live={false}
     />,
   );
-  expect(screen.getByText("Note to self")).toBeTruthy();
+  expect(section("note")).not.toBeNull();
 });
 
 test("hasBody is false exactly when the body would render nothing", () => {
@@ -342,7 +346,7 @@ test("a live call renders the request fields before any output exists", () => {
       live
     />,
   );
-  expect(screen.getByText("Note to self")).toBeTruthy();
+  expect(section("note")).not.toBeNull();
   expect(screen.getByText("Keep the delegate id dlg_123.")).toBeTruthy();
   expect(within(container).queryByText(/Note pinned/)).toBeNull();
 });
@@ -351,7 +355,7 @@ test("the note-clearing fixture's body shows the tool's own sentence and no note
   const Body = toolRendererFor("compact_context").body!;
   render(<Body item={toolWireStep("call_compact_context")} live={false} />);
   expect(screen.getByText("Note cleared. No compaction requested.")).toBeTruthy();
-  expect(screen.queryByText("Note to self")).toBeNull();
+  expect(section("note")).toBeNull();
 });
 
 test("renders through the real tool row: summary, stated intent, and the labeled body", () => {
@@ -385,8 +389,8 @@ test("renders through the real tool row: summary, stated intent, and the labeled
   // render it again under an Intent label.
   expect(within(row).getByTestId("tool-row-intent").textContent).toBe(statedIntent);
   const body = within(row).getByTestId("tool-call-body");
-  expect(within(body).queryByText("Intent")).toBeNull();
-  expect(within(body).getByText("Note to self")).toBeTruthy();
+  expect(section("intent", body)).toBeNull();
+  expect(section("note", body)).not.toBeNull();
   expect(within(body).getByText("Ship the renderer.")).toBeTruthy();
-  expect(within(body).getByText("Compaction instructions")).toBeTruthy();
+  expect(section("instructions", body)).not.toBeNull();
 });
