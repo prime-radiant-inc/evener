@@ -42,6 +42,7 @@ import {
   ListRow,
   Loader,
   PropertyList,
+  type PropertyListRow,
   Sheet,
   Skeleton,
   Textarea,
@@ -465,6 +466,26 @@ interface HostSheetProps {
  * Restart, Edit, the remnant repairs, and Remove below a divider. The actions'
  * own dialogs open over it.
  */
+// hostFacts: the host's last-known facts for its sheet, each value wrapping
+// and tagged with data-field so tests find a fact without reading its label.
+function hostFacts(row: HostRow): PropertyListRow[] {
+  const platform = [row.os, row.arch].filter(Boolean).join("/");
+  const facts: [string, string, string | undefined, boolean][] = [
+    ["address", "Address", row.address, true],
+    ["hub-version", "Hub version", row.hubVersion, true],
+    ["platform", "Platform", platform || undefined, false],
+    ["origin", "Origin", row.origin, true],
+  ];
+  return facts
+    .filter(([, , value]) => value !== undefined && value !== "")
+    .map(([field, label, value, mono]) => ({
+      label,
+      mono,
+      wrap: true,
+      value: <span data-field={field}>{value}</span>,
+    }));
+}
+
 function HostSheet({
   row,
   connecting,
@@ -491,6 +512,9 @@ function HostSheet({
     <Sheet open onClose={onClose} title={row.name} side={isMobile ? "bottom" : "right"}>
       <div ref={focusRoot} className={CLASS.sheetBody}>
         <div className={CLASS.chipRow}>{stateChip(row, connecting)}</div>
+        {/* The row's meta is one truncated line; the sheet states the host's
+            retained facts in full, wrapping, so a long address stays readable. */}
+        <PropertyList rows={hostFacts(row)} />
         {/* The last attach's own failure, so a background attach that fails
             while the sheet is open explains why Connect is back. */}
         {!row.attached && !connecting && row.lastAttachError && (

@@ -1960,3 +1960,23 @@ test("a teardown-unknown-key refusal offers a re-read path out, not a dead end",
   // the list still names instead of closing and reopening into it.
   await waitFor(() => expect(within(dialog).getByRole("button", { name: "Teardown retry" })).toBeTruthy());
 });
+
+// The row's meta is one truncated line, so the sheet carries the host's facts
+// in full: a long address must be readable once the host is opened.
+test("the host sheet lists the host's retained facts in full", async () => {
+  const fake = connectFakeClient();
+  const longAddress = `deploy-target-${"x".repeat(80)}.internal.example:2222`;
+  fake.on("evener/host/list", () => ({
+    hosts: [
+      row({ name: "beta", address: longAddress, hubVersion: "9.9.9", os: "linux", arch: "arm64", origin: "hub.toml" }),
+    ],
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const sheet = await openHost("beta");
+  const field = (name: string) => sheet.querySelector(`[data-field="${name}"]`)?.textContent;
+  expect(field("address")).toBe(longAddress);
+  expect(field("hub-version")).toContain("9.9.9");
+  expect(field("platform")).toContain("linux");
+  expect(field("platform")).toContain("arm64");
+  expect(field("origin")).toBe("hub.toml");
+});
