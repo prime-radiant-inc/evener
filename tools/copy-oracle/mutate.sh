@@ -15,6 +15,10 @@
 #     's/hint=\{params.note\}//' -- \
 #     bash -c 'cd cmd/evener-hub/frontend && npx vitest run src/panes/welcome'
 #
+# The test command runs twice: first unmutated, where it must pass
+# (BASELINE-FAIL otherwise), then mutated. Only one mutate.sh may run per
+# worktree at a time.
+#
 # Output: KILLED (tests failed, good; the failing tests are listed under it),
 # SURVIVED (tests passed: the conversion lost coverage), or NO-OP (the
 # substitution matched nothing). The full test log path is printed on SURVIVED
@@ -37,9 +41,23 @@ if ! git diff --quiet -- "$file"; then
   echo "refusing: $file has uncommitted edits; mutate.sh restores it with git restore" >&2
   exit 2
 fi
-# One log per run: parallel checks must not overwrite each other's output.
+# One mutation at a time per worktree: a second run would mutate files under
+# the first run's tests, or restore them mid-run.
+lock="$(git rev-parse --absolute-git-dir)/copy-oracle-mutate.lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  echo "refusing: another mutate.sh is running in this worktree ($lock)" >&2
+  exit 2
+fi
+trap 'rmdir "$lock"' EXIT
+# One log per run: parallel checks in other worktrees must not mix output.
 log=$(mktemp "${TMPDIR:-/tmp}/copy-oracle-mutate.XXXXXX")
-trap 'git restore -- "$file"' EXIT
+# The tests must pass unmutated, or a failure afterwards proves nothing: the
+# runner may be missing, or the test may already be broken.
+if ! "$@" >"$log" 2>&1; then
+  echo "BASELINE-FAIL the test command fails without the mutation (log: $log)" >&2
+  exit 2
+fi
+trap 'git restore -- "$file"; rmdir "$lock"' EXIT
 perl -0pi -e "$subst" "$file"
 if git diff --quiet -- "$file"; then
   echo "NO-OP   $file: $subst"
