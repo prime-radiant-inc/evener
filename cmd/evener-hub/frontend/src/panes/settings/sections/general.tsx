@@ -1,7 +1,7 @@
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, EmptyState, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
+import { Button, InlineNotice, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./general.module.css";
 import { Code, FieldDim, FieldValue } from "./settingsField";
@@ -39,20 +39,23 @@ export function GeneralSection() {
 
   if (!data && error) {
     return (
-      <EmptyState
+      <InlineNotice
+        tone="danger"
+        live="status"
+        data-reason="unavailable"
         title="Couldn't load general settings"
-        reason="unavailable"
-        // friendlyErrorMessage, not the raw store error: settingsOverview.ts
-        // stores errorText(err) as-is, which is AppwireClient's own message
-        // verbatim for a client-unreachable rejection - internal wiring
-        // detail, never something to show here.
-        hint={friendlyErrorMessage(error)}
         action={
           <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
             Retry
           </Button>
         }
-      />
+      >
+        {/* friendlyErrorMessage, not the raw store error: settingsOverview.ts
+            stores errorText(err) as-is, which is AppwireClient's own message
+            verbatim for a client-unreachable rejection - internal wiring
+            detail, never something to show here. */}
+        {friendlyErrorMessage(error)}
+      </InlineNotice>
     );
   }
 

@@ -86,7 +86,7 @@ const CLASS = {
   tabs: requireClass(styles.tabs, "askdock.module.css", "tabs"),
   tab: requireClass(styles.tab, "askdock.module.css", "tab"),
   tabCheck: requireClass(styles.tabCheck, "askdock.module.css", "tabCheck"),
-  footer: requireClass(styles.footer, "askdock.module.css", "footer"),
+  batchFooter: requireClass(styles.batchFooter, "askdock.module.css", "batchFooter"),
   count: requireClass(styles.count, "askdock.module.css", "count"),
 };
 
@@ -362,7 +362,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
         ) : (
           <div key="panel">{batch.questions.map((question, index) => renderCard(question, index))}</div>
         )}
-        <div className={CLASS.footer}>
+        <div className={CLASS.batchFooter}>
           {/* Visual count only - NOT a live region (virtualized remounts would
             re-announce it; AskDockAnnouncements owns count announcements). */}
           <span className={CLASS.count} data-testid="ask-dock-count" data-answered={answeredCount} data-total={total}>

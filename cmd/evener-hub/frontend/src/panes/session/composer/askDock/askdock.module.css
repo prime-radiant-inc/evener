@@ -69,7 +69,7 @@
   color: var(--accent);
 }
 
-.footer {
+.batchFooter {
   display: flex;
   align-items: center;
   justify-content: space-between;

@@ -2,7 +2,7 @@ import type { AppwireClientLike } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
-import { Button, EmptyState, Skeleton } from "../../../widgets";
+import { Button, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { copyText } from "./credentials/clipboard";
 import styles from "./devicePairing/devicePairing.module.css";
@@ -36,11 +36,9 @@ class QRChunkBoundary extends Component<{ children: ReactNode; fallback?: ReactN
     if (this.state.failed) {
       return (
         this.props.fallback ?? (
-          <EmptyState
-            title="Couldn't load the QR renderer"
-            hint="The pairing link below still works — copy it instead, or reload this page to try again."
-            reason="unavailable"
-          />
+          <InlineNotice tone="danger" live="status" data-reason="unavailable" title="Couldn't load the QR renderer">
+            The pairing link below still works — copy it instead, or reload this page to try again.
+          </InlineNotice>
         )
       );
     }
@@ -82,11 +80,9 @@ export function MobileSection() {
         <>
           <QRChunkBoundary
             fallback={
-              <EmptyState
-                title="Couldn't load device setup"
-                hint="Close setup to return to pairing, or reload to try again."
-                reason="unavailable"
-              />
+              <InlineNotice tone="danger" data-reason="unavailable" title="Couldn't load device setup">
+                Close setup to return to pairing, or reload to try again.
+              </InlineNotice>
             }
           >
             <Suspense fallback={<Skeleton lines={4} />}>
@@ -134,12 +130,15 @@ function DirectPairing({ state, onManualSetup }: { state: PairingState; onManual
 
   if (state.kind === "error") {
     return (
-      <EmptyState
+      <InlineNotice
+        tone="danger"
+        live="status"
+        data-reason="unavailable"
         title="Couldn't create a mobile pairing link"
-        hint="Enter the Hub address to create a QR invitation, or reload to try again."
-        reason="unavailable"
         action={manualSetup}
-      />
+      >
+        Enter the Hub address to create a QR invitation, or reload to try again.
+      </InlineNotice>
     );
   }
 

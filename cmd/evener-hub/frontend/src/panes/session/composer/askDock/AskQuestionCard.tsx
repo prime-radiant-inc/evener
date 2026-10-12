@@ -31,7 +31,7 @@ import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
 
 const CLASS = {
-  card: requireClass(styles.card, "askquestioncard.module.css", "card"),
+  question: requireClass(styles.question, "askquestioncard.module.css", "question"),
   head: requireClass(styles.head, "askquestioncard.module.css", "head"),
   num: requireClass(styles.num, "askquestioncard.module.css", "num"),
   header: requireClass(styles.header, "askquestioncard.module.css", "header"),
@@ -203,7 +203,7 @@ export function AskQuestionCard({
   );
 
   return (
-    <div className={CLASS.card} data-ask-question data-ask-key={question.key}>
+    <div className={CLASS.question} data-ask-question data-ask-key={question.key}>
       <div className={CLASS.head}>
         <span className={CLASS.num}>{number}.</span>
         <span className={CLASS.header} id={headerId}>

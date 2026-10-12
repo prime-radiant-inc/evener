@@ -1203,8 +1203,8 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			}
 			// Old-format checkpoint/summary stored as TurnUserInput — carry it
 			// just like a typed compaction turn.
-			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				data.collectCompaction(text, strings.HasPrefix(text, "[CONTEXT SUMMARY]"))
+			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
+				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
@@ -2020,46 +2020,54 @@ func checkNotCutOff(reply llm.Response) error {
 // check or on the model: by ruling on #4173, the summary turn carries the
 // partner's messages verbatim beside the reply (partnerMessagesMarkdown).
 func checkSummaryReply(reply, instructions string) error {
-	text := strings.TrimSpace(reply)
-	if text == "" {
+	if strings.TrimSpace(reply) == "" {
 		return errors.New("summarizer returned an empty reply")
 	}
 	if instructions != "" {
 		return nil
 	}
 	// Once a section heading appears, any later line is content — subheadings,
-	// bold labels and "#3978" lines included — except another section heading
-	// and the summary's own framing markers.
+	// bold labels and "#3978" lines included — except another section heading.
 	// The permissions section restates the human partner's own words, so
 	// content there alone carries none of the folded work: a reply that is
 	// only "## Permissions and Holds\nNone." is no summary.
 	// A heading inside a fenced block is quoted text, not a section.
+	// This reads the reply as the model wrote it and edits nothing: the framing a
+	// model may echo back around its own text stays in the stored turn.
 	inSection := false
 	var fence fenceTracker
-	for line := range strings.Lines(text) {
-		line = strings.TrimSpace(line)
-		if fence.step(line) {
+	// The lines are read as written: the reply's own indentation is Markdown's,
+	// and trimming it would turn an indented block into a fence.
+	for raw := range strings.Lines(reply) {
+		line := strings.TrimSpace(raw)
+		// The tracker reads the line as written: a delimiter indented by four
+		// spaces is code inside the block, not a delimiter.
+		if fence.step(raw) {
 			continue
 		}
-		if section, rest, ok := summarySectionHeading(line); ok && !fence.inside() {
+		// A model sometimes echoes the framing around its own heading. Read through
+		// the markers at the line's edges so the heading still counts; a marker
+		// inside the line's own text is that text. An indented line is code: it is
+		// content under a section, never one.
+		if section, rest, ok := summarySectionHeading(withoutEdgeFraming(line)); ok && !fence.inside() && !indentedCode(raw) {
 			inSection = !strings.EqualFold(section, permissionsSection)
-			if inSection && isSummaryContent(rest) {
+			// The heading's own text counts only if it is text: the edge markers
+			// are read through above, but markup can hold one inside it
+			// ("**Progress: [END SUMMARY]**"), and a heading with nothing but
+			// framing under it has summarized nothing.
+			if inSection && rest != "" && !markerOnly(rest) {
 				return nil
 			}
 			continue
 		}
-		if inSection && isSummaryContent(line) {
+		// A line of framing markers is not content: quoting the framing is not
+		// summarizing the folded history, whether the markers sit on their own line
+		// or inside a fenced block.
+		if inSection && line != "" && !markerOnly(line) {
 			return nil
 		}
 	}
 	return errors.New("summarizer reply has no summary section with content")
-}
-
-// isSummaryContent reports whether trimmed text under or beside a section
-// heading carries content: it is not empty and not one of the summary's own
-// framing markers.
-func isSummaryContent(text string) bool {
-	return text != "" && text != "[CONTEXT SUMMARY]" && text != "[END SUMMARY]"
 }
 
 // summarySectionHeading reports whether line is a heading naming one of the
@@ -2437,7 +2445,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
-		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryTurnEnd
+		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryMarkerEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

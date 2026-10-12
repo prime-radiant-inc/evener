@@ -27,9 +27,9 @@
        region a tall batch grows.
      - .paneFooter: PaneScaffold .footer (flex: none) - back to the plain
        fixed slot every pane has, with no ask-dock special case.
-     Local mirror classes, not the real .body/.root: the module CSS loads
-     de-scoped here, and askdock.module.css's own .footer (the batch's
-     footer bar) would collide with panescaffold.module.css's .footer. */
+     Local mirror classes, not the real .body/.root/.footer: the module
+     CSS loads de-scoped here, and this case mirrors only the chrome's
+     geometry, not its module stylesheets. */
   .host {
     width: 360px;
     height: 360px;
@@ -88,7 +88,7 @@
            the batch's layout div inside it, as AskDock.tsx renders it. -->
       <div class="card attention" data-ask-batch>
       <div class="batch">
-        <div class="card" data-ask-question>
+        <div class="question" data-ask-question>
           <div class="head">
             <span class="num">1.</span>
             <span class="header">Cleanup</span>
@@ -138,7 +138,7 @@
             <input type="text" class="textInput" placeholder="note (optional)">
           </div>
         </div>
-        <div class="footer">
+        <div class="batchFooter">
           <span class="count">1 of 1 question answered</span>
           <button type="button" class="sendButton" id="send-button">Send answers</button>
         </div>
@@ -178,6 +178,8 @@ window.measure = function () {
   const transcript = document.getElementById("transcript");
   const footer = document.getElementById("pane-footer");
   const dock = document.querySelector(".dock");
+  const envelope = document.querySelector("[data-ask-batch]");
+  const envelopeStyle = getComputedStyle(envelope);
   const card = document.querySelector("[data-ask-question]");
   const sendButton = document.getElementById("send-button");
   const cardRect = rectOf(card);
@@ -228,6 +230,7 @@ window.measure = function () {
     viewport: { w: window.innerWidth, h: window.innerHeight },
     documentHeight: document.documentElement.scrollHeight,
     host: rectOf(host),
+    envelopeEdges: ["Top", "Right", "Bottom", "Left"].map((side) => Number.parseFloat(envelopeStyle[`border${side}Width`])),
     options,
     withDock,
     withoutDock,
