@@ -48,6 +48,7 @@ import {
 } from "./transcriptSettle";
 import "../styles/tokens.css";
 import "../styles/global.css";
+import { mulberry32 } from "./mulberry32";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __tsgErrors?: string[] };
@@ -73,18 +74,9 @@ const REF =
     : "local:transcriptscrollguard";
 const THREAD_ID = "thr_transcriptscrollguard";
 
-// Deterministic PRNG (mulberry32): the transcript's row heights must be
-// variable AND identical on every run - a guard whose geometry depends on
-// Math.random() cannot be bisected or reproduced.
-function mulberry32(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+// The transcript's row heights must be variable AND identical on every run -
+// a guard whose geometry depends on Math.random() cannot be bisected or
+// reproduced.
 const rand = mulberry32(0x5eed);
 
 const WORDS = [

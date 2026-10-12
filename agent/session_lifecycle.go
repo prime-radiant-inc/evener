@@ -1839,7 +1839,7 @@ func transcriptRefusal(cause error) error {
 	if cause == nil {
 		return nil
 	}
-	if errors.Is(cause, errTranscriptFailedClosed) {
+	if errors.Is(cause, ErrTranscriptFailedClosed) {
 		return cause
 	}
 	if errors.Is(cause, transcript.ErrWriterPoisoned) {

@@ -284,7 +284,14 @@ export function summaryText(band: Band, count: number): string {
 
 export type Hue = "danger" | "attention";
 
+/** What a why line says, apart from its words: the state's reason, the
+ * running subagents, a silence (quiet, or long enough to be stuck), the
+ * session's latest intent, the job it runs, or only the state's own word. */
+export type WhyKind = "reason" | "subagents" | "stuck" | "quiet" | "intent" | "job" | "state";
+
 export interface WhyLine {
+	/** Absent on a line that stands in for a why line (a held change's). */
+	kind?: WhyKind;
 	word?: string;
 	hue?: Hue;
 	/** The line reads "May be stuck" (spec 7.1, 13.1): the whole text draws in
@@ -350,12 +357,12 @@ export function subagentQuietLine(timing: DelegateTiming): { text: string; quiet
  * the session last set out to do, else the job it is running, else
  * "Working". */
 function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
-	if (activity.runningSubagents > 0) return { text: waitingOnSubagents(activity.runningSubagents) };
+	if (activity.runningSubagents > 0) return { kind: "subagents", text: waitingOnSubagents(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
-		return { text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
-	if (quiet?.state === "quiet") return { text: `Quiet ${durationLabel(quiet.forMs)}` };
-	return { text: commandOrWorking(row, activity.latestIntent) };
+		return { kind: "stuck", text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
+	if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${durationLabel(quiet.forMs)}` };
+	return commandOrWorking(row, activity.latestIntent);
 }
 
 /** The row's why line. activity and msSinceReadMs are S5's live read (the
@@ -364,9 +371,9 @@ function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity
  * (workingActivity). */
 export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs = 0): WhyLine | null {
 	if (item.state === "working")
-		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : { text: workingActivity(item.row) };
+		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : workingActivity(item.row);
 	const reason = REASONS[item.state];
-	return reason ? { word: WORDS[item.state], ...reason } : null;
+	return reason ? { kind: "reason", word: WORDS[item.state], ...reason } : null;
 }
 
 /** A working row's own words, where nothing louder applies: what the session
@@ -374,10 +381,10 @@ export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSince
  * running, else the bare state word. The intent leads the job because it says
  * what the job is for; the daemon cuts one to a line and drops it when a turn
  * begins (activity_meter.go). */
-function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string): string {
-	if (latestIntent) return latestIntent;
+function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string): WhyLine {
+	if (latestIntent) return { kind: "intent", text: latestIntent };
 	const command = row.running_job_command;
-	return command ? `Running ${command}` : "Working";
+	return command ? { kind: "job", text: `Running ${command}` } : { kind: "state", text: "Working" };
 }
 
 /** What a working session is doing when there is no activity read at all (an
@@ -385,9 +392,9 @@ function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string):
  * subagents tally stands in for S5's read (S3). The row no longer nests
  * subagents under its children -- those hold only fork originals and cluster
  * members -- so the tally is the only place a subagent count comes from. */
-export function workingActivity(row: NavigationSessionSummary): string {
+export function workingActivity(row: NavigationSessionSummary): WhyLine {
 	const running = row.subagents?.running ?? 0;
-	if (running > 0) return waitingOnSubagents(running);
+	if (running > 0) return { kind: "subagents", text: waitingOnSubagents(running) };
 	return commandOrWorking(row);
 }
 

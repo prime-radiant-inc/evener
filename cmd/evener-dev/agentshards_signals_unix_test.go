@@ -135,13 +135,13 @@ func TestAgentShardsSIGTERMExits143RetainsLogsReapsChildren(t *testing.T) {
 		t.Fatalf("interrupted runner exit = %v, want exit status 143", err)
 	}
 	stderr := cmd.Stderr.(*bytes.Buffer).String()
-	if !strings.Contains(stderr, "interrupted by SIGTERM") {
-		t.Fatalf("interruption not explained on stderr:\n%s", stderr)
-	}
-	if !strings.Contains(stderr, "full logs: ") {
-		t.Fatalf("interrupted run did not point at retained logs:\n%s", stderr)
+	if !strings.Contains(stderr, "SIGTERM") {
+		t.Fatalf("interruption does not name its signal on stderr:\n%s", stderr)
 	}
 	want := filepath.Join(tmp, fmt.Sprintf("agent-test-shards.%d", cmd.Process.Pid))
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("interrupted run did not point at retained logs %s:\n%s", want, stderr)
+	}
 	if _, statErr := os.Stat(want); statErr != nil {
 		t.Fatalf("interrupted run's scratch %s not retained: %v", want, statErr)
 	}

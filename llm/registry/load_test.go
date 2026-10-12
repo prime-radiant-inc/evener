@@ -1010,14 +1010,23 @@ func TestLoad_UserLayerTriState(t *testing.T) {
 	data, _ := os.ReadFile("testdata/models.dev.sample.json")
 	dir := t.TempDir()
 	env := map[string]string{"XDG_CONFIG_HOME": dir, "EVENER_PROVIDERS_CONFIG": ""}
+	// A config at the default path tells "no user layer" (the empty
+	// variable) apart from falling back to the default path.
+	defaultPath := filepath.Join(dir, "evener", "providers.toml")
+	if err := os.MkdirAll(filepath.Dir(defaultPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(defaultPath, []byte("[providers.groq]\nprotocol = \"openai-responses\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(env)), WithStateRoot(t.TempDir()))
-	if err != nil || !strings.Contains(r.UserLayerNote(), "EVENER_PROVIDERS_CONFIG is empty") {
-		t.Fatalf("empty variable: err=%v note=%q", err, r.UserLayerNote())
+	if path, loaded := r.UserConfigSnapshot(); err != nil || path != "" || loaded != nil || r.explicit["groq"] != nil {
+		t.Fatalf("empty variable: err=%v snapshot path=%q, want no user layer", err, path)
 	}
 	delete(env, "EVENER_PROVIDERS_CONFIG")
 	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(env)), WithStateRoot(t.TempDir()))
-	if err != nil || !strings.Contains(r.UserLayerNote(), filepath.Join(dir, "evener", "providers.toml")) {
-		t.Fatalf("default path: err=%v note=%q", err, r.UserLayerNote())
+	if path, _ := r.UserConfigSnapshot(); err != nil || path != defaultPath || r.explicit["groq"] == nil {
+		t.Fatalf("default path: err=%v snapshot path=%q, want %q", err, path, defaultPath)
 	}
 	path := filepath.Join(dir, "custom.toml")
 	if err := os.WriteFile(path, []byte("[providers.groq]\nprotocol = \"openai-responses\"\n"), 0o600); err != nil {

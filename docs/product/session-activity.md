@@ -467,6 +467,8 @@ Output no longer retained has a separate notice; useful cached text below the
 new floor remains readable. UTF-8 and ANSI state join only across contiguous
 bytes, with bounded decoder carry across known eviction. A gap starts an
 independent decoding range. Long lines render as bounded source-byte fragments.
+A page, a trim or a window join decodes only the bytes whose rows it changes;
+settled rows carry over, so per-page cost tracks the page rather than the window.
 
 Each open pane permits one output read at a time. A visible running pane reads
 the latest output every second while serving visible history demand between

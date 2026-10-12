@@ -66,6 +66,7 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 					label="Status"
 					value={<RowValue text={status.word} tone={status.tone === "attention" ? "attention" : "normal"} />}
 					accessibilityLabel={`Status, ${status.word}`}
+					testID={`host-status-${status.state}`}
 				/>
 				<Row
 					label="Version"
@@ -86,6 +87,7 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 				<Group label="Last error">
 					<Text
 						allowFontScaling={allowFontScaling}
+						testID="host-last-error"
 						style={{
 							color: palette.dangerInk,
 							...scaledType(uiType.footnote, scale),
@@ -123,9 +125,9 @@ export function HostDetailPage({ navigation, route }: NativeStackScreenProps<Hub
 				/>
 			</Group>
 			{row.attached && drift ? (
-				<GroupFooter>{VERSION_DRIFT_FOOTER}</GroupFooter>
+				<GroupFooter testID="host-footer-drift">{VERSION_DRIFT_FOOTER}</GroupFooter>
 			) : status.footer ? (
-				<GroupFooter>{status.footer}</GroupFooter>
+				<GroupFooter testID={`host-footer-${status.state}`}>{status.footer}</GroupFooter>
 			) : null}
 			{connectError ? <GroupFooter tone="danger">{connectError}</GroupFooter> : null}
 			{removeError ? <GroupFooter tone="danger">{removeError}</GroupFooter> : null}

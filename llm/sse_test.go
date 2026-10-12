@@ -133,8 +133,8 @@ func TestParseSSE_StreamReadTimeout_FiresOnStall(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from stream read timeout, got nil")
 	}
-	if !strings.Contains(err.Error(), "stream read timeout") {
-		t.Errorf("expected 'stream read timeout' in error, got: %v", err)
+	if !errors.Is(err, ErrSSEReadTimeout) {
+		t.Errorf("errors.Is(%v, ErrSSEReadTimeout) = false, want true", err)
 	}
 	if len(events) != 1 {
 		t.Errorf("expected 1 event before timeout, got %d", len(events))

@@ -174,7 +174,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// as a warning — right for a marketplace it failed to fetch, wrong for a
 	// caller that has left. Everything after this builds a client and a
 	// session, so the interrupt is read here rather than carried into them.
-	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+	if err := startupInterrupted(ctx, stepSeedingMarketplaces); err != nil {
 		return err
 	}
 	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
@@ -321,7 +321,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
-	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+	if err := startupInterrupted(ctx, stepProbingLoginShellPath); err != nil {
 		return err
 	}
 	memoryProjectID := ""
@@ -392,7 +392,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		// Provisioning allocates the session scratch and the lease under it,
 		// which nothing releases until a session owns this environment.
-		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+		if err := startupInterrupted(ctx, stepProvisioningSandbox); err != nil {
 			_ = env.DisposeSessionScratch()
 			return err
 		}
@@ -445,7 +445,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// The session is live, and everything past here is the turn itself. An
 	// interrupt that arrived while it was being built ends the run instead,
 	// and the deferred Close takes the session down on the way out.
-	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+	if err := startupInterrupted(ctx, stepCreatingSession); err != nil {
 		return err
 	}
 

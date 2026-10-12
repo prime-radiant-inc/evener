@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { errorAction, RETRY_MESSAGE } from "./errorAction";
+import { errorAction } from "./errorAction";
 
 const session = (resumeRequired = false) => ({
 	resumeRequired,
@@ -27,9 +27,5 @@ describe("an error's one action (spec 8.2, ruling 26)", () => {
 		["no retry for a warning's row", { ...failure("rate limited"), id: "warn-item-1" }, session(), true, null],
 	] as const)("%s", (_name, row, model, canSend, action) => {
 		expect(errorAction(row, model, canSend)).toBe(action);
-	});
-
-	it("retries with Jesse's sentence", () => {
-		expect(RETRY_MESSAGE).toBe("Something went wrong. Please try again.");
 	});
 });

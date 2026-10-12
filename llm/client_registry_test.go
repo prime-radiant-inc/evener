@@ -429,7 +429,7 @@ func TestClientModelsResolvableOverrideWithoutListerCannotList(t *testing.T) {
 	c.Register(&recordingAdapter{name: "openai"})
 	_, err := c.Models(context.Background(), "openai")
 	var cfgErr *llm.ConfigurationError
-	if !errors.As(err, &cfgErr) || !strings.Contains(err.Error(), "does not support listing models") {
+	if !errors.As(err, &cfgErr) || !errors.Is(err, llm.ErrModelListingUnsupported) {
 		t.Fatalf("want a ConfigurationError from the override, got %v", err)
 	}
 }

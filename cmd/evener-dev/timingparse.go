@@ -54,6 +54,23 @@ type timingEvent struct {
 // `start` has reported no duration and no outcome (issue #172).
 var timingTerminalActions = map[string]bool{"pass": true, "fail": true, "skip": true}
 
+// missingTerminalEventError names the expected packages a `go test -json`
+// stream never ended, one line per package.
+type missingTerminalEventError struct {
+	packages []string
+}
+
+func (e *missingTerminalEventError) Error() string {
+	var b strings.Builder
+	for i, pkg := range e.packages {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "package %s listed by go list produced no terminal event in the go test -json stream", pkg)
+	}
+	return b.String()
+}
+
 // parseGoTestJSON reads a `go test -json` stream and returns the ratchet's rows,
 // or an error naming every package in expected that the stream never ended.
 func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
@@ -116,14 +133,7 @@ func parseGoTestJSON(r io.Reader, expected []string) ([]string, error) {
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		var b strings.Builder
-		for i, pkg := range missing {
-			if i > 0 {
-				b.WriteByte('\n')
-			}
-			fmt.Fprintf(&b, "package %s listed by go list produced no terminal event in the go test -json stream", pkg)
-		}
-		return nil, errors.New(b.String())
+		return nil, &missingTerminalEventError{packages: missing}
 	}
 	return rows, nil
 }

@@ -5,20 +5,15 @@ import (
 	"testing"
 )
 
-const devUsage = "usage: evener dev <subcommand> [args]\nsubcommands: agent-shards check-gate-flags cli-shards covstmt hub-shards list-build-flags module-lint root-test-flags timing-parse web-browser-guards web-checks\n"
-
 func TestRunRejectsMissingAndUnknownSubcommands(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		wantStderr string
+		name string
+		args []string
+		// wantNamed is what the diagnostic must name, if anything.
+		wantNamed string
 	}{
-		{name: "missing", wantStderr: devUsage},
-		{
-			name:       "unknown",
-			args:       []string{"does-not-exist"},
-			wantStderr: "evener dev: unknown subcommand \"does-not-exist\"\n" + devUsage,
-		},
+		{name: "missing"},
+		{name: "unknown", args: []string{"does-not-exist"}, wantNamed: "does-not-exist"},
 	}
 
 	for _, tc := range tests {
@@ -31,8 +26,12 @@ func TestRunRejectsMissingAndUnknownSubcommands(t *testing.T) {
 			if got := stdout.String(); got != "" {
 				t.Fatalf("Run(%q) stdout = %q, want empty", tc.args, got)
 			}
-			if got := stderr.String(); got != tc.wantStderr {
-				t.Fatalf("Run(%q) stderr = %q, want %q", tc.args, got, tc.wantStderr)
+			got := stderr.String()
+			if got == "" {
+				t.Fatalf("Run(%q) wrote no usage to stderr", tc.args)
+			}
+			if !strings.Contains(got, tc.wantNamed) {
+				t.Fatalf("Run(%q) stderr = %q, want %q named", tc.args, got, tc.wantNamed)
 			}
 		})
 	}

@@ -205,13 +205,13 @@
   },
   {
     "case": "index-change-project",
-    "note": "Another session changed the known project index: the section lists only the added and removed lines and carries no raw.",
+    "note": "Another session changed the known project index: the section lists only the added line, not the line another session removed, and carries no raw.",
     "item": {
       "type": "systemMessage",
       "id": "item_memory_context_1_1",
       "turnId": "turn_1",
       "transcriptEntryIndex": 1,
-      "text": "Project memory index lines changed since you last saw it:\nadded \"- opaque-change-added\"\nremoved \"- opaque-change-removed\"",
+      "text": "Project memory index lines changed since you last saw it:\nadded \"- opaque-change-added\"",
       "description": "Memory context",
       "status": "completed",
       "eventKind": "memory-context"
@@ -219,13 +219,13 @@
   },
   {
     "case": "page-notice-project",
-    "note": "Another session changed one project page this session read and removed another: the section names both pages, carries no page contents and no raw.",
+    "note": "Another session changed one project page this session read and removed another: the section names only the changed page, carries no page contents and no raw.",
     "item": {
       "type": "systemMessage",
       "id": "item_memory_context_1_2",
       "turnId": "turn_1",
       "transcriptEntryIndex": 1,
-      "text": "Project memory pages you read that another session changed:\n\"opaque-notice-changed.md\" changed\n\"opaque-notice-removed.md\" removed",
+      "text": "Project memory pages you read that another session changed:\n\"opaque-notice-changed.md\" changed",
       "description": "Memory context",
       "status": "completed",
       "eventKind": "memory-context"

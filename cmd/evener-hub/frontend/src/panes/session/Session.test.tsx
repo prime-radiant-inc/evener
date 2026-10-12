@@ -95,6 +95,17 @@ async function openForceStopDialog(user: ReturnType<typeof userEvent.setup>): Pr
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
 }
 
+// Force stop's work runs past the click: the durable cancellation, the stop
+// RPC, the recovery obligation, and the refresh after which the dialog closes.
+// Asserting before the dialog closes races that work, and a stop still in
+// flight when the test ends lands on the next test's client. So confirm, wait
+// for the close, and settle the projection reads the stop started.
+async function confirmForceStop(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await flushPendingTurnsProjectionForTests();
+}
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -3820,13 +3831,15 @@ test.each(["success", "refused"])(
     await user.click(screen.getByRole("button", { name: "Force shutdown…" }));
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
     if (outcome === "success") {
+      // Force stop's durable cancellation and stop RPC run past the click; the
+      // pane starts its refresh only once they have settled.
+      await waitFor(() => expect(refresh).toHaveBeenCalledWith(ref));
       // R09: confirmed recovery now surfaces as Send on the Send-resumes face,
       // not a standalone Resume control.
       expect(sendResumesLocalModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       // Hydration publishes Resume before storage reconciliation completes.
       // The dialog closes only when the complete refresh promise settles.
-      expect(refresh).toHaveBeenCalledWith(ref);
       await act(async () => {
         await refresh.mock.results[0]?.value;
       });
@@ -3936,8 +3949,7 @@ test("confirmed force stop refreshes the session and surfaces the Send face", as
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
-  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await confirmForceStop(user);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   // R09: the recovered session offers Send on the Send-resumes face; the send
   // drives the resume - no standalone Resume control.
@@ -4209,12 +4221,11 @@ test.each(["idle", "active"])(
     const user = userEvent.setup();
     await openForceStopDialog(user);
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
+    await confirmForceStop(user);
     // R09: recovery surfaces as Send on the Send-resumes face after the force
     // stop, with no standalone Resume control.
     expect(sendResumesLocalModel(ref)).toBe(true);
     expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref } },
     ]);
@@ -4560,15 +4571,9 @@ test.each(["model", "compact"])(
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
-      // Force stop's work runs past the click: the durable cancellation, the
-      // stop RPC (whose handler rejects the pending action), the recovery
-      // obligation, and the refresh after which the dialog closes. Awaiting
-      // the rejection alone would leave the rest to render outside act, so the
-      // test waits for the dialog to close and settles the projection reads
-      // that work started.
-      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-      await flushPendingTurnsProjectionForTests();
+      // The stop RPC's handler rejects the pending action; awaiting that
+      // rejection alone would leave the rest of the stop to render outside act.
+      await confirmForceStop(user);
       await settled;
       // R09: the force-stopped session offers Send on the Send-resumes face, not
       // a standalone Resume control.
@@ -4636,12 +4641,11 @@ test.each(["idle", "active"])(
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await openForceStopDialog(user);
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
+      await confirmForceStop(user);
       // R09: the force-stopped fork offers Send on the Send-resumes face, not a
       // standalone Resume control.
       expect(sendResumesLocalModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);

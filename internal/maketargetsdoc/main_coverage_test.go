@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,7 +109,7 @@ func TestGenerateOneUnknownStem(t *testing.T) {
 	if err == nil {
 		t.Fatalf("generateOne with unknown stem should error")
 	}
-	if !strings.Contains(err.Error(), "no destination doc") {
+	if !errors.Is(err, errNoDestinationDoc) {
 		t.Fatalf("generateOne unknown stem error = %v, want no destination doc", err)
 	}
 }

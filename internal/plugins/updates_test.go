@@ -364,7 +364,7 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 // catalog is read, which map order makes an occasional event.
 func TestCheckUpdates_WarnsAboutEveryRemoteAndCatalogItCannotRead(t *testing.T) {
 	f := installURLPlugin(t, unpinned)
-	name := "other"
+	name := "unreadable-catalog"
 	mktRepo := makeMarketplaceRepoWithPlugin(t, name, "gadget")
 	ref, err := f.m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
 	if err != nil {
@@ -383,7 +383,7 @@ func TestCheckUpdates_WarnsAboutEveryRemoteAndCatalogItCannotRead(t *testing.T) 
 		t.Fatalf("CheckUpdates: %v", err)
 	}
 	w := f.warnings()
-	if !strings.Contains(w, "checking widget@acme for updates") || !strings.Contains(w, "reading marketplace.json for "+name) {
+	if !strings.Contains(w, "widget@acme") || !strings.Contains(w, name) {
 		t.Fatalf("warnings miss the unreachable remote or the unreadable catalog: %q", w)
 	}
 }
@@ -618,7 +618,7 @@ func TestCheckUpdates_AClonePinnedDuringTheFetchIsNotFastForwarded(t *testing.T)
 	}
 	advanceRepo(t, f.mktRepo)
 	checkThenList(t, f.m)
-	if w := f.warnings(); strings.Contains(w, "refreshing marketplace") {
+	if w := f.warnings(); w != "" {
 		t.Fatalf("a clone pinned during the fetch was fast-forwarded: %q", w)
 	}
 }

@@ -19,6 +19,7 @@ export function CredentialPasteSheet({
 	busy,
 	canSave,
 	error,
+	errorReason,
 	onSave,
 	onCancel,
 }: {
@@ -33,6 +34,8 @@ export function CredentialPasteSheet({
 	canSave: boolean;
 	/** Why the last save didn't land. */
 	error: string | null;
+	/** The reason behind `error`, such as "unconfirmed-credential". */
+	errorReason?: string;
 	onSave(): void;
 	/** Cancel or a swipe down; the page asks first when there is text. */
 	onCancel(): void;
@@ -70,9 +73,9 @@ export function CredentialPasteSheet({
 	}
 	// FormError speaks each new report, so the same words land as one report.
 	const report = useMemo(() => {
-		const message = error ?? pasteError;
-		return message ? { message } : null;
-	}, [error, pasteError]);
+		if (error) return { message: error, reason: errorReason };
+		return pasteError ? { message: pasteError, reason: "empty-clipboard" } : null;
+	}, [error, errorReason, pasteError]);
 	// Save and the keyboard's Done run through one gate: never while a save
 	// runs, and only when Save could.
 	const save = () => {

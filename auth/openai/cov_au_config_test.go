@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"errors"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -52,7 +54,7 @@ func TestAuthorizeURLRejectsUnparseableIssuer(t *testing.T) {
 	if err == nil {
 		t.Fatal("AuthorizeURL() error = nil, want issuer parse failure")
 	}
-	if !strings.Contains(err.Error(), "parse issuer base URL") {
+	if _, ok := errors.AsType[*url.Error](err); !ok {
 		t.Fatalf("AuthorizeURL() error = %v, want issuer parse failure", err)
 	}
 }

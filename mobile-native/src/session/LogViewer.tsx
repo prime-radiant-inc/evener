@@ -1,4 +1,5 @@
 // A step's whole output in a sheet (spec 8.2's "Show all 412 lines").
+import { View } from "react-native";
 import { AnsiOutputList } from "../AnsiOutputList";
 import { ModalSheet } from "../sheet/ModalSheet";
 import { MAX_ITEM_BYTES, TRUNCATION_MARKER } from "../projectedRows";
@@ -12,7 +13,13 @@ export function LogViewer({ title, text, onClose }: { title: string; text: strin
 			<AnsiOutputList
 				text={text}
 				contentContainerStyle={{ padding: 16 }}
-				footer={cut ? <Copy muted>{`Showing the first ${MAX_ITEM_BYTES / 1024} KB`}</Copy> : null}
+				footer={
+					cut ? (
+						<View testID="log-truncated">
+							<Copy muted>{`Showing the first ${MAX_ITEM_BYTES / 1024} KB`}</Copy>
+						</View>
+					) : null
+				}
 			/>
 		</ModalSheet>
 	);
