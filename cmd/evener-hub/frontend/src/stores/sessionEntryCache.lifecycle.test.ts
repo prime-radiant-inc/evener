@@ -115,7 +115,9 @@ it("clear removes every entry store row and advances the durable epoch together"
   expect(await countRows(factory, name, ENTRY_ITEM_STORE)).toBe(0);
   expect(await countRows(factory, name, ENTRY_TURN_STORE)).toBe(0);
   expect(await countRows(factory, name, ENTRY_COVERAGE_STORE)).toBe(0);
-  expect(await countRows(factory, name, ENTRY_META_STORE)).toBe(0);
+  // The reserved Clear epoch row is entry-owned now, so it is the one row that
+  // survives Clear; every history meta row is gone.
+  expect(await countRows(factory, name, ENTRY_META_STORE)).toBe(1);
   await expect(cache.getLatest(historyKey, 10)).resolves.toEqual([]);
   await expect(cache.getSessionMetadata(historyKey)).resolves.toBeUndefined();
   await expect(cache.getByteTotals(historyKey)).resolves.toEqual({ historyBytes: 0, aggregateBytes: 0 });

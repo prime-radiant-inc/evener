@@ -159,10 +159,6 @@ describe("SessionCacheRow", () => {
       "transcriptTurns",
       "transcriptCoverage",
       "transcriptMeta",
-      "records",
-      "meta",
-      "current",
-      "currentMeta",
     ]);
     const clearing = sessionCacheRowStore.getState().clear();
     try {
@@ -197,10 +193,6 @@ describe("SessionCacheRow", () => {
       "transcriptTurns",
       "transcriptCoverage",
       "transcriptMeta",
-      "records",
-      "meta",
-      "current",
-      "currentMeta",
     ]);
     let clearing: Promise<void> | undefined;
     try {

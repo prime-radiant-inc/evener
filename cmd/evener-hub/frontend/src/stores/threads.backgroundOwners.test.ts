@@ -578,10 +578,6 @@ describe("background thread claims", () => {
       "transcriptTurns",
       "transcriptCoverage",
       "transcriptMeta",
-      "records",
-      "meta",
-      "current",
-      "currentMeta",
     ]);
     try {
       const release = background.release();
@@ -634,10 +630,6 @@ describe("background thread claims", () => {
       "transcriptTurns",
       "transcriptCoverage",
       "transcriptMeta",
-      "records",
-      "meta",
-      "current",
-      "currentMeta",
     ]);
     try {
       const release = background.release();

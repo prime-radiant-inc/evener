@@ -1,67 +1,6 @@
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { vi } from "vitest";
-import type { SessionCacheIndexedDB } from "../sessionCacheIndexedDB";
-
-// Holds the result of the next real getCurrent lookup after its transaction
-// has settled: reach resolves once the real storage result exists, and release
-// lets it return. This delays a real storage result so a sibling transaction
-// (a clear from another adapter on the same IDBFactory) can commit before the
-// held read's caller publishes. It substitutes no fabricated success: the
-// spy delegates to the real adapter and only gates the timing.
-export function holdNextCurrentLookup(cache: SessionCacheIndexedDB) {
-  const read = cache.getCurrent.bind(cache);
-  let reached!: () => void;
-  let release!: () => void;
-  const arrived = new Promise<void>((resolve) => {
-    reached = resolve;
-  });
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const spy = vi.spyOn(cache, "getCurrent").mockImplementationOnce(async (...args) => {
-    const result = await read(...args);
-    reached();
-    await gate;
-    return result;
-  });
-  return {
-    reached: arrived,
-    release: () => {
-      release();
-      spy.mockRestore();
-    },
-  };
-}
-
-// Holds the next real getCurrent call BEFORE its read runs: reach resolves as
-// the call is entered, and release lets the real read execute. Unlike
-// holdNextCurrentLookup (which captures the storage result first and only then
-// delays its return), this lets the durable store change underneath a suspended
-// worker, so a post-Clear lookup observes a genuine miss rather than a stale
-// hit. The spy delegates to the real adapter; it fabricates no result.
-export function holdNextCurrentLookupBeforeRead(cache: SessionCacheIndexedDB) {
-  const read = cache.getCurrent.bind(cache);
-  let reached!: () => void;
-  let release!: () => void;
-  const arrived = new Promise<void>((resolve) => {
-    reached = resolve;
-  });
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const spy = vi.spyOn(cache, "getCurrent").mockImplementationOnce(async (...args) => {
-    reached();
-    await gate;
-    return read(...args);
-  });
-  return {
-    reached: arrived,
-    release: () => {
-      release();
-      spy.mockRestore();
-    },
-  };
-}
+import { CLEAR_EPOCH_KEY, ENTRY_META_STORE } from "../sessionCacheSchema";
 
 // A request that never fires success, error, or blocked: the wedged
 // connection-coordinator shape, where open()/deleteDatabase() return and then
@@ -106,8 +45,8 @@ export function bumpCacheEpochRow(indexedDB: IDBFactory, epoch: number): Promise
       "success",
       () => {
         const database = request.result;
-        const tx = database.transaction("meta", "readwrite");
-        tx.objectStore("meta").put({ ref: "__clearEpoch", epoch });
+        const tx = database.transaction(ENTRY_META_STORE, "readwrite");
+        tx.objectStore(ENTRY_META_STORE).put({ historyKey: CLEAR_EPOCH_KEY, epoch });
         tx.addEventListener(
           "complete",
           () => {

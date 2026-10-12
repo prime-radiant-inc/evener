@@ -26,7 +26,7 @@ test-web: web-preflight build-dev
 # failing case does not hide the remaining guard's verdict; exit status is the
 # first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
-## shellguard, spawnguard, transcriptscrollguard, sessioncacheguard,
+## shellguard, spawnguard, transcriptscrollguard,
 ## retirementguard, mermaidguard) plus the
 ##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
 ##   `browserguard` tag) that jsdom cannot evaluate.

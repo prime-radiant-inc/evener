@@ -1,29 +1,22 @@
 import {
-  currentTranscriptState,
   decodeTranscriptItem,
   encodeTranscriptItem,
-  hydrateThread,
   markItemIdentityOnly,
   markItemTextOmitted,
-  type ThreadItem,
-  type ThreadReadResponse,
 } from "@evener/appwire-client";
-import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { IDBDatabase, IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
-import { type CurrentSessionRecord, SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
 import {
-  CURRENT_META_STORE,
-  CURRENT_STORE,
+  CLEAR_EPOCH_KEY,
   ENTRY_COVERAGE_STORE,
   ENTRY_ITEM_STORE,
   ENTRY_META_STORE,
   ENTRY_TURN_STORE,
   entryHistoryKey,
-  LEGACY_META_STORE,
-  LEGACY_RECORDS_STORE,
+  SESSION_CACHE_DATABASE_VERSION,
   type TranscriptHistoryMetaRow,
   type TranscriptSessionMetadata,
+  upgradeSessionCache,
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
@@ -185,16 +178,7 @@ it("writes and reads one entry by history identity and transcript key", async ()
     request.addEventListener("error", () => reject(request.error), { once: true });
   });
   expect(Array.from(database.objectStoreNames)).toEqual(
-    [
-      CURRENT_META_STORE,
-      CURRENT_STORE,
-      ENTRY_COVERAGE_STORE,
-      ENTRY_ITEM_STORE,
-      ENTRY_META_STORE,
-      ENTRY_TURN_STORE,
-      LEGACY_META_STORE,
-      LEGACY_RECORDS_STORE,
-    ].sort(),
+    [ENTRY_COVERAGE_STORE, ENTRY_ITEM_STORE, ENTRY_META_STORE, ENTRY_TURN_STORE].sort(),
   );
   database.close();
 });
@@ -3035,104 +3019,6 @@ it("prefers a retained identity when an archive write must evict", async () => {
   await expect(capped.getByteTotals(other)).resolves.toMatchObject({ historyBytes: 0 });
 });
 
-it("counts a current checkpoint in the combined cap and evicts its body", async () => {
-  const name = `entry-cache-${crypto.randomUUID()}`;
-  const factory = new IDBFactory();
-  databases.push({ factory, name });
-  const cache = new SessionEntryCache({
-    indexedDB: factory,
-    keyRange: IDBKeyRange,
-    databaseName: name,
-    ttlMs: Number.MAX_SAFE_INTEGER,
-    now: () => 1_000,
-  });
-  caches.push(cache);
-  await cache.getByteTotals("warmup");
-  const legacy = new SessionCacheIndexedDB({ indexedDB: factory, databaseName: name, databaseVersion: 3 });
-  caches.push(legacy);
-
-  const item: ThreadItem = {
-    id: "a1",
-    turnId: "turn_1",
-    type: "agentMessage",
-    text: "x".repeat(20_000),
-    transcriptKey: "e1",
-    position: { entry: 1, item: 0 },
-    version: 1,
-  };
-  const base = currentRead("local:big");
-  const read: ThreadReadResponse = {
-    ...base,
-    thread: { ...base.thread, turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [item] }] },
-  };
-  const state = currentTranscriptState(hydrateThread(read, "local:big", 10));
-  if (!state) throw new Error("fixture state did not build");
-  const current: CurrentSessionRecord = {
-    ownerToken: "tab",
-    ref: "local:big",
-    connectionGeneration: 1,
-    ownershipGeneration: 1,
-    clearEpoch: 0,
-    appliedSequence: 1,
-    savedAt: 1_000,
-    state,
-  };
-  await legacy.putCurrent(current, 1_000);
-
-  const historyKey = entryHistoryKey(identityFor("entry"));
-  await cache.commitBatch({
-    historyKey,
-    clearEpoch: 0,
-    items: [itemRow(historyKey, 1)],
-    sessionMetadata: metadataFor("entry", 1_000, 1_000),
-  });
-  const entryBytes = (await cache.getByteTotals(historyKey)).historyBytes;
-
-  const capped = new SessionEntryCache({
-    indexedDB: factory,
-    keyRange: IDBKeyRange,
-    databaseName: name,
-    maxBytes: entryBytes + 5,
-    ttlMs: Number.MAX_SAFE_INTEGER,
-    now: () => 1_000,
-  });
-  caches.push(capped);
-  await expect(
-    capped.commitBatch({
-      historyKey,
-      clearEpoch: 0,
-      items: [itemRow(historyKey, 1)],
-      sessionMetadata: metadataFor("entry", 1_000, 1_000),
-    }),
-  ).resolves.toMatchObject({ outcome: "committed" });
-
-  // The ~20 KB current checkpoint was part of the combined total, so it was
-  // evicted body-and-meta; the entry history survived.
-  const currentAfter = await new Promise<unknown>((resolve, reject) => {
-    const request = factory.open(name);
-    request.addEventListener(
-      "success",
-      () => {
-        const database = request.result;
-        const tx = database.transaction("current", "readonly");
-        const get = tx.objectStore("current").get(["tab", "local:big"]);
-        get.addEventListener("success", () => {
-          database.close();
-          resolve(get.result);
-        });
-        get.addEventListener("error", () => {
-          database.close();
-          reject(get.error);
-        });
-      },
-      { once: true },
-    );
-    request.addEventListener("error", () => reject(request.error), { once: true });
-  });
-  expect(currentAfter).toBeUndefined();
-  await expect(capped.getLatest(historyKey, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
-});
-
 it("evicts a preferred unit only after unpresferred units when pressure persists", async () => {
   const name = `entry-cache-${crypto.randomUUID()}`;
   const factory = new IDBFactory();
@@ -3184,4 +3070,73 @@ it("evicts a preferred unit only after unpresferred units when pressure persists
   await expect(capped.getLatest(other, 10)).resolves.toEqual([]);
   await expect(capped.getLatest(live, 10)).resolves.toEqual([]);
   await expect(capped.getLatest(archive, 10)).resolves.toMatchObject([{ transcriptKey: "row-1" }]);
+});
+
+// Ruling 37: the legacy cache is discarded on the schema upgrade, never
+// migrated. A pre-6d database (v3) holding a legacy record and a legacy Clear
+// epoch upgrades to the entry schema with its legacy stores gone, no rows
+// carried forward, and the Clear epoch read from its entry-owned home (0). A
+// tree that migrated would carry the legacy epoch (5) or the legacy record.
+it("discards a pre-6d legacy cache on the schema upgrade rather than migrating it", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const legacyUpgrade = factory.open(name, 3);
+  legacyUpgrade.addEventListener(
+    "upgradeneeded",
+    () => {
+      const database = legacyUpgrade.result;
+      database.createObjectStore("records", { keyPath: "ref" }).put({ ref: "local:old", threadId: "thr_1" });
+      database.createObjectStore("meta", { keyPath: "ref" }).put({ ref: "__clearEpoch", epoch: 5 });
+      database.createObjectStore("current", { keyPath: ["ownerToken", "ref"] });
+      database.createObjectStore("currentMeta", { keyPath: ["ownerToken", "ref"] });
+    },
+    { once: true },
+  );
+  const legacyDatabase = await new Promise<IDBDatabase>((resolve, reject) => {
+    legacyUpgrade.addEventListener("success", () => resolve(legacyUpgrade.result), { once: true });
+    legacyUpgrade.addEventListener("error", () => reject(legacyUpgrade.error), { once: true });
+  });
+  legacyDatabase.close();
+
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  expect(await cache.count()).toBe(0);
+  expect(await cache.getClearEpoch()).toBe(0); // the legacy epoch 5 is discarded, not migrated
+  const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open(name);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  expect(Array.from(upgraded.objectStoreNames).sort()).toEqual(
+    ["transcriptCoverage", "transcriptItems", "transcriptMeta", "transcriptTurns"].sort(),
+  );
+  upgraded.close();
+});
+
+// The epoch's real upgrade semantics (carried from the deleted legacy
+// sessionCacheIndexedDB.test.ts:313): the entry-owned Clear epoch row lives in
+// ENTRY_META_STORE, which the schema upgrade never drops, so a committed epoch
+// survives a version bump. A test that only bumped a synthetic meta store would
+// not exercise upgradeSessionCache.
+it("preserves the committed entry Clear epoch across the real schema upgrade", async () => {
+  const name = `entry-cache-${crypto.randomUUID()}`;
+  const factory = new IDBFactory();
+  databases.push({ factory, name });
+  const seed = factory.open(name, SESSION_CACHE_DATABASE_VERSION);
+  seed.addEventListener("upgradeneeded", () => upgradeSessionCache(seed.result), { once: true });
+  const seeded = await requestValue(seed);
+  const write = seeded.transaction(ENTRY_META_STORE, "readwrite");
+  write.objectStore(ENTRY_META_STORE).put({ historyKey: CLEAR_EPOCH_KEY, epoch: 1 });
+  await transactionDone(write);
+  seeded.close();
+
+  const next = factory.open(name, SESSION_CACHE_DATABASE_VERSION + 1);
+  next.addEventListener("upgradeneeded", () => upgradeSessionCache(next.result), { once: true });
+  const upgraded = await requestValue(next);
+  const row = await requestValue(
+    upgraded.transaction(ENTRY_META_STORE).objectStore(ENTRY_META_STORE).get(CLEAR_EPOCH_KEY),
+  );
+  expect(row).toEqual({ historyKey: CLEAR_EPOCH_KEY, epoch: 1 });
+  upgraded.close();
 });

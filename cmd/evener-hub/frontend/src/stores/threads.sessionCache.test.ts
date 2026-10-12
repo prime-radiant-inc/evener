@@ -8,7 +8,6 @@
 import "fake-indexeddb/auto";
 import type {
   AnyNotification,
-  CachedSessionRecord,
   HistoryChanges,
   QueueState,
   SnapshotIdentity,
@@ -26,11 +25,10 @@ import { readComposerDraft, writeComposerDraft } from "../panes/session/composer
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
-import { SessionCacheIndexedDB } from "./sessionCacheIndexedDB";
-import { entryHistoryKey, type TranscriptResolvedIdentity, upgradeSessionCache } from "./sessionCacheSchema";
+import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
-import { deleteIndexedDatabase, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { deleteIndexedDatabase } from "./testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
@@ -43,6 +41,7 @@ import {
   productionEntryTranscriptForTests,
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
+  setProductionEntryCacheForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
@@ -139,52 +138,6 @@ function turnFixture(id: string, text = "cached turn"): TurnModel & Turn {
   };
 }
 
-interface SeedOverrides {
-  incarnation?: string;
-  length?: number;
-  turns?: TurnModel[];
-  olderCursor?: string;
-  bootGeneration?: string;
-  epoch?: number;
-  appliedGeneration?: number;
-  issuedGeneration?: number;
-}
-
-// seededRecord is the record literal every seed in this file agrees on: the
-// shape the store's own write seam persists, threadId pinned to "thr_1" (not
-// the wire fixture's thr_<ref> derivation) because the replay assertion fences
-// a Clear on the CACHED thread id — the record is the authority the shell
-// paints, so its id is the one the test names.
-function seededRecord(ref: string, overrides: SeedOverrides): CachedSessionRecord {
-  return {
-    ref,
-    threadId: "thr_1",
-    name: "cached session",
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    model: "anthropic/claude-sonnet-4-5",
-    olderCursor: overrides.olderCursor ?? "cur-1",
-    savedAt: Date.now(),
-    history: {
-      bootGeneration: overrides.bootGeneration ?? "1",
-      epoch: overrides.epoch ?? 1,
-      incarnation: overrides.incarnation ?? "inc-1",
-      length: overrides.length ?? 40,
-      appliedGeneration: overrides.appliedGeneration ?? 0,
-      issuedGeneration: overrides.issuedGeneration ?? 0,
-      turns: overrides.turns ?? [turnFixture("turn_1")],
-    },
-  };
-}
-
-// seedCache writes a CachedSessionRecord through a SessionCacheIndexedDB on
-// the global fake factory — until Task 6 lands the debounced write seam this
-// is how a "prior tab's" record exists at all.
-async function seedCache(adapter: SessionCacheIndexedDB, ref: string, overrides: SeedOverrides = {}): Promise<void> {
-  const record = seededRecord(ref, overrides);
-  const outcome = await adapter.put(record, 0, record.savedAt);
-  expect(outcome.outcome).toBe("written");
-}
-
 // nextHandledRequest resolves with the params of the first request to
 // `method` — same contract as threads.test.ts's helper; a second request
 // re-resolves it to no effect, so the count assertions (not this promise)
@@ -212,70 +165,11 @@ async function deleteMutationDatabase(): Promise<void> {
   });
 }
 
-// The adapter a test installed on the singleton seam for the write seam's own
-// storage universe (the oversize fixture's private IDBFactory is not the
-// default one); undefined when the test rides the module adapter and the
-// default database.
-let installedCacheAdapter: SessionCacheIndexedDB | undefined;
-
-// cacheRecord reads the adapter's stored record for assertions: the installed
-// adapter when a test installed one, otherwise a throwaway reader over the
-// default factory — the same database the module adapter writes. The read's
-// readwrite transaction queues behind any in-flight put on the same stores,
-// so a record asserted here is one whose write already committed.
-async function cacheRecord(ref: string): Promise<CachedSessionRecord | undefined> {
-  const reader = installedCacheAdapter ?? new SessionCacheIndexedDB();
-  try {
-    const found = await reader.get(ref, Date.now());
-    return found?.record;
-  } finally {
-    if (reader !== installedCacheAdapter) reader.close();
-  }
-}
-
-// Count legacy rows by key only. Neither store body is fetched: `records`
-// uses ref as its primary key and `current` has a ref index.
-async function countLegacyCacheRows(ref: string): Promise<{ records: number; current: number }> {
-  const database = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("evener-session-cache", 2);
-    request.addEventListener("upgradeneeded", () => upgradeSessionCache(request.result), { once: true });
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-  });
-  try {
-    const tx = database.transaction(["records", "current"], "readonly");
-    const completed = new Promise<void>((resolve, reject) => {
-      tx.addEventListener("complete", () => resolve(), { once: true });
-      tx.addEventListener("abort", () => reject(tx.error ?? new Error("legacy count transaction aborted")), {
-        once: true,
-      });
-      tx.addEventListener("error", () => reject(tx.error ?? new Error("legacy count transaction failed")), {
-        once: true,
-      });
-    });
-    const recordKey = new Promise<IDBValidKey | undefined>((resolve, reject) => {
-      const request = tx.objectStore("records").getKey(ref);
-      request.addEventListener("success", () => resolve(request.result), { once: true });
-      request.addEventListener("error", () => reject(request.error), { once: true });
-    });
-    const currentCount = new Promise<number>((resolve, reject) => {
-      const request = tx.objectStore("current").index("ref").count(IDBKeyRange.only(ref));
-      request.addEventListener("success", () => resolve(request.result), { once: true });
-      request.addEventListener("error", () => reject(request.error), { once: true });
-    });
-    const [key, current] = await Promise.all([recordKey, currentCount]);
-    await completed;
-    return { records: key === undefined ? 0 : 1, current };
-  } finally {
-    database.close();
-  }
-}
-
 // echoingReadHandler answers a thread/read with the file's fixture, echoing
 // the request's generation: the store's latest-window contract discards a
 // response to a superseded generation, and both a resync and the
 // stale-cursor retry re-issue with a bumped one.
-function echoingReadHandler(
+function _echoingReadHandler(
   overrides: ReadResponseOverrides & TestThreadOverrides = {},
 ): RequestHandler<"thread/read"> {
   return (params) => {
@@ -313,7 +207,7 @@ function requireOpenHistory(
 // and the fold would sort by its version surrogate instead of its entry).
 // Without an entry the fold keeps the file's original shape, exactly as
 // Tasks 5-6 emitted it.
-function emitHistoryUpdated(ref: string, options: { fold: string; entry?: number }): void {
+function _emitHistoryUpdated(ref: string, options: { fold: string; entry?: number }): void {
   const client = requireConnectedClient("emitHistoryUpdated");
   const { model, history } = requireOpenHistory("emitHistoryUpdated", ref);
   client.emitNotification({
@@ -356,7 +250,7 @@ function emitHistoryUpdated(ref: string, options: { fold: string; entry?: number
 // the load seam's bounded lookup and any IndexedDB delivery still queued — so
 // the publication the read produced is fully on the store before the test
 // advances the debounce.
-async function resolveEverything(_fake: FakeClient): Promise<void> {
+async function _resolveEverything(_fake: FakeClient): Promise<void> {
   // The tracker's settle waits for in-flight storage work by yielding through
   // a MessageChannel hop, which the scoped fake timers above do not fake —
   // so it both flushes the load seam's own lookup transaction and lets every
@@ -364,10 +258,6 @@ async function resolveEverything(_fake: FakeClient): Promise<void> {
   // could not do here.
   await settleProjectionWorkForTests();
 }
-
-// Every adapter a test holds, closed in afterEach so the next beforeEach's
-// cache-database deletion never fires "blocked".
-const beds: SessionCacheIndexedDB[] = [];
 
 let _pendingReadRef: string | undefined;
 let _pendingReadGeneration: number | undefined;
@@ -411,7 +301,6 @@ beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   connectedFakeClient = undefined;
-  installedCacheAdapter = undefined;
   _pendingReadRef = undefined;
   _pendingReadGeneration = undefined;
   _resolvePendingReadFn = undefined;
@@ -433,7 +322,6 @@ beforeEach(async () => {
 afterEach(() => {
   restoreHydrationRetryScheduler?.();
   restoreHydrationRetryScheduler = null;
-  for (const adapter of beds.splice(0)) adapter.close();
   vi.restoreAllMocks();
 });
 
@@ -449,34 +337,17 @@ describe("cached shell load seam", () => {
   });
 });
 
-describe("cached write seam", () => {
-  // Every test scopes its fake timers to the clock functions (Task 5's own
-  // rationale): fake-indexeddb delivers every IndexedDB event on
-  // setImmediate, which a bare useFakeTimers() fakes too — freezing the
-  // debounced write's own transaction mid-test — while the debounce rides
-  // setTimeout either way.
-
-  it("flush: a ref closed by deletion flushes nothing (the deletedRefs gate)", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:gone");
-      await resolveEverything(fake);
-      // Arm the deletion state directly (Task 9's markCacheSessionsDeleted is
-      // the production writer of it); this test owns the flush-side gate.
-      threadsStore.setState((s) => ({ deletedRefs: new Set(s.deletedRefs).add("local:gone") }));
-      threadsStore.getState().releaseThread("local:gone"); // the flush runs; the deletedRefs gate refuses it
-      expect(await cacheRecord("local:gone")).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // Ruling 33 disposition 5: mapped. Original: flush: the pinned drain (dropUnpinnedModel) commits a pending debounced write before the model leaves the map
-  // The final mutation pin is a real owner, its fresh final source cut must persist before removal.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary mutation-pin release saves a fresh final read before removing the last pinned model".
-});
+// The 6d removal deleted the legacy debounced write seam. Its remaining cases
+// are retired under disposition; the entry route's equivalents are:
+// Ruling 33 disposition 5: mapped. Original: flush: the pinned drain
+// (dropUnpinnedModel) commits a pending debounced write before the model leaves
+// the map. Entry protection: src/stores/threads.entryProduction.test.ts —
+// "ordinary mutation-pin release saves a fresh final read before removing the
+// last pinned model".
+// Ruling 33 disposition 14: mapped. Original: a deleteSession success removes
+// the record, cancels the pending timer and arms deletedRefs. Entry protection:
+// src/stores/threads.entryProduction.test.ts — "ordinary deletion removes bound
+// histories and durably refuses the captured pre-delete write".
 
 // Parked-read helpers remain for the surviving legacy cached-shell tests.
 
@@ -537,45 +408,6 @@ let _pendingReloadGeneration: number | undefined;
 // durable deletion-fence rejection exactly the way threads.test.ts's own
 // markThreadDeletedIfFenced coverage does (data.mutationOutcome ===
 // "targetDeleted" — cmd/evener-hub's deletionFenceError).
-// seedCacheDirect writes a "prior tab's" record without the store: seedCache's
-// record through a throwaway adapter over the global fake factory — the same
-// database the singleton adapter and cacheRecord's reader share
-// (seedPositionedRecord's pattern).
-async function seedCacheDirect(ref: string, overrides: SeedOverrides = {}): Promise<void> {
-  const adapter = new SessionCacheIndexedDB();
-  try {
-    await seedCache(adapter, ref, overrides);
-  } finally {
-    adapter.close();
-  }
-}
-
-// healRecord is the record a racing write re-creates: the file's seed shape
-// for the named ref (seededRecord's literal is the model).
-function healRecord(ref: string): CachedSessionRecord {
-  return seededRecord(ref, {});
-}
-
-// holdCachePutTransaction parks the singleton adapter's next write
-// transaction over the cache's four stores — the debounced put's own —
-// mid-flight: the tree's holdNextWriteTransaction, itself built on
-// holdIndexedDBEvent.
-function holdCachePutTransaction(): ReturnType<typeof holdNextWriteTransaction> {
-  return holdNextWriteTransaction(["records", "meta", "current", "currentMeta"]);
-}
-
-// The faulted-delete adapter: beforeCommit("deleteRecords") throws until
-// clearDeleteFault, so the fence's delete transaction aborts and the record
-// survives one round — the stated residual — while reads stay clean (get
-// never passes the label).
-const _deleteRecordsFaulted = false;
-
-// driveSecondFencedRead re-delivers the fenced rejection through the same
-// hydrate path the first one took: refreshThread re-issues the pane's read —
-// it is not gated on deletedRefs (threads.test.ts's own fence coverage drives
-// the same second firing, and the pane claim outlives the retired lifecycle) —
-// so the rejection re-fires markThreadDeletedIfFenced, which is what retries
-// the aborted delete. The rejection itself is the expected outcome.
 // TestBroadcastChannel is mutationOutbox.test.ts's shape: an EventTarget
 // subclass with a peers set, so posts from a "peer" tab reach every channel
 // of the same name — this tab's singleton handler included.
@@ -627,133 +459,117 @@ function installNoCacheChannel(): void {
   setCacheChannelFactoryForTests(() => null);
 }
 
+// seedProductionEntryHistory commits one entry history for `ref` into an entry
+// cache installed on the ordinary route, so a channel deletion has a real
+// durable history to heal (deleteCachedRefs discovers it by requested-ref
+// metadata).
+async function seedProductionEntryHistory(cache: SessionEntryCache, ref: string): Promise<string> {
+  const resolvedIdentity: TranscriptResolvedIdentity = {
+    clientId: "client",
+    hostId: "local",
+    sessionId: `sess_${ref}`,
+    incarnation: "inc-1",
+  };
+  const historyKey = entryHistoryKey(resolvedIdentity);
+  const item = turnFixture("turn_seed").items[0]!;
+  const outcome = await cache.commitBatch({
+    historyKey,
+    clearEpoch: 0,
+    items: [{ historyKey, transcriptKey: "seed-item", position: { entry: 1, item: 0 }, version: 1, item }],
+    sessionMetadata: {
+      historyKey,
+      requestedRefs: [{ clientId: "client", ref }],
+      resolvedIdentity,
+      savedAt: Date.now(),
+      accessedAt: Date.now(),
+      formatVersion: 1,
+    },
+  });
+  expect(outcome).toMatchObject({ outcome: "committed" });
+  return historyKey;
+}
+
 describe("deletion", () => {
-  // Ruling 33 disposition 14: mapped. Original: a deleteSession success removes the record, cancels the pending timer, and arms deletedRefs
-  // The actual deleteSession success fences deletedRefs, deletes every requested-ref entry history and durably rejects a pre-delete write, no debounce remains to cancel.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary deletion removes bound histories and durably refuses the captured pre-delete write".
+  // Ruling 33 disposition 14: mapped. Original: a deleteSession success removes
+  // the record, cancels the pending timer and arms deletedRefs. Entry
+  // protection: threads.entryProduction.test.ts — "ordinary deletion removes
+  // bound histories and durably refuses the captured pre-delete write". The
+  // retired debounced-write cases (queued task refused, open transaction
+  // ordered before the delete) asserted the deleted legacy write seam.
+  // Ruling 33 disposition 15/17: mapped. Entry protection:
+  // threads.entryProduction.test.ts — "ordinary disk-only read-proven deletion
+  // keeps cached content visible while healing entry storage and broadcasting
+  // once" and "ordinary sibling deletion heals entry rows and retires the
+  // still-held publication and write claims".
 
-  it("a debounce task already queued when the deletion ran is refused by the fire-time deletedRefs gate", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  it("the cache channel ignores wrong versions, invalid payloads and its own source id, and heals entry rows on a valid deletion", async () => {
+    const entryDatabase = "entry-channel-validation-test";
+    const cache = new SessionEntryCache({ databaseName: entryDatabase });
+    setProductionEntryCacheForTests(cache);
     try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:thr_2");
-      await resolveEverything(fake);
-      emitHistoryUpdated("local:thr_2", { fold: "turn_q" }); // write scheduled, timer not yet fired
-      markCacheSessionsDeleted(["local:thr_2"]); // the success handler's arm, before the queued task runs
-      await vi.advanceTimersByTimeAsync(6_000);
-      expect(await cacheRecord("local:thr_2")).toBeUndefined(); // the queued task's gates refused the ref
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("a write whose transaction was already open commits first, and the deletion serialized after it removes the record", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:order");
-      await resolveEverything(fake);
-      const hold = holdCachePutTransaction(); // parks the debounced write's put transaction mid-flight
-      emitHistoryUpdated("local:order", { fold: "turn_p" });
-      await vi.advanceTimersByTimeAsync(1_000); // the write's transaction is open and parked
-      markCacheSessionsDeleted(["local:order"]); // the deletion's deleteRecords transaction queues behind it
-      hold.release(); // the write commits first, the deletion runs after it
+      const { peer, posted } = installTestCacheChannel();
+      markCacheSessionsDeleted(["local:source-id"]);
+      const own = posted[0] as { sourceId: string };
+      const ref = "local:channel-validation";
+      const historyKey = await seedProductionEntryHistory(cache, ref);
+      const message = { version: 1, sourceId: "peer", kind: "deletion", refs: [ref] };
+      for (const invalid of [
+        null,
+        { ...message, version: 2 },
+        { ...message, sourceId: "" },
+        { ...message, sourceId: undefined },
+        { ...message, sourceId: own.sourceId },
+        { ...message, kind: "unknown" },
+        { ...message, refs: ref },
+        { version: 1, sourceId: "peer", kind: "clear", epoch: "1" },
+      ])
+        peer.post(invalid);
       await settleProjectionWorkForTests();
-      expect(await cacheRecord("local:order")).toBeUndefined(); // the two-orders invariant's second order: removed
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
+      await expect(cache.getLatest(historyKey, 10)).resolves.toHaveLength(1);
+      peer.post(message);
+      await vi.waitFor(async () => expect(await cache.getLatest(historyKey, 10)).toEqual([]));
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
     } finally {
-      vi.useRealTimers();
+      cache.close();
+      await deleteIndexedDatabase(entryDatabase);
     }
-  });
-
-  // Ruling 33 disposition 15: mapped. Original: the deletion fence removes the record and propagates on a read-proven deletion
-  // Ruling 34: start from disk-only real bodies, observe cached content with the source read pending, then prove it remains visible after targetDeleted removes storage and broadcasts once. No visible-content guarantee is retired.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary disk-only read-proven deletion keeps cached content visible while healing entry storage and broadcasting once".
-
-  it("the channel ignores wrong versions, invalid payloads and its own source id", async () => {
-    const { peer, posted } = installTestCacheChannel();
-    markCacheSessionsDeleted(["local:source-id"]);
-    const own = posted[0] as { sourceId: string };
-    const ref = "local:channel-validation";
-    await seedCacheDirect(ref, {});
-    const message = { version: 1, sourceId: "peer", kind: "deletion", refs: [ref] };
-    for (const invalid of [
-      null,
-      { ...message, version: 2 },
-      { ...message, sourceId: "" },
-      { ...message, sourceId: undefined },
-      { ...message, sourceId: own.sourceId },
-      { ...message, kind: "unknown" },
-      { ...message, refs: ref },
-      { version: 1, sourceId: "peer", kind: "clear", epoch: "1" },
-    ])
-      peer.post(invalid);
-    await settleProjectionWorkForTests();
-    expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBeUndefined();
-    expect(await cacheRecord(ref)).toBeDefined();
-    peer.post(message);
-    await settleProjectionWorkForTests();
-    expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
-    expect(await cacheRecord(ref)).toBeUndefined();
   });
 
   it.each([null, 7])("the cache v1 envelope still accepts source %s and extra fields", async (sourceId) => {
-    const { peer } = installTestCacheChannel();
-    const ref = "local:channel-compatibility";
-    await seedCacheDirect(ref, {});
-    peer.post({ version: 1, sourceId, kind: "deletion", refs: [ref], extra: true });
-    await settleProjectionWorkForTests();
-    expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
-    expect(await cacheRecord(ref)).toBeUndefined();
-  });
-
-  // Ruling 33 disposition 16: mapped. Original: a suppression-only ref still cold-reads, stays suppressed while owned, and expires on final release
-  // Keep the real suppression-only lifetime protection, one cold read without heldSnapshot, two-holder suppression including final retirement, then fresh reacquisition writes again.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary suppression-only acquisition still cold-reads but never caches until every holder releases".
-
-  // Ruling 33 disposition 17: mapped. Original: the channel message: a sibling holding the ref open stops writing without a reload and never re-creates the record
-  // A sibling deletion heals real entry rows and prevents held-lifetime resurrection, now through durable generation and retired repository claims.
-  // Entry protection: src/stores/threads.entryProduction.test.ts — "ordinary sibling deletion heals entry rows and retires the still-held publication and write claims".
-
-  it("the heal: a message arriving after a racing write re-created the record deletes it in the same step", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const entryDatabase = `entry-channel-compat-${String(sourceId)}-test`;
+    const cache = new SessionEntryCache({ databaseName: entryDatabase });
+    setProductionEntryCacheForTests(cache);
     try {
       const { peer } = installTestCacheChannel();
-      await seedCacheDirect("local:heal", { incarnation: "inc-1", length: 1, turns: [turnFixture("turn_1")] });
-      markCacheSessionsDeleted(["local:heal"]); // the deleting tab removed it and broadcast (delivery delayed)
-      expect(await cacheRecord("local:heal")).toBeUndefined();
-      const sibling = new SessionCacheIndexedDB(); // the same global fake database the singleton uses
-      await sibling.put(healRecord("local:heal"), 0, Date.now());
-      await settleProjectionWorkForTests();
-      expect(await cacheRecord("local:heal")).toBeDefined(); // the racing write re-created the record
-      peer.post({ version: 1, sourceId: "other-tab", kind: "deletion", refs: ["local:heal"] });
-      await settleProjectionWorkForTests();
-      expect(await cacheRecord("local:heal")).toBeUndefined(); // the heal deleted the resurrection in the same step
-      sibling.close();
+      const ref = `local:channel-compat-${String(sourceId)}`;
+      const historyKey = await seedProductionEntryHistory(cache, ref);
+      peer.post({ version: 1, sourceId, kind: "deletion", refs: [ref], extra: true });
+      await vi.waitFor(async () => expect(await cache.getLatest(historyKey, 10)).toEqual([]));
+      expect(threadsStore.getState().cacheLifetimes.get(ref)?.suppressed).toBe(true);
     } finally {
-      vi.useRealTimers();
+      cache.close();
+      await deleteIndexedDatabase(entryDatabase);
     }
   });
 
-  // Runs on the entry route: the channel factory answers null, so
-  // usesEntryTranscripts stays true (no adapter override). The deletion must
-  // still clear the ref's legacy record locally (sessionEntryCache.ts clears
-  // LEGACY_RECORDS_STORE) and arm deletedRefs, with nothing thrown.
+  // Runs on the entry route: the channel factory answers null, as the typeof
+  // guard does in a webview. The deletion must still clear the ref's entry
+  // history locally and arm deletedRefs, with nothing thrown.
   it("BroadcastChannel absent: deletion still works locally and nothing throws (Review Focus 2)", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    installNoCacheChannel();
+    const entryDatabase = "entry-no-channel-test";
+    const cache = new SessionEntryCache({ databaseName: entryDatabase });
+    setProductionEntryCacheForTests(cache);
     try {
-      installNoCacheChannel(); // the factory answers null, as the typeof guard does in a webview
-      const fake = connectFakeClient();
-      fake.on("thread/read", echoingReadHandler({ snapshot: { incarnation: "inc-1", length: 1 } }));
-      await threadsStore.getState().ensureThread("local:quiet");
-      await resolveEverything(fake);
-      await vi.advanceTimersByTimeAsync(1_000);
-      markCacheSessionsDeleted(["local:quiet"]);
-      expect(await cacheRecord("local:quiet")).toBeUndefined(); // local deletion intact, no channel needed
-      expect(threadsStore.getState().deletedRefs.has("local:quiet")).toBe(true);
+      const ref = "local:quiet";
+      const historyKey = await seedProductionEntryHistory(cache, ref);
+      markCacheSessionsDeleted([ref]);
+      await vi.waitFor(async () => expect(await cache.getLatest(historyKey, 10)).toEqual([]));
+      expect(threadsStore.getState().deletedRefs.has(ref)).toBe(true);
     } finally {
-      vi.useRealTimers();
+      cache.close();
+      await deleteIndexedDatabase(entryDatabase);
     }
   });
 });
@@ -868,20 +684,17 @@ describe("ordinary entry transcript route", () => {
           ([, owner]) => owner !== undefined && completedBodies.some((body) => JSON.stringify(owner).includes(body)),
         )
         .map(([name]) => name);
-      const legacyRows = await countLegacyCacheRows(selected);
       const selectedBeforeOpen = JSON.stringify([repositoryModel, selectedThreadModel]);
       expect({
         completedBodyOwners,
         readerAttached: fixture.inspect().readerRetention !== undefined,
         legacyResidencyOwnsSelectedRef: legacyResidency.refs.has(selected),
-        legacyRows,
         running: selectedThreadModel?.status.type,
         overlayPreserved: selectedBeforeOpen.includes(overlayBody),
       }).toEqual({
         completedBodyOwners: [],
         readerAttached: false,
         legacyResidencyOwnsSelectedRef: false,
-        legacyRows: { records: 0, current: 0 },
         running: "active",
         overlayPreserved: true,
       });
@@ -1151,13 +964,10 @@ describe("ordinary entry transcript route", () => {
     }
   });
 
-  it("routes every ref around the legacy cache and accepts the current wire baseline", async () => {
+  it("routes every ref through the entry repository and accepts the current wire baseline", async () => {
     const selected = "local:entry-selected";
     const other = "local:ordinary";
     const entryDatabase = "entry-transcript-fixture-test";
-    const legacy = { adapter: new SessionCacheIndexedDB() };
-    beds.push(legacy.adapter);
-    const legacyGet = vi.spyOn(legacy.adapter, "get");
     const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
     const fixture = observeProductionEntryForTests(entryCache, selected);
     try {
@@ -1208,7 +1018,6 @@ describe("ordinary entry transcript route", () => {
       } as AnyNotification);
       await fixture.settled();
 
-      expect(legacyGet).not.toHaveBeenCalledWith(selected, expect.any(Number));
       const identity: TranscriptResolvedIdentity = {
         clientId: location.origin,
         hostId: "local",
@@ -1221,10 +1030,7 @@ describe("ordinary entry transcript route", () => {
           expect.objectContaining({ item: expect.objectContaining({ text: "current live notification" }) }),
         ]),
       );
-      expect(await cacheRecord(selected)).toBeUndefined();
-
       await threadsStore.getState().ensureThread(other);
-      expect(legacyGet).not.toHaveBeenCalledWith(other, expect.any(Number));
       expect(productionEntryTranscriptForTests(other).repository).toBeDefined();
     } finally {
       fixture.dispose();

@@ -94,16 +94,7 @@ const tool: AnyNotification = {
     },
   },
 };
-const writeStores = [
-  "transcriptItems",
-  "transcriptTurns",
-  "transcriptCoverage",
-  "transcriptMeta",
-  "records",
-  "meta",
-  "current",
-  "currentMeta",
-];
+const writeStores = ["transcriptItems", "transcriptTurns", "transcriptCoverage", "transcriptMeta"];
 
 afterEach(async () => {
   for (const repo of repos.splice(0)) repo.dispose();
