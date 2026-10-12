@@ -69,7 +69,7 @@ describe("Composer", () => {
 	it("shows the placeholder in a 17/24 field", () => {
 		const { tree } = composer();
 		const [field] = fields(tree);
-		expect(field?.props.placeholder).toEqual(expect.stringMatching(/\S/));
+		expect(field?.props.placeholder).toBe("Tell the agent something…");
 		expect(field?.props.multiline).toBe(true);
 		expect(field?.props.style).toMatchObject({ fontSize: 17, lineHeight: 24 });
 	});
