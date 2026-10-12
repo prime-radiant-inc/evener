@@ -553,7 +553,11 @@ export function NotificationCard({
     return (
       <div className={CLASS.staticHead} {...headData}>
         {statusIcon}
-        {showWarningChip && <Chip tone="attention">warning</Chip>}
+        {showWarningChip && (
+          <Chip tone="attention" kind="warning">
+            warning
+          </Chip>
+        )}
         <span className={CLASS.headingText}>
           <span className={CLASS.title}>{notification.title}</span>
           {/* An unlabeled delegate keeps its ending and Open control: the
@@ -586,7 +590,11 @@ export function NotificationCard({
         }}
       >
         {statusIcon}
-        {showWarningChip && <Chip tone="attention">warning</Chip>}
+        {showWarningChip && (
+          <Chip tone="attention" kind="warning">
+            warning
+          </Chip>
+        )}
         <span className={CLASS.headingText}>
           {hasSecondary || !transcriptRef ? (
             hasSecondary ? (

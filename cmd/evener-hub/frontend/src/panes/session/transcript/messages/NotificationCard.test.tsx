@@ -11,20 +11,16 @@ import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { navigationStore } from "../../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
-import chipStyles from "../../../../widgets/chip/chip.module.css";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { FailureGlyph } from "../../../../widgets/failureglyph";
-import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ToolIcon } from "../../../../widgets/toolicon";
 import { NotificationCard } from "./NotificationCard";
 
-const CHIP = requireClass(chipStyles.chip, "chip.module.css", "chip");
-const CHIP_ATTENTION = requireClass(chipStyles.attention, "chip.module.css", "attention");
-
-// Every chip on screen, as whether each wears the attention tone, found by the
-// shared Chip widget's own classes.
-function chipTones(): boolean[] {
-  return [...document.querySelectorAll(`.${CHIP}`)].map((chip) => chip.classList.contains(CHIP_ATTENTION));
+// The head's chips, by what each marks (the Chip widget's data-kind).
+function chipKinds(): (string | undefined)[] {
+  return [...screen.getByTestId("notification-card").querySelectorAll<HTMLElement>("[data-kind]")].map(
+    (chip) => chip.dataset.kind,
+  );
 }
 
 beforeAll(async () => {
@@ -594,17 +590,17 @@ test("an expanded notification card stays open across a remount through the scop
 
 test("warning tone chip is visible even when collapsed", () => {
   render(<NotificationCard notification={notif({ tone: "warning", title: "watcher reported" })} />);
-  expect(chipTones()).toEqual([true]);
+  expect(chipKinds()).toEqual(["warning"]);
 });
 
 test("a success/neutral notification recedes: no tone chip (color spent on the warning chip and the failure glyph)", () => {
   render(<NotificationCard notification={notif({ tone: "success" })} />);
-  expect(chipTones()).toEqual([]);
+  expect(chipKinds()).toEqual([]);
 });
 
 test("an error notification carries no chip: the failure glyph is the whole signal", () => {
   render(<NotificationCard notification={notif({ tone: "error" })} />);
-  expect(chipTones()).toEqual([]);
+  expect(chipKinds()).toEqual([]);
   expect(screen.getByTestId("failure-glyph")).toBeTruthy();
 });
 
@@ -639,7 +635,7 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
   expect(row.textContent).toContain("Run repository lint, vet, and test gates");
   expect(row.textContent).not.toContain("exit -1");
   expect(row.textContent).not.toContain("stopped_by_parent");
-  expect(chipTones()).toEqual([]);
+  expect(chipKinds()).toEqual([]);
 
   expect(screen.getByTestId("notification-field-status").textContent).toContain("cancelled");
   expect(screen.getByTestId("notification-field-reason").textContent).toContain("stopped_by_parent");
@@ -1034,7 +1030,7 @@ test("a timer's prose renders with no echo metadata and no tone chip", () => {
   expect(screen.queryByTestId("notification-field-output")).toBeNull();
   expect(screen.queryByTestId("notification-field-reason")).toBeNull();
   expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("neutral");
-  expect(chipTones()).toEqual([]);
+  expect(chipKinds()).toEqual([]);
 });
 
 test("a watch card keeps the watch id inspectable in the raw disclosure", () => {
@@ -1340,7 +1336,7 @@ test("a delivery-failure card earns a warning chip and failure title", () => {
     />,
   );
   expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("warning");
-  expect(chipTones()).toEqual([true]);
+  expect(chipKinds()).toEqual(["warning"]);
   expect(screen.getByTestId("notification-card").textContent).toContain("Watch delivery failed");
 });
 
