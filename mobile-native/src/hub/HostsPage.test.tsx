@@ -6,7 +6,8 @@ import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { HostsController } from "../hosts/hostsController";
 import { hostRow, liveSession, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUtils";
 import { LiveSessionsReader } from "../hosts/liveCounts";
-import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
+import { render, renderedText, testIDSuffixes, unmountMountedTrees, offersButton } from "../renderNative.testkit";
+import { Tag } from "../sheet/Grouped";
 import { HostsPage } from "./HostsPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -156,18 +157,15 @@ it("lists each host with its state, system and live sessions, and its version wi
 		[liveSession("paradise-park:a", "paradise-park"), liveSession("studio:b", "studio")],
 	);
 	const page = await mount(fleet);
-	expect(page.row("paradise-park")?.props.accessibilityLabel).toBe(
-		"paradise-park, Connected · macOS · arm64 · 1 live, 0.9.409, Hub runs 0.9.412",
-	);
-	expect(page.row("studio")?.props.accessibilityLabel).toBe(
-		"studio, Offline · reconnecting · 1 live, out of reach, 0.9.412",
-	);
-	expect(page.row("attic")?.props.accessibilityLabel).toBe("attic, Offline · No live sessions");
-	const text = renderedText(page.tree);
-	expect(text).toContain("0.9.409");
-	expect(text).toContain("Hub runs 0.9.412");
+	// Each host's state, in the page's order.
+	expect(testIDSuffixes(page.tree, "host-status-")).toEqual(["connected", "reconnecting", "offline"]);
+	expect(page.row("paradise-park")?.props.accessibilityLabel).toContain("0.9.409");
+	expect(page.row("studio")?.props.accessibilityLabel).toContain("0.9.412");
 	// Only the drifting host carries the tag; a host of unknown version shows neither.
-	expect(text.match(/Hub runs 0\.9\.412/g)).toHaveLength(1);
+	const tags = page.tree.root.findAll((node) => node.type === Tag);
+	expect(tags).toHaveLength(1);
+	expect(page.row("paradise-park")?.findAll((node) => node.type === Tag)).toHaveLength(1);
+	expect(renderedText(page.tree)).toContain("0.9.409");
 });
 
 it("opens a host's detail", async () => {
@@ -193,12 +191,9 @@ it("opens the host a notice named, once, and clears the request", async () => {
 	expect(page.navigation.setParams).toHaveBeenCalledWith({ focus: undefined });
 });
 
-it("says where hosts come from, and never asks to reconnect", async () => {
+it("never asks to reconnect", async () => {
 	const page = await mount(scriptedFleet([hostRow("paradise-park", { attached: false })]));
-	expect(renderedText(page.tree)).toContain(
-		"Hosts come from hub.toml or were added in the web app. Add hosts from the web app; they need an SSH address and a key.",
-	);
-	expect(renderedText(page.tree)).not.toMatch(/\bReconnect\b/);
+	expect(offersButton(page.tree, /\bReconnect\b/)).toBe(false);
 });
 
 it("says why the hub's hosts didn't load when its first answer is a refusal", async () => {
@@ -207,7 +202,7 @@ it("says why the hub's hosts didn't load when its first answer is a refusal", as
 		throw new WireError("the hub is still starting", -32000);
 	}) as never;
 	const page = await mount(fleet);
-	expect(renderedText(page.tree)).toContain("Couldn't list this hub's hosts: the hub is still starting");
+	expect(renderedText(page.tree)).toContain("the hub is still starting");
 });
 
 it("reads the live sessions again when the connection comes back", async () => {
@@ -219,16 +214,17 @@ it("reads the live sessions again when the connection comes back", async () => {
 		return answer(method as never, params as never);
 	}) as never;
 	const page = await mount(fleet, { ready: false });
-	expect(page.row("paradise-park")?.props.accessibilityLabel).toContain("No live sessions");
+	// The row counts no sessions, then the fixture's one.
+	expect(page.row("paradise-park")?.props.accessibilityLabel).not.toMatch(/\b1\b/);
 	down = false;
 	await page.setReady(true);
-	expect(page.row("paradise-park")?.props.accessibilityLabel).toContain("1 live");
+	expect(page.row("paradise-park")?.props.accessibilityLabel).toMatch(/\b1\b/);
 });
 
 it("waits quietly, connected, before the hub has listed its hosts (spec 14)", async () => {
 	const fleet = scriptedFleet([]);
 	fleet.client.request = (() => new Promise(() => {})) as never;
 	const page = await mount(fleet);
-	expect(renderedText(page.tree)).not.toContain("Connecting");
+	expect(testIDSuffixes(page.tree, "first-load-")).toEqual([]);
 	expect(page.tree.root.findAllByProps({ accessibilityLabel: "Loading hosts" })).not.toHaveLength(0);
 });

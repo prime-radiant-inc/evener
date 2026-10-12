@@ -56,6 +56,7 @@ export function HostsPage({ navigation, route }: NativeStackScreenProps<HubRoute
 							sub={sub}
 							value={<RowValue text={row.hubVersion} tag={drift ? { text: drift, tone: "gray" } : null} />}
 							accessibilityLabel={[row.name, sub, row.hubVersion, drift].filter(Boolean).join(", ")}
+							testID={`host-status-${status.state}`}
 							chevron
 							onPress={() => navigation.navigate("HostDetail", { hubId, name: row.name })}
 						/>

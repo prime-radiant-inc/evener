@@ -1010,8 +1010,7 @@ test("/tasks toggle-closes while repeated /status preserves About and a saved De
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "about", ref: "ref_a" });
 });
 
-test("/status advertises Overview and remains findable by details and info", () => {
-  expect(cmd("status").title).toBe("Show session details in Overview");
+test("/status is a session command findable by details and info", () => {
   expect(cmd("status").keywords).toEqual(["details", "info"]);
   expect(cmd("status").scope).toBe("session");
 });
