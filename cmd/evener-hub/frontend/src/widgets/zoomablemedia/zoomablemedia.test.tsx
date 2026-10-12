@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
@@ -80,4 +83,33 @@ test("it never submits an enclosing form", async () => {
   );
   await user.click(screen.getByRole("button", { name: "View shot.png" }));
   expect(onSubmit).not.toHaveBeenCalled();
+});
+
+// Height filling is opt-in: a fixed-size thumbnail tile wants the trigger to
+// fill it, but in a flowing pane (the doc viewer) a filled height would
+// stretch the trigger to the pane instead of the image.
+test("only fill=true marks the trigger to fill its container's height", () => {
+  const { rerender } = render(
+    <ZoomableMedia label="Zoom image" onOpen={() => {}}>
+      <img src="data:," alt="" />
+    </ZoomableMedia>,
+  );
+  expect(screen.getByRole("button", { name: "Zoom image" }).hasAttribute("data-fill")).toBe(false);
+  rerender(
+    <ZoomableMedia label="Zoom image" onOpen={() => {}} fill>
+      <img src="data:," alt="" />
+    </ZoomableMedia>,
+  );
+  expect(screen.getByRole("button", { name: "Zoom image" }).hasAttribute("data-fill")).toBe(true);
+});
+
+test("the base trigger keeps automatic height; only the fill form sets 100%", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "zoomablemedia.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const base = /\.zoomableMedia\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(base).not.toMatch(/(^|[;\s])height\s*:/);
+  const fill = /\.zoomableMedia\[data-fill\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(fill).toMatch(/height:\s*100%/);
 });

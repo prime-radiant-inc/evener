@@ -6,9 +6,6 @@
   display: block;
   box-sizing: border-box;
   width: 100%;
-  /* A fixed-size tile gives this a definite height to fill; an auto-height
-   * container resolves the percentage to auto, so the media sizes it. */
-  height: 100%;
   margin: 0;
   padding: 0;
   border: 0;
@@ -17,6 +14,13 @@
   font: inherit;
   text-align: inherit;
   cursor: zoom-in;
+}
+
+/* fill: a fixed-size thumbnail tile gives the trigger a definite height to
+ * fill. Opt-in, because in a flowing pane (the doc viewer) a filled height
+ * would stretch the trigger to the pane instead of the image. */
+.zoomableMedia[data-fill] {
+  height: 100%;
 }
 
 /* Inset: thumbnail tiles clip their overflow, and an outset ring on a child

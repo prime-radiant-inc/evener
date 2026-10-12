@@ -78,7 +78,7 @@ export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
         // is noise, and the state resolves on its own in a few frames.
         <div className={CLASS.imagePending} role="img" aria-label={`${item.name} (still processing)`} />
       ) : (
-        <ZoomableMedia label={`View ${item.name}`} onOpen={() => setLightboxOpen(true)}>
+        <ZoomableMedia label={`View ${item.name}`} onOpen={() => setLightboxOpen(true)} fill>
           {/* Decorative: the button around it already carries the name, and
               a second announcement of the same filename is just noise. */}
           <img className={CLASS.imageThumbnail} src={source} alt="" />

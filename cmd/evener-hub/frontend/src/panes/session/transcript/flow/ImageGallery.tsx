@@ -139,7 +139,7 @@ export function ImageGallery({ images: supplied, size }: ImageGalleryProps) {
             className={size === "large" ? `${CLASS.thumb} ${CLASS.thumbLarge}` : CLASS.thumb}
           >
             {/* No label: the thumbnail's alt text and caption name it. */}
-            <ZoomableMedia data-testid="image-gallery-thumb" onOpen={() => setOpenIndex(i)}>
+            <ZoomableMedia data-testid="image-gallery-thumb" onOpen={() => setOpenIndex(i)} fill>
               <img
                 className={size === "large" ? `${CLASS.thumbImg} ${CLASS.thumbImgLarge}` : CLASS.thumbImg}
                 src={image.src}
