@@ -1422,6 +1422,50 @@ test("goal editing focuses only the requesting seat's composer when two share a 
   expect(seatAFocused).not.toHaveBeenCalled();
 });
 
+test("the current-task control opens this column's tasks without stealing cascade focus", async () => {
+  const user = userEvent.setup();
+  const overrides = { evener: currentWorkEvener({ task: true }) };
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("remote:parent", overrides));
+  await threadsStore.getState().ensureThread("remote:parent");
+  // An embedded column's composer: the host cascade covers this
+  // conversation, and an ordinary pane for the same conversation sits
+  // beside it.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: {
+          ref: "remote:leaf",
+          source: { type: "session", params: { ref: "remote:root" } },
+          edges: [{ ownerRef: "remote:parent", childRef: "remote:leaf", delegateId: "d1" }],
+        },
+        slot: "main",
+      },
+      { id: "pane-parent", type: "session", params: { ref: "remote:parent" }, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  // The sidebar describes the focused leaf, like the zoom's own scope does.
+  activitySidebarStore.getState().retarget("remote:leaf");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="remote:parent" paneId="zoom" source={createTestComposerSource("remote:parent")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("remote:parent");
+  await user.click(screen.getByRole("button", { name: /Open tasks: Finish the focused composer test/ }));
+
+  // The request came from the parent column's composer: the sidebar opens
+  // that conversation's Tasks, holding its scope, and the cascade keeps
+  // focus.
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "tasks", ref: "remote:parent" });
+  expect(activitySidebarStore.getState().explicitScopeRef).toBe("remote:parent");
+  expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
+});
+
 test("the composer persists the quote-inserted text as this ref's draft", async () => {
   await mountComposer("ref_a");
   act(() => {

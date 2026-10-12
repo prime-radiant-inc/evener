@@ -26,6 +26,7 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
+import { readDraft } from "../session/composer/draft";
 import { replaceEditorText } from "../session/testing/editor";
 import { resetTranscriptViewRegistryForTests } from "../session/transcript/flow/transcriptViewRegistry";
 import { readerWireTurns } from "../session/transcript/transcriptReaderTestUtils";
@@ -619,6 +620,13 @@ test("resuming the rendered source moves the cascade's source ownership to the r
   expect(conversationPaneLifetime(currentPane()).sourceRef).toBe("root-resumed");
   const resumedEditor = within(cascadeScope("root-resumed")).getByRole("textbox", { name: "Message" });
   expect(resumedEditor.textContent).toBe("source draft carries to the resumed identity");
+  // Subsequent editing persists under the resumed identity: the retained
+  // state binds persistence to the ref it was created with, so a reload of
+  // the resumed conversation finds the newer text while the superseded
+  // identity does not.
+  replaceEditorText(resumedEditor, "edited after the source resume");
+  expect(readDraft("root-resumed")).toBe("edited after the source resume");
+  expect(readDraft("root")).not.toBe("edited after the source resume");
 
   // Return reopens the resumed conversation with its carried draft, not
   // the superseded identity.

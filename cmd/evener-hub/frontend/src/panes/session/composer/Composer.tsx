@@ -443,7 +443,13 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // Tasks tab; on mobile there is no sidebar, so the per-session Sheet
     // keeps its behavior.
     if (isMobile) tasksPanelRef.current?.open();
-    else activitySidebarStore.getState().openWith("tasks");
+    else {
+      // The owning pane rides along, like every other embedded-column
+      // request: the sidebar opens THIS conversation's Tasks and holds its
+      // scope, keeping the cascade focused even when an ordinary pane for
+      // the same conversation exists.
+      activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
+    }
   };
 
   useEffect(() => {

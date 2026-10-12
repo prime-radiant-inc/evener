@@ -59,16 +59,14 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
     },
     adoptResumedSource(resumedRef: string): void {
       if (sourceRef === resumedRef) return;
-      // The retained composer is the source's in-memory ownership: it moves
-      // to the resumed identity, and the superseded ref's state retires with
-      // the move.
-      const prior = lifetime.composers.get(sourceRef);
+      // The retained state binds draft persistence, recovery and
+      // submission to the ref it was created with: rekeying the entry
+      // would keep writing under the superseded identity. Retire the old
+      // state; a fresh one for the resumed identity loads the draft the
+      // resume carried, and any state already created for the resumed ref
+      // keeps its newer work.
+      lifetime.composers.get(sourceRef)?.dispose();
       lifetime.composers.delete(sourceRef);
-      if (prior && !lifetime.composers.has(resumedRef)) {
-        lifetime.composers.set(resumedRef, prior);
-      } else {
-        prior?.dispose();
-      }
       sourceRef = resumedRef;
     },
     dispose() {
