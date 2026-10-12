@@ -10,6 +10,24 @@ is left.
     python3 tools/copy-oracle/inventory.py                 # per-package summary
     python3 tools/copy-oracle/inventory.py --hits hits.tsv # also every hit
     python3 tools/copy-oracle/inventory.py --path cmd/evener-hub/frontend/src/settings
+    python3 tools/copy-oracle/inventory.py --copy-only tests.tsv   # tests that only test wording
+
+--copy-only narrows the question from "where is copy asserted" to "which tests
+exist only to test copy": every check in the test is a copy hit and the test's
+name says its subject is wording. Behavior tests whose only oracle happens to
+be copy are listed separately as incidental. Run its tests with
+`python3 -B tools/copy-oracle/test_inventory.py`.
+
+--copy-only is advisory. It builds review lists; it never decides on its own.
+It reads one line at a time, so it can misjudge:
+  - tests that contain multi-line raw strings, template literals or block
+    comments, whose boundaries it can get wrong;
+  - assertions or conditions split across lines (`expect(...)` then
+    `.toHaveLength(n)` on the next line), which it classifies by their first
+    line;
+  - assertion forms it doesn't recognise, such as `expect.soft` and
+    `expect.poll`.
+Read every listed test before deleting or converting it.
 
 A literal counts as copy only when it also appears in production source (or a
 production text asset such as an embedded prompt). A literal that appears only
@@ -223,12 +241,220 @@ def scan_go(paths_filter):
     return hits, fixtures
 
 
+TS_TEST_START = re.compile(r"^\s*(?:test|it)(?:\.(?:only|skip|concurrent|each\(.*?\)))?\s*\(\s*" + STR)
+TS_CHECK = re.compile(r"\bexpect\(|\b(?:get|find)(?:All)?By\w+\(")
+GO_TEST_START = re.compile(r"^func (Test\w+)\(")
+# A Go check is a condition line. `if err != nil {` right after a call is a
+# setup guard, not a claim; expecting an error (`err == nil`) is a claim.
+GO_CHECK = re.compile(r"^\s*if\b|\b(?:require|assert)\.\w+\(")
+GO_SETUP_GUARD = re.compile(r"^\s*if\s+err\s*!=\s*nil\s*\{")
+
+
+# Characters after which a `/` in TypeScript starts a regex literal, not a
+# division. `<` and `>` are left out: after them a `/` is JSX (`</div>`, or a
+# child's text like `<span>/tmp</span>`), and a regex there is vanishingly rare.
+TS_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%~^")
+
+
+def sanitize(line, lang):
+    """The line with the contents of strings, TS regex literals and comments
+    replaced by spaces. Its length is unchanged, so offsets found in it apply
+    to the original line; braces, parentheses, operators and semicolons inside
+    text no longer count as code."""
+    out, i, n, prev = list(line), 0, len(line), ""
+
+    def blank(a, b):
+        for k in range(a, min(b, n)):
+            out[k] = " "
+
+    while i < n:
+        c = line[i]
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            blank(i, n)
+            break
+        if c in "\"'`":
+            j = i + 1
+            while j < n and line[j] != c:
+                j += 2 if line[j] == "\\" else 1
+            blank(i + 1, j)
+            i, prev = j + 1, c
+            continue
+        if lang == "ts" and c == "/" and (prev == "" or prev in TS_REGEX_PRECEDERS):
+            j, in_class = i + 1, False
+            while j < n and (line[j] != "/" or in_class):
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                in_class = (in_class or line[j] == "[") and line[j] != "]"
+                j += 1
+            blank(i + 1, j)
+            i, prev = j + 1, "/"
+            continue
+        if not c.isspace():
+            prev = c
+        i += 1
+    return "".join(out)
+
+
+GO_COPY_OPERATOR = re.compile(r"strings\.\w+\(|\.MatchString\(|[=!]=\s*[\"`]|[\"`]\s*[=!]=")
+
+
+def go_copy_term(term):
+    """A condition term that asks only about text: a copy operator applied to a
+    string literal that isn't a machine-contract token (`status != "running"`
+    checks state, not wording)."""
+    literals = [go_unquote(m.group(1), m.group(2)).strip() for m in re.finditer(GO_STR, term)]
+    return bool(GO_COPY_OPERATOR.search(term)) and any(not contract_shaped(lit) for lit in literals)
+
+
+def go_condition_terms(line):
+    """The && / || terms of an `if` condition, after any `init;` statement.
+    Every boundary is found in the sanitized line and applied to the original,
+    so operators, braces and semicolons inside strings or comments don't count."""
+    code = sanitize(line, "go")
+    m = re.search(r"\bif\b", code)
+    if not m:
+        return [line]
+    lo, hi = m.end(), code.rfind("{")
+    hi = hi if hi > lo else len(code)
+    semi = code.rfind(";", lo, hi)
+    if semi >= 0:
+        lo = semi + 1
+    terms, last = [], lo
+    for op in re.finditer(r"&&|\|\|", code[lo:hi]):
+        terms.append(line[last:lo + op.start()])
+        last = lo + op.end()
+    terms.append(line[last:hi])
+    return [t for t in terms if t.strip()]
+
+
+def test_blocks(text, lang):
+    """(start line, name, [(line number, line)]) for each test in a file."""
+    lines = text.splitlines()
+    blocks, i = [], 0
+    while i < len(lines):
+        if lang == "ts":
+            m = TS_TEST_START.match(lines[i])
+            name = first(m.groups()) if m else None
+        else:
+            m = GO_TEST_START.match(lines[i])
+            name = m.group(1) if m else None
+        if not m:
+            i += 1
+            continue
+        # A TS test ends where its test(...) call closes, which also covers
+        # expression-bodied callbacks with no braces; a Go test ends where its
+        # func body closes.
+        open_ch, close_ch = ("(", ")") if lang == "ts" else ("{", "}")
+        depth, body, j, opened = 0, [], i, False
+        while j < len(lines):
+            code = sanitize(lines[j], lang)
+            depth += code.count(open_ch) - code.count(close_ch)
+            opened = opened or open_ch in code
+            body.append((j + 1, lines[j]))
+            j += 1
+            if opened and depth <= 0:
+                break
+        blocks.append((i + 1, name, body))
+        i = j
+    return blocks
+
+
+# A check that is about something other than the wording, even when a copy
+# hit sits on the same line: an expected error, or text used only to find an
+# element whose attribute or state is then checked.
+BEHAVIOR_ON_LINE = re.compile(
+    r"\berr\s*==\s*nil|getAttribute\(|toHaveAttribute|\.dataset\b|className|\.checked\b|\.disabled\b"
+    r"|toHaveLength|toHaveBeenCalled|toBeGreaterThan|toBeLessThan|\blen\(|[=!<>]=?\s*-?\d+\b")
+# Test names that say the subject is wording.
+COPY_PURPOSE_NAME = re.compile(
+    r"show|display|render|label|title|text|copy|message|word|say|mention|hint|placeholder|tooltip|"
+    r"caption|usage|help|heading|banner|describ|phrase|string", re.I)
+# Lines that carry no input to the code under test: comments and failure diagnostics.
+NOT_INPUT = re.compile(r"^\s*(?://|/?\*)|\bt\.(?:Fatal|Error|Log|Skip)f?\(")
+QUOTED = re.compile(r"""\"((?:[^\"\\]|\\.){3,})\"|'((?:[^'\\]|\\.){3,})'|`([^`]{3,})`""")
+
+
+def copy_only_tests(text, hit_lines, lang, purpose="copy"):
+    """Tests whose every check is a copy hit.
+
+    purpose="copy" (the default) keeps only tests whose name says their subject
+    is wording: those exist to test copy. purpose="behavior" returns the others:
+    behavior tests whose only oracle happens to be copy, which are incidental.
+    A check is not a copy claim when it expects an error, checks an attribute
+    or state of an element found by its text, or matches text the test itself
+    fed in (fixture data flowing through)."""
+    found = []
+    for start, name, body in test_blocks(text, lang):
+        if lang == "ts":
+            checks = [(n, line) for n, line in body if TS_CHECK.search(line)]
+        else:
+            checks = [(n, line) for n, line in body if GO_CHECK.search(line) and not GO_SETUP_GUARD.match(line)]
+        check_numbers = {n for n, _ in checks}
+        inputs = "\n".join(line for n, line in body[1:] if n not in check_numbers and not NOT_INPUT.search(line))
+
+        def copy_claim(n, line):
+            if n not in hit_lines or BEHAVIOR_ON_LINE.search(line):
+                return False
+            if lang == "go" and not all(go_copy_term(t) for t in go_condition_terms(line)):
+                return False
+            literals = [first(m.groups()) for m in QUOTED.finditer(line)]
+            return not any(lit and lit in inputs for lit in literals)
+
+        if not checks or not all(copy_claim(n, line) for n, line in checks):
+            continue
+        is_copy_purpose = bool(COPY_PURPOSE_NAME.search(name or ""))
+        if is_copy_purpose == (purpose == "copy"):
+            found.append((start, name))
+    return found
+
+
+def area_of(path):
+    parts = path.split("/")
+    if parts[0] == "cmd" and len(parts) > 2 and parts[2] == "frontend":
+        return "/".join(parts[:3])
+    return "/".join(parts[:2]) if parts[0] == "cmd" else parts[0]
+
+
+def report_copy_only(hits, out_path):
+    """Per area: tests that exist to test wording (the targets), and behavior
+    tests whose only oracle is copy (incidental; listed, not targeted)."""
+    by_file = collections.defaultdict(set)
+    for f, ln, _, _ in hits:
+        by_file[f].add(ln)
+    rows = []
+    for f, lines in sorted(by_file.items()):
+        lang = "go" if f.endswith(".go") else "ts"
+        text = read(f)
+        for purpose in ("copy", "behavior"):
+            for start, name in copy_only_tests(text, lines, lang, purpose):
+                rows.append((f, start, name, purpose))
+    per = collections.defaultdict(collections.Counter)
+    for f, _, _, purpose in rows:
+        per[area_of(f)][purpose] += 1
+    print("| area | copy-only (targets) | behavior, copy-only oracle (incidental) |")
+    print("|---|---:|---:|")
+    for area, c in sorted(per.items(), key=lambda kv: -kv[1]["copy"]):
+        print(f"| `{area}` | {c['copy'] or ''} | {c['behavior'] or ''} |")
+    tot = collections.Counter(p for *_, p in rows)
+    print(f"| **all** | **{tot['copy']}** | **{tot['behavior']}** |")
+    with open(out_path, "w", encoding="utf-8") as out:
+        out.write("file\tline\ttest\tpurpose\n")
+        for f, start, name, purpose in rows:
+            out.write(f"{f}\t{start}\t{name}\t{purpose}\n")
+    print(f"\n{len(rows)} tests written to {out_path}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--path", default="", help="only scan test files under this repo-relative prefix")
     ap.add_argument("--hits", help="write every hit as TSV (file, line, category, literal) to this path")
     ap.add_argument("--only", choices=["ts", "go"], help="scan only one language")
     ap.add_argument("--top", type=int, default=0, help="limit the package table to the N largest (0 = all)")
+    ap.add_argument("--copy-only", metavar="TSV",
+                    help="instead of every hit, list the tests whose every check is a copy hit to this TSV: "
+                         "those whose name says they test wording (targets) and behavior tests whose "
+                         "only oracle is copy (incidental), with per-area counts")
     args = ap.parse_args()
 
     hits, fixtures = [], collections.Counter()
@@ -236,6 +462,10 @@ def main():
         h, fx = scan_ts(args.path); hits += h; fixtures += fx
     if args.only in (None, "go"):
         h, fx = scan_go(args.path); hits += h; fixtures += fx
+
+    if args.copy_only:
+        report_copy_only(hits, args.copy_only)
+        return
 
     cats = ["ts-assert", "ts-locator", "ts-constant", "go-errstring", "go-copy", "go-asset"]
     per = collections.defaultdict(collections.Counter)

@@ -1148,6 +1148,7 @@ func TestMemoryConfigRoundTrip(t *testing.T) {
 type memorySeedFrontmatter struct {
 	tags    []string
 	updated string
+	when    string
 }
 
 // memorySeedOption changes a seeded page's frontmatter.
@@ -1156,6 +1157,11 @@ type memorySeedOption func(*memorySeedFrontmatter)
 // memorySeedUpdated stamps a seeded page with date instead of 2026-10-01.
 func memorySeedUpdated(date string) memorySeedOption {
 	return func(f *memorySeedFrontmatter) { f.updated = date }
+}
+
+// memorySeedWhen gives a seeded page a when line.
+func memorySeedWhen(when string) memorySeedOption {
+	return func(f *memorySeedFrontmatter) { f.when = when }
 }
 
 // memorySeedTags tags a seeded page.
@@ -1178,6 +1184,9 @@ func memorySeedPage(t *testing.T, root, dir, name, description string, opts ...m
 		opt(&front)
 	}
 	body := "---\ndescription: " + description + "\n"
+	if front.when != "" {
+		body += "when: " + front.when + "\n"
+	}
 	if len(front.tags) > 0 {
 		body += "tags: [" + strings.Join(front.tags, ", ") + "]\n"
 	}
