@@ -34,6 +34,10 @@ function refFromParams(params: unknown): string | null {
 function onPageForType(type: string): OnPage {
   switch (type) {
     case "session":
+    // A cascade column is a live conversation seat now: the context it
+    // provides is the leaf conversation under the pane hosting its column,
+    // the same scope focusedSessionRef and the workspace show for it.
+    case "sessionZoom":
     case "sessionTasks":
     case "sessionDetails":
       return "session";
@@ -58,7 +62,7 @@ export function buildPaletteContext(): PaletteContext {
   const onPage = onPageForType(focused.type);
   const sessionRef = onPage === "session" ? refFromParams(focused.params) : null;
   const sessionPaneId =
-    focused.type === "session"
+    focused.type === "session" || focused.type === "sessionZoom"
       ? focused.id
       : sessionRef !== null
         ? (ws.panes.find((p) => p.type === "session" && refFromParams(p.params) === sessionRef)?.id ?? null)

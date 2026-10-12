@@ -64,6 +64,21 @@ test("buildPaletteContext treats a transcript pane as non-session (no interactiv
   expect(buildPaletteContext()).toEqual({ sessionRef: null, sessionPaneId: null, onPage: "other" });
 });
 
+test("buildPaletteContext addresses a focused cascade's leaf conversation under its own pane", () => {
+  // A cascade column is a live conversation seat: session commands hand off to
+  // the leaf conversation, addressed to the pane hosting the column.
+  focus("sessionZoom", {
+    ref: "local:leaf",
+    source: { type: "session", params: { ref: "local:root" } },
+    edges: [{ ownerRef: "local:parent", childRef: "local:leaf", delegateId: "d1" }],
+  });
+  expect(buildPaletteContext()).toEqual({
+    sessionRef: "local:leaf",
+    sessionPaneId: "p1",
+    onPage: "session",
+  });
+});
+
 test("buildPaletteContext returns a null sessionRef when nothing is focused", () => {
   expect(buildPaletteContext()).toEqual({ sessionRef: null, sessionPaneId: null, onPage: "other" });
 });
