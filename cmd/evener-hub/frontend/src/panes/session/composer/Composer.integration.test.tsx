@@ -37,6 +37,7 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
@@ -2187,7 +2188,7 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   await user.type(textarea() as HTMLDivElement, "fu");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() => expect(getToasts().map((toast) => toast.kind)).toEqual(["error"]));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/queue" || call.method === "turn/start")).toHaveLength(0);
   expect((textarea() as HTMLDivElement).textContent).toBe("fu");
 

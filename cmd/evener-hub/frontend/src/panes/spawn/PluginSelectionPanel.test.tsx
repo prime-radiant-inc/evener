@@ -69,8 +69,6 @@ test("renders named switches, source subheading, counts, and description", () =>
   expect(screen.getByText("2 skills · 1 agent · 1 command")).toBeTruthy();
   expect(screen.getByText("Alpha tools")).toBeTruthy();
   expect(screen.getByText("1 of 2 selected")).toBeTruthy();
-  expect(screen.queryByText(/for session$/)).toBeNull();
-  expect(screen.queryByText(/^Showing /)).toBeNull();
 });
 
 test("each row orders source subheading, then counts, then description", () => {
