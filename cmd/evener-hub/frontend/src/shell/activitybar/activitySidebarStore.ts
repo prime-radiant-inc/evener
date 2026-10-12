@@ -4,6 +4,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { zoomPaneCoversConversation } from "../../panes/zoom/cascadeCoverage";
 import { isRendered } from "../../widgets/focusscope/tabbable";
 import { focusedActivityScopeRef, useFocusedActivityScopeRef } from "../focusedSession";
 import { refParam } from "../routing";
@@ -123,7 +124,7 @@ export interface ActivitySidebarState {
   explicitScopeRef: string | null;
   views: ReadonlyMap<string, ActivitySessionView>;
   openWith(tab?: ActivityTab, opener?: HTMLElement): void;
-  openFor(ref: string, tab?: ActivityTab, opener?: HTMLElement): void;
+  openFor(ref: string, tab?: ActivityTab, opener?: HTMLElement, sourcePaneId?: string): void;
   close(): void;
   setTab(tab: ActivityTab): void;
   toggle(): void;
@@ -164,18 +165,34 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       captureActivitySidebarOpener(opener);
       update({ open: true, tab: tab ?? get().tab });
     },
-    openFor: (ref, tab, opener) => {
+    openFor: (ref, tab, opener, sourcePaneId) => {
       const workspace = workspaceStore.getState();
+      const source = workspace.panes.find((candidate) => candidate.id === sourcePaneId);
+      if (source && source.type === "sessionZoom" && zoomPaneCoversConversation(source, ref)) {
+        // An embedded column's open request: the hosting cascade keeps
+        // focus — an ordinary pane for the same conversation must not
+        // steal it — and the requested scope holds explicitly whenever the
+        // focused leaf does not already describe it.
+        set({ explicitScopeRef: focusedActivityScopeRef() === ref ? null : ref });
+        if (get().ref !== ref) get().retarget(ref);
+        get().openWith(tab, opener);
+        return;
+      }
       const panes = workspace.panes.filter(
         (candidate) => candidate.type === "session" && refParam(candidate.params) === ref,
       );
       const pane = panes.find((candidate) => candidate.id === workspace.focusedPaneId) ?? panes[0];
-      if (pane) workspaceStore.getState().focusPane(pane.id);
-      else {
-        // An embedded conversation (a cascade column) has no pane of its
-        // own, so focus cannot carry the request: hold the requested scope
-        // explicitly so the sidebar describes that column, not the focused
-        // pane's leaf.
+      if (pane) {
+        // A focus-based request releases any held column scope and saves
+        // against its own conversation, even when focus does not move.
+        set({ explicitScopeRef: null });
+        workspaceStore.getState().focusPane(pane.id);
+        if (get().ref !== ref) get().retarget(ref);
+      } else {
+        // No pane carries the conversation (a cascade column, or a session
+        // nothing has opened): focus cannot carry the request, so hold the
+        // requested scope explicitly and the sidebar describes it rather
+        // than the focused leaf.
         get().retarget(ref);
         set({ explicitScopeRef: ref });
       }
@@ -183,15 +200,20 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
     },
     close: () => {
       update({ open: false });
-      // The inspection ended: a later open follows the focused scope again.
+      // The inspection ended: release any held column scope and leave
+      // preference saves with the focused conversation.
       set({ explicitScopeRef: null });
+      const focused = focusedActivityScopeRef();
+      if (get().ref !== focused) get().retarget(focused);
     },
     setTab: (tab) => update({ tab }),
     toggle: () => {
-      const opening = !get().open;
-      if (opening) captureActivitySidebarOpener();
-      update({ open: !get().open });
-      if (!opening) set({ explicitScopeRef: null });
+      if (get().open) {
+        get().close();
+        return;
+      }
+      captureActivitySidebarOpener();
+      update({ open: true });
     },
     retarget(ref) {
       const state = get();

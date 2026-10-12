@@ -563,7 +563,13 @@ test("an embedded column's Overview describes that column, then the sidebar foll
     ],
   };
   workspaceStore.setState({
-    panes: [{ id: "zoom", type: "sessionZoom", params, slot: "main" }],
+    panes: [
+      { id: "zoom", type: "sessionZoom", params, slot: "main" },
+      // An ordinary conversation pane for the parent column's ref exists
+      // beside the cascade: the column's own Overview must keep the
+      // cascade focused rather than jumping to it.
+      { id: "ordinary-child", type: "session", params: { ref: "child" }, slot: "secondary" },
+    ],
     focusedPaneId: "zoom",
   });
   // The embedded conversation hydrates its column's thread before the chrome
@@ -585,7 +591,10 @@ test("an embedded column's Overview describes that column, then the sidebar foll
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
     const sidebar = within(screen.getByTestId("activity-sidebar"));
-    // The open request named the parent column, so the sidebar describes it:
+    // The open request came from the column's chrome: the cascade stays
+    // focused, not the ordinary pane for the same conversation.
+    expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
+    // The request named the parent column, so the sidebar describes it:
     // its delegates, its wire identity, and its own ancestry - never the
     // focused leaf's.
     await sidebar.findByRole("button", { name: /delegate owned by child/ });

@@ -559,6 +559,17 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     for (const [pane, origin] of origins) {
       transcriptOpenOrigins.set(pane === expected ? replacement : pane, origin === expected ? replacement : origin);
     }
+    // A cascade's drill, pop and resume retype its pane; a document opened
+    // from one of its columns keeps pointing at the surviving inspector, so
+    // its origin binding must follow the replacement the same way.
+    const documents = [...documentPaneStates];
+    documentPaneStates.clear();
+    for (const [pane, state] of documents) {
+      documentPaneStates.set(
+        pane === expected ? replacement : pane,
+        state.origin === expected ? { ...state, origin: replacement } : state,
+      );
+    }
     const parents = [...conversationOpenParentRefs];
     conversationOpenParentRefs.clear();
     for (const [pane, parentRef] of parents) {

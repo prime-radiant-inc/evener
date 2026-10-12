@@ -569,9 +569,13 @@ demand. The inspector's footer and shared sidebar stay scoped to the selected
 leaf, including while the reader selects text in a parent. Opening Overview
 from an embedded column's own chrome holds that column's scope explicitly —
 the sidebar describes that conversation, its checkmarks mark it, and its
-breadcrumbs show its own ancestry — until the workspace scope moves or
-Overview closes, after which the sidebar follows focus again. Each ordinary
-pane's footer remains bound to its own conversation.
+breadcrumbs show its own ancestry — until the workspace scope moves, Overview
+closes, or another open request names a different scope, and the cascade keeps
+focus even when an ordinary pane for that conversation exists. A focus-based
+open request (a footer chip, an ordinary pane's Overview) releases the held
+scope and leaves the sidebar, its preference saves and its checkmarks with the
+focused conversation. Each ordinary pane's footer remains bound to its own
+conversation.
 
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
 Tasks. A column's activity controls render below its transcript content, with

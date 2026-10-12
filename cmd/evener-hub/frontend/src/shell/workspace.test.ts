@@ -41,6 +41,9 @@ beforeAll(() => {
   registerPaneForTests(fixtureDescriptor("doc"));
   registerPaneForTests(fixtureDescriptor("session"));
   registerPaneForTests(fixtureDescriptor("spawn", { singleton: true }));
+  // The cascade retype test below retypes a sessionZoom pane, and retypePane
+  // resolves its type through paneFor like every open path does.
+  registerPaneForTests(fixtureDescriptor("sessionZoom"));
   // "welcome" is a real PaneTypeId and the main slot's empty state, so the
   // placement tests below open one. openPane has ALWAYS resolved its type
   // through paneFor (that is where an unregistered type throws), so this is a
@@ -392,6 +395,42 @@ describe("source-aware document placement", () => {
     if (!document) throw new Error("document did not open");
     expect(documentPaneState(document)?.origin).toBeUndefined();
     expect(workspaceStore.getState().panes.find((pane) => pane.id === sourceId)?.slot).toBe("main");
+  });
+
+  test("a cascade retyping transfers its document's origin binding to the replacement pane", async () => {
+    const { openDocBeside } = await import("../panes/doc/openDoc");
+    const rootRef = "local:034MXwo6BpPH0QQCgdICSf";
+    const childRef = "local:02wMz5TxvEMoJEDTDGOTil";
+    const grandchildRef = "local:01ZoomFixtureAAAAAAAAAAA";
+    const workspace = workspaceStore.getState();
+    const originId = workspace.openPane("session", { ref: rootRef });
+    const params = {
+      ref: childRef,
+      source: { type: "session", params: { ref: rootRef } },
+      edges: [{ ownerRef: rootRef, childRef: childRef, delegateId: "d1" }],
+    };
+    const zoom: OpenPaneRecord = { id: "cascade-zoom", type: "sessionZoom", params, slot: "secondary" };
+    workspaceStore.setState({ panes: [...workspaceStore.getState().panes, zoom] });
+    const origin = workspaceStore.getState().panes.find((pane) => pane.id === originId);
+    const reference = bindFilePath("docs/a.md", "/work/child");
+    if (!reference || !origin) throw new Error("fixture did not create the cascade");
+    openDocBeside({ session: childRef, reference, sourcePaneId: zoom.id });
+    const document = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+    if (!document) throw new Error("document did not open");
+    expect(documentPaneState(document)?.origin).toBe(zoom);
+    // Drilling deeper replaces the zoom's record exactly as every cascade
+    // drill, pop and resume does through retypePane: the document's origin
+    // must name the surviving pane or Back treats the inspector as gone.
+    const drilled = {
+      ...params,
+      ref: grandchildRef,
+      edges: [...params.edges, { ownerRef: childRef, childRef: grandchildRef, delegateId: "d2" }],
+    };
+    expect(workspaceStore.getState().retypePane(zoom, "sessionZoom", drilled)).toBe(true);
+    const replacement = workspaceStore.getState().panes.find((pane) => pane.id === "cascade-zoom");
+    if (!replacement || replacement === zoom) throw new Error("retype did not replace the record");
+    expect(documentPaneState(document)?.origin).toBe(replacement);
+    expect(origin.slot).toBe("main");
   });
 
   test("reset retires a still-bound document before pane ids are reused", async () => {

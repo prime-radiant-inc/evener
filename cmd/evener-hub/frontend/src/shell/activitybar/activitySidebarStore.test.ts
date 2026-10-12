@@ -134,6 +134,63 @@ test("an embedded column's explicit scope holds until the workspace scope moves 
   expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
 });
 
+test("closing the sidebar retargets its preference saves to the focused scope", () => {
+  // A drilled cascade: the focused zoom names its selected leaf, so no
+  // workspace scope change ever releases the held column itself.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: { ref: "remote:leaf", source: { type: "session", params: { ref: "remote:root" } }, edges: [] },
+        slot: "main",
+      },
+    ],
+    focusedPaneId: "zoom",
+  });
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().setTab("watches");
+  activitySidebarStore.getState().close();
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+  // Closing ends the column's inspection: later preference saves belong to
+  // the focused conversation, not the retired column.
+  expect(activitySidebarStore.getState().ref).toBe("remote:leaf");
+  activitySidebarStore.getState().setTab("jobs");
+  const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+  expect(saved["remote:leaf"]).toMatchObject({ open: false, tab: "jobs" });
+  expect(saved["remote:column"]).toMatchObject({ open: false, tab: "watches" });
+});
+
+test("a focus-based open request releases the held column scope and saves against its own session", () => {
+  // A drilled cascade with an ordinary pane for its selected leaf: the
+  // focused scope never moves, so only the request itself can release the
+  // held column scope.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: { ref: "remote:leaf", source: { type: "session", params: { ref: "remote:root" } }, edges: [] },
+        slot: "main",
+      },
+      { id: "pane-leaf", type: "session", params: { ref: "remote:leaf" }, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  activitySidebarStore.getState().openFor("remote:column", "agents");
+  activitySidebarStore.getState().setTab("watches");
+  // The footer chip's request: focus the ordinary pane, then open its
+  // conversation's overview naming it as the source.
+  workspaceStore.getState().focusPane("pane-leaf");
+  activitySidebarStore.getState().openFor("remote:leaf", "jobs", undefined, "pane-leaf");
+  expect(activitySidebarStore.getState().explicitScopeRef).toBeNull();
+  expect(activitySidebarStore.getState().ref).toBe("remote:leaf");
+  activitySidebarStore.getState().setTab("tasks");
+  const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
+  expect(saved["remote:leaf"]).toMatchObject({ open: true, tab: "tasks" });
+  expect(saved["remote:column"]).toMatchObject({ open: true, tab: "watches" });
+});
+
 function sessionActions(parent: HTMLElement, ref: string, paneId: string): HTMLButtonElement {
   const button = parent.appendChild(document.createElement("button"));
   const marker = button.appendChild(document.createElement("span"));
