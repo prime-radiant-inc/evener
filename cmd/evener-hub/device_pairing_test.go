@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,6 +22,35 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
+
+func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
+	for _, host := range []string{
+		"192.168.1.256", "192.168.1.999999999999999999999", "1.2.3.4.5", "1..2.3",
+		"08.1.2.3", "0x100.1.2.3", "0x100000000", "hub.123", "hub.0xff", "hub.0x",
+		"１９２．１６８．１．２５６",
+	} {
+		for _, viaConfig := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/config=%t", host, viaConfig), func(t *testing.T) {
+				cfg := hubcore.WebConfig{AuthToken: "synthetic-credential"}
+				params := appwire.DevicePairingCreateParams{Origin: "http://" + host + ":9180", Tailnet: true}
+				if viaConfig {
+					cfg.MobileBaseURL = "https://" + host + ":9180"
+					params.Origin = "https://valid.example"
+				}
+				p := newDevicePairings(cfg)
+				invite, err := p.create(params)
+				var wireErr appwire.WireError
+				if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || invite.Invitation != "" || len(p.entries) != 0 {
+					t.Fatalf("malformed host created an invitation: code=%d entries=%d err=%v", wireErr.Code, len(p.entries), err)
+				}
+				p.cfg.MobileBaseURL = ""
+				if _, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://magic-kingdom:9180", Tailnet: true}); err != nil || len(p.entries) != 1 {
+					t.Fatalf("valid destination did not recover pairing: entries=%d err=%v", len(p.entries), err)
+				}
+			})
+		}
+	}
+}
 
 func TestDevicePairingRejectsUnsupportedCredentials(t *testing.T) {
 	for _, tc := range []struct{ name, token string }{

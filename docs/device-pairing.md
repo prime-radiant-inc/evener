@@ -67,7 +67,9 @@ reported before an invitation is issued; ordinary Hub authentication is unchange
 use MagicDNS. Direct HTTP retains the
 mobile pairing private-network origin rules; direct HTTPS accepts a reachable
 DNS or IP origin, including IPv6. Origins contain no credentials, path, query or
-fragment. Port range is 1–65535. Clients report unsupported
+fragment. IPv4 uses canonical dotted-decimal spelling; malformed numeric hosts
+and legacy numeric spellings are rejected before an invitation is created.
+Port range is 1–65535. Clients report unsupported
 transports locally: Playdate supports DNS/IPv4 and HTTP inside its native
 tailnet stream; the native phone app also supports IPv6 and HTTPS over Tailscale.
 
