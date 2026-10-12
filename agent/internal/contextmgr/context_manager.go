@@ -1595,9 +1595,7 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 	if ceiling > 0 {
 		budget = min(budget, ceiling)
 	}
-	// The newest message as written: the ceiling's trim below cuts from it, so
-	// the note it writes counts what the message lost rather than what a trim
-	// above had already taken of it.
+	// The newest message as written, for the ceiling's trim below.
 	newestAsWritten := ""
 	if len(kept) > 0 {
 		newestAsWritten = kept[len(kept)-1].Text
