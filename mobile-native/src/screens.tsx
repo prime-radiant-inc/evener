@@ -3215,6 +3215,7 @@ export function ConversationScreen({
 										}
 										error={find.seeking && olderHistory.permanent ? errorText(olderHistory.error) : undefined}
 										settled={!find.seeking}
+										exhausted={find.exhausted}
 										onQuery={(query) => setFind(newFind(query))}
 										onStep={stepFind}
 										onDone={() => {

@@ -4196,10 +4196,12 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
 		chooseMenu("Find in session");
 		await search(tree, "settle");
+		expect(hasTestID(tree, "find-bar:exhausted")).toBe(false);
 		await press(tree, "Older match");
 		await press(tree, "Older match");
 		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
 		// History has ended: the bar says so in place of a match.
+		expect(hasTestID(tree, "find-bar:exhausted")).toBe(true);
 		expect(findBar(tree).props.label).not.toBe(NO_MATCHES);
 		expect(findBar(tree).props.searchingOlder).toBe(false);
 		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");

@@ -15,6 +15,7 @@ export function FindBar({
 	searchingOlder,
 	error,
 	settled,
+	exhausted = false,
 	onQuery,
 	onStep,
 	onDone,
@@ -29,6 +30,8 @@ export function FindBar({
 	error?: string;
 	/** The label is the search's answer, not a step on the way to it. */
 	settled: boolean;
+	/** Paging has reached the start of history: no older match is left. */
+	exhausted?: boolean;
 	onQuery(query: string): void;
 	onStep(direction: 1 | -1): void;
 	onDone(): void;
@@ -53,6 +56,7 @@ export function FindBar({
 	}, [shown, settled, searchingOlder, error]);
 	return (
 		<View
+			testID={exhausted ? "find-bar:exhausted" : undefined}
 			style={{
 				flexDirection: "row",
 				alignItems: "center",
