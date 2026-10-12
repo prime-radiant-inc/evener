@@ -81,8 +81,8 @@ export function applyJobLogPage(
   const next = reconcileJobLogBounds(windows, page.retainedStartBytes, page.totalBytes);
   if (page.bytes.length === 0 && next[target] !== null) return next;
   verifyOverlap(next[target === "older" ? "live" : "older"], page);
-  const merged = mergeRawWindow(next[target], page);
   const previous = next[target];
+  const merged = mergeRawWindow(previous, page);
   let parsed = parseAnsiByteRows(merged.bytes, merged.offsetBytes, merged.initialState, previous ? [previous] : []);
   if (merged.bytes.length > JOB_LOG_WINDOW_BYTES) {
     if (keep === "end") {

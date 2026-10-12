@@ -308,3 +308,11 @@ test("the joined rows of overlapping windows reuse each window's parse", () => {
   expect(joined[0]).toBe(windows.older?.rows[0]);
   expect(joined.at(-2)).toBe(windows.live?.rows.at(-2));
 });
+
+test("a window of blank lines accepts another page", () => {
+  const blank = new Uint8Array(524288).fill(10);
+  const windows = loadBytes(blank, 0, "live", "end");
+  const after = applyJobLogPage(windows, rawPage(524288, new Uint8Array(65536).fill(10), 589824), "live", "end");
+  expect(after.live?.rows).toHaveLength(524288);
+  expect(after.live?.offsetBytes).toBe(65536);
+});

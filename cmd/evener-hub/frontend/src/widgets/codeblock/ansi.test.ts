@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
+import { mulberry32 } from "../../dev/mulberry32";
 import type { AnsiLine } from "./ansi";
 import { AnsiTailBuffer, parseAnsiByteRows, parseAnsiLines } from "./ansi";
 
@@ -391,16 +392,6 @@ test("byte rows retain blank newline rows but do not invent an EOF row", () => {
 // diverge from a fresh one: styles carried across lines, control strings and
 // CSI sequences split by a range edge, malformed and multi-byte scalars, and
 // logical lines long enough to split into several fragments.
-function seededRandom(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
-    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
-    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 const STREAM_TOKENS = [
   [65],
   [66, 67, 68],
@@ -431,7 +422,7 @@ function randomRange(random: () => number, length: number): [number, number] {
 }
 
 test("a parse reusing earlier parses of overlapping ranges equals a fresh parse", () => {
-  const random = seededRandom(4242);
+  const random = mulberry32(4242);
   for (let trial = 0; trial < 300; trial++) {
     const stream = randomStream(random, 2000 + Math.floor(random() * 12000));
     const offset = 1000;
@@ -474,4 +465,15 @@ test("a prepended range rejoins an earlier parse once its terminal state agrees"
   // states agree again from C on.
   expect(parsed.rows[2]).not.toBe(earlier.rows[1]);
   expect(parsed.rows[3]).toBe(earlier.rows[2]);
+});
+
+test("a boundary reached inside a control string does not reuse rows parsed as text", () => {
+  // The size split lands at byte 4096 in both parses, but only the full parse
+  // is inside the OSC there: the earlier one began mid-string and read its
+  // payload as visible text.
+  const bytes = new Uint8Array([27, 93, ...new Array(20000).fill(120), 7, 65, 10]);
+  const earlier = parseAnsiByteRows(bytes.slice(4096), 4096);
+  const parsed = parseAnsiByteRows(bytes, 0, undefined, [earlier]);
+  expect(parsed).toEqual(parseAnsiByteRows(bytes, 0));
+  expect(parsed.rows.map((row) => plainText([row.line]))).toEqual(["A"]);
 });
