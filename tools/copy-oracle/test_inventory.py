@@ -125,5 +125,58 @@ class Refinements(unittest.TestCase):
                          ["resetGeneration rejects invalidation waiters"])
 
 
+class RoborevRound1(unittest.TestCase):
+    def test_braces_inside_strings_do_not_merge_the_next_test(self):
+        src = """func TestRefusesLiteralHeader(t *testing.T) {
+	_, err := add(`x-api-key: ${PORTKEY`)
+	if err == nil {
+		t.Fatal("want refusal")
+	}
+	cfg := "{ unterminated"
+	_ = cfg
+}
+
+func TestHelpShowsUsage(t *testing.T) {
+	if !strings.Contains(help(), "Usage: evener") {
+		t.Fatal("no usage")
+	}
+}
+"""
+        self.assertEqual([n for _, n in inventory.copy_only_tests(src, {11}, "go")], ["TestHelpShowsUsage"])
+
+    def test_a_count_on_the_same_line_is_a_behavior_claim(self):
+        ts = """test("renders Recommended in both themes", () => {
+  render(<Specimen />);
+  expect(screen.getAllByText("Recommended")).toHaveLength(THEMES);
+});
+"""
+        self.assertEqual(inventory.copy_only_tests(ts, {3}, "ts"), [])
+        go = """func TestRenderShowsTwoRows(t *testing.T) {
+	out := render()
+	if len(rows(out)) != 2 || !strings.Contains(out, "Ready") {
+		t.Fatal(out)
+	}
+}
+"""
+        self.assertEqual(inventory.copy_only_tests(go, {3}, "go"), [])
+
+    def test_the_name_comments_and_diagnostics_are_not_fixture_inputs(self):
+        src = """func TestRenderShowsNoSessions(t *testing.T) {
+	// The empty view says "no sessions yet".
+	out := render(nil)
+	if !strings.Contains(out, "no sessions yet") {
+		t.Fatalf("want \"no sessions yet\", got %q", out)
+	}
+}
+"""
+        self.assertEqual([n for _, n in inventory.copy_only_tests(src, {4}, "go")], ["TestRenderShowsNoSessions"])
+        ts = """test("renders No sessions yet", () => {
+  render(<Empty />);
+  expect(screen.getByText("No sessions yet")).toBeTruthy();
+});
+"""
+        self.assertEqual([n for _, n in inventory.copy_only_tests(ts, {3}, "ts")], ["renders No sessions yet"])
+
+
 if __name__ == "__main__":
     unittest.main()

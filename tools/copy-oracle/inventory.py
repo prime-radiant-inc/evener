@@ -239,6 +239,17 @@ GO_CHECK = re.compile(r"^\s*if\b|\b(?:require|assert)\.\w+\(")
 GO_SETUP_GUARD = re.compile(r"^\s*if\s+err\s*!=\s*nil\s*\{")
 
 
+CODE_STRINGS = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`[^`\n]*`')
+
+
+def code_only(line):
+    """The line without string literals and a trailing // comment, so braces in
+    fixture text or comments don't move block boundaries."""
+    line = CODE_STRINGS.sub('""', line)
+    cut = line.find("//")
+    return line if cut < 0 else line[:cut]
+
+
 def test_blocks(text, lang):
     """(start line, name, [(line number, line)]) for each test in a file."""
     lines = text.splitlines()
@@ -255,8 +266,9 @@ def test_blocks(text, lang):
             continue
         depth, body, j, opened = 0, [], i, False
         while j < len(lines):
-            depth += lines[j].count("{") - lines[j].count("}")
-            opened = opened or "{" in lines[j]
+            code = code_only(lines[j])
+            depth += code.count("{") - code.count("}")
+            opened = opened or "{" in code
             body.append((j + 1, lines[j]))
             j += 1
             if opened and depth <= 0:
@@ -269,11 +281,15 @@ def test_blocks(text, lang):
 # A check that is about something other than the wording, even when a copy
 # hit sits on the same line: an expected error, or text used only to find an
 # element whose attribute or state is then checked.
-BEHAVIOR_ON_LINE = re.compile(r"\berr\s*==\s*nil|getAttribute\(|toHaveAttribute|\.dataset\b|className|\.checked\b|\.disabled\b")
+BEHAVIOR_ON_LINE = re.compile(
+    r"\berr\s*==\s*nil|getAttribute\(|toHaveAttribute|\.dataset\b|className|\.checked\b|\.disabled\b"
+    r"|toHaveLength|toHaveBeenCalled|toBeGreaterThan|toBeLessThan|\blen\(|[=!<>]=?\s*-?\d+\b")
 # Test names that say the subject is wording.
 COPY_PURPOSE_NAME = re.compile(
     r"show|display|render|label|title|text|copy|message|word|say|mention|hint|placeholder|tooltip|"
     r"caption|usage|help|heading|banner|describ|phrase|string", re.I)
+# Lines that carry no input to the code under test: comments and failure diagnostics.
+NOT_INPUT = re.compile(r"^\s*(?://|/?\*)|\bt\.(?:Fatal|Error|Log|Skip)f?\(")
 QUOTED = re.compile(r"""\"((?:[^\"\\]|\\.){3,})\"|'((?:[^'\\]|\\.){3,})'|`([^`]{3,})`""")
 
 
@@ -293,7 +309,7 @@ def copy_only_tests(text, hit_lines, lang, purpose="copy"):
         else:
             checks = [(n, line) for n, line in body if GO_CHECK.search(line) and not GO_SETUP_GUARD.match(line)]
         check_numbers = {n for n, _ in checks}
-        inputs = "\n".join(line for n, line in body if n not in check_numbers)
+        inputs = "\n".join(line for n, line in body[1:] if n not in check_numbers and not NOT_INPUT.search(line))
 
         def copy_claim(n, line):
             if n not in hit_lines or BEHAVIOR_ON_LINE.search(line):
