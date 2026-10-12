@@ -688,7 +688,7 @@ export function FormError({ error }: { error: FormErrorReport | null }) {
 		if (error && Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(error.message);
 	}, [error]);
 	return error ? (
-		<GroupFooter tone="danger" live testID="form-error">
+		<GroupFooter tone="danger" live testID={error.reason ? `form-error-${error.reason}` : "form-error"}>
 			{error.message}
 		</GroupFooter>
 	) : null;
@@ -698,13 +698,18 @@ export function FormError({ error }: { error: FormErrorReport | null }) {
  * that repeats the last one's words still scrolls and speaks again. */
 export interface FormErrorReport {
 	message: string;
+	/** Why the save was refused, when the form tells refusals apart, such as "write-busy". */
+	reason?: string;
 }
 
 /** A form's error state: set a message (or null to clear it) as with
  * useState, and each message becomes its own FormErrorReport. */
-export function useFormError(): [FormErrorReport | null, (message: string | null) => void] {
+export function useFormError(): [FormErrorReport | null, (message: string | null, reason?: string) => void] {
 	const [error, setError] = useState<FormErrorReport | null>(null);
-	const report = useCallback((message: string | null) => setError(message === null ? null : { message }), []);
+	const report = useCallback(
+		(message: string | null, reason?: string) => setError(message === null ? null : { message, reason }),
+		[],
+	);
 	return [error, report];
 }
 

@@ -192,7 +192,7 @@ export function MarketplaceBrowser({
 			{state.marketplacesLoading && rows.length === 0 ? <Spinner label="Loading marketplaces" /> : null}
 			{!state.marketplacesLoading && state.marketplaces?.length === 0 ? (
 				// Add marketplace is on the Marketplaces segment only.
-				<GroupFooter>
+				<GroupFooter testID={`marketplaces-empty-${segment}`}>
 					{segment === "marketplaces"
 						? "No marketplaces on this hub. Add one to browse its plugins."
 						: "No marketplaces on this hub. Add one on Marketplaces to browse its plugins."}
@@ -513,7 +513,14 @@ export function MarketplaceDetail({
 					<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
 						<SearchField label="Filter this catalog" value={query} onChangeText={setQuery} />
 					</View>
-					{catalogProblem ? <GroupFooter tone="danger">{catalogProblem}</GroupFooter> : null}
+					{catalogProblem ? (
+						<GroupFooter
+							tone="danger"
+							testID={catalogError ? "catalog-problem-catalog-failed" : "catalog-problem-installed-failed"}
+						>
+							{catalogProblem}
+						</GroupFooter>
+					) : null}
 					{catalogProblem ? (
 						<Group>
 							{catalogError ? (
@@ -540,7 +547,9 @@ export function MarketplaceDetail({
 					) : null}
 					{browsing ? <Spinner label="Loading marketplace catalog" /> : null}
 					{!browsing && loaded && catalogPlugins.length === 0 ? (
-						<GroupFooter>{needle ? "No matching plugins." : "No plugins in this catalog."}</GroupFooter>
+						<GroupFooter testID={needle ? "catalog-empty-filtered" : "catalog-empty-none"}>
+							{needle ? "No matching plugins." : "No plugins in this catalog."}
+						</GroupFooter>
 					) : null}
 					{catalogPlugins.length > 0 ? (
 						<Group>
@@ -698,11 +707,14 @@ export function AddMarketplace({
 			return;
 		}
 		if (outcome === "refused") {
-			setError(HUB_WRITE_BUSY);
+			setError(HUB_WRITE_BUSY, "write-busy");
 			return;
 		}
 		if (outcome === "failed")
-			setError("Could not confirm the marketplace was added. Check the list and source before trying again.");
+			setError(
+				"Could not confirm the marketplace was added. Check the list and source before trying again.",
+				"write-failed",
+			);
 		else onClose();
 	}
 	// Cancel and a swipe down wait out an add in flight, and ask before a
