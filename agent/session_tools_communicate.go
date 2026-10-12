@@ -51,6 +51,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 		if reg.Get(resultToolName) != nil {
 			return fmt.Errorf("cannot use result tool name %q: an Evener tool of that name is already registered; choose a different --result-tool-name", resultToolName)
 		}
+		if deps.nativeWebSearch && resultToolName == "web_search" {
+			return fmt.Errorf("cannot use result tool name %q: the provider's own web search tool uses that name for this profile; choose a different --result-tool-name", resultToolName)
+		}
 		for canonical, wire := range deps.toolNameMap {
 			if wire == resultToolName && reg.Get(canonical) != nil {
 				return fmt.Errorf("cannot use result tool name %q: it is this session's provider-visible name for Evener's %q tool; choose a different --result-tool-name", resultToolName, canonical)

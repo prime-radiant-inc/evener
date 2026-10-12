@@ -136,17 +136,36 @@ func TestNewSessionRejectsResultToolNameOfProfileDeclaredTool(t *testing.T) {
 	requireResultToolRejected(t, newGeminiProfile("gemini-test"), SessionConfig{ResultToolName: "web_search", StateDir: t.TempDir()})
 }
 
+// TestNewSessionRejectsResultToolNameOfProviderNativeWebSearch covers the name
+// the protocol layer injects itself: a profile that serves provider-native web
+// search makes the request carry a server-side web_search tool, and the
+// anthropic protocol strips any function tool of that name first
+// (llm/providers/anthropic/request.go), so a result tool renamed web_search is
+// dropped from the request and the session cannot report.
+func TestNewSessionRejectsResultToolNameOfProviderNativeWebSearch(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile *provider.Profile
+	}{
+		{"anthropic native search", withWebSearch(newAnthropicProfile("claude-test"), true)},
+		{"responses native search", withWebSearch(NewOpenAIProfile("gpt-5.2"), true)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireResultToolRejected(t, tc.profile, SessionConfig{ResultToolName: "web_search"})
+		})
+	}
+}
+
 // TestNewSessionAllowsResultToolNameNoToolHolds is the precision control: the
-// check is derived from what this session actually registers, so a name that is
-// native to some other session but absent here is still usable, and the
-// accepted result tool is still communicate underneath.
+// check is derived from what this session actually uses, so a name whose
+// reservation is conditional on this session's configuration stays usable, and
+// the accepted result tool is still communicate underneath.
 func TestNewSessionAllowsResultToolNameNoToolHolds(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  SessionConfig
 	}{
-		// web_search is google-only; this session's profile does not declare it.
-		{"web_search on an openai profile", SessionConfig{ResultToolName: "web_search"}},
 		// memory_foo is usable while this session has memory.
 		{"memory prefix while memory is bound", SessionConfig{ResultToolName: "memory_foo", MemoryStateRoot: t.TempDir()}},
 	}
