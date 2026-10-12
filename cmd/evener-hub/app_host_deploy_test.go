@@ -1211,6 +1211,9 @@ func TestHostRestartReattachRetriesATransientAttachFailure(t *testing.T) {
 // reattach fails on the first attempt and the record carries the terminal
 // cause verbatim.
 func TestHostRestartReattachFailsFastOnATerminalAttachFailure(t *testing.T) {
+	// The attach fails for a terminal cause; the record must carry this one.
+	const terminalDetail = "fixture: host speaks another protocol"
+	terminalCause := fmt.Errorf("%w: %s", sshconn.ErrProtocolIncompatible, terminalDetail)
 	entry := deployTestHost()
 	entry.Generation = 2
 	entry.IncarnationID = "inc-new"
@@ -1227,7 +1230,7 @@ func TestHostRestartReattachFailsFastOnATerminalAttachFailure(t *testing.T) {
 		restart:        func(context.Context, hostreg.Host, sshconn.Preflight) error { return nil },
 		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, _ bool) (func() bool, error) {
 			attachCalls.Add(1)
-			return nil, sshconn.ErrProtocolIncompatible
+			return nil, terminalCause
 		},
 	})
 	m.cfg.probeTimeout = 300 * time.Millisecond
@@ -1244,7 +1247,7 @@ func TestHostRestartReattachFailsFastOnATerminalAttachFailure(t *testing.T) {
 	if record.Result == nil || record.Result.OK {
 		t.Fatalf("terminal-reattach restart record result = %+v, want a failure", record.Result)
 	}
-	if msg := record.Result.Message; !strings.Contains(msg, sshconn.ErrProtocolIncompatible.Error()) {
+	if msg := record.Result.Message; !strings.Contains(msg, terminalDetail) {
 		t.Fatalf("the record does not carry the terminal cause the attach returned:\n%s", msg)
 	}
 	if progress := progressText(record); strings.Count(progress, "reattaching the host under the held host gate") != 1 {

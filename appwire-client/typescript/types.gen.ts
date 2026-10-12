@@ -496,6 +496,11 @@ export interface DelegateStopResponse {
 export interface DeletionSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
 }
 
 export interface DiagnosticCause {
@@ -2921,6 +2926,11 @@ export interface ProjectDeleteResponse {
 export interface ProjectDeleteSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
 }
 
 export interface ProjectsRecentParams {

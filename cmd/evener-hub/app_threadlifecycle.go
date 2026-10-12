@@ -371,7 +371,7 @@ func prepareLocalSpawn(ctx context.Context, cfg hubcore.WebConfig, params appwir
 	// while it ran must not become a session: past the detach below, nothing
 	// asks about the caller again.
 	if err := ctx.Err(); err != nil {
-		return localSpawnPlan{}, appwire.HubLaunchError(err.Error())
+		return localSpawnPlan{}, launchRefusal(err)
 	}
 	return localSpawnPlan{workingDir: workingDir, resolved: spawnResolved, modelRef: modelRef}, nil
 }
