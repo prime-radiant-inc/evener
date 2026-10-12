@@ -1,10 +1,5 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
-import {
-  ErrorEndpointConflict,
-  FINGERPRINT_UNAVAILABLE_ERROR,
-  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
-  WireError,
-} from "@evener/appwire-client";
+import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -15,6 +10,20 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { enterText } from "../../../../textEntryTestUtils";
 import { ProviderConnection } from "./ProviderConnection";
+
+// The flow's state, read from its markers rather than from the words it shows:
+// the alert by its data-reason, the confirmed check by its status's data-state,
+// and the reveal by the disclosure's own testid.
+const alertReason = async (): Promise<string | null> => (await screen.findByRole("alert")).getAttribute("data-reason");
+const reasonShown = (reason: string): boolean =>
+  document.querySelector(`[role="alert"][data-reason="${reason}"]`) !== null;
+const checkConfirmed = (): Promise<void> =>
+  waitFor(() => expect(document.querySelector('[role="status"][data-state="success"]')).not.toBeNull());
+const revealAllProviders = async (): Promise<HTMLElement> => {
+  const summary = (await screen.findByTestId("show-all-providers")).querySelector("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("Missing show-all-providers summary");
+  return summary;
+};
 
 function provider(
   id: string,
@@ -127,9 +136,7 @@ test("an oauth-only provider renders its billing line without a key link", async
   await choose(user, "OpenAI Codex");
   expect(await screen.findByRole("dialog", { name: "Connect OpenAI Codex" })).toBeTruthy();
   expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
-  expect(
-    screen.getByText("Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key."),
-  ).toBeTruthy();
+  expect(screen.getByTestId("billing-note")).toBeTruthy();
 });
 
 // The apiKey providers keep both halves: the key link and the billing line.
@@ -140,9 +147,7 @@ test("an apiKey provider still renders its key link and its billing line", async
     "https://console.anthropic.com/settings/keys",
   );
   expect(screen.getByRole("link", { name: "Get an API key" }).getAttribute("rel")).toBe(NEW_TAB_POLICY);
-  expect(
-    screen.getByText("Claude subscriptions do not include API billing. API usage is billed separately."),
-  ).toBeTruthy();
+  expect(screen.getByTestId("billing-note")).toBeTruthy();
 });
 
 // The first screen is the popular set and nothing else. Everything the
@@ -164,7 +169,7 @@ test("the popular providers are what the picker shows first", async () => {
 // directions, no second label to keep in sync.
 test("show all providers reveals the rest of the catalogue and closes back to the popular set", async () => {
   const { user } = setup();
-  const reveal = await screen.findByText("Show all providers");
+  const reveal = await revealAllProviders();
   await user.click(reveal);
   expect(screen.getByLabelText("Search providers")).toBeTruthy();
   for (const name of ["Azure", "Google Vertex", "Local endpoint", "Custom endpoint", "Anthropic"]) {
@@ -184,7 +189,7 @@ test("show all providers reveals the rest of the catalogue and closes back to th
 // (the same limitation widgets/disclosure/disclosure.test.tsx documents).
 test("the show all providers control is keyboard reachable", async () => {
   const { user } = setup();
-  const reveal = await screen.findByText("Show all providers");
+  const reveal = await revealAllProviders();
   expect(reveal.tagName).toBe("SUMMARY");
   // No tabindex override: the control is in the browser's tab order.
   expect(reveal.getAttribute("tabindex")).toBeNull();
@@ -198,7 +203,7 @@ test("the show all providers control is keyboard reachable", async () => {
 test("a provider named like an Object.prototype member is not popular and gets no help link", async () => {
   const custom = provider("constructor", "Custom endpoint");
   const { user } = setup({ instances: [], availableProviders: [custom] });
-  await screen.findByText("Show all providers");
+  await revealAllProviders();
   await act(async () => {
     await credentialsStore.getState().fetch();
   });
@@ -208,9 +213,9 @@ test("a provider named like an Object.prototype member is not popular and gets n
   // Object.prototype.constructor as its help entry - a "Get an API key"
   // anchor with no destination for a provider that has no help metadata.
   expect(screen.queryByRole("button", { name: "Custom endpoint" })).toBeNull();
-  await user.click(screen.getByText("Show all providers"));
+  await user.click(await revealAllProviders());
   await user.click(screen.getByRole("button", { name: "Custom endpoint" }));
-  expect(screen.queryByText("Get an API key")).toBeNull();
+  expect(screen.queryByRole("link")).toBeNull();
 });
 
 test("device authorization survives its own delayed listing refresh and proceeds to a real check", async () => {
@@ -426,13 +431,13 @@ test("discovers a public provider without launch-ready instances and asks only f
   expect(screen.getByRole("link", { name: /Get.*API key/ }).getAttribute("href")).toBe(
     "https://console.anthropic.com/settings/keys",
   );
-  expect(screen.getByText(/API billing/)).toBeTruthy();
+  expect(screen.getByTestId("billing-note")).toBeTruthy();
   expect(screen.queryByLabelText("Name")).toBeNull();
   expect(screen.queryByLabelText("Base URL (optional)")).toBeNull();
 });
 test("show all providers searches the complete catalogue including separate Codex and configured variants", async () => {
   const { user } = setup();
-  await user.click(await screen.findByText("Show all providers"));
+  await user.click(await revealAllProviders());
   const search = screen.getByLabelText("Search providers");
   for (const row of catalogue) {
     await user.clear(search);
@@ -447,7 +452,7 @@ test("show all providers searches the complete catalogue including separate Code
 // it is neither the id nor the label on screen.
 test("the catalogue search matches id, display name and help label", async () => {
   const { user } = setup({ instances: [], availableProviders: [provider("google", "Google Generative AI")] });
-  await user.click(await screen.findByText("Show all providers"));
+  await user.click(await revealAllProviders());
   const search = screen.getByLabelText("Search providers");
   for (const query of ["google", "generative", "gemini"]) {
     await user.clear(search);
@@ -461,7 +466,7 @@ test("the catalogue search matches id, display name and help label", async () =>
 
 test("a cloud choice opens the complete preselected configuration editor", async () => {
   const { user } = setup();
-  await user.click(await screen.findByText("Show all providers"));
+  await user.click(await revealAllProviders());
   await user.click(screen.getByRole("button", { name: "Azure" }));
   await user.click(screen.getByRole("button", { name: "Configure provider" }));
   expect(screen.getByLabelText("Base provider")).toHaveProperty("value", "azure");
@@ -480,7 +485,7 @@ async function choose(user: ReturnType<typeof userEvent.setup>, name = "Anthropi
   // Choosing from the revealed catalogue covers both kinds of provider this
   // helper is used for (popular and not), and keeps one path through the
   // picker for every caller.
-  await user.click(await screen.findByText("Show all providers"));
+  await user.click(await revealAllProviders());
   await user.click(screen.getByRole("button", { name }));
 }
 function scriptSave(client: FakeClient, next = savedList()) {
@@ -517,9 +522,7 @@ test("a save refused because the held listing belongs to a replaced connection r
   // Nothing was sent to the replacement connection...
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(0);
   // ...and the refusal names the change rather than reporting a save failure.
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("connection changed");
-  expect(screen.queryByText(/could not be saved/)).toBeNull();
+  expect(await alertReason()).toBe("connection-replaced");
   // The draft was aimed at a destination that is gone, so it is dropped, and
   // the flow re-reads the listing to re-anchor on the one now on screen.
   await waitFor(() => expect(screen.getByLabelText("API key")).toHaveProperty("value", ""));
@@ -560,9 +563,7 @@ test("a sign-in refused because the held listing belongs to a replaced connectio
     ),
   ).toHaveLength(0);
   // ...and the refusal names the change rather than reporting a failed start.
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("connection changed");
-  expect(screen.queryByText(/Sign-in could not be started/)).toBeNull();
+  expect(await alertReason()).toBe("connection-replaced");
 });
 
 test("empty required key stays focused and does not mutate", async () => {
@@ -579,7 +580,7 @@ test("saves directly to the real public ID then reloads and checks before explic
   await choose(user);
   await enterText(user, screen.getByLabelText("API key"), "fixture-key");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+  await checkConfirmed();
   expect(client.calls.slice(1)).toEqual([
     {
       method: "evener/auth/apiKey/set",
@@ -612,7 +613,7 @@ test("save failure retains the draft and retry saves once more without a prematu
   expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
   scriptSave(client);
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+  await checkConfirmed();
 });
 test.each(["auth_rejected", "endpoint_failure", "configuration_failure", "unsupported"])(
   "%s keeps the saved connection and retries only the check",
@@ -633,7 +634,7 @@ test.each(["auth_rejected", "endpoint_failure", "configuration_failure", "unsupp
     }
     client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
     await user.click(screen.getByRole("button", { name: "Retry check" }));
-    expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+    await checkConfirmed();
     expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(1);
   },
 );
@@ -646,10 +647,10 @@ test.each([{ activeSource: "api_key" }, { baseUrl: "https://changed.example/v1" 
     await enterText(user, screen.getByLabelText("API key"), "fixture-key");
     await user.click(screen.getByRole("button", { name: "Save and check" }));
     expect(await screen.findByRole("button", { name: "Use reviewed access and check" })).toBeTruthy();
-    expect(screen.getByText(/Credential saved/)).toBeTruthy();
+    expect(screen.getByTestId("credential-saved")).toBeTruthy();
     expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
     await user.click(screen.getByRole("button", { name: "Use reviewed access and check" }));
-    expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+    await checkConfirmed();
   },
 );
 test("failed refresh is not proof of fresh access and does not check stale metadata", async () => {
@@ -668,7 +669,7 @@ test("failed refresh is not proof of fresh access and does not check stale metad
   scriptSave(client);
   client.on("evener/instance/list", () => savedList());
   await user.click(screen.getByRole("button", { name: "Retry check" }));
-  expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+  await checkConfirmed();
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(1);
 });
 test("optional local access checks the host without clearing or requiring a key", async () => {
@@ -678,7 +679,7 @@ test("optional local access checks the host without clearing or requiring a key"
   expect(screen.getByText("http://localhost:8080/v1")).toBeTruthy();
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Check connection" }));
-  expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+  await checkConfirmed();
   expect(client.calls.filter((c) => c.method.includes("/set") || c.method.includes("/clear"))).toEqual([]);
 });
 test("ADC JSON is masked and sent to the JSON route, not API-key auth", async () => {
@@ -694,7 +695,7 @@ test("ADC JSON is masked and sent to the JSON route, not API-key auth", async ()
   await user.click(input);
   await user.paste('{"type":"service_account"}');
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+  await checkConfirmed();
   expect(client.calls.find((c) => c.method === "evener/auth/credentialJson/set")?.params).toEqual({
     provider: "google-vertex",
     value: '{"type":"service_account"}',
@@ -762,7 +763,7 @@ test("settings saved then key failed repairs the actual named connection without
   await enterText(user, await screen.findByLabelText("API key"), "retained-draft");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   expect(await screen.findByRole("alert")).toBeTruthy();
-  expect(screen.getByText(/Connection settings saved as azure-team/)).toBeTruthy();
+  expect(screen.getByTestId("connection-configured").textContent).toContain("azure-team");
   client.on("evener/auth/apiKey/set", () => {
     client.on("evener/instance/list", () => ({
       ...created,
@@ -902,7 +903,7 @@ test("the originating client's own auth-update echo does not invalidate its save
     await pending.promise;
   });
   expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+  expect(reasonShown("changed")).toBe(false);
 });
 test("the store's own post-save refresh does not invalidate the completed check", async () => {
   // The store schedules its own listing refresh the moment the save succeeds
@@ -932,7 +933,7 @@ test("the store's own post-save refresh does not invalidate the completed check"
     expect(credentialsStore.getState().loading).toBe(false);
   });
   expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
-  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+  expect(reasonShown("changed")).toBe(false);
 });
 test("the store's own debounced post-save refresh does not invalidate an in-flight check", async () => {
   // The original flake (issue #1435): the store's own debounced listing refetch
@@ -968,7 +969,7 @@ test("the store's own debounced post-save refresh does not invalidate an in-flig
     await pending.promise;
   });
   expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+  expect(reasonShown("changed")).toBe(false);
 });
 test("a slow save response extends the echo window so its late own echo keeps Continue", async () => {
   const { user, client, connected } = setup();
@@ -1005,7 +1006,7 @@ test("a slow save response extends the echo window so its late own echo keeps Co
   // to "Connection or configuration changed" and the user loses a save that
   // actually succeeded.
   expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+  expect(reasonShown("changed")).toBe(false);
   await user.click(screen.getByRole("button", { name: "Continue" }));
   expect(connected).toHaveBeenCalledWith("anthropic");
 });
@@ -1237,11 +1238,7 @@ test("a superseded reload read does not baseline a same-named row the store stil
     await retryRead.promise;
   });
 
-  expect(
-    await screen.findByText(
-      "The saved connection could not be loaded. Reload it or open the full editor; do not create it again.",
-    ),
-  ).toBeTruthy();
+  expect(await alertReason()).toBe("reload-failed");
   expect(screen.getByRole("button", { name: "Reload connection" })).toBeTruthy();
   expect(screen.queryByLabelText("API key")).toBeNull();
 });
@@ -1343,12 +1340,18 @@ test("a query-only endpoint change still requires review before the check", asyn
 
   await user.click(screen.getByRole("button", { name: "Save and check" }));
 
-  expect(await screen.findByText("Review changed access before contacting the provider.")).toBeTruthy();
+  const review = await screen.findByTestId("access-review");
   // Both sanitized copies are the same text, so this pins that the review came
   // from the endpoint identity the fingerprint carries and not from what the
   // user reads.
-  expect(screen.getByText("Previous destination: https://anthropic.example/v1")).toBeTruthy();
-  expect(screen.getByText("Current destination: https://anthropic.example/v1")).toBeTruthy();
+  const destinations = [...review.querySelectorAll("[data-destination]")].map((line) => [
+    line.getAttribute("data-destination"),
+    line.textContent?.includes("https://anthropic.example/v1"),
+  ]);
+  expect(destinations).toEqual([
+    ["previous", true],
+    ["current", true],
+  ]);
 });
 
 test("a credential draft is not saved to a destination that changed since it was typed", async () => {
@@ -1367,11 +1370,7 @@ test("a credential draft is not saved to a destination that changed since it was
 
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-  expect(
-    await screen.findByText(
-      "This connection changed to a different endpoint. Check its destination and enter the key again.",
-    ),
-  ).toBeTruthy();
+  expect(await alertReason()).toBe("endpoint-changed");
 });
 
 // The adopted instance is a different connection. The draft typed for the
@@ -1472,11 +1471,7 @@ test("the flow's own recovery read carries its commitment and leaves the flow us
 
   await user.click(screen.getByRole("button", { name: "Save and check" }));
 
-  expect(
-    await screen.findByText(
-      "This connection changed to a different endpoint. Check its destination and enter the key again.",
-    ),
-  ).toBeTruthy();
+  expect(await alertReason()).toBe("endpoint-changed");
   expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
   // Nothing is left mid-flight by the read that no longer resets the flow.
   expect(await screen.findByRole("button", { name: "Save and check" })).toHaveProperty("disabled", false);
@@ -1507,11 +1502,7 @@ test("the hub's endpoint refusal re-anchors the flow instead of saving to the mo
   // The draft belonged to the endpoint that is gone: dropped, re-anchored, and
   // said so, rather than left as a save that silently went somewhere else.
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-  expect(
-    await screen.findByText(
-      "This connection changed to a different endpoint. Check its destination and enter the key again.",
-    ),
-  ).toBeTruthy();
+  expect(await alertReason()).toBe("endpoint-changed");
 });
 
 // The probe must carry the destination this flow reviewed, so the hub can
@@ -1529,7 +1520,7 @@ test("the check asserts the reviewed endpoint", async () => {
 
   await user.click(screen.getByRole("button", { name: "Save and check" }));
 
-  expect(await screen.findByText(/Model list access confirmed/)).toBeTruthy();
+  await checkConfirmed();
   expect(client.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
     provider: "anthropic",
     expectedEndpointFingerprint: "fp-reviewed",
@@ -1545,7 +1536,7 @@ test("a destination the hub cannot fingerprint refuses the check without a probe
   const { user, client } = setup({ instances: [], availableProviders: [noAuth] });
   await choose(user, "Team endpoint");
   await user.click(screen.getByRole("button", { name: "Check connection" }));
-  expect(await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE)).toBeTruthy();
+  expect(await alertReason()).toBe("check-fingerprint-unavailable");
   expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
 });
 
@@ -1566,8 +1557,8 @@ test("a connection the hub cannot key refuses the save instead of writing an una
   expect(client.calls.find((call) => call.method === "evener/auth/apiKey/set")).toBeUndefined();
   expect(client.calls.some((call) => call.method === "evener/auth/credentialJson/set")).toBe(false);
   expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
-  // The exact shared write-refusal wording, not the check-refusal one.
-  expect((await screen.findByRole("alert")).textContent).toBe(FINGERPRINT_UNAVAILABLE_ERROR);
+  // The write refusal, not the check refusal.
+  expect(await alertReason()).toBe("fingerprint-unavailable");
   // The phase stays idle: the same control is still offered rather than a
   // spinner left behind by a write that never happened.
   expect(screen.getByRole("button", { name: "Save and check" })).toHaveProperty("disabled", false);
@@ -1594,12 +1585,6 @@ test("a refused assertion is reported as a changed connection, not an endpoint f
 
   await user.click(screen.getByRole("button", { name: "Save and check" }));
 
-  expect(
-    await screen.findByText(
-      "This connection changed to a different endpoint. Check its destination and enter the key again.",
-    ),
-  ).toBeTruthy();
-  expect(
-    screen.queryByText("The provider endpoint could not be reached. Check the endpoint and network connection."),
-  ).toBeNull();
+  expect(await alertReason()).toBe("endpoint-changed");
+  expect(reasonShown("check-failed")).toBe(false);
 });

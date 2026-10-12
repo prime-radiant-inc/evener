@@ -29,6 +29,23 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
   };
 }
 
+// The row's credential state (configured, keyless, missing, error), the chips it
+// carries by kind, and its heading dot's state, read from markers rather than
+// from the words the row shows for them.
+function rowState(): string | null {
+  const marked = document.querySelector("[data-credential-state]");
+  if (!marked) throw new Error("Missing row credential state");
+  return marked.getAttribute("data-credential-state");
+}
+
+function chipKinds(): (string | null)[] {
+  return [...document.querySelectorAll("[data-kind]")].map((chip) => chip.getAttribute("data-kind"));
+}
+
+function dotState(): string | null {
+  return screen.getByRole("img").getAttribute("data-state");
+}
+
 describe("the row carries identity and status only", () => {
   test("the whole row is one button showing name, meta, and a chevron", () => {
     render(
@@ -79,7 +96,7 @@ describe("the row carries identity and status only", () => {
 
   test("the default badge shows when isDefault", () => {
     render(<InstanceRow instance={instance({ name: "a", providerId: "x", isDefault: true })} onSelect={() => {}} />);
-    expect(screen.getByText(/default/i)).toBeTruthy();
+    expect(chipKinds()).toEqual(["default"]);
   });
 });
 
@@ -95,7 +112,7 @@ describe("environment-backed instances", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("from environment")).toBeTruthy();
+    expect(chipKinds()).toEqual(["environment"]);
   });
 
   test("a 'from environment' badge marks an instance the ADC file supplies", () => {
@@ -111,7 +128,7 @@ describe("environment-backed instances", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("from environment")).toBeTruthy();
+    expect(chipKinds()).toEqual(["environment"]);
   });
 
   test("a stored key through the UI carries no badge", () => {
@@ -127,7 +144,7 @@ describe("environment-backed instances", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.queryByText("from environment")).toBeNull();
+    expect(chipKinds()).not.toContain("environment");
   });
 
   test("a signed-in Codex account carries no badge", () => {
@@ -144,7 +161,7 @@ describe("environment-backed instances", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.queryByText("from environment")).toBeNull();
+    expect(chipKinds()).not.toContain("environment");
   });
 
   test("a non-implicit instance carries no badge", () => {
@@ -154,7 +171,7 @@ describe("environment-backed instances", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.queryByText("from environment")).toBeNull();
+    expect(chipKinds()).not.toContain("environment");
   });
 });
 
@@ -206,15 +223,20 @@ describe("the meta line", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText("No key set · optional · openai-chat · base http://127.0.0.1:8080/v1")).toBeTruthy();
+    // The meta line leads with the unconfigured state's words, ahead of the
+    // endpoint the fixture gave it.
+    expect(rowState()).toBe("keyless");
+    const meta = screen.getByRole("button", { name: /llama/ }).textContent ?? "";
+    expect(meta).toContain("http://127.0.0.1:8080/v1");
+    expect(meta.indexOf("openai-chat")).toBeGreaterThan(meta.indexOf("llama") + "llama".length);
   });
 });
 
 // The heading dot is the glyph half of what the meta line says in words, so
 // the two have to agree about the same instance. StatusDot's only observable
 // difference between "idle" and "ended" is its accessible name (both states
-// share the neutral token family - src/widgets/statusdot), so that name is
-// what these assert on.
+// share the neutral token family - src/widgets/statusdot), so its data-state is
+// what these assert on, beside the row's own credential state.
 describe("the heading dot agrees with the meta line", () => {
   test("a keyless gateway - no key, none needed - is not announced as ended", () => {
     render(
@@ -229,8 +251,8 @@ describe("the heading dot agrees with the meta line", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText(/No key set · optional/)).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+    expect(rowState()).toBe("keyless");
+    expect(dotState()).toBe("idle");
   });
 
   test("an auth-none provider - one that authenticates nothing - is not announced as ended", () => {
@@ -246,8 +268,8 @@ describe("the heading dot agrees with the meta line", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText(/No credentials required/)).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+    expect(rowState()).toBe("keyless");
+    expect(dotState()).toBe("idle");
   });
 
   test("a provider whose required key is missing keeps the ended dot", () => {
@@ -263,8 +285,8 @@ describe("the heading dot agrees with the meta line", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByText(/Not configured/)).toBeTruthy();
-    expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
+    expect(rowState()).toBe("missing");
+    expect(dotState()).toBe("ended");
   });
 
   test("a configured instance shows the idle dot", () => {
@@ -274,7 +296,8 @@ describe("the heading dot agrees with the meta line", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+    expect(rowState()).toBe("configured");
+    expect(dotState()).toBe("idle");
   });
 });
 
@@ -307,7 +330,8 @@ describe("the read-only variant", () => {
       />,
     );
     expect(screen.getByText("on-host")).toBeTruthy();
-    expect(screen.getByText(/default/i)).toBeTruthy();
+    expect(chipKinds()).toEqual(["default"]);
+    expect(rowState()).toBe("configured");
     expect(screen.getByText("openai-chat")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
@@ -340,10 +364,10 @@ test("the props type requires onSelect whenever the row is not read-only", () =>
   render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} />);
 });
 
-// A credential the provider rejected (#3539): the row says Error, with the
+// A credential the provider rejected (#3539): the row is in the error state, with the
 // failed dot, so the list shows which provider needs its key replaced.
 describe("a provider whose credential the hub found an error with", () => {
-  test("reads Error with the failed dot", () => {
+  test("is in the error state with the failed dot", () => {
     render(
       <InstanceRow
         instance={instance({ name: "lunaroute", providerId: "openai", hasStoredFile: true, activeSource: "store" })}
@@ -351,9 +375,8 @@ describe("a provider whose credential the hub found an error with", () => {
         onSelect={() => {}}
       />,
     );
-    const row = screen.getByRole("button", { name: /lunaroute/ });
-    expect(row.textContent).toContain("Error");
-    expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+    expect(rowState()).toBe("error");
+    expect(dotState()).toBe("failed");
   });
 
   test("a provider with no error reads as before", () => {
@@ -363,7 +386,7 @@ describe("a provider whose credential the hub found an error with", () => {
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: /lunaroute/ }).textContent).not.toContain("Error");
-    expect(screen.queryByRole("img", { name: "Failed" })).toBeNull();
+    expect(rowState()).toBe("configured");
+    expect(dotState()).toBe("idle");
   });
 });
