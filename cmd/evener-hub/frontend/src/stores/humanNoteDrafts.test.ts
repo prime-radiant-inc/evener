@@ -16,16 +16,19 @@ import {
 } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
   setMutationStorageForTests,
+  setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
   threadsStore,
 } from "./threads";
 
 let storage: MutationOutboxIndexedDB;
-beforeEach(() => {
+let entryCache: SessionEntryCache;
+beforeEach(async () => {
   resetPanelStoreEvictionForTests();
   resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -35,9 +38,17 @@ beforeEach(() => {
   vi.stubGlobal("IDBKeyRange", IDBKeyRange);
   storage = new MutationOutboxIndexedDB({ indexedDB });
   setMutationStorageForTests(storage);
+  entryCache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `human-note-drafts-${crypto.randomUUID()}`,
+  });
+  setProductionEntryCacheForTests(entryCache);
+  await entryCache.getClearEpoch();
 });
 afterEach(() => {
   cleanup();
+  entryCache.close();
   resetThreadsStoreForTests();
   vi.useRealTimers();
   vi.unstubAllGlobals();

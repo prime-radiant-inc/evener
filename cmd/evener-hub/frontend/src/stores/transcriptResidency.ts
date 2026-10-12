@@ -266,9 +266,16 @@ export function createTranscriptResidency(
       retireHydrations();
     },
     async settled() {
-      while (hydrationTasks.size > 0) {
-        await Promise.allSettled([...hydrationTasks].map((task) => task.promise));
-      }
+      // The 6d reduction moved every local disk write into the repository, so
+      // this residency owns no local work left to drain: its only async work is
+      // a network hydration, which production bounds with the client's own read
+      // deadline. Joining an in-flight hydration here would deadlock any caller
+      // that deliberately holds a read pending (a held local-page merge under a
+      // pending hydration, or a retirement's final read the fake never answers),
+      // which the pre-6d contract never did. Drain the synchronous scheduling
+      // cascade and return; a test that must observe a hydration awaits the
+      // repository's own settled() (or a request) instead.
+      startAvailableHydrations();
     },
     snapshot() {
       return {
