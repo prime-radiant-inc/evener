@@ -18,6 +18,10 @@ import (
 // give it.
 const sdkImportPath = "github.com/modelcontextprotocol/go-sdk/mcp"
 
+// allowedTransportPackage is the one package allowed to build an http or sse
+// MCP transport. Everything else goes through mcphttp.BuildTransport.
+const allowedTransportPackage = "agent/internal/mcphttp"
+
 // TestTransportConstructionStaysInThisPackage pins the boundary the MCP
 // transport policy lives behind (#2396, architecture audit EXT-04). The http and
 // sse SDK transports are built by this package for both callers — the connection
@@ -37,22 +41,65 @@ const sdkImportPath = "github.com/modelcontextprotocol/go-sdk/mcp"
 // rebuilding a transport privately in agent/mcpprobe fails this test.
 func TestTransportConstructionStaysInThisPackage(t *testing.T) {
 	t.Parallel()
-	// The workspace root, absolute, so the walk's root is not itself a dot-named
-	// directory that the hidden-directory skip below would prune (which would
-	// silently scan nothing), and so every module in the workspace is covered.
+	// The workspace root, absolute: the walk covers every module in the
+	// workspace, not just this one.
 	workspaceRoot, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const allowed = "agent/internal/mcphttp"
-	watched := map[string]bool{"SSEClientTransport": true, "StreamableClientTransport": true}
-	reachedThisPackage := false
+	sites, reached, err := transportConstructionSites(workspaceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, site := range sites {
+		t.Errorf("%s outside %s/; build the transport through mcphttp.BuildTransport so the "+
+			"probe and the connection manager keep one policy (#2396)", site, allowedTransportPackage)
+	}
+	if !reached {
+		t.Fatalf("the scan did not reach this package's own production sources under %s, so it did not run as intended", workspaceRoot)
+	}
+}
 
-	err = filepath.WalkDir(workspaceRoot, func(path string, d fs.DirEntry, err error) error {
+// The scan must never prune the directory it starts at. A checkout whose own
+// directory name begins with a dot is ordinary — a hidden clone, a CI workspace
+// — and skipping it would leave the scan visiting nothing, with the
+// proof-of-reaching check in the test above as the only thing that notices.
+func TestTransportConstructionScanDoesNotPruneItsRoot(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), ".evener")
+	fixture := filepath.Join(root, "agent", "mcpprobe")
+	if err := os.MkdirAll(fixture, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := "package mcpprobe\n\nimport (\n\tmcpsdk \"" + sdkImportPath + "\"\n)\n\n" +
+		"var _ = mcpsdk.SSEClientTransport{}\n"
+	if err := os.WriteFile(filepath.Join(fixture, "transport.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sites, _, err := transportConstructionSites(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 || !strings.Contains(sites[0], "SSEClientTransport") {
+		t.Fatalf("a dot-named root's production sources were not scanned: sites = %v", sites)
+	}
+}
+
+// transportConstructionSites walks root and returns every production source
+// outside allowedTransportPackage that names one of the SDK's http/sse transport
+// types, each as "relative/path.go:line names mcpsdk.Type", and whether the walk
+// reached the allowed package's own production sources at all — false means the
+// walk was pruned somewhere above them and its verdict proves nothing.
+func transportConstructionSites(root string) (sites []string, reachedAllowed bool, err error) {
+	watched := map[string]bool{"SSEClientTransport": true, "StreamableClientTransport": true}
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
+			if path == root {
+				return nil // the root itself is never pruned; SkipDir here ends the walk
+			}
 			name := d.Name()
 			if name == "testdata" || name == "node_modules" || strings.HasPrefix(name, ".") {
 				return fs.SkipDir
@@ -62,14 +109,14 @@ func TestTransportConstructionStaysInThisPackage(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		rel, relErr := filepath.Rel(workspaceRoot, path)
+		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
-		inThisPackage := strings.HasPrefix(rel, allowed+"/")
+		inThisPackage := strings.HasPrefix(rel, allowedTransportPackage+"/")
 		if inThisPackage {
-			reachedThisPackage = true
+			reachedAllowed = true
 		}
 
 		source, readErr := os.ReadFile(path)
@@ -97,19 +144,12 @@ func TestTransportConstructionStaysInThisPackage(t *testing.T) {
 			if !ok || qualifier.Name != local || !watched[sel.Sel.Name] || inThisPackage {
 				return true
 			}
-			t.Errorf("%s:%d names mcpsdk.%s outside %s/; build the transport through "+
-				"mcphttp.BuildTransport so the probe and the connection manager keep one "+
-				"policy (#2396)", rel, fset.Position(sel.Pos()).Line, sel.Sel.Name, allowed)
+			sites = append(sites, fmt.Sprintf("%s:%d names mcpsdk.%s", rel, fset.Position(sel.Pos()).Line, sel.Sel.Name))
 			return true
 		})
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reachedThisPackage {
-		t.Fatalf("the scan did not reach this package's own production sources under %s, so it did not run as intended", workspaceRoot)
-	}
+	return sites, reachedAllowed, err
 }
 
 // sdkLocalName returns the name this file refers to the MCP SDK by — the import
