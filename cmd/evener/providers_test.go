@@ -534,8 +534,8 @@ func TestProvidersAddWritesEntryAndSkipsProbeWithoutCredential(t *testing.T) {
 	if !strings.Contains(out, "PORTKEY_KEY") {
 		t.Fatalf("add prints what to set when no credential resolves:\n%s", out)
 	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("add sent %d probe requests for an instance no credential resolves, want none", got)
+	if got := requests.Load(); got != 0 || reportsProbeVerdicts(out) {
+		t.Fatalf("add probed an instance no credential resolves (%d requests):\n%s", got, out)
 	}
 	// An entry carrying credential_headers never reaches the store or the
 	// environment (spec §10 resolution order), so suggesting them would send
@@ -560,8 +560,8 @@ func TestProvidersAddPrintsTheCredentialPointerWhenItHelps(t *testing.T) {
 			t.Fatalf("missing %q in\n%s", want, out)
 		}
 	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("add sent %d probe requests for an instance no credential resolves, want none", got)
+	if got := requests.Load(); got != 0 || reportsProbeVerdicts(out) {
+		t.Fatalf("add probed an instance no credential resolves (%d requests):\n%s", got, out)
 	}
 }
 
@@ -830,4 +830,15 @@ func countingEndpoint(t *testing.T) (string, *atomic.Int64) {
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL + "/v1", &requests
+}
+
+// reportsProbeVerdicts reports whether `evener providers` output carries a
+// probe's per-protocol "<protocol>: <verdict>" lines.
+func reportsProbeVerdicts(out string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, "openai-chat:") || strings.HasPrefix(line, "openai-responses:") {
+			return true
+		}
+	}
+	return false
 }
