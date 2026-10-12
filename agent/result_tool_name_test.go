@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -16,6 +17,13 @@ import (
 // NewSession's error instead of failing the test, so both a config-validation
 // refusal and its passing counterpart can be observed.
 func newResultToolSession(t *testing.T, profile *provider.Profile, cfg SessionConfig) (*Session, error) {
+	t.Helper()
+	return newResultToolSessionOn(t, profile, cfg, execenv.NewLocalExecutionEnvironment(t.TempDir()))
+}
+
+// newResultToolSessionOn is newResultToolSession over a caller-supplied
+// environment, so a test can carry a sandbox policy.
+func newResultToolSessionOn(t *testing.T, profile *provider.Profile, cfg SessionConfig, env execenv.ExecutionEnvironment) (*Session, error) {
 	t.Helper()
 	if cfg.MaxSubagentDepth == 0 {
 		cfg.MaxSubagentDepth = 1
@@ -31,7 +39,31 @@ func newResultToolSession(t *testing.T, profile *provider.Profile, cfg SessionCo
 	if profile.ConfiguredCheapModel() == "" {
 		profile = withTestSessionNamer(client, profile)
 	}
-	return NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	return NewSession(client, profile, env, cfg)
+}
+
+// resultToolWrapperEnv gives a real local environment a kernel-sandbox wrapper,
+// so the session sees a resolved sandbox policy.
+type resultToolWrapperEnv struct {
+	execenv.ExecutionEnvironment
+	wrapper *sandbox.Wrapper
+}
+
+func (e resultToolWrapperEnv) KernelWrapper() *sandbox.Wrapper { return e.wrapper }
+
+// resultToolSandboxWrapper builds a kernel wrapper for the given network
+// policy, so a test can drive providerWebSearchEnabled's net-off branch.
+func resultToolSandboxWrapper(t *testing.T, network bool) *sandbox.Wrapper {
+	t.Helper()
+	wrapper, err := sandbox.NewWrapper(sandbox.ResolvedPolicy{
+		Mode:    sandbox.ModeRestricted,
+		Network: network,
+		Backend: sandbox.BackendBwrap,
+	}, "/fake/bwrap", "/fake/session-tmp")
+	if err != nil {
+		t.Fatalf("sandbox.NewWrapper: %v", err)
+	}
+	return wrapper
 }
 
 // requireResultToolRejected asserts NewSession refuses cfg's ResultToolName with
@@ -179,6 +211,24 @@ func TestNewSessionAllowsResultToolNameNoToolHolds(t *testing.T) {
 			requireResultToolShape(t, sess, tc.cfg.ResultToolName)
 		})
 	}
+}
+
+// TestNewSessionAllowsProviderNativeWebSearchNameWhenNetOff is the precision
+// control for the provider-native reservation: with network egress denied,
+// providerWebSearchEnabled (session_model_call.go) is false, so no server-side
+// web_search is injected and the name is free.
+func TestNewSessionAllowsProviderNativeWebSearchNameWhenNetOff(t *testing.T) {
+	profile := withWebSearch(NewOpenAIProfile("gpt-5.2"), true)
+	env := resultToolWrapperEnv{
+		ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		wrapper:              resultToolSandboxWrapper(t, false),
+	}
+	sess, err := newResultToolSessionOn(t, profile, SessionConfig{ResultToolName: "web_search"}, env)
+	if err != nil {
+		t.Fatalf("NewSession refused a name with native web search disabled by net=off: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	requireResultToolShape(t, sess, "web_search")
 }
 
 // TestNewSessionAllowsNonNativeResultToolName is the rename positive control: a

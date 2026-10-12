@@ -69,10 +69,11 @@ type toolDeps struct {
 	// Nil for surfaces that keep canonical names.
 	toolNameMap map[string]string
 
-	// nativeWebSearch reports that the provider serves its own web_search tool
-	// (provider.Profile.SupportsWebSearch). The protocol layer injects that
-	// server-side tool on the request, and the anthropic protocol strips any
-	// function tool of the same name first
+	// nativeWebSearch reports that this session will carry the provider's own
+	// web_search tool (Session.providerWebSearchEnabled: the profile's
+	// capability, narrowed by a network-off sandbox policy). The protocol layer
+	// injects that server-side tool on the request, and the anthropic protocol
+	// strips any function tool of the same name first
 	// (llm/providers/anthropic/request.go), so the name cannot hold the result
 	// tool.
 	nativeWebSearch bool
@@ -381,7 +382,7 @@ func newToolDeps(s *Session) *toolDeps {
 		offersEndReason:        s.hasHumanPartnerToAsk(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
 		toolNameMap:            s.profile.ToolNameMap(),
-		nativeWebSearch:        s.profile.SupportsWebSearch(),
+		nativeWebSearch:        s.providerWebSearchEnabled(s.profile),
 		skill: func(name string) (skill.SkillMeta, bool) {
 			descriptor, ok := s.skills.Entries[name]
 			return descriptor.Meta, ok
