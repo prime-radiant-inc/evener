@@ -462,8 +462,11 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
       expect(connect.disabled).toBe(false);
     });
     expect(within(betaSheet).queryByRole("button", { name: "Connecting…" })).toBeNull();
-    // The settled attach's own error (the fixture's data) reaches the row.
-    expect(screen.getByText(/dial tcp: connection refused/)).toBeTruthy();
+    // The settled attach's own error (the fixture's data) is explained in the
+    // open sheet, beside the Connect it re-enabled, not only in the list row.
+    await waitFor(() =>
+      expect(within(betaSheet).getByRole("alert").textContent).toContain("dial tcp: connection refused"),
+    );
   } finally {
     vi.useRealTimers();
   }

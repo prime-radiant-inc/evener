@@ -485,6 +485,11 @@ function HostSheet({
     <Sheet open onClose={onClose} title={row.name} side={isMobile ? "bottom" : "right"}>
       <div ref={focusRoot} className={CLASS.sheetBody}>
         <div className={CLASS.chipRow}>{stateChip(row, connecting)}</div>
+        {/* The last attach's own failure, so a background attach that fails
+            while the sheet is open explains why Connect is back. */}
+        {!row.attached && !connecting && row.lastAttachError && (
+          <InlineNotice tone="danger">{row.lastAttachError}</InlineNotice>
+        )}
         {operationView !== null && (
           // The operation's progress/terminal state (registry spec 08 §13): the
           // chip names the state, the line is the record's own prose - a
