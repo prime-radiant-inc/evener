@@ -146,7 +146,7 @@ export function ProviderEditor({
 				// A newer listing superseded this save's answer: the write may have
 				// landed on the host, but the store cannot confirm it, so the editor
 				// does not close reporting success.
-				if (alive.current) setError(UNCONFIRMED_CHANGE);
+				if (alive.current) setError(UNCONFIRMED_CHANGE, "unconfirmed");
 				return;
 			}
 			if (alive.current) onSaved(instance?.name ?? draft.name.trim());
@@ -160,7 +160,7 @@ export function ProviderEditor({
 					// is never shown.
 					onEndpointConflict(instance?.name ?? draft.name.trim());
 				} else {
-					setError(UNCONFIRMED_CHANGE);
+					setError(UNCONFIRMED_CHANGE, "unconfirmed");
 				}
 			}
 		} finally {

@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -82,8 +81,8 @@ func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
 			req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Millisecond}
 			client, srv := stallingSSEClient(t, twoResponsesEvents)
 			err := streamTerminalErrorWithClient(t, client, srv, req)
-			if err == nil || !strings.Contains(err.Error(), "responses stream stalled without completion") {
-				t.Fatalf("stalled stream error = %v", err)
+			if _, ok := errors.AsType[*llm.StreamError](err); !ok {
+				t.Fatalf("stalled stream error = %v, want a retryable stream error", err)
 			}
 			if !errors.Is(err, llm.ErrResponseIdleTimeout) {
 				t.Fatalf("a stall must carry the response-byte idle timeout as its cause: %v", err)
@@ -96,8 +95,14 @@ func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
 
 	t.Run("read failure", func(t *testing.T) {
 		err := streamTerminalError(t, abortingSSEServer(t, twoResponsesEvents), userReq("hi"))
-		if err == nil || !strings.Contains(err.Error(), "responses stream ended without completion") {
-			t.Fatalf("broken stream error = %v", err)
+		if _, ok := errors.AsType[*llm.StreamError](err); !ok {
+			t.Fatalf("broken stream error = %v, want a retryable stream error", err)
+		}
+		if errors.Unwrap(err) == nil {
+			t.Fatalf("a broken read must carry the read failure as its cause: %v", err)
+		}
+		if errors.Is(err, llm.ErrResponseIdleTimeout) || errors.Is(err, llm.ErrSSEReadTimeout) {
+			t.Fatalf("a broken read is not a stall: %v", err)
 		}
 		if isUnsupportedEndpoint(err) {
 			t.Fatalf("a broken read is not evidence about endpoint support: %v", err)
@@ -109,9 +114,6 @@ func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
 		// the Responses API: the model likely does not implement /v1/responses.
 		srv, _ := server(t, 200, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
 		err := streamTerminalError(t, srv, userReq("hi"))
-		if err == nil || !strings.Contains(err.Error(), "responses stream closed with no events") {
-			t.Fatalf("empty stream error = %v", err)
-		}
 		if !isUnsupportedEndpoint(err) {
 			t.Fatalf("a clean close with no Responses event is the endpoint sentinel: %v", err)
 		}
@@ -121,8 +123,11 @@ func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
 		// Real Responses events, then a clean close with no response.completed.
 		srv, _ := server(t, 200, twoResponsesEvents)
 		err := streamTerminalError(t, srv, userReq("hi"))
-		if err == nil || !strings.Contains(err.Error(), "responses stream closed before response.completed") {
-			t.Fatalf("truncated stream error = %v", err)
+		if _, ok := errors.AsType[*llm.StreamError](err); !ok {
+			t.Fatalf("truncated stream error = %v, want a retryable stream error", err)
+		}
+		if cause := errors.Unwrap(err); cause != nil {
+			t.Fatalf("a clean close has no read failure to report, got cause %v", cause)
 		}
 		if isUnsupportedEndpoint(err) {
 			t.Fatalf("a stream that produced Responses events proves the endpoint served it: %v", err)

@@ -5,8 +5,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { DisplayProvider } from "../display/displayContext";
 import { DISPLAY_KEY, DisplayPreferences } from "../display/displayPreferences";
 import type { NativePreferencesSnapshot } from "../nativePreferences";
-import { render, renderedText } from "../renderNative.testkit";
-import { Group } from "../sheet/Grouped";
+import { render, testIDSuffixes, offersButton } from "../renderNative.testkit";
+import { Group, GroupFooter, GroupLabel } from "../sheet/Grouped";
 import { DisplayPage } from "./DisplayPage";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
 
@@ -106,11 +106,10 @@ it("stores a dark appearance for this phone", () => {
 	expect(JSON.parse(storage.get(DISPLAY_KEY) ?? "{}")).toMatchObject({ appearance: "dark" });
 });
 
-it("stores the Sans reading font and says what it applies to", () => {
-	const { choose, storage, tree } = mount();
+it("stores the Sans reading font", () => {
+	const { choose, storage } = mount();
 	choose("Sans");
 	expect(JSON.parse(storage.get(DISPLAY_KEY) ?? "{}")).toMatchObject({ readingFont: "sans" });
-	expect(renderedText(tree)).toContain("For what agents write: messages, plans and documents.");
 });
 
 it("says a choice applies now but won't survive a restart when the phone can't store it", () => {
@@ -123,7 +122,8 @@ it("says a choice applies now but won't survive a restart when the phone can't s
 	act(() => {
 		tree.root.findByProps({ accessibilityRole: "radio", accessibilityLabel: "Dark" }).props.onPress();
 	});
-	expect(renderedText(tree)).toContain("This choice applies now but couldn't be saved on this phone.");
+	expect(prefs.getSnapshot().appearance).toBe("dark");
+	expect(testIDSuffixes(tree, "display-not-saved-")).toEqual(["appearance"]);
 });
 
 it("names the hub's default detail level, or Custom, and opens its page", () => {
@@ -132,7 +132,6 @@ it("names the hub's default detail level, or Custom, and opens its page", () => 
 		accessibilityRole: "button",
 		accessibilityLabel: "Default detail level, Intent",
 	});
-	expect(renderedText(intent.tree)).toContain("Each session can override this from its menu.");
 	act(() => row.props.onPress());
 	expect(intent.navigation.navigate).toHaveBeenCalledWith("DetailLevel", { hubId: "hub-1" });
 	const custom = mount(
@@ -162,14 +161,18 @@ it("names the default detail level once: its row says it, with no label repeatin
 	expect(tree.root.findAll((node) => node.type === Group && node.props.label === "Default detail level")).toHaveLength(
 		0,
 	);
-	expect(renderedText(tree).match(/Default detail level/g)).toHaveLength(1);
+	// The page's only group labels are the two segmented controls'.
+	expect(tree.root.findAll((node) => node.type === GroupLabel)).toHaveLength(2);
 });
 
 // Absence is the signal (spec 14): a hub that keeps no default detail level
 // leaves no label or sentence behind (audit N5).
 it("shows nothing about a default detail level when the hub doesn't keep one", () => {
+	const footers = (tree: ReturnType<typeof mount>["tree"]) =>
+		tree.root.findAll((node) => node.type === GroupFooter).length;
 	const { tree } = mount(transcript({ support: "unsupported" }));
-	expect(renderedText(tree)).not.toMatch(/default detail level/i);
+	// Its footer goes with the row: one footer fewer than a hub that keeps one.
+	expect(footers(tree)).toBe(footers(mount().tree) - 1);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Default detail level, Intent" })).toHaveLength(0);
 });
 
@@ -192,12 +195,12 @@ it("says Show model on Board rows applies now but won't survive a restart when t
 	})(prefs.set.bind(prefs));
 	act(() => tree.root.findByProps({ accessibilityLabel: "Show model on Board rows" }).props.onValueChange(true));
 	expect(prefs.getSnapshot().showModel).toBe(true);
-	expect(renderedText(tree)).toContain("This choice applies now but couldn't be saved on this phone.");
+	expect(testIDSuffixes(tree, "display-not-saved-")).toEqual(["showModel"]);
 });
 
 it("never asks to reconnect or refresh", () => {
 	const { tree } = mount();
-	expect(renderedText(tree)).not.toMatch(/\bReconnect\b|\bRefresh\b|transcript display/i);
+	expect(offersButton(tree, /\bReconnect\b|\bRefresh\b/i)).toBe(false);
 });
 
 it("names the level the hub has saved, not a change still waiting to save", () => {

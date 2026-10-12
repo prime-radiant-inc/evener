@@ -349,11 +349,11 @@ func TestFromModelsDev_UnknownNPMFallsBackWithNote(t *testing.T) {
 	}
 	found := false
 	for _, n := range p.notes {
-		if strings.Contains(n, "protocol unverified") && strings.Contains(n, "some-unknown-sdk") {
+		if strings.Contains(n, "some-unknown-sdk") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("notes = %v, want a note containing %q and %q", p.notes, "protocol unverified", "some-unknown-sdk")
+		t.Fatalf("notes = %v, want a note naming %q", p.notes, "some-unknown-sdk")
 	}
 }

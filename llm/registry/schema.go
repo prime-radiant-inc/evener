@@ -346,6 +346,10 @@ func validateProvider(ps providerSchema, where string) error {
 	return validateCaps(ps.Caps, where)
 }
 
+// errHeaderNamesDifferOnlyByCase refuses credential-header names that collide
+// case-insensitively.
+var errHeaderNamesDifferOnlyByCase = errors.New("differ only by case; header names are case-insensitive, so one of them must go")
+
 // checkCredentialHeaderNames refuses two credential-header names that differ
 // only by case: header names are case-insensitive on the wire, so the
 // variants would collide into one header, while resolution picks a single
@@ -359,7 +363,7 @@ func checkCredentialHeaderNames(headers map[string]string, where string) error {
 	for _, k := range slices.Sorted(maps.Keys(headers)) {
 		folded := strings.ToLower(k)
 		if first, dup := seen[folded]; dup {
-			return fmt.Errorf("%s.credential_headers: %q and %q differ only by case; header names are case-insensitive, so one of them must go", where, first, k)
+			return fmt.Errorf("%s.credential_headers: %q and %q %w", where, first, k, errHeaderNamesDifferOnlyByCase)
 		}
 		seen[folded] = k
 	}
