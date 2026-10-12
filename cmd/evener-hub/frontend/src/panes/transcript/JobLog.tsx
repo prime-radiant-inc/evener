@@ -350,7 +350,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
           </div>
         )}
         {sourceBytes > 0 && sourceBytes < snapshot.windows.totalBytes && (
-          <span className={CLASS.joblogNote}>
+          <span className={CLASS.joblogNote} data-testid="joblog-partial">
             Loaded {sourceBytes.toLocaleString()} of {snapshot.windows.totalBytes.toLocaleString()} output bytes
           </span>
         )}
@@ -361,7 +361,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         )}
         {live === null && older === null && !snapshot.outputError && <Loader label="Loading job output" />}
         {live !== null && snapshot.windows.totalBytes === 0 && (
-          <EmptyState title="No output yet" hint="This job hasn't written anything." />
+          <EmptyState title="No output yet" hint="This job hasn't written anything." reason="empty" />
         )}
         <div
           className={CLASS.joblog}

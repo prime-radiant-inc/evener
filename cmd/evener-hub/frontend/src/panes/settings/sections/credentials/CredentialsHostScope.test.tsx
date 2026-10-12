@@ -17,8 +17,15 @@ import {
 import { hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
+import { emptyStateReasons } from "../../../../widgets/emptystate/emptyStateTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsHostScope } from "./CredentialsHostScope";
+
+// The surface's states, read from their markers rather than from the words it
+// shows for them.
+const hostUnconfigured = (): HTMLElement | null => document.querySelector('[data-reason="host-unconfigured"]');
+const credentialStateOf = (name: HTMLElement): string | null | undefined =>
+  name.closest("li")?.querySelector("[data-credential-state]")?.getAttribute("data-credential-state");
 
 // The credentials settings surface's host scope (component 07b's read path made
 // visible): a "Host" picker over the local hub plus every configured remote
@@ -309,7 +316,7 @@ test("a host that is no longer configured says so instead of falling back to thi
   // Beta disappears from the registry (removed from another client).
   act(() => hostsStore.setState({ load: { phase: "ready", hosts: [] } }));
 
-  expect(await screen.findByText(/is no longer configured/)).toBeTruthy();
+  await waitFor(() => expect(hostUnconfigured()).not.toBeNull());
   expect(screen.queryByText("on-beta")).toBeNull();
   expect(screen.queryByText("controller-only")).toBeNull();
 });
@@ -410,13 +417,13 @@ test("this hub's credential error never marks a remote host's same-named row", a
   const user = setupUser();
   // The statuses are live: this hub's own row reads Error.
   const local = screen.getByText(CONTROLLER_ROW.name);
-  await waitFor(() => expect(local.closest("li")?.textContent).toContain("Error"));
+  await waitFor(() => expect(credentialStateOf(local)).toBe("error"));
 
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   const remoteSection = await screen.findByRole("region", { name: "Providers on beta" });
   const remote = await within(remoteSection).findByText(CONTROLLER_ROW.name);
-  expect(remote.closest("li")?.textContent).not.toContain("Error");
+  expect(credentialStateOf(remote)).not.toBe("error");
 });
 
 // Medium (roborev): the read must follow the connection. useConnectedEffect's
@@ -472,7 +479,7 @@ test("a transition that orphans the first read never reads as 'no instances'", a
   replacement.on("evener/host/request", () => HOST_LIST);
   await act(async () => connectionStore.getState().connect(replacement));
 
-  expect(screen.queryByText(/No provider instances on beta/)).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("no-instances");
   expect(await screen.findByText("on-beta")).toBeTruthy();
 });
 
@@ -635,7 +642,7 @@ test("a host that offers no device flow surfaces a named failure that points at 
   await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
 
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("Device-code sign-in is not enabled on beta");
+  expect(alert.getAttribute("data-reason")).toBe("device-flow-unavailable");
   // The remedy is the CLI on the host, naming the instance it signs in...
   expect(alert.textContent).toContain("evener openai login --instance codex --no-device");
   // ...and never the env var the hub does not read.
@@ -745,7 +752,7 @@ test("a registry read that fails shows the honest unverifiable state", async () 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
   // A failed registry is never a permanent skeleton - that reads as "still
   // working" - and no remote read is issued under it.
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
@@ -766,9 +773,8 @@ test("the unverifiable state's retry re-reads the registry and restores verifica
 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
-  // The failed state by its own title: "The hosts list has no answer for beta"
-  // is the pending state, which also mentions the hosts list.
-  await screen.findByText("Couldn't check beta's registration");
+  // The failed state by its own reason, never the pending state's.
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
 
   // The hosts list comes back, and Retry issues the registry's own read.
   registryDown = false;
@@ -793,7 +799,7 @@ test("a pane retry that recovers the registry reads the host exactly once", asyn
 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
-  await screen.findByText("Couldn't check beta's registration");
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
   expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
 
   registryDown = false;
@@ -819,12 +825,12 @@ test("a recovery whose registry no longer names the host issues no read", async 
 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
-  await screen.findByText("Couldn't check beta's registration");
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
 
   registryDown = false;
   await setupUser().click(screen.getByRole("button", { name: "Retry" }));
 
-  expect(await screen.findByText(/is no longer configured/)).toBeTruthy();
+  await waitFor(() => expect(hostUnconfigured()).not.toBeNull());
   expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
 });
 
@@ -872,7 +878,7 @@ test("a listing read before the registry ever answered is not verified when the 
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unverifiable"]));
   expect(screen.queryByText("on-beta")).toBeNull();
 });
 
@@ -917,7 +923,7 @@ test("a retained identity keeps a verified listing shown when the registry later
   // the rows are still read under the current one.
   act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
 
-  expect(screen.queryByText(/Couldn't check/)).toBeNull();
+  expect(emptyStateReasons(document.body)).not.toContain("unverifiable");
   expect(screen.getByText("on-beta")).toBeTruthy();
 });
 
@@ -1015,7 +1021,7 @@ test("a sign-in failure naming the old host does not survive a host change", asy
   await screen.findByRole("option", { name: "gamma" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("Device-code sign-in is not enabled on beta");
+  expect((await screen.findByRole("alert")).getAttribute("data-reason")).toBe("device-flow-unavailable");
 
   await user.selectOptions(select, "gamma");
   expect(await screen.findByRole("heading", { name: "Providers on gamma" })).toBeTruthy();
@@ -1181,7 +1187,7 @@ test("a restart the host answers with fallback clears the expired dialog", async
   restarted = true;
   await user.click(startAgain);
 
-  expect((await screen.findByRole("alert")).textContent).toContain("Device-code sign-in is not enabled on beta");
+  expect((await screen.findByRole("alert")).getAttribute("data-reason")).toBe("device-flow-unavailable");
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.queryByText("REMOTE-CODE")).toBeNull();
 });

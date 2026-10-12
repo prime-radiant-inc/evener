@@ -126,6 +126,7 @@ export function SessionCacheRow() {
 
   return (
     <SettingsField
+      field="session-cache"
       label="Cached session content"
       value={
         <>

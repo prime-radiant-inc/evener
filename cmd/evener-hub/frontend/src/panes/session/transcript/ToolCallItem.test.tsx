@@ -129,7 +129,7 @@ test.each(["running", "completed"])(
     // Expanded at settle, the card's merged status line carries the word; the
     // standalone lifecycle div is suppressed while the card is mounted.
     expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
-    expect(screen.getByTestId("subagent-stats").textContent).toContain("Status unavailable");
+    expect(screen.getByTestId("subagent-stats").dataset.kind).toBe("unknown");
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
     expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
@@ -139,7 +139,7 @@ test.each(["running", "completed"])(
     const body = screen.getByTestId("tool-call-body");
     fireEvent.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${body.id}"]`)!);
     expect(screen.queryByTestId("tool-call-body")).toBeNull();
-    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("unknown");
     expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
   },
 );
@@ -734,6 +734,14 @@ test("a body-less errored row is still an expandable disclosure, collapsed until
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
+// An open shell row's summary is a placeholder: still there, but no longer
+// repeating the command the body shows.
+function expectPlaceholderSummary(command: string): void {
+  const summary = screen.getByTestId("tool-row-summary").textContent ?? "";
+  expect(summary).not.toBe("");
+  expect(summary).not.toContain(command);
+}
+
 test("an expanded shell row swaps the one-line command for a placeholder - the body's block stays the single copy", () => {
   // At activity level the body opens through the config default, so an open
   // shell row swaps its summary for the placeholder.
@@ -752,7 +760,7 @@ test("an expanded shell row swaps the one-line command for a placeholder - the b
   expect(rowIsOpen(details)).toBe(true);
   // The summary line stays (it is the line the disclosure chevron rides), but
   // its text no longer duplicates the body's pretty-printed command.
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // The command still appears exactly once: the body's pretty-printed block.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
   // The row stays toggleable: the chevron rides the summary line.
@@ -775,7 +783,7 @@ test("a collapsed shell row keeps the one-line command summary; opening the row 
   );
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
   expandRow();
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // Collapsing the body again restores the real summary - the swap is a
   // display state, not a one-way replacement.
   expandRow();
@@ -1605,15 +1613,15 @@ test("a delegate_send card's Open transcript control rides inline between the de
   const trailing = screen.getByTestId("tool-row-trailing");
   expect(trailing.contains(screen.getByRole("button", { name: "Open transcript" }))).toBe(true);
   const [before, after] = textAround(trailing);
-  expect(before).toBe("Sent a message to delegate dlg_abc123");
-  expect(after).toBe(" · running");
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Sent a message to delegate dlg_abc123 · running");
+  expect(before).toContain("dlg_abc123");
+  expect(after).toContain("running");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe(`${before}${after}`);
   cleanup();
   render(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
   const openTrailing = screen.getByTestId("tool-row-trailing");
   const [openBefore, openAfter] = textAround(openTrailing);
-  expect(openBefore).toBe("Sent a message to delegate dlg_abc123");
-  expect(openAfter).toBe(" · running");
+  expect(openBefore).toBe(before);
+  expect(openAfter).toBe(after);
 });
 
 // --- summarySuffix (kata h70z): a descriptor may append text to the
@@ -1913,7 +1921,7 @@ test("a shell row swaps the summary for the placeholder when the body opens (too
   // intent line.
   const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
   fireEvent.click(bodyTrigger);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // The intent line stays.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");
   // data-body-trigger-intent marks the intent-line chevron placement; the
@@ -2278,7 +2286,8 @@ test("a collapsed two-level row keeps distinct accessible names for its intent a
   expect(intentTrigger.getAttribute("aria-label")).toBeNull();
   expect(screen.getAllByRole("button", { name: "Running the test suite" })).toHaveLength(1);
   // The body trigger keeps the bare fallback rather than duplicating it.
-  expect(bodyTrigger.getAttribute("aria-label")).toBe("Tool call");
+  expect(bodyTrigger.getAttribute("aria-label")).not.toBeNull();
+  expect(bodyTrigger.getAttribute("aria-label")).not.toBe("Running the test suite");
 });
 
 // --- entity cards on ids in non-content summary fields ---------------------

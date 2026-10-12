@@ -981,3 +981,24 @@ func (c *Client) PluginSetAutoUpgrade(ctx context.Context, params PluginSetAutoU
 	err := c.request(ctx, MethodEvenerPluginSetAutoUpgrade, params, &out)
 	return out, err
 }
+
+func (c *Client) DevicePairingCreate(ctx context.Context, params DevicePairingCreateParams) (DevicePairingInvitation, error) {
+	var out DevicePairingInvitation
+	err := c.request(ctx, MethodEvenerDevicePairingCreate, params, &out)
+	return out, err
+}
+func (c *Client) DevicePairingRead(ctx context.Context, params DevicePairingParams) (DevicePairingStatus, error) {
+	var out DevicePairingStatus
+	err := c.request(ctx, MethodEvenerDevicePairingRead, params, &out)
+	return out, err
+}
+func (c *Client) DevicePairingApprove(ctx context.Context, params DevicePairingApproveParams) (DevicePairingStatus, error) {
+	var out DevicePairingStatus
+	err := c.request(ctx, MethodEvenerDevicePairingApprove, params, &out)
+	return out, err
+}
+func (c *Client) DevicePairingCancel(ctx context.Context, params DevicePairingParams) (DevicePairingStatus, error) {
+	var out DevicePairingStatus
+	err := c.request(ctx, MethodEvenerDevicePairingCancel, params, &out)
+	return out, err
+}

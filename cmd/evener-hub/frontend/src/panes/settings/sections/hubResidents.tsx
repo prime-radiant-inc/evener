@@ -293,7 +293,7 @@ export function HubResidents() {
           data is available. The timeout governs future spawns and resumes;
           currently-running daemons keep their per-row effective timeout. */}
       {data !== null && (
-        <p className={CLASS.meta}>
+        <p className={CLASS.meta} data-testid="hub-default-timeout">
           Hub default idle timeout: {formatTimeout(data.defaultTimeoutMillis)}. Applies to future spawns and resumes;
           running daemons keep their effective timeout.
         </p>
@@ -409,7 +409,7 @@ export function HubResidents() {
                             supersede this snapshot: the claim snapshot carries the same
                             in-flight leases, so rendering both duplicates the line. */}
                         {(retireResult === undefined || retireResult.accepted) && snapshotBlockers.length > 0 && (
-                          <div className={CLASS.blockers}>
+                          <div className={CLASS.blockers} data-testid="resident-blockers">
                             {"Blocked by: "}
                             {snapshotBlockers.map(formatBlocker).join(", ")}
                           </div>
@@ -419,7 +419,7 @@ export function HubResidents() {
                             row's lifecycle phase changes, the daemon leaves the
                             roster, or a new action is initiated. */}
                         {retireResult !== undefined && !retireResult.accepted && (
-                          <div className={CLASS.blockers}>
+                          <div className={CLASS.blockers} data-testid="resident-blockers">
                             {"Blocked by: "}
                             {retireResult.lifecycle.blockers.map(formatBlocker).join(", ") || "unknown reason"}
                           </div>

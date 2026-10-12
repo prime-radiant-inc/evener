@@ -75,7 +75,12 @@ export function MemoryContextBody({
   const hasContent = observation.content.trim() !== "";
   return (
     <div className={CLASS.body} data-testid="memory-context-body">
-      <div className={CLASS.meta} data-testid="memory-context-meta">
+      <div
+        className={CLASS.meta}
+        data-testid="memory-context-meta"
+        data-scope={observation.scope}
+        data-state={observation.state}
+      >
         <span data-testid="memory-context-scope-state">{meta}</span>
         {observation.truncated && (
           <span className={CLASS.truncated} data-testid="memory-context-truncated">
@@ -88,7 +93,7 @@ export function MemoryContextBody({
           <Markdown source={observation.content} />
         </div>
       ) : (
-        <p className={CLASS.empty} data-testid="memory-context-empty">
+        <p className={CLASS.empty} data-testid="memory-context-empty" data-reason={observation.state}>
           {memoryContextEmptyText(observation.state)}
         </p>
       )}
@@ -103,7 +108,7 @@ export function MemoryContextDisclosure({ item, sessionRef }: { item: ItemModel;
   // too, so the summary never implies a successful read.
   const qualifier =
     observation && (observation.state === "unavailable" || observation.state === "revoked") ? (
-      <span className={CLASS.state} data-testid="memory-context-state">
+      <span className={CLASS.state} data-testid="memory-context-state" data-state={observation.state}>
         {memoryContextStateLabel(observation.state)}
       </span>
     ) : undefined;

@@ -128,12 +128,16 @@ const DEGRADED_VERSION_EMPTY_HINT =
 // Evener version; other empty sessions invite their first message.
 function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
   if (restartRequired) {
-    return <EmptyState title={DEGRADED_VERSION_EMPTY_TITLE} hint={DEGRADED_VERSION_EMPTY_HINT} />;
+    return (
+      <EmptyState title={DEGRADED_VERSION_EMPTY_TITLE} hint={DEGRADED_VERSION_EMPTY_HINT} reason="version-mismatch" />
+    );
   }
   if (active) {
-    return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
+    return (
+      <EmptyState title="Waiting for the first reply" hint="The agent has your message." reason="awaiting-reply" />
+    );
   }
-  return <EmptyState title="Send the first message" hint="This session hasn't started yet." />;
+  return <EmptyState title="Send the first message" hint="This session hasn't started yet." reason="no-turns" />;
 }
 
 // Failure-feedback convention: a USER-INITIATED action that fails surfaces via
@@ -174,7 +178,10 @@ function RestartRequiredNotice({
     }
   };
   return (
-    <div role="alert">
+    <div
+      role="alert"
+      data-reason={ownerRef ? "owner-retained" : resumeRequired ? "resume-required" : "version-mismatch"}
+    >
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
@@ -719,7 +726,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               !restartPending &&
               !controlsFor(model).send && <SessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity />}
             {reconciliationFailed && (
-              <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
+              <div role="alert" data-testid="message-recovery-pending">
+                Message recovery has not completed. Sending will resume after recovery succeeds.
+              </div>
             )}
             <PendingChips sessionRef={ref} />
             {composerSource && <Composer ref={ref} paneId={paneId} source={composerSource} focused={paneFocused} />}

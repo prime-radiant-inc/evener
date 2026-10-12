@@ -3,6 +3,9 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./settingsField.module.css";
 
 export interface SettingsFieldProps {
+  /** Stable id for the row, rendered as `data-field` so callers and tests can
+   * tell rows apart without reading their labels. */
+  field: string;
   label: string;
   value: ReactNode;
   help?: ReactNode;
@@ -30,9 +33,9 @@ const CLASS = {
  * `<label htmlFor>`; every field here is inert display text, which is what
  * `<dt>`/`<dd>` are for.
  */
-export function SettingsField({ label, value, help }: SettingsFieldProps) {
+export function SettingsField({ field, label, value, help }: SettingsFieldProps) {
   return (
-    <div className={CLASS.row}>
+    <div className={CLASS.row} data-field={field}>
       <dt className={CLASS.label}>{label}</dt>
       <dd className={CLASS.value}>{value}</dd>
       {help !== undefined && <p className={CLASS.help}>{help}</p>}

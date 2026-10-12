@@ -9,12 +9,30 @@ import { credentialsStore, resetCredentialsStoreForTests } from "../../../../sto
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
 import { InstanceSheet } from "./InstanceSheet";
 
 /** The refusal these controls use instead of the native attribute: a click that
  * starts work must not drop the keyboard, so the pending/busy state is
  * aria-disabled (Button/Switch swallow the activation themselves). */
 const isRefused = (el: HTMLElement): boolean => el.getAttribute("aria-disabled") === "true";
+
+// The sheet's state, read from its markers rather than from the words it shows
+// for them: the chips by kind, the credential layers by wire source, the form's
+// refusal by reason, and the rename note by which rename it describes.
+const chipKinds = (): (string | null)[] =>
+  [...document.querySelectorAll("[data-kind]")].map((chip) => chip.getAttribute("data-kind"));
+const layers = (): [string | null, (string | null)[]][] =>
+  [...document.querySelectorAll("[data-source]")].map((layer) => [
+    layer.getAttribute("data-source"),
+    [...layer.querySelectorAll("[data-kind]")].map((chip) => chip.getAttribute("data-kind")),
+  ]);
+const credentialStateShown = (): string | null =>
+  document.querySelector("[data-credential-state]")?.getAttribute("data-credential-state") ?? null;
+const formErrorReason = (): string | null => screen.getByRole("alert").getAttribute("data-reason");
+const refusalShown = (reason: string): boolean =>
+  document.querySelector(`[role="alert"][data-reason="${reason}"]`) !== null;
+const renameNote = (): string | null => document.querySelector("form")?.getAttribute("data-rename") ?? null;
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
@@ -116,7 +134,7 @@ describe("visibility", () => {
   test("renders a dialog named after the instance, with the default chip when set", () => {
     renderSheet(instance({ name: "openai-work", providerId: "openai", isDefault: true }));
     expect(screen.getByRole("dialog", { name: "openai-work" })).toBeTruthy();
-    expect(screen.getByText(/default/i)).toBeTruthy();
+    expect(chipKinds()).toEqual(["default"]);
   });
 
   // The sheet is the whole screen on mobile and the only place Remove would
@@ -124,14 +142,14 @@ describe("visibility", () => {
   // be here too - not only on the row behind it.
   test("an environment-backed instance is badged 'from environment'", () => {
     renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
-    expect(screen.getByText("from environment")).toBeTruthy();
+    expect(chipKinds()).toContain("environment");
   });
 
   test("an implicit instance credentialed through the UI carries no badge", () => {
     renderSheet(
       instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
     );
-    expect(screen.queryByText("from environment")).toBeNull();
+    expect(chipKinds()).not.toContain("environment");
   });
 
   test("a signed-in Codex account carries no badge", () => {
@@ -145,12 +163,12 @@ describe("visibility", () => {
         hasStoredOAuth: true,
       }),
     );
-    expect(screen.queryByText("from environment")).toBeNull();
+    expect(chipKinds()).not.toContain("environment");
   });
 
   test("a non-implicit instance carries no such badge", () => {
     renderSheet(instance({ name: "work", providerId: "groq", base: "groq", implicit: false }));
-    expect(screen.queryByText("from environment")).toBeNull();
+    expect(chipKinds()).not.toContain("environment");
   });
 
   test("the close button calls onClose", async () => {
@@ -169,12 +187,12 @@ describe("visibility", () => {
 
   test("the heading dot reads idle for a configured instance", () => {
     renderSheet(instance({ name: "a", providerId: "x", hasStoredFile: true, activeSource: "store" }));
-    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+    expect(screen.getByRole("img").getAttribute("data-state")).toBe("idle");
   });
 
   test("the heading dot reads ended when a required key is missing", () => {
     renderSheet(instance({ name: "a", providerId: "x", activeSource: "none", credentialRequired: true }));
-    expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
+    expect(screen.getByRole("img").getAttribute("data-state")).toBe("ended");
   });
 });
 
@@ -188,10 +206,10 @@ describe("credential display", () => {
         activeSource: "api_key",
       }),
     );
-    expect(screen.getByText("effective")).toBeTruthy();
-    expect(screen.getByText("shadowed")).toBeTruthy();
-    expect(screen.getByText(/Configured via providers\.toml/)).toBeTruthy();
-    expect(screen.getByText(/Configured via stored API key/)).toBeTruthy();
+    expect(layers()).toEqual([
+      ["api_key", ["effective"]],
+      ["store", ["shadowed"]],
+    ]);
   });
 
   test("an oauth layer carries the stored email", () => {
@@ -205,13 +223,14 @@ describe("credential display", () => {
         activeSource: "oauth",
       }),
     );
-    expect(screen.getByText(/Configured via OAuth \(me@x\.com\)/)).toBeTruthy();
+    expect(layers()).toEqual([["oauth", ["effective"]]]);
+    expect(document.querySelector('[data-source="oauth"]')?.textContent).toContain("me@x.com");
   });
 
   test("an unconfigured instance shows its label instead of layers", () => {
     renderSheet(instance({ name: "a", providerId: "x", activeSource: "none" }));
-    expect(screen.getByText("Not configured")).toBeTruthy();
-    expect(screen.queryByText("effective")).toBeNull();
+    expect(credentialStateShown()).toBe("missing");
+    expect(layers()).toEqual([]);
   });
 });
 
@@ -333,7 +352,7 @@ describe("actions are conditionally rendered", () => {
         credentialRequired: false,
       }),
     );
-    expect(screen.getByText("from environment")).toBeTruthy();
+    expect(chipKinds()).toContain("environment");
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
   });
@@ -353,7 +372,7 @@ describe("actions are conditionally rendered", () => {
   // nothing to say.
   test("an implicit instance with no environment-supplied source keeps Remove and its divider", () => {
     renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
-    expect(screen.queryByText("from environment")).toBeNull();
+    expect(chipKinds()).not.toContain("environment");
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
     expect(document.querySelectorAll("hr").length).toBe(1);
   });
@@ -407,7 +426,10 @@ describe("action labels follow stored state", () => {
     // Replacing a key that providers.toml outranks changes nothing the
     // instance actually uses, so the shadowed chip has to be on screen next
     // to the offer.
-    expect(screen.getByText("shadowed")).toBeTruthy();
+    expect(layers()).toEqual([
+      ["api_key", ["effective"]],
+      ["store", ["shadowed"]],
+    ]);
   });
 
   test("'Sign in…' when no OAuth is stored", () => {
@@ -479,10 +501,7 @@ describe("action labels follow stored state", () => {
       }),
     );
     expect(screen.getByRole("button", { name: "Replace credential JSON" })).toBeTruthy();
-    // A regex, not an exact string: the layer's "↳ " prefix and the label
-    // render as sibling text nodes in the same <span> (same reason the
-    // sibling assertions above, at :119-120 and :134, use a regex too).
-    expect(screen.getByText(/Configured via stored credential JSON/)).toBeTruthy();
+    expect(layers()).toEqual([["store", ["effective"]]]);
   });
 
   test("the credential JSON action calls onSetCredentialJson", async () => {
@@ -557,7 +576,7 @@ describe("action callbacks fire", () => {
     renderSheet(instance({ name: "a", providerId: "x" }), {
       testCredentialsResult: { provider: "a", status: "success", message: "Credentials verified." },
     });
-    expect(screen.getByRole("status").textContent).toContain("Credentials verified.");
+    expect(screen.getByRole("status").getAttribute("data-state")).toBe("success");
   });
 
   test("an unknown test status is sanitized to the endpoint-failure message", () => {
@@ -565,7 +584,7 @@ describe("action callbacks fire", () => {
       testCredentialsResult: { provider: "a", status: "garbage", message: "raw provider prose" },
     });
     const line = screen.getByRole("status");
-    expect(line.textContent).toContain("The provider endpoint could not be reached.");
+    expect(line.getAttribute("data-state")).toBe("endpoint_failure");
     expect(line.textContent).not.toContain("raw provider prose");
   });
 });
@@ -722,8 +741,7 @@ describe("the form", () => {
     expect(select("Surface").value).toBe("generic");
     expect(field("API key environment variable").value).toBe("PORTKEY_KEY");
     expect(field("Credential header").value).toBe("Authorization=Bearer $PORTKEY_KEY");
-    // "openai" is also a Surface option's text, so read the meta row's value cell.
-    expect(screen.getByText("Base provider").nextElementSibling?.textContent).toBe("openai");
+    expect(screen.getByTestId("base-provider").textContent).toBe("openai");
   });
 
   test("renders one input per base-provider variable, labelled by env var name, plus authored extras", () => {
@@ -874,7 +892,7 @@ describe("the form", () => {
     expect(field("Name").disabled).toBe(false);
     const user = userEvent.setup();
     await user.type(field("Name"), "-2");
-    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+    expect(renameNote()).toBe("leaves-row");
   });
 
   // The same note for a row that only looks like the user's - a stored key
@@ -894,7 +912,7 @@ describe("the form", () => {
     );
     const user = userEvent.setup();
     await user.type(field("Name"), "-2");
-    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+    expect(renameNote()).toBe("leaves-row");
   });
 
   test("a UI-credentialed instance's Name is editable with the ordinary rename note", async () => {
@@ -911,15 +929,14 @@ describe("the form", () => {
     expect(field("Name").disabled).toBe(false);
     const user = userEvent.setup();
     await user.type(field("Name"), "-2");
-    expect(screen.getByText(/keep the old name/)).toBeTruthy();
-    expect(screen.queryByText(/leaves this one in place/)).toBeNull();
+    expect(renameNote()).toBe("keeps-old-name");
   });
 
   test("changing the name shows the rename note", async () => {
     renderSheet(WORK, {}, [OPENAI]);
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
-    expect(screen.getByText(/reference "work" keep the old name/)).toBeTruthy();
+    expect(renameNote()).toBe("keeps-old-name");
   });
 
   // The note and instanceEditParams have to agree on what a rename is: an
@@ -930,7 +947,7 @@ describe("the form", () => {
     renderSheet(WORK, {}, [OPENAI]);
     const user = userEvent.setup();
     await user.clear(field("Name"));
-    expect(screen.queryByText(/reference "work" keep the old name/)).toBeNull();
+    expect(renameNote()).toBeNull();
   });
 
   test("Save sends only the changed fields", async () => {
@@ -944,7 +961,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    await waitFor(() => expect(getToasts().some((t) => t.text === "Saved work")).toBe(true));
+    await waitFor(() => expect(toastKinds()).toContain("success"));
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
     // Reseeded from the refreshed instance: clean again.
     expect(saveButton().disabled).toBe(true);
@@ -958,7 +975,7 @@ describe("the form", () => {
     renderSheet(WORK, {}, [OPENAI]);
     const user = userEvent.setup();
     await user.clear(field("Base URL"));
-    expect(screen.getByText("Resets the endpoint to the provider's default.")).toBeTruthy();
+    expect(document.getElementById(`${field("Base URL").id}-help`)).not.toBeNull();
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true, originClientId: "test-tab" });
   });
@@ -1001,7 +1018,7 @@ describe("the form", () => {
     await user.clear(field("Credential header"));
     await fill(user, field("Credential header"), "Authorization=Bearer sk-literal");
     await user.click(saveButton());
-    expect(screen.getByRole("alert").textContent).toContain("$VARIABLE");
+    expect(formErrorReason()).toBe("literal-header");
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
   });
 
@@ -1016,7 +1033,7 @@ describe("the form", () => {
     await user.clear(field("Name"));
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(screen.getByRole("alert").textContent).toContain("Name cannot be empty");
+    expect(formErrorReason()).toBe("empty-name");
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
   });
 
@@ -1035,7 +1052,7 @@ describe("the form", () => {
     await user.clear(field("Name"));
     expect(saveButton().disabled).toBe(false);
     await user.click(saveButton());
-    expect(screen.getByRole("alert").textContent).toContain("Name cannot be empty");
+    expect(formErrorReason()).toBe("empty-name");
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
   });
 
@@ -1066,7 +1083,7 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("read-only"));
-    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(true);
+    expect(toastKinds()).toContain("error");
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
   });
 
@@ -1098,8 +1115,10 @@ describe("the form", () => {
       expectedEndpointFingerprint: "fp-work",
       originClientId: "test-tab",
     });
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
-    expect(getToasts().some((t) => t.text.includes("changed to a different endpoint"))).toBe(true);
+    await waitFor(() => expect(formErrorReason()).toBe("endpoint-changed"));
+    // The toast says what the form says, as an error.
+    const refusal = screen.getByRole("alert").textContent;
+    expect(getToasts().some((t) => t.kind === "error" && t.text === refusal)).toBe(true);
     // The draft survives for the retry, and the listing is re-read.
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
@@ -1139,7 +1158,7 @@ describe("the form", () => {
     const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
     expect(edits()).toHaveLength(1);
     expect(edits()[0]?.params).toMatchObject({ expectedEndpointFingerprint: "fp-work" });
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    await waitFor(() => expect(formErrorReason()).toBe("endpoint-changed"));
     // The recovery read has applied the re-pointed row.
     await waitFor(() =>
       expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.endpointFingerprint).toBe(
@@ -1189,14 +1208,14 @@ describe("the form", () => {
 
     const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
     expect(edits()).toHaveLength(1);
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    await waitFor(() => expect(formErrorReason()).toBe("endpoint-changed"));
     await waitFor(() =>
       expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.providerId).toBe("anthropic"),
     );
 
     await user.click(saveButton());
     // The guard refuses and reseeds; nothing is sent to the replacement.
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("was replaced under the same name"));
+    await waitFor(() => expect(formErrorReason()).toBe("instance-replaced"));
     expect(edits()).toHaveLength(1);
   });
 
@@ -1221,7 +1240,7 @@ describe("the form", () => {
       originClientId: "test-tab",
     });
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("already exists"));
-    expect(screen.queryByText(/changed to a different endpoint/)).toBeNull();
+    expect(formErrorReason()).toBe("save-failed");
     // Not the endpoint-conflict recovery: no listing read was asked for.
     expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBe(listingsBefore);
   });
@@ -1238,7 +1257,7 @@ describe("the form", () => {
     await user.type(field("Name"), "2");
     await user.click(saveButton());
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("work2"));
-    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(true);
+    expect(toastKinds()).toContain("success");
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -1295,7 +1314,7 @@ describe("the form", () => {
     await user.click(saveButton());
     // The stale edit must not reach the replacement...
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
-    expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
+    expect(formErrorReason()).toBe("instance-replaced");
     // ...and the form re-anchors to the instance now on screen.
     expect(field("Base URL").value).toBe("https://gw.example.test/v2");
   });
@@ -1327,9 +1346,8 @@ describe("the form", () => {
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
     // ...reported as the change it is, in the form and as a warning, never as
     // the store's own words or a "Save failed" toast...
-    await waitFor(() => expect(screen.getAllByText(/connection changed/).length).toBeGreaterThan(0));
-    expect(screen.queryByText(/credentials store/)).toBeNull();
-    expect(screen.queryByText(/Save failed/)).toBeNull();
+    await waitFor(() => expect(formErrorReason()).toBe("connection-replaced"));
+    expect(toastKinds()).toEqual(["warning"]);
     // ...the draft is kept, so the retry is the save the user typed...
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/stale");
     expect(saveButton().disabled).toBe(false);
@@ -1372,7 +1390,7 @@ describe("the form", () => {
 
     await user.click(saveButton());
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
-    expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
+    expect(formErrorReason()).toBe("instance-replaced");
     expect(field("API key environment variable").value).toBe("");
   });
 
@@ -1413,7 +1431,7 @@ describe("the form", () => {
     // The stale draft must not reach the replacement through either write path.
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
     expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(0);
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("replaced under the same name"));
+    await waitFor(() => expect(formErrorReason()).toBe("instance-replaced"));
     // ...and the form re-anchors to the endpoint now on screen.
     expect(field("Base URL").value).toBe("https://replacement.example/v2");
     expect(field("API key environment variable").value).toBe("");
@@ -1444,7 +1462,7 @@ describe("the form", () => {
 
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({ name: "work", apiKeyEnv: "PORTKEY_KEY", originClientId: "test-tab" });
-    await waitFor(() => expect(getToasts().some((t) => t.text === "Saved work")).toBe(true));
+    await waitFor(() => expect(toastKinds()).toContain("success"));
     expect(screen.queryByRole("alert")).toBeNull();
     // Reseeded from the instance the save answered with: clean again, showing
     // what landed rather than a refusal.
@@ -1593,7 +1611,7 @@ describe("the form", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     // The rename happened, so the user hears about it even though the sheet
     // they asked from is gone.
-    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(true);
+    expect(toastKinds()).toContain("success");
     // And the sheet is not wedged busy: opening it on the new name gives a
     // live form again.
     selectName("work2");
@@ -1675,7 +1693,7 @@ describe("the form", () => {
     await act(async () => fail(new Error("providers.toml: write: read-only")));
 
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(true);
+    expect(toastKinds()).toContain("error");
   });
 
   // A refresh that starts after the save answers first, so the store discards
@@ -1684,9 +1702,6 @@ describe("the form", () => {
   // store does not have. Only the store's current list can say what landed —
   // and when that list already holds the renamed instance, it says the save
   // landed, so the sheet reports the ordinary success.
-  const STALE_SAVE_WARNING =
-    "Saved, but the list changed underneath; your edits were kept — refresh to see the current state";
-
   /** Answers an evener/instance/list refresh with `instances` and waits for
    * the store to apply it, so the save still in flight becomes superseded. */
   async function refreshList(
@@ -1712,8 +1727,8 @@ describe("the form", () => {
     await act(async () => finish({ instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] }));
 
     expect(handlers.onRenamed).not.toHaveBeenCalled();
-    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+    expect(toastKinds()).not.toContain("success");
+    expect(toastKinds()).toContain("warning");
     // The draft is the user's, and nothing reseeded over it.
     expect(field("Name").value).toBe("work2");
   });
@@ -1737,8 +1752,8 @@ describe("the form", () => {
     await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
 
     expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+    expect(toastKinds()).toContain("success");
+    expect(toastKinds()).not.toContain("warning");
   });
 
   // A rename the hub persisted but could not finish (the OAuth record would
@@ -1781,7 +1796,7 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === HUB_MESSAGE)).toBe(true);
     // ...and no form error blames the instance the config already renamed.
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(false);
+    expect(toastKinds()).not.toContain("error");
   });
 
   // The same rename answered by the store instead of superseded: the edit
@@ -1814,8 +1829,8 @@ describe("the form", () => {
     });
 
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+    expect(toastKinds()).toContain("success");
+    expect(toastKinds()).not.toContain("warning");
   });
 
   test("a plain save the store superseded keeps the draft and does not claim a save", async () => {
@@ -1835,8 +1850,8 @@ describe("the form", () => {
       finish({ instances: [{ ...WORK, baseUrl: "https://gw.example.test/v1/x" }], availableProviders: [OPENAI] }),
     );
 
-    expect(getToasts().some((t) => t.text === "Saved work")).toBe(false);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+    expect(toastKinds()).not.toContain("success");
+    expect(toastKinds()).toContain("warning");
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
   });
 
@@ -1877,7 +1892,7 @@ describe("the form", () => {
 
     // The draft now equals the landed row, so no replacement error appears and
     // Save is clean (disabled) rather than re-sending the same edit.
-    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(refusalShown("instance-replaced")).toBe(false);
     expect(saveButton().disabled).toBe(true);
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
@@ -1915,7 +1930,7 @@ describe("the form", () => {
     await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
 
     await user.click(saveButton());
-    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(refusalShown("instance-replaced")).toBe(true);
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
 
@@ -1956,7 +1971,7 @@ describe("the form", () => {
     await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
 
     // The re-anchor takes the landed resolution and leaves the draft clean.
-    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(refusalShown("instance-replaced")).toBe(false);
     expect(field("Base URL").value).toBe("https://new.example.test/v1");
     expect(saveButton().disabled).toBe(true);
 
@@ -2003,7 +2018,7 @@ describe("the form", () => {
     await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
 
     // Draft equals landed: clean, no replacement error.
-    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(refusalShown("instance-replaced")).toBe(false);
     expect(saveButton().disabled).toBe(true);
 
     await user.clear(field("Base URL"));
@@ -2099,7 +2114,7 @@ describe("the form", () => {
     });
     await pendingRead;
 
-    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(refusalShown("instance-replaced")).toBe(false);
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
     expect(saveButton().disabled).toBe(true);
   });
@@ -2131,9 +2146,8 @@ describe("the form", () => {
       finish({ instances: [before], availableProviders: [OPENAI] });
     });
 
-    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(false);
-    expect(screen.queryByText(/Save failed/)).toBeNull();
-    expect(screen.queryByText(/no client connected/)).toBeNull();
+    expect(toastKinds()).not.toContain("error");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   // `vars` is a map: the re-anchor must rebase per key, so an undeclared
@@ -2224,7 +2238,7 @@ describe("the form", () => {
       resolvers[3]?.({ instances: [landed], availableProviders: [OPENAI] });
     });
 
-    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(refusalShown("instance-replaced")).toBe(false);
     expect(saveButton().disabled).toBe(true);
   });
 });

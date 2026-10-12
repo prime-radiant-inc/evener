@@ -34,6 +34,10 @@ function question(overrides: Partial<AskQuestionRef> = {}): AskQuestionRef {
   };
 }
 
+function recommendedMarkers(): Element[] {
+  return [...document.querySelectorAll('[data-slot="recommended"]')];
+}
+
 const UNTOUCHED: AskAnswerState = { resolution: null, note: "" };
 
 // Controlled harness: AskQuestionCard is a pure controlled component (no
@@ -66,7 +70,9 @@ test("renders each option's label and detail, tagging only the recommended one",
   expect(screen.getByText("Yes")).toBeTruthy();
   expect(screen.getByText("Ship it")).toBeTruthy();
   expect(screen.getByText("No")).toBeTruthy();
-  expect(screen.getAllByText(/recommended/i)).toHaveLength(1);
+  const markers = recommendedMarkers();
+  expect(markers).toHaveLength(1);
+  expect(markers[0]?.closest("label")).toBe(screen.getByRole("radio", { name: "Yes" }).closest("label"));
 });
 
 // Option labels are inline bold text, not pills (ask-dialog UX rework): the
@@ -104,9 +110,9 @@ test("the recommended option carries an accent suffix right after its bold label
   render(<Harness q={question()} />);
 
   const yesLabel = screen.getByText("Yes");
-  const marker = screen.getByText("· recommended");
+  const [marker] = recommendedMarkers();
   // Same option row, immediately after the label.
-  expect(marker.parentElement).toBe(yesLabel.parentElement);
+  expect(marker?.parentElement).toBe(yesLabel.parentElement);
   expect(yesLabel.nextElementSibling).toBe(marker);
 
   const css = cardCss();
@@ -284,7 +290,8 @@ test("the note field is visible with no disclosure toggle and calls onNoteChange
 test("the free-mode field's aria-labelledby resolves to its own alternative label, not a colliding regular option", async () => {
   const user = userEvent.setup();
   render(<Harness q={question()} />);
-  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  const freeRadio = screen.getByRole("radio", { name: /something else/i });
+  await user.click(freeRadio);
   const freeInput = screen.getByPlaceholderText(/type your answer/i);
   const labelledBy = freeInput.getAttribute("aria-labelledby") ?? "";
   const ids = labelledBy.split(" ").filter(Boolean);
@@ -292,9 +299,9 @@ test("the free-mode field's aria-labelledby resolves to its own alternative labe
   for (const id of ids) {
     expect(document.getElementById(id)).not.toBeNull();
   }
-  // Resolves to the free alternative's OWN label text, not "Yes"/"No".
+  // Resolves to the free alternative's OWN label, not "Yes"/"No".
   const labelEl = document.getElementById(ids[0] ?? "");
-  expect(labelEl?.textContent).toMatch(/something else/i);
+  expect(labelEl?.closest("label")).toBe(freeRadio.closest("label"));
 });
 
 test("options render inside a group whose role reflects single vs multi select", () => {

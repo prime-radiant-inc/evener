@@ -129,6 +129,7 @@ export function UserMessageView({
     <div
       className={provisional === undefined ? CLASS.message : `${CLASS.message} ${CLASS.provisional}`}
       data-testid="user-message-item"
+      data-speaker={speaker}
       data-opens-exchange={opensExchange ? "true" : undefined}
       data-provisional={provisional !== undefined ? "true" : undefined}
     >

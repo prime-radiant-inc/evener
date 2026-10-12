@@ -176,6 +176,10 @@ no router (reserved).
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads a working directory's git HEAD, and its sanitized origin remote URL when requested. |
 | `evener/mobile/pairing` | hub | `MobilePairingParams` | `MobilePairingResponse` | Creates a validated mobile pairing URL for the authenticated web application. |
+| `evener/devicePairing/create` | hub | `DevicePairingCreateParams` | `DevicePairingInvitation` | Creates a short-lived device pairing invitation. |
+| `evener/devicePairing/read` | hub | `DevicePairingParams` | `DevicePairingStatus` | Lists pending device claims for explicit comparison. |
+| `evener/devicePairing/approve` | hub | `DevicePairingApproveParams` | `DevicePairingStatus` | Approves one device key for encrypted credential delivery. |
+| `evener/devicePairing/cancel` | hub | `DevicePairingParams` | `DevicePairingStatus` | Revokes a device pairing invitation. |
 | `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base. |
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
 | `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
@@ -663,6 +667,48 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `outcome` | `appwire.DelegateStopOutcome` |  |  |
+
+
+### `DevicePairingApproveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `invitation` | `string` |  |  |
+| `publicKey` | `string` |  |  |
+
+
+### `DevicePairingCreateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `origin` | `string` |  |  |
+| `tailnet` | `bool` |  |  |
+
+
+### `DevicePairingInvitation`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `invitation` | `string` |  |  |
+| `origin` | `string` |  |  |
+| `tailnet` | `bool` |  |  |
+| `expiresAt` | `int64` |  |  |
+
+
+### `DevicePairingParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `invitation` | `string` |  |  |
+
+
+### `DevicePairingStatus`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `state` | `string` |  |  |
+| `claims` | `[]appwire.DevicePairingClaim` |  |  |
+| `approvedKey` | `string` | yes |  |
 
 
 ### `DirsCreateParams`

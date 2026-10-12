@@ -89,7 +89,11 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   if (level === "none" || text === null) return null;
 
   return (
-    <div data-testid="liveness-line" className={level === "stalled" ? `${CLASS.line} ${CLASS.stalled}` : CLASS.line}>
+    <div
+      data-testid="liveness-line"
+      data-level={level}
+      className={level === "stalled" ? `${CLASS.line} ${CLASS.stalled}` : CLASS.line}
+    >
       {text}
     </div>
   );

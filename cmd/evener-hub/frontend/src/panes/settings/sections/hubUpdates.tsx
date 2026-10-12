@@ -65,6 +65,21 @@ export function HubUpdates() {
 
   if (!hub) return null;
 
+  // Which message the status line below is showing, as its `data-state`.
+  const updateState = restarting
+    ? "restarting"
+    : restartTimedOut
+      ? "restart-timed-out"
+      : checking
+        ? "checking"
+        : checkError !== null
+          ? "check-failed"
+          : check === null
+            ? undefined
+            : check.updateAvailable
+              ? "update-available"
+              : "up-to-date";
+
   return (
     <section className={CLASS.root} aria-labelledby="hub-updates-heading">
       <h3 id="hub-updates-heading" className={CLASS.heading}>
@@ -77,7 +92,7 @@ export function HubUpdates() {
       </p>
 
       {isDev && (
-        <p className={CLASS.status}>
+        <p className={CLASS.status} data-testid="hub-update-dev-note">
           <FieldDim>
             Dev build. Rebuild with <Code>make build-hub</Code> to update.
           </FieldDim>
@@ -96,7 +111,7 @@ export function HubUpdates() {
             disabled={applying || restarting}
           />
 
-          <p className={CLASS.status} role="status">
+          <p className={CLASS.status} role="status" data-testid="hub-update-status" data-state={updateState}>
             {restarting && <Loader label="Restarting hub" />}
             {!restarting &&
               restartTimedOut &&

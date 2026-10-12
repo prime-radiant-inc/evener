@@ -1,7 +1,7 @@
 # @evener/appwire-client
 
 The framework independent TypeScript client for Evener's AppWire protocol.
-It has no runtime dependencies and exports the client, the connection seam
+It uses TweetNaCl for its optional pairing subpath and exports the client, the connection seam
 applications program against, the transport contract, generated protocol
 types, wire errors with their session classifiers, the rejection classifier
 and the user-facing message helpers every failure display goes through, the
@@ -498,7 +498,8 @@ entry, and `mobile-native/src/metroResolver.test.ts` reads the same `exports`
 map, so a published subpath Metro cannot resolve fails there.
 
 Build and qualify from this directory with `npm run qualification`. The runner
-packs the package, installs that tarball into a temporary consumer, and then,
+packs the package and its installed runtime dependencies, installs those tarballs
+offline into a temporary consumer with an empty npm cache, and then,
 for every specifier the `exports` map publishes, checks ESM and CommonJS
 TypeScript resolution and runs both runtime import forms against the names that
 specifier promises. A subpath with no entry in the runner's qualification
@@ -572,3 +573,8 @@ readback.
 The shared connection example uses the platform WebSocket. If your hub requires
 an Authorization header, adapt `clientFromEnvironment` to the authenticated
 `socketFactory` described above before using these examples.
+
+`@evener/appwire-client/pairing` owns temporary device invitation encoding,
+comparison fingerprints, claim requests and encrypted credential decoding.
+It is a separate subpath so ordinary AppWire consumers do not load NaCl. See
+[the device pairing protocol](../../docs/device-pairing.md) for the wire contract.

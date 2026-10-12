@@ -5,6 +5,7 @@ import {
   type ActivityCounts,
   type ActivityTree as ActivityTreeData,
   buildActivityRows,
+  jobStatusDisplay,
   projectSessionActivity,
   SessionActivityStore,
 } from "@evener/appwire-client";
@@ -428,7 +429,7 @@ describe("ActivityTree", () => {
     const row = screen.getByRole("treeitem", { name: "Bounded audit" });
     expect(row.textContent).toContain("exhausted");
     expect(row.getAttribute("aria-description")).toBe("exhausted");
-    expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Failed");
+    expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("failed");
   });
 
   test("active child gives a terminal stable delegate a working glyph", () => {
@@ -480,7 +481,7 @@ describe("ActivityTree", () => {
 
     render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "Stable child work" });
-    expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Working");
+    expect(within(row).getByText("⌘").getAttribute("data-state")).toBe("working");
     expect(row.textContent).toContain("completed");
   });
 
@@ -590,7 +591,7 @@ describe("ActivityTree", () => {
     expect(failedRow.textContent).not.toContain("failed");
     expect(failedRow.getAttribute("aria-description")).toBe("failed");
     const kindGlyph = within(failedRow).getByText("$");
-    expect(kindGlyph.getAttribute("aria-label")).toBe("Failed");
+    expect(kindGlyph.getAttribute("data-state")).toBe("failed");
   });
 
   test("a live delegate row shows its intent while aria and glyph keep the status", () => {
@@ -664,7 +665,9 @@ describe("ActivityTree", () => {
     };
     render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
     const row = screen.getByRole("treeitem", { name: "legacy lint" });
-    expect(row.textContent).toContain("Command failed");
+    // The reason picks the word: it is not the bare status's.
+    expect(row.getAttribute("aria-description")).toBe(jobStatusDisplay("failed", "exit_nonzero"));
+    expect(row.getAttribute("aria-description")).not.toBe(jobStatusDisplay("failed"));
   });
 
   test("the kind glyph carries the row's status hue and accessible name", () => {
@@ -674,15 +677,15 @@ describe("ActivityTree", () => {
 
     // Working rows color the glyph with the alive hue.
     const liveGlyph = within(screen.getByRole("treeitem", { name: "run tests" })).getByText("$");
-    expect(liveGlyph.getAttribute("aria-label")).toBe("Working");
+    expect(liveGlyph.getAttribute("data-state")).toBe("working");
     expect(liveGlyph.className).toContain("kindAlive");
 
     // Both settled outcomes keep default low ink without losing the outcome label.
     const failedGlyph = within(screen.getByRole("treeitem", { name: "broken lint" })).getByText("$");
-    expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
+    expect(failedGlyph.getAttribute("data-state")).toBe("failed");
     expect(failedGlyph.className).not.toContain("kindDanger");
     const endedGlyph = within(screen.getByRole("treeitem", { name: "finished build" })).getByText("$");
-    expect(endedGlyph.getAttribute("aria-label")).toBe("Ended");
+    expect(endedGlyph.getAttribute("data-state")).toBe("ended");
     expect(endedGlyph.className).not.toContain("kindDanger");
     expect(endedGlyph.className).not.toContain("kindAlive");
   });
@@ -714,7 +717,7 @@ describe("ActivityTree", () => {
     expect(metaText(failedRow)).toBe("completed");
     expect(failedRow.querySelector("[class*=denseFailed]")).toBeNull();
     const failedGlyph = within(failedRow).getByText("$");
-    expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
+    expect(failedGlyph.getAttribute("data-state")).toBe("failed");
     expect(failedGlyph.className).not.toContain("kindDanger");
   });
 
@@ -745,7 +748,7 @@ describe("ActivityTree", () => {
     expect(screen.getByRole("treeitem", { name: "1 inactive" })).toBeTruthy();
     const row = screen.getByRole("treeitem", { name: "status only" });
     const glyph = within(row).getByText("$");
-    expect(glyph.getAttribute("aria-label")).toBe("Ended");
+    expect(glyph.getAttribute("data-state")).toBe("ended");
     expect(glyph.className).not.toContain("kindDanger");
   });
 

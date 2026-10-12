@@ -26,6 +26,7 @@
 import type { ItemModel, TranscriptMetadataVisibility, TurnModel } from "@evener/appwire-client";
 import {
   APPROVAL_DECISION_EVENT_KIND,
+  approvalDecisionOf,
   attentionWarningNotice,
   echoesTurnError,
   firstLine,
@@ -108,6 +109,26 @@ function noticeText(item: ItemModel): string {
   return systemEventWords(item).text || FALLBACK_LABEL;
 }
 
+// The quiet one-liner itself. data-fallback marks a line whose event said
+// nothing, so it reads the category label.
+function NoticeLine({ item }: { item: ItemModel }) {
+  return (
+    <div
+      className={CLASS.line}
+      data-testid="system-notice-line"
+      data-fallback={systemEventWords(item).text ? undefined : "true"}
+    >
+      {noticeText(item)}
+    </div>
+  );
+}
+
+// The system prompt, by its typed eventKind, or by the stable id for an older
+// daemon that predates it.
+function isSystemPromptItem(item: ItemModel): boolean {
+  return item.eventKind === "system_prompt" || item.id === SYSTEM_PROMPT_ITEM_ID;
+}
+
 // scaffoldLabel names the disclosure's collapsed summary: the system
 // prompt gets its own exact, honest label (never a snippet of its own
 // content, which routinely opens with something less recognizable than
@@ -116,7 +137,7 @@ function noticeText(item: ItemModel): string {
 // falls back to the same first-line preview SystemGroup already uses for its
 // own summary.
 function scaffoldLabel(item: ItemModel): string {
-  if (item.eventKind === "system_prompt" || item.id === SYSTEM_PROMPT_ITEM_ID) return "System prompt";
+  if (isSystemPromptItem(item)) return "System prompt";
   // A compaction's summary or checkpoint folds under the label the phone uses.
   return systemEventWords(item).label ?? (firstLine(noticeText(item), 60) || FALLBACK_LABEL);
 }
@@ -144,10 +165,16 @@ function ScaffoldDisclosure({ item, sessionRef }: { item: ItemModel; sessionRef?
     isNotesSnapshot ? { ignoreBaseline: true } : undefined,
   );
   return (
-    <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
+    <details
+      className={CLASS.scaffold}
+      data-testid="system-notice-scaffold"
+      data-kind={isSystemPromptItem(item) ? "system-prompt" : item.eventKind}
+      open={open}
+    >
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
       <summary
         className={CLASS.scaffoldSummary}
+        data-chars={item.text.length}
         onClick={(e) => {
           e.preventDefault();
           setDisclosureOpen(disclosureKey, !open);
@@ -199,13 +226,7 @@ function pctLabel(pct: number): string {
 // something rather than nothing.
 function RoundTimingsLine({ item }: { item: ItemModel }) {
   const summary = roundTimingsSummary(item.raw);
-  if (!summary) {
-    return (
-      <div className={CLASS.line} data-testid="system-notice-line">
-        {noticeText(item)}
-      </div>
-    );
-  }
+  if (!summary) return <NoticeLine item={item} />;
   const total = formatDurationMs(summary.totalMs);
   if (!summary.dominant) {
     // Every tracked phase rounded under 1ms - nothing to break down further.
@@ -223,7 +244,14 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
       : []),
   ].join("\n");
   return (
-    <div className={CLASS.line} data-testid="system-notice-line" title={breakdown}>
+    <div
+      className={CLASS.line}
+      data-testid="system-notice-line"
+      data-round={summary.round}
+      data-dominant-phase={summary.dominant.key}
+      data-omitted-phases={summary.omittedCount}
+      title={breakdown}
+    >
       {headline}
     </div>
   );
@@ -235,8 +263,13 @@ function RoundTimingsLine({ item }: { item: ItemModel }) {
 // never folds into a run (systemGrouping's joinsRun).
 function ApprovalDecisionLine({ item }: { item: ItemModel }) {
   const decidedAt = Date.parse(item.startedAt ?? "");
+  const decision = approvalDecisionOf(item);
   return (
-    <div className={CLASS.approval} data-testid="system-notice-approval">
+    <div
+      className={CLASS.approval}
+      data-testid="system-notice-approval"
+      data-approved={decision ? String(decision.approved) : undefined}
+    >
       <span data-testid="system-notice-approval-text">{noticeText(item)}</span>
       {Number.isFinite(decidedAt) && <MessageTimestamp value={decidedAt} />}
     </div>
@@ -259,11 +292,11 @@ const FAILURE_FALLBACK_LABEL = "Turn failed";
 // its own message, since the cap speaks only for the turn's failure: with no
 // cap at all, or an earlier, distinct error in the same turn, nothing else
 // carries it, and a failure is never left unstated.
-function failureText(item: ItemModel, turn: TurnModel): string {
+function failureText(item: ItemModel, turn: TurnModel): string | undefined {
   const named = item.description?.trim();
   const message = item.text.trim();
   const preferred = echoesTurnError(item, asTurnError(turn.error)) ? [named, message] : [message, named];
-  return preferred.find((candidate) => candidate) ?? FAILURE_FALLBACK_LABEL;
+  return preferred.find((candidate) => candidate);
 }
 
 // FailureLine is a turn failure: the one systemMessage a reader is hunting for
@@ -273,10 +306,16 @@ function failureText(item: ItemModel, turn: TurnModel): string {
 // lifecycle notice shares. data-attention="error" is the same urgent anchor
 // ToolCallItem tags a failed row with (parity §11).
 function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
+  const text = failureText(item, turn);
   return (
-    <div className={CLASS.failure} data-testid="system-notice-failure" data-attention="error">
+    <div
+      className={CLASS.failure}
+      data-testid="system-notice-failure"
+      data-attention="error"
+      data-fallback={text ? undefined : "true"}
+    >
       <FailureGlyph />
-      <span className={CLASS.failureText}>{failureText(item, turn)}</span>
+      <span className={CLASS.failureText}>{text ?? FAILURE_FALLBACK_LABEL}</span>
     </div>
   );
 }
@@ -316,11 +355,7 @@ function SystemLine({
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return <ApprovalDecisionLine item={item} />;
-  return (
-    <div className={CLASS.line} data-testid="system-notice-line">
-      {noticeText(item)}
-    </div>
-  );
+  return <NoticeLine item={item} />;
 }
 
 function SystemGroup({
@@ -352,7 +387,7 @@ function SystemGroup({
   const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, firstItem.id, false);
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   return (
-    <details className={CLASS.group} data-testid="system-notice-group" open={open}>
+    <details className={CLASS.group} data-testid="system-notice-group" data-count={count} open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
       <summary
         className={CLASS.summary}
@@ -361,7 +396,7 @@ function SystemGroup({
           toggleDisclosure(disclosureKey, disclosureFallback);
         }}
       >
-        {count} system events · {first}
+        {count} system events · <span data-slot="preview">{first}</span>
       </summary>
       <div className={CLASS.groupBody}>
         {run.items.map((it) => (

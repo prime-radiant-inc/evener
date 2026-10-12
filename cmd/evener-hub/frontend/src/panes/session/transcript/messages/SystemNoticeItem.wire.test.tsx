@@ -44,38 +44,47 @@ function oneItemTurn(item: ThreadItem): TurnModel {
   return turnModel({ id: "turn_1", itemsView: "full", status: "completed", items: [item] } as unknown as Turn);
 }
 
-function lineFor(name: SystemEventWireCase): string {
+function lineFor(name: SystemEventWireCase): HTMLElement {
   render(<TurnBlock turn={oneItemTurn(systemEventWireItem(name))} />);
-  return screen.getByTestId("system-notice-line").textContent ?? "";
+  return screen.getByTestId("system-notice-line");
 }
 
 test("names a loaded plugin, or says a plugin loaded, with no counts", () => {
-  expect(lineFor("plugin-loaded")).toBe("Plugin superpowers loaded");
+  const named = lineFor("plugin-loaded");
+  expect(named.textContent).toContain("superpowers");
+  expect(named.textContent).not.toMatch(/\d/);
   cleanup();
-  expect(lineFor("plugin-loaded-unnamed")).toBe("Plugin loaded");
+  const unnamed = lineFor("plugin-loaded-unnamed");
+  expect(unnamed.dataset.fallback).toBeUndefined();
+  expect(unnamed.textContent).not.toMatch(/\d/);
 });
 
+// The pass's own numbers (412000 -> 38000 tokens, 40 -> 5 turns), in the
+// compact token form; a pass with none reads with no numbers at all.
 test.each([
-  ["context-compaction", "Context compacted · 412K → 38K tokens"],
-  ["context-compaction-turns", "Context compacted · 40 → 5 turns"],
-  ["context-compaction-bare", "Context compacted"],
-] as const)("reads a %s pass as %s", (name, text) => {
-  expect(lineFor(name)).toBe(text);
+  ["context-compaction", /^\D*412K\D+38K\D*$/],
+  ["context-compaction-turns", /^\D*40\D+5\D*$/],
+  ["context-compaction-bare", /^\D+$/],
+] as const)("reads a %s pass by its numbers", (name, numbers) => {
+  const line = lineFor(name);
+  expect(line.dataset.fallback).toBeUndefined();
+  expect(line.textContent).toMatch(numbers);
 });
 
 test.each(["compaction-summary", "compaction-checkpoint"] as const)(
   "folds a %s under Context summary, never its first line",
   (name) => {
     render(<TurnBlock turn={oneItemTurn(systemEventWireItem(name))} />);
-    const summary = screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent ?? "";
-    expect(summary.startsWith("Context summary · ")).toBe(true);
-    expect(summary).not.toContain("# Summary");
+    const scaffold = screen.getByTestId("system-notice-scaffold");
+    expect(scaffold.dataset.kind).toBe("compaction");
+    expect(scaffold.querySelector("summary")?.textContent).not.toContain("# Summary");
   },
 );
 
 test("a failed turn's own failure row names the event, and its end cap carries the message", () => {
   render(<TurnBlock turn={turnModel(systemEventWireFailedTurn())} />);
   const rows = screen.getAllByTestId("system-notice-failure");
+  // The failure item's own description, from the recorded wire.
   expect(rows.map((row) => row.textContent)).toEqual(["Turn failed"]);
   expect(screen.getAllByText(/Provider exploded: 529 overloaded/)).toHaveLength(1);
 });
@@ -100,10 +109,10 @@ function itemsTurn(...names: SystemEventWireCase[]): TurnModel {
 test("an approval decision says what was decided, on what, and when", () => {
   render(<TurnBlock turn={itemsTurn("approval-allowed", "approval-denied")} />);
   const rows = screen.getAllByTestId("system-notice-approval");
-  expect(rows.map((row) => row.querySelector("[data-testid=system-notice-approval-text]")?.textContent)).toEqual([
-    "Allowed: write /Users/j/sites/docs/index.md",
-    "Denied: read /etc/hosts",
-  ]);
+  expect(rows.map((row) => row.dataset.approved)).toEqual(["true", "false"]);
+  const texts = rows.map((row) => row.querySelector("[data-testid=system-notice-approval-text]")?.textContent ?? "");
+  expect(texts[0]).toContain("/Users/j/sites/docs/index.md");
+  expect(texts[1]).toContain("/etc/hosts");
   for (const row of rows) expect(row.querySelector("time")).not.toBeNull();
 });
 

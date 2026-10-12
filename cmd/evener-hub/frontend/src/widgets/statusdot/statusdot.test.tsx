@@ -84,3 +84,11 @@ test("only the working state carries the activity spinner", () => {
     unmount();
   }
 });
+
+test("marks its state as data-state, so a state can be read without its accessible name", () => {
+  for (const [state] of STATE_FAMILIES) {
+    const { unmount } = render(<StatusDot state={state} />);
+    expect(screen.getByRole("img").getAttribute("data-state")).toBe(state);
+    unmount();
+  }
+});

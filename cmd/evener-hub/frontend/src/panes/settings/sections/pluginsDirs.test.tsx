@@ -22,15 +22,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("renders the Plugin directories heading, copy, and the pluginDirs entries", async () => {
+test("renders a heading and the pluginDirs entries, not skillsDirs", async () => {
   const fake = connectFakeClient();
   fake.on("evener/launch/getLayer", (params) => {
     expect(params).toEqual({ cwd: "/", layer: "global" });
     return { pluginDirs: ["/opt/plugins"], skillsDirs: ["/opt/skills"] };
   });
   render(<PluginsDirsSection />);
-  expect(await screen.findByText("Plugin directories")).toBeTruthy();
-  expect(screen.getByText("Directories evener scans for plugins at launch. Applied to every spawn.")).toBeTruthy();
+  expect(await screen.findByRole("heading", { level: 2 })).toBeTruthy();
   expect(await screen.findByText("/opt/plugins")).toBeTruthy();
   expect(screen.queryByText("/opt/skills")).toBeNull();
 });

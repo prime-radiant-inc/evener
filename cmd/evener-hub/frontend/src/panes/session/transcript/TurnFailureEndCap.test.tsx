@@ -13,6 +13,17 @@ beforeEach(() => {
   resetToastStoreForTests();
 });
 
+// The hint disclosure's toggle, or null when the end-cap has no hint.
+function hintSummary(): HTMLElement | null {
+  return screen.getByTestId("turn-failure").querySelector("summary");
+}
+
+// How many attached images the re-attach note says are unavailable, or null
+// when there is no note.
+function reattachCount(): string | null | undefined {
+  return screen.queryByTestId("turn-failure-reattach")?.getAttribute("data-count");
+}
+
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_u", turnId: "turn_1", type: "userMessage", text: "do the thing", ...overrides };
 }
@@ -42,7 +53,9 @@ test("a provider failure shows a provider-status badge and a Retry action", () =
       sessionRef="ref_a"
     />,
   );
-  expect(screen.getByText("provider 429")).toBeTruthy();
+  // The badge (the head's leading chip) carries the provider's HTTP status.
+  const badge = screen.getByTestId("turn-failure").firstElementChild?.firstElementChild;
+  expect(badge?.textContent).toContain("429");
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
 });
 
@@ -66,7 +79,7 @@ test("the hint renders when present", () => {
       sessionRef="ref_a"
     />,
   );
-  expect(screen.getByText("What can I do?")).toBeTruthy();
+  expect(hintSummary()).not.toBeNull();
   expect(screen.queryByText("check your API key")).toBeNull();
 });
 
@@ -78,7 +91,7 @@ test("hint sits behind a disclosure; retry is inline in the head row", () => {
   const head = cap.firstElementChild as HTMLElement;
   expect(head.contains(screen.getByRole("button", { name: /retry/i }))).toBe(true);
   expect(screen.queryByText("check your API key")).toBeNull();
-  fireEvent.click(screen.getByText("What can I do?"));
+  fireEvent.click(hintSummary() as HTMLElement);
   expect(screen.getByText("check your API key")).toBeTruthy();
 });
 
@@ -86,7 +99,7 @@ test("the hint toggle is a disclosure summary with a chevron affordance", () => 
   render(
     <TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} turn={failedTurn()} sessionRef="s1" />,
   );
-  const summary = screen.getByText("What can I do?").closest("summary");
+  const summary = hintSummary();
   expect(summary).not.toBeNull();
   expect(summary?.querySelector("svg")).not.toBeNull();
   fireEvent.click(summary!);
@@ -554,7 +567,7 @@ test("an image-only input with unavailable bytes shows a re-attach note instead 
   ]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
   expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(screen.getByText(/re-attach the image to retry/)).toBeTruthy();
+  expect(reattachCount()).toBe("1");
 });
 
 test("retry sends composer-style anchors so a failed retry recovers its image tiles", async () => {
@@ -654,7 +667,7 @@ test("prose that is only a translated marker counts as image-only for unavailabl
   ]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
   expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+  expect(reattachCount()).toBe("1");
 });
 
 test("a subset of unnamed markers refuses the images instead of misassigning", async () => {
@@ -812,7 +825,7 @@ test("a reloaded marker-only input with a paren in the lost filename shows re-at
   ]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
   expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+  expect(reattachCount()).toBe("1");
 });
 
 test("an image-only input whose filename holds a paren retries on a rebuilt anchor", async () => {
@@ -854,7 +867,7 @@ test("reloaded marker-only inputs with dotless or dashed tails show re-attach", 
     ]);
     render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
     expect(screen.queryByRole("button", { name: "Retry" }), text).toBe(null);
-    expect(screen.getByText("Attached image unavailable — re-attach the image to retry."), text).toBeTruthy();
+    expect(reattachCount(), text).toBe("1");
     cleanup();
   }
 });
@@ -905,7 +918,7 @@ test("a reloaded marker-only input whose lost filename ends with a paren shows r
   ]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
   expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+  expect(reattachCount()).toBe("1");
 });
 
 test("a reloaded marker-only input whose lost filename holds ') ' shows re-attach", () => {
@@ -925,7 +938,7 @@ test("a reloaded marker-only input whose lost filename holds ') ' shows re-attac
   ]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
   expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+  expect(reattachCount()).toBe("1");
 });
 
 test("glued user text after an unnamed marker is preserved, not swallowed", async () => {

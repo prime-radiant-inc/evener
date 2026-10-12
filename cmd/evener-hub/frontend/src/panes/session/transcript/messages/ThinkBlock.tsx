@@ -94,7 +94,7 @@ const thoughtIcon = (
 
 const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 
-// thoughtLabel never fabricates a duration: `durationMs` is undefined whenever
+// ThoughtLabel never fabricates a duration: `durationMs` is undefined whenever
 // neither the wire pair nor the observed pair is available or valid (see
 // reasoningFormat.ts). Every part joins on the same " · " separator - the
 // draft restyle's "Thought · 12s · preview" grammar (mockup #4), one delimiter
@@ -102,11 +102,27 @@ const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 // plain-text rendering of the final meaningful line, not a second Markdown
 // body; opening the disclosure still reveals the complete source through
 // Markdown.
-function thoughtLabel(durationMs: number | undefined, preview: string): string {
-  const parts = ["Thought"];
-  if (durationMs !== undefined) parts.push(formatThoughtDuration(durationMs));
-  if (preview) parts.push(preview);
-  return parts.join(" · ");
+// Each optional part rides in its own inline span carrying what it stands for
+// (data-duration-ms, data-slot="preview"), so the words stay one line while a
+// reader of the DOM can tell the measured duration and the preview apart.
+function ThoughtLabel({ durationMs, preview }: { durationMs: number | undefined; preview: string }) {
+  return (
+    <>
+      Thought
+      {durationMs !== undefined && (
+        <>
+          {" · "}
+          <span data-duration-ms={durationMs}>{formatThoughtDuration(durationMs)}</span>
+        </>
+      )}
+      {preview && (
+        <>
+          {" · "}
+          <span data-slot="preview">{preview}</span>
+        </>
+      )}
+    </>
+  );
 }
 
 // The live view (mockup #4's draft treatment): a quiet "Thinking…" eyebrow
@@ -171,7 +187,13 @@ function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
   const estimatedTokens = Math.round(characters / 4);
   const label = estimatedTokens > 0 ? `Thinking… · ~${formatTokenCount(estimatedTokens)} tokens` : "Thinking…";
   return (
-    <div className={CLASS.block} data-testid="think-block" data-live="true" data-content-free="true">
+    <div
+      className={CLASS.block}
+      data-testid="think-block"
+      data-live="true"
+      data-content-free="true"
+      data-estimated-tokens={estimatedTokens > 0 ? estimatedTokens : undefined}
+    >
       {/* rail: the grid IS this row's status glyph, so it seats in the icon
        * rail the live and settled rows seat their bulb glyph in (the Loader
        * variant owns the slot geometry and the gutter pull - see
@@ -284,7 +306,7 @@ export const ThinkBlock = memo(function ThinkBlock({
               chevron always stays on screen at the end of the words instead of
               being pushed past the summary's clipped edge. */}
           <span className={CLASS.summaryText}>
-            {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
+            <ThoughtLabel durationMs={durationMs} preview={open ? "" : preview} />
           </span>
           {/* Mockup #4's trailing affordance: the shared widgets/chevron at the
               tail of the collapsed line, turning 90° when open via the same

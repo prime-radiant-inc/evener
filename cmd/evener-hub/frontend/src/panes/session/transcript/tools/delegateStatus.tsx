@@ -344,7 +344,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
             <Markdown source={mandate.first} />
           </div>
           {mandate.rest && (
-            <Disclosure id={mandateDisclosureId} summary="Show full mandate">
+            <Disclosure id={mandateDisclosureId} summary="Show full mandate" data-testid="delegate-mandate-rest">
               <Markdown source={mandate.rest} />
             </Disclosure>
           )}

@@ -153,7 +153,12 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
                   <ToolIcon kind={sourceIconKind} size={14} />
                 </span>
               )}
-              <span className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</span>
+              <span
+                className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}
+                data-reason={isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined}
+              >
+                {summaryText}
+              </span>
             </>
           )}
         </span>

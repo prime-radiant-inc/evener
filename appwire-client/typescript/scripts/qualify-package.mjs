@@ -23,9 +23,32 @@ async function qualify() {
   const packageManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
   const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", consumerDir], packageDir))[0];
   const tarball = join(consumerDir, packed.filename);
+  // Use the installed runtime dependencies so qualification needs neither
+  // registry access nor metadata left in a developer's npm cache.
+  const runtimeTarballs = Object.keys(packageManifest.dependencies ?? {}).map((name) => {
+    const dependency = JSON.parse(
+      run(
+        "npm",
+        ["pack", "--ignore-scripts", "--json", "--pack-destination", consumerDir],
+        join(packageDir, "node_modules", name),
+      ),
+    )[0];
+    return join(consumerDir, dependency.filename);
+  });
   run(
     "npm",
-    ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
+    [
+      "install",
+      "--offline",
+      "--cache",
+      join(consumerDir, ".npm-cache"),
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      tarball,
+      ...runtimeTarballs,
+    ],
     consumerDir,
   );
   // Every module the package ships, read off the build's own file list rather
@@ -442,6 +465,13 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
     // readDocFile is not a root export: it needs a fetch, and a consumer that
     // wants to substitute one (or spy on the module) needs a real subpath to
     // import, which a root re-export cannot give it.
+    "./pairing": {
+      esmTypeUses: `const invite: DevicePairingInvitation = { invitation: "01".repeat(24), origin: "http://hub.local:9180", tailnet: true, expiresAt: 0 };
+const wire: Uint8Array = encodeInvitation(invite);
+const restored: DevicePairingInvitation = decodeInvitation(wire); void restored;`,
+      cjsTypeUses: `const bytes: Uint8Array = client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0}); void bytes;`,
+      smoke: `assert.equal(client.decodeInvitation(client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0})).origin, "http://hub.local:9180");`,
+    },
     "./docContent": {
       esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,

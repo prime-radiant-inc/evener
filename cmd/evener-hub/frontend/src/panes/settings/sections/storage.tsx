@@ -67,22 +67,26 @@ export function StorageSection() {
       <p className={CLASS.help}>Paths and file locations used by the hub at runtime.</p>
       <dl className={CLASS.list}>
         <SettingsField
+          field="state-dir"
           label="State dir"
           value={data.storage?.stateDir ?? ""}
           help="Root directory for hub state: auth token, credentials, and project sub-directories."
         />
         <SettingsField
+          field="run-dir"
           label="Run dir"
           value={hub?.runDir ?? ""}
           help="Per-PID rendezvous files; the hub watches this directory to discover live daemons."
         />
         <SettingsField
+          field="hub-config"
           label="Hub config"
           value={<Code>~/.config/evener/hub.toml</Code>}
           help="Main configuration file. Edit it to change addresses, providers, and spawn defaults."
         />
         {pastIndex !== undefined && (
           <SettingsField
+            field="past-index"
             label="Past index"
             value={
               <>
