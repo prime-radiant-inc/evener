@@ -131,7 +131,12 @@ export function InRepoSection({ host = LOCAL_HOST }: InRepoSectionProps) {
           placeholder="Choose a directory"
         />
       </FormRow>
-      <div className={CLASS.status} aria-live="polite">
+      <div
+        className={CLASS.status}
+        aria-live="polite"
+        data-testid="inrepo-status"
+        data-state={status.phase === "resolved" ? (status.repo?.trust ?? "absent") : status.phase}
+      >
         {status.phase === "empty" && <p className={CLASS.note}>Enter a working directory.</p>}
         {status.phase === "loading" && <Loader label="Loading" />}
         {status.phase === "error" && (
@@ -143,7 +148,7 @@ export function InRepoSection({ host = LOCAL_HOST }: InRepoSectionProps) {
           <ResolvedStatus cwd={cwd.trim()} repo={status.repo} trusting={trusting} onTrust={handleTrust} />
         )}
         {trustError && (
-          <InlineNotice tone="danger" live="off">
+          <InlineNotice tone="danger" live="off" data-reason="trust-failed">
             {trustError}
           </InlineNotice>
         )}

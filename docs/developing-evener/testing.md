@@ -961,15 +961,16 @@ count could not see. Both are start-time readings of a lagging metric, not
 admission control: runs that begin together can still stack. Neither lever
 widens a timeout or replaces an awaitable completion with polling.
 
-One in-band check does not share that protection: the flush-scope hygiene
-meta-test (src/testFlushScopeHygiene.test.ts) parses every test file under
-the frontend's `src/` with the TypeScript compiler inside a single vitest
-test bounded only
-by the default 5000ms, so its runtime grows with the tree and with CPU
-contention (issue #3966). `make test-web` run beside another heavy lane can
-time that one test out with everything else green. Run the heavy local
-gates — `make test-web`, `make vet`, `make lint` — one at a time, and rerun
-the gate alone before diagnosing that timeout as a regression.
+One in-band check used to be the exception: the flush-scope hygiene meta-test
+(src/testFlushScopeHygiene.test.ts) parsed every test file under the frontend's
+`src/` with the TypeScript compiler inside a single vitest test bounded only by
+the default 5000ms, so its runtime grew with the tree and with CPU contention
+and breached the per-test ceiling the timing ratchet enforces
+(`perTestCeilingSeconds` in testing-budget.json; warn-only locally, failing
+under `CHECK=1`) (issue #3966). It now parses only the files that can name the
+flush, so its runtime does not scale with the tree. The heavy local gates still
+compete for CPU, so run `make test-web`, `make vet` and `make lint` one at a
+time where you can.
 
 `LOAD_AWARE_LOAD1` replaces the measured load average for every budget the
 helper sizes. The CI `tests` lanes set it to 0, because a fresh runner's own

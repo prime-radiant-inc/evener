@@ -551,7 +551,7 @@ export {
 export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
-export { stableDelegateDisplayStatus } from "./stableDelegate";
+export { delegateStatedIntent, delegateWorkText, stableDelegateDisplayStatus } from "./stableDelegate";
 export {
   isParentSteer,
   isSuppressedSteeringKind,

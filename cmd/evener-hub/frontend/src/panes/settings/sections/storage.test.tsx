@@ -1,9 +1,10 @@
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
+import { settingsFieldHelp, settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 import { StorageSection } from "./storage";
 
 function connectFakeClient(): FakeClient {
@@ -29,11 +30,9 @@ test("renders State dir (from storage, not hub), Run dir (from hub), and the sta
 
   expect(await screen.findByText("/home/user/.evener")).toBeTruthy();
   expect(screen.getByText("/tmp/evener-run")).toBeTruthy();
-  expect(screen.getByText("State dir").tagName).toBe("DT");
-  expect(screen.getByText("~/.config/evener/hub.toml")).toBeTruthy();
-  expect(
-    screen.getByText("Main configuration file. Edit it to change addresses, providers, and spawn defaults."),
-  ).toBeTruthy();
+  expect(settingsFieldIds()).toEqual(["state-dir", "run-dir", "hub-config", "session-cache"]);
+  expect(settingsFieldValue("state-dir").textContent).toBe("/home/user/.evener");
+  expect(settingsFieldHelp("hub-config")).not.toBeNull();
 });
 
 test("Hub config's dd carries no 'edit to change' dim hint (unlike General's own row)", async () => {
@@ -42,8 +41,10 @@ test("Hub config's dd carries no 'edit to change' dim hint (unlike General's own
 
   render(<StorageSection />);
 
-  const configValue = await screen.findByText("~/.config/evener/hub.toml");
-  expect(configValue.textContent).toBe("~/.config/evener/hub.toml");
+  await waitFor(() => expect(settingsFieldIds()).toContain("hub-config"));
+  // The value is the path alone, with no note beside it.
+  const configValue = settingsFieldValue("hub-config");
+  expect(configValue.textContent).toBe(configValue.querySelector("code")?.textContent);
 });
 
 test("omits the Past index row entirely when pastIndex is absent (no configured past-session index)", async () => {
@@ -52,15 +53,14 @@ test("omits the Past index row entirely when pastIndex is absent (no configured 
 
   render(<StorageSection />);
 
-  await screen.findByText("~/.config/evener/hub.toml"); // wait for load to settle
-  expect(screen.queryByText("Past index")).toBeNull();
+  await waitFor(() => expect(settingsFieldIds()).toEqual(["state-dir", "run-dir", "hub-config", "session-cache"]));
 });
 
 test("renders the Past index row with its size and a pluralized live session count when present", async () => {
   const fake = connectFakeClient();
   const response: SettingsOverviewResponse = {
     hub: {
-      pastIndex: { path: "~/.evener/past.db", size: "48 MB", perPage: 20, count: 3 },
+      pastIndex: { path: "~/.evener/past.db", size: "size-from-hub", perPage: 20, count: 3 },
       daemonIdleTimeoutMillis: 3600000,
     },
     storage: { stateDir: "/home/user/.evener" },
@@ -69,8 +69,8 @@ test("renders the Past index row with its size and a pluralized live session cou
 
   render(<StorageSection />);
 
-  expect((await screen.findByText("Past index")).tagName).toBe("DT");
-  expect(screen.getByText("48 MB")).toBeTruthy();
+  await waitFor(() => expect(settingsFieldIds()).toContain("past-index"));
+  expect(within(settingsFieldValue("past-index")).getByText("size-from-hub")).toBeTruthy();
   expect(screen.getByText(/Currently tracking 3 sessions\./)).toBeTruthy();
 });
 

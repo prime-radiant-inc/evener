@@ -140,7 +140,9 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   if (loadError !== null) {
     return (
       <section className={CLASS.page}>
-        <InlineNotice tone="danger">Failed to load: {friendlyErrorMessage(loadError)}</InlineNotice>
+        <InlineNotice tone="danger" data-reason="unavailable">
+          Failed to load: {friendlyErrorMessage(loadError)}
+        </InlineNotice>
       </section>
     );
   }

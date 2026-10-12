@@ -1742,39 +1742,44 @@ type EvenerDelegateInfo struct {
 	// Unicode code points including an ellipsis when truncated. Absent while the
 	// run is open, for an error-only or unreported outcome, and for a prior
 	// generation once a new run has started.
-	ReportPreview          string               `json:"reportPreview,omitempty"`
-	ReportPreviewTruncated bool                 `json:"reportPreviewTruncated,omitempty"`
-	Task                   string               `json:"task,omitempty"`
-	Description            string               `json:"description,omitempty"`
-	AgentType              string               `json:"agentType,omitempty"`
-	RequestedModel         string               `json:"requestedModel,omitempty"`
-	ResolvedProfileID      string               `json:"resolvedProfileId,omitempty"`
-	ResolvedModel          string               `json:"resolvedModel,omitempty"`
-	Model                  string               `json:"model,omitempty"`
-	ReasoningEffort        string               `json:"reasoningEffort,omitempty"`
-	OriginTurnID           string               `json:"originTurnId,omitempty"`
-	OriginToolCallID       string               `json:"originToolCallId,omitempty"`
-	OriginItemID           string               `json:"originItemId,omitempty"`
-	RunStartedAt           string               `json:"runStartedAt,omitempty"`
-	RunEndedAt             string               `json:"runEndedAt,omitempty"`
-	LatestActivityAt       string               `json:"latestActivityAt,omitempty"`
-	RunningForMS           *int64               `json:"runningForMs,omitempty"`
-	QuietForMS             *int64               `json:"quietForMs,omitempty"`
-	DurationMS             *int64               `json:"durationMs,omitempty"`
-	PacketKind             string               `json:"packetKind,omitempty"`
-	Message                json.RawMessage      `json:"message,omitempty"`
-	StructuredResult       json.RawMessage      `json:"structuredResult,omitempty"`
-	StructuredValid        *bool                `json:"structuredResultValid,omitempty"`
-	StructuredReason       string               `json:"structuredResultReason,omitempty"`
-	Warnings               []string             `json:"warnings,omitempty"`
-	Diagnostics            []string             `json:"diagnostics,omitempty"`
-	ExhaustionBudget       string               `json:"exhaustionBudget,omitempty"`
-	ExhaustionLimit        int                  `json:"exhaustionLimit,omitempty"`
-	ExhaustionResumable    *bool                `json:"exhaustionResumable,omitempty"`
-	DelegationAllowance    int                  `json:"delegationAllowance,omitempty"`
-	ParentWatchGranted     bool                 `json:"parentWatchGranted,omitempty"`
-	Usage                  *EvenerUsage         `json:"usage,omitempty"`
-	Worktree               *JobActivityWorktree `json:"worktree,omitempty"`
+	ReportPreview          string `json:"reportPreview,omitempty"`
+	ReportPreviewTruncated bool   `json:"reportPreviewTruncated,omitempty"`
+	Task                   string `json:"task,omitempty"`
+	Description            string `json:"description,omitempty"`
+	AgentType              string `json:"agentType,omitempty"`
+	RequestedModel         string `json:"requestedModel,omitempty"`
+	ResolvedProfileID      string `json:"resolvedProfileId,omitempty"`
+	ResolvedModel          string `json:"resolvedModel,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	ReasoningEffort        string `json:"reasoningEffort,omitempty"`
+	OriginTurnID           string `json:"originTurnId,omitempty"`
+	OriginToolCallID       string `json:"originToolCallId,omitempty"`
+	OriginItemID           string `json:"originItemId,omitempty"`
+	RunStartedAt           string `json:"runStartedAt,omitempty"`
+	RunEndedAt             string `json:"runEndedAt,omitempty"`
+	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// LatestIntent is the open generation's newest stated tool-call intent
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the row's display line, the same Excerpt-bounded value the read
+	// projects. Empty whenever no run is open, and absent from older daemons.
+	LatestIntent        string               `json:"latestIntent,omitempty"`
+	RunningForMS        *int64               `json:"runningForMs,omitempty"`
+	QuietForMS          *int64               `json:"quietForMs,omitempty"`
+	DurationMS          *int64               `json:"durationMs,omitempty"`
+	PacketKind          string               `json:"packetKind,omitempty"`
+	Message             json.RawMessage      `json:"message,omitempty"`
+	StructuredResult    json.RawMessage      `json:"structuredResult,omitempty"`
+	StructuredValid     *bool                `json:"structuredResultValid,omitempty"`
+	StructuredReason    string               `json:"structuredResultReason,omitempty"`
+	Warnings            []string             `json:"warnings,omitempty"`
+	Diagnostics         []string             `json:"diagnostics,omitempty"`
+	ExhaustionBudget    string               `json:"exhaustionBudget,omitempty"`
+	ExhaustionLimit     int                  `json:"exhaustionLimit,omitempty"`
+	ExhaustionResumable *bool                `json:"exhaustionResumable,omitempty"`
+	DelegationAllowance int                  `json:"delegationAllowance,omitempty"`
+	ParentWatchGranted  bool                 `json:"parentWatchGranted,omitempty"`
+	Usage               *EvenerUsage         `json:"usage,omitempty"`
+	Worktree            *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type EvenerDelegateParams struct {

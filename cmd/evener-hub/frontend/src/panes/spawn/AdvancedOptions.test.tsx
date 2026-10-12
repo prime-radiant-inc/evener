@@ -314,7 +314,7 @@ test("a browsable path control's trigger names the resolved default path", async
 // The collection list's empty-state row, present only when the list has
 // neither local nor inherited entries.
 function emptyRow(list: HTMLElement): Element | null {
-  return list.querySelector('li[data-kind="empty"]');
+  return list.querySelector('li[data-reason="empty"]');
 }
 //
 // A collection control's own list holds only the user's per-launch additions;

@@ -139,8 +139,19 @@
   color: var(--danger);
 }
 .denseMeta {
-  flex: none;
-  /* The right edge is the meta's, so the open control stays beside the name. */
+  /* A stated intent can fill the meta line, so it shrinks and ellipsizes
+   * under pressure the way the sidebar's rowMeta does — a full-width line
+   * here would collapse the shrinkable name to nothing. The right edge is
+   * still the meta's, so the open control stays beside the name. */
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Proportional shrinking alone still starves a short name when the meta
+   * holds a near-limit intent, because shrink is distributed by content
+   * width: cap the meta's share so the name keeps enough of the row to stay
+   * recognizable beside its ellipsis. */
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   margin-left: auto;
   white-space: nowrap;
   font-family: var(--font-sans);

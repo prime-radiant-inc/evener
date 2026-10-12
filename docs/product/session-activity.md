@@ -220,6 +220,28 @@ to `reportPreview`. Each reaches its owner's transcript as its own
 "Delegate update" card and the phone as "<name> sent an update", with the
 delegate's message beneath.
 
+A running delegate's row carries `latestIntent`, the intent line of its newest
+in-flight tool call: the child session states the line when it launches the
+call, the owner's controller journals it per run generation, and the row
+shows it while the run is open. The read and the frame apply the same
+200-code-point excerpt treatment as `name`, flattening whitespace and keeping
+an ellipsis when truncated. Run settlement clears it; a resumed run starts
+with none until its child states one; a restored tree shows the journaled
+value until the child's next report. The controller publishes the line on the
+delegate update notification at most once every five seconds, so a burst of
+tool calls costs at most one frame per window while the standing line is
+never dropped.
+
+Clients show the line in place of the status word only while the row is
+non-terminal and the line is non-empty; every other row state keeps today's
+status text, and the status word stays reachable — the sidebar row's title,
+the activity tree's row description and glyph tone, and the phone's
+accessibility label keep reading it. The merge rides the existing bounded
+preview gate: a client that has not advertised it keeps the read path alone,
+and an absent, over-long or malformed value applies as omitted rather than
+dropping the row. Older daemons never send the field, and their rows keep
+today's status word everywhere.
+
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and
 nonzero generation match. A resumed or settling run cannot borrow the previous

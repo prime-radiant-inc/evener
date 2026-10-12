@@ -6,7 +6,14 @@
 // from the rail or the activity panel.
 
 import type { ActivityWatchRow, JobActivityJob, SessionDelegate } from "@evener/appwire-client";
-import { activityDelegateState, activityNodeID, jobStatusDisplay, watchMeta, watchName } from "@evener/appwire-client";
+import {
+  activityDelegateState,
+  activityNodeID,
+  delegateWorkText,
+  jobStatusDisplay,
+  watchMeta,
+  watchName,
+} from "@evener/appwire-client";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { Disclosure, ListRow, ToolIcon, type ToolIconTone } from "../../widgets";
@@ -58,8 +65,12 @@ export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () 
           <ToolIcon kind="delegate" tone={agentTone(sub)} />
         </span>
       }
-      label={sub.name?.trim() || sub.description || sub.task || sub.delegateId}
-      meta={agentStateText(sub)}
+      label={
+        <span title={agentStateText(sub)}>{sub.name?.trim() || sub.description || sub.task || sub.delegateId}</span>
+      }
+      // The intent replaces the status word here; the label's title keeps the
+      // word reachable, JobRow's pattern for a value the meta line hides.
+      meta={delegateWorkText(sub, agentStateText(sub))}
       onSelect={onDrill}
       data-activity-anchor={activityNodeID({ ...sub, kind: "delegate" })}
     />

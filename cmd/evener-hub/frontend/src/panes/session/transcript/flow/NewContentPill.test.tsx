@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { accessibleName } from "../../../../accessibleNameTestUtils";
 import { Chevron, type ChevronDirection } from "../../../../widgets";
 import { NewContentPill } from "./NewContentPill";
 
@@ -127,6 +128,24 @@ test("the error variant does not show a numeric count - matches the legacy pill'
 test("the error variant never renders a literal ✕ character", () => {
   render(<NewContentPill count={5} needsYou={false} error={true} onClick={() => {}} />);
   expect(screen.getByTestId("new-content-pill").textContent).not.toContain("✕");
+});
+
+// data-kind is invisible to a screen reader: the pill's accessible name is what
+// tells a failed turn from a needs-you flip from a plain jump to latest.
+test("each pill form announces a distinct, non-empty name", () => {
+  const forms = [
+    { needsYou: false, error: true },
+    { needsYou: true, error: false },
+    { needsYou: false, error: false },
+  ];
+  const names = forms.map((form) => {
+    const { unmount } = render(<NewContentPill visible count={0} {...form} onClick={() => {}} />);
+    const name = accessibleName(screen.getByRole("button")).trim();
+    unmount();
+    return name;
+  });
+  for (const name of names) expect(name).not.toBe("");
+  expect(new Set(names).size).toBe(names.length);
 });
 
 test("error defaults to false - existing count/needsYou-only callers are unaffected", () => {

@@ -57,7 +57,7 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
       <ul aria-label="Installed plugins" className={CLASS.list}>
         {plugins.length === 0 ? (
           <li>
-            <EmptyState size="compact" title="No plugins installed yet. Install one from Browse." />
+            <EmptyState size="compact" reason="empty" title="No plugins installed yet. Install one from Browse." />
           </li>
         ) : visible.length === 0 ? (
           <li>

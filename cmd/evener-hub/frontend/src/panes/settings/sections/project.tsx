@@ -175,7 +175,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
     return (
       <div className={CLASS.root}>
         <h2>Project launch settings</h2>
-        <p className={CLASS.help}>
+        <p className={CLASS.help} data-reason="no-project">
           No project selected. Open this page via the gear icon next to a project in the sidebar, or navigate here with
           a <code>?cwd=</code> query parameter.
         </p>
@@ -194,6 +194,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       {load.phase === "error" && (
         <InlineNotice
           tone="danger"
+          data-reason="load-failed"
           action={
             <Button type="button" onClick={() => retryLoad()}>
               Retry
@@ -209,6 +210,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
             <InlineNotice
               tone="danger"
               live="status"
+              data-reason="refresh-failed"
               action={
                 <Button type="button" onClick={() => reload()}>
                   Retry

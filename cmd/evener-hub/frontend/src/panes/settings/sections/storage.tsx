@@ -4,7 +4,7 @@ import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores
 import { Button, EmptyState, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SESSION_CACHE_HELP, SESSION_CACHE_LABEL, SessionCacheStatus } from "./sessionCacheRow";
-import { Code, FieldDim } from "./settingsField";
+import { Code, FieldDim, FieldValue } from "./settingsField";
 import styles from "./storage.module.css";
 
 const CLASS = {
@@ -70,17 +70,21 @@ export function StorageSection() {
           [
             {
               label: "State dir",
-              value: data.storage?.stateDir ?? "",
+              value: <FieldValue field="state-dir">{data.storage?.stateDir ?? ""}</FieldValue>,
               help: "Root directory for hub state: auth token, credentials, and project sub-directories.",
             },
             {
               label: "Run dir",
-              value: hub?.runDir ?? "",
+              value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
               help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
             },
             {
               label: "Hub config",
-              value: <Code>~/.config/evener/hub.toml</Code>,
+              value: (
+                <FieldValue field="hub-config">
+                  <Code>~/.config/evener/hub.toml</Code>
+                </FieldValue>
+              ),
               help: "Main configuration file. Edit it to change addresses, providers, and spawn defaults.",
             },
             ...(pastIndex !== undefined
@@ -88,9 +92,9 @@ export function StorageSection() {
                   {
                     label: "Past index",
                     value: (
-                      <>
+                      <FieldValue field="past-index">
                         {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
-                      </>
+                      </FieldValue>
                     ),
                     help: (
                       <>
@@ -104,7 +108,15 @@ export function StorageSection() {
             // The session-history cache row (spec, "The clear-cached-sessions
             // setting"): its value is its own component because its state is its
             // own store with a per-render count, unlike the overview-fed rows above.
-            { label: SESSION_CACHE_LABEL, value: <SessionCacheStatus />, help: SESSION_CACHE_HELP },
+            {
+              label: SESSION_CACHE_LABEL,
+              value: (
+                <FieldValue field="session-cache">
+                  <SessionCacheStatus />
+                </FieldValue>
+              ),
+              help: SESSION_CACHE_HELP,
+            },
           ] satisfies StackedPropertyListRow[]
         }
       />

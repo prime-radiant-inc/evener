@@ -152,6 +152,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
       {load.phase === "error" && (
         <InlineNotice
           tone="danger"
+          data-reason="load-failed"
           action={
             <Button type="button" onClick={() => retryLoad()}>
               Retry
@@ -167,6 +168,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
             <InlineNotice
               tone="danger"
               live="status"
+              data-reason="refresh-failed"
               action={
                 <Button type="button" onClick={() => reload()}>
                   Retry

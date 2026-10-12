@@ -6,7 +6,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
-import { Code } from "./settingsField";
+import { Code, FieldValue } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hub.module.css", "root"),
@@ -35,6 +35,7 @@ export function HubSection() {
     return (
       <EmptyState
         title="Couldn't load hub settings"
+        reason="unavailable"
         // friendlyErrorMessage, not the raw store error - see general.tsx's
         // matching comment for why (settingsOverview.ts stores errorText(err)
         // verbatim, including AppwireClient's own internal-wiring text).
@@ -59,7 +60,7 @@ export function HubSection() {
         rows={[
           {
             label: "Listen address",
-            value: hub?.listenAddr ?? "",
+            value: <FieldValue field="listen-address">{hub?.listenAddr ?? ""}</FieldValue>,
             help: (
               <>
                 Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
@@ -69,12 +70,12 @@ export function HubSection() {
           },
           {
             label: "Run dir",
-            value: hub?.runDir ?? "",
+            value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
             help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
           },
           {
             label: "Spawn timeout",
-            value: hub?.spawnTimeout ?? "",
+            value: <FieldValue field="spawn-timeout">{hub?.spawnTimeout ?? ""}</FieldValue>,
             help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
           },
         ]}

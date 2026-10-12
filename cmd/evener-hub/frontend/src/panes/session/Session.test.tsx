@@ -3083,6 +3083,8 @@ test("an incompatible session shows a plain degraded notice with no buttons", as
   );
   const notice = await screen.findByRole("alert");
   expect(notice.getAttribute("data-reason")).toBe("version-mismatch");
+  // The alert announces its content: it must have some.
+  expect(notice.textContent?.trim()).toBeTruthy();
   // The notice is informational now: force shutdown lives in the session menu,
   // and the pane re-hydrates itself on the hub's evener/thread/resync, so the
   // banner offers no control at all.

@@ -849,6 +849,7 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	live.quietNotified = false
 	live.quietNotifiedAt = time.Time{}
 	live.quietClaim = nil
+	live.intent = ""
 	c.evidenceVersion++
 	return delegateStartCommit{
 		lease:          lease,
@@ -886,6 +887,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	live.recoveryRequired = false
 	live.finalizationRecoveryRequired = false
 	live.recoveryRunnerPending = false
+	live.intent = ""
 	live.quietSequence = 0
 	live.quietNotified = false
 	live.quietNotifiedAt = time.Time{}

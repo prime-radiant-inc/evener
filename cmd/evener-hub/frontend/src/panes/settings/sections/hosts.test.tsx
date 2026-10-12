@@ -1,5 +1,4 @@
 import {
-  HOST_CHANGED_MESSAGE,
   type HostPlan,
   type HostRow,
   type OperationRecord,
@@ -14,7 +13,9 @@ import { connectionStore } from "../../../stores/connection";
 import { hostOpsStore } from "../../../stores/hostOps";
 import { hostsStore } from "../../../stores/hosts";
 import { enterText } from "../../../textEntryTestUtils";
-import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { emptyStateReasons } from "../../../widgets/emptystate/emptyStateTestUtils";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { HOST_POLL_MS, HostsSection, OPERATION_POLL_MS } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
@@ -27,6 +28,13 @@ function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
     removed: false,
     ...overrides,
   };
+}
+
+/** The refusal kind of each alert inside `container`, in document order. */
+function refusalReasons(container: HTMLElement): (string | null)[] {
+  return [...container.querySelectorAll("[role='alert'][data-reason]")].map((alert) =>
+    alert.getAttribute("data-reason"),
+  );
 }
 
 function connectFakeClient(): FakeClient {
@@ -246,14 +254,14 @@ test("a validation refusal lands on the input the hub blamed", async () => {
   // The message is the address row's own: the refusal named the wire field the
   // input is labelled for, so the operator sees it where the fix belongs.
   const addressInput = within(dialog).getByLabelText("SSH address");
-  const addressLabel = within(dialog).getByText("SSH address", { selector: "label" });
-  const addressRow = addressLabel.parentElement;
+  const addressLabel = dialog.querySelector(`label[for="${addressInput.id}"]`);
+  const addressRow = addressLabel?.parentElement ?? null;
   if (addressRow === null) throw new Error("SSH address label has no FormRow parent");
   expect(within(addressRow).getByLabelText("SSH address")).toBe(addressInput);
   const inlineError = await within(addressRow).findByRole("alert");
   expect(inlineError.textContent).toMatch(/missing ssh destination/);
   expect(inlineError.id).toBe(`${addressInput.id}-error`);
-  expect(within(dialog).queryByText(/Something went wrong/)).toBeNull();
+  expect(within(dialog).getAllByRole("alert")).toEqual([inlineError]);
 });
 
 test("an edit made while someone else changed the host is refused and never saved over theirs", async () => {
@@ -290,7 +298,7 @@ test("an edit made while someone else changed the host is refused and never save
   await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
   const alert = await within(dialog).findByRole("alert");
-  expect(alert.textContent).toBe(HOST_CHANGED_MESSAGE);
+  expect(alert.getAttribute("data-reason")).toBe("stale-entry");
   // One attempt, carrying the pair of the row the dialog opened on.
   expect(sentGenerations).toEqual([1]);
 });
@@ -420,7 +428,7 @@ test("load failure shows retry", async () => {
     throw new Error("hub unavailable");
   });
   render(<HostsSection sectionId="hosts" />);
-  expect(await screen.findByText("Couldn't load hosts")).toBeTruthy();
+  await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unavailable"]));
   const reads = () => fake.calls.filter((call) => call.method === "evener/host/list").length;
   const before = reads();
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -430,7 +438,7 @@ test("load failure shows retry", async () => {
     expect(reads()).toBe(before + 1);
     expect(hostsStore.getState().load.phase).toBe("error");
   });
-  expect(screen.getByText("Couldn't load hosts")).toBeTruthy();
+  expect(emptyStateReasons(document.body)).toEqual(["unavailable"]);
 });
 
 test("a server-side mid-attach row settles via the poll: in-progress -> failed re-enables Connect", async () => {
@@ -509,7 +517,6 @@ test("Deploy opens the plan confirmation and renders the controller-minted plan"
   // Registry spec 08 §13: target host, controller revision, resolved remote
   // target path, whether a restart follows, the running build, and facts
   // freshness from the plan's factsCapturedAt/factsAgeSec.
-  expect(within(dialog).getByText("Target host")).toBeTruthy();
   expect(within(dialog).getByText("beta")).toBeTruthy();
   expect(within(dialog).getByText("controller-rev-9")).toBeTruthy();
   expect(within(dialog).getByText("yes")).toBeTruthy();
@@ -568,8 +575,7 @@ test("a stale token re-plans and re-renders the confirmation before any retry", 
   // the confirmation from the new response before any retry.
   await waitFor(() => expect(plans).toBe(2));
   await waitFor(() => expect(within(dialog).getByText("/t2")).toBeTruthy());
-  expect(within(dialog).getByText(/This plan expired before the deploy was submitted/)).toBeTruthy();
-  expect(within(dialog).getByText(/fresh plan is shown below/)).toBeTruthy();
+  expect(within(dialog).getByTestId("host-replan-notice")).toBeTruthy();
   expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(1);
 
   // The re-rendered confirmation deploys under the fresh token.
@@ -787,7 +793,7 @@ test("host-detached offers Connect and re-plan", async () => {
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
 
-  await waitFor(() => expect(within(dialog).getByText(/The host has no live attached channel\./)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["host-detached"]));
   await user.click(within(dialog).getByRole("button", { name: "Connect and plan" }));
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/attach")).toHaveLength(1));
   await waitFor(() => expect(plans).toBe(2));
@@ -811,7 +817,7 @@ test("a lost response can be retried under the same operation ID", async () => {
   await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
 
-  await waitFor(() => expect(within(dialog).getByText(/did not answer before the request timed out/)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["unknown"]));
   await user.click(within(dialog).getByRole("button", { name: "Retry deploy" }));
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(2));
   const calls = fake.calls.filter((c) => c.method === "evener/host/deploy");
@@ -917,7 +923,7 @@ test("a host-detached restart offers Connect and restart, never a bare repeat", 
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
 
-  await waitFor(() => expect(within(dialog).getByText(/The host has no live attached channel\./)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["host-detached"]));
   // No bare repeat: the confirm is disabled and the supported recovery is the
   // Connect action.
   expect((within(dialog).getByRole("button", { name: "Restart" }) as HTMLButtonElement).disabled).toBe(true);
@@ -996,9 +1002,7 @@ test("a surfaced restart stale-entry names the operation, not a plan", async () 
   const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
   await user.click(within(dialog).getByRole("button", { name: "Restart" }));
 
-  await waitFor(() =>
-    expect(within(dialog).getByText(/The host changed since this operation was prepared\./)).toBeTruthy(),
-  );
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["stale-entry"]));
 });
 
 // --- S15: operations polling, progress/terminal render, replay ---------------
@@ -1038,6 +1042,11 @@ async function startDeploy(fake: FakeClient): Promise<{ betaSheet: HTMLElement; 
   return { betaSheet, view };
 }
 
+/** The `data-state` of the operation a host row shows, or null when it shows none. */
+function operationState(hostRow: HTMLElement): string | null {
+  return hostRow.querySelector("[data-testid='host-operation']")?.getAttribute("data-state") ?? null;
+}
+
 const operationReads = (fake: FakeClient): number =>
   fake.calls.filter((call) => call.method === "evener/host/operations").length;
 
@@ -1056,7 +1065,7 @@ test("an operation's progress renders on its host row, then its failure renders 
     // progress on the operation's own row (registry spec 08 §13).
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(within(betaSheet).getByText("pushing evener to /srv/evener/evener")).toBeTruthy());
-    expect(within(betaSheet).getByText("Deploying…")).toBeTruthy();
+    expect(operationState(betaSheet)).toBe("running");
 
     // The operation fails with the worker's 04b error: the row surfaces it
     // VERBATIM — never a rewritten or generic message.
@@ -1064,8 +1073,7 @@ test("an operation's progress renders on its host row, then its failure renders 
     record = operationRecord({ state: "failed", result: { ok: false, message: verbatim } });
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(within(betaSheet).getByText(verbatim)).toBeTruthy());
-    expect(within(betaSheet).getByText("Deploy failed")).toBeTruthy();
-    expect(within(betaSheet).queryByText("Deploying…")).toBeNull();
+    expect(operationState(betaSheet)).toBe("failed");
   } finally {
     vi.useRealTimers();
   }
@@ -1102,9 +1110,8 @@ test("a replayed operation renders its past terminal outcome, never a fresh Depl
     // past outcome, marked as the compacted replay — not a running operation.
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(within(betaSheet).getByText(verbatim)).toBeTruthy());
-    expect(within(betaSheet).getByText("Deploy failed")).toBeTruthy();
-    expect(within(betaSheet).getByText(/replayed from a compacted operation/)).toBeTruthy();
-    expect(within(betaSheet).queryByText("Deploying…")).toBeNull();
+    expect(operationState(betaSheet)).toBe("failed");
+    expect(within(betaSheet).getByTestId("host-operation-replay")).toBeTruthy();
   } finally {
     vi.useRealTimers();
   }
@@ -1167,7 +1174,7 @@ test("a stopped read renders a visible progress state on the row, never a silent
     // updates stopped instead of pretending the operation is still reporting.
     connectionStore.setState({ client: null });
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
-    await waitFor(() => expect(within(betaSheet).getByText(/Progress updates stopped/)).toBeTruthy());
+    await waitFor(() => expect(within(betaSheet).getByRole("alert")).toBeTruthy());
     expect(within(betaSheet).getByText("installing")).toBeTruthy();
   } finally {
     vi.useRealTimers();
@@ -1247,7 +1254,7 @@ test("an operation from a previous incarnation is not rendered, and still settle
     reCreated = true;
     await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
     await waitFor(() => expect(within(betaSheet).queryByText("old incarnation work")).toBeNull());
-    expect(within(betaSheet).queryByText("Deploying…")).toBeNull();
+    expect(operationState(betaSheet)).toBeNull();
 
     // ...but it is still polled to its terminal state, so the ref can settle
     // and never lingers non-terminal while the name exists.
@@ -1255,7 +1262,7 @@ test("an operation from a previous incarnation is not rendered, and still settle
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(hostOpsStore.getState().operations.beta?.state).toBe("failed"));
     expect(within(betaSheet).queryByText("old incarnation work")).toBeNull();
-    expect(within(betaSheet).queryByText("Deploy failed")).toBeNull();
+    expect(operationState(betaSheet)).toBeNull();
   } finally {
     vi.useRealTimers();
   }
@@ -1278,11 +1285,10 @@ test("a dedup hit that is still running does not toast a fresh start", async () 
   fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Deploy beta" })).toBeNull());
 
-  const texts = getToasts().map((toast) => toast.text);
-  expect(texts).toContain("Deploy beta repeated its existing operation (running).");
-  expect(texts.join(" ")).not.toContain("Deploy started");
+  // An informational replay notice, never the success toast of a fresh start.
+  expect(toastKinds()).toEqual(["info"]);
   // The row renders the running operation it adopted.
-  expect(within(betaSheet).getByText("Deploying…")).toBeTruthy();
+  expect(operationState(betaSheet)).toBe("running");
 });
 
 // --- S16: remnant retry/recover ----------------------------------------------
@@ -1331,7 +1337,7 @@ test("a live-attempt busy refusal renders the typed busy with retry-later, never
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
 
-  await waitFor(() => expect(within(dialog).getByText(/The host is busy right now\./)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["host-busy-transient"]));
   expect(within(dialog).getByText(/a live teardown attempt owns the remnant/)).toBeTruthy();
   // Retry later is the affordance the busy class earns.
   expect(within(dialog).getByRole("button", { name: "Retry teardown" })).toBeTruthy();
@@ -1504,7 +1510,7 @@ test("a different remnant on the name renders neutral, never the previous remnan
   await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   const first = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(first).getByRole("button", { name: "Teardown retry" }));
-  await waitFor(() => expect(within(first).getByText(/The host is busy right now\./)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(first)).toEqual(["host-busy-transient"]));
 
   // A NEW remnant replaces the name's remnant while the dialog is open: the
   // old refusal belongs to the old remnant, and the dialog follows the live row.
@@ -1514,7 +1520,7 @@ test("a different remnant on the name renders neutral, never the previous remnan
   });
   const second = await screen.findByRole("dialog", { name: "Repair remnant remnant-8" });
   await waitFor(() => expect(within(second).getByRole("button", { name: "Teardown retry" })).toBeTruthy());
-  expect(within(second).queryByText(/The host is busy right now\./)).toBeNull();
+  expect(refusalReasons(second)).toEqual([]);
 });
 
 test("the repair dialog closes honestly when the remnant disappears", async () => {
@@ -1607,7 +1613,7 @@ test("closing the repair dialog drops its refusal, so a later opening starts cle
   await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   let dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
-  await waitFor(() => expect(within(dialog).getByText(/The host is busy right now\./)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["host-busy-transient"]));
 
   // The dialog renders its panel close control and the footer Close: both call
   // the same onClose, which owns the repair-state clear.
@@ -1618,7 +1624,7 @@ test("closing the repair dialog drops its refusal, so a later opening starts cle
 
   await user.click(within(betaSheet).getByRole("button", { name: "Teardown retry" }));
   dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
-  expect(within(dialog).queryByText(/The host is busy right now\./)).toBeNull();
+  expect(refusalReasons(dialog)).toEqual([]);
   expect(within(dialog).getByRole("button", { name: "Teardown retry" })).toBeTruthy();
 });
 
@@ -1647,7 +1653,7 @@ test("closing the deploy dialog drops its remnant repair state", async () => {
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
   await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
   await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
-  await waitFor(() => expect(within(dialog).getByText(/The host is busy right now\./)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["host-busy-transient"]));
   expect(hostOpsStore.getState().repairs.beta).toBeDefined();
 
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -1851,7 +1857,7 @@ test("a refused recovery resumes the recovery with its attestation, never a bare
   const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
   await user.type(within(dialog).getByLabelText("Operator"), "operator-1");
   await user.click(within(dialog).getByRole("button", { name: "Recover remnant" }));
-  await waitFor(() => expect(within(dialog).getByText(/The host is busy right now\./)).toBeTruthy());
+  await waitFor(() => expect(refusalReasons(dialog)).toEqual(["host-busy-transient"]));
 
   // Cancel the form: the retry affordance resumes the RECOVERY (with the
   // attestation it already collected), never a bare teardown retry.

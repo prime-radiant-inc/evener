@@ -10,7 +10,9 @@ import {
   activityDelegateState,
   buildActivityRows,
   buildWatchRows,
+  delegateStatedIntent,
   delegateTiming,
+  delegateWorkText,
   jobIsFailed,
   watchMeta,
   watchName,
@@ -155,13 +157,29 @@ function terminalSegment(durationMs: number | undefined, statusText: string): Me
 }
 
 // liveMetaSegments is the one place the live meta grammar is built (#1388): the
-// usage pair when the daemon sent one, else the row's status text, then the
-// quiet age when its anchor is known. Sharing it keeps the two row kinds
-// reading the same - a shell job's ActivityJob carries no usage field at all,
-// so it always takes the status branch, while a delegate takes it only until
-// usage arrives. Neither renders a placeholder dash: the empty token slot
-// carried no information and read as a value that failed to load.
-function liveMetaSegments(tokens: string | undefined, statusText: string, quietMs: number | undefined): MetaSegment[] {
+// leading segment is the delegate's standing intent when one states work,
+// else the usage pair when the daemon sent one, else the row's status text;
+// the quiet age follows when its anchor is known. Sharing it keeps the two row
+// kinds reading the same - a shell job's ActivityJob carries no usage field or
+// intent at all, so it always takes the status branch, while a delegate's
+// tokens displace only the bare status word, never a standing intent.
+// Neither renders a placeholder dash: the empty token slot carried no
+// information and read as a value that failed to load.
+function liveMetaSegments(
+  tokens: string | undefined,
+  statusText: string,
+  quietMs: number | undefined,
+  intent?: string,
+): MetaSegment[] {
+  // A standing intent leads the meta — the row's live action, which a token
+  // count must not displace. Without one, tokens keep displacing the bare
+  // status word exactly as before.
+  if (intent) {
+    const segments: MetaSegment[] = [{ key: "intent", text: intent }];
+    if (tokens) segments.push({ key: "tokens", text: tokens });
+    if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
+    return segments;
+  }
   const first: MetaSegment = tokens ? { key: "tokens", text: tokens } : { key: "status", text: statusText };
   const segments: MetaSegment[] = [first];
   if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
@@ -188,10 +206,15 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   // quietForMs while an anchor parses), the duration from the terminal run
   // window, else the snapshot.
   const timing = delegateTiming(delegate, now);
-  if (row.live) return liveMetaSegments(tokens ?? undefined, rowStatusText(row), timing.quietForMs);
+  // The visible meta is the one place the intent stands in for the status
+  // word: the row's aria-description and the glyph tone below keep reading
+  // the word itself, so the status stays reachable and the hue stays true.
+  const work = delegateWorkText(delegate, rowStatusText(row));
+  if (row.live)
+    return liveMetaSegments(tokens ?? undefined, work, timing.quietForMs, delegateStatedIntent(delegate) || undefined);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
-  segments.push(terminalSegment(timing.durationMs, rowStatusText(row)));
+  segments.push(terminalSegment(timing.durationMs, work));
   return segments;
 }
 

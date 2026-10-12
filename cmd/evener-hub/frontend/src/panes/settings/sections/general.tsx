@@ -4,7 +4,7 @@ import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores
 import { Button, EmptyState, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./general.module.css";
-import { Code, FieldDim } from "./settingsField";
+import { Code, FieldDim, FieldValue } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "general.module.css", "root"),
@@ -41,6 +41,7 @@ export function GeneralSection() {
     return (
       <EmptyState
         title="Couldn't load general settings"
+        reason="unavailable"
         // friendlyErrorMessage, not the raw store error: settingsOverview.ts
         // stores errorText(err) as-is, which is AppwireClient's own message
         // verbatim for a client-unreachable rejection - internal wiring
@@ -70,13 +71,13 @@ export function GeneralSection() {
         layout="stacked"
         rows={
           [
-            { label: "Hub address", value: hub?.listenAddr ?? "" },
+            { label: "Hub address", value: <FieldValue field="hub-address">{hub?.listenAddr ?? ""}</FieldValue> },
             {
               label: "Bearer token",
               value: (
-                <>
+                <FieldValue field="bearer-token">
                   {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
-                </>
+                </FieldValue>
               ),
               help: (
                 <>
@@ -87,18 +88,18 @@ export function GeneralSection() {
             },
             {
               label: "Run dir",
-              value: hub?.runDir ?? "",
+              value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
               help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
             },
-            { label: "State dir", value: data.storage?.stateDir ?? "" },
+            { label: "State dir", value: <FieldValue field="state-dir">{data.storage?.stateDir ?? ""}</FieldValue> },
             ...(pastIndex !== undefined
               ? [
                   {
                     label: "Past index",
                     value: (
-                      <>
+                      <FieldValue field="past-index">
                         {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
-                      </>
+                      </FieldValue>
                     ),
                     help: (
                       <>
@@ -110,24 +111,31 @@ export function GeneralSection() {
               : []),
             {
               label: "Spawn timeout",
-              value: hub?.spawnTimeout ?? "",
+              value: <FieldValue field="spawn-timeout">{hub?.spawnTimeout ?? ""}</FieldValue>,
               help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
             },
-            ...(pastIndex !== undefined ? [{ label: "Past results per page", value: pastIndex.perPage ?? 0 }] : []),
+            ...(pastIndex !== undefined
+              ? [
+                  {
+                    label: "Past results per page",
+                    value: <FieldValue field="past-results-per-page">{pastIndex.perPage ?? 0}</FieldValue>,
+                  },
+                ]
+              : []),
             {
               label: "Hub config",
               value: (
-                <>
+                <FieldValue field="hub-config">
                   <Code>~/.config/evener/hub.toml</Code> <FieldDim>edit to change</FieldDim>
-                </>
+                </FieldValue>
               ),
             },
             {
               label: "Hub version",
               value: (
-                <>
+                <FieldValue field="hub-version">
                   {hub?.version ?? ""} {hub?.commit !== undefined && <FieldDim>({hub.commit})</FieldDim>}
-                </>
+                </FieldValue>
               ),
             },
           ] satisfies StackedPropertyListRow[]

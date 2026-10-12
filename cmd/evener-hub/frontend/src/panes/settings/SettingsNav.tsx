@@ -80,7 +80,7 @@ export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
         if (sections.length === 0) return null;
         return (
           <div key={cluster.id}>
-            <div className={CLASS.clusterHeader}>
+            <div className={CLASS.clusterHeader} data-section={cluster.id}>
               <Eyebrow>{cluster.label}</Eyebrow>
             </div>
             {sections.map((section) => (

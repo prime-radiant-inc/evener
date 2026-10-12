@@ -7,6 +7,14 @@ const CLASS = {
   code: requireClass(styles.code, "settingsField.module.css", "code"),
 };
 
+/** A settings PropertyList row's value, tagged with the row's stable id as
+ * `data-field` so callers and tests can tell rows apart without reading their
+ * labels. PropertyList takes no per-row attributes, so the id rides on the
+ * value it wraps. */
+export function FieldValue({ field, children }: { field: string; children: ReactNode }) {
+  return <span data-field={field}>{children}</span>;
+}
+
 /** A dim trailing note within a settings PropertyList value (bearer-token age,
  * past-index size, hub version's commit, ...) - mirrors the legacy
  * templates' own `<span class="val-text"><span class="dim">...</span></span>`

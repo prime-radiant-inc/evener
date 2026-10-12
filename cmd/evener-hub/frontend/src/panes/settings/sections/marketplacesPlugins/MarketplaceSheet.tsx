@@ -401,15 +401,39 @@ export function MarketplaceSheet({
                 </FormRow>
               )}
               {sourceTouched && (
-                <InlineNotice>Saving re-fetches the marketplace. Installed plugins are unaffected.</InlineNotice>
+                <InlineNotice data-testid="marketplace-refetch-note">
+                  Saving re-fetches the marketplace. Installed plugins are unaffected.
+                </InlineNotice>
               )}
               {formError !== null && <InlineNotice tone="danger">{formError}</InlineNotice>}
             </form>
             <div className={CLASS.metaList}>
               <PropertyList
                 rows={[
-                  { label: "Install location", value: entry.installLocation || "not fetched yet", mono: true },
-                  { label: "Last updated", value: lastUpdatedText(entry.lastUpdated), mono: true },
+                  {
+                    label: "Install location",
+                    value: (
+                      <span
+                        data-testid="marketplace-install-location"
+                        data-state={entry.installLocation ? undefined : "unfetched"}
+                      >
+                        {entry.installLocation || "not fetched yet"}
+                      </span>
+                    ),
+                    mono: true,
+                  },
+                  {
+                    label: "Last updated",
+                    value: (
+                      <span
+                        data-testid="marketplace-last-updated"
+                        data-state={entry.lastUpdated > 0 ? undefined : "never"}
+                      >
+                        {lastUpdatedText(entry.lastUpdated)}
+                      </span>
+                    ),
+                    mono: true,
+                  },
                 ]}
               />
             </div>

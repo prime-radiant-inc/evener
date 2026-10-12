@@ -284,6 +284,7 @@ export function HostsSection(_props: HostsSectionProps) {
     return (
       <EmptyState
         title="Couldn't load hosts"
+        reason="unavailable"
         hint={load.message}
         action={
           <Button size="sm" onClick={() => void hostsStore.getState().fetch()}>
@@ -360,6 +361,7 @@ export function HostsSection(_props: HostsSectionProps) {
           row={selectedRow}
           connecting={isConnecting(selectedRow)}
           operationView={selectedOperationView}
+          operationState={selectedOperation?.state}
           onClose={() => setSelectedName(null)}
           onConnect={() => void handleConnect(selectedRow)}
           onDeploy={() => setDeployTarget(selectedRow)}
@@ -445,6 +447,9 @@ interface HostSheetProps {
   row: HostRow;
   connecting: boolean;
   operationView: HostOperationView | null;
+  /** The tracked operation's wire state, rendered as the operation block's
+   * `data-state`. */
+  operationState: string | undefined;
   onClose: () => void;
   onConnect: () => void;
   onDeploy: () => void;
@@ -464,6 +469,7 @@ function HostSheet({
   row,
   connecting,
   operationView,
+  operationState,
   onClose,
   onConnect,
   onDeploy,
@@ -495,12 +501,16 @@ function HostSheet({
           // chip names the state, the line is the record's own prose - a
           // failure's 04b message verbatim - and a stopped read says so
           // instead of stalling.
-          <div className={CLASS.operation}>
+          <div className={CLASS.operation} data-testid="host-operation" data-state={operationState}>
             <div className={CLASS.chipRow}>
               <Chip tone={operationView.tone}>{operationView.label}</Chip>
             </div>
             {operationView.line !== null && <InlineNotice live="off">{operationView.line}</InlineNotice>}
-            {operationView.replay !== null && <InlineNotice live="off">{operationView.replay}</InlineNotice>}
+            {operationView.replay !== null && (
+              <InlineNotice live="off" data-testid="host-operation-replay">
+                {operationView.replay}
+              </InlineNotice>
+            )}
             {operationView.unavailable !== null && (
               <InlineNotice tone="danger">{operationView.unavailable}</InlineNotice>
             )}
@@ -577,7 +587,9 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
   const [addr, setAddr] = useState(row?.addr ?? "");
   const [roots, setRoots] = useState(rootsToText(row?.roots));
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ field: string | null; message: string } | null>(null);
+  // `reason` is the refusal kind when the hub says the host moved under the
+  // dialog, rendered as the form alert's `data-reason`.
+  const [error, setError] = useState<{ field: string | null; message: string; reason?: "stale-entry" } | null>(null);
 
   // A backend refusal may name an input this mode deliberately omits (notably
   // immutable name in Edit). Only rendered fields get an inline slot; every
@@ -595,7 +607,7 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
 
   const fieldError = (field: string): string | undefined =>
     error !== null && error.field === field ? error.message : undefined;
-  const formError = error !== null && error.field === null ? error.message : null;
+  const formError = error !== null && error.field === null ? error : null;
   // Submission stays available for invalid values so the hub remains the one
   // validator and can blame the precise input. It is disabled only in flight.
 
@@ -619,9 +631,11 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
       // A refusal that names an input goes on that input; everything else is
       // form-level.
       const field = hostFieldError(err);
+      const hostChanged = hostChangedSinceOpened(err);
       setError({
         field: field !== undefined && renderedFields.has(field) ? field : null,
-        message: hostChangedSinceOpened(err) ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(err),
+        message: hostChanged ? HOST_CHANGED_MESSAGE : friendlyErrorMessage(err),
+        ...(hostChanged ? { reason: "stale-entry" as const } : {}),
       });
     } finally {
       setBusy(false);
@@ -729,7 +743,11 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
         >
           <Textarea id={`${prefix}-roots`} value={roots} onChange={(e) => setRoots(e.target.value)} rows={3} />
         </FormRow>
-        {formError !== null && <InlineNotice tone="danger">{formError}</InlineNotice>}
+        {formError !== null && (
+          <InlineNotice tone="danger" data-reason={formError.reason}>
+            {formError.message}
+          </InlineNotice>
+        )}
       </div>
     </Dialog>
   );
@@ -864,7 +882,11 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
         </div>
       ) : planned !== null ? (
         <div className={CLASS.planFields}>
-          {planned.notice !== null && <p className={CLASS.planNotice}>{planned.notice}</p>}
+          {planned.notice !== null && (
+            <p className={CLASS.planNotice} data-testid="host-replan-notice">
+              {planned.notice}
+            </p>
+          )}
           {/* The operator is confirming exactly these values, so each wraps in
               full rather than truncating the part that matters. */}
           <PropertyList
@@ -881,7 +903,11 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
               },
             ]}
           />
-          {refusal !== null && <InlineNotice tone="danger">{refusal.message}</InlineNotice>}
+          {refusal !== null && (
+            <InlineNotice tone="danger" data-reason={refusal.kind}>
+              {refusal.message}
+            </InlineNotice>
+          )}
           {refusal?.kind === "remnant-open" && refusal.remnantId !== undefined && (
             <RemnantRepairControls
               key={`repair-controls:${refusal.remnantId}`}
@@ -899,7 +925,9 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
         </div>
       ) : state.phase === "error" ? (
         <div className={CLASS.planFields}>
-          <InlineNotice tone="danger">{state.refusal.message}</InlineNotice>
+          <InlineNotice tone="danger" data-reason={state.refusal.kind}>
+            {state.refusal.message}
+          </InlineNotice>
           {state.recovery !== "none" && (
             <Button size="sm" variant="quiet" disabled={busy} onClick={() => void submit(state.recovery)}>
               {RECOVERY_LABEL[state.recovery]}
@@ -1012,7 +1040,9 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
       </p>
       {refusal !== null && (
         <>
-          <InlineNotice tone="danger">{refusal.message}</InlineNotice>
+          <InlineNotice tone="danger" data-reason={refusal.kind}>
+            {refusal.message}
+          </InlineNotice>
           {refusal.kind === "remnant-open" && refusal.remnantId !== undefined && (
             <RemnantRepairControls
               key={`repair-controls:${refusal.remnantId}`}
@@ -1158,7 +1188,11 @@ function RemnantRepairControls({
     <div className={CLASS.planFields}>
       {repair?.phase === "retrying" && <Loader label={`Retrying teardown for remnant ${remnantId}…`} />}
       {repair?.phase === "recovering" && <Loader label={`Recovering remnant ${remnantId}…`} />}
-      {refusal !== null && <InlineNotice tone="danger">{refusal.message}</InlineNotice>}
+      {refusal !== null && (
+        <InlineNotice tone="danger" data-reason={refusal.kind}>
+          {refusal.message}
+        </InlineNotice>
+      )}
       {repair?.phase === "retried" && (
         <>
           <p className={CLASS.planNotice}>{retryOutcomeLine(repair.result)}</p>
